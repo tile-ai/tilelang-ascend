@@ -348,7 +348,7 @@ def _batched_transpose_kernel_db(
 
 @tilelang.jit(out_idx=[-1], pass_configs=_PASS_CONFIGS)
 def _batched_transpose_kernel_db_serial(
-    num_batches: int, shape_x: int, shape_y: int, block_M: int, block_N: int, dtype: str = "float32",
+    num_batches: int, shape_x: int, shape_y: int, block_M: int, block_N: int, dtype: str = "bfloat16",
 ):
     m_blocks = shape_x // block_M
     n_blocks = shape_y // block_N
