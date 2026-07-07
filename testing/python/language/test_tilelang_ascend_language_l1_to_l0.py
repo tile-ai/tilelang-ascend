@@ -151,14 +151,13 @@ def _lower_and_get_source(kernel_func, target, pass_configs):
     the sliced-L1 load lowers to a static intrinsic that bisheng may reject.
     """
     import tvm
+
     with tvm.transform.PassContext(opt_level=3, config=pass_configs):
         artifact = tilelang.lower(kernel_func, target=target, platform="auto")
     return artifact.kernel_source
 
 
-def _assert_l0b_tile_row_within_capacity(kernel_func, target, pass_configs,
-                                         expected_tile_row=None,
-                                         physical_row=None):
+def _assert_l0b_tile_row_within_capacity(kernel_func, target, pass_configs, expected_tile_row=None, physical_row=None):
     """Codegen-layer assertion: every L0B copy's tile_row must fit the L0B K
     capacity.
 
@@ -181,12 +180,12 @@ def _assert_l0b_tile_row_within_capacity(kernel_func, target, pass_configs,
       ``physical_row`` argument is therefore ignored on ascendc.
     """
     import re
+
     src = _lower_and_get_source(kernel_func, target, pass_configs)
 
     if target == "pto":
         # pto: 4-arg template <type, dst_K, dst_N, tile_row, tile_col>.
-        copies = re.findall(
-            r"copy_l1_to_l0b<[^,]+,\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)>", src)
+        copies = re.findall(r"copy_l1_to_l0b<[^,]+,\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)>", src)
         assert copies, "no 4-arg copy_l1_to_l0b call in generated source"
         for dst_k, dst_n, tile_row, tile_col in copies:
             dst_k = int(dst_k)
@@ -194,10 +193,10 @@ def _assert_l0b_tile_row_within_capacity(kernel_func, target, pass_configs,
             assert tile_row <= dst_k, (
                 f"tile_row={tile_row} > dst_K={dst_k} (L0B K capacity) -> "
                 f"overflow (dst_K={dst_k} dst_N={dst_n} tile_row={tile_row} "
-                f"tile_col={tile_col})")
+                f"tile_col={tile_col})"
+            )
             if expected_tile_row is not None:
-                assert tile_row == expected_tile_row, (
-                    f"tile_row={tile_row} != expected {expected_tile_row}")
+                assert tile_row == expected_tile_row, f"tile_row={tile_row} != expected {expected_tile_row}"
     else:
         # ascendc: 3-arg template <type, dst_M, dst_N, transpose_flag>.
         # The ascendc backend does not perform FindBestTileRowB and, for
@@ -207,13 +206,11 @@ def _assert_l0b_tile_row_within_capacity(kernel_func, target, pass_configs,
         # copy_l1_to_l0b call, so we only assert the call exists.  The
         # tile_row correctness for sliced sources is verified on the pto
         # backend, whose codegen does perform the tile_row selection.
-        copies = re.findall(
-            r"copy_l1_to_l0b<[^,]+,\s*(\d+),\s*(\d+),\s*(?:true|false)>", src)
+        copies = re.findall(r"copy_l1_to_l0b<[^,]+,\s*(\d+),\s*(\d+),\s*(?:true|false)>", src)
         assert copies, "no 3-arg copy_l1_to_l0b call in generated source"
 
 
-def _assert_l0a_uses_valid_row(kernel_func, target, pass_configs,
-                               physical_row, valid_row):
+def _assert_l0a_uses_valid_row(kernel_func, target, pass_configs, physical_row, valid_row):
     """Codegen-layer assertion: the L0A copy must use the slice-valid row.
 
     The A path uses ``dst.slice_row`` directly as tile_row (no
@@ -223,12 +220,11 @@ def _assert_l0a_uses_valid_row(kernel_func, target, pass_configs,
     dimension arg.
     """
     import re
+
     src = _lower_and_get_source(kernel_func, target, pass_configs)
     assert "copy_l1_to_l0a" in src, "no copy_l1_to_l0a call in generated source"
     bad = re.findall(rf"copy_l1_to_l0a<[^,]+,\s*{physical_row},", src)
-    assert not bad, (
-        f"L0A copy used physical row {physical_row} instead of valid row "
-        f"{valid_row}: {bad}")
+    assert not bad, f"L0A copy used physical row {physical_row} instead of valid row {valid_row}: {bad}"
 
 
 # =============================================================================
@@ -237,8 +233,7 @@ def _assert_l0a_uses_valid_row(kernel_func, target, pass_configs,
 # sizes: full-block, multi-tile grids, asymmetric blocks.  Both A (->L0A) and
 # B (->L0B) copy paths exercised.
 # =============================================================================
-def explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K,
-                           dtype="float16", accum_dtype="float"):
+def explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float"):
     """Expert-mode GEMM with explicit L1 -> L0A/L0B copies.
 
     Data flow per K-tile:
@@ -287,13 +282,10 @@ def explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K,
     return main
 
 
-def run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K,
-                                    dtype, accum_dtype, target):
+def run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target):
     torch.manual_seed(0)
-    func = explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K,
-                                  dtype, accum_dtype)
-    func = tilelang.compile(func, out_idx=[-1],
-                            pass_configs=CUBE_PASS_CONFIGS, target=target)
+    func = explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=CUBE_PASS_CONFIGS, target=target)
     td = _torch_dtype(dtype)
     a = torch.randn(M, K, dtype=td).npu()
     b = torch.randn(K, N, dtype=td).npu()
@@ -306,20 +298,17 @@ def run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K,
 # (M, N, K, block_M, block_N, block_K) -- divisible shapes, varied block sizes.
 explicit_configs = [
     (128, 128, 128, 128, 128, 128),  # single tile, block == full dim
-    (256, 256, 256, 128, 128, 64),   # 2x2 grid, K split into 4
-    (512, 512, 512, 128, 256, 64),   # asymm block_N
-    (256, 256, 256, 64, 64, 64),     # smaller block, 4x4 grid
+    (256, 256, 256, 128, 128, 64),  # 2x2 grid, K split into 4
+    (512, 512, 512, 128, 256, 64),  # asymm block_N
+    (256, 256, 256, 64, 64, 64),  # smaller block, 4x4 grid
 ]
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype",
-                         [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
 @pytest.mark.parametrize("M,N,K,block_M,block_N,block_K", explicit_configs)
-def test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K,
-                                dtype, accum_dtype, target):
-    run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K,
-                                    dtype, accum_dtype, target)
+def test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target):
+    run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target)
 
 
 # =============================================================================
@@ -327,9 +316,7 @@ def test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K,
 # gemm_v0 internally performs the L1 -> L0 copy.  Covers the transpose_B=True
 # branch (TileMatL1ZN template path) and the plain non-transpose path.
 # =============================================================================
-def gemm_v0_implicit(M, N, K, block_M, block_N, block_K,
-                     transpose_B=False,
-                     dtype="float16", accum_dtype="float"):
+def gemm_v0_implicit(M, N, K, block_M, block_N, block_K, transpose_B=False, dtype="float16", accum_dtype="float"):
     """Developer-mode GEMM via T.gemm_v0 (implicit L1 -> L0 copy).
 
     With transpose_B=True the B matrix is loaded as [block_N, block_K] (nZ
@@ -350,11 +337,9 @@ def gemm_v0_implicit(M, N, K, block_M, block_N, block_K,
             by = cid % n_num
 
             A_L1 = T.alloc_L1((block_M, block_K), dtype)
-            B_L1 = T.alloc_L1(
-                (block_N, block_K) if transpose_B else (block_K, block_N), dtype)
+            B_L1 = T.alloc_L1((block_N, block_K) if transpose_B else (block_K, block_N), dtype)
             if transpose_B:
-                T.annotate_layout(
-                    {A_L1: make_zn_layout(A_L1), B_L1: make_nz_layout(B_L1)})
+                T.annotate_layout({A_L1: make_zn_layout(A_L1), B_L1: make_nz_layout(B_L1)})
             C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
 
             with T.Scope("C"):
@@ -367,8 +352,7 @@ def gemm_v0_implicit(M, N, K, block_M, block_N, block_K,
                         T.copy(B[k * block_K, by * block_N], B_L1)
 
                     T.barrier_all()
-                    T.gemm_v0(A_L1, B_L1, C_L0,
-                              transpose_B=transpose_B, init=(k == 0))
+                    T.gemm_v0(A_L1, B_L1, C_L0, transpose_B=transpose_B, init=(k == 0))
                     T.barrier_all()
 
                 T.copy(C_L0, C[bx * block_M, by * block_N])
@@ -376,14 +360,10 @@ def gemm_v0_implicit(M, N, K, block_M, block_N, block_K,
     return main
 
 
-def run_test_gemm_v0_implicit(M, N, K, block_M, block_N, block_K,
-                              transpose_B, dtype, accum_dtype, target):
+def run_test_gemm_v0_implicit(M, N, K, block_M, block_N, block_K, transpose_B, dtype, accum_dtype, target):
     torch.manual_seed(0)
-    func = gemm_v0_implicit(M, N, K, block_M, block_N, block_K,
-                            transpose_B=transpose_B,
-                            dtype=dtype, accum_dtype=accum_dtype)
-    func = tilelang.compile(func, out_idx=[-1],
-                            pass_configs=DEV_PASS_CONFIGS, target=target)
+    func = gemm_v0_implicit(M, N, K, block_M, block_N, block_K, transpose_B=transpose_B, dtype=dtype, accum_dtype=accum_dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=DEV_PASS_CONFIGS, target=target)
     td = _torch_dtype(dtype)
     a = torch.randn(M, K, dtype=td).npu()
     if transpose_B:
@@ -398,17 +378,17 @@ def run_test_gemm_v0_implicit(M, N, K, block_M, block_N, block_K,
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype",
-                         [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
 @pytest.mark.parametrize("transpose_B", [False, True])
-@pytest.mark.parametrize("M,N,K,block_M,block_N,block_K", [
-    (128, 128, 128, 128, 128, 128),
-    (256, 256, 256, 128, 128, 64),
-])
-def test_gemm_v0_implicit(M, N, K, block_M, block_N, block_K,
-                          transpose_B, dtype, accum_dtype, target):
-    run_test_gemm_v0_implicit(M, N, K, block_M, block_N, block_K,
-                              transpose_B, dtype, accum_dtype, target)
+@pytest.mark.parametrize(
+    "M,N,K,block_M,block_N,block_K",
+    [
+        (128, 128, 128, 128, 128, 128),
+        (256, 256, 256, 128, 128, 64),
+    ],
+)
+def test_gemm_v0_implicit(M, N, K, block_M, block_N, block_K, transpose_B, dtype, accum_dtype, target):
+    run_test_gemm_v0_implicit(M, N, K, block_M, block_N, block_K, transpose_B, dtype, accum_dtype, target)
 
 
 # =============================================================================
@@ -419,19 +399,16 @@ def test_gemm_v0_implicit(M, N, K, block_M, block_N, block_K,
 # =============================================================================
 k_tail_configs = [
     (128, 128, 160, 128, 128, 64),  # K=160, last tile K=32 (half tile)
-    (128, 256, 96, 128, 256, 64),   # K=96, last tile K=32
+    (128, 256, 96, 128, 256, 64),  # K=96, last tile K=32
     (256, 256, 176, 128, 128, 64),  # K=176, last tile K=48
 ]
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype",
-                         [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
 @pytest.mark.parametrize("M,N,K,block_M,block_N,block_K", k_tail_configs)
-def test_k_tail_gemm(M, N, K, block_M, block_N, block_K,
-                     dtype, accum_dtype, target):
-    run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K,
-                                    dtype, accum_dtype, target)
+def test_k_tail_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target):
+    run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target)
 
 
 # =============================================================================
@@ -441,21 +418,18 @@ def test_k_tail_gemm(M, N, K, block_M, block_N, block_K,
 # K >= 16 for float16 / bfloat16).
 # =============================================================================
 fractal_configs = [
-    (32, 32, 32, 16, 16, 16),      # minimum fractal for fp16/bf16
-    (64, 64, 64, 16, 16, 16),      # 4x4 grid at min fractal
-    (128, 128, 128, 64, 64, 16),   # min K, larger M/N blocks
+    (32, 32, 32, 16, 16, 16),  # minimum fractal for fp16/bf16
+    (64, 64, 64, 16, 16, 16),  # 4x4 grid at min fractal
+    (128, 128, 128, 64, 64, 16),  # min K, larger M/N blocks
     (128, 128, 128, 16, 128, 16),  # asymm: min M, large N, min K
 ]
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype",
-                         [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
 @pytest.mark.parametrize("M,N,K,block_M,block_N,block_K", fractal_configs)
-def test_fractal_boundary(M, N, K, block_M, block_N, block_K,
-                          dtype, accum_dtype, target):
-    run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K,
-                                    dtype, accum_dtype, target)
+def test_fractal_boundary(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target):
+    run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target)
 
 
 # =============================================================================
@@ -466,20 +440,17 @@ def test_fractal_boundary(M, N, K, block_M, block_N, block_K,
 # properly zeroed on the first tile and accumulated on subsequent tiles.
 # =============================================================================
 k_tiling_configs = [
-    (128, 128, 512, 128, 128, 64),   # K split into 8 tiles
+    (128, 128, 512, 128, 128, 64),  # K split into 8 tiles
     (128, 128, 1024, 128, 128, 64),  # K split into 16 tiles
-    (64, 64, 768, 64, 64, 64),       # K split into 12 tiles, smaller block
+    (64, 64, 768, 64, 64, 64),  # K split into 12 tiles, smaller block
 ]
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype",
-                         [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
 @pytest.mark.parametrize("M,N,K,block_M,block_N,block_K", k_tiling_configs)
-def test_k_tiling_accumulation(M, N, K, block_M, block_N, block_K,
-                               dtype, accum_dtype, target):
-    run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K,
-                                    dtype, accum_dtype, target)
+def test_k_tiling_accumulation(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target):
+    run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target)
 
 
 # =============================================================================
@@ -487,10 +458,9 @@ def test_k_tiling_accumulation(M, N, K, block_M, block_N, block_K,
 # L1 buffers annotated with zN (default) and nZ layouts, combined with
 # transpose_B.  Guards the L1 -> L0 copy under explicit layout control.
 # =============================================================================
-def layout_annotated_gemm(M, N, K, block_M, block_N, block_K,
-                          a_layout="zn", b_layout="zn",
-                          transpose_B=False,
-                          dtype="float16", accum_dtype="float"):
+def layout_annotated_gemm(
+    M, N, K, block_M, block_N, block_K, a_layout="zn", b_layout="zn", transpose_B=False, dtype="float16", accum_dtype="float"
+):
     """GEMM with explicit layout annotation on L1 buffers.
 
     ``a_layout`` / ``b_layout`` select zN or nZ layout for the A/B L1 buffers.
@@ -512,21 +482,16 @@ def layout_annotated_gemm(M, N, K, block_M, block_N, block_K,
             by = cid % n_num
 
             A_L1 = T.alloc_L1((block_M, block_K), dtype)
-            B_L1 = T.alloc_L1(
-                (block_N, block_K) if transpose_B else (block_K, block_N), dtype)
+            B_L1 = T.alloc_L1((block_N, block_K) if transpose_B else (block_K, block_N), dtype)
 
             if a_layout == "zn" and b_layout == "zn":
-                T.annotate_layout(
-                    {A_L1: make_zn_layout(A_L1), B_L1: make_zn_layout(B_L1)})
+                T.annotate_layout({A_L1: make_zn_layout(A_L1), B_L1: make_zn_layout(B_L1)})
             elif a_layout == "zn" and b_layout == "nz":
-                T.annotate_layout(
-                    {A_L1: make_zn_layout(A_L1), B_L1: make_nz_layout(B_L1)})
+                T.annotate_layout({A_L1: make_zn_layout(A_L1), B_L1: make_nz_layout(B_L1)})
             elif a_layout == "nz" and b_layout == "zn":
-                T.annotate_layout(
-                    {A_L1: make_nz_layout(A_L1), B_L1: make_zn_layout(B_L1)})
+                T.annotate_layout({A_L1: make_nz_layout(A_L1), B_L1: make_zn_layout(B_L1)})
             else:
-                T.annotate_layout(
-                    {A_L1: make_nz_layout(A_L1), B_L1: make_nz_layout(B_L1)})
+                T.annotate_layout({A_L1: make_nz_layout(A_L1), B_L1: make_nz_layout(B_L1)})
 
             C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
 
@@ -540,8 +505,7 @@ def layout_annotated_gemm(M, N, K, block_M, block_N, block_K,
                         T.copy(B[k * block_K, by * block_N], B_L1)
 
                     T.barrier_all()
-                    T.gemm_v0(A_L1, B_L1, C_L0,
-                              transpose_B=transpose_B, init=(k == 0))
+                    T.gemm_v0(A_L1, B_L1, C_L0, transpose_B=transpose_B, init=(k == 0))
                     T.barrier_all()
 
                 T.copy(C_L0, C[bx * block_M, by * block_N])
@@ -549,16 +513,22 @@ def layout_annotated_gemm(M, N, K, block_M, block_N, block_K,
     return main
 
 
-def run_test_layout_annotated_gemm(M, N, K, block_M, block_N, block_K,
-                                   a_layout, b_layout, transpose_B,
-                                   dtype, accum_dtype, target):
+def run_test_layout_annotated_gemm(M, N, K, block_M, block_N, block_K, a_layout, b_layout, transpose_B, dtype, accum_dtype, target):
     torch.manual_seed(0)
-    func = layout_annotated_gemm(M, N, K, block_M, block_N, block_K,
-                                 a_layout=a_layout, b_layout=b_layout,
-                                 transpose_B=transpose_B,
-                                 dtype=dtype, accum_dtype=accum_dtype)
-    func = tilelang.compile(func, out_idx=[-1],
-                            pass_configs=DEV_PASS_CONFIGS, target=target)
+    func = layout_annotated_gemm(
+        M,
+        N,
+        K,
+        block_M,
+        block_N,
+        block_K,
+        a_layout=a_layout,
+        b_layout=b_layout,
+        transpose_B=transpose_B,
+        dtype=dtype,
+        accum_dtype=accum_dtype,
+    )
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=DEV_PASS_CONFIGS, target=target)
     td = _torch_dtype(dtype)
     a = torch.randn(M, K, dtype=td).npu()
     if transpose_B:
@@ -573,22 +543,23 @@ def run_test_layout_annotated_gemm(M, N, K, block_M, block_N, block_K,
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype",
-                         [("float16", "float"), ("bfloat16", "float")])
-@pytest.mark.parametrize("a_layout,b_layout,transpose_B", [
-    ("zn", "zn", False),    # default zN on both, no transpose
-    ("zn", "nz", True),     # zN A, nZ B, transpose (attention-style Q*K^T)
-    ("nz", "zn", False),    # nZ A, zN B, no transpose
-])
-@pytest.mark.parametrize("M,N,K,block_M,block_N,block_K", [
-    (128, 128, 128, 128, 128, 128),
-])
-def test_layout_annotation(M, N, K, block_M, block_N, block_K,
-                           a_layout, b_layout, transpose_B,
-                           dtype, accum_dtype, target):
-    run_test_layout_annotated_gemm(M, N, K, block_M, block_N, block_K,
-                                   a_layout, b_layout, transpose_B,
-                                   dtype, accum_dtype, target)
+@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize(
+    "a_layout,b_layout,transpose_B",
+    [
+        ("zn", "zn", False),  # default zN on both, no transpose
+        ("zn", "nz", True),  # zN A, nZ B, transpose (attention-style Q*K^T)
+        ("nz", "zn", False),  # nZ A, zN B, no transpose
+    ],
+)
+@pytest.mark.parametrize(
+    "M,N,K,block_M,block_N,block_K",
+    [
+        (128, 128, 128, 128, 128, 128),
+    ],
+)
+def test_layout_annotation(M, N, K, block_M, block_N, block_K, a_layout, b_layout, transpose_B, dtype, accum_dtype, target):
+    run_test_layout_annotated_gemm(M, N, K, block_M, block_N, block_K, a_layout, b_layout, transpose_B, dtype, accum_dtype, target)
 
 
 # =============================================================================
@@ -597,8 +568,7 @@ def test_layout_annotation(M, N, K, block_M, block_N, block_K,
 # the L1 -> L0 copy path (implicit via gemm_v0).  Follows the pattern in
 # examples/gemm/example_gemm_persistent.py.
 # =============================================================================
-def persistent_gemm(M, N, K, block_M, block_N, block_K, core_num,
-                    dtype="float16", accum_dtype="float"):
+def persistent_gemm(M, N, K, block_M, block_N, block_K, core_num, dtype="float16", accum_dtype="float"):
     """Persistent-scheduled GEMM (implicit L1 -> L0 copy via gemm_v0).
 
     The kernel grid is m_num * n_num (total tiles); T.Persistent distributes
@@ -619,9 +589,7 @@ def persistent_gemm(M, N, K, block_M, block_N, block_K, core_num,
             C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
 
             with T.Scope("C"):
-                for bx, by in T.Persistent(
-                        [T.ceildiv(M, block_M), T.ceildiv(N, block_N)],
-                        core_num, cid):
+                for bx, by in T.Persistent([T.ceildiv(M, block_M), T.ceildiv(N, block_N)], core_num, cid):
                     loop_k = T.ceildiv(K, block_K)
                     for k in T.serial(loop_k):
                         T.copy(A[bx * block_M, k * block_K], A_L1)
@@ -636,13 +604,10 @@ def persistent_gemm(M, N, K, block_M, block_N, block_K, core_num,
     return main
 
 
-def run_test_persistent_gemm(M, N, K, block_M, block_N, block_K, core_num,
-                             dtype, accum_dtype, target):
+def run_test_persistent_gemm(M, N, K, block_M, block_N, block_K, core_num, dtype, accum_dtype, target):
     torch.manual_seed(0)
-    func = persistent_gemm(M, N, K, block_M, block_N, block_K, core_num,
-                           dtype, accum_dtype)
-    func = tilelang.compile(func, out_idx=[-1],
-                            pass_configs=CUBE_PASS_CONFIGS, target=target)
+    func = persistent_gemm(M, N, K, block_M, block_N, block_K, core_num, dtype, accum_dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=CUBE_PASS_CONFIGS, target=target)
     td = _torch_dtype(dtype)
     a = torch.randn(M, K, dtype=td).npu()
     b = torch.randn(K, N, dtype=td).npu()
@@ -653,16 +618,16 @@ def run_test_persistent_gemm(M, N, K, block_M, block_N, block_K, core_num,
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype",
-                         [("float16", "float"), ("bfloat16", "float")])
-@pytest.mark.parametrize("M,N,K,block_M,block_N,block_K,core_num", [
-    (256, 256, 128, 128, 128, 64, 4),  # 2x2 grid, 4 cores
-    (512, 256, 128, 128, 128, 64, 4),  # 4x2 grid, 4 cores
-])
-def test_persistent_scheduling(M, N, K, block_M, block_N, block_K, core_num,
-                               dtype, accum_dtype, target):
-    run_test_persistent_gemm(M, N, K, block_M, block_N, block_K, core_num,
-                             dtype, accum_dtype, target)
+@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize(
+    "M,N,K,block_M,block_N,block_K,core_num",
+    [
+        (256, 256, 128, 128, 128, 64, 4),  # 2x2 grid, 4 cores
+        (512, 256, 128, 128, 128, 64, 4),  # 4x2 grid, 4 cores
+    ],
+)
+def test_persistent_scheduling(M, N, K, block_M, block_N, block_K, core_num, dtype, accum_dtype, target):
+    run_test_persistent_gemm(M, N, K, block_M, block_N, block_K, core_num, dtype, accum_dtype, target)
 
 
 # =============================================================================
@@ -679,8 +644,7 @@ def test_persistent_scheduling(M, N, K, block_M, block_N, block_K, core_num,
 # selection logic resides -- succeeds and emits the correct template.  Both
 # ascendc and pto codegen are inspected.
 # =============================================================================
-def sliced_3d_l1_to_l0b(STACK, BLOCK_N, D, BM,
-                        dtype="float16", accum_dtype="float"):
+def sliced_3d_l1_to_l0b(STACK, BLOCK_N, D, BM, dtype="float16", accum_dtype="float"):
     """3D L1 buffer sliced to L0B.
 
     shared_l1 = [STACK, BLOCK_N, D] (3D L1).  Per chunk:
@@ -689,11 +653,12 @@ def sliced_3d_l1_to_l0b(STACK, BLOCK_N, D, BM,
     The 3D buffer flattens to [STACK*BLOCK_N, D]; each slice's valid row
     count is BLOCK_N while the physical row is STACK*BLOCK_N.
     """
+
     @T.prim_func
     def main(
-        A: T.Tensor((STACK, BM, BLOCK_N), dtype),   # type: ignore
-        V: T.Tensor((STACK, BLOCK_N, D), dtype),    # type: ignore
-        C: T.Tensor((BM, D), dtype),                # type: ignore
+        A: T.Tensor((STACK, BM, BLOCK_N), dtype),  # type: ignore
+        V: T.Tensor((STACK, BLOCK_N, D), dtype),  # type: ignore
+        C: T.Tensor((BM, D), dtype),  # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             shared_l1 = T.alloc_L1([STACK, BLOCK_N, D], dtype)
@@ -718,19 +683,19 @@ def sliced_3d_l1_to_l0b(STACK, BLOCK_N, D, BM,
     return main
 
 
-def sliced_3d_l1_to_l0a(STACK, BM, K, BLOCK_N,
-                        dtype="float16", accum_dtype="float"):
+def sliced_3d_l1_to_l0a(STACK, BM, K, BLOCK_N, dtype="float16", accum_dtype="float"):
     """3D L1 buffer sliced to L0A (symmetric to the L0B case).
 
     shared_a_l1 = [STACK, BM, K] (3D L1).  Per chunk:
         copy shared_a_l1[chunk, :, :] -> l0a  (the sliced L1 -> L0A copy)
         mma(l0a=[BM, K], l0b=[K, BLOCK_N], l0c=[BM, BLOCK_N])
     """
+
     @T.prim_func
     def main(
-        A: T.Tensor((STACK, BM, K), dtype),        # type: ignore
-        B: T.Tensor((STACK, K, BLOCK_N), dtype),   # type: ignore
-        C: T.Tensor((BM, BLOCK_N), dtype),         # type: ignore
+        A: T.Tensor((STACK, BM, K), dtype),  # type: ignore
+        B: T.Tensor((STACK, K, BLOCK_N), dtype),  # type: ignore
+        C: T.Tensor((BM, BLOCK_N), dtype),  # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             shared_a_l1 = T.alloc_L1([STACK, BM, K], dtype)
@@ -756,15 +721,16 @@ def sliced_3d_l1_to_l0a(STACK, BM, K, BLOCK_N,
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype",
-                         [("float16", "float"), ("bfloat16", "float")])
-@pytest.mark.parametrize("STACK,ROWS,COLS,BM", [
-    (4, 128, 128, 128),  # [4,128,128] -> physical 512, valid 128 per slice
-    (2, 128, 128, 128),  # [2,128,128] -> physical 256, valid 128 per slice
-    (4, 64, 128, 64),    # smaller rows
-])
-def test_sliced_3d_l1_to_l0b(STACK, ROWS, COLS, BM,
-                             dtype, accum_dtype, target):
+@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize(
+    "STACK,ROWS,COLS,BM",
+    [
+        (4, 128, 128, 128),  # [4,128,128] -> physical 512, valid 128 per slice
+        (2, 128, 128, 128),  # [2,128,128] -> physical 256, valid 128 per slice
+        (4, 64, 128, 64),  # smaller rows
+    ],
+)
+def test_sliced_3d_l1_to_l0b(STACK, ROWS, COLS, BM, dtype, accum_dtype, target):
     """3D L1 sliced -> L0B: codegen must size tile_row by the valid row count.
 
     Asserts every copy_l1_to_l0b template's tile_row <= dst_K (the L0B K
@@ -772,14 +738,11 @@ def test_sliced_3d_l1_to_l0b(STACK, ROWS, COLS, BM,
     than the physical (flattened) row count.
     """
     kfunc = sliced_3d_l1_to_l0b(STACK, ROWS, COLS, BM, dtype, accum_dtype)
-    _assert_l0b_tile_row_within_capacity(kfunc, target, CUBE_PASS_CONFIGS,
-                                         expected_tile_row=ROWS,
-                                         physical_row=STACK * ROWS)
+    _assert_l0b_tile_row_within_capacity(kfunc, target, CUBE_PASS_CONFIGS, expected_tile_row=ROWS, physical_row=STACK * ROWS)
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype",
-                         [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
 def test_sliced_3d_l1_to_l0a(dtype, accum_dtype, target):
     """3D L1 sliced -> L0A: codegen must use the slice-valid row, not physical.
 
@@ -790,8 +753,7 @@ def test_sliced_3d_l1_to_l0a(dtype, accum_dtype, target):
     """
     STACK, BM, K, BLOCK_N = 4, 128, 128, 128
     kfunc = sliced_3d_l1_to_l0a(STACK, BM, K, BLOCK_N, dtype, accum_dtype)
-    _assert_l0a_uses_valid_row(kfunc, target, CUBE_PASS_CONFIGS,
-                               physical_row=STACK * BM, valid_row=BM)
+    _assert_l0a_uses_valid_row(kfunc, target, CUBE_PASS_CONFIGS, physical_row=STACK * BM, valid_row=BM)
 
 
 # =============================================================================
@@ -801,19 +763,19 @@ def test_sliced_3d_l1_to_l0a(dtype, accum_dtype, target):
 #
 # Verified at the codegen layer for the same backend reasons as Group 8.
 # =============================================================================
-def row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM,
-                             dtype="float16", accum_dtype="float"):
+def row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM, dtype="float16", accum_dtype="float"):
     """2-D L1 with a row sub-range access -> L0B.
 
     b_l1 is allocated [PHYS_ROW, COL] but only the first BM rows are copied
     to L0B (BM < PHYS_ROW).  The access extent = BM*COL, so slice_valid_row =
     BM while physical row = PHYS_ROW.
     """
+
     @T.prim_func
     def main(
-        A: T.Tensor((BM, PHYS_ROW), dtype),   # type: ignore
+        A: T.Tensor((BM, PHYS_ROW), dtype),  # type: ignore
         B: T.Tensor((PHYS_ROW, COL), dtype),  # type: ignore
-        C: T.Tensor((BM, COL), dtype),        # type: ignore
+        C: T.Tensor((BM, COL), dtype),  # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             a_l1 = T.alloc_L1([BM, PHYS_ROW], dtype)
@@ -837,14 +799,15 @@ def row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM,
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype",
-                         [("float16", "float"), ("bfloat16", "float")])
-@pytest.mark.parametrize("PHYS_ROW,COL,BM", [
-    (256, 128, 128),  # slice_valid_row=128 < phys_row=256
-    (256, 128, 64),   # slice_valid_row=64 < phys_row=256
-])
-def test_row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM,
-                                 dtype, accum_dtype, target):
+@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize(
+    "PHYS_ROW,COL,BM",
+    [
+        (256, 128, 128),  # slice_valid_row=128 < phys_row=256
+        (256, 128, 64),  # slice_valid_row=64 < phys_row=256
+    ],
+)
+def test_row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM, dtype, accum_dtype, target):
     """2-D L1 row-sub-range -> L0B: tile_row must fit the L0B K capacity.
 
     Asserts every copy_l1_to_l0b template's tile_row <= dst_K, ensuring the
@@ -852,9 +815,7 @@ def test_row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM,
     count (PHYS_ROW).
     """
     kfunc = row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM, dtype, accum_dtype)
-    _assert_l0b_tile_row_within_capacity(kfunc, target, CUBE_PASS_CONFIGS,
-                                         expected_tile_row=BM,
-                                         physical_row=PHYS_ROW)
+    _assert_l0b_tile_row_within_capacity(kfunc, target, CUBE_PASS_CONFIGS, expected_tile_row=BM, physical_row=PHYS_ROW)
 
 
 if __name__ == "__main__":

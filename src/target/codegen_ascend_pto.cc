@@ -1358,9 +1358,8 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
   // larger than the L0B/L0A capacity, causing an out-of-bounds copy.
   int32_t src_row = src_shape_info.is_slice ? src_shape_info.slice_valid_row
                                             : src_shape_info.row;
-  int32_t tile_row =
-      is_a ? dst_shape_info.slice_row
-           : FindBestTileRowB(src_row, dst_shape_info.slice_row);
+  int32_t tile_row = is_a ? dst_shape_info.slice_row
+                          : FindBestTileRowB(src_row, dst_shape_info.slice_row);
   int32_t num_tiles = src_row / tile_row;
   if (num_tiles < 1)
     num_tiles = 1;
