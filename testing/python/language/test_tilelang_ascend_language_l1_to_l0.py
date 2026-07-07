@@ -157,7 +157,7 @@ def _lower_and_get_source(kernel_func, target, pass_configs):
     return artifact.kernel_source
 
 
-def _assert_l0b_tile_row_within_capacity(kernel_func, target, pass_configs, expected_tile_row=None, physical_row=None):
+def _assert_l0b_tile_row_within_capacity(kernel_func, target, pass_configs, expected_tile_row=None):
     """Codegen-layer assertion: every L0B copy's tile_row must fit the L0B K
     capacity.
 
@@ -176,8 +176,7 @@ def _assert_l0b_tile_row_within_capacity(kernel_func, target, pass_configs, expe
       tile_row); the codegen does not perform FindBestTileRowB and, for
       sliced L1 sources, copies the full physical buffer tile (a pre-existing
       ascendc limitation).  We only assert the call exists; the tile_row
-      correctness for sliced sources is verified on the pto backend.  The
-      ``physical_row`` argument is therefore ignored on ascendc.
+      correctness for sliced sources is verified on the pto backend.
     """
     import re
 
@@ -660,17 +659,15 @@ def sliced_3d_l1_to_l0b(STACK, BLOCK_N, D, BM, dtype="float16", accum_dtype="flo
         V: T.Tensor((STACK, BLOCK_N, D), dtype),  # type: ignore
         C: T.Tensor((BM, D), dtype),  # type: ignore
     ):
-        with T.Kernel(1, is_npu=True) as (cid, vid):
+        with T.Kernel(1, is_npu=True) as (_, _):
             shared_l1 = T.alloc_L1([STACK, BLOCK_N, D], dtype)
             a_l1 = T.alloc_L1([BM, BLOCK_N], dtype)
             l0a = T.alloc_L0A([BM, BLOCK_N], dtype)
             l0b = T.alloc_L0B([BLOCK_N, D], dtype)
             l0c = T.alloc_L0C([BM, D], accum_dtype)
 
-            T.copy(V[0, :, :], shared_l1[0, :, :])
-            T.copy(V[1, :, :], shared_l1[1, :, :])
-            T.copy(V[2, :, :], shared_l1[2, :, :])
-            T.copy(V[3, :, :], shared_l1[3, :, :])
+            for i in T.serial(STACK):
+                T.copy(V[i, :, :], shared_l1[i, :, :])
 
             for chunk in T.serial(STACK):
                 T.copy(A[chunk, :, :], a_l1[:, :])
@@ -697,17 +694,15 @@ def sliced_3d_l1_to_l0a(STACK, BM, K, BLOCK_N, dtype="float16", accum_dtype="flo
         B: T.Tensor((STACK, K, BLOCK_N), dtype),  # type: ignore
         C: T.Tensor((BM, BLOCK_N), dtype),  # type: ignore
     ):
-        with T.Kernel(1, is_npu=True) as (cid, vid):
+        with T.Kernel(1, is_npu=True) as (_, _):
             shared_a_l1 = T.alloc_L1([STACK, BM, K], dtype)
             b_l1 = T.alloc_L1([K, BLOCK_N], dtype)
             l0a = T.alloc_L0A([BM, K], dtype)
             l0b = T.alloc_L0B([K, BLOCK_N], dtype)
             l0c = T.alloc_L0C([BM, BLOCK_N], accum_dtype)
 
-            T.copy(A[0, :, :], shared_a_l1[0, :, :])
-            T.copy(A[1, :, :], shared_a_l1[1, :, :])
-            T.copy(A[2, :, :], shared_a_l1[2, :, :])
-            T.copy(A[3, :, :], shared_a_l1[3, :, :])
+            for i in T.serial(STACK):
+                T.copy(A[i, :, :], shared_a_l1[i, :, :])
 
             for chunk in T.serial(STACK):
                 T.copy(B[chunk, :, :], b_l1[:, :])
@@ -738,7 +733,7 @@ def test_sliced_3d_l1_to_l0b(STACK, ROWS, COLS, BM, dtype, accum_dtype, target):
     than the physical (flattened) row count.
     """
     kfunc = sliced_3d_l1_to_l0b(STACK, ROWS, COLS, BM, dtype, accum_dtype)
-    _assert_l0b_tile_row_within_capacity(kfunc, target, CUBE_PASS_CONFIGS, expected_tile_row=ROWS, physical_row=STACK * ROWS)
+    _assert_l0b_tile_row_within_capacity(kfunc, target, CUBE_PASS_CONFIGS, expected_tile_row=ROWS)
 
 
 @pytest.mark.parametrize("target", TARGETS)
@@ -777,7 +772,7 @@ def row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM, dtype="float16", accum_dtype="flo
         B: T.Tensor((PHYS_ROW, COL), dtype),  # type: ignore
         C: T.Tensor((BM, COL), dtype),  # type: ignore
     ):
-        with T.Kernel(1, is_npu=True) as (cid, vid):
+        with T.Kernel(1, is_npu=True) as (_, _):
             a_l1 = T.alloc_L1([BM, PHYS_ROW], dtype)
             b_l1 = T.alloc_L1([PHYS_ROW, COL], dtype)
             l0a = T.alloc_L0A([BM, PHYS_ROW], dtype)
@@ -815,7 +810,7 @@ def test_row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM, dtype, accum_dtype, target):
     count (PHYS_ROW).
     """
     kfunc = row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM, dtype, accum_dtype)
-    _assert_l0b_tile_row_within_capacity(kfunc, target, CUBE_PASS_CONFIGS, expected_tile_row=BM, physical_row=PHYS_ROW)
+    _assert_l0b_tile_row_within_capacity(kfunc, target, CUBE_PASS_CONFIGS, expected_tile_row=BM)
 
 
 if __name__ == "__main__":
