@@ -670,15 +670,15 @@ if __name__ == "__main__":
     ]
 
     _device_id = int(_os.environ.get("ASCEND_DEVICE_ID", "3"))
-    _device = "npu:{_device_id}"
+    _device = f"npu:{_device_id}"
     if hasattr(torch, "npu"):
         torch.npu.set_device(_device_id)
 
     torch.manual_seed(42)
 
     for _dtype, _hidden, _experts, _num_tokens in _cases:
-        _case_name = "dtype={_dtype},hidden={_hidden},experts={_experts},num_tokens={_num_tokens}"
-        print("[batched_transpose __main__] running {_case_name}", flush=True)
+        _case_name = f"dtype={_dtype},hidden={_hidden},experts={_experts},num_tokens={_num_tokens}"
+        print(f"[batched_transpose __main__] running {_case_name}", flush=True)
         _x = torch.randn((_experts, _num_tokens, _hidden), dtype=torch.bfloat16, device=_device)
         if _dtype != torch.bfloat16:
             _x = _x.to(_dtype)
@@ -689,6 +689,6 @@ if __name__ == "__main__":
 
         if hasattr(torch, "npu"):
             torch.npu.synchronize()
-        print("[batched_transpose __main__] test case passed", flush=True)
+        print(f"[batched_transpose __main__] test case passed", flush=True)
 
     print("test PASSED!", flush=True)
