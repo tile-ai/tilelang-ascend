@@ -1,6 +1,7 @@
 import tilelang
 import tilelang.language as T
 import torch
+import contextlib
 
 _PASS_CONFIGS = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
@@ -174,7 +175,6 @@ def _batched_transpose_kernel_fp32_serial(
             src_pong = T.alloc_ub((TILE, TILE), dtype)
             dst_ping = T.alloc_ub((TILE, TILE), dtype)
             dst_pong = T.alloc_ub((TILE, TILE), dtype)
-            
             src_ping_16 = T.alloc_ub((TILE, TILE), "float16")
             src_pong_16 = T.alloc_ub((TILE, TILE), "float16")
             dst_ping_16 = T.alloc_ub((TILE, TILE), "float16")
@@ -554,10 +554,8 @@ def _run_kernel(x_contig: torch.Tensor, shape_x: int, shape_y: int) -> torch.Ten
         return _run_kernel_single(x_contig, shape_x, shape_y, block_M, block_N, padded_x, padded_y)
     except (torch.OutOfMemoryError, RuntimeError) as e:
         if "out of memory" in str(e).lower() or isinstance(e, torch.OutOfMemoryError):
-            try:
+            with contextlib.suppress(Exception):
                 torch.npu.empty_cache()
-            except:
-                pass
             try:
                 return _run_kernel_single(x_contig, shape_x, shape_y, block_M, block_N, padded_x, padded_y)
             except (torch.OutOfMemoryError, RuntimeError):
@@ -642,7 +640,7 @@ def _main_assert_equal(actual: torch.Tensor, expected: torch.Tensor, case_name: 
             flat_idx = int(diff.reshape(-1).argmax().item()) if diff.numel() else 0
             max_idx = tuple(int(v) for v in torch.unravel_index(torch.tensor(flat_idx), diff.shape)) if diff.numel() else None
             raise AssertionError(
-                "{case_name}: value mismatch max_diff={max_diff:.8e} mean_diff={mean_diff:.8e} max_idx={max_idx}; {err}"
+                f"{case_name}: value mismatch max_diff={max_diff:.8e} mean_diff={mean_diff:.8e} max_idx={max_idx}; {err}"
             ) from err
 
     if not torch.equal(actual_cpu, expected):
@@ -651,7 +649,7 @@ def _main_assert_equal(actual: torch.Tensor, expected: torch.Tensor, case_name: 
         mean_diff = diff.mean().item() if diff.numel() else 0.0
         flat_idx = int(diff.reshape(-1).argmax().item()) if diff.numel() else 0
         max_idx = tuple(int(v) for v in torch.unravel_index(torch.tensor(flat_idx), diff.shape)) if diff.numel() else None
-        raise AssertionError("{case_name}: value mismatch max_diff={max_diff:.8e} mean_diff={mean_diff:.8e} max_idx={max_idx}")
+        raise AssertionError(f"{case_name}: value mismatch max_diff={max_diff:.8e} mean_diff={mean_diff:.8e} max_idx={max_idx}")
 
 
 if __name__ == "__main__":
