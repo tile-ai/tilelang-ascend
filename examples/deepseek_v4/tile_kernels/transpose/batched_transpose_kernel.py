@@ -569,7 +569,7 @@ def _run_kernel_single(
     total_blocks = num_batches * m_blocks * n_blocks
     use_serial_grid = total_blocks > GRID_THRESHOLD
 
-    # 核心修改：利用 _get_compiled_kernel 从全局缓存中拉取已编译好的 Module，阻断内存膨胀
+    # 核心修改：利用 @tilelang.jit 的缓存机制拉取已编译好的 Module，阻断内存膨胀
     if x_contig.dtype in (torch.bfloat16, torch.float16):
         if use_serial_grid:
             kernel = _batched_transpose_kernel_db_serial(num_batches, padded_x, padded_y, block_M, block_N, dtype_str)
