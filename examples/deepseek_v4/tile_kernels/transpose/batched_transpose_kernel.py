@@ -689,6 +689,6 @@ if __name__ == "__main__":
 
         if hasattr(torch, "npu"):
             torch.npu.synchronize()
-        print(f"[batched_transpose __main__] test case passed", flush=True)
+        print("[batched_transpose __main__] test case passed", flush=True)
 
     print("test PASSED!", flush=True)
