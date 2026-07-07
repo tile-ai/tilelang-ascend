@@ -141,6 +141,7 @@ def _batched_transpose_kernel_fp32_vector(
                     T.wait_flag("V", "MTE2", idx_pong)
                     T.wait_flag("MTE3", "V", idx_ping)
                     T.wait_flag("MTE3", "V", idx_pong)
+
     return transpose_fp32_vector_kernel
 
 
@@ -254,6 +255,7 @@ def _batched_transpose_kernel_fp32_serial(
                     T.wait_flag("V", "MTE2", idx_pong)
                     T.wait_flag("MTE3", "V", idx_ping)
                     T.wait_flag("MTE3", "V", idx_pong)
+
     return transpose_fp32_serial_kernel
 
 
@@ -356,6 +358,7 @@ def _batched_transpose_kernel_db(
                     T.wait_flag("V", "MTE2", idx_pong)
                     T.wait_flag("MTE3", "V", idx_ping)
                     T.wait_flag("MTE3", "V", idx_pong)
+
     return transpose_manual_pipelined_kernel
 
 
@@ -458,6 +461,7 @@ def _batched_transpose_kernel_db_serial(
                     T.wait_flag("V", "MTE2", idx_pong)
                     T.wait_flag("MTE3", "V", idx_ping)
                     T.wait_flag("MTE3", "V", idx_pong)
+
     return transpose_db_serial_kernel
 
 
@@ -501,6 +505,7 @@ def _batched_transpose_kernel_8bit(
                             for j in T.serial(block_N):
                                 dst_buf[j, i] = src_buf[i, j]
                         T.copy(dst_buf, out[bid, col_base, row_base])
+
     return transpose_8bit_kernel
 
 
