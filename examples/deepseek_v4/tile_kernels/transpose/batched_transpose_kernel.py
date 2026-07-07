@@ -504,7 +504,7 @@ def _batched_transpose_kernel_8bit(
     return transpose_8bit_kernel
 
 
-# ==================== 5. 主调度与智能缓存层 ====================
+# ==================== 5. 主调度和外围处理 ====================
 def _transpose_via_pytorch(x: torch.Tensor) -> torch.Tensor:
     return torch.transpose(x, 1, 2).contiguous()
 
@@ -536,10 +536,9 @@ def _run_kernel(x_contig: torch.Tensor, shape_x: int, shape_y: int) -> torch.Ten
                 result = torch.empty((num_batches, shape_y, shape_x), dtype=x_contig.dtype, device=x_contig.device)
             except (torch.OutOfMemoryError, RuntimeError):
                 try:
-                    import torch_npu
                     torch.npu.empty_cache()
                     result = torch.empty((num_batches, shape_y, shape_x), dtype=x_contig.dtype, device=x_contig.device)
-                except (torch.OutOfMemoryError, RuntimeError, ImportError):
+                except (torch.OutOfMemoryError, RuntimeError):
                     return _transpose_via_pytorch(x_contig)
 
             for start in range(0, num_batches, max_batches_per_launch):
@@ -556,7 +555,6 @@ def _run_kernel(x_contig: torch.Tensor, shape_x: int, shape_y: int) -> torch.Ten
     except (torch.OutOfMemoryError, RuntimeError) as e:
         if "out of memory" in str(e).lower() or isinstance(e, torch.OutOfMemoryError):
             try:
-                import torch_npu
                 torch.npu.empty_cache()
             except:
                 pass
@@ -569,8 +567,13 @@ def _run_kernel(x_contig: torch.Tensor, shape_x: int, shape_y: int) -> torch.Ten
 
 
 def _run_kernel_single(
-    x_contig: torch.Tensor, shape_x: int, shape_y: int,
-    block_M: int, block_N: int, padded_x: int, padded_y: int,
+    x_contig: torch.Tensor,
+    shape_x: int,
+    shape_y: int,
+    block_M: int,
+    block_N: int,
+    padded_x: int,
+    padded_y: int,
 ) -> torch.Tensor:
     num_batches = x_contig.shape[0]
     dtype_str = _DTYPE_TO_STR[x_contig.dtype]
@@ -585,7 +588,6 @@ def _run_kernel_single(
     total_blocks = num_batches * m_blocks * n_blocks
     use_serial_grid = total_blocks > GRID_THRESHOLD
 
-    # 核心修改：利用 _get_compiled_kernel 从全局缓存中拉取已编译好的 Module，阻断内存膨胀
     if x_contig.dtype in (torch.bfloat16, torch.float16):
         if use_serial_grid:
             kernel = _batched_transpose_kernel_db_serial(num_batches, padded_x, padded_y, block_M, block_N, dtype_str)
@@ -599,7 +601,7 @@ def _run_kernel_single(
     elif x_contig.dtype in (torch.float8_e4m3fn, torch.uint8):
         kernel = _batched_transpose_kernel_8bit(num_batches, padded_x, padded_y, block_M, block_N, dtype_str)
     else:
-        raise NotImplementedError(f"Unsupported data type: {x_contig.dtype}")
+        raise NotImplementedError("Unsupported data type: {x_contig.dtype}")
 
     result = kernel(x_contig)
     if need_pad:
@@ -614,7 +616,7 @@ def transpose(x: torch.Tensor) -> torch.Tensor:
 
 
 def batched_transpose(x: torch.Tensor) -> torch.Tensor:
-    assert x.dim() == 3, f"Expected 3D tensor, got {x.dim()}D"
+    assert x.dim() == 3, "Expected 3D tensor, got {x.dim()}D"
     num_batches, shape_x, shape_y = x.shape
     orig_dtype = x.dtype
     if num_batches == 0 or shape_x == 0 or shape_y == 0:
@@ -622,16 +624,13 @@ def batched_transpose(x: torch.Tensor) -> torch.Tensor:
     x_contig = x.contiguous()
     return _run_kernel(x_contig, shape_x, shape_y)
 
+
 def _main_assert_equal(actual: torch.Tensor, expected: torch.Tensor, case_name: str) -> None:
     actual_cpu = actual.detach().cpu()
     if actual_cpu.shape != expected.shape:
-        raise AssertionError(
-            f"{case_name}: shape mismatch actual={tuple(actual_cpu.shape)} expected={tuple(expected.shape)}"
-        )
+        raise AssertionError("{case_name}: shape mismatch actual={tuple(actual_cpu.shape)} expected={tuple(expected.shape)}")
     if actual_cpu.dtype != expected.dtype:
-        raise AssertionError(
-            f"{case_name}: dtype mismatch actual={actual_cpu.dtype} expected={expected.dtype}"
-        )
+        raise AssertionError("{case_name}: dtype mismatch actual={actual_cpu.dtype} expected={expected.dtype}")
     if actual_cpu.dtype == torch.float32:
         try:
             torch.testing.assert_close(actual_cpu, expected, atol=1e-6, rtol=1e-6)
@@ -643,8 +642,7 @@ def _main_assert_equal(actual: torch.Tensor, expected: torch.Tensor, case_name: 
             flat_idx = int(diff.reshape(-1).argmax().item()) if diff.numel() else 0
             max_idx = tuple(int(v) for v in torch.unravel_index(torch.tensor(flat_idx), diff.shape)) if diff.numel() else None
             raise AssertionError(
-                f"{case_name}: value mismatch max_diff={max_diff:.8e} "
-                f"mean_diff={mean_diff:.8e} max_idx={max_idx}; {err}"
+                "{case_name}: value mismatch max_diff={max_diff:.8e} mean_diff={mean_diff:.8e} max_idx={max_idx}; {err}"
             ) from err
 
     if not torch.equal(actual_cpu, expected):
@@ -653,10 +651,7 @@ def _main_assert_equal(actual: torch.Tensor, expected: torch.Tensor, case_name: 
         mean_diff = diff.mean().item() if diff.numel() else 0.0
         flat_idx = int(diff.reshape(-1).argmax().item()) if diff.numel() else 0
         max_idx = tuple(int(v) for v in torch.unravel_index(torch.tensor(flat_idx), diff.shape)) if diff.numel() else None
-        raise AssertionError(
-            f"{case_name}: value mismatch max_diff={max_diff:.8e} "
-            f"mean_diff={mean_diff:.8e} max_idx={max_idx}"
-        )
+        raise AssertionError("{case_name}: value mismatch max_diff={max_diff:.8e} mean_diff={mean_diff:.8e} max_idx={max_idx}")
 
 
 if __name__ == "__main__":
@@ -672,18 +667,15 @@ if __name__ == "__main__":
     ]
 
     _device_id = int(_os.environ.get("ASCEND_DEVICE_ID", "3"))
-    _device = f"npu:{_device_id}"
+    _device = "npu:{_device_id}"
     if hasattr(torch, "npu"):
         torch.npu.set_device(_device_id)
 
     torch.manual_seed(42)
 
     for _dtype, _hidden, _experts, _num_tokens in _cases:
-        _case_name = (
-            f"dtype={_dtype},hidden={_hidden},experts={_experts},"
-            f"num_tokens={_num_tokens}"
-        )
-        print(f"[batched_transpose __main__] running {_case_name}", flush=True)
+        _case_name = "dtype={_dtype},hidden={_hidden},experts={_experts},num_tokens={_num_tokens}"
+        print("[batched_transpose __main__] running {_case_name}", flush=True)
         _x = torch.randn((_experts, _num_tokens, _hidden), dtype=torch.bfloat16, device=_device)
         if _dtype != torch.bfloat16:
             _x = _x.to(_dtype)
@@ -694,6 +686,6 @@ if __name__ == "__main__":
 
         if hasattr(torch, "npu"):
             torch.npu.synchronize()
-        print(f"[batched_transpose __main__] test case passed", flush=True)
+        print("[batched_transpose __main__] test case passed", flush=True)
 
     print("test PASSED!", flush=True)
