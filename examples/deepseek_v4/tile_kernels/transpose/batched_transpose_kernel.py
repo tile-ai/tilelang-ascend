@@ -483,14 +483,7 @@ def _batched_transpose_kernel_8bit(
 
 # ==================== 5. 主调度与智能缓存层 ====================
 def _transpose_via_pytorch(x: torch.Tensor) -> torch.Tensor:
-    num_batches = x.shape[0]
-    if num_batches <= 1:
-        return torch.transpose(x, 1, 2).contiguous()
-    shape_x, shape_y = x.shape[1], x.shape[2]
-    result = torch.empty((num_batches, shape_y, shape_x), dtype=x.dtype, device=x.device)
-    for b in range(num_batches):
-        result[b] = x[b].T.contiguous()
-    return result
+    return torch.transpose(x, 1, 2).contiguous()
 
 
 def _select_block_size(shape_x: int, shape_y: int):
