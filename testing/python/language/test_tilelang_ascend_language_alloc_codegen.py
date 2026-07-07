@@ -132,6 +132,25 @@ def dev_ub_explicit_splice(dim, block_N=128, block_size=128, live_max=64):
     return main
 
 
+def dev_unaligned_ub_alloc():
+    dtype = "float32"
+
+    @T.prim_func
+    def main(
+        Output: T.Tensor([126], dtype),
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            row_ub = T.alloc_ub([126], dtype)
+
+            with T.Scope("V"):
+                for i in T.serial(126):
+                    row_ub[i] = T.cast(i, dtype)
+                for i in T.serial(126):
+                    Output[i] = row_ub[i]
+
+    return main
+
+
 def _compile_and_get_source(target):
     prim_func = dev_L1_explicit_splice(dim=64)
     with (
@@ -166,6 +185,25 @@ def _compile_ub_and_get_source(target):
             out_idx=[2],
             pass_configs=DEV_CONFIGS,
             target=target,
+        )
+    return compiled.get_kernel_source()
+
+
+def _compile_unaligned_ub_and_get_source():
+    prim_func = dev_unaligned_ub_alloc()
+    with (
+        patch("tilelang.jit.adapter.libgen.LibraryGenerator.compile_lib") as mock_compile,
+        patch(
+            "tilelang.jit.adapter.libgen.LibraryGenerator.load_lib",
+            return_value=None,
+        ),
+    ):
+        mock_compile.return_value = None
+        compiled = tilelang.compile(
+            prim_func,
+            out_idx=[0],
+            pass_configs=DEV_CONFIGS,
+            target="ascendc",
         )
     return compiled.get_kernel_source()
 
@@ -218,6 +256,14 @@ def test_ub_splice_codegen(target):
         assert "TileMatL1" not in k_ub_alloc_line[0], (
             f"k_ub was incorrectly allocated as TileMatL1 instead of TileUbDataND:\n{k_ub_alloc_line[0]}"
         )
+
+
+def test_ub_getwithoffset_size_is_32byte_aligned_for_unaligned_shape():
+    code = _compile_unaligned_ub_and_get_source()
+
+    assert "row_ub = ascend_ub.GetWithOffset<float>(128, 0)" in code, (
+        "A 126-float UB allocation should request a 32-byte aligned LocalTensor capacity from AscendC GetWithOffset:\n" + code
+    )
 
 
 if __name__ == "__main__":
