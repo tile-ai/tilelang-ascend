@@ -8,6 +8,7 @@
 #include <tvm/arith/analyzer.h>
 #include <tvm/runtime/container/string.h>
 #include <tvm/runtime/registry.h>
+#include <tvm/tir/expr_functor.h>
 #include <tvm/tir/index_map.h>
 #include <tvm/tir/op.h>
 
@@ -30,6 +31,20 @@ const std::string kAscendPtoScope = "tl::ascend_pto::";
 using ShapeInfo = CodeGenTileLangAscendPto::ShapeInfo;
 
 using BufferInfo = CodeGenTileLangAscendPto::BufferInfo;
+
+namespace {
+// Recursively collects every VarNode referenced in a buffer shape expression.
+// Unlike a top-level `as<VarNode>()` check, this traverses composite
+// expressions such as `batch + 1` so that symbolic dimensions used inside
+// arithmetic are still registered as kernel parameters before any shape is
+// printed. 
+class ShapeVarCollector : public tir::ExprVisitor {
+public:
+  std::vector<const tir::VarNode *> vars;
+
+  void VisitExpr_(const tir::VarNode *op) override { vars.push_back(op); }
+};
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Hardware / platform constants
@@ -3360,12 +3375,14 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
     if (f->buffer_map.find(v) != f->buffer_map.end()) {
       tir::Buffer buffer = f->buffer_map[v];
       for (size_t j = 0; j < buffer->shape.size(); j++) {
-        auto shape_var = buffer->shape[j].as<VarNode>();
-        if ((std::find(shape_vars.begin(), shape_vars.end(), shape_var) ==
-             shape_vars.end()) &&
-            shape_var != 0) {
-          (void)AllocVarID(shape_var);
-          shape_vars.push_back(shape_var);
+        ShapeVarCollector collector;
+        collector(buffer->shape[j]);
+        for (auto shape_var : collector.vars) {
+          if (std::find(shape_vars.begin(), shape_vars.end(), shape_var) ==
+              shape_vars.end()) {
+            (void)AllocVarID(shape_var);
+            shape_vars.push_back(shape_var);
+          }
         }
       }
     }
