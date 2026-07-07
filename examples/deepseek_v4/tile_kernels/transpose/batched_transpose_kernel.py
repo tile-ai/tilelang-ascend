@@ -631,9 +631,9 @@ def batched_transpose(x: torch.Tensor) -> torch.Tensor:
 def _main_assert_equal(actual: torch.Tensor, expected: torch.Tensor, case_name: str) -> None:
     actual_cpu = actual.detach().cpu()
     if actual_cpu.shape != expected.shape:
-        raise AssertionError("{case_name}: shape mismatch actual={tuple(actual_cpu.shape)} expected={tuple(expected.shape)}")
+        raise AssertionError(f"{case_name}: shape mismatch actual={tuple(actual_cpu.shape)} expected={tuple(expected.shape)}")
     if actual_cpu.dtype != expected.dtype:
-        raise AssertionError("{case_name}: dtype mismatch actual={actual_cpu.dtype} expected={expected.dtype}")
+        raise AssertionError(f"{case_name}: dtype mismatch actual={actual_cpu.dtype} expected={expected.dtype}")
     if actual_cpu.dtype == torch.float32:
         try:
             torch.testing.assert_close(actual_cpu, expected, atol=1e-6, rtol=1e-6)
@@ -678,7 +678,7 @@ if __name__ == "__main__":
 
     for _dtype, _hidden, _experts, _num_tokens in _cases:
         _case_name = f"dtype={_dtype},hidden={_hidden},experts={_experts},num_tokens={_num_tokens}"
-        print(f"[batched_transpose __main__] running {_case_name}", flush=True)
+        print(f"running {_case_name}", flush=True)
         _x = torch.randn((_experts, _num_tokens, _hidden), dtype=torch.bfloat16, device=_device)
         if _dtype != torch.bfloat16:
             _x = _x.to(_dtype)
@@ -689,6 +689,5 @@ if __name__ == "__main__":
 
         if hasattr(torch, "npu"):
             torch.npu.synchronize()
-        print("[batched_transpose __main__] test case passed", flush=True)
 
-    print("test PASSED!", flush=True)
+    print("All test PASSED!", flush=True)
