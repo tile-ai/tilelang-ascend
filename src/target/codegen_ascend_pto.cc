@@ -1360,9 +1360,6 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
                                             : src_shape_info.row;
   int32_t tile_row = is_a ? dst_shape_info.slice_row
                           : FindBestTileRowB(src_row, dst_shape_info.slice_row);
-  int32_t num_tiles = src_row / tile_row;
-  if (num_tiles < 1)
-    num_tiles = 1;
 
   int32_t tile_size = tile_row * tile_col;
 
