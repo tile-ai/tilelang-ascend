@@ -157,7 +157,7 @@ def _lower_and_get_source(kernel_func, target, pass_configs):
     return artifact.kernel_source
 
 
-def _assert_l0b_tile_row_within_capacity(kernel_func, target, pass_configs, expected_tile_row=None, physical_row=None):
+def _assert_l0b_tile_row_within_capacity(kernel_func, target, pass_configs, expected_tile_row=None):
     """Codegen-layer assertion: every L0B copy's tile_row must fit the L0B K
     capacity.
 
@@ -176,8 +176,7 @@ def _assert_l0b_tile_row_within_capacity(kernel_func, target, pass_configs, expe
       tile_row); the codegen does not perform FindBestTileRowB and, for
       sliced L1 sources, copies the full physical buffer tile (a pre-existing
       ascendc limitation).  We only assert the call exists; the tile_row
-      correctness for sliced sources is verified on the pto backend.  The
-      ``physical_row`` argument is therefore ignored on ascendc.
+      correctness for sliced sources is verified on the pto backend.
     """
     import re
 
@@ -243,7 +242,8 @@ def explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype="float16", 
         GM[C] <- C_L0
 
     The explicit T.copy(L1, L0A/L0B) calls exercise the CopyL1ToL0Codegen path
-    directly, for both the A (L0A) and B (L0B) matrix inputs."""
+    directly, for both the A (L0A) and B (L0B) matrix inputs.
+    """
     m_num = T.ceildiv(M, block_M)
     n_num = T.ceildiv(N, block_N)
 
@@ -269,13 +269,10 @@ def explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype="float16", 
                     T.copy(A[bx * block_M, k * block_K], A_L1)
                     T.copy(B[k * block_K, by * block_N], B_L1)
 
-                    T.barrier_all()
                     T.copy(A_L1, A_L0)
                     T.copy(B_L1, B_L0)
-                    T.barrier_all()
 
                     T.mma(A_L0, B_L0, C_L0, init=(k == 0))
-                    T.barrier_all()
 
                 T.copy(C_L0, C[bx * block_M, by * block_N])
 
@@ -351,9 +348,7 @@ def gemm_v0_implicit(M, N, K, block_M, block_N, block_K, transpose_B=False, dtyp
                     else:
                         T.copy(B[k * block_K, by * block_N], B_L1)
 
-                    T.barrier_all()
                     T.gemm_v0(A_L1, B_L1, C_L0, transpose_B=transpose_B, init=(k == 0))
-                    T.barrier_all()
 
                 T.copy(C_L0, C[bx * block_M, by * block_N])
 
@@ -504,9 +499,7 @@ def layout_annotated_gemm(
                     else:
                         T.copy(B[k * block_K, by * block_N], B_L1)
 
-                    T.barrier_all()
                     T.gemm_v0(A_L1, B_L1, C_L0, transpose_B=transpose_B, init=(k == 0))
-                    T.barrier_all()
 
                 T.copy(C_L0, C[bx * block_M, by * block_N])
 
@@ -595,9 +588,7 @@ def persistent_gemm(M, N, K, block_M, block_N, block_K, core_num, dtype="float16
                         T.copy(A[bx * block_M, k * block_K], A_L1)
                         T.copy(B[k * block_K, by * block_N], B_L1)
 
-                        T.barrier_all()
                         T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
-                        T.barrier_all()
 
                     T.copy(C_L0, C[bx * block_M, by * block_N])
 
@@ -660,17 +651,15 @@ def sliced_3d_l1_to_l0b(STACK, BLOCK_N, D, BM, dtype="float16", accum_dtype="flo
         V: T.Tensor((STACK, BLOCK_N, D), dtype),  # type: ignore
         C: T.Tensor((BM, D), dtype),  # type: ignore
     ):
-        with T.Kernel(1, is_npu=True) as (cid, vid):
+        with T.Kernel(1, is_npu=True) as (cid, _):
             shared_l1 = T.alloc_L1([STACK, BLOCK_N, D], dtype)
             a_l1 = T.alloc_L1([BM, BLOCK_N], dtype)
             l0a = T.alloc_L0A([BM, BLOCK_N], dtype)
             l0b = T.alloc_L0B([BLOCK_N, D], dtype)
             l0c = T.alloc_L0C([BM, D], accum_dtype)
 
-            T.copy(V[0, :, :], shared_l1[0, :, :])
-            T.copy(V[1, :, :], shared_l1[1, :, :])
-            T.copy(V[2, :, :], shared_l1[2, :, :])
-            T.copy(V[3, :, :], shared_l1[3, :, :])
+            for i in T.serial(STACK):
+                T.copy(V[i, :, :], shared_l1[i, :, :])
 
             for chunk in T.serial(STACK):
                 T.copy(A[chunk, :, :], a_l1[:, :])
@@ -697,7 +686,7 @@ def sliced_3d_l1_to_l0a(STACK, BM, K, BLOCK_N, dtype="float16", accum_dtype="flo
         B: T.Tensor((STACK, K, BLOCK_N), dtype),  # type: ignore
         C: T.Tensor((BM, BLOCK_N), dtype),  # type: ignore
     ):
-        with T.Kernel(1, is_npu=True) as (cid, vid):
+        with T.Kernel(1, is_npu=True) as (cid, _):
             shared_a_l1 = T.alloc_L1([STACK, BM, K], dtype)
             b_l1 = T.alloc_L1([K, BLOCK_N], dtype)
             l0a = T.alloc_L0A([BM, K], dtype)
@@ -738,7 +727,7 @@ def test_sliced_3d_l1_to_l0b(STACK, ROWS, COLS, BM, dtype, accum_dtype, target):
     than the physical (flattened) row count.
     """
     kfunc = sliced_3d_l1_to_l0b(STACK, ROWS, COLS, BM, dtype, accum_dtype)
-    _assert_l0b_tile_row_within_capacity(kfunc, target, CUBE_PASS_CONFIGS, expected_tile_row=ROWS, physical_row=STACK * ROWS)
+    _assert_l0b_tile_row_within_capacity(kfunc, target, CUBE_PASS_CONFIGS, expected_tile_row=ROWS)
 
 
 @pytest.mark.parametrize("target", TARGETS)
@@ -777,7 +766,7 @@ def row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM, dtype="float16", accum_dtype="flo
         B: T.Tensor((PHYS_ROW, COL), dtype),  # type: ignore
         C: T.Tensor((BM, COL), dtype),  # type: ignore
     ):
-        with T.Kernel(1, is_npu=True) as (cid, vid):
+        with T.Kernel(1, is_npu=True) as (cid, _):
             a_l1 = T.alloc_L1([BM, PHYS_ROW], dtype)
             b_l1 = T.alloc_L1([PHYS_ROW, COL], dtype)
             l0a = T.alloc_L0A([BM, PHYS_ROW], dtype)
@@ -787,10 +776,8 @@ def row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM, dtype="float16", accum_dtype="flo
             T.copy(A[:, :], a_l1[:, :])
             T.copy(B[:, :], b_l1[:, :])
 
-            T.barrier_all()
             T.copy(a_l1[:, :], l0a[:, :])
             T.copy(b_l1[0:BM, :], l0b[0:BM, :])
-            T.barrier_all()
 
             T.mma(l0a, l0b, l0c, init=True)
             T.copy(l0c, C[:, :])
@@ -815,7 +802,7 @@ def test_row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM, dtype, accum_dtype, target):
     count (PHYS_ROW).
     """
     kfunc = row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM, dtype, accum_dtype)
-    _assert_l0b_tile_row_within_capacity(kfunc, target, CUBE_PASS_CONFIGS, expected_tile_row=BM, physical_row=PHYS_ROW)
+    _assert_l0b_tile_row_within_capacity(kfunc, target, CUBE_PASS_CONFIGS, expected_tile_row=BM)
 
 
 if __name__ == "__main__":
