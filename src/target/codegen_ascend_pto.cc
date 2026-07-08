@@ -2039,7 +2039,7 @@ void CodeGenTileLangAscendPto::TransposeCodegen(const CallNode *op,
   std::string tmp_addr_str = std::to_string(max_ub_addr_);
 
   // Update max_ub_addr_ after allocating temporary buffer
-  int32_t tmp_buffer_size = N * tmp_tile_w * elem_bytes;
+  int64_t tmp_buffer_size = N * tmp_tile_w * elem_bytes;
   max_ub_addr_ += tmp_buffer_size;
   // Align to 32-byte boundary
   max_ub_addr_ = ((max_ub_addr_ + kUbAlignmentBytes - 1) / kUbAlignmentBytes) *
@@ -2679,8 +2679,8 @@ void CodeGenTileLangAscendPto::SiluCodegen(const CallNode *op) {
 
   // Update max_ub_addr_ after allocating temporary buffer
   int32_t elem_bytes = GetTypeLen(dst_shape_info.type);
-  int32_t tmp_buffer_size = row * col * elem_bytes;
-  int32_t tmp_addr = max_ub_addr_; // Save original address before alignment
+  int64_t tmp_buffer_size = row * col * elem_bytes;
+  int64_t tmp_addr = max_ub_addr_; // Save original address before alignment
   max_ub_addr_ += tmp_buffer_size;
   // Align to 32-byte boundary
   max_ub_addr_ = ((max_ub_addr_ + kUbAlignmentBytes - 1) / kUbAlignmentBytes) *
@@ -2715,8 +2715,8 @@ void CodeGenTileLangAscendPto::MulAddDstCodegen(const CallNode *op) {
 
   // Update max_ub_addr_ after allocating temporary buffer
   int32_t elem_bytes = GetTypeLen(dst_shape_info.type);
-  int32_t tmp_buffer_size = row * col * elem_bytes;
-  int32_t tmp_addr = max_ub_addr_; // Save original address before alignment
+  int64_t tmp_buffer_size = row * col * elem_bytes;
+  int64_t tmp_addr = max_ub_addr_; // Save original address before alignment
   max_ub_addr_ += tmp_buffer_size;
   // Align to 32-byte boundary
   max_ub_addr_ = ((max_ub_addr_ + kUbAlignmentBytes - 1) / kUbAlignmentBytes) *
