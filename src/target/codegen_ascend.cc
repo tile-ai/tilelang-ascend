@@ -807,9 +807,24 @@ void CodeGenTileLangAscend::VisitStmt_(const AllocateNode *op) {
             << target_var_name
             << ". All buffers must be pre-allocated via address_map_.";
 
+        size_t allocation_size = op->ConstantAllocationSize();
+        size_t elem_bytes = op->dtype.bytes();
+        if (elem_bytes != 0) {
+          size_t a = elem_bytes;
+          size_t b = 32;
+          while (b != 0) {
+            size_t t = b;
+            b = a % b;
+            a = t;
+          }
+          size_t align_elems = 32 / a;
+          allocation_size =
+              ((allocation_size + align_elems - 1) / align_elems) * align_elems;
+        }
+
         stream << "auto " << vid << " = " << pos << ".GetWithOffset<" << type
-               << ">(" << op->ConstantAllocationSize() << ", "
-               << PrintExpr(target_expr) << ");\n";
+               << ">(" << allocation_size << ", " << PrintExpr(target_expr)
+               << ");\n";
       };
 
   if (scope == "wmma.matrix_a") {
