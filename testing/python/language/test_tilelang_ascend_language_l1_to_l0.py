@@ -693,10 +693,8 @@ def sliced_3d_l1_to_l0a(STACK, BM, K, BLOCK_N, dtype="float16", accum_dtype="flo
             l0b = T.alloc_L0B([K, BLOCK_N], dtype)
             l0c = T.alloc_L0C([BM, BLOCK_N], accum_dtype)
 
-            T.copy(A[0, :, :], shared_a_l1[0, :, :])
-            T.copy(A[1, :, :], shared_a_l1[1, :, :])
-            T.copy(A[2, :, :], shared_a_l1[2, :, :])
-            T.copy(A[3, :, :], shared_a_l1[3, :, :])
+            for i in T.serial(STACK):
+                T.copy(A[i, :, :], shared_a_l1[i, :, :])
 
             for chunk in T.serial(STACK):
                 T.copy(B[chunk, :, :], b_l1[:, :])
