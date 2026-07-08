@@ -78,6 +78,9 @@ def compile(
             "tl.ascend_memory_planning": bool, default: False
     """
 
+    from tilelang.transform.pass_config import process_default_pass_config
+    pass_configs = process_default_pass_config(target, pass_configs)
+
     return cached(
         func=func,
         out_idx=out_idx,

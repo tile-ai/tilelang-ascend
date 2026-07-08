@@ -380,6 +380,18 @@ def AscendSyncInsert(target: Target, platform: str):
     return _ffi_api.AscendSyncInsert(target, platform)  # type: ignore
 
 
+def AscendSyncInsertVS(target: Target, platform: str):
+    """As a supplement to AscendSyncInsert, auto insert sync for Ascend (V→V, S↔Others).
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    ----
+    """
+    return _ffi_api.AscendSyncInsertVS(target, platform)  # type: ignore
+
+
 def CombineCV():
     """CombineCV
 
