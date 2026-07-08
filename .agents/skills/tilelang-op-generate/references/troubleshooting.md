@@ -94,7 +94,7 @@ InternalError: Check failed: pb->value != 0 (0 vs. 0) : Divide by zero
 
 **原因**: `n_num = N // block_N = 0`（当 `block_N > N`），导致 `cid // 0`。
 
-**解决方案**: 在调用 GEMM 前确保 M, N ≥ block size。如果 `M < block_M` 或 `N < block_N`，zero-padding 矩阵到 block 倍数再调用 GEMM，完成后裁剪。
+**解决方案**: 用 `T.ceildiv(M, block_M)` / `T.ceildiv(N, block_N)` 分别代替 `M // block_M` / `N // block_N`——对任意维度 < block 时返回 1（非零），不会产生零 block。
 
 ### 5. Autotune supply_prog IndexError
 
