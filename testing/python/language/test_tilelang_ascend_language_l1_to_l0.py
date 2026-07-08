@@ -743,6 +743,96 @@ def test_sliced_3d_l1_to_l0a(dtype, accum_dtype, target):
     _assert_l0a_uses_valid_row(kfunc, target, CUBE_PASS_CONFIGS, physical_row=STACK * BM, valid_row=BM)
 
 
+def sliced_3d_l1_to_l0b_transpose(STACK, BLOCK_N, D, BM, dtype="float16", accum_dtype="float"):
+    """3D L1 buffer sliced to L0B with transpose=True.
+
+    Same as sliced_3d_l1_to_l0b but the L1 -> L0B copy uses transpose=True,
+    exercising the TileMatL1ZN transpose branch of CopyL1ToL0Codegen.  The
+    3D buffer [STACK, BLOCK_N, D] flattens to [STACK*BLOCK_N, D]; each slice's
+    valid row count is BLOCK_N while the physical row is STACK*BLOCK_N.
+    """
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((STACK, BM, BLOCK_N), dtype),  # type: ignore
+        V: T.Tensor((STACK, BLOCK_N, D), dtype),  # type: ignore
+        C: T.Tensor((BM, D), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            shared_l1 = T.alloc_L1([STACK, BLOCK_N, D], dtype)
+            T.annotate_layout({shared_l1: make_nz_layout(shared_l1)})
+
+            a_l1 = T.alloc_L1([BM, BLOCK_N], dtype)
+            T.annotate_layout({a_l1: make_zn_layout(a_l1)})
+
+            l0a = T.alloc_L0A([BM, BLOCK_N], dtype)
+            l0b = T.alloc_L0B([BLOCK_N, D], dtype)
+            l0c = T.alloc_L0C([BM, D], accum_dtype)
+
+            for i in T.serial(STACK):
+                T.copy(V[i, :, :], shared_l1[i, :, :])
+
+            for chunk in T.serial(STACK):
+                T.copy(A[chunk, :, :], a_l1[:, :])
+                T.copy(a_l1[:, :], l0a[:, :])
+                # *** transpose=True on a sliced 3D L1 buffer ***
+                T.copy(shared_l1[chunk, :, :], l0b[:, :], transpose=True)
+                T.mma(l0a, l0b, l0c, init=(chunk == 0))
+
+            T.copy(l0c, C[:, :])
+
+    return main
+
+
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize(
+    "STACK,ROWS,COLS,BM",
+    [
+        (4, 128, 128, 128),  # [4,128,128] -> physical 512, valid 128 per slice
+        (2, 128, 128, 128),  # [2,128,128] -> physical 256, valid 128 per slice
+    ],
+)
+def test_sliced_3d_l1_to_l0b_transpose(STACK, ROWS, COLS, BM, dtype, accum_dtype, target):
+    """3D L1 sliced + transpose -> L0B: transpose branch must use valid row.
+
+    The transpose branch of CopyL1ToL0Codegen (pto) emits a TileMatL1ZN temp
+    and a copy_l1_to_l0b<..., true> template; both must use the slice-valid
+    row count (ROWS), not the physical (flattened) row count (STACK*ROWS).
+    The ascendc backend emits a 3-arg copy_l1_to_l0b<type, dst_M, dst_N, true>
+    template.  Asserts the physical row value never appears in any transpose
+    template on either backend.
+    """
+    import re
+
+    kfunc = sliced_3d_l1_to_l0b_transpose(STACK, ROWS, COLS, BM, dtype, accum_dtype)
+    src = _lower_and_get_source(kfunc, target, CUBE_PASS_CONFIGS)
+    physical_row = STACK * ROWS
+
+    if target == "pto":
+        # pto: TileMatL1ZN<type, col, row, col, row> and
+        # copy_l1_to_l0b<type, dst_K, dst_N, tile_col, src_row, true>.
+        zn_lines = re.findall(r"TileMatL1ZN<[^>]+>", src)
+        assert zn_lines, "no TileMatL1ZN template in generated source"
+        for line in zn_lines:
+            assert str(physical_row) not in line, f"TileMatL1ZN used physical row {physical_row} instead of valid {ROWS}: {line}"
+
+        l0b_t_lines = re.findall(r"copy_l1_to_l0b<[^,]+,\s*\d+,\s*\d+,\s*\d+,\s*\d+,\s*true>", src)
+        assert l0b_t_lines, "no transposed copy_l1_to_l0b template in generated source"
+        for line in l0b_t_lines:
+            assert str(physical_row) not in line, (
+                f"copy_l1_to_l0b (transpose) used physical row {physical_row} instead of valid {ROWS}: {line}"
+            )
+    else:
+        # ascendc: copy_l1_to_l0b<type, dst_M, dst_N, true> (3-arg template).
+        # Assert the physical row value does not appear as a template dim.
+        l0b_t_lines = re.findall(r"copy_l1_to_l0b<[^,]+,\s*(\d+),\s*(\d+),\s*true>", src)
+        assert l0b_t_lines, "no transposed copy_l1_to_l0b template in generated source"
+        for dst_m, dst_n in l0b_t_lines:
+            assert int(dst_m) != physical_row, f"ascendc copy_l1_to_l0b (transpose) dst_M={dst_m} equals physical row {physical_row}"
+            assert int(dst_n) != physical_row, f"ascendc copy_l1_to_l0b (transpose) dst_N={dst_n} equals physical row {physical_row}"
+
+
 # =============================================================================
 # Group 9 - 2-D L1 partial-row slice -> L0B             [risk: medium]
 # A 2-D L1 buffer [phys_row, col] is accessed with a row sub-range, so
