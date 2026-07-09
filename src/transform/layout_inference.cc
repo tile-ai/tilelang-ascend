@@ -29,6 +29,23 @@ namespace tl {
 
 using namespace tir;
 
+class LetBindingCollector : public StmtExprVisitor {
+public:
+  std::unordered_map<const VarNode *, PrimExpr> bindings;
+  void VisitStmt_(const LetStmtNode *op) final {
+    bindings[op->var.get()] = op->value;
+    StmtExprVisitor::VisitStmt_(op);
+  }
+};
+
+static void
+CollectLetBindings(const Stmt &stmt,
+                   std::unordered_map<const VarNode *, PrimExpr> &bindings) {
+  LetBindingCollector collector;
+  collector(stmt);
+  bindings = std::move(collector.bindings);
+}
+
 /*!
  * \brief collect the mapping from the buffer var to it allocated buffer
  */
@@ -541,11 +558,17 @@ public:
   static PrimFunc Substitute(PrimFunc f, bool skip_thread_partition = false) {
     arith::Analyzer analyzer;
     PrimFuncNode *fptr = f.CopyOnWrite();
+
+    std::unordered_map<const VarNode *, PrimExpr> let_bindings;
+    CollectLetBindings(fptr->body, let_bindings);
+
     fptr->body = ParallelLoopFuser::Fuse(f->body);
+
     BufferUseDefCollector collector(skip_thread_partition);
     collector.Collect(f);
     auto result = collector.Run();
     LayoutInferencer substituter(result, skip_thread_partition, &analyzer);
+    substituter.let_bindings_ = let_bindings;
     fptr->body = substituter.VisitStmt(f->body);
     auto fn_attr = fptr->attrs.CopyOnWrite();
     fn_attr->dict.Set("address_map", substituter.address_map_);
@@ -558,6 +581,8 @@ private:
       : arith::IRMutatorWithAnalyzer(analyzer), result_(result),
         skip_thread_partition_(skip_thread_partition) {};
 
+  std::unordered_map<const VarNode *, PrimExpr> let_bindings_;
+
   Stmt VisitStmt_(const BlockNode *op) final {
     Block block = Downcast<Block>(IRMutatorWithAnalyzer::VisitStmt_(op));
 
@@ -568,8 +593,23 @@ private:
       }
     }
     if (op->annotations.count("address_map")) {
-      address_map_ =
+      auto raw_map =
           op->annotations.at("address_map").as<Map<Var, PrimExpr>>().value();
+
+      if (!let_bindings_.empty()) {
+        Map<Var, PrimExpr> vmap;
+        for (const auto &lb : let_bindings_) {
+          vmap.Set(GetRef<Var>(lb.first), lb.second);
+        }
+        Map<Var, PrimExpr> resolved_map;
+        for (const auto &kv : raw_map) {
+          PrimExpr resolved = tir::Substitute(kv.second, vmap);
+          resolved_map.Set(kv.first, resolved);
+        }
+        address_map_ = resolved_map;
+      } else {
+        address_map_ = raw_map;
+      }
     }
     auto block_ptr = block.CopyOnWrite();
     block_ptr->annotations.Set(attr::kLayoutMap, result_.layout_map);
