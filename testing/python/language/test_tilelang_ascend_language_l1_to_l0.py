@@ -396,6 +396,8 @@ k_tail_configs = [
     (128, 128, 160, 128, 128, 64),  # K=160, last tile K=32 (half tile)
     (128, 256, 96, 128, 256, 64),  # K=96, last tile K=32
     (256, 256, 176, 128, 128, 64),  # K=176, last tile K=48
+    (113, 113, 113, 64, 64, 32),  # odd prime sizes, last tile K=17
+    (112, 112, 112, 32, 32, 64),  # odd prime sizes, last tile K=48
 ]
 
 
