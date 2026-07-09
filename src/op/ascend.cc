@@ -219,8 +219,27 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
       ss << "copy_gm_to_ub<";
       ss << get_dtype(src) << ", ";
-      ss << dst_extents[dst->shape.size() - 1];
-      // ss << dst->shape[dst->shape.size() - 1];
+      // The column dim is a COMPILE-TIME template arg. A runtime inner-extent
+      // slice (dynamic width, e.g. a softmax's actual window tw_a < buffer
+      // width) would put a non-const expr in the template -> invalid C++ ("use
+      // of undeclared identifier"). Use the buffer's compile-time shape for the
+      // template; the runtime width is already carried by the maskShapeN
+      // function arg (validCol_dst). A const extent stays byte-identical (==
+      // shape for a full copy, or the const slice width), so every existing
+      // caller is unchanged -- only the previously-uncompilable runtime-slice
+      // case changes.
+      PrimExpr gm2ub_tmpl_n = dst_extents[dst->shape.size() - 1];
+      if (!gm2ub_tmpl_n->IsInstance<IntImmNode>()) {
+        gm2ub_tmpl_n = dst->shape[dst->shape.size() - 1];
+        // The shape fallback must itself be a compile-time constant; a buffer
+        // declared with a dynamic inner dim would still emit a non-const
+        // template arg (the invalid-C++ case above), so fail early and clearly.
+        ICHECK(gm2ub_tmpl_n->IsInstance<IntImmNode>())
+            << "copy_gm_to_ub: the inner (column) dimension of the destination "
+               "buffer shape must be a compile-time constant, but got "
+            << gm2ub_tmpl_n;
+      }
+      ss << gm2ub_tmpl_n;
       if (dst->shape.size() > 1) {
         ss << ", " << compute_blocklen(dst, dst_extents);
       }
@@ -232,8 +251,19 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
       ss << "copy_ub_to_gm<";
       ss << get_dtype(dst) << ", ";
-      ss << src_extents[src->shape.size() - 1];
-      // ss << src->shape[src->shape.size() - 1];
+      // See copy_gm_to_ub above: a runtime inner-extent must use the buffer's
+      // compile-time shape for the template col dim (runtime width is carried
+      // by the maskShapeN function arg); const extents are byte-identical.
+      PrimExpr ub2gm_tmpl_n = src_extents[src->shape.size() - 1];
+      if (!ub2gm_tmpl_n->IsInstance<IntImmNode>()) {
+        ub2gm_tmpl_n = src->shape[src->shape.size() - 1];
+        // See copy_gm_to_ub: the shape fallback must itself be compile-time.
+        ICHECK(ub2gm_tmpl_n->IsInstance<IntImmNode>())
+            << "copy_ub_to_gm: the inner (column) dimension of the source "
+               "buffer shape must be a compile-time constant, but got "
+            << ub2gm_tmpl_n;
+      }
+      ss << ub2gm_tmpl_n;
       if (src->shape.size() > 1) {
         ss << ", " << compute_blocklen(src, src_extents);
       }
@@ -691,9 +721,25 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
          "destination buffer rank";
 
   std::stringstream ss;
+  // Same compile-time-template-arg fix as the GM<->UB copy above (see
+  // AscendCopy::Lower): the inner (column) dim is a template arg, so a runtime
+  // inner-extent -- e.g. atomic_add(A[rows, 0:n], src_ub[:, 0:n]) with a
+  // dynamic n -- would put a non-const expr in the template and emit invalid
+  // C++. Use the source buffer's compile-time shape for the template; the
+  // runtime column count is carried by validCol_dst below, so the DMA still
+  // adds exactly the runtime number of columns. A const extent stays
+  // byte-identical, so every existing caller is unchanged.
+  PrimExpr atomic_tmpl_n = src_extents[src->shape.size() - 1];
+  if (!atomic_tmpl_n->IsInstance<IntImmNode>()) {
+    atomic_tmpl_n = src->shape[src->shape.size() - 1];
+    ICHECK(atomic_tmpl_n->IsInstance<IntImmNode>())
+        << "tl.ascend_atomic_add: the inner (column) dimension of the source "
+           "buffer shape must be a compile-time constant, but got "
+        << atomic_tmpl_n;
+  }
   if (src.scope() == "shared.ub") {
     ss << "tl::ascend::atomic_add_ub_to_gm<";
-    ss << get_dtype(dst) << ", " << src_extents[src->shape.size() - 1];
+    ss << get_dtype(dst) << ", " << atomic_tmpl_n;
     if (src->shape.size() > 1) {
       ss << ", " << compute_blocklen(src, src_extents);
     }
@@ -704,10 +750,9 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
        << (T.layout_map.count(src) ? T.layout_map[src]->AscendLayoutStr()
                                    : "layout::RowMajor");
     if (src->shape.size() > 1) {
-      ss << ", " << compute_blocklen(src, src_extents) << ", "
-         << src_extents[src->shape.size() - 1];
+      ss << ", " << compute_blocklen(src, src_extents) << ", " << atomic_tmpl_n;
     } else {
-      ss << ", 1, " << src_extents[src->shape.size() - 1];
+      ss << ", 1, " << atomic_tmpl_n;
     }
     ss << ">";
   }
