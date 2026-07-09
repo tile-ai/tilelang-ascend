@@ -158,20 +158,19 @@ private:
 
   Stmt VisitStmt_(const BufferStoreNode *op) override {
     std::string scope = GetPtrStorageScope(op->buffer->data);
-    if (scope == "local.var" || scope == "n") {
-      return GetRef<Stmt>(op);
-    }
 
     std::vector<BufferAccess> current_accesses;
 
-    BufferAccess write_access;
-    write_access.buffer_name = op->buffer->data->name_hint;
-    write_access.is_write = true;
-    write_access.pipeline = "PIPE_S";
-    write_access.operation = "BufferStore";
-    write_access.physical_address =
-        GetPhysicalAddress(write_access.buffer_name);
-    current_accesses.push_back(write_access);
+    if (scope != "local.var" && scope != "n") {
+      BufferAccess write_access;
+      write_access.buffer_name = op->buffer->data->name_hint;
+      write_access.is_write = true;
+      write_access.pipeline = "PIPE_S";
+      write_access.operation = "BufferStore";
+      write_access.physical_address =
+          GetPhysicalAddress(write_access.buffer_name);
+      current_accesses.push_back(write_access);
+    }
 
     auto scalar_reads = ScanBufferLoads(op->value);
     for (const auto &read : scalar_reads) {
@@ -185,6 +184,10 @@ private:
       if (!found) {
         current_accesses.push_back(read);
       }
+    }
+
+    if (current_accesses.empty()) {
+      return GetRef<Stmt>(op);
     }
 
     return ProcessStatement(GetRef<Stmt>(op), current_accesses);
