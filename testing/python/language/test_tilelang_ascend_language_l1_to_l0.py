@@ -732,7 +732,19 @@ def test_sliced_3d_l1_to_l0b(STACK, ROWS, COLS, BM, dtype, accum_dtype, target):
 
 @pytest.mark.parametrize("target", TARGETS)
 @pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
-def test_sliced_3d_l1_to_l0a(dtype, accum_dtype, target):
+@pytest.mark.parametrize(
+    "STACK,BM,K,BLOCK_N",
+    [
+        (2, 128, 128, 128),  # [2,128,128] -> physical 256, valid 128 per slice
+        (4, 64, 53, 27),  # non-power-of-2 K, smaller BM, physical 256, valid 64
+        (4, 128, 64, 128),  # smaller K=64, physical 512, valid 128 per slice
+        (3, 128, 128, 128),  # odd STACK, physical 384, valid 128 per slice
+        (4, 48, 64, 64),  # non-power-of-2 BM, physical 192, valid 48
+        (4, 128, 96, 128),  # non-power-of-2 K, physical 512, valid 128
+        (4, 64, 96, 64),  # non-power-of-2 K, smaller BM, physical 256
+    ],
+)
+def test_sliced_3d_l1_to_l0a(STACK, BM, K, BLOCK_N, dtype, accum_dtype, target):
     """3D L1 sliced -> L0A: codegen must use the slice-valid row, not physical.
 
     The A path uses dst.slice_row directly as tile_row (no FindBestTileRowB),
@@ -740,7 +752,6 @@ def test_sliced_3d_l1_to_l0a(dtype, accum_dtype, target):
     flattened row (STACK*BM).  Asserts the physical row value does not appear
     in any copy_l1_to_l0a template's first dimension.
     """
-    STACK, BM, K, BLOCK_N = 4, 128, 128, 128
     kfunc = sliced_3d_l1_to_l0a(STACK, BM, K, BLOCK_N, dtype, accum_dtype)
     _assert_l0a_uses_valid_row(kfunc, target, CUBE_PASS_CONFIGS, physical_row=STACK * BM, valid_row=BM)
 
