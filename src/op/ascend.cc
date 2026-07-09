@@ -174,6 +174,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     bool gm2ub = false;
     bool ub2gm = false;
     bool ub2ub = false;
+    bool gm2ub_dynamic = false;
+    bool ub2gm_dynamic = false;
   } config;
 
   std::stringstream ss;
@@ -205,27 +207,51 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       strideN = compute_strideN(src, src_extents);
       config.needs_strideN = true;
 
-      ss << "copy_gm_to_ub<";
-      ss << get_dtype(src) << ", ";
-      ss << dst_extents[dst->shape.size() - 1];
-      // ss << dst->shape[dst->shape.size() - 1];
+      auto &dst_last = dst_extents[dst->shape.size() - 1];
+      bool is_dynamic = !dst_last->IsInstance<IntImmNode>();
       if (dst->shape.size() > 1) {
-        ss << ", " << compute_blocklen(dst, dst_extents);
+        auto blk = compute_blocklen(dst, dst_extents);
+        if (!blk->IsInstance<IntImmNode>())
+          is_dynamic = true;
       }
-      ss << ">";
+      if (is_dynamic) {
+        config.gm2ub_dynamic = true;
+        config.gm2ub = false;
+        ss << "copy_gm_to_ub_dynamic<" << get_dtype(src) << ">";
+      } else {
+        ss << "copy_gm_to_ub<";
+        ss << get_dtype(src) << ", ";
+        ss << dst_last;
+        if (dst->shape.size() > 1) {
+          ss << ", " << compute_blocklen(dst, dst_extents);
+        }
+        ss << ">";
+      }
     } else if (dst.scope() == "global") {
       config.ub2gm = true;
       strideN = compute_strideN(dst, dst_extents);
       config.needs_strideN = true;
 
-      ss << "copy_ub_to_gm<";
-      ss << get_dtype(dst) << ", ";
-      ss << src_extents[src->shape.size() - 1];
-      // ss << src->shape[src->shape.size() - 1];
+      auto &src_last = src_extents[src->shape.size() - 1];
+      bool is_dynamic = !src_last->IsInstance<IntImmNode>();
       if (src->shape.size() > 1) {
-        ss << ", " << compute_blocklen(src, src_extents);
+        auto blk = compute_blocklen(src, src_extents);
+        if (!blk->IsInstance<IntImmNode>())
+          is_dynamic = true;
       }
-      ss << ">";
+      if (is_dynamic) {
+        config.ub2gm_dynamic = true;
+        config.ub2gm = false;
+        ss << "copy_ub_to_gm_dynamic<" << get_dtype(dst) << ">";
+      } else {
+        ss << "copy_ub_to_gm<";
+        ss << get_dtype(dst) << ", ";
+        ss << src_last;
+        if (src->shape.size() > 1) {
+          ss << ", " << compute_blocklen(src, src_extents);
+        }
+        ss << ">";
+      }
     } else if (dst.scope() == "shared.dyn") {
       config.virtual_channel = true;
       ss << "copy_ub_to_l1<"; // real channel is "ub -> gm -> l1"
@@ -466,6 +492,22 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     new_args.push_back(dst->shape[dst->shape.size() - 1]);
   }
 
+  if (config.gm2ub_dynamic) {
+    new_args.push_back(validRow_src);
+    new_args.push_back(validCol_src);
+    PrimExpr pad_val = padValue;
+    if (pad_val->dtype != dst->dtype) {
+      pad_val = Cast(dst->dtype, pad_val);
+    }
+    new_args.push_back(pad_val);
+    new_args.push_back(dst->shape[dst->shape.size() - 1]);
+    if (dst->shape.size() > 1) {
+      new_args.push_back(dst->shape[dst->shape.size() - 2]);
+    } else {
+      new_args.push_back(Integer(1));
+    }
+  }
+
   if (config.ub2gm) {
     new_args.push_back(validRow_dst);
     new_args.push_back(validCol_dst);
@@ -473,6 +515,17 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       new_args.push_back(src->shape[src->shape.size() - 2]);
     }
     new_args.push_back(src->shape[src->shape.size() - 1]);
+  }
+
+  if (config.ub2gm_dynamic) {
+    new_args.push_back(validRow_dst);
+    new_args.push_back(validCol_dst);
+    new_args.push_back(src->shape[src->shape.size() - 1]);
+    if (src->shape.size() > 1) {
+      new_args.push_back(src->shape[src->shape.size() - 2]);
+    } else {
+      new_args.push_back(Integer(1));
+    }
   }
 
   if (config.virtual_channel) {

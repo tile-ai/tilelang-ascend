@@ -807,9 +807,20 @@ void CodeGenTileLangAscend::VisitStmt_(const AllocateNode *op) {
             << target_var_name
             << ". All buffers must be pre-allocated via address_map_.";
 
+        int64_t const_size = op->ConstantAllocationSize();
+        std::string size_str;
+        if (const_size > 0) {
+          size_str = std::to_string(const_size);
+        } else {
+          PrimExpr total = Integer(1);
+          for (const auto &ext : op->extents) {
+            total = total * ext;
+          }
+          size_str = PrintExpr(total);
+        }
         stream << "auto " << vid << " = " << pos << ".GetWithOffset<" << type
-               << ">(" << op->ConstantAllocationSize() << ", "
-               << PrintExpr(target_expr) << ");\n";
+               << ">(" << size_str << ", " << PrintExpr(target_expr)
+               << ");\n";
       };
 
   if (scope == "wmma.matrix_a") {
@@ -2457,6 +2468,7 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
   static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
       {"copy_l0c_to_gm", 3},      {"copy_gm_to_l1", 3},
       {"copy_l1_to_l0a", 2},      {"copy_l1_to_l0b", 2},
+      {"copy_gm_to_ub_dynamic", 6}, {"copy_ub_to_gm_dynamic", 6},
       {"copy_gm_to_ub", 4},       {"copy_ub_to_gm", 3},
       {"atomic_add_ub_to_gm", 3}, {"atomic_add_l0c_to_gm", 3},
       {"copy_ub_to_ub", 6}};
