@@ -250,8 +250,8 @@ template <typename T>
 CATLASS_DEVICE void
 copy_gm_to_ub_dynamic(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
                       uint32_t realSrcN, uint32_t maskShapeM,
-                      uint32_t maskShapeN, T padValue = T(0),
-                      uint32_t dstN = 0, uint32_t dstM = 1) {
+                      uint32_t maskShapeN, T padValue = T(0), uint32_t dstN = 0,
+                      uint32_t dstM = 1) {
   bool isPad = true;
   uint32_t rightPadding = 1;
   if (maskShapeN == dstN || (maskShapeN * sizeof(T)) % 32 == 0) {

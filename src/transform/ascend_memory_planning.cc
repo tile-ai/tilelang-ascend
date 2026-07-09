@@ -133,7 +133,8 @@ private:
       return address_map_;
     }
 
-    const std::unordered_map<const VarNode *, PrimExpr> &GetBufferSizes() const {
+    const std::unordered_map<const VarNode *, PrimExpr> &
+    GetBufferSizes() const {
       return buffer_sizes_;
     }
 
@@ -557,8 +558,8 @@ private:
             pre_alloc_scope_buffer[buffer] = imm->value;
           } else {
             address_map_[buffer] = addr;
-            DLOG(DEBUG) << "Pre-alloc (symbolic) buffer "
-                        << buffer->name_hint << " at " << addr;
+            DLOG(DEBUG) << "Pre-alloc (symbolic) buffer " << buffer->name_hint
+                        << " at " << addr;
             continue;
           }
         }
@@ -593,7 +594,8 @@ private:
       auto allocations = allocator.allocate(intervals);
 
       for (const auto &alloc : allocations) {
-        address_map_[alloc.buffer] = Integer(static_cast<int64_t>(alloc.offset));
+        address_map_[alloc.buffer] =
+            Integer(static_cast<int64_t>(alloc.offset));
         DLOG(DEBUG) << "Allocated buffer " << alloc.buffer->name_hint
                     << " at offset " << alloc.offset << " (size=" << alloc.size
                     << ")";
@@ -633,9 +635,8 @@ private:
         }
         if (pre_alloc_buffer_.count(buffer->name_hint)) {
           address_map_[buffer] = pre_alloc_buffer_[buffer->name_hint];
-          max_offset = max(max_offset,
-                           pre_alloc_buffer_[buffer->name_hint] +
-                               buffer_sizes_[buffer]);
+          max_offset = max(max_offset, pre_alloc_buffer_[buffer->name_hint] +
+                                           buffer_sizes_[buffer]);
         } else if (scope != "shared") {
           alloc_buffer(buffer, current_offset,
                        "Linear memory allocation failed!");
