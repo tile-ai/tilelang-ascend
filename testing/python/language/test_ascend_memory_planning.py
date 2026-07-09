@@ -877,6 +877,7 @@ def test_symbolic_buffer_size_linear_mode_no_crash():
             rules_ub = T.alloc_ub((max_segs,), "int32")
             T.copy(A[:], a_ub)
             T.copy(a_ub, B[:])
+            T.tile.fill(rules_ub, 0)
 
     _, kernel = _compile_and_get_offsets(main, PASS_LINEAR, out_idx=[1])
     src = kernel.get_kernel_source()
@@ -975,9 +976,7 @@ def test_symbolic_address_preserved_in_codegen():
 
     _, kernel = _compile_and_get_offsets(main, PASS_LINEAR, out_idx=[1])
     src = kernel.get_kernel_source()
-    assert "max_segs" in src, (
-        "Symbolic variable 'max_segs' must appear in generated code"
-    )
+    assert "max_segs" in src, "Symbolic variable 'max_segs' must appear in generated code"
 
 
 def test_constant_address_still_works_linear():
@@ -1001,9 +1000,7 @@ def test_constant_address_still_works_linear():
             T.copy(B[:, :], b_ub)
 
     offsets, _ = _compile_and_get_offsets(main, PASS_LINEAR, out_idx=[])
-    assert offsets["a_ub"] == 32768, (
-        f"Pre-allocated a_ub must be at 32768, got {offsets['a_ub']}"
-    )
+    assert offsets["a_ub"] == 32768, f"Pre-allocated a_ub must be at 32768, got {offsets['a_ub']}"
 
 
 def test_constant_address_still_works_auto():
@@ -1027,9 +1024,7 @@ def test_constant_address_still_works_auto():
             T.copy(B[:, :], b_ub)
 
     offsets, _ = _compile_and_get_offsets(main, PASS_AUTO, out_idx=[])
-    assert offsets["a_ub"] == 32768, (
-        f"Pre-allocated a_ub must be at 32768, got {offsets['a_ub']}"
-    )
+    assert offsets["a_ub"] == 32768, f"Pre-allocated a_ub must be at 32768, got {offsets['a_ub']}"
 
 
 def test_symbolic_size_buffer_gets_address():
@@ -1049,6 +1044,7 @@ def test_symbolic_size_buffer_gets_address():
             rules_ub = T.alloc_ub((max_segs,), "int32")
             T.copy(A[:], a_ub)
             T.copy(a_ub, B[:])
+            T.tile.fill(rules_ub, 0)
 
     offsets, kernel = _compile_and_get_offsets(main, PASS_LINEAR, out_idx=[1])
     src = kernel.get_kernel_source()
