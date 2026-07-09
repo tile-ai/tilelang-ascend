@@ -699,6 +699,21 @@ public:
     return false;
   }
 
+  // Handle resource_scope attribute to track current execution context
+  // (CUBE/VEC)
+  Stmt VisitStmt_(const AttrStmtNode *op) final {
+    if (op->attr_key == "resource_scope") {
+      auto resource_id = Downcast<IntImm>(op->value)->value;
+      std::string resource_name = resource_id == 0 ? "CUBE" : "VEC";
+      std::string old_scope = current_resource_scope_;
+      current_resource_scope_ = resource_name;
+      Stmt body = StmtMutator::VisitStmt_(op);
+      current_resource_scope_ = old_scope;
+      return body;
+    }
+    return StmtMutator::VisitStmt_(op);
+  }
+
   Stmt VisitStmt_(const EvaluateNode *op) final {
     auto call_node_ = op->value.as<CallNode>();
     if (!call_node_) {
@@ -749,6 +764,11 @@ public:
       return StmtMutator::VisitStmt_(op);
     }
     current_proccess_switch_ = false; // turn off
+
+    if (IsSyncSideEffectCall(call_node_, is_aiv_)) {
+      return StmtMutator::VisitStmt_(op);
+    }
+
     return Evaluate(0);
   }
 
@@ -786,6 +806,8 @@ public:
 private:
   const bool is_aiv_;
   bool current_proccess_switch_ = false;
+  // Current resource scope: CUBE or VEC
+  std::string current_resource_scope_ = "";
   Map<Var, String> &location_map_;
   std::unordered_map<std::string, std::string> callnodeMapPos_ = {
       {"copy_gm_to_l1", "cube"},
@@ -803,6 +825,120 @@ private:
       {"wmma.accumulator", "cube"},
       {"shared.dyn", "cube"},
       {"shared", "vec"}};
+
+  // Check if the call node is a synchronization operation that should be
+  // retained in the current scope (AIV or AIC). Handles set_flag/wait_flag and
+  // pipe_barrier.
+  bool IsSyncSideEffectCall(const CallNode *call_node, bool is_aiv) {
+    if (!call_node)
+      return false;
+
+    if (call_node->op.as<OpNode>()) {
+      std::string op_name = call_node->op.as<OpNode>()->name;
+
+      // Match set_flag / wait_flag synchronization intrinsics.
+      // Signature: op(src_pipe, dst_pipe, event_id) — the first three args
+      // encode the source pipeline, destination pipeline, and event handle.
+      static const char *kSyncOps[] = {
+          "tl.ascend_set_flag",      "tl.ascend_wait_flag",
+          "tl.ascend_auto_set_flag", "tl.ascend_auto_wait_flag",
+          "ascend_set_flag",         "ascend_wait_flag"};
+
+      if (std::any_of(std::begin(kSyncOps), std::end(kSyncOps),
+                      [&op_name](const char *s) {
+                        return op_name.find(s) != std::string::npos;
+                      })) {
+        if (call_node->args.size() >= 3) {
+          if (const auto *src_pipe = call_node->args[0].as<StringImmNode>()) {
+            if (const auto *dst_pipe = call_node->args[1].as<StringImmNode>()) {
+              if (const auto *event_id = call_node->args[2].as<IntImmNode>()) {
+                std::string src = src_pipe->value;
+                std::string dst = dst_pipe->value;
+
+                bool src_is_cube = IsCubePipeline(src);
+                bool dst_is_cube = IsCubePipeline(dst);
+
+                bool src_is_vector = IsVectorPipeline(src);
+                bool dst_is_vector = IsVectorPipeline(dst);
+
+                // MTE2/MTE3 belong to both Cube and Vector pipelines. When
+                // the src and dst both fall into this overlap, resolve the
+                // ambiguity using the current resource_scope annotation.
+                if (src_is_cube && dst_is_cube && src_is_vector &&
+                    dst_is_vector) {
+                  if (current_resource_scope_ == "VEC") {
+                    src_is_cube = false;
+                    dst_is_cube = false;
+                  } else if (current_resource_scope_ == "CUBE") {
+                    src_is_vector = false;
+                    dst_is_vector = false;
+                  }
+                }
+
+                // Retain the sync only when both src and dst belong to the
+                // execution unit this pass is processing (Vector for AIV,
+                // Cube for AIC).
+                if (is_aiv) {
+                  return src_is_vector && dst_is_vector;
+                } else {
+                  return src_is_cube && dst_is_cube;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Match pipe_barrier / barrier_all synchronization intrinsics.
+      // Signature: op(pipe_name) — pipe_name is "M" (Cube), "V" (Vector),
+      // or "ALL" (both). Keep the barrier that belongs to the current side.
+      static const char *kSyncPatterns[] = {
+          "ascend_pipe_barrier",
+          "pipe_barrier",
+          "barrier_all",
+      };
+
+      if (std::any_of(std::begin(kSyncPatterns), std::end(kSyncPatterns),
+                      [&op_name](const char *p) {
+                        return op_name.find(p) != std::string::npos;
+                      })) {
+        if (const auto *pipe = call_node->args[0].as<StringImmNode>()) {
+          std::string pipe_name = pipe->value;
+          // "ALL" barriers synchronize both sides — always retain.
+          if (pipe_name == "ALL") {
+            return true;
+          }
+          // "V" barrier is relevant to the Vector (AIV) side,
+          // "M" barrier is relevant to the Cube (AIC) side.
+          if (is_aiv) {
+            return pipe_name == "V";
+          } else {
+            return pipe_name == "M";
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  // Cube pipelines: M (main Cube pipe) and its sub-pipes MTE1/MTE2/MTE3,
+  // plus FIX (fixed-function Cube pipe).
+  // MTE2/MTE3 also appear in the Vector set — they serve both units and are
+  // disambiguated by the caller using current_resource_scope_.
+  bool IsCubePipeline(const std::string &pipe) {
+    static const std::unordered_set<std::string> cube_pipelines = {
+        "M", "MTE1", "MTE2", "MTE3", "FIX"};
+    return cube_pipelines.find(pipe) != cube_pipelines.end();
+  }
+
+  // Vector pipelines: V (main Vector pipe) and shared MTE2/MTE3 sub-pipes.
+  // MTE2/MTE3 overlap with the Cube set — the caller resolves the ambiguity
+  // via current_resource_scope_ when both classifications match.
+  bool IsVectorPipeline(const std::string &pipe) {
+    static const std::unordered_set<std::string> vector_pipelines = {
+        "V", "MTE2", "MTE3"};
+    return vector_pipelines.find(pipe) != vector_pipelines.end();
+  }
 };
 
 class CombineCV : public arith::IRMutatorWithAnalyzer {
@@ -845,7 +981,6 @@ private:
 
       Stmt cube_code = cubeStmt(block->body);
       Stmt vec_code = vecStmt(block->body);
-
       if (is_auto_cross_core_sync_) {
         AutoInsertCrossCoreSync::AutoInsert(cube_code, vec_code);
       }
