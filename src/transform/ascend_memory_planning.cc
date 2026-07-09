@@ -58,6 +58,39 @@ static PrimExpr AlignUpExpr(PrimExpr value, int64_t alignment) {
   return floordiv(value + mask, align) * align;
 }
 
+class LetBindingCollector : public StmtExprVisitor {
+public:
+  std::unordered_map<const VarNode *, PrimExpr> bindings;
+
+  void VisitStmt_(const LetStmtNode *op) final {
+    std::cerr << "[MEMPLAN] Found LetStmt: " << op->var->name_hint << " = "
+              << op->value << "\n";
+    bindings[op->var.get()] = op->value;
+    StmtExprVisitor::VisitStmt_(op);
+  }
+};
+
+static void
+CollectLetBindings(const Stmt &stmt,
+                   std::unordered_map<const VarNode *, PrimExpr> &bindings) {
+  LetBindingCollector collector;
+  collector(stmt);
+  bindings = std::move(collector.bindings);
+}
+
+static PrimExpr SubstituteLetVars(
+    PrimExpr expr,
+    const std::unordered_map<const VarNode *, PrimExpr> &bindings) {
+  if (bindings.empty()) {
+    return expr;
+  }
+  Map<Var, PrimExpr> vmap;
+  for (const auto &kv : bindings) {
+    vmap.Set(GetRef<Var>(kv.first), kv.second);
+  }
+  return Substitute(expr, vmap);
+}
+
 class AscendMemoryPlanning : public arith::IRMutatorWithAnalyzer {
 public:
   static PrimFunc Substitute(PrimFunc f, PassContext ctx) {
@@ -84,6 +117,18 @@ public:
                                .value();
     }
 
+    std::unordered_map<const VarNode *, PrimExpr> let_bindings;
+    CollectLetBindings(fptr->body, let_bindings);
+
+    if (!let_bindings.empty()) {
+      Map<Var, PrimExpr> resolved_address_map;
+      for (const auto &kv : external_address_map) {
+        PrimExpr resolved = SubstituteLetVars(kv.second, let_bindings);
+        resolved_address_map.Set(kv.first, resolved);
+      }
+      external_address_map = resolved_address_map;
+    }
+
     AscendMemoryPlanner planner(f, external_address_map, external_shape_map,
                                 auto_ascend_memory_planning);
     auto address_map = planner.GetAddressMap();
@@ -92,14 +137,22 @@ public:
     Map<Var, PrimExpr> address_map_attr;
     for (const auto &kv : address_map) {
       Var buffer_var = GetRef<Var>(kv.first);
-      address_map_attr.Set(buffer_var, kv.second);
+      PrimExpr resolved = kv.second;
+      if (!let_bindings.empty()) {
+        resolved = SubstituteLetVars(resolved, let_bindings);
+      }
+      address_map_attr.Set(buffer_var, resolved);
     }
     fn_attr->dict.Set("address_map", address_map_attr);
 
     Map<Var, PrimExpr> size_map_attr;
     for (const auto &kv : buffer_sizes) {
       Var buffer_var = GetRef<Var>(kv.first);
-      size_map_attr.Set(buffer_var, kv.second);
+      PrimExpr resolved = kv.second;
+      if (!let_bindings.empty()) {
+        resolved = SubstituteLetVars(resolved, let_bindings);
+      }
+      size_map_attr.Set(buffer_var, resolved);
     }
     fn_attr->dict.Set("size_map", size_map_attr);
     return f;
