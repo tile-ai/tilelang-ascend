@@ -415,6 +415,61 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
     )
 
 
+def copy_pa(
+    dst,
+    kv,
+    block_table,
+    block_size,
+    head_num,
+    head_dim,
+    kv_stride,
+    max_block_num_per_batch,
+    act_head_dim,
+    copy_row_num,
+    copy_row_num_align,
+    b_idx,
+    n2_idx,
+    s2_idx,
+    d_idx,
+):
+    """Paged-attention KV load: gather ``copy_row_num`` rows of the paged KV
+    cache ``kv`` (GM) straight into ``dst`` (L1), resolving each page via
+    ``block_table`` (GM). Faithful port of the reference op's ``DataCopyPA``
+    (PA_ND): walks the window one page at a time and Nd2Nz-copies each page's
+    row run, so a window inside one page is a single DataCopy. Runs on the cube
+    (L1-direct), so it needs no UB staging and no GM workspace round-trip.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call to ``tl.ascend_copy_pa``.
+    """
+    dst = _legalize_arguments(dst)
+    kv = _legalize_arguments(kv)
+    block_table = _legalize_arguments(block_table)
+    dst_ptr = _retrieve_ptr(dst, "w")
+    kv_ptr = _retrieve_ptr(kv, "r")
+    bt_ptr = _retrieve_ptr(block_table, "r")
+    return T.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_copy_pa"),
+        f"copy_pa<{_dtype(kv)}>",
+        dst_ptr,
+        kv_ptr,
+        bt_ptr,
+        block_size,
+        head_num,
+        head_dim,
+        kv_stride,
+        max_block_num_per_batch,
+        act_head_dim,
+        copy_row_num,
+        copy_row_num_align,
+        b_idx,
+        n2_idx,
+        s2_idx,
+        d_idx,
+    )
+
+
 def printf(format_str: str, *args):
     """
     Prints formatted output.

@@ -638,6 +638,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     PrintOpCall(op, "AscendC::SyncAll<false>", {0, 0}, {0, 0});
   } else if (op->op.same_as(tl::ascend_gemm_v0())) {
     GemmOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_copy_pa())) {
+    CopyPACodegen(op);
   } else if (op->op.same_as(tl::ascend_printf())) {
     PrintfOpCodegen(op, "AscendC::PRINTF");
   } else if (op->op.same_as(tl::ascend_dump_tensor())) {
@@ -2259,6 +2261,30 @@ void CodeGenTileLangAscend::GemmOpCodegen(const CallNode *op) {
                << "[" << b_offset << "], " << c_name << "[" << c_offset
                << "], ascend_l0a, ascend_l0b, " << PrintExpr(op->args[4])
                << ");\n";
+}
+
+void CodeGenTileLangAscend::CopyPACodegen(const CallNode *op) {
+  // args: [0]=template op-name string, [1]=dst L1, [2]=kv GM, [3]=block_table
+  // GM (all tvm_access_ptr CallNodes), [4..]=scalar params forwarded verbatim.
+  std::string op_name =
+      "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
+
+  auto dst_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
+  auto kv_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
+  auto bt_var = op->args[3].as<CallNode>()->args[1].as<VarNode>();
+
+  auto dst_offset = PrintExpr(op->args[1].as<CallNode>()->args[2]);
+  auto kv_offset = PrintExpr(op->args[2].as<CallNode>()->args[2]);
+  auto bt_offset = PrintExpr(op->args[3].as<CallNode>()->args[2]);
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << var_idmap_[dst_var] << "[" << dst_offset
+               << "], " << var_idmap_[kv_var] << "[" << kv_offset << "], "
+               << var_idmap_[bt_var] << "[" << bt_offset << "]";
+  for (size_t i = 4; i < op->args.size(); ++i) {
+    this->stream << ", " << PrintExpr(op->args[i]);
+  }
+  this->stream << ");\n";
 }
 
 void CodeGenTileLangAscend::PrintfOpCodegen(const CallNode *op,

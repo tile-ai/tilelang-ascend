@@ -85,6 +85,57 @@ copy_gm_to_l1(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
   tileCopier(dst, src);
 }
 
+// Paged-attention KV load: gather `copyRowNum` rows of a paged KV cache from GM
+// straight into L1 (NZ), resolving each page through `blockTableGm`. This is a
+// faithful port of the reference op's DataCopyPA (PA_ND branch,
+// sparse_attn_sharedkv_common.h): it walks the window one *page* at a time --
+// look up the page id in the block table, Nd2Nz-copy the contiguous run of rows
+// that fall inside that page, advance, repeat -- so a <=128-row window that
+// sits in one page is a single DataCopy (vs a per-row gather). Runs on the
+// cube, L1-direct, so it needs no UB staging and no GM "workspace_kv"
+// round-trip. PA_ND layout only (headNum/n2Idx/dIdx kept for parity with the
+// reference signature; SWA passes n2Idx=dIdx=0, headNum=1).
+template <typename T>
+CATLASS_DEVICE void
+copy_pa(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
+        GlobalTensor<int32_t> blockTableGm, uint32_t blockSize,
+        uint32_t headNum, uint32_t headDim, uint32_t kvStride,
+        uint32_t maxblockNumPerBatch, uint32_t actHeadDim, uint32_t copyRowNum,
+        uint32_t copyRowNumAlign, uint32_t bIdx, uint32_t n2Idx, uint32_t s2Idx,
+        uint32_t dIdx) {
+  (void)headNum; // PA_ND offset uses n2Idx/headDim/blockSize; kept for parity
+  uint32_t copyFinishRowCnt = 0;
+  uint64_t blockTableBaseOffset = (uint64_t)bIdx * maxblockNumPerBatch;
+  uint32_t curS2Idx = s2Idx;
+  uint32_t blockElementCnt = 32 / sizeof(T);
+  while (copyFinishRowCnt < copyRowNum) {
+    uint64_t blockIdOffset = curS2Idx / blockSize;
+    uint64_t reaminRowCnt = curS2Idx % blockSize;
+    uint64_t idInBlockTable =
+        blockTableGm.GetValue(blockTableBaseOffset + blockIdOffset);
+    uint32_t copyRowCnt = blockSize - reaminRowCnt; // one block at a time
+    if (copyFinishRowCnt + copyRowCnt > copyRowNum) {
+      copyRowCnt = copyRowNum - copyFinishRowCnt;
+    }
+    uint64_t offset = (uint64_t)idInBlockTable * kvStride +
+                      (uint64_t)n2Idx * headDim * blockSize +
+                      reaminRowCnt * headDim + dIdx;
+    AscendC::Nd2NzParams nd2nzPara;
+    nd2nzPara.ndNum = 1;
+    nd2nzPara.nValue = copyRowCnt;
+    nd2nzPara.dValue = actHeadDim;
+    nd2nzPara.srcDValue = headDim;
+    nd2nzPara.dstNzC0Stride = copyRowNumAlign;
+    nd2nzPara.dstNzNStride = 1;
+    nd2nzPara.srcNdMatrixStride = 0;
+    nd2nzPara.dstNzMatrixStride = 0;
+    AscendC::DataCopy(dstTensor[copyFinishRowCnt * blockElementCnt],
+                      srcTensor[offset], nd2nzPara);
+    copyFinishRowCnt += copyRowCnt;
+    curS2Idx += copyRowCnt;
+  }
+}
+
 template <typename T, uint32_t srcM, uint32_t srcN, bool transpose = false>
 CATLASS_DEVICE void copy_l1_to_l0a(LocalTensor<T> dstTensor,
                                    LocalTensor<T> srcTensor, uint32_t dstM,

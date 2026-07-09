@@ -789,6 +789,7 @@ private:
   Map<Var, String> &location_map_;
   std::unordered_map<std::string, std::string> callnodeMapPos_ = {
       {"copy_gm_to_l1", "cube"},
+      {"copy_pa", "cube"},
       {"gemm_v0", "cube"},
       {"copy_l1_to_l0a", "cube"},
       {"copy_l1_to_l0b", "cube"},
