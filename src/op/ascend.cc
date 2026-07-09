@@ -1134,6 +1134,28 @@ TIR_DEFINE_TL_BUILTIN(ascend_row_expand_mul)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
+// Row-broadcast Div/Sub (faithful Ascend C RowDivs/RowMuls). Inputs:
+// [0]=template name, [1]=dst, [2]=src0, [3]=src1 column [M,1], [4]=tmp [M,blk].
+TIR_DEFINE_TL_BUILTIN(ascend_row_expand_div)
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_row_expand_sub)
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+// Non-PTO row-broadcast Mul (faithful Ascend C RowMuls = Brcb + Mul). A
+// DISTINCT op from the PTO ascend_row_expand_mul (TROWEXPANDMUL) so the PTO
+// binding/codegen and its callers (examples/HISA/*) stay byte-identical. Same
+// arg layout as div/sub: [0]=template name row_expand_mul<T,M,N>,
+// [1..4]=dst/src0/src1col/tmp.
+TIR_DEFINE_TL_BUILTIN(ascend_row_expand_mul_nd)
+    .set_num_inputs(5)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
 TIR_DEFINE_TL_BUILTIN(ascend_wait_cross_flag)
     .set_num_inputs(2)
     .set_attr<TCallEffectKind>("TCallEffectKind",

@@ -179,6 +179,7 @@ private:
 
   void UseSwizzleCodegen(const CallNode *op, std::ostream &os);
 
+  void RowExpandCodegen(const CallNode *op);
   void MmaCodegen(const CallNode *op);
 
   void CopyCodegen(const CallNode *op);

@@ -618,6 +618,10 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     BroadcastOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_row_expand_mul())) {
     RowExpandMulCodegen(op);
+  } else if (op->op.same_as(tl::ascend_row_expand_div()) ||
+             op->op.same_as(tl::ascend_row_expand_sub()) ||
+             op->op.same_as(tl::ascend_row_expand_mul_nd())) {
+    RowExpandCodegen(op);
   } else if (op->op.same_as(tl::ascend_row_expand_mul_experiment())) {
     RowExpandMulExperimentCodegen(op);
   } else if (op->op.same_as(tl::ascend_row_expand_sub_experiment())) {
@@ -2399,6 +2403,15 @@ void CodeGenTileLangAscend::UseSwizzleCodegen(const CallNode *op,
       "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   std::string expr = PrintExpr(op->args[1]);
   os << op_name << "(" << expr << ")";
+}
+
+void CodeGenTileLangAscend::RowExpandCodegen(const CallNode *op) {
+  // args: [0]=template name (row_expand_div<T,M,N> / row_expand_sub<...> /
+  // row_expand_mul<...>), [1]=dst, [2]=src0, [3]=src1 column, [4]=tmp. All UB
+  // buffers, no scalars.
+  std::string op_name =
+      "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
+  PrintOpCall(op, op_name, {1, 5}, {5, 5});
 }
 
 void CodeGenTileLangAscend::MmaCodegen(const CallNode *op) {

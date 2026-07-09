@@ -2124,6 +2124,71 @@ def broadcast(
     )
 
 
+def _row_expand_binary(cpp_name, op_key, dst, src0, src1, tmp):
+    """Row-broadcast binary op: dst[i, j] = src0[i, j] OP src1[i] (one src1 value
+    per row, broadcast across the N columns). Backed by the non-PTO common.h
+    templates (Brcb [M,1]->[M,blk] + Div/Sub/Mul with src1RepStride=1), the
+    faithful equivalent of Ascend C's RowDivs/RowMuls. M, N are taken from dst's
+    last two dims and become template constants; ``tmp`` is an [M, 32/sizeof(dtype)]
+    scratch for the Brcb. N must be a multiple of 256/sizeof(dtype)."""
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_shape = _handle_buffer_region_2d(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
+        # Match _handle_buffer_region_2d: flatten any leading dims into M so a
+        # Buffer dst behaves like a BufferRegion (a >2D Buffer would otherwise
+        # drop its leading dims, and a 1D one would IndexError on shape[-2:]).
+        if len(dst.shape) >= 2:
+            dst_shape = [math.prod(dst.shape[:-1]), dst.shape[-1]]
+        else:
+            dst_shape = [1, dst.shape[0]]
+    if isinstance(src0, BufferRegion):
+        src0_ptr, _ = _handle_buffer_region_2d(src0, "r")
+    else:
+        src0_ptr = src0.access_ptr("r")
+    if isinstance(src1, BufferRegion):
+        src1_ptr, _ = _handle_buffer_region(src1, "r")
+    else:
+        src1_ptr = src1.access_ptr("r")
+    if isinstance(tmp, BufferRegion):
+        tmp_ptr, _ = _handle_buffer_region(tmp, "w")
+    else:
+        tmp_ptr = tmp.access_ptr("w")
+    M, N = dst_shape[-2], dst_shape[-1]
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get(op_key),
+        f"{cpp_name}<{_dtype(dst)}, {M}, {N}>",
+        dst_ptr,
+        src0_ptr,
+        src1_ptr,
+        tmp_ptr,
+    )
+
+
+def row_expand_div(dst, src0, src1, tmp):
+    """Row-broadcast divide: dst[i, j] = src0[i, j] / src1[i]. See
+    :func:`_row_expand_binary`. dst/src0 may alias (in-place)."""
+    return _row_expand_binary("row_expand_div", "tl.ascend_row_expand_div", dst, src0, src1, tmp)
+
+
+def row_expand_sub(dst, src0, src1, tmp):
+    """Row-broadcast subtract: dst[i, j] = src0[i, j] - src1[i]. See
+    :func:`_row_expand_binary`. dst/src0 may alias (in-place)."""
+    return _row_expand_binary("row_expand_sub", "tl.ascend_row_expand_sub", dst, src0, src1, tmp)
+
+
+def row_expand_mul_nd(dst, src0, src1, tmp):
+    """Row-broadcast multiply: dst[i, j] = src0[i, j] * src1[i]. The NON-PTO
+    counterpart of :func:`row_expand_mul` (which is PTO-only / TROWEXPANDMUL and
+    LOG(FATAL)s on the tilelang_ascend codegen path that SWA/CFA/SCFA use). Same
+    Brcb + Mul scheme as :func:`row_expand_div`; emits the distinct
+    ``tl.ascend_row_expand_mul_nd`` op so the PTO ``row_expand_mul`` and its
+    examples/HISA callers stay byte-identical. Faithful to Ascend C RowMuls (the
+    cfa/scfa flash-attention PV rescale). dst/src0 may alias (in-place)."""
+    return _row_expand_binary("row_expand_mul", "tl.ascend_row_expand_mul_nd", dst, src0, src1, tmp)
+
+
 def row_expand_mul(
     dst: Buffer | BufferRegion,
     src0: Buffer | BufferRegion,

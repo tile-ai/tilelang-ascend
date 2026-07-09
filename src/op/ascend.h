@@ -170,6 +170,12 @@ TVM_DLL const Op &ascend_broadcast();
 
 TVM_DLL const Op &ascend_row_expand_mul();
 
+TVM_DLL const Op &ascend_row_expand_div();
+
+TVM_DLL const Op &ascend_row_expand_sub();
+
+TVM_DLL const Op &ascend_row_expand_mul_nd();
+
 TVM_DLL const Op &ascend_reinterpretcast();
 
 TVM_DLL const Op &ascend_wait_cross_flag();
