@@ -61,10 +61,7 @@ static PrimExpr AlignUpExpr(PrimExpr value, int64_t alignment) {
 class LetBindingCollector : public StmtExprVisitor {
 public:
   std::unordered_map<const VarNode *, PrimExpr> bindings;
-
   void VisitStmt_(const LetStmtNode *op) final {
-    std::cerr << "[MEMPLAN] Found LetStmt: " << op->var->name_hint << " = "
-              << op->value << "\n";
     bindings[op->var.get()] = op->value;
     StmtExprVisitor::VisitStmt_(op);
   }
@@ -670,6 +667,7 @@ private:
 
     void PlanMemoryForScopeLinear(const std::string &scope,
                                   const std::vector<const VarNode *> &buffers) {
+      arith::Analyzer analyzer;
       PrimExpr current_offset = Integer(0);
       PrimExpr max_offset = Integer(0);
 
@@ -677,7 +675,7 @@ private:
                               const std::string &err_prefix) -> bool {
         PrimExpr buf_size = buffer_sizes_[buffer];
         address_map_[buffer] = offset;
-        offset = AlignUpExpr(offset + buf_size, 32);
+        offset = analyzer.Simplify(AlignUpExpr(offset + buf_size, 32));
         return true;
       };
 
@@ -688,12 +686,13 @@ private:
         }
         if (pre_alloc_buffer_.count(buffer->name_hint)) {
           address_map_[buffer] = pre_alloc_buffer_[buffer->name_hint];
-          max_offset = max(max_offset, pre_alloc_buffer_[buffer->name_hint] +
-                                           buffer_sizes_[buffer]);
+          max_offset = analyzer.Simplify(
+              max(max_offset, pre_alloc_buffer_[buffer->name_hint] +
+                                  buffer_sizes_[buffer]));
         } else if (scope != "shared") {
           alloc_buffer(buffer, current_offset,
                        "Linear memory allocation failed!");
-          max_offset = max(max_offset, current_offset);
+          max_offset = analyzer.Simplify(max(max_offset, current_offset));
         }
       }
       if (scope == "shared") {

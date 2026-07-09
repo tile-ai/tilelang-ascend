@@ -482,7 +482,13 @@ void CodeGenTileLangAscend::VisitStmt_(const BufferStoreNode *op) {
   std::string scope = GetPtrStorageScope(op->buffer->data);
   this->PrintIndent();
   if (scope == "local.var") {
-    this->stream << var_name << " = " << PrintExpr(op->value) << ";\n";
+    if (op->value->IsInstance<CallNode>() &&
+        op->value.as<CallNode>()->op.same_as(builtin::if_then_else())) {
+      std::string result = PrintExpr(op->value);
+      this->stream << var_name << " = " << result << ";\n";
+    } else {
+      this->stream << var_name << " = " << PrintExpr(op->value) << ";\n";
+    }
   } else {
     this->stream << var_name << ".SetValue(" << PrintExpr(op->indices.back())
                  << ", " << PrintExpr(op->value) << ");\n";
