@@ -110,11 +110,11 @@ private:
       // Preserve layouts needed by CalculateBufferSize.
       // PTO 4D shapes are [physical_M, physical_N, valid_M, valid_N].
       external_shape_map_ = external_shape_map;
-      memory_limits_ = {{"shared.dyn", ASCEND_SHARED_DYN_MEM_SIZE},
+      memory_limits_ = {{"shared.l1", ASCEND_SHARED_DYN_MEM_SIZE},
                         {"wmma.matrix_a", ASCEND_WMMA_MATRIX_A_MEM_SIZE},
                         {"wmma.matrix_b", ASCEND_WMMA_MATRIX_B_MEM_SIZE},
                         {"wmma.accumulator", ASCEND_WMMA_ACCUMULATOR_MEM_SIZE},
-                        {"shared", ASCEND_SHARED_MEM_SIZE}};
+                        {"shared.ub", ASCEND_SHARED_MEM_SIZE}};
 
       SetPreAllocBuffer(external_address_map);
       SetTmpBuffers(external_shape_map);
@@ -292,7 +292,7 @@ private:
       for (auto &kv : external_shape_map) {
         const VarNode *buf = kv.first.get();
         std::string scope = GetPtrStorageScope(kv.first);
-        if (!pre_alloc_buffer_.count(buf->name_hint) && scope == "shared") {
+        if (!pre_alloc_buffer_.count(buf->name_hint) && scope == "shared.ub") {
           tmp_buffers.push_back(buf);
         }
       }
@@ -625,7 +625,7 @@ private:
               max_offset,
               static_cast<int64_t>(pre_alloc_buffer_[buffer->name_hint] +
                                    buffer_sizes_[buffer]));
-        } else if (scope != "shared") {
+        } else if (scope != "shared.ub") {
           alloc_buffer(buffer, current_offset,
                        "Linear memory allocation failed!");
           max_offset = std::max(max_offset, current_offset);
@@ -633,7 +633,7 @@ private:
       }
       // Allocate tmp buffer/default buffer after origin buffer to avoid
       // fragmention in shared memory
-      if (scope == "shared") {
+      if (scope == "shared.ub") {
         for (const VarNode *buffer : origin_buffer) {
           if (std::find(tmp_buffers.begin(), tmp_buffers.end(), buffer) !=
                   tmp_buffers.end() &&

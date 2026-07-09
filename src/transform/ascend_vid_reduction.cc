@@ -91,7 +91,7 @@ private:
     if (buffer->data->type_annotation.defined()) {
       if (const auto *ptr_type =
               buffer->data->type_annotation.as<PointerTypeNode>()) {
-        return ptr_type->storage_scope == "shared";
+        return ptr_type->storage_scope == "shared.ub";
       }
     }
     return false;

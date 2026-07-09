@@ -66,14 +66,14 @@ private:
     StorageScope storage_scope =
         runtime::StorageScope::Create(GetPtrStorageScope(buffer_var));
     return storage_scope.rank == runtime::StorageRank::kShared &&
-           storage_scope.tag == ".dyn";
+           storage_scope.tag == ".l1";
   }
 
   bool IsStaticSharedMemory(Var buffer_var) {
     StorageScope storage_scope =
         runtime::StorageScope::Create(GetPtrStorageScope(buffer_var));
     return storage_scope.rank == runtime::StorageRank::kShared &&
-           storage_scope.tag == "";
+           storage_scope.tag == ".ub";
   }
 
 public:
@@ -642,6 +642,7 @@ private:
   // memory. Special memory is all combined into a single allocation.
   bool IsSpecialTaggedMemory(const StorageScope &scope) {
     return scope.tag.length() != 0 && scope.tag != ".dyn" &&
+           scope.tag != ".l1" && scope.tag != ".ub" &&
            scope.tag != ".workspace" && scope.tag != ".vtcm";
   }
 
@@ -1055,7 +1056,7 @@ private:
     // disable reuse of small arrays, they will be lowered to registers in LLVM
     // This rules only apply if we are using non special memory
     bool is_small_array =
-        (scope.tag.length() == 0) &&
+        (scope.tag.length() == 0 || scope.tag == ".ub") &&
         (scope.rank >= StorageRank::kWarp || op->dtype.is_handle() ||
          (is_known_size && const_nbits <= 32));
 
@@ -1127,7 +1128,7 @@ private:
 
     // disable reuse of small arrays, they will be lowered to registers in LLVM
     // This rules only apply if we are using non special memory
-    if (e->scope.tag.length() == 0) {
+    if (e->scope.tag.length() == 0 || e->scope.tag == ".ub") {
       // Disable sharing of local memory.
       if (e->scope.rank >= StorageRank::kWarp ||
           e->allocs[0]->dtype.is_handle())

@@ -818,10 +818,14 @@ void CodeGenTileLangAscend::VisitStmt_(const AllocateNode *op) {
     print_buffer("ascend_l0b");
   } else if (scope == "wmma.accumulator") {
     print_buffer("ascend_l0c");
-  } else if (scope == "shared.dyn") {
+  } else if (scope == "shared.l1") {
     print_buffer("ascend_l1");
-  } else if (scope == "shared") {
+  } else if (scope == "shared.ub") {
     print_buffer("ascend_ub");
+  } else if (scope == "shared") {
+    // Dynamic shared scope fallback: unresolved dynamic buffers are treated
+    // as L1, preserving the previous shared.dyn -> L1 behavior.
+    print_buffer("ascend_l1");
   } else if (scope == "local.var") {
     PrimExpr init = tir::make_const(op->dtype, 0);
     std::string init_type = type;

@@ -50,7 +50,9 @@ static Buffer makeBufferWithLayout(const Buffer &buffer, const Layout &layout,
   Array<PrimExpr> output_shape = layout_shape;
 
   if (ptr_type->storage_scope == "shared" ||
-      ptr_type->storage_scope == "shared.dyn") {
+      ptr_type->storage_scope == "shared.dyn" ||
+      ptr_type->storage_scope == "shared.ub" ||
+      ptr_type->storage_scope == "shared.l1") {
     int replicate_extent = 1;
     Array<PrimExpr> buffer_shape = buffer->shape;
     int buffer_extent = 1;
