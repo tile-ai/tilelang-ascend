@@ -275,6 +275,7 @@ private:
     }
     void VisitStmt_(const WhileNode *op) final { VisitNewScope(op); }
     void VisitStmt_(const AssertStmtNode *op) final { VisitNewScope(op); }
+    void VisitStmt_(const LetStmtNode *op) final { VisitNewScope(op); }
 
     void SetPreAllocBuffer(Map<Var, PrimExpr> external_address_map) {
       for (const auto &kv : external_address_map) {
