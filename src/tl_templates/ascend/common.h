@@ -246,6 +246,37 @@ atomic_add_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
   disable_dma_atomic_compat();
 }
 
+template <typename T>
+CATLASS_DEVICE void
+copy_gm_to_ub_dynamic(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
+                      uint32_t realSrcN, uint32_t maskShapeM,
+                      uint32_t maskShapeN, T padValue = T(0),
+                      uint32_t dstN = 0, uint32_t dstM = 1) {
+  bool isPad = true;
+  uint32_t rightPadding = 1;
+  if (maskShapeN == dstN || (maskShapeN * sizeof(T)) % 32 == 0) {
+    isPad = false;
+    rightPadding = 0;
+  }
+  AscendC::DataCopyExtParams dataCopyParams(
+      maskShapeM, maskShapeN * sizeof(T), (realSrcN - maskShapeN) * sizeof(T),
+      (dstN - maskShapeN) * sizeof(T) / 32, 0);
+  AscendC::DataCopyPadExtParams<T> padParams(isPad, 0, rightPadding, padValue);
+  AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams, padParams);
+}
+
+template <typename T>
+CATLASS_DEVICE void
+copy_ub_to_gm_dynamic(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
+                      uint32_t realdstN, uint32_t maskShapeM,
+                      uint32_t maskShapeN, uint32_t srcN = 0,
+                      uint32_t srcM = 1) {
+  AscendC::DataCopyExtParams dataCopyParams(
+      maskShapeM, maskShapeN * sizeof(T), (srcN - maskShapeN) * sizeof(T) / 32,
+      (realdstN - maskShapeN) * sizeof(T), 0);
+  AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams);
+}
+
 template <typename T1, typename T2, typename LayoutGM, uint32_t srcM,
           uint32_t srcN, bool enRelu = false>
 CATLASS_DEVICE void

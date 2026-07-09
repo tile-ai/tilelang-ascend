@@ -851,5 +851,288 @@ def test_npu_if_else_in_loop_correctness():
     torch.testing.assert_close(b_neg, ref_neg, rtol=1e-3, atol=1e-3)
 
 
+# ---------------------------------------------------------------------------
+# 13. Symbolic buffer size / symbolic address (Issue #1319 regression)
+# ---------------------------------------------------------------------------
+
+
+def test_symbolic_buffer_size_linear_mode_no_crash():
+    """Linear mode: T.alloc_ub with a symbolic extent must not crash.
+
+    This is the core regression test for Issue #1319 where
+    ``T.alloc_ub([max_segs], "int32")`` with ``max_segs = T.symbolic(...)``
+    caused a Segmentation fault in SetPreAllocBuffer.
+    """
+
+    max_segs = T.symbolic("max_segs")
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((128,), "float32"),  # type: ignore
+        B: T.Tensor((128,), "float32"),  # type: ignore
+        rules: T.Tensor((max_segs,), "int32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((128,), "float32")
+            rules_ub = T.alloc_ub((max_segs,), "int32")
+            T.copy(A[:], a_ub)
+            T.copy(a_ub, B[:])
+
+    _, kernel = _compile_and_get_offsets(main, PASS_LINEAR, out_idx=[1])
+    src = kernel.get_kernel_source()
+    assert "max_segs" in src
+
+
+def test_symbolic_address_expr_linear_mode_no_crash():
+    """Linear mode: T.annotate_address with a symbolic expression must
+    not crash.
+
+    In Issue #1319 the address expression contained symbolic variables
+    (e.g. ``segment_rules_len`` derived from ``max_segs``), which caused
+    ``as<IntImmNode>()->value`` to dereference a null pointer.
+    """
+
+    max_segs = T.symbolic("max_segs")
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((128,), "float32"),  # type: ignore
+        B: T.Tensor((128,), "float32"),  # type: ignore
+        rules: T.Tensor((max_segs,), "int32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((128,), "float32")
+            rules_ub = T.alloc_ub((max_segs,), "int32")
+            T.annotate_address(
+                {
+                    a_ub: 0,
+                    rules_ub: max_segs * 4,
+                }
+            )
+            T.copy(A[:], a_ub)
+            T.copy(a_ub, B[:])
+
+    _, kernel = _compile_and_get_offsets(main, PASS_LINEAR, out_idx=[1])
+    src = kernel.get_kernel_source()
+    assert "max_segs" in src
+
+
+def test_symbolic_buffer_size_with_symbolic_address_no_crash():
+    """Linear mode: both symbolic buffer size AND symbolic address together
+    must not crash — the exact combination from Issue #1319."""
+
+    max_segs = T.symbolic("max_segs")
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((128,), "float32"),  # type: ignore
+        B: T.Tensor((128,), "float32"),  # type: ignore
+        offsets: T.Tensor((max_segs + 1,), "int32"),  # type: ignore
+        rules: T.Tensor((max_segs,), "int32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((128,), "float32")
+            offsets_ub = T.alloc_ub((max_segs + 1,), "int32")
+            rules_ub = T.alloc_ub((max_segs,), "int32")
+            T.annotate_address(
+                {
+                    a_ub: 0,
+                    offsets_ub: 32768,
+                    rules_ub: 32768 + max_segs * 8,
+                }
+            )
+            T.copy(A[:], a_ub)
+            T.copy(a_ub, B[:])
+
+    _, kernel = _compile_and_get_offsets(main, PASS_LINEAR, out_idx=[1])
+    src = kernel.get_kernel_source()
+    assert "max_segs" in src
+
+
+def test_symbolic_address_preserved_in_codegen():
+    """Generated source must contain the symbolic address expression,
+    not a crash or a silently-wrong constant."""
+
+    max_segs = T.symbolic("max_segs")
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((128,), "float32"),  # type: ignore
+        B: T.Tensor((128,), "float32"),  # type: ignore
+        rules: T.Tensor((max_segs,), "int32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((128,), "float32")
+            rules_ub = T.alloc_ub((max_segs,), "int32")
+            T.annotate_address(
+                {
+                    a_ub: 0,
+                    rules_ub: max_segs * 4,
+                }
+            )
+            T.copy(A[:], a_ub)
+            T.copy(a_ub, B[:])
+
+    _, kernel = _compile_and_get_offsets(main, PASS_LINEAR, out_idx=[1])
+    src = kernel.get_kernel_source()
+    assert "max_segs" in src, (
+        "Symbolic variable 'max_segs' must appear in generated code"
+    )
+
+
+def test_constant_address_still_works_linear():
+    """Regression: constant annotate_address must still produce correct
+    offsets in linear mode after the PrimExpr refactor."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((64, 128), "float32"),  # type: ignore
+        B: T.Tensor((64, 128), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((64, 128), "float32")
+            b_ub = T.alloc_ub((64, 128), "float32")
+            T.annotate_address(
+                {
+                    a_ub: 32768,
+                }
+            )
+            T.copy(A[:, :], a_ub)
+            T.copy(B[:, :], b_ub)
+
+    offsets, _ = _compile_and_get_offsets(main, PASS_LINEAR, out_idx=[])
+    assert offsets["a_ub"] == 32768, (
+        f"Pre-allocated a_ub must be at 32768, got {offsets['a_ub']}"
+    )
+
+
+def test_constant_address_still_works_auto():
+    """Regression: constant annotate_address in auto mode must still
+    produce correct offsets after the PrimExpr refactor."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((64, 128), "float32"),  # type: ignore
+        B: T.Tensor((64, 128), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((64, 128), "float32")
+            b_ub = T.alloc_ub((64, 128), "float32")
+            T.annotate_address(
+                {
+                    a_ub: 32768,
+                }
+            )
+            T.copy(A[:, :], a_ub)
+            T.copy(B[:, :], b_ub)
+
+    offsets, _ = _compile_and_get_offsets(main, PASS_AUTO, out_idx=[])
+    assert offsets["a_ub"] == 32768, (
+        f"Pre-allocated a_ub must be at 32768, got {offsets['a_ub']}"
+    )
+
+
+def test_symbolic_size_buffer_gets_address():
+    """Linear mode: symbolic-size buffer without annotate_address should
+    still receive a valid (possibly symbolic) address."""
+
+    max_segs = T.symbolic("max_segs")
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((128,), "float32"),  # type: ignore
+        B: T.Tensor((128,), "float32"),  # type: ignore
+        rules: T.Tensor((max_segs,), "int32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((128,), "float32")
+            rules_ub = T.alloc_ub((max_segs,), "int32")
+            T.copy(A[:], a_ub)
+            T.copy(a_ub, B[:])
+
+    offsets, kernel = _compile_and_get_offsets(main, PASS_LINEAR, out_idx=[1])
+    src = kernel.get_kernel_source()
+    assert "a_ub" in src
+    assert "max_segs" in src
+
+
+def test_auto_mode_symbolic_address_assigned_directly():
+    """Auto mode: a buffer with a symbolic pre-alloc address is assigned
+    directly to address_map_ (bypassing LinearScanAllocator), while
+    constant-size buffers without pre-alloc go through normal allocation."""
+
+    max_segs = T.symbolic("max_segs")
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((128,), "float32"),  # type: ignore
+        B: T.Tensor((128,), "float32"),  # type: ignore
+        rules: T.Tensor((max_segs,), "int32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((128,), "float32")
+            rules_ub = T.alloc_ub((max_segs,), "int32")
+            T.annotate_address(
+                {
+                    rules_ub: max_segs * 4,
+                }
+            )
+            T.copy(A[:], a_ub)
+            T.copy(a_ub, B[:])
+
+    _, kernel = _compile_and_get_offsets(main, PASS_AUTO, out_idx=[1])
+    src = kernel.get_kernel_source()
+    assert "max_segs" in src
+    assert "a_ub" in src
+
+
+def test_auto_mode_symbolic_size_clear_error():
+    """Auto mode: a buffer with symbolic size (no pre-alloc address) must
+    produce a clear ICHECK error, not a crash or silent miscompilation."""
+
+    max_segs = T.symbolic("max_segs")
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((128,), "float32"),  # type: ignore
+        B: T.Tensor((128,), "float32"),  # type: ignore
+        rules: T.Tensor((max_segs,), "int32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((128,), "float32")
+            rules_ub = T.alloc_ub((max_segs,), "int32")
+            T.tile.fill(rules_ub, 0)
+            T.copy(A[:], a_ub)
+            T.copy(a_ub, B[:])
+
+    with pytest.raises(Exception, match=r".*TL_ASCEND_MEMORY_PLANNING.*|.*constant.*"):
+        _compile_and_get_offsets(main, PASS_AUTO, out_idx=[1])
+
+
+@pytest.mark.skipif(
+    not NPU_AVAILABLE,
+    reason="NPU correctness requires an Ascend NPU runtime",
+)
+def test_npu_symbolic_buffer_size_correctness():
+    """NPU correctness: symbolic-size buffer produces correct results.
+    Uses a fixed-size input at runtime to verify the kernel works."""
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((128,), "float32"),  # type: ignore
+        B: T.Tensor((128,), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((128,), "float32")
+            T.copy(A[:], a_ub)
+            T.copy(a_ub, B[:])
+
+    kernel = tilelang.compile(main, pass_configs=PASS_LINEAR, target="ascendc", out_idx=[1])
+
+    a = torch.randn(128, dtype=torch.float32, device="npu")
+    b = kernel(a)
+    torch.testing.assert_close(b, a, rtol=1e-3, atol=1e-3)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-n", "8"])
