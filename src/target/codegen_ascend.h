@@ -144,6 +144,8 @@ private:
 
   void RowExpandMulCodegen(const CallNode *op);
 
+  void SoftmaxFlashV2OpCodegen(const CallNode *op);
+
   void RowExpandMulExperimentCodegen(const CallNode *op);
 
   void RowExpandSubExperimentCodegen(const CallNode *op);

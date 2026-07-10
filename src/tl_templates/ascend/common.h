@@ -8,6 +8,13 @@
 #include "catlass/gemm/tile/tile_copy.hpp"
 #include "catlass/layout/layout.hpp"
 
+// AscendC SoftmaxFlashV2 high-level API (lib/activation). Included explicitly
+// so the softmax_flash_v2 template below resolves regardless of whether the
+// catlass umbrella already pulls it in. The header is include-guarded and its
+// begin_pipe(V)/end_pipe pair is balanced, so it is inert for any kernel that
+// does not call softmax_flash_v2 (no effect on existing operators).
+#include "lib/activation/softmaxflashv2.h"
+
 #if defined(__has_include)
 #if __has_include("version/cann_version.h")
 #include "version/cann_version.h"
@@ -873,6 +880,65 @@ div_mask(const LocalTensor<T> &dst, const LocalTensor<T> &src0,
                                      dstRepStride, src0RepStride,
                                      src1RepStride);
   AscendC::Div<T, false>(dst, src0, src1, mask, repeatTime, params);
+}
+
+// SoftmaxFlashV2 config: WITHOUT_BRC -> the max/sum/exp outputs are (m,1), not
+// broadcast to (m,N).
+constexpr SoftmaxConfig kSoftmaxFlashV2CfgWithoutBrc = {
+    false, 0, 0, SoftmaxMode::SOFTMAX_OUTPUT_WITHOUT_BRC};
+
+// Flash-attention online softmax over a variable-width window, wrapping the
+// AscendC SoftmaxFlashV2 library.
+//
+// The library reduces a contiguous [M, columnCount] tile with actualColumnCount
+// live columns. Our `src`/`dst` are a fixed [M, N]-strided UB tile whose first
+// `col_count` (= 16-aligned window) columns hold the score and whose
+// [col_count, N) tail is uninitialised. Feeding the library N as columnCount
+// would make it touch that uninitialised tail (flaky NaN), so we compact
+// src[:, 0:col_count] into the contiguous [M, col_count] `compact` buffer, run
+// SoftmaxFlashV2 there (srcK = col_count, its designed range), then scatter the
+// result back to dst[:, 0:col_count]. The uninitialised [col_count, N) is never
+// read; the >=16 alignment tail [actual_col, col_count) is exp'd but excluded
+// from the reduce (oriSrcK = actual_col).
+//
+// dst (== src, in place via isReuseSource) gets P = exp(score - newMax);
+// `sum`/`max` are the running sum/max (m,1) seeded by `in_sum` / `in_max`;
+// `expmax` (m,1) is the flash rescale factor (unused for a single block).
+// `tmp` is the library's uint8 shared scratch. col_count and N must both be
+// multiples of 32/sizeof(T).
+template <typename T, uint32_t M, uint32_t N>
+CATLASS_DEVICE void
+softmax_flash_v2(const LocalTensor<T> &dst, const LocalTensor<T> &sum,
+                 const LocalTensor<T> &max, const LocalTensor<T> &expmax,
+                 const LocalTensor<T> &src, const LocalTensor<T> &in_sum,
+                 const LocalTensor<T> &in_max, const LocalTensor<uint8_t> &tmp,
+                 const LocalTensor<T> &compact, uint32_t col_count,
+                 uint32_t actual_col) {
+  constexpr uint32_t BLK = 32 / sizeof(T); // elems per 32B datablock (f32: 8)
+  static_assert(N % BLK == 0,
+                "softmax_flash_v2 requires N % (32/sizeof(T)) == 0");
+  // compact src[:, 0:col_count] (N-strided) -> compact ([M, col_count] contig).
+  AscendC::DataCopy(
+      compact, src,
+      AscendC::DataCopyParams{static_cast<uint16_t>(M),
+                              static_cast<uint16_t>(col_count / BLK),
+                              static_cast<uint16_t>((N - col_count) / BLK), 0});
+  AscendC::PipeBarrier<PIPE_V>();
+
+  SoftMaxShapeInfo srcShape{M, col_count, M, actual_col};
+  SoftMaxTiling tiling = SoftMaxFlashV2TilingFunc(
+      srcShape, sizeof(T), sizeof(T), tmp.GetSize(), true, false);
+  SoftmaxFlashV2<T, true, true, false, false, kSoftmaxFlashV2CfgWithoutBrc>(
+      compact, sum, max, compact, expmax, in_sum, in_max, tmp, tiling,
+      srcShape);
+  AscendC::PipeBarrier<PIPE_V>();
+
+  // scatter compact ([M, col_count] contig) -> dst[:, 0:col_count] (N-strided).
+  AscendC::DataCopy(
+      dst, compact,
+      AscendC::DataCopyParams{static_cast<uint16_t>(M),
+                              static_cast<uint16_t>(col_count / BLK), 0,
+                              static_cast<uint16_t>((N - col_count) / BLK)});
 }
 
 template <typename T1, typename T2, typename LayOutL1, typename LayoutGM,
