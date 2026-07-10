@@ -284,6 +284,40 @@ def update_submodules():
         raise RuntimeError("Failed to update submodules") from error
 
 
+def apply_tvm_patches():
+    """Apply local patches under 3rdparty/patches/ to the pinned tvm submodule.
+
+    Mirrors 3rdparty/patches/apply_tvm_patches.sh so that ``USE_ASCEND=true pip
+    install -e .`` picks up the same fixes as install_ascend.sh and
+    build_wheel_ascend.sh. Without this the editable install would build against
+    an unpatched TVM (e.g. missing the dynamic-slice fix for issue #1207).
+
+    Idempotent (skips already-applied patches); raises RuntimeError on failure.
+    """
+    import glob
+
+    patch_dir = os.path.join(ROOT_DIR, "3rdparty", "patches")
+    tvm_dir = os.path.join(ROOT_DIR, "3rdparty", "tvm")
+    if not os.path.isdir(patch_dir):
+        return
+    patches = sorted(glob.glob(os.path.join(patch_dir, "tvm_*.patch")))
+    for patch in patches:
+        name = os.path.basename(patch)
+
+        def run(*args):
+            return subprocess.run(["git", "-C", tvm_dir, *args], capture_output=True)
+
+        if run("apply", "--reverse", "--check", patch).returncode == 0:
+            logger.info(f"  [patch] {name} already applied, skipping")
+        elif run("apply", "--check", patch).returncode == 0:
+            res = run("apply", patch)
+            if res.returncode != 0:
+                raise RuntimeError(f"Failed to apply {name}: {res.stderr.decode(errors='replace')}")
+            logger.info(f"  [patch] {name} applied")
+        else:
+            raise RuntimeError(f"Cannot apply {name} to 3rdparty/tvm (the pinned tvm submodule may have changed; regenerate the patch)")
+
+
 def build_csrc(llvm_config_path):
     """Configures and builds TVM."""
 
@@ -665,6 +699,7 @@ class CMakeBuild(build_ext):
             raise RuntimeError("CMake must be installed to build the following extensions") from error
 
         update_submodules()
+        apply_tvm_patches()
 
         # Build each extension (of type CMakeExtension) using our custom method.
         for ext in self.extensions:

@@ -1137,6 +1137,20 @@ FormatStrides(CodeGenTileLangAscendPto *codegen, const Array<PrimExpr> &shape,
 }
 
 std::string CodeGenTileLangAscendPto::GetPadEnum(const PrimExpr value) {
+  if (!value.defined()) {
+    return "pto::PadValue::Null";
+  }
+  if (const auto *int_value = value.as<IntImmNode>()) {
+    if (int_value->value == 0) {
+      return "pto::PadValue::Zero";
+    }
+  }
+  if (const auto *float_value = value.as<FloatImmNode>()) {
+    if (float_value->value == 0.0) {
+      return "pto::PadValue::Zero";
+    }
+  }
+
   std::string value_str = PrintExpr(value);
 
   std::string pad_value_enum = "pto::PadValue::Null";
@@ -1150,9 +1164,7 @@ std::string CodeGenTileLangAscendPto::GetPadEnum(const PrimExpr value) {
              value_str.find("INFINITY") != std::string::npos ||
              value_str == "std::numeric_limits<float>::infinity()") {
     pad_value_enum = "pto::PadValue::Max";
-  } else if (value_str == "0" || value_str == "0.0" || value_str == "0.0f" ||
-             value_str.find("0.000000e+00") != std::string::npos ||
-             value_str.find("0e+00") != std::string::npos) {
+  } else if (value_str == "0" || value_str == "0.0" || value_str == "0.0f") {
     pad_value_enum = "pto::PadValue::Zero";
   }
 
@@ -1215,14 +1227,15 @@ void CodeGenTileLangAscendPto::GMCopyCall(const CallNode *call,
   if (op_name.rfind("copy_gm_to_ub", 0) == 0) {
     // Use buffer's full shape (row/col) for UB tile physical dimensions
     // to ensure correct physical row stride for column slices.
-    stream << slice_info.row << ", " << slice_info.col << ", ";
-    // For sliced accesses, disable padding: TFILLPAD_INPLACE would write
-    // zeros to the full tile's non-valid region (cols beyond the slice),
-    // corrupting adjacent column data or crossing buffer boundaries.
+    stream << slice_info.row << "," << slice_info.col << ",";
+
+    // For sliced accesses, disable padding. TFILLPAD_INPLACE would write
+    // zeros to the full tile's non-valid region, corrupting adjacent column
+    // data or crossing buffer boundaries.
     if (slice_info.is_slice) {
       stream << "pto::PadValue::Null";
     } else {
-      stream << GetPadEnum(call->args[6]);
+      stream << GetPadEnum(call->args.size() > 6 ? call->args[6] : PrimExpr());
     }
   } else if (op_name.rfind("copy_ub_to_gm", 0) == 0 ||
              op_name.find("atomic_add_ub_to_gm") != std::string::npos) {
@@ -1363,13 +1376,14 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
   bool transpose = (op_name.find(", true>") != std::string::npos);
 
   int32_t tile_col = src_shape_info.col;
-  int32_t tile_row =
-      is_a ? dst_shape_info.slice_row
-           : FindBestTileRowB(src_shape_info.row, dst_shape_info.slice_row);
-  int32_t num_tiles =
-      is_a ? src_shape_info.row / tile_row : src_shape_info.row / tile_row;
-  if (num_tiles < 1)
-    num_tiles = 1;
+  // For sliced L1 buffers (e.g. a 3D buffer sliced into chunks), use the
+  // valid row count of the current slice instead of the physical row count
+  // declared by the buffer. Otherwise FindBestTileRowB may return a tile_row
+  // larger than the L0B/L0A capacity, causing an out-of-bounds copy.
+  int32_t src_row = src_shape_info.is_slice ? src_shape_info.slice_valid_row
+                                            : src_shape_info.row;
+  int32_t tile_row = is_a ? dst_shape_info.slice_row
+                          : FindBestTileRowB(src_row, dst_shape_info.slice_row);
 
   int32_t tile_size = tile_row * tile_col;
 
@@ -1404,9 +1418,8 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
     std::string src_temp_name = GetTempVarName(src_shape_info.ub_name + "_zn");
     this->PrintIndent();
     this->stream << kAscendPtoScope << "TileMatL1ZN<" << dst_shape_info.type
-                 << ", " << tile_col << ", " << src_shape_info.row << ", "
-                 << tile_col << ", " << src_shape_info.row << "> "
-                 << src_temp_name << ";\n";
+                 << ", " << tile_col << ", " << src_row << ", " << tile_col
+                 << ", " << src_row << "> " << src_temp_name << ";\n";
     this->PrintIndent();
     this->stream << "TASSIGN(" << src_temp_name << ", "
                  << src_shape_info.first_addr << " + " << src_shape_info.offset
@@ -1421,7 +1434,7 @@ void CodeGenTileLangAscendPto::CopyL1ToL0Codegen(const CallNode *call,
                << ", " << dst_shape_info.slice_row << ", "
                << dst_shape_info.slice_col;
   if (transpose) {
-    this->stream << ", " << tile_col << ", " << src_shape_info.row << ", true";
+    this->stream << ", " << tile_col << ", " << src_row << ", true";
   } else {
     this->stream << ", " << tile_row << ", " << tile_col;
   }
@@ -1641,7 +1654,77 @@ void CodeGenTileLangAscendPto::FillCodegen(const CallNode *op) {
   this->PrintIndent();
   this->stream << "wait_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
 
-  ShapeInfo dst_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
+  const CallNode *dst_access = op->args[1].as<CallNode>();
+  ShapeInfo dst_shape_info = GetSliceInfo(dst_access);
+
+  // A runtime-dynamic slice length (e.g. T.tile.fill(buf[0, 0:idx], v))
+  // cannot be baked into the tile's static valid dims. For such an access
+  // GetSliceInfo falls back to the full tile shape, which makes TEXPANDS
+  // over-fill: it fills the descriptor's *valid* region (there is no
+  // separate count argument). TEXPANDS fills a [valid_row, valid_col]
+  // rectangle (valid_col elements per row, row stride = buffer col), so a
+  // single rectangle cannot represent a contiguous run whose length is not a
+  // multiple of col: floor-dividing drops the tail (ext=48, col=32 -> only 32
+  // filled, 16 dropped). Split into full rows + a partial tail row, each
+  // guarded at runtime, so exactly ext elements are filled.
+  if (dst_access->args[3].as<IntImmNode>() == nullptr) {
+    const std::string type = dst_shape_info.type;
+    const std::string col = std::to_string(dst_shape_info.col);
+    const std::string ext = "(" + PrintExpr(dst_access->args[3]) + ")";
+    const std::string full_rows = "(" + ext + " / " + col + ")";
+    const std::string tail = "(" + ext + " % " + col + ")";
+    const std::string value = PrintExpr(op->args[2]);
+    const int type_len = GetTypeLen(type);
+    const std::string row_temp = GetTempVarName(dst_shape_info.ub_name);
+    const std::string tail_temp = GetTempVarName(dst_shape_info.ub_name);
+
+    // Full rows: [full_rows, col] starting at the base offset.
+    this->PrintIndent();
+    this->stream << "if (" << full_rows << " > 0) {\n";
+    {
+      int scope = this->BeginScope();
+      this->PrintIndent();
+      this->stream << kAscendPtoScope << "TileUbDataND<" << type << ", "
+                   << dst_shape_info.slice_row << ", "
+                   << dst_shape_info.slice_col
+                   << ", pto::DYNAMIC, pto::DYNAMIC> " << row_temp << "("
+                   << full_rows << ", " << col << ");\n";
+      this->PrintIndent();
+      this->stream << "TASSIGN(" << row_temp << ", "
+                   << dst_shape_info.first_addr << " + "
+                   << dst_shape_info.offset << " * " << type_len << ");\n";
+      this->PrintIndent();
+      this->stream << "TEXPANDS(" << row_temp << ", " << value << ");\n";
+      this->EndScope(scope);
+    }
+    this->PrintIndent();
+    this->stream << "}\n";
+
+    // Partial tail row: [1, tail] starting full_rows * col elements past base.
+    this->PrintIndent();
+    this->stream << "if (" << tail << " != 0) {\n";
+    {
+      int scope = this->BeginScope();
+      this->PrintIndent();
+      this->stream << kAscendPtoScope << "TileUbDataND<" << type << ", "
+                   << dst_shape_info.slice_row << ", "
+                   << dst_shape_info.slice_col
+                   << ", pto::DYNAMIC, pto::DYNAMIC> " << tail_temp << "(1, "
+                   << tail << ");\n";
+      this->PrintIndent();
+      this->stream << "TASSIGN(" << tail_temp << ", "
+                   << dst_shape_info.first_addr << " + ("
+                   << dst_shape_info.offset << " + " << full_rows << " * "
+                   << col << ") * " << type_len << ");\n";
+      this->PrintIndent();
+      this->stream << "TEXPANDS(" << tail_temp << ", " << value << ");\n";
+      this->EndScope(scope);
+    }
+    this->PrintIndent();
+    this->stream << "}\n";
+    return;
+  }
+
   std::string dst_name = ResolveUbSliceName(dst_shape_info);
 
   this->PrintIndent();
@@ -2048,6 +2131,13 @@ void CodeGenTileLangAscendPto::TransposeCodegen(const CallNode *op,
       (dst_tile_w + y_tile_size_elem - 1) / y_tile_size_elem * y_tile_size_elem;
 
   std::string tmp_addr_str = std::to_string(max_ub_addr_);
+
+  // Update max_ub_addr_ after allocating temporary buffer
+  int64_t tmp_buffer_size = N * tmp_tile_w * elem_bytes;
+  max_ub_addr_ += tmp_buffer_size;
+  // Align to 32-byte boundary
+  max_ub_addr_ = ((max_ub_addr_ + kUbAlignmentBytes - 1) / kUbAlignmentBytes) *
+                 kUbAlignmentBytes;
 
   this->PrintIndent();
   this->stream << "{\n";
@@ -2681,11 +2771,20 @@ void CodeGenTileLangAscendPto::SiluCodegen(const CallNode *op) {
   std::string src_name = ResolveUbSliceName(src_shape_info);
   std::string tmp_name = GetTempVarName(dst_shape_info.ub_name) + "_silu_tmp";
 
+  // Update max_ub_addr_ after allocating temporary buffer
+  int32_t elem_bytes = GetTypeLen(dst_shape_info.type);
+  int64_t tmp_buffer_size = row * col * elem_bytes;
+  int64_t tmp_addr = max_ub_addr_; // Save original address before alignment
+  max_ub_addr_ += tmp_buffer_size;
+  // Align to 32-byte boundary
+  max_ub_addr_ = ((max_ub_addr_ + kUbAlignmentBytes - 1) / kUbAlignmentBytes) *
+                 kUbAlignmentBytes;
+
   this->PrintIndent();
   this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type << ", "
                << row << ", " << col << "> " << tmp_name << ";\n";
   this->PrintIndent();
-  this->stream << "TASSIGN(" << tmp_name << ", " << max_ub_addr_ << ");\n";
+  this->stream << "TASSIGN(" << tmp_name << ", " << tmp_addr << ");\n";
   this->PrintIndent();
   this->stream << kAscendPtoScope << "TSILU<" << dst_shape_info.type << ", "
                << row << ", " << col << ">(" << dst_name << ", " << src_name
@@ -2708,11 +2807,20 @@ void CodeGenTileLangAscendPto::MulAddDstCodegen(const CallNode *op) {
   std::string tmp_name =
       GetTempVarName(dst_shape_info.ub_name) + "_muladddst_tmp";
 
+  // Update max_ub_addr_ after allocating temporary buffer
+  int32_t elem_bytes = GetTypeLen(dst_shape_info.type);
+  int64_t tmp_buffer_size = row * col * elem_bytes;
+  int64_t tmp_addr = max_ub_addr_; // Save original address before alignment
+  max_ub_addr_ += tmp_buffer_size;
+  // Align to 32-byte boundary
+  max_ub_addr_ = ((max_ub_addr_ + kUbAlignmentBytes - 1) / kUbAlignmentBytes) *
+                 kUbAlignmentBytes;
+
   this->PrintIndent();
   this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type << ", "
                << row << ", " << col << "> " << tmp_name << ";\n";
   this->PrintIndent();
-  this->stream << "TASSIGN(" << tmp_name << ", " << max_ub_addr_ << ");\n";
+  this->stream << "TASSIGN(" << tmp_name << ", " << tmp_addr << ");\n";
   this->PrintIndent();
   this->stream << kAscendPtoScope << "MulAddDst<" << dst_shape_info.type << ", "
                << row << ", " << col << ">(" << dst_name << ", " << src0_name

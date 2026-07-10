@@ -90,7 +90,8 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
      - 多步（如 softmax = max + sub + exp + sum + div）→ 多次计算、可能需要中间缓冲
      - 融合（如 flash attention = GEMM + softmax + GEMM）→ 核间协作、流水线
    - **动态 shape 判定**：是否存在运行时才确定的维度
-4. **非整除场景预判**：检查输入 shape 是否可能不被 block size 整除。GEMM 类算子的 `M // block_M` 和 `N // block_N` 在 `M < block_M` 或 `N < block_N` 时产生零 block 或不完整 tile，必须在设计中明确处理策略（host 侧 zero-padding + crop，或 Kernel 内动态 block size）
+4. **非整除场景预判**：检查输入 shape 是否可能不被 block size 整除。`T.ceildiv(M, block_M)` 对非整除或 `M < block_M` 返回 ≥1（非零），`T.copy` 已支持动态 shape 切片自动处理尾块，**不需要 host padding**。用 `T.ceildiv` + 动态切片 `T.copy(A[m:m+valid, ...])`，参考 `examples/chunk_gated_delta_rule/expert_chunk_gated_delta_rule.py:107-108`。仅当多个 group 共享同一输出 buffer 时需注意尾块写入竞态——用 metadata 的 valid_m 字段限制写入范围 `T.copy(C_L0, Y[m:m+valid_m, ...])`
+5. **多 group 输出竞态约束**（grouped 类算子）：当多个 group 共享同一输出 buffer（紧凑排列，不 padding）时，尾块按 block_M 整块写会溢出到隔壁 group 的区域，导致竞态条件（执行顺序不确定→结果不确定）。解法：metadata 记录 valid_m，kernel 用 `T.copy(C_L0, Y[m_start : m_start + valid_m, ...])` 只写有效行。参考 `examples/grouped_gemm/example_grouped_gemm_fwd.py` 的 block_metadata[2]（valid_m 字段，当前未使用，应启用）。
 
 ### Phase 2：信息收集
 
@@ -166,7 +167,7 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 
 - [references/ascend-constraints.md](references/ascend-constraints.md) — 技术约束清单、强制检测规则、警告输出格式
 - [references/decision-tree.md](references/decision-tree.md) — 算子特征分析决策树、平台识别、NPU 硬件约束、API 映射规则
-- [references/quality-checklist.md](references/quality-checklist.md) — 19 项质量自检清单
+- [references/quality-checklist.md](references/quality-checklist.md) — 18 项质量自检清单
 - [references/info-sources.md](references/info-sources.md) — 信息收集步骤、信息源优先级、冲突处理原则
 - [examples/design-template.md](examples/design-template.md) — design.md 完整模板
 - [examples/completion-report-template.md](examples/completion-report-template.md) — 完成报告输出模板
