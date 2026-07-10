@@ -707,9 +707,15 @@ private:
     } else if (sync_type.find("PipeBarrier_") == 0) {
       std::string pipeline = sync_type.substr(12);
       if (pipeline == "PIPE_V" && platform_ == "A5") {
-        return;
+        // A5 does not support pipe_barrier(PIPE_V);
+        // raise error: the range of 1st parameter must be [4, 6]
+        // use V_V event pair
+        int event_id = AllocateEventId();
+        stmts.push_back(CreateSetFlag("V_V", event_id));
+        stmts.push_back(CreateWaitFlag("V_V", event_id));
+      } else {
+        stmts.push_back(CreatePipeBarrier(pipeline));
       }
-      stmts.push_back(CreatePipeBarrier(pipeline));
     } else if (sync_type.find("EventPair_") == 0) {
       std::string event_type = sync_type.substr(10);
       int event_id = AllocateEventId();
@@ -783,6 +789,13 @@ private:
   void
   UpdateLatestAccessHistory(const std::vector<BufferAccess> &current_accesses) {
     for (const auto &access : current_accesses) {
+      if (is_revisit_pass_) {
+        auto it = current_access_history_.find(access.buffer_name);
+        if (it != current_access_history_.end() && it->second.is_back_edge &&
+            !ShouldSync(it->second.pipeline, access.pipeline)) {
+          continue;
+        }
+      }
       current_access_history_[access.buffer_name] = access;
     }
   }
