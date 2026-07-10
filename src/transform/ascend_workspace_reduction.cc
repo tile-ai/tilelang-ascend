@@ -730,7 +730,8 @@ private:
       args.push_back(IntImm(DataType::Int(32), 0));
       args.push_back(IntImm(DataType::Int(32), 0));
     } else if (buffer_scope == DstBufferScope::Ub) {
-      // copy_gm_to_ub: add maskShapeM, maskShapeN, padValue=0
+      // copy_gm_to_ub: add maskShapeM, maskShapeN, padValue=0 (full workspace
+      // shape, never a tail).
       // ws_info.shapes = [M, N] (workspace shape, M includes vector_cnt)
       // Template params: dstN=N, dstM=M/vector_cnt (from reversed shapes)
       // So maskShapeM=M/vector_cnt, maskShapeN=N
