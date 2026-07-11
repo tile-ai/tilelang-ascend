@@ -1040,16 +1040,17 @@ CATLASS_DEVICE void tail_reduce_min(LocalTensor<T> out, LocalTensor<T> src,
 static constexpr uint32_t L0AB_EVENT = 0;
 
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
-          bool transpose_A = false, bool transpose_B = false>
+          bool transpose_A = false, bool transpose_B = false,
+          uint32_t kL0Size = 128>
 CATLASS_DEVICE void
 gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
         LocalTensor<T2> const &C, // this must be located in l0c
         AscendC::TBuf<AscendC::TPosition::A2> &l0a_,
         AscendC::TBuf<AscendC::TPosition::B2> &l0b_, bool clear) {
+  static_assert(kL0Size % 16 == 0, "kL0Size must be a multiple of 16");
+  constexpr uint32_t kL0split = (K + kL0Size - 1) / kL0Size;
   auto l0a = l0a_.Get<T1>();
   auto l0b = l0b_.Get<T1>();
-  constexpr uint32_t kL0Size = 128;
-  uint32_t kL0split = (K + kL0Size - 1) / kL0Size;
   uint32_t kL0Tail = K - (kL0split - 1) * kL0Size;
   bool initflag = false;
 

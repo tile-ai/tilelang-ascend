@@ -141,7 +141,7 @@ AICORE PTO_INLINE void mma(TileMatL0A<T1, M, K> l0a, TileMatL0B<T1, K, N> l0b,
 
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           uint32_t validM, uint32_t validN, uint32_t validK, uint32_t CurrentK,
-          bool transpose_A, bool transpose_B>
+          uint32_t kL0Size, bool transpose_A, bool transpose_B>
 AICORE PTO_INLINE void gemm_v0_inner(
     std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
                        TileMatL1<T1, M, K, validM, validK>> &A,
@@ -163,18 +163,18 @@ AICORE PTO_INLINE void gemm_v0_inner(
   }
 
   if constexpr (!transpose_A) {
-    copy_l1_to_l0a<T1, M, CurrentK, M, K, false>(l0a, A, 0, kL0Idx * CurrentK);
+    copy_l1_to_l0a<T1, M, CurrentK, M, K, false>(l0a, A, 0, kL0Idx * kL0Size);
   } else {
     TileMatL1ZN<T1, M, K, validM, validK> A_t;
     pto::TRESHAPE(A_t, A);
-    copy_l1_to_l0a<T1, M, CurrentK, M, K, true>(l0a, A_t, 0, kL0Idx * CurrentK);
+    copy_l1_to_l0a<T1, M, CurrentK, M, K, true>(l0a, A_t, 0, kL0Idx * kL0Size);
   }
   if constexpr (!transpose_B) {
-    copy_l1_to_l0b<T1, CurrentK, N, K, N, false>(l0b, B, kL0Idx * CurrentK, 0);
+    copy_l1_to_l0b<T1, CurrentK, N, K, N, false>(l0b, B, kL0Idx * kL0Size, 0);
   } else {
     TileMatL1ZN<T1, K, N, validK, validN> B_t;
     pto::TRESHAPE(B_t, B);
-    copy_l1_to_l0b<T1, CurrentK, N, K, N, true>(l0b, B_t, kL0Idx * CurrentK, 0);
+    copy_l1_to_l0b<T1, CurrentK, N, K, N, true>(l0b, B_t, kL0Idx * kL0Size, 0);
   }
 
   set_flag(PIPE_MTE1, PIPE_M, war_event_id);
@@ -194,16 +194,16 @@ AICORE PTO_INLINE void gemm_v0_inner(
 
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           uint32_t validM = M, uint32_t validN = N, uint32_t validK = K,
-          uint32_t K_tail, bool transpose_A = false, bool transpose_B = false>
+          uint32_t K_tail, uint32_t kL0Size = 128, bool transpose_A = false,
+          bool transpose_B = false>
 AICORE PTO_INLINE void
 gemm_v0(std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
                            TileMatL1<T1, M, K, validM, validK>> &A,
         std::conditional_t<transpose_B, TileMatL1<T1, N, K, validN, validK>,
                            TileMatL1<T1, K, N, validK, validN>> &B,
         pto::TileAcc<T2, M, N, validM, validN> &C, bool clear) {
-  constexpr uint32_t kL0Size =
-      128; // L0 slice size, adapted to 64K memory limit
-  const uint32_t kL0split = (K + kL0Size - 1) / kL0Size; // Number of slices
+  static_assert(kL0Size % 16 == 0, "kL0Size must be a multiple of 16");
+  constexpr uint32_t kL0split = (K + kL0Size - 1) / kL0Size;
   auto war_event_id = (event_t)(((int)EVENT_ID0 + 1) % 8);
 
   set_flag(PIPE_MTE2, PIPE_MTE1, war_event_id);
@@ -214,11 +214,11 @@ gemm_v0(std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
     const bool is_tail_block = (kL0Idx == kL0split - 1);
 
     if (is_tail_block) {
-      gemm_v0_inner<T1, T2, M, N, K, validM, validN, validK, K_tail,
+      gemm_v0_inner<T1, T2, M, N, K, validM, validN, validK, K_tail, kL0Size,
                     transpose_A, transpose_B>(A, B, C, kL0Idx, initflag,
                                               war_event_id, true);
     } else {
-      gemm_v0_inner<T1, T2, M, N, K, validM, validN, validK, kL0Size,
+      gemm_v0_inner<T1, T2, M, N, K, validM, validN, validK, kL0Size, kL0Size,
                     transpose_A, transpose_B>(A, B, C, kL0Idx, initflag,
                                               war_event_id, false);
     }

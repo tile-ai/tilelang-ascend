@@ -340,7 +340,7 @@ def shmem_ub_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr
     )
 
 
-def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
+def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False, kL0Size=128):
     """
     Performs a block-level General Matrix Multiplication (GEMM).
 
@@ -358,6 +358,17 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
         transpose_B (bool, optional): Whether to transpose matrix B. Defaults to False.
         init (bool, optional): Whether to initialize the accumulator matrix C (typically to zero)
             before computation. Defaults to False.
+        kL0Size (int, optional, advanced): K-axis tile size for L1->L0 data movement.
+            Controls how the K dimension is split when copying from L1 to L0A/L0B.
+            Must be a multiple of 16. Defaults to 128.
+
+            Normally you don't need to change this. Consider tuning it when:
+            - L0C is underutilized (e.g., block_M x block_N x 4 < 128KB)
+            - You want to enable double-buffer but kL0Size=128 makes L0A/L0B too full
+
+            Smaller kL0Size allows larger block_M/block_N (more L0C utilization)
+            at the cost of more L1->L0 copy iterations. For half precision with
+            block_M=128, block_N=256, kL0Size=64 is recommended.
 
     Returns:
         tvm.tir.Call: A TIR intrinsic call to `tl.ascend_gemm_v0`.
@@ -399,6 +410,10 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
     K_B = B_shape[-1] if transpose_B else B_shape[-2]
     assert K == K_B, f"T.gemm K shape check failed: K_A = {K}, K_B = {K_B}"
 
+    assert kL0Size > 0, f"kL0Size={kL0Size} must be a positive integer"
+    assert kL0Size % 16 == 0, f"kL0Size={kL0Size} must be a multiple of 16"
+    assert kL0Size <= 4095, f"kL0Size={kL0Size} exceeds PTO MMAD upper limit 4095"
+
     Aptr = _retrieve_ptr(A, "r")
     Bptr = _retrieve_ptr(B, "r")
     Cptr = _retrieve_ptr(C, "w" if init is True else "rw")
@@ -407,7 +422,7 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):
     return T.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_gemm_v0"),
-        f"gemm_v0<{_dtype(A)}, {_dtype(C)}, {M}, {N}, {K}, {str(transpose_A).lower()}, {str(transpose_B).lower()}>",
+        f"gemm_v0<{_dtype(A)}, {_dtype(C)}, {M}, {N}, {K}, {str(transpose_A).lower()}, {str(transpose_B).lower()}, {kL0Size}>",
         Aptr,
         Bptr,
         Cptr,
@@ -500,7 +515,6 @@ def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple = (
 
 
 def reinterpretcast(dst: Buffer, src: Buffer, casttype: str):
-
     # return T.call_extern("handle", f"ReinterpretCast", dst.access_ptr("w"), src.access_ptr("r"),
     #                      casttype)
     return T.call_intrin("handle", tir.op.Op.get("tl.ascend_reinterpretcast"), dst.access_ptr("w"), src.access_ptr("r"), casttype)

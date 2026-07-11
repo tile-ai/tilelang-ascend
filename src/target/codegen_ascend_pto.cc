@@ -51,7 +51,7 @@ constexpr int kAlignment16Bytes = 16;
 constexpr int kUbAlignmentMask = kUbAlignmentBytes - 1;
 constexpr int kVectorRepeatBytes = 256;
 constexpr int kEleNumPerC0 = 16;
-constexpr int kL0SliceSize = 128;
+constexpr int kDefaultL0SliceSize = 128;
 constexpr int kL0CSliceElements = 256;
 constexpr int kSortBlockSize = 32;
 constexpr int kTransposeTileSize = 16;
@@ -817,8 +817,8 @@ extractTemplateParams(const std::string &input) {
     params.push_back(param);
   }
   std::vector<std::string> paramNames = {
-      "data_type_input", "data_type_output", "M", "N", "K",
-      "transpose_A",     "transpose_B"};
+      "data_type_input", "data_type_output", "M",      "N", "K",
+      "transpose_A",     "transpose_B",      "kL0Size"};
   for (size_t i = 0; i < params.size() && i < paramNames.size(); ++i) {
     result[paramNames[i]] = params[i];
   }
@@ -1824,8 +1824,10 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
   uint32_t K = std::stoi(params["K"]);
   bool transpose_A = (params["transpose_A"] == "true");
   bool transpose_B = (params["transpose_B"] == "true");
-  uint32_t kL0split = (K + kL0SliceSize - 1) / kL0SliceSize;
-  uint32_t kL0Tail = K - (kL0split - 1) * kL0SliceSize;
+  uint32_t kL0Size = params.count("kL0Size") ? std::stoi(params["kL0Size"])
+                                             : kDefaultL0SliceSize;
+  uint32_t kL0split = (K + kL0Size - 1) / kL0Size;
+  uint32_t kL0Tail = K - (kL0split - 1) * kL0Size;
 
   auto override_slice = [](ShapeInfo &info, int32_t slice_row,
                            int32_t slice_col) {
@@ -1859,8 +1861,8 @@ void CodeGenTileLangAscendPto::GemmV0Codegen(const CallNode *op) {
                << params["data_type_output"] << ", " << GetValid16BytesShape(M)
                << ", " << GetValid16BytesShape(N) << ", "
                << GetValidShape(K, data_type_input) << ", " << M << ", " << N
-               << ", " << K << ", " << kL0Tail << ", " << params["transpose_A"]
-               << ", " << params["transpose_B"] << ">"
+               << ", " << K << ", " << kL0Tail << ", " << kL0Size << ", "
+               << params["transpose_A"] << ", " << params["transpose_B"] << ">"
                << "(";
   this->stream << a_name << ", " << b_name << ", " << c_name << ", "
                << PrintExpr(op->args[4]) << ");\n";
