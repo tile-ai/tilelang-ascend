@@ -667,7 +667,6 @@ def xattention():
 
                                     T.copy(m_i, m_i_prev)
                                     T.copy(m_i, m_i_prev_chunk)
-                                    T.pipe_barrier("v")
                                     T.wait_cross_flag(SHARED_QK_READY_BASE)
 
                                     for row_pipe in T.serial(SHARED_S_ROW_TILES + 1):
@@ -696,6 +695,7 @@ def xattention():
                                                 acc_s_ub[compute_side, :, :],
                                                 sm_scale,
                                             )
+                                            T.pipe_barrier("v")
                                             if (task_k + 1) * EFFECTIVE_BLOCK_N > shared_kv_lens[task_request_idx]:
                                                 for mask_row in T.serial(SHARED_S_ROWS):
                                                     for mask_col in T.serial(EFFECTIVE_BLOCK_N):
@@ -729,6 +729,7 @@ def xattention():
                                                     m_i_prev_chunk_tiles[row_tile, :, :],
                                                     m_i_tiles[row_tile, :, :],
                                                 )
+                                                T.pipe_barrier("v")
                                                 T.tile.exp(
                                                     m_i_prev_chunk_tiles[row_tile, :, :],
                                                     m_i_prev_chunk_tiles[row_tile, :, :],
@@ -739,7 +740,6 @@ def xattention():
                                                     sumexp_tiles[row_tile, :, :],
                                                     m_i_prev_chunk_tiles[row_tile, :, :],
                                                 )
-                                                T.pipe_barrier("v")
                                             T.tile.brcb_experiment(
                                                 shared_s_brcb_buf,
                                                 m_i_next,
@@ -763,6 +763,7 @@ def xattention():
                                                     ],
                                                     shared_s_brcb_buf,
                                                 )
+                                            T.pipe_barrier("v")
                                             T.tile.exp(
                                                 acc_s_ub[compute_side, :, :],
                                                 acc_s_ub[compute_side, :, :],
@@ -779,7 +780,6 @@ def xattention():
                                                 sumexp_tiles[row_tile, :, :],
                                                 sumexp_i[0, :, :],
                                             )
-                                            T.pipe_barrier("v")
 
                                             T.wait_flag("mte3", "v", compute_side)
                                             T.copy(
@@ -801,10 +801,10 @@ def xattention():
                                             T.set_flag("mte3", "v", compute_side)
 
                                     T.tile.sub(m_i_prev, m_i_prev, m_i)
+                                    T.pipe_barrier("v")
                                     T.tile.exp(m_i_prev, m_i_prev)
                                     T.pipe_barrier("v")
                                     T.copy(m_i_prev, shared_o_scale_slots[o_slot, :, :])
-                                    T.pipe_barrier("v")
                                     if task_k == SHARED_KV_TILES - 1:
                                         T.tile.brcb_experiment(
                                             shared_gm_store_buf,
@@ -931,7 +931,6 @@ def xattention():
                                             ],
                                         )
                                         T.set_flag("mte3", "v", 2)
-                                    T.pipe_barrier("v")
 
                         for final_mte3_event in T.serial(4):
                             T.wait_flag("mte3", "v", final_mte3_event)
@@ -1121,7 +1120,9 @@ def xattention():
                             unshared_s,
                             unshared_mask,
                         )
+                        T.pipe_barrier("v")
                         T.tile.mul(unshared_s, unshared_s, sm_scale)
+                        T.pipe_barrier("v")
                         T.reduce_max(unshared_s, unshared_m, dim=-1)
                         T.pipe_barrier("v")
                         T.tile.brcb_experiment(
@@ -1145,10 +1146,10 @@ def xattention():
                                 ],
                                 unshared_m_broadcast,
                             )
+                        T.pipe_barrier("v")
                         T.tile.exp(unshared_s, unshared_s)
                         T.pipe_barrier("v")
                         T.reduce_sum(unshared_s, unshared_sum, dim=-1)
-                        T.pipe_barrier("v")
                         T.copy(unshared_s, unshared_s_half)
                         if i + 1 < TASKS_PER_CORE:
                             T.set_flag("v", "mte2", 0)
@@ -1286,7 +1287,6 @@ def xattention():
                             merge_s_gm,
                             dim=-1,
                         )
-                        T.pipe_barrier("v")
                         T.reduce_max(
                             merge_s_gl_load_lane[merge_buf, :, :],
                             merge_s_gl,
@@ -1310,7 +1310,6 @@ def xattention():
                         )
                         T.pipe_barrier("v")
                         T.tile.add(merge_gl, merge_s_gl, merge_u_gl[merge_buf, :, :])
-                        T.pipe_barrier("v")
                         T.tile.brcb_experiment(
                             merge_s_gm_lane,
                             merge_cor_s,
@@ -1334,7 +1333,6 @@ def xattention():
                                 ],
                                 merge_s_gm_lane,
                             )
-                        T.pipe_barrier("v")
                         T.tile.brcb_experiment(
                             merge_s_gl_lane,
                             merge_cor_u,
@@ -1364,7 +1362,6 @@ def xattention():
                             merge_s_O[merge_buf, :, :],
                             merge_u_O[merge_buf, :, :],
                         )
-                        T.pipe_barrier("v")
                         T.tile.brcb_experiment(
                             merge_s_gm_lane,
                             merge_gl,
@@ -1395,7 +1392,6 @@ def xattention():
                             merge_s_O[merge_buf, :, :],
                             merge_out[merge_buf, :, :],
                         )
-                        T.pipe_barrier("v")
                         T.set_flag("v", "mte2", merge_buf)
 
                         T.set_flag("v", "mte3", 2 + merge_buf)
