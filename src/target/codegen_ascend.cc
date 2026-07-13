@@ -823,9 +823,12 @@ void CodeGenTileLangAscend::VisitStmt_(const AllocateNode *op) {
   } else if (scope == "shared.ub") {
     print_buffer("ascend_ub");
   } else if (scope == "shared") {
-    // Dynamic shared scope fallback: unresolved dynamic buffers are treated
-    // as L1, preserving the previous dynamic -> L1 behavior.
-    print_buffer("ascend_l1");
+    LOG(FATAL) << "CodeGenTileLangAscend: buffer '"
+               << op->buffer_var->name_hint
+               << "' has unresolved dynamic storage scope \"shared\". "
+               << "The InferAllocScope pass should have resolved it to "
+               << "\"shared.l1\" or \"shared.ub\". This usually means the "
+               << "buffer is not used in any Cube/Vector operation.";
   } else if (scope == "local.var") {
     PrimExpr init = tir::make_const(op->dtype, 0);
     std::string init_type = type;

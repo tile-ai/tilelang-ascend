@@ -3105,7 +3105,6 @@ const std::unordered_map<std::string, std::string> scope_to_tile = {
     {"wmma.accumulator", "TileAcc"},
     {"shared.l1", kAscendPtoScope + "TileMatL1"},
     {"shared.ub", kAscendPtoScope + "TileUbDataND"},
-    {"shared", kAscendPtoScope + "TileMatL1"},
 };
 
 void CodeGenTileLangAscendPto::AllocateLocalVar(const AllocateNode *op,
