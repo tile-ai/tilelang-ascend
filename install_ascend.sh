@@ -173,6 +173,21 @@ echo "Cloning TVM repository and initializing submodules..."
 # clone and build tvm
 git submodule update --init --recursive
 
+# Apply local patches to the tvm submodule (kept under 3rdparty/patches/).
+# These are minimal fixes we cannot land in the pinned submodule commit, e.g.
+# dynamic-slice support in Buffer.__getitem__ (issue #1207). The shared
+# apply_tvm_patches.sh is also used by build_wheel_ascend.sh and setup.py so
+# that every build path (including CI and `pip install -e .`) picks them up
+# right after the submodule checkout.
+#
+# Behaviour (see 3rdparty/patches/apply_tvm_patches.sh):
+#   - idempotent: an already-applied patch is detected (reverse --check) and
+#     skipped, so re-running install / incremental builds is safe;
+#   - FATAL on failure: if a patch cannot apply (e.g. the pinned tvm was bumped
+#     and the context no longer matches) we exit non-zero instead of silently
+#     building an unpatched TVM.
+bash 3rdparty/patches/apply_tvm_patches.sh
+
 # 根据增量编译选项决定是否清理 build 目录
 if $INCREMENTAL_BUILD; then
     if [ -d build ]; then

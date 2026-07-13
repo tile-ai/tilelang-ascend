@@ -263,6 +263,26 @@ T.copy(C_L0, C[bx * block_M, by * block_N])
 T.copy(K[bz, by, k * block_N:(k + 1) * block_N, :], k_l1)
 ```
 
+#### T.copy 动态 shape 切片
+
+`T.copy` 支持用**运行期动态变量**做切片范围，自动处理尾块（非整除 shape），**不需要 host 侧 zero-padding**。
+
+**用法**：
+
+```python
+# 运行期动态值做切片范围
+actual_len = T.if_then_else(T_len < BT, T_len, BT)
+T.copy(A[bos : bos + actual_len, ...], A_L1)  # 只搬 actual_len 行
+
+# valid_m 限制写入范围（多 group 避免竞态）
+valid_m = block_metadata[bx, 2]
+T.copy(C_L0, Y[m_start : m_start + valid_m, ...])  # 只写 valid_m 行，不溢出到隔壁 group
+```
+
+**适用场景**：
+- 尾块处理（维度非 block 整数倍）：非整除时，最后的尾块无需特殊处理，框架已支持自动尾块搬运。
+- 变长序列：每次要搬运的序列长度是动态的，框架支持切片范围为运行期动态变量。
+
 ---
 
 ## 4. V 核并行化

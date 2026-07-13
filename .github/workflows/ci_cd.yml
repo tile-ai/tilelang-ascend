@@ -3,17 +3,6 @@ name: TileLang-Ascend CI
 
 # 触发条件
 on:
-  push:
-    branches:
-      - ascendc_pto*                           # ascendc_pto 分支
-    paths-ignore:                              # 以下路径的修改不触发 CI
-      - '**.md'                                # Markdown 文件
-      - '**.png'
-      - '.gitignore'
-      - 'docs/**'                              # 文档目录
-      - 'images/**'                            # 图片目录
-      - '.agents/**'                           # Agent skill 目录
-
   pull_request:
     branches:
       - ascendc_pto*
@@ -55,7 +44,7 @@ permissions:
 
 concurrency:
   # PR 场景（含 pull_request 和 /re-test）：统一按 PR 号分组，新运行自动取消旧运行
-  # 定时任务按分支分组避免积压；手动/push 场景退化为 github.run_id（每次唯一），互不干扰
+  # 定时任务按分支分组避免积压；手动场景退化为 github.run_id（每次唯一），互不干扰
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number || (github.event_name == 'schedule' && github.ref_name) || github.run_id }}
   # 同一组中有新运行时，自动取消旧的正在运行的 workflow 
   cancel-in-progress: true
@@ -64,9 +53,6 @@ jobs:
   check_changes:
     name: Check PR Status and Changes
     runs-on: ubuntu-latest
-    if: |
-      github.event_name != 'push' ||
-      !contains(github.event.head_commit.message, 'Merge pull request')
     outputs:
       merged: ${{ steps.pr_info.outputs.merged || steps.pr_status.outputs.merged || steps.default_changes.outputs.merged }}
       test_dirs: ${{ steps.detect_changes.outputs.test_dirs || steps.default_changes.outputs.test_dirs }}
@@ -367,11 +353,11 @@ jobs:
     if: |
       (
         (github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true') &&
-        (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') &&
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') &&
         needs.check_changes.outputs.merged != 'true' &&
         needs.check_changes.outputs.should_skip != 'true'
       )
-    timeout-minutes: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 360 || 60 }}
+    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 360 || 60 }}
     env:
       FULL_BUILD: ${{ github.event_name == 'schedule' || github.event.inputs.full_build == 'true' }}
     steps:
@@ -454,9 +440,9 @@ jobs:
           SKIP_PYTEST_VALUE="${{ steps.check_skip_pytest.outputs.skip_pytest }}"
           
           # 确定 TEST_DIRS 参数和测试策略
-          # push/schedule/workflow_dispatch 事件：全量测试
+          # schedule/workflow_dispatch 事件：全量测试
           # PR 事件：根据 check_changes outputs
-          if [[ "$GITHUB_EVENT_NAME" == "push" ]] || [[ "$GITHUB_EVENT_NAME" == "schedule" ]] || [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]] || [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             TEST_DIRS_ARG=""
             PYTEST_FILES_ARG=""
             RUN_EXAMPLES="true"
@@ -490,9 +476,9 @@ jobs:
           fi
 
           # 确定 pytest marker 过滤策略
-          # push/schedule/workflow_dispatch 事件：跳过 ci_skip，保留 low_priority
+          # schedule/workflow_dispatch 事件：跳过 ci_skip，保留 low_priority
           # PR 事件：跳过 low_priority 和 ci_skip
-          if [[ "$GITHUB_EVENT_NAME" == "push" ]] || [[ "$GITHUB_EVENT_NAME" == "schedule" ]] || [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]] || [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             PYTEST_MARKERS="not ci_skip"
           elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
             PYTEST_MARKERS="not (low_priority or ci_skip)"
