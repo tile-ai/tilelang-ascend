@@ -50,7 +50,6 @@ static Buffer makeBufferWithLayout(const Buffer &buffer, const Layout &layout,
   Array<PrimExpr> output_shape = layout_shape;
 
   if (ptr_type->storage_scope == "shared" ||
-      ptr_type->storage_scope == "shared.dyn" ||
       ptr_type->storage_scope == "shared.ub" ||
       ptr_type->storage_scope == "shared.l1") {
     int replicate_extent = 1;
@@ -319,7 +318,7 @@ private:
     } else {
       is_ptx_ = true;
     }
-    // Rewrite from/to shared or shared.dyn to/from local
+    // Rewrite from/to shared or shared.ub/shared.l1 to/from local
     auto call = Downcast<Call>(IRMutatorWithAnalyzer::VisitExpr_(op));
     if (call->op.same_as(builtin::ptx_ldmatrix())) {
       // form: T.ptx_ldmatrix(..., smem_ptr, smem_offset)
@@ -413,7 +412,7 @@ private:
       return IRMutatorWithAnalyzer::VisitStmt_(op);
     AddWorkspaceCallback callback = [this](int num_elem, DataType dtype) {
       auto workspace =
-          decl_buffer({PrimExpr(num_elem)}, dtype, "workspace", "shared.dyn");
+          decl_buffer({PrimExpr(num_elem)}, dtype, "workspace", "shared");
       workspaces_.push_back(workspace);
       return workspace.access_ptr(2); // write
     };

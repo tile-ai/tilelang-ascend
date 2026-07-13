@@ -431,10 +431,10 @@ private:
       } else if (original_scope == "shared.l1") {
         // Even though the scope is unchanged (shared.l1 -> shared.l1),
         // force a Var replacement. This replicates the original behavior
-        // where shared.l1 was always rewritten to shared.dyn (a different
-        // scope string), triggering Var recreation. The Var recreation
-        // causes InjectDefaultLayoutMap to re-evaluate the default layout
-        // for the new Var, which is essential for layout annotation
+        // where shared.l1 was always rewritten to a different scope string
+        // (previously a different scope string), triggering Var
+        // recreation causes InjectDefaultLayoutMap to re-evaluate the default
+        // layout for the new Var, which is essential for layout annotation
         // consistency (e.g., splice patterns where the default zN layout
         // must be (re)injected for the rewritten buffer handle).
         if (alloc_info->alloc_node) {

@@ -824,7 +824,7 @@ void CodeGenTileLangAscend::VisitStmt_(const AllocateNode *op) {
     print_buffer("ascend_ub");
   } else if (scope == "shared") {
     // Dynamic shared scope fallback: unresolved dynamic buffers are treated
-    // as L1, preserving the previous shared.dyn -> L1 behavior.
+    // as L1, preserving the previous dynamic -> L1 behavior.
     print_buffer("ascend_l1");
   } else if (scope == "local.var") {
     PrimExpr init = tir::make_const(op->dtype, 0);
