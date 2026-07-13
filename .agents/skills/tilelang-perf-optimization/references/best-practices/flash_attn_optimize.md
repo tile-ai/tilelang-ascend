@@ -500,6 +500,113 @@ T.copy(work_ub, acc_s_half)               # 结果存储
 
 ---
 
+### 9. 面向不同 shape 的适配优化（布局 / decode / 变长 Skv）
+
+以上 1–8 是 kernel **内部**的流水/同步调优。本节补充让同一个 FA 算子高效适配**多种输入 shape** 的三条手段——解决的不是流水排布，而是「host 侧布局/padding 引入额外搬运」和「非常规 shape（Sq=1、变长 Skv）走低效路径」的问题。
+
+上层调用方常传入 **BSND 布局** `[B, S, N, D]`（query/key/value 已分头，head 在 dim2）。用 `msprof op` 采集时，若 `main_kernel` 之外出现明显的 Transpose / Cast / Copy 辅助 kernel，或 Sq=1 / 变长 Skv 的 shape 明显偏慢，即可对照下表优化：
+
+| 现象 | 优化 |
+|------|------|
+| 出现 Transpose 辅助 kernel（host 端 `permute().contiguous()`） | (a) kernel 直接消费 BSND |
+| Sq==1（decode）偏慢、Q 被 pad 到 block_M=64 大量空转 | (b) decode 窄块 kernel |
+| Skv 非 block_N 整除时结果错，或只能退化到逐算子实现 | (c) 加性 mask 屏蔽 padding |
+
+#### (a) kernel 直接消费 BSND，消除布局转置
+
+**问题**：kernel 内部常按 BHSD `[B,N,S,D]`（head 在 seq 前）组织，于是 host 侧要 `query.permute(0,2,1,3).contiguous()` 把 BSND 转成 BHSD。`.contiguous()` 在 NPU 上会生成一个真实的 Transpose kernel，纯搬运、不产生有效计算。小 shape（尤其 Sq=1 的 decode）下，这个转置耗时可达 main_kernel 的数倍。
+
+**手段**：不做物理转置，让 kernel 按 BSND 原始 stride 索引。BSND 里 head 在 dim2、D 仍是最内层连续维，`Q[bz, s0:s1, by, :]` 是 D-连续、按 N·D 跨步的 strided-row DMA，`T.copy` 原生支持（参考 `examples/deepseek_v4/sparse_attention.py`，`q_shape=[b,m,h,d]`、`T.copy(q[by,bx,:,:], q_l1)`）。
+
+改动清单：
+1. kernel 签名 shape：`[batch, heads, seq, dim]` → `[batch, seq, heads, dim]`
+2. kernel 内所有 Q/K/V/Output 索引：`X[bz, by, s_range, :]` → `X[bz, s_range, by, :]`（head 与 seq 位置对调；D 维分片时 `X[bz,by,s,d0:d1]` → `X[bz,s,by,d0:d1]`）
+3. host 侧去掉进出 permute：直接传原张量（bf16 才 `.to(fp16)`），输出已是 BSND 直接用
+4. padding 改到 S 维：`torch.cat([k, pad], dim=2)` → `dim=1`
+
+**权衡**：strided DMA 理论上略慢于连续 DMA，但省下的是整块 Transpose kernel，净收益极大正；实测 main_kernel 未见劣化。
+
+**注意冷启动**：手写 flag 同步的 expert kernel 可能有低概率冷启动竞争，被布局/时序改动暴露。用 `msprof` 或精度校验时以**热身后**（warmup+repeat 的最后一次）的输出为准，连跑多次判稳定，不要被单次冷启动异常误导。
+
+#### (b) Sq==1 decode 窄块 kernel
+
+**背景**：`Sq==1` 是自回归 decode（每步只新增 1 个 token）。kernel 编译期固定 shape，只处理恰好 `block_M` 行 Q，运行时 Q 须 pad 到 block_M 整数倍。
+
+**问题**：prefill 常用 block_M=64。Sq==1 套用时 1 行真实 Q 要 pad 成 64 行，其余 63 行全 0、算完丢弃——纯空转（softmax 逐行独立，pad 行不污染结果，但白耗算力/带宽）。
+
+| 方案 | 有效行 | 总行 | 浪费 |
+|------|--------|------|------|
+| 套 prefill block_M=64 | 1 | 64 | 98% |
+| decode 专用 block_M=16 | 1 | 16 | 94% |
+
+**手段**：写 `block_m` 可配的通用 masked kernel，decode 传 `block_m=16`：
+
+```python
+# host 侧（decode，BSND）
+q_pad = torch.zeros((B, 16, N, D), dtype=q.dtype, device=q.device)
+q_pad[:, 0:1, :, :] = q          # S==1，仅第 0 行真实
+out = kernel(q_pad, k, v, mask)  # [B, 16, N, D]
+out = out[:, 0:1, :, :]          # 只取第 0 行，pad 的 15 行结果丢弃
+```
+
+block_M=16 把陪跑行从 63 降到 15，buffer 更小、循环更短，少算约 4x 无效行。（不设 block_M=1：向量单元/UB 对齐要求 tile 有最小宽度，太小效率低/编译不过，16 是折中。）
+
+**复用**：这个 kernel 把 `block_m=64` 就变成通用 prefill kernel（因带加性 mask + n_num D 维分片，支持任意 Skv/D）。一份 kernel 两用：`block_m=16` decode / `block_m=64` prefill，避免为 decode 单独维护一套代码。
+
+#### (c) 加性 mask 屏蔽 Skv padding（正确性 + 摆脱慢路径）
+
+**问题**：KV 维按 block_N=128 分块，Skv 须 pad 到 128 倍数。padding 列会进 softmax 分母，必须屏蔽。一种**错误**做法是把 padding 的 K 填 -1e4：
+
+```
+QK^T = q · k_pad = -1e4 × Σ_d q_d
+```
+
+`Σ_d q_d`（q 各维和）符号不定，若为负则 `-1e4×负=大正数`，softmax 后 pad 列权重反而≈1 → 结果崩坏（实测 maxrel≈0.99）。为回避此坑，一种保守做法是干脆要求 `Skv % block_N == 0`，否则退化到逐算子（matmul+softmax）实现——但那样丢失了 kernel 融合的性能。
+
+**为什么补 0 也不行**：补 0 的 K 使 `score_pad = Q·0 = 0`，`exp(0)=1` 是个和真实列同量级的正数，仍会撑大分母、分走权重。
+
+**手段**：与 K/q 值无关——**softmax 前直接给 pad 列 score 加 -1e4**，利用 `exp(-1e4)≈0` 压没权重：
+
+```python
+# host 造 mask
+mask = torch.zeros((1, skv_padded), dtype=torch.float32, device=q.device)
+mask[0, S_kv:] = -1e4       # 真实列 0，padding 列 -1e4
+
+# kernel 内 softmax 前
+T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)              # score = QK^T * scale
+T.copy(Mask[0:1, k*block_N:(k+1)*block_N], mask_ub)   # 取当前 KV block 的 mask 段
+T.tile.broadcast(mask_2d, mask_ub)                    # [1,block_N] -> [block_M/2, block_N]
+T.tile.add(acc_s_ub, acc_s_ub, mask_2d)               # score += mask  ← 关键
+# 之后正常 online softmax
+```
+
+原理：`真实列 score+0 → 权重正常`；`pad 列 score+(-1e4) → exp≈0 → 权重≈0，等价于不存在`。加性 mask 作用在 score 上，绕过"K值→QK^T→score"这条会翻符号的链路，对任意输入都正确。
+
+**收益**：非整除 Skv 精度从崩坏（maxrel≈0.99）恢复正确（<5e-3）；变长 Skv / 大 D（256/512）不再退化到逐算子实现，改走融合 kernel 后耗时普遍降低一半以上。
+
+**两种 pad 勿混淆**：
+
+| pad 类型 | 补的东西 | 影响正确性 | 处理 |
+|----------|----------|-----------|------|
+| **Sq pad** | 多余 query 行 | 否（结果丢弃） | 切片扔掉（(b)） |
+| **Skv pad** | 多余 KV 列 | **是**（进 softmax 分母） | 加性 mask 屏蔽（(c)） |
+
+#### 按 shape 分流
+
+用一个顶层入口按 shape 特征选 kernel，把「快但受限」的路径和「通用」的路径分开：
+
+```python
+if S == 1:
+    return decode_forward(...)              # block_m=16 窄块 masked kernel
+if D != 128 or S_kv % block_N != 0:
+    return masked_prefill_forward(...)      # block_m=64 通用 masked kernel（任意 D / 变长 Skv）
+# 仅 D==128 且 Skv 整除：走无 mask 的高速专用 kernel（block_N==dim，L0 可跨两次 GEMM 复用）
+```
+
+要点：仅在 shape 满足特化 kernel 的前提（如 `D==128 且 Skv 整除`）时走特化快路，其余统一交给带加性 mask + D 维分片的通用 kernel，兼顾速度与覆盖面。每改一处遵循本文档验证口径：先跑精度对比（vs fp64/fp32 golden，atol/rtol=1e-2）确认正确，再用 `msprof op` 对比优化前后 Task Duration 确认收益；精度不过或性能回退则回退该步。
+
+---
+
 ### 10. Pass 配置优化
 
 #### 基础实现
@@ -793,6 +900,7 @@ Expert 优化版本的 Flash Attention 实现展示了 TileLang-Ascend 的高级
 6. **批量 Softmax**：预计算 r_factors 和 sumexp_is
 7. **Workspace 优化**：NUM_CORES*num_stages 结构
 8. **内存复用**：io_buf, work_ub, buf_2d
+9. **多 shape 适配**：BSND 免转置、Sq==1 decode 窄块 kernel、加性 mask 屏蔽变长 Skv
 10. **Pass 配置**：关闭自动化 Pass，完全手动控制
 
 这些技术组合使用，可实现接近硬件峰值性能的 Flash Attention 实现，适用于 LLM 推理优化。

@@ -109,11 +109,11 @@ print(func.get_kernel_source())
 
 **最佳实践参考**：
 
-| 算子类型 | 文档 |
-|---------|------|
-| Vector 型 | [RoPE 优化](references/best-practices/rope-developer-mode.md) |
-| Cube 型 | [GEMM Intrinsic](references/best-practices/gemm_intrinsic_optimize.md) |
-| CV 融合型 | [Flash Attention](references/best-practices/flash_attn_optimize.md) |
+| 算子类型 | 文档 | 核心优化技术 |
+|---------|------|-------------|
+| Vector 型 | [RoPE 优化](references/best-practices/rope-developer-mode.md) | NPU 内动态生成 Mask、Tile API 向量化、参数简化 |
+| Cube 型 | [GEMM Intrinsic](references/best-practices/gemm_intrinsic_optimize.md) | 多缓冲流水线、细粒度 Flag 同步、MMA intrinsic、L0 分块、负载均衡 |
+| CV 融合型 | [Flash Attention](references/best-practices/flash_attn_optimize.md) | num_stages 流水线、批量 Softmax、Cross-core Semaphore、数据布局优化；**多 shape 适配**（BSND 免转置、Sq==1 decode 窄块、加性 mask 屏蔽变长 Skv） |
 
 ### Step 5: 效果验证
 
