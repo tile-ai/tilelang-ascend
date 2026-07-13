@@ -48,6 +48,8 @@ from .allocate import (
     alloc_L0B,  # noqa: F401
     alloc_L0C,  # noqa: F401
     alloc_L1,  # noqa: F401
+    alloc_L1_scale_a,  # noqa: F401
+    alloc_L1_scale_b,  # noqa: F401
     alloc_ub,  # noqa: F401
 )
 from .copy import copy, c2d_im2col, npu_copy_v2 as copy  # noqa: F401, F811

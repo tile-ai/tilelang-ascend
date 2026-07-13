@@ -128,6 +128,7 @@ private:
   void CallExternCodegen(const CallNode *op);
 
   void GemmV0Codegen(const CallNode *op);
+  void GemmMxCodegen(const CallNode *op);
 
   void SyncAllCodegen(const CallNode *op);
 
@@ -222,6 +223,8 @@ private:
   std::string GetPadEnum(const PrimExpr value);
 
   void GMCopyCall(const CallNode *call, std::string op_name);
+
+  void ScaleCopyCall(const CallNode *call, const std::string &layout);
 
   void CopyUBToUBCodegen(const CallNode *call);
 

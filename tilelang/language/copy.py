@@ -199,6 +199,7 @@ def npu_copy_v2(
     enable_relu: bool = False,
     transpose: bool | None = False,  # for copy_l1_to_l0 param: tranpose l1
     pad_value: float | int | tir.PrimExpr | None = None,
+    src_layout: str | None = None,
 ):
     """Copy data between memory regions.
 
@@ -210,6 +211,10 @@ def npu_copy_v2(
         pad_value (Optional[Union[float, int, tir.PrimExpr]]): Value to fill in UB unused area.
             Supports float, int, tir.FloatImm, tir.IntImm, tir.PrimExpr (e.g., -T.infinity(dtype)).
             Defaults to 0.
+        src_layout (Optional[str]): Source data layout for MX scale format conversion.
+            - None: normal copy (default)
+            - "MX_A_ND": Scale A, ND→ZZ conversion, src shape [M, kScale, 2]
+            - "MX_B_ND": Scale B, ND→NN conversion, src shape [kScale, N, 2]
 
     Raises:
         TypeError: If copy extents cannot be deduced from arguments
@@ -220,7 +225,22 @@ def npu_copy_v2(
     if isinstance(src, tir.Buffer) and isinstance(dst, tir.Buffer) and not transpose:
         ir.assert_structural_equal(src.shape, dst.shape)
 
-    # src_shape = src.shape if isinstance(src, tir.Buffer) else src.buffer.shape
+    # Extract full source buffer shape for MX scale layout before region conversion
+    mx_kmx = None
+    if src_layout is not None:
+        if isinstance(src, tir.BufferRegion):
+            full_src_shape = src.buffer.shape
+        elif isinstance(src, tir.Buffer):
+            full_src_shape = src.shape
+        elif isinstance(src, tir.BufferLoad):
+            full_src_shape = src.buffer.shape
+        else:
+            full_src_shape = None
+        if full_src_shape is not None and len(full_src_shape) == 3:
+            if src_layout == "MX_A_ND":
+                mx_kmx = full_src_shape[1] * full_src_shape[2]
+            elif src_layout == "MX_B_ND":
+                mx_kmx = full_src_shape[0] * full_src_shape[2]
 
     def get_extent(data):
         if isinstance(data, tir.Var) and T.has_let_value(data):
@@ -282,4 +302,10 @@ def npu_copy_v2(
     else:
         pad_value_expr = tir.IntImm("int32", int(pad_value))
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu, transpose, pad_value_expr)
+    extra_args = []
+    if src_layout is not None:
+        extra_args.append(tir.StringImm(src_layout))
+        if mx_kmx is not None:
+            extra_args.append(tir.IntImm("int32", int(mx_kmx)))
+
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu, transpose, pad_value_expr, *extra_args)

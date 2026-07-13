@@ -44,6 +44,8 @@ inline const std::unordered_map<std::string, OperationConfig> &
 GetOperationConfig() {
   static std::unordered_map<std::string, OperationConfig> operation_config_ = {
       {"copy_gm_to_l1", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
+      {"copy_gm_to_l1_mx_scale_a", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
+      {"copy_gm_to_l1_mx_scale_b", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
       {"copy_gm_to_l0a", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
       {"copy_gm_to_l0b", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
       {"copy_gm_to_ub", {{{0, "read"}, {1, "write"}}, "PIPE_MTE2"}},
@@ -59,6 +61,9 @@ GetOperationConfig() {
       {"mma", {{{0, "read"}, {1, "read"}, {2, "write"}}, "PIPE_M"}},
       {"gemm_v0", {{{0, "read"}, {1, "read"}, {2, "write"}}, "PIPE_M"}},
       {"gemm_v1", {{{0, "read"}, {1, "read"}, {2, "write"}}, "PIPE_M"}},
+      {"gemm_mx",
+       {{{0, "read"}, {1, "read"}, {2, "read"}, {3, "read"}, {4, "write"}},
+        "PIPE_M"}},
       {"AscendC::Add", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"AscendC::Adds", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"AscendC::Mul", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
@@ -157,6 +162,9 @@ GetOperationConfig() {
        {{{1, "read"}, {2, "read"}, {3, "write"}}, "PIPE_M"}},
       {"tl.ascend_gemm_v1",
        {{{1, "read"}, {2, "read"}, {3, "write"}}, "PIPE_M"}},
+      {"tl.ascend_gemm_mx",
+       {{{1, "read"}, {2, "read"}, {3, "read"}, {4, "read"}, {5, "write"}},
+        "PIPE_M"}},
       {"tl.ascend_add", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_adds", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_mul", {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
