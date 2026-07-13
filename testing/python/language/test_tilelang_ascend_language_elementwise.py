@@ -2791,6 +2791,98 @@ def test_ln(dtype, target, shape):
     run_test_ln(M, N, block_M, block_N, dtype, target)
 
 
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+def test_scalar_log(dtype):
+    block_size = 8 if dtype == "float" else 16
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((block_size,), dtype),  # type: ignore
+        B: T.Tensor((block_size,), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((block_size,), dtype)
+            b_ub = T.alloc_ub((block_size,), dtype)
+
+            T.copy(A, a_ub)
+            b_ub[2] = T.log(a_ub[1])
+            a_ub[3] = T.log(a_ub[3])
+            b_ub[3] = a_ub[3]
+            T.copy(b_ub, B)
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target="ascendc")
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.arange(1, block_size + 1, dtype=torch_dtype).npu()
+
+    b = func(a)
+    torch.npu.synchronize()
+
+    ln_calls = [line for line in func.get_kernel_source().splitlines() if "AscendC::Ln(" in line]
+    assert len(ln_calls) == 2 and all(line.rstrip().endswith(", 1);") for line in ln_calls)
+    torch.testing.assert_close(b[2], torch.log(a[1]), rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(b[3], torch.log(a[3]), rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+def test_rank_zero_scalar_log(dtype):
+    block_size = 8 if dtype == "float" else 16
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((block_size,), dtype),  # type: ignore
+        B: T.Tensor((block_size,), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_vec = T.alloc_ub((block_size,), dtype)
+            b_vec = T.alloc_ub((block_size,), dtype)
+            a_ub = T.alloc_ub((), dtype)
+            b_ub = T.alloc_ub((), dtype)
+
+            T.copy(A, a_vec)
+            a_ub[()] = a_vec[0]
+            b_ub[()] = T.log(a_ub[()])
+            b_vec[0] = b_ub[()]
+            T.copy(b_vec, B)
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target="ascendc")
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.full((block_size,), 2.0, dtype=torch_dtype).npu()
+
+    b = func(a)
+    torch.npu.synchronize()
+
+    torch.testing.assert_close(b[0], torch.log(a[0]), rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+def test_scalar_log_after_reduce(dtype):
+    block_size = 64
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((block_size,), dtype),  # type: ignore
+        B: T.Tensor((block_size,), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((block_size,), dtype)
+            sum_ub = T.alloc_ub((1,), dtype)
+            b_ub = T.alloc_ub((block_size,), dtype)
+
+            T.copy(A, a_ub)
+            T.reduce_sum(a_ub, sum_ub, -1, [1, block_size])
+            b_ub[0] = T.log(sum_ub[0])
+            T.copy(b_ub, B)
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target="ascendc")
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.ones((block_size,), dtype=torch_dtype).npu()
+
+    b = func(a)
+    torch.npu.synchronize()
+
+    torch.testing.assert_close(b[0], torch.log(a.sum()), rtol=1e-2, atol=1e-2)
+
+
 def gathermask_fixed_mode(M, N, block_M, block_N, dtype="int32"):
     m_num = M // block_M
     n_num = N // block_N
