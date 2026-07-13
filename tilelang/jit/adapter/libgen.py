@@ -110,6 +110,8 @@ class LibraryGenerator:
         TL_ROOT = _get_tl_root()
         auto_sync = os.environ.get("TL_CCE_AUTO_SYNC", "on").lower()
         opt_level = os.environ.get("TL_CCE_OPT_LEVEL", "2").lower()
+        if opt_level not in ("0", "1", "2", "3"):
+            raise ValueError(f"Invalid TL_CCE_OPT_LEVEL={opt_level!r}, expected one of: 0, 1, 2, 3")
         if self.target == "ascendc" or self.target == "auto":
             command = [
                 "bisheng",

@@ -46,9 +46,9 @@ def compile(
     ----------
     func : tvm.tir.PrimFunc, optional
         The TileLang TIR function to compile and wrap.
-    out_idx : Union[list[int], int], optional
+    out_idx : list[int] | int | None
         Index(es) of the output tensors to return (default: None).
-    workspace_idx : Union[list[int], int], optional
+    workspace_idx : list[int] | int | None
         Index(es) of the auto-allocated workspace tensors.
     execution_backend : Literal["dlpack", "ctypes"], optional
         Execution backend to use for kernel execution (default: "dlpack").
@@ -142,7 +142,7 @@ class _JitImplementation:
             (default: "cython").
         verbose : bool, optional
             If True, enables verbose logging during compilation (default: False).
-        pass_configs : Optional[dict[str, Any]], optional
+        pass_configs : dict[str, Any] | None
             A dictionary of configurations for TVM's pass context. These can fine-tune
             the compilation process. Examples include "tir.disable_vectorize"
             (default: None).
@@ -283,7 +283,7 @@ def jit(  # This is the new public interface
         Backend for kernel execution and argument passing. Defaults to "cython".
     verbose : bool, optional
         Enables verbose logging during compilation. Defaults to False.
-    pass_configs : Optional[dict[str, Any]], optional
+    pass_configs : dict[str, Any] | None
         Configurations for TVM's pass context. Defaults to None.
     debug_root_path : Optional[str], optional
         Directory to save compiled kernel source for debugging. Defaults to None.
