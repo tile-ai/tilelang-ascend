@@ -133,10 +133,14 @@ CATLASS_DEVICE void copy_l1_to_l0b(LocalTensor<T> dstTensor,
 template <typename T1, typename T2, uint32_t M, uint32_t N>
 CATLASS_DEVICE void mma(LocalTensor<T1> const A, LocalTensor<T1> const B,
                         LocalTensor<T2> const C, bool init, uint32_t K,
-                        uint8_t unitFlag = 0) {
+                        uint32_t n_actual = N, uint8_t unitFlag = 0) {
+  // n_actual: runtime number of output columns to compute (<= N). Defaults to
+  // the compile-time N, so existing callers are byte-identical. Enables
+  // variable-N gemm (e.g. QK over the actual window length), mirroring how K is
+  // already a runtime arg.
   MmadParams mmadParams;
   mmadParams.m = M;
-  mmadParams.n = N;
+  mmadParams.n = n_actual;
   mmadParams.k = K;
   mmadParams.cmatrixInitVal = init;
   // mmadParams.unitFlag = unitFlag;
@@ -1046,7 +1050,14 @@ CATLASS_DEVICE void
 gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
         LocalTensor<T2> const &C, // this must be located in l0c
         AscendC::TBuf<AscendC::TPosition::A2> &l0a_,
-        AscendC::TBuf<AscendC::TPosition::B2> &l0b_, bool clear) {
+        AscendC::TBuf<AscendC::TPosition::B2> &l0b_, bool clear,
+        uint32_t n_actual = N) {
+  // n_actual: runtime output-column count (<= N), only honoured on the
+  // transpose_B (QK) path -- computes/loads just the real window columns
+  // instead of the full template N. Defaults to N, so all existing callers are
+  // byte-identical. Physical L0B/L0C layout and the template N/K stay
+  // compile-time; only "how many columns are actually computed" changes (dual
+  // to the runtime K already threaded through mma).
   static_assert(kL0Size % 16 == 0, "kL0Size must be a multiple of 16");
   constexpr uint32_t kL0split = (K + kL0Size - 1) / kL0Size;
   auto l0a = l0a_.Get<T1>();
@@ -1154,14 +1165,20 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
         tl::ascend::copy_l1_to_l0b<T1, K, N>(
             l0b[l0b_base], B[bNOffset + kL0Idx * 16 * kL0Size], kSize, nTile);
       } else {
+        // transpose_B (QK): load only the n_actual real output columns; the
+        // [n_actual:N] columns stay unloaded (masked downstream). n_actual
+        // defaults to N (full width) -> byte-identical for non-window callers.
         tl::ascend::copy_l1_to_l0b<T1, N, K, true>(
-            l0b[l0b_base], B[kL0Idx * N * kL0Size], kSize, N);
+            l0b[l0b_base], B[kL0Idx * N * kL0Size], kSize, n_actual);
       }
       SetFlag<HardEvent::MTE1_M>(L0AB_EVENT + pp);
       WaitFlag<HardEvent::MTE1_M>(L0AB_EVENT + pp);
       PipeBarrier<PIPE_M>();
+      // transpose_B (QK) computes only n_actual columns (window width); the
+      // non-transpose path keeps the full template N (nTile per N-tile).
       tl::ascend::mma<T1, T2, M, nTile>(l0a[l0a_base], l0b[l0b_base],
-                                        C[cNOffset], initflag, kSize);
+                                        C[cNOffset], initflag, kSize,
+                                        transpose_B ? n_actual : nTile);
       SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + pp);
       tileIdx++;
     }

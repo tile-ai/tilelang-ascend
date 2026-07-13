@@ -340,7 +340,7 @@ def shmem_ub_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr
     )
 
 
-def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False, kL0Size=128):
+def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False, kL0Size=128, n_actual=None):
     """
     Performs a block-level General Matrix Multiplication (GEMM).
 
@@ -369,6 +369,11 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False, kL0Size=1
             Smaller kL0Size allows larger block_M/block_N (more L0C utilization)
             at the cost of more L1->L0 copy iterations. For half precision with
             block_M=128, block_N=256, kL0Size=64 is recommended.
+        n_actual (int, optional): Runtime number of output columns to compute (<= N
+            and a multiple of 16), honoured only on the transpose_B path (variable-N
+            gemm, e.g. QK over the actual window length). None -> compile-time N
+            (byte-identical to before). A compile-time-constant value is validated;
+            a runtime tir expression is the caller's responsibility.
 
     Returns:
         tvm.tir.Call: A TIR intrinsic call to `tl.ascend_gemm_v0`.
@@ -419,6 +424,18 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False, kL0Size=1
     Cptr = _retrieve_ptr(C, "w" if init is True else "rw")
 
     # assert _dtype(A) == _dtype(B), f"gemm A and B dtype mismatch: {_dtype(A)} vs {_dtype(B)}"
+    # n_actual: runtime output-column count (<= N), honoured on the transpose_B
+    # (QK) path; None -> compile-time N (byte-identical to before).
+    if n_actual is None:
+        n_actual = N  # full N, the existing template contract -- no extra check
+    else:
+        # Validate a compile-time-constant n_actual early (runtime tir
+        # expressions are the caller's responsibility): it must fit the template
+        # N and be a multiple of the 16-column fractal granularity.
+        _na = n_actual.value if isinstance(n_actual, tir.IntImm) else n_actual
+        if isinstance(_na, int):
+            assert 0 < _na <= N, f"gemm_v0 n_actual ({_na}) must be in (0, N={N}]"
+            assert _na % 16 == 0, f"gemm_v0 n_actual ({_na}) must be a multiple of 16 (fractal column granularity)"
     return T.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_gemm_v0"),
@@ -427,6 +444,7 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False, kL0Size=1
         Bptr,
         Cptr,
         init,
+        n_actual,
     )
 
 
