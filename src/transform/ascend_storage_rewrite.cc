@@ -641,9 +641,9 @@ private:
   // Checks whether the storage_scope is especially tagged for a specific
   // memory. Special memory is all combined into a single allocation.
   bool IsSpecialTaggedMemory(const StorageScope &scope) {
-    return scope.tag.length() != 0 && scope.tag != ".dyn" &&
-           scope.tag != ".l1" && scope.tag != ".ub" &&
-           scope.tag != ".workspace" && scope.tag != ".vtcm";
+    return scope.tag.length() != 0 && scope.tag != ".l1" &&
+           scope.tag != ".ub" && scope.tag != ".workspace" &&
+           scope.tag != ".vtcm";
   }
 
   // Alllocate entry of node.
