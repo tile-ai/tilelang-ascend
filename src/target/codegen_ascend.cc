@@ -823,8 +823,7 @@ void CodeGenTileLangAscend::VisitStmt_(const AllocateNode *op) {
   } else if (scope == "shared.ub") {
     print_buffer("ascend_ub");
   } else if (scope == "shared") {
-    LOG(FATAL) << "CodeGenTileLangAscend: buffer '"
-               << op->buffer_var->name_hint
+    LOG(FATAL) << "CodeGenTileLangAscend: buffer '" << op->buffer_var->name_hint
                << "' has unresolved dynamic storage scope \"shared\". "
                << "The InferAllocScope pass should have resolved it to "
                << "\"shared.l1\" or \"shared.ub\". This usually means the "
