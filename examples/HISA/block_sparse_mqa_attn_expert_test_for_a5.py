@@ -1,28 +1,52 @@
 """
-Block Sparse MQA Attention Kernel (Expert Mode)
+Block Sparse MQA Attention Kernel (Expert Mode, A5 CV通路 / no-workspace)
 
-Manual CV scope, manual sync, explicit L0A/L0B/MMA.
-Pure expert mode: all auto passes disabled.
+A5-only variant of block_sparse_mqa_attn_expert_test.py.
 
-Flag conventions:
-  - MTE1↔MTE2 for L1 buffer management
-  - M↔MTE1 for L0A/L0B management
-  - M↔FIX for L0C management
-  - V↔MTE2 for UB buffer management
-  - V↔MTE3 for output buffer management
+The base kernel routes each [H, kv] score tile through a GM workspace:
+    C:  MMA -> L0C -> T.copy(l0c, workspace_1[token, n_i])   (L0C -> GM)
+    V:  T.copy(workspace_1[token, n_i], s_ub column)         (GM  -> UB)
+
+This version uses the A5-exclusive CV通路 (L0C -> UB direct via TMOV,
+`T.copy_op.copy_cv_experiment`) to hand the score tile straight from the
+cube's L0C to the vector core's UB, eliminating the workspace round-trip.
+
+Key differences vs. the base kernel (everything else is kept identical):
+  1. `workspace_1` argument removed (and `workspace_idx`); no GM staging.
+  2. C scope: each `T.copy(l0c, workspace_1[...])` becomes
+     `copy_cv_experiment(l0c, s_ub_j, SingleVec{0|1})`.
+       - token_a -> vector core 0 (SingleVec0), token_b -> core 1 (SingleVec1),
+         matching `token_idx = bx*ntpk + pair_i*2 + by`.
+       - The block index within the group (0..3) selects s_ub_0..3.
+       - The surrounding M<->FIX (SIG_L0C) flags are unchanged: the CV copy is
+         a FIX-pipe op reading L0C, exactly like the old L0C->GM copy.
+  3. Because the 4 per-block UB score buffers are *reused* across n_outer
+     (unlike the uniquely-addressed GM workspace), a V->C "buffer-free" credit
+     (CROSS_V2C) is added so C never overwrites a tile V has not yet consumed.
+  4. V scope: per-block relu / row_expand_mul / reduce_sum into logits_4x
+     columns (the merged [H, 4*kv] buffer can't be filled by CV copies, since
+     TMOV writes a slice as contiguous). Masking/output are unchanged.
+
+Flag conventions (C-scope pipe flags identical to base):
+  - MTE1<->MTE2 for L1 buffer management
+  - M<->MTE1 for L0A/L0B management
+  - M<->FIX for L0C management
+  - V<->MTE2 for UB (weights) buffer management
+  - V<->MTE3 for output buffer management
+  - Cross: FIX->V (CROSS_C2V) data-ready, V->FIX (CROSS_V2C) buffer-free
 """
 
 import tilelang
 from tilelang import language as T
 import argparse
 import torch
+import sys
 
 tilelang.disable_cache()
 
 
 @tilelang.jit(
     out_idx=[3],
-    workspace_idx=[-1],
     target="pto",
 )
 def block_sparse_mqa_attn_return_logits(
@@ -44,7 +68,8 @@ def block_sparse_mqa_attn_return_logits(
     # grid_size is the controllable input. num_pairs is derived from it:
     # each block must cover ceildiv(seq_len, grid_size) tokens, rounded up to
     # whole pairs so that num_tokens_per_kernel == 2*num_pairs. Any tokens
-    # provisioned beyond seq_len are guarded by the `if token_* < seq_len` checks.
+    # provisioned beyond seq_len are guarded by the `if token_* < seq_len` checks
+    # (and by the per-core num_pairs_bx loop bound, see kernel body).
     tokens_per_block = (seq_len + grid_size - 1) // grid_size
     num_pairs = (tokens_per_block + 1) // 2
     num_tokens_per_kernel = 2 * num_pairs
@@ -70,12 +95,17 @@ def block_sparse_mqa_attn_return_logits(
     SIG_L0C_0 = 0  # L0C ping
     SIG_L0C_1 = 1  # L0C pong
     # V scope
-    SIG_S_UB = 0  # s_ub: V↔MTE2
     SIG_W_UB = 1  # weights_ub: V↔MTE2
     SIG_LOGITS = 0  # logits: V↔MTE3
-    # Cross-scope (ping-pong flags for n_outer-level pipelining)
-    CROSS_FLAG_C2V_0 = 0  # C→V for even n_outer
-    CROSS_FLAG_C2V_1 = 1  # C→V for odd n_outer
+    # Cross-scope
+    CROSS_C2V_0 = 0  # C→V data-ready for even n_outer
+    CROSS_C2V_1 = 1  # C→V data-ready for odd n_outer
+    CROSS_V2C = 2  # V→C buffer-free credit (s_ub_0..3 consumed)
+
+    # CV通路 destination-core mode (plain int; must live outside prim_func body,
+    # otherwise TVMScript binds it to a Var and int(mode) fails).
+    V0 = int(T.copy_op.CopyCVMode.SingleVec0)  # token_a → vector core 0
+    V1 = int(T.copy_op.CopyCVMode.SingleVec1)  # token_b → vector core 1
 
     @T.prim_func
     def kernel(
@@ -86,7 +116,6 @@ def block_sparse_mqa_attn_return_logits(
         Weights: T.Tensor([seq_len, heads], dtype),  # type: ignore
         CuSeqLenKS: T.Tensor([seq_len], index_dtype),  # type: ignore
         CuSeqLenKE: T.Tensor([seq_len], index_dtype),  # type: ignore
-        workspace_1: T.Tensor([seq_len, topk, H_per_block, kv_block_size], accum_dtype),
     ):
         with T.Kernel(grid_size, is_npu=True) as (bx, by):
             # Per-core valid pair count. Compile-time num_pairs is the upper
@@ -94,14 +123,27 @@ def block_sparse_mqa_attn_return_logits(
             # it actually owns. This is what makes an arbitrary grid_size safe:
             # the tail core (fewer valid tokens) runs fewer iterations instead of
             # entering fully-empty pairs. A fully-empty pair would still execute
-            # the unconditional set/wait_cross_flag with no buffer work to pace
-            # it, desyncing the intra-block cube<->vec handshake -> device hang.
-            # T.min clamps to num_pairs; negative arg on an over-shot core yields
-            # a 0-trip loop (harmless; our derivation never produces empty cores).
+            # the unconditional cross-flag handshake (CROSS_C2V / CROSS_V2C) with
+            # no buffer work to pace it, desyncing the intra-block cube<->vec
+            # handshake -> device hang. Both C and V loops MUST use this same
+            # expression so the C2V/V2C credit ping-pong stays balanced per core.
             num_pairs_bx = T.min(num_pairs, T.ceildiv(seq_len - bx * num_tokens_per_kernel, 2))
-            # ---- V scope: UB allocations (4 blocks merged) ----
-            s_ub_4x = T.alloc_ub([H_per_block, kv_block_size * 4], accum_dtype)
+            # ---- V scope: UB allocations ----
+            # 4 per-block score buffers (CV通路 destinations). Each block's
+            # [H, kv] L0C tile is copied here directly by the cube. Total UB
+            # footprint == the base kernel's single s_ub_4x [H, 4*kv].
+            s_ub_0 = T.alloc_ub([H_per_block, kv_block_size], accum_dtype)
+            s_ub_1 = T.alloc_ub([H_per_block, kv_block_size], accum_dtype)
+            s_ub_2 = T.alloc_ub([H_per_block, kv_block_size], accum_dtype)
+            s_ub_3 = T.alloc_ub([H_per_block, kv_block_size], accum_dtype)
             logits_4x = T.alloc_ub([1, kv_block_size * 4], accum_dtype)
+            # Per-block reduce temporaries (reduce_sum needs a full-buffer out;
+            # a sliced BufferRegion out is not accepted, so reduce here then
+            # T.copy into the logits_4x columns).
+            logits_t0 = T.alloc_ub([1, kv_block_size], accum_dtype)
+            logits_t1 = T.alloc_ub([1, kv_block_size], accum_dtype)
+            logits_t2 = T.alloc_ub([1, kv_block_size], accum_dtype)
+            logits_t3 = T.alloc_ub([1, kv_block_size], accum_dtype)
             weights_ub = T.alloc_ub([heads], dtype)
             weights = T.alloc_ub([heads], accum_dtype)
             # Mask buffers (4 blocks merged → [4*kv//8] = 64 uint8 ≥ 32)
@@ -129,7 +171,8 @@ def block_sparse_mqa_attn_return_logits(
             l0c_1 = T.alloc_L0C([H_per_block, kv_block_size], accum_dtype)
 
             # ================================================================
-            # C scope: double-buffered L0B/L0C/k_l1 4-stage SW pipeline
+            # C scope: double-buffered L0B/L0C/k_l1 4-stage SW pipeline.
+            # L0C tiles go straight to V's UB via CV通路 (no GM workspace).
             # ================================================================
             with T.Scope("C"):
                 # Init: all buffers start free (ping + pong)
@@ -148,8 +191,12 @@ def block_sparse_mqa_attn_return_logits(
                         n_i2 = n_outer * 4 + 2
                         n_i3 = n_outer * 4 + 3
 
+                        # Back-pressure: wait until V has consumed the previous
+                        # group's s_ub_0..3 before overwriting them via CV通路.
+                        T.wait_cross_flag(CROSS_V2C, "FIX")
+
                         # ====================================================
-                        # token_a: 4 blocks, double-buffered pipeline
+                        # token_a → vector core 0 (SingleVec0)
                         # ====================================================
                         t_a = pair_i * 2
                         token_a = bx * num_tokens_per_kernel + t_a
@@ -214,7 +261,7 @@ def block_sparse_mqa_attn_return_logits(
                             T.set_flag("M", "MTE1", SIG_L0AB_0)
                             T.set_flag("M", "FIX", SIG_L0C_0)
 
-                            # ---- Wave 3: DMA K[3]→k_l1_1 | Stage K[2]→l0b_0 | MMA K[1]→l0c_1 | Copy l0c_0→ws ----
+                            # ---- Wave 3: DMA K[3]→k_l1_1 | Stage K[2]→l0b_0 | MMA K[1]→l0c_1 | CV l0c_0→s_ub_0 ----
                             T.wait_flag("MTE1", "MTE2", SIG_K_L1_1)
                             T.copy(
                                 IndexK[
@@ -239,10 +286,10 @@ def block_sparse_mqa_attn_return_logits(
                             T.set_flag("M", "FIX", SIG_L0C_1)
 
                             T.wait_flag("M", "FIX", SIG_L0C_0)
-                            T.copy(l0c_0, workspace_1[token_a, n_i0, :, :])
+                            T.copy_op.copy_cv_experiment(l0c_0, s_ub_0, V0)
                             T.set_flag("FIX", "M", SIG_L0C_0)
 
-                            # ---- Wave 4: Stage K[3]→l0b_1 | MMA K[2]→l0c_0 | Copy l0c_1→ws ----
+                            # ---- Wave 4: Stage K[3]→l0b_1 | MMA K[2]→l0c_0 | CV l0c_1→s_ub_1 ----
                             T.wait_flag("MTE2", "MTE1", SIG_K_L1_1)
                             T.wait_flag("M", "MTE1", SIG_L0AB_1)
                             T.copy(k_l1_1, l0b_1, transpose=True)
@@ -256,10 +303,10 @@ def block_sparse_mqa_attn_return_logits(
                             T.set_flag("M", "FIX", SIG_L0C_0)
 
                             T.wait_flag("M", "FIX", SIG_L0C_1)
-                            T.copy(l0c_1, workspace_1[token_a, n_i1, :, :])
+                            T.copy_op.copy_cv_experiment(l0c_1, s_ub_1, V0)
                             T.set_flag("FIX", "M", SIG_L0C_1)
 
-                            # ---- Wave 5: MMA K[3]→l0c_1 | Copy l0c_0→ws (drain) ----
+                            # ---- Wave 5: MMA K[3]→l0c_1 | CV l0c_0→s_ub_2 (drain) ----
                             T.wait_flag("MTE1", "M", SIG_L0AB_1)
                             T.wait_flag("FIX", "M", SIG_L0C_1)
                             T.mma(l0a_0, l0b_1, l0c_1, init=True)
@@ -267,24 +314,20 @@ def block_sparse_mqa_attn_return_logits(
                             T.set_flag("M", "FIX", SIG_L0C_1)
 
                             T.wait_flag("M", "FIX", SIG_L0C_0)
-                            T.copy(l0c_0, workspace_1[token_a, n_i2, :, :])
+                            T.copy_op.copy_cv_experiment(l0c_0, s_ub_2, V0)
                             T.set_flag("FIX", "M", SIG_L0C_0)
 
-                            # ---- Wave 6: Copy l0c_1→ws (drain) ----
+                            # ---- Wave 6: CV l0c_1→s_ub_3 (drain) ----
                             T.wait_flag("M", "FIX", SIG_L0C_1)
-                            T.copy(l0c_1, workspace_1[token_a, n_i3, :, :])
+                            T.copy_op.copy_cv_experiment(l0c_1, s_ub_3, V0)
                             T.set_flag("FIX", "M", SIG_L0C_1)
 
                         # ====================================================
-                        # token_b: 4 blocks, double-buffered pipeline
+                        # token_b → vector core 1 (SingleVec1)
                         # ====================================================
                         t_b = pair_i * 2 + 1
                         token_b = bx * num_tokens_per_kernel + t_b
                         if token_b < seq_len:
-                            n_i1 = n_outer * 4 + 1
-                            n_i2 = n_outer * 4 + 2
-                            n_i3 = n_outer * 4 + 3
-
                             # ---- Wave 0: DMA K[0] → k_l1_0 ----
                             T.wait_flag("MTE1", "MTE2", SIG_K_L1_0)
                             T.copy(
@@ -345,7 +388,7 @@ def block_sparse_mqa_attn_return_logits(
                             T.set_flag("M", "MTE1", SIG_L0AB_0)
                             T.set_flag("M", "FIX", SIG_L0C_0)
 
-                            # ---- Wave 3: DMA K[3]→k_l1_1 | Stage K[2]→l0b_0 | MMA K[1]→l0c_1 | Copy l0c_0→ws ----
+                            # ---- Wave 3: DMA K[3]→k_l1_1 | Stage K[2]→l0b_0 | MMA K[1]→l0c_1 | CV l0c_0→s_ub_0 ----
                             T.wait_flag("MTE1", "MTE2", SIG_K_L1_1)
                             T.copy(
                                 IndexK[
@@ -370,10 +413,10 @@ def block_sparse_mqa_attn_return_logits(
                             T.set_flag("M", "FIX", SIG_L0C_1)
 
                             T.wait_flag("M", "FIX", SIG_L0C_0)
-                            T.copy(l0c_0, workspace_1[token_b, n_i0, :, :])
+                            T.copy_op.copy_cv_experiment(l0c_0, s_ub_0, V1)
                             T.set_flag("FIX", "M", SIG_L0C_0)
 
-                            # ---- Wave 4: Stage K[3]→l0b_1 | MMA K[2]→l0c_0 | Copy l0c_1→ws ----
+                            # ---- Wave 4: Stage K[3]→l0b_1 | MMA K[2]→l0c_0 | CV l0c_1→s_ub_1 ----
                             T.wait_flag("MTE2", "MTE1", SIG_K_L1_1)
                             T.wait_flag("M", "MTE1", SIG_L0AB_1)
                             T.copy(k_l1_1, l0b_1, transpose=True)
@@ -387,10 +430,10 @@ def block_sparse_mqa_attn_return_logits(
                             T.set_flag("M", "FIX", SIG_L0C_0)
 
                             T.wait_flag("M", "FIX", SIG_L0C_1)
-                            T.copy(l0c_1, workspace_1[token_b, n_i1, :, :])
+                            T.copy_op.copy_cv_experiment(l0c_1, s_ub_1, V1)
                             T.set_flag("FIX", "M", SIG_L0C_1)
 
-                            # ---- Wave 5: MMA K[3]→l0c_1 | Copy l0c_0→ws (drain) ----
+                            # ---- Wave 5: MMA K[3]→l0c_1 | CV l0c_0→s_ub_2 (drain) ----
                             T.wait_flag("MTE1", "M", SIG_L0AB_1)
                             T.wait_flag("FIX", "M", SIG_L0C_1)
                             T.mma(l0a_1, l0b_1, l0c_1, init=True)
@@ -398,19 +441,19 @@ def block_sparse_mqa_attn_return_logits(
                             T.set_flag("M", "FIX", SIG_L0C_1)
 
                             T.wait_flag("M", "FIX", SIG_L0C_0)
-                            T.copy(l0c_0, workspace_1[token_b, n_i2, :, :])
+                            T.copy_op.copy_cv_experiment(l0c_0, s_ub_2, V1)
                             T.set_flag("FIX", "M", SIG_L0C_0)
 
-                            # ---- Wave 6: Copy l0c_1→ws (drain) ----
+                            # ---- Wave 6: CV l0c_1→s_ub_3 (drain) ----
                             T.wait_flag("M", "FIX", SIG_L0C_1)
-                            T.copy(l0c_1, workspace_1[token_b, n_i3, :, :])
+                            T.copy_op.copy_cv_experiment(l0c_1, s_ub_3, V1)
                             T.set_flag("FIX", "M", SIG_L0C_1)
 
-                        # Per-n_outer sync: both token_a and token_b ready
+                        # Per-n_outer sync: both token_a and token_b tiles are in UB
                         if n_outer % 2 == 0:
-                            T.set_cross_flag("FIX", CROSS_FLAG_C2V_0)
+                            T.set_cross_flag("FIX", CROSS_C2V_0)
                         else:
-                            T.set_cross_flag("FIX", CROSS_FLAG_C2V_1)
+                            T.set_cross_flag("FIX", CROSS_C2V_1)
 
                 # Destroy: consume outstanding init-direction flags
                 T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
@@ -422,49 +465,29 @@ def block_sparse_mqa_attn_return_logits(
                 T.wait_flag("FIX", "M", SIG_L0C_1)
 
             # ================================================================
-            # V scope: workspace → s_ub → ReLU → mul weights → reduce → Logits
+            # V scope: s_ub (from CV通路) → ReLU → mul weights → reduce → mask → Logits
             # ================================================================
             kv = kv_block_size  # shorthand
 
             with T.Scope("V"):
                 # Init: UB buffers start free
-                T.set_flag("V", "MTE2", SIG_S_UB)
                 T.set_flag("V", "MTE2", SIG_W_UB)
                 T.set_flag("MTE3", "V", SIG_LOGITS)
+                # Pre-arm buffer-free credit so C's first n_outer can proceed.
+                T.set_cross_flag("V", CROSS_V2C)
 
                 for pair_i in T.serial(num_pairs_bx):
                     for n_outer in T.serial(topk_groups):
-                        # Per-n_outer sync: wait for C scope to finish this topk tile
+                        # Per-n_outer sync: wait for C to finish this topk tile
                         if n_outer % 2 == 0:
-                            T.wait_cross_flag(CROSS_FLAG_C2V_0, "MTE2")
+                            T.wait_cross_flag(CROSS_C2V_0, "V")
                         else:
-                            T.wait_cross_flag(CROSS_FLAG_C2V_1, "MTE2")
+                            T.wait_cross_flag(CROSS_C2V_1, "V")
 
                         t_a = pair_i * 2
                         token_idx = bx * num_tokens_per_kernel + t_a + by
                         if token_idx < seq_len:
                             n_i_base = n_outer * 4
-
-                            # -- DMA 4 workspace blocks → s_ub_4x columns --
-                            T.wait_flag("V", "MTE2", SIG_S_UB)
-                            T.copy(
-                                workspace_1[token_idx, n_i_base + 0, :, :],
-                                s_ub_4x[:, 0 * kv : 1 * kv],
-                            )
-                            T.copy(
-                                workspace_1[token_idx, n_i_base + 1, :, :],
-                                s_ub_4x[:, 1 * kv : 2 * kv],
-                            )
-                            T.copy(
-                                workspace_1[token_idx, n_i_base + 2, :, :],
-                                s_ub_4x[:, 2 * kv : 3 * kv],
-                            )
-                            T.copy(
-                                workspace_1[token_idx, n_i_base + 3, :, :],
-                                s_ub_4x[:, 3 * kv : 4 * kv],
-                            )
-                            T.set_flag("MTE2", "V", SIG_S_UB)
-                            T.wait_flag("MTE2", "V", SIG_S_UB)
 
                             # -- DMA weights once (shared across 4 blocks) --
                             T.wait_flag("V", "MTE2", SIG_W_UB)
@@ -472,17 +495,39 @@ def block_sparse_mqa_attn_return_logits(
                             T.set_flag("MTE2", "V", SIG_W_UB)
                             T.wait_flag("MTE2", "V", SIG_W_UB)
                             T.copy(weights_ub, weights)
-                            T.pipe_barrier("v")
                             T.set_flag("V", "MTE2", SIG_W_UB)
 
-                            # -- Vector ops once on [H, 4*kv] --
-                            T.tile.relu(s_ub_4x, s_ub_4x)
-                            T.tile.row_expand_mul(s_ub_4x, s_ub_4x, weights)
+                            # -- Vector ops per block on [H, kv] (s_ub from CV通路) --
+                            T.pipe_barrier("v")
+                            T.tile.relu(s_ub_0, s_ub_0)
+                            T.tile.relu(s_ub_1, s_ub_1)
+                            T.tile.relu(s_ub_2, s_ub_2)
+                            T.tile.relu(s_ub_3, s_ub_3)
+                            T.tile.row_expand_mul(s_ub_0, s_ub_0, weights)
+                            T.pipe_barrier("v")
+                            T.tile.row_expand_mul(s_ub_1, s_ub_1, weights)
+                            T.pipe_barrier("v")
+                            T.tile.row_expand_mul(s_ub_2, s_ub_2, weights)
+                            T.pipe_barrier("v")
+                            T.tile.row_expand_mul(s_ub_3, s_ub_3, weights)
+                            T.pipe_barrier("v")
 
-                            # -- Reduce sum: [H, 4*kv] → [4*kv] --
+                            # -- Reduce sum per block: [H, kv] → [kv] temp --
+                            T.reduce_sum(s_ub_0, logits_t0, dim=0, clear=True)
+                            T.pipe_barrier("v")
+                            T.reduce_sum(s_ub_1, logits_t1, dim=0, clear=True)
+                            T.pipe_barrier("v")
+                            T.reduce_sum(s_ub_2, logits_t2, dim=0, clear=True)
+                            T.pipe_barrier("v")
+                            T.reduce_sum(s_ub_3, logits_t3, dim=0, clear=True)
+                            T.pipe_barrier("v")
+
+                            # -- Merge temps into logits_4x columns --
                             T.wait_flag("MTE3", "V", SIG_LOGITS)
-                            T.reduce_sum(s_ub_4x, logits_4x, dim=0, clear=True)
-                            T.set_flag("V", "MTE2", SIG_S_UB)
+                            T.copy(logits_t0, logits_4x[0, 0 * kv : 1 * kv])
+                            T.copy(logits_t1, logits_4x[0, 1 * kv : 2 * kv])
+                            T.copy(logits_t2, logits_4x[0, 2 * kv : 3 * kv])
+                            T.copy(logits_t3, logits_4x[0, 3 * kv : 4 * kv])
 
                             # ================================================
                             # Mask: 4 blocks merged → [64] uint8 (≥32 ✓)
@@ -502,7 +547,6 @@ def block_sparse_mqa_attn_return_logits(
                             T.copy(kvpi_b, kvpf_4x[1 * kv : 2 * kv])
                             T.copy(kvpi_c, kvpf_4x[2 * kv : 3 * kv])
                             T.copy(kvpi_d, kvpf_4x[3 * kv : 4 * kv])
-                            T.pipe_barrier("v")
 
                             # (3) compare: GE cu_seqlen_ks, LT cu_seqlen_ke
                             cu_k_s_min = CuSeqLenKS[token_idx]
@@ -537,8 +581,15 @@ def block_sparse_mqa_attn_return_logits(
                             )
                             T.set_flag("MTE3", "V", SIG_LOGITS)
 
+                            # All UB ops done (masking + DMA issued) →
+                            # release s_ub_0..3 so C can overwrite via CV通路.
+                            T.set_cross_flag("V", CROSS_V2C)
+                        else:
+                            # token out of range: still release the credit so C's
+                            # per-n_outer wait_cross_flag count stays balanced.
+                            T.set_cross_flag("V", CROSS_V2C)
+
                 # Destroy: consume outstanding init-direction flags
-                T.wait_flag("V", "MTE2", SIG_S_UB)
                 T.wait_flag("V", "MTE2", SIG_W_UB)
                 T.wait_flag("MTE3", "V", SIG_LOGITS)
 
@@ -669,7 +720,7 @@ def get_npu_core_num() -> int:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Block Sparse MQA Attention Kernel Test")
+    parser = argparse.ArgumentParser(description="Block Sparse MQA Attention Kernel Test (A5 CV通路)")
     parser.add_argument("--seq_len", type=int, default=1024, help="Query sequence length")
     parser.add_argument("--seq_len_kv", type=int, default=128 * 1024, help="KV sequence length")
     parser.add_argument("--heads", type=int, default=32, help="Number of attention heads")
@@ -678,6 +729,13 @@ if __name__ == "__main__":
     parser.add_argument("--topk", type=int, default=64, help="Number of top blocks (must be divisible by 4)")
     parser.add_argument("--dtype", type=str, default="float16", help="Data type")
     args = parser.parse_args()
+
+    # A5-only guard: this kernel requires A5 CV通路 (TMOV).
+    from tilelang.utils.target import determine_platform
+
+    if determine_platform() != "A5":
+        print(f"[SKIP] This kernel requires A5 CV通路, treat it as Kernel Output Match, detected: {determine_platform()}")
+        sys.exit(0)
 
     torch.set_default_device("npu")
     torch.manual_seed(42)
@@ -688,7 +746,7 @@ if __name__ == "__main__":
     print(f"[grid_size] NPU cube core count -> grid_size={args.grid_size}")
 
     print("=" * 60)
-    print("Block Sparse MQA Attention Kernel Test")
+    print("Block Sparse MQA Attention Kernel Test (A5 CV通路)")
     print("=" * 60)
     print("Configuration:")
     print(f"  seq_len: {args.seq_len}")
