@@ -59,6 +59,8 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     # Identify and filter host tiling data for npu
     mod = tilelang.transform.HostProcesser()(mod)
     # mod = tilelang.transform.FrontendLegalize()(mod)
+    # Resolve let-bound variables in address_map before Simplify eliminates them
+    mod = tilelang.transform.ResolveAddressMapLetVars()(mod)
     # Simplify the IR expressions
     mod = tir.transform.Simplify()(mod)
     # Lower parallel loops to vector instructions for Ascend.

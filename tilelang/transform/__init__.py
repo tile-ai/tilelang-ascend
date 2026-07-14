@@ -368,6 +368,17 @@ def AscendMemoryPlanning():
     return _ffi_api.AscendMemoryPlanning()  # type: ignore
 
 
+def ResolveAddressMapLetVars():
+    """Resolve let-bound variables in address_map annotations.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.ResolveAddressMapLetVars()  # type: ignore
+
+
 def AscendSyncInsert(target: Target, platform: str):
     """Auto insert sync for Ascend.
 

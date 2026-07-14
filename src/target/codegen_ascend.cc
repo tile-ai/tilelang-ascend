@@ -482,7 +482,13 @@ void CodeGenTileLangAscend::VisitStmt_(const BufferStoreNode *op) {
   std::string scope = GetPtrStorageScope(op->buffer->data);
   this->PrintIndent();
   if (scope == "local.var") {
-    this->stream << var_name << " = " << PrintExpr(op->value) << ";\n";
+    if (op->value->IsInstance<CallNode>() &&
+        op->value.as<CallNode>()->op.same_as(builtin::if_then_else())) {
+      std::string result = PrintExpr(op->value);
+      this->stream << var_name << " = " << result << ";\n";
+    } else {
+      this->stream << var_name << " = " << PrintExpr(op->value) << ";\n";
+    }
   } else {
     this->stream << var_name << ".SetValue(" << PrintExpr(op->indices.back())
                  << ", " << PrintExpr(op->value) << ");\n";
@@ -807,9 +813,19 @@ void CodeGenTileLangAscend::VisitStmt_(const AllocateNode *op) {
             << target_var_name
             << ". All buffers must be pre-allocated via address_map_.";
 
+        int64_t const_size = op->ConstantAllocationSize();
+        std::string size_str;
+        if (const_size > 0) {
+          size_str = std::to_string(const_size);
+        } else {
+          PrimExpr total = Integer(1);
+          for (const auto &ext : op->extents) {
+            total = total * ext;
+          }
+          size_str = PrintExpr(total);
+        }
         stream << "auto " << vid << " = " << pos << ".GetWithOffset<" << type
-               << ">(" << op->ConstantAllocationSize() << ", "
-               << PrintExpr(target_expr) << ");\n";
+               << ">(" << size_str << ", " << PrintExpr(target_expr) << ");\n";
       };
 
   if (scope == "wmma.matrix_a") {
@@ -2455,10 +2471,11 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
   auto dst_type = GetAccessPtrDtype(op->args[2].as<CallNode>());
 
   static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
-      {"copy_l0c_to_gm", 3},      {"copy_gm_to_l1", 3},
-      {"copy_l1_to_l0a", 2},      {"copy_l1_to_l0b", 2},
-      {"copy_gm_to_ub", 4},       {"copy_ub_to_gm", 3},
-      {"atomic_add_ub_to_gm", 3}, {"atomic_add_l0c_to_gm", 3},
+      {"copy_l0c_to_gm", 3},        {"copy_gm_to_l1", 3},
+      {"copy_l1_to_l0a", 2},        {"copy_l1_to_l0b", 2},
+      {"copy_gm_to_ub_dynamic", 6}, {"copy_ub_to_gm_dynamic", 6},
+      {"copy_gm_to_ub", 4},         {"copy_ub_to_gm", 3},
+      {"atomic_add_ub_to_gm", 3},   {"atomic_add_l0c_to_gm", 3},
       {"copy_ub_to_ub", 6}};
 
   bool found = false;

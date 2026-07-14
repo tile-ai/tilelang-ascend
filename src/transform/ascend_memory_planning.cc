@@ -52,6 +52,42 @@ static size_t AlignUp(size_t value, size_t alignment) {
   return ((value + alignment - 1) / alignment) * alignment;
 }
 
+static PrimExpr AlignUpExpr(PrimExpr value, int64_t alignment) {
+  Integer align(alignment);
+  Integer mask(alignment - 1);
+  return floordiv(value + mask, align) * align;
+}
+
+class LetBindingCollector : public StmtExprVisitor {
+public:
+  std::unordered_map<const VarNode *, PrimExpr> bindings;
+  void VisitStmt_(const LetStmtNode *op) final {
+    bindings[op->var.get()] = op->value;
+    StmtExprVisitor::VisitStmt_(op);
+  }
+};
+
+static void
+CollectLetBindings(const Stmt &stmt,
+                   std::unordered_map<const VarNode *, PrimExpr> &bindings) {
+  LetBindingCollector collector;
+  collector(stmt);
+  bindings = std::move(collector.bindings);
+}
+
+static PrimExpr SubstituteLetVars(
+    PrimExpr expr,
+    const std::unordered_map<const VarNode *, PrimExpr> &bindings) {
+  if (bindings.empty()) {
+    return expr;
+  }
+  Map<Var, PrimExpr> vmap;
+  for (const auto &kv : bindings) {
+    vmap.Set(GetRef<Var>(kv.first), kv.second);
+  }
+  return Substitute(expr, vmap);
+}
+
 class AscendMemoryPlanning : public arith::IRMutatorWithAnalyzer {
 public:
   static PrimFunc Substitute(PrimFunc f, PassContext ctx) {
@@ -78,6 +114,18 @@ public:
                                .value();
     }
 
+    std::unordered_map<const VarNode *, PrimExpr> let_bindings;
+    CollectLetBindings(fptr->body, let_bindings);
+
+    if (!let_bindings.empty()) {
+      Map<Var, PrimExpr> resolved_address_map;
+      for (const auto &kv : external_address_map) {
+        PrimExpr resolved = SubstituteLetVars(kv.second, let_bindings);
+        resolved_address_map.Set(kv.first, resolved);
+      }
+      external_address_map = resolved_address_map;
+    }
+
     AscendMemoryPlanner planner(f, external_address_map, external_shape_map,
                                 auto_ascend_memory_planning);
     auto address_map = planner.GetAddressMap();
@@ -86,14 +134,22 @@ public:
     Map<Var, PrimExpr> address_map_attr;
     for (const auto &kv : address_map) {
       Var buffer_var = GetRef<Var>(kv.first);
-      address_map_attr.Set(buffer_var, Integer(kv.second));
+      PrimExpr resolved = kv.second;
+      if (!let_bindings.empty()) {
+        resolved = SubstituteLetVars(resolved, let_bindings);
+      }
+      address_map_attr.Set(buffer_var, resolved);
     }
     fn_attr->dict.Set("address_map", address_map_attr);
 
     Map<Var, PrimExpr> size_map_attr;
     for (const auto &kv : buffer_sizes) {
       Var buffer_var = GetRef<Var>(kv.first);
-      size_map_attr.Set(buffer_var, Integer(static_cast<int64_t>(kv.second)));
+      PrimExpr resolved = kv.second;
+      if (!let_bindings.empty()) {
+        resolved = SubstituteLetVars(resolved, let_bindings);
+      }
+      size_map_attr.Set(buffer_var, resolved);
     }
     fn_attr->dict.Set("size_map", size_map_attr);
     return f;
@@ -123,11 +179,12 @@ private:
       PlanMemory();
     }
 
-    const std::unordered_map<const VarNode *, int64_t> &GetAddressMap() const {
+    const std::unordered_map<const VarNode *, PrimExpr> &GetAddressMap() const {
       return address_map_;
     }
 
-    const std::unordered_map<const VarNode *, size_t> &GetBufferSizes() const {
+    const std::unordered_map<const VarNode *, PrimExpr> &
+    GetBufferSizes() const {
       return buffer_sizes_;
     }
 
@@ -279,12 +336,11 @@ private:
     void SetPreAllocBuffer(Map<Var, PrimExpr> external_address_map) {
       for (const auto &kv : external_address_map) {
         const VarNode *buf = kv.first.get();
-        int64_t addr_offset = kv.second.as<IntImmNode>()->value;
         if (pre_alloc_buffer_.count(buf->name_hint)) {
           LOG(FATAL) << "Buffer " << buf->name_hint
                      << " already been allocated.";
         }
-        pre_alloc_buffer_[buf->name_hint] = addr_offset;
+        pre_alloc_buffer_[buf->name_hint] = kv.second;
       }
     }
 
@@ -547,17 +603,34 @@ private:
       std::unordered_map<const VarNode *, int64_t> pre_alloc_scope_buffer;
       for (const VarNode *buffer : buffers) {
         if (pre_alloc_buffer_.count(buffer->name_hint) > 0) {
-          pre_alloc_scope_buffer[buffer] = pre_alloc_buffer_[buffer->name_hint];
-        };
+          const PrimExpr &addr = pre_alloc_buffer_[buffer->name_hint];
+          if (auto imm = addr.as<IntImmNode>()) {
+            pre_alloc_scope_buffer[buffer] = imm->value;
+          } else {
+            address_map_[buffer] = addr;
+            DLOG(DEBUG) << "Pre-alloc (symbolic) buffer " << buffer->name_hint
+                        << " at " << addr;
+            continue;
+          }
+        }
+
+        const PrimExpr &sz = buffer_sizes_[buffer];
+        auto sz_imm = sz.as<IntImmNode>();
+        ICHECK(sz_imm)
+            << "Auto memory planning requires constant buffer size for '"
+            << buffer->name_hint << "', got: " << sz
+            << ". Consider setting TL_ASCEND_MEMORY_PLANNING to False "
+            << "to use linear allocation which supports symbolic sizes.";
 
         int64_t start = FindEventIndex(buffer, true);
         int64_t end = FindEventIndex(buffer, false);
 
         if (start != -1 && end != -1) {
           end = ExtendKillIndex(buffer, start, end);
-          intervals.emplace_back(buffer, start, end, buffer_sizes_[buffer]);
+          intervals.emplace_back(buffer, start, end,
+                                 static_cast<size_t>(sz_imm->value));
           DLOG(DEBUG) << "Buffer " << buffer->name_hint << ": [" << start
-                      << ", " << end << "], size=" << buffer_sizes_[buffer];
+                      << ", " << end << "], size=" << sz_imm->value;
         }
       }
 
@@ -571,7 +644,8 @@ private:
       auto allocations = allocator.allocate(intervals);
 
       for (const auto &alloc : allocations) {
-        address_map_[alloc.buffer] = alloc.offset;
+        address_map_[alloc.buffer] =
+            Integer(static_cast<int64_t>(alloc.offset));
         DLOG(DEBUG) << "Allocated buffer " << alloc.buffer->name_hint
                     << " at offset " << alloc.offset << " (size=" << alloc.size
                     << ")";
@@ -593,24 +667,15 @@ private:
 
     void PlanMemoryForScopeLinear(const std::string &scope,
                                   const std::vector<const VarNode *> &buffers) {
-      bool check_overflow = false; // reserve memory overflow check
-      int64_t current_offset = 0;
-      int64_t max_offset = 0;
+      arith::Analyzer analyzer;
+      PrimExpr current_offset = Integer(0);
+      PrimExpr max_offset = Integer(0);
 
-      // Allocate origin buffer first, then tmp buffer in shared memory
-      auto alloc_buffer = [&](const VarNode *buffer, int64_t &offset,
+      auto alloc_buffer = [&](const VarNode *buffer, PrimExpr &offset,
                               const std::string &err_prefix) -> bool {
-        int64_t buf_size = buffer_sizes_[buffer];
-        if (offset + buf_size > memory_limits_[scope] && check_overflow) {
-          LOG(FATAL) << err_prefix << " Out of memory in scope: " << scope
-                     << "\nBuffer: " << buffer->name_hint
-                     << "\nRequired size: " << buf_size
-                     << "\nCurrent offset: " << offset
-                     << "\nMemory limit: " << memory_limits_[scope];
-          return false;
-        }
+        PrimExpr buf_size = buffer_sizes_[buffer];
         address_map_[buffer] = offset;
-        offset = static_cast<int64_t>(AlignUp(offset + buf_size, 32));
+        offset = analyzer.Simplify(AlignUpExpr(offset + buf_size, 32));
         return true;
       };
 
@@ -621,18 +686,15 @@ private:
         }
         if (pre_alloc_buffer_.count(buffer->name_hint)) {
           address_map_[buffer] = pre_alloc_buffer_[buffer->name_hint];
-          max_offset = std::max(
-              max_offset,
-              static_cast<int64_t>(pre_alloc_buffer_[buffer->name_hint] +
-                                   buffer_sizes_[buffer]));
+          max_offset = analyzer.Simplify(
+              max(max_offset, pre_alloc_buffer_[buffer->name_hint] +
+                                  buffer_sizes_[buffer]));
         } else if (scope != "shared") {
           alloc_buffer(buffer, current_offset,
                        "Linear memory allocation failed!");
-          max_offset = std::max(max_offset, current_offset);
+          max_offset = analyzer.Simplify(max(max_offset, current_offset));
         }
       }
-      // Allocate tmp buffer/default buffer after origin buffer to avoid
-      // fragmention in shared memory
       if (scope == "shared") {
         for (const VarNode *buffer : origin_buffer) {
           if (std::find(tmp_buffers.begin(), tmp_buffers.end(), buffer) !=
@@ -916,27 +978,30 @@ private:
       std::unordered_map<const VarNode *, const LiveInterval *> buffer_map_;
     };
 
-    size_t CalculateBufferSize(const AllocateNode *alloc) {
-      size_t size_elements = 1;
+    PrimExpr CalculateBufferSize(const AllocateNode *alloc) {
+      PrimExpr size_elements = Integer(1);
       auto shape_it = external_shape_map_.find(alloc->buffer_var);
       if (shape_it != external_shape_map_.end() &&
           (*shape_it).second.size() == 4) {
         const auto &shape = (*shape_it).second;
         const IntImmNode *row = shape[0].as<IntImmNode>();
         const IntImmNode *col = shape[1].as<IntImmNode>();
-        ICHECK(row && col) << "PTO physical buffer shape must be constant";
-        size_elements = row->value * col->value;
+        if (row && col) {
+          size_elements = Integer(row->value * col->value);
+        } else {
+          for (const auto &extent : alloc->extents) {
+            size_elements = size_elements * extent;
+          }
+        }
       } else {
         for (const auto &extent : alloc->extents) {
-          const IntImmNode *int_imm = extent.as<IntImmNode>();
-          ICHECK(int_imm) << "Extent must be an integer constant";
-          size_elements *= int_imm->value;
+          size_elements = size_elements * extent;
         }
       }
 
-      size_t size_bytes =
-          size_elements * alloc->dtype.bytes() * alloc->dtype.lanes();
-      return AlignUp(size_bytes, 32);
+      PrimExpr size_bytes =
+          size_elements * Integer(alloc->dtype.bytes() * alloc->dtype.lanes());
+      return AlignUpExpr(size_bytes, 32);
     }
 
     void UpdateStmtAttr(const Object *stmt, size_t level) {
@@ -950,11 +1015,11 @@ private:
 
     std::unordered_map<const VarNode *, AllocEntry>
         alloc_info_; // buffer allocation and level
-    std::unordered_map<const VarNode *, int64_t>
+    std::unordered_map<const VarNode *, PrimExpr>
         address_map_; // buffer address map
     std::unordered_map<const VarNode *, std::string>
         buffer_scopes_; // buffer scope(UB/L1..)
-    std::unordered_map<const VarNode *, size_t>
+    std::unordered_map<const VarNode *, PrimExpr>
         buffer_sizes_; // buffer bytes size
     // Layout map used to size PTO 4D tiles by physical footprint.
     Map<Var, Array<PrimExpr>> external_shape_map_;
@@ -966,7 +1031,7 @@ private:
         stmt_attrs_; // stmt operation level
     std::unordered_map<const Object *, EventEntry>
         event_map_; // stmt gen/kill event
-    std::unordered_map<std::string, int64_t>
+    std::unordered_map<std::string, PrimExpr>
         pre_alloc_buffer_;              // pre alloction buffer address map
     std::vector<StmtEntry> linear_seq_; // linear stmt node scopes and levels
     std::vector<StmtEntry> scope_;      // temp stmt node scopes and levels
