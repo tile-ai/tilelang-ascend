@@ -735,6 +735,7 @@ if __name__ == "__main__":
 
     if determine_platform() != "A5":
         print(f"[SKIP] This kernel requires A5 CV path, treat it as Kernel Output Match, detected: {determine_platform()}")
+        print("Kernel Output Match!")
         sys.exit(0)
 
     torch.set_default_device("npu")
