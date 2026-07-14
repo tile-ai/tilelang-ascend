@@ -1,5 +1,5 @@
 """
-Block Sparse MQA Attention Kernel (Expert Mode, A5 CV通路 / no-workspace)
+Block Sparse MQA Attention Kernel (Expert Mode, A5 CV path / no-workspace)
 
 A5-only variant of block_sparse_mqa_attn_expert_test.py.
 
@@ -7,7 +7,7 @@ The base kernel routes each [H, kv] score tile through a GM workspace:
     C:  MMA -> L0C -> T.copy(l0c, workspace_1[token, n_i])   (L0C -> GM)
     V:  T.copy(workspace_1[token, n_i], s_ub column)         (GM  -> UB)
 
-This version uses the A5-exclusive CV通路 (L0C -> UB direct via TMOV,
+This version uses the A5-exclusive CV path (L0C -> UB direct via TMOV,
 `T.copy_op.copy_cv_experiment`) to hand the score tile straight from the
 cube's L0C to the vector core's UB, eliminating the workspace round-trip.
 
@@ -102,7 +102,7 @@ def block_sparse_mqa_attn_return_logits(
     CROSS_C2V_1 = 1  # C→V data-ready for odd n_outer
     CROSS_V2C = 2  # V→C buffer-free credit (s_ub_0..3 consumed)
 
-    # CV通路 destination-core mode (plain int; must live outside prim_func body,
+    # CV path destination-core mode (plain int; must live outside prim_func body,
     # otherwise TVMScript binds it to a Var and int(mode) fails).
     V0 = int(T.copy_op.CopyCVMode.SingleVec0)  # token_a → vector core 0
     V1 = int(T.copy_op.CopyCVMode.SingleVec1)  # token_b → vector core 1
@@ -129,7 +129,7 @@ def block_sparse_mqa_attn_return_logits(
             # expression so the C2V/V2C credit ping-pong stays balanced per core.
             num_pairs_bx = T.min(num_pairs, T.ceildiv(seq_len - bx * num_tokens_per_kernel, 2))
             # ---- V scope: UB allocations ----
-            # 4 per-block score buffers (CV通路 destinations). Each block's
+            # 4 per-block score buffers (CV path destinations). Each block's
             # [H, kv] L0C tile is copied here directly by the cube. Total UB
             # footprint == the base kernel's single s_ub_4x [H, 4*kv].
             s_ub_0 = T.alloc_ub([H_per_block, kv_block_size], accum_dtype)
@@ -172,7 +172,7 @@ def block_sparse_mqa_attn_return_logits(
 
             # ================================================================
             # C scope: double-buffered L0B/L0C/k_l1 4-stage SW pipeline.
-            # L0C tiles go straight to V's UB via CV通路 (no GM workspace).
+            # L0C tiles go straight to V's UB via CV path (no GM workspace).
             # ================================================================
             with T.Scope("C"):
                 # Init: all buffers start free (ping + pong)
@@ -192,7 +192,7 @@ def block_sparse_mqa_attn_return_logits(
                         n_i3 = n_outer * 4 + 3
 
                         # Back-pressure: wait until V has consumed the previous
-                        # group's s_ub_0..3 before overwriting them via CV通路.
+                        # group's s_ub_0..3 before overwriting them via CV path.
                         T.wait_cross_flag(CROSS_V2C, "FIX")
 
                         # ====================================================
@@ -465,7 +465,7 @@ def block_sparse_mqa_attn_return_logits(
                 T.wait_flag("FIX", "M", SIG_L0C_1)
 
             # ================================================================
-            # V scope: s_ub (from CV通路) → ReLU → mul weights → reduce → mask → Logits
+            # V scope: s_ub (from CV path) → ReLU → mul weights → reduce → mask → Logits
             # ================================================================
             kv = kv_block_size  # shorthand
 
@@ -497,7 +497,7 @@ def block_sparse_mqa_attn_return_logits(
                             T.copy(weights_ub, weights)
                             T.set_flag("V", "MTE2", SIG_W_UB)
 
-                            # -- Vector ops per block on [H, kv] (s_ub from CV通路) --
+                            # -- Vector ops per block on [H, kv] (s_ub from CV path) --
                             T.pipe_barrier("v")
                             T.tile.relu(s_ub_0, s_ub_0)
                             T.tile.relu(s_ub_1, s_ub_1)
@@ -582,7 +582,7 @@ def block_sparse_mqa_attn_return_logits(
                             T.set_flag("MTE3", "V", SIG_LOGITS)
 
                             # All UB ops done (masking + DMA issued) →
-                            # release s_ub_0..3 so C can overwrite via CV通路.
+                            # release s_ub_0..3 so C can overwrite via CV path.
                             T.set_cross_flag("V", CROSS_V2C)
                         else:
                             # token out of range: still release the credit so C's
@@ -720,7 +720,7 @@ def get_npu_core_num() -> int:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Block Sparse MQA Attention Kernel Test (A5 CV通路)")
+    parser = argparse.ArgumentParser(description="Block Sparse MQA Attention Kernel Test (A5 CV path)")
     parser.add_argument("--seq_len", type=int, default=1024, help="Query sequence length")
     parser.add_argument("--seq_len_kv", type=int, default=128 * 1024, help="KV sequence length")
     parser.add_argument("--heads", type=int, default=32, help="Number of attention heads")
@@ -730,11 +730,11 @@ if __name__ == "__main__":
     parser.add_argument("--dtype", type=str, default="float16", help="Data type")
     args = parser.parse_args()
 
-    # A5-only guard: this kernel requires A5 CV通路 (TMOV).
+    # A5-only guard: this kernel requires A5 CV path (TMOV).
     from tilelang.utils.target import determine_platform
 
     if determine_platform() != "A5":
-        print(f"[SKIP] This kernel requires A5 CV通路, treat it as Kernel Output Match, detected: {determine_platform()}")
+        print(f"[SKIP] This kernel requires A5 CV path, treat it as Kernel Output Match, detected: {determine_platform()}")
         sys.exit(0)
 
     torch.set_default_device("npu")
@@ -746,7 +746,7 @@ if __name__ == "__main__":
     print(f"[grid_size] NPU cube core count -> grid_size={args.grid_size}")
 
     print("=" * 60)
-    print("Block Sparse MQA Attention Kernel Test (A5 CV通路)")
+    print("Block Sparse MQA Attention Kernel Test (A5 CV path)")
     print("=" * 60)
     print("Configuration:")
     print(f"  seq_len: {args.seq_len}")
