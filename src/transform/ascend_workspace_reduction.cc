@@ -1,6 +1,8 @@
 #include "../op/builtin.h"
 #include "arith/ir_mutator_with_analyzer.h"
+#include <tvm/tir/analysis.h>
 #include <tvm/tir/builtin.h>
+#include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
 namespace tvm {
@@ -9,6 +11,11 @@ namespace tl {
 enum class DstBufferScope { L1, Ub };
 
 enum class CopyDirection { None, UbToL1, L0cToUb };
+
+struct LoopContextInfo {
+  Var loop_var;
+  PrimExpr extent;
+};
 
 struct WorkspaceInfo {
   DataType dtype;
@@ -24,6 +31,10 @@ struct WorkspaceInfo {
   PrimExpr dst_l1_row_offset; // Only used for skip UB scenario to store the row
                               // offset for in-place UB to workspace copy
                               // transformation
+
+  std::vector<LoopContextInfo> enclosing_loops;
+  std::unordered_set<std::string> loops_with_backpressure;
+  int64_t per_block_ele_nums_no_loop = 0;
 };
 
 struct CoreMetaInfo {
@@ -56,6 +67,78 @@ struct CopyGlobalContext {
   std::unordered_set<std::string> buffers_skip_vid_reduction_;
   // Buffer shapes (from PrimFunc attrs)
   std::unordered_map<std::string, Array<PrimExpr>> buffer_shapes_;
+
+  // Loop name → set of copy directions observed within that loop (including
+  // nested loops). Used for backpressure detection.
+  std::unordered_map<std::string, std::unordered_set<CopyDirection>>
+      loop_directions_;
+};
+
+class LoopDirectionCollector : public StmtExprVisitor {
+public:
+  std::unordered_map<std::string, std::unordered_set<CopyDirection>>
+      loop_directions;
+
+private:
+  std::unordered_set<std::string> target_copy_stmts_ = {"copy_ub_to_l1",
+                                                        "copy_l0c_to_ub"};
+  std::vector<LoopContextInfo> current_loops_;
+
+  std::string IsTargetCopyExpr(const CallNode *call_node) {
+    if (!call_node || call_node->op != tir::builtin::call_extern()) {
+      return "";
+    }
+    if (call_node->args.empty() ||
+        !call_node->args[0].as<StringImmNode>()) {
+      return "";
+    }
+    std::string copy_stmt =
+        Downcast<StringImm>(call_node->args[0])->value;
+    for (const auto &target_substr : target_copy_stmts_) {
+      if (copy_stmt.find(target_substr) != std::string::npos) {
+        return copy_stmt;
+      }
+    }
+    return "";
+  }
+
+public:
+  void VisitStmt_(const ForNode *op) final {
+    current_loops_.push_back({op->loop_var, op->extent});
+    StmtExprVisitor::VisitStmt_(op);
+    current_loops_.pop_back();
+  }
+
+  void VisitStmt_(const EvaluateNode *op) final {
+    const CallNode *call_node = op->value.as<CallNode>();
+    if (!call_node) {
+      return StmtExprVisitor::VisitStmt_(op);
+    }
+
+    std::string copy_stmt_name = IsTargetCopyExpr(call_node);
+    if (copy_stmt_name.empty()) {
+      return StmtExprVisitor::VisitStmt_(op);
+    }
+
+    if (!current_loops_.empty()) {
+      for (const auto &loop : current_loops_) {
+        std::string loop_name = loop.loop_var->name_hint;
+        for (auto &target_copy_stmt : target_copy_stmts_) {
+          if (copy_stmt_name.find(target_copy_stmt) !=
+              std::string::npos) {
+            if (target_copy_stmt == "copy_ub_to_l1") {
+              loop_directions[loop_name].insert(
+                  CopyDirection::UbToL1);
+            } else if (target_copy_stmt == "copy_l0c_to_ub") {
+              loop_directions[loop_name].insert(
+                  CopyDirection::L0cToUb);
+            }
+          }
+        }
+      }
+    }
+    StmtExprVisitor::VisitStmt_(op);
+  }
 };
 
 class CopyInfoCollector : public StmtExprVisitor {
@@ -69,6 +152,8 @@ private:
   std::unordered_map<std::string, DstBufferScope> scope_table_ = {
       {"copy_ub_to_l1", DstBufferScope::L1},
       {"copy_l0c_to_ub", DstBufferScope::Ub}};
+
+  std::vector<LoopContextInfo> current_loops_;
 
 public:
   const CopyGlobalContext &GetCopyGlobalContext() const { return context_; }
@@ -91,6 +176,12 @@ public:
   void SetBufferShapes(
       const std::unordered_map<std::string, Array<PrimExpr>> &shapes) {
     context_.buffer_shapes_ = shapes;
+  }
+
+  void SetLoopDirections(
+      const std::unordered_map<std::string,
+                               std::unordered_set<CopyDirection>> &dirs) {
+    context_.loop_directions_ = dirs;
   }
 
   DataType ConvertStringToDataType(const std::string &type_str) {
@@ -236,21 +327,9 @@ public:
             }
             ws_info.per_block_ele_nums = M_val * N_val;
 
-            // dst_extent for workspace = M * N (full L1 size)
-            PrimExpr dst_full_extent = M * N;
-
-            // base offset: cid * dst_full_extent (for workspace declaration,
-            // excludes dst_offset) workspace declaration)
-            ws_info.offset = context_.core_meta_info_.cid_var * dst_full_extent;
-
             // Store row offset separately, added during UbToL1 in-place
             // transform
             ws_info.dst_l1_row_offset = dst_offset;
-
-            // extent: total_core_nums * dst_full_extent - base_offset
-            ws_info.extent =
-                context_.core_meta_info_.total_core_nums * dst_full_extent -
-                ws_info.offset;
 
           } else {
             // Normal UB scenario: use M, N from template params
@@ -275,15 +354,6 @@ public:
                      "valid IntImm, cannot extract value\n";
               ws_info.per_block_ele_nums *= i_node->value;
             }
-
-            ws_info.offset =
-                context_.core_meta_info_.cid_var *
-                IntImm(DataType::Int(64), ws_info.per_block_ele_nums);
-
-            ws_info.extent =
-                context_.core_meta_info_.total_core_nums *
-                    IntImm(DataType::Int(64), ws_info.per_block_ele_nums) -
-                ws_info.offset;
           }
           break;
         case CopyDirection::L0cToUb:
@@ -297,20 +367,96 @@ public:
 
           ws_info.per_block_ele_nums = shapeM * shapeN;
 
-          ws_info.offset =
-              context_.core_meta_info_.cid_var *
-              IntImm(DataType::Int(64), ws_info.per_block_ele_nums);
-
-          ws_info.extent =
-              context_.core_meta_info_.total_core_nums *
-                  IntImm(DataType::Int(64), ws_info.per_block_ele_nums) -
-              ws_info.offset;
           break;
         }
 
+        // Capture enclosing loops
+        ws_info.enclosing_loops = current_loops_;
+
+        // Per-loop backpressure detection: a loop has backpressure if both
+        // UbToL1 and L0cToUb directions appear within its body (including
+        // nested loops).
+        for (const auto &loop : ws_info.enclosing_loops) {
+          std::string loop_name = loop.loop_var->name_hint;
+          auto it = context_.loop_directions_.find(loop_name);
+          if (it != context_.loop_directions_.end()) {
+            const auto &dirs = it->second;
+            if (dirs.count(CopyDirection::UbToL1) &&
+                dirs.count(CopyDirection::L0cToUb)) {
+              ws_info.loops_with_backpressure.insert(loop_name);
+            }
+          }
+        }
+
+        // Determine which loops to expand (those without backpressure).
+        // For skip UB scenario, exclude loops whose variable appears in
+        // dst_l1_row_offset — that offset already handles row placement
+        // for those iterations, and the loop may be unrolled later by
+        // LegalizeVectorizedLoop (leaving dangling variable references).
+        std::vector<LoopContextInfo> loops_to_expand;
+        for (const auto &loop : ws_info.enclosing_loops) {
+          if (ws_info.loops_with_backpressure.count(
+                  loop.loop_var->name_hint) > 0) {
+            continue;
+          }
+          if (ws_info.dst_l1_row_offset.defined() &&
+              tir::UsesVar(ws_info.dst_l1_row_offset,
+                           [&loop](const tir::VarNode *v) {
+                             return v == loop.loop_var.get();
+                           })) {
+            continue;
+          }
+          loops_to_expand.push_back(loop);
+        }
+
+        bool should_expand = !loops_to_expand.empty();
+
+        // Check that all loops to expand have constant extents
+        if (should_expand) {
+          for (const auto &loop : loops_to_expand) {
+            if (!loop.extent.as<IntImmNode>()) {
+              LOG(WARNING)
+                  << "[WorkspaceReduction] Symbolic loop extent detected for "
+                     "loop '"
+                  << loop.loop_var->name_hint
+                  << "', falling back to no expansion. Workspace may stomp "
+                     "if no backpressure exists.";
+              should_expand = false;
+              loops_to_expand.clear();
+              break;
+            }
+          }
+        }
+
+        // Save pre-expansion per_block_ele_nums
+        ws_info.per_block_ele_nums_no_loop = ws_info.per_block_ele_nums;
+
+        // Expand per_block_ele_nums by product of loop extents
+        if (should_expand) {
+          int64_t expand_factor = 1;
+          for (const auto &loop : loops_to_expand) {
+            expand_factor *= loop.extent.as<IntImmNode>()->value;
+          }
+          ws_info.per_block_ele_nums *= expand_factor;
+        }
+
+        // Unified offset/extent calculation
+        ws_info.offset =
+            context_.core_meta_info_.cid_var *
+            IntImm(DataType::Int(64), ws_info.per_block_ele_nums);
+        ws_info.extent =
+            context_.core_meta_info_.total_core_nums *
+                IntImm(DataType::Int(64), ws_info.per_block_ele_nums) -
+            ws_info.offset;
+
         ws_info.dim = IntImm(DataType::Int(64), ws_info.shapes.size());
 
-        Array<PrimExpr> real_shapes{context_.core_meta_info_.total_core_nums};
+        // Build real_shapes: [total_core_nums, loop_extents..., M, N]
+        Array<PrimExpr> real_shapes{
+            context_.core_meta_info_.total_core_nums};
+        for (const auto &loop : loops_to_expand) {
+          real_shapes.push_back(loop.extent);
+        }
         for (const auto &shape : ws_info.shapes) {
           real_shapes.push_back(shape);
         }
@@ -421,10 +567,21 @@ public:
           context_.core_meta_info_.vector_cnt =
               Downcast<IntImm>(op->value)->value;
         }
+        if (iter_var->thread_tag == "blockIdx.y") {
+          context_.core_meta_info_.vid_var = iter_var->var;
+          context_.core_meta_info_.vector_cnt =
+              Downcast<IntImm>(op->value)->value; // 2
+        }
       }
     }
 
     StmtVisitor::VisitStmt_(op);
+  }
+
+  void VisitStmt_(const ForNode *op) final {
+    current_loops_.push_back({op->loop_var, op->extent});
+    StmtExprVisitor::VisitStmt_(op);
+    current_loops_.pop_back();
   }
 };
 
@@ -480,9 +637,17 @@ public:
       }
     }
 
+    // Pre-pass: collect all copy directions per loop for backpressure
+    // detection. This must run before CopyInfoCollector so that when
+    // WorkspaceInfoCollector checks loop_directions_, all directions are
+    // already known.
+    LoopDirectionCollector direction_collector;
+    direction_collector(f->body);
+
     CopyInfoCollector info_collector;
     info_collector.SetSkipBuffers(skip_buffer_names);
     info_collector.SetBufferShapes(buffer_shapes);
+    info_collector.SetLoopDirections(direction_collector.loop_directions);
     info_collector.VisitStmt(f->body);
     const CopyGlobalContext &context = info_collector.GetCopyGlobalContext();
     AscendWorkspaceReductionPass substituter(&analyzer, context);
@@ -648,13 +813,65 @@ private:
     DataType dtype = DataType::Handle();
     const Op &op = builtin::tvm_access_ptr();
 
-    PrimExpr offset = ws_info.offset; // Base offset: cid * M * N
+    PrimExpr offset = ws_info.offset; // Base offset: cid * per_block_ele_nums
+
+    // Determine which loops to expand (same logic as WorkspaceInfoCollector)
+    std::vector<LoopContextInfo> loops_to_expand;
+    for (const auto &loop : ws_info.enclosing_loops) {
+      if (ws_info.loops_with_backpressure.count(
+              loop.loop_var->name_hint) > 0) {
+        continue;
+      }
+      if (ws_info.dst_l1_row_offset.defined() &&
+          tir::UsesVar(ws_info.dst_l1_row_offset,
+                       [&loop](const tir::VarNode *v) {
+                         return v == loop.loop_var.get();
+                       })) {
+        continue;
+      }
+      loops_to_expand.push_back(loop);
+    }
+    bool should_expand = !loops_to_expand.empty();
+
+    // Add loop variable offset: each expanded loop iteration writes to a
+    // different region of the workspace.
+    if (should_expand) {
+      PrimExpr loop_offset = IntImm(DataType::Int(64), 0);
+      PrimExpr stride =
+          IntImm(DataType::Int(64), ws_info.per_block_ele_nums_no_loop);
+      // Iterate from innermost to outermost, accumulating stride
+      for (int i = loops_to_expand.size() - 1; i >= 0; --i) {
+        loop_offset =
+            loop_offset + loops_to_expand[i].loop_var * stride;
+        stride = stride * loops_to_expand[i].extent;
+      }
+      offset = offset + loop_offset;
+    }
 
     // skip UB UbToL1 in-place: add row offset
     // Condition: dst_l1_row_offset exists and workspace as dst (rw_mask=2,
-    // write) workspace restore (rw_mask=1, read) doesn't need this
+    // write) workspace restore (rw_mask=1, read) doesn't need this.
+    // When should_expand is true, check if dst_l1_row_offset contains any
+    // expanded loop variable — if so, skip it (the loop variable is already
+    // handled by loop_offset above).
     if (ws_info.dst_l1_row_offset.defined() && rw_mask == 2) {
-      offset = offset + ws_info.dst_l1_row_offset;
+      if (should_expand) {
+        bool contains_loop_var = false;
+        for (const auto &loop : loops_to_expand) {
+          if (tir::UsesVar(ws_info.dst_l1_row_offset,
+                           [&loop](const tir::VarNode *v) {
+                             return v == loop.loop_var.get();
+                           })) {
+            contains_loop_var = true;
+            break;
+          }
+        }
+        if (!contains_loop_var) {
+          offset = offset + ws_info.dst_l1_row_offset;
+        }
+      } else {
+        offset = offset + ws_info.dst_l1_row_offset;
+      }
     }
 
     // Check if vid offset needed: GM's other side is UB (UB halved by
@@ -664,10 +881,17 @@ private:
                            core_meta_info__.vector_cnt > 1;
 
     if (need_vid_offset) {
-      // vid offset: vid * per_block_ele_nums / vector_cnt
+      // vid offset stride uses per_block_ele_nums_no_loop (single-iteration
+      // data size), not the expanded per_block_ele_nums, because vid split
+      // is within a single iteration, not across loop iterations.
+      int64_t vid_stride = should_expand
+                               ? ws_info.per_block_ele_nums_no_loop
+                               : ws_info.per_block_ele_nums;
+      if (vid_stride == 0)
+        vid_stride = ws_info.per_block_ele_nums;
       PrimExpr vid_offset =
           core_meta_info__.vid_var *
-          IntImm(DataType::Int(64), ws_info.per_block_ele_nums) /
+          IntImm(DataType::Int(64), vid_stride) /
           IntImm(DataType::Int(64), core_meta_info__.vector_cnt);
       offset = offset + vid_offset;
     }
