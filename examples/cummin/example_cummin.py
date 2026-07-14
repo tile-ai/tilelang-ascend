@@ -58,7 +58,7 @@ def _find_block_L(N, L, dtype):
 @tilelang.jit(out_idx=[1, 2], pass_configs={
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-}, target="pto")
+})
 def cummin_vec_ker(Rows, L, core_num, single_core_load, N, block_L, has_nan=True, dtype="float16"):
     """Vectorized prefix-min scan. Data layout: [L, Rows] (transposed).
 
@@ -192,7 +192,7 @@ def _find_block_R(block_N, R, dtype):
 @tilelang.jit(out_idx=[1, 2], pass_configs={
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-}, target="pto")
+})
 def cummin_vec_ker_v2(M, R, N, core_num, single_core_load, block_N, block_R,
                       has_nan=True, dtype="float16"):
     """Vectorized prefix-min scan on [M*R, N] physical layout (no transpose)."""
@@ -499,25 +499,25 @@ def _make_case_input(shape, dtype, value_range):
 # (case_id, shape, dtype, dim, value_range, note)
 _CASES = [
     (1, [1024, 1024], "float16", -1, [-1, 1], "S-float16-1M-aligned-dim=-1"),
-    # (2, [2048, 2048], "float32", -1, [-2, 2], "M-float32-4M-aligned-dim=-1"),
-    # (3, [4096, 4096], "bfloat16", -1, [-3, 3], "M-bfloat16-16M-aligned-dim=-1"),
-    # (4, [8192, 8192], "int32", -1, [-10000, 10000], "L-int32-67M-aligned-dim=-1"),
-    # (5, [16384, 16384], "float16", 0, [-100, 100], "L-float16-268M-aligned-dim=0"),
-    # (6, [8192, 8192], "float32", 1, [-1000, 1000], "L-float32-1G-aligned-dim=1"),
-    # (7, [1023, 1023], "bfloat16", -1, [-0.1, 0.1], "S-bfloat16-1M-unaligned-dim=-1"),
-    # (8, [1009, 1021], "float16", 0, [-1, 2], "S-float16-1M-prime-unaligned-dim=0"),
-    # (9, [1537, 769], "float32", -1, [-5, 10], "S-float32-1M-unaligned-dim=-1"),
-    # (10, [363, 367, 373], "bfloat16", 1, [-50, 100], "M-bfloat16-50M-3D-dim=1"),
-    # (11, [2049, 513], "float16", -1, [-65504, 65504], "S-float16-fp16-extreme-dim=-1"),
-    # (12, [3, 7, 13, 4001], "float32", -1, [-88, 88], "S-float32-4D-dim=-1"),
-    # (13, [1000003], "bfloat16", -1, [-float("inf"), float("inf")], "S-bfloat16-inf-1D-dim=-1"),
-    # (14, [11, 13, 17, 67, 67], "float16", 2, [float("nan"), float("nan")], "M-float16-nan-5D-dim=2"),
-    # (15, [3, 7, 11, 13, 1013], "int32", -1, [0, 0], "M-int32-zero-5D-dim=-1"),
-    # (16, [512, 2049], "float32", -1, [-0.5, 0.5], "S-float32-unaligned-dim=-1"),
-    # (17, [255, 8193], "bfloat16", 0, [-1, 3], "S-bfloat16-unaligned-dim=0"),
-    # (18, [4097, 511], "float16", -1, [-1000, 1000], "S-float16-unaligned-dim=-1"),
-    # (19, [2, 511, 2049], "float32", 1, [-0.2, 0.2], "S-float32-3D-dim=1"),
-    # (20, [4, 255, 2049], "bfloat16", -1, [-3, 6], "S-bfloat16-3D-dim=-1"),
+    (2, [2048, 2048], "float32", -1, [-2, 2], "M-float32-4M-aligned-dim=-1"),
+    (3, [4096, 4096], "bfloat16", -1, [-3, 3], "M-bfloat16-16M-aligned-dim=-1"),
+    (4, [8192, 8192], "int32", -1, [-10000, 10000], "L-int32-67M-aligned-dim=-1"),
+    (5, [16384, 16384], "float16", 0, [-100, 100], "L-float16-268M-aligned-dim=0"),
+    (6, [8192, 8192], "float32", 1, [-1000, 1000], "L-float32-1G-aligned-dim=1"),
+    (7, [1023, 1023], "bfloat16", -1, [-0.1, 0.1], "S-bfloat16-1M-unaligned-dim=-1"),
+    (8, [1009, 1021], "float16", 0, [-1, 2], "S-float16-1M-prime-unaligned-dim=0"),
+    (9, [1537, 769], "float32", -1, [-5, 10], "S-float32-1M-unaligned-dim=-1"),
+    (10, [363, 367, 373], "bfloat16", 1, [-50, 100], "M-bfloat16-50M-3D-dim=1"),
+    (11, [2049, 513], "float16", -1, [-65504, 65504], "S-float16-fp16-extreme-dim=-1"),
+    (12, [3, 7, 13, 4001], "float32", -1, [-88, 88], "S-float32-4D-dim=-1"),
+    (13, [1000003], "bfloat16", -1, [-float("inf"), float("inf")], "S-bfloat16-inf-1D-dim=-1"),
+    (14, [11, 13, 17, 67, 67], "float16", 2, [float("nan"), float("nan")], "M-float16-nan-5D-dim=2"),
+    (15, [3, 7, 11, 13, 1013], "int32", -1, [0, 0], "M-int32-zero-5D-dim=-1"),
+    (16, [512, 2049], "float32", -1, [-0.5, 0.5], "S-float32-unaligned-dim=-1"),
+    (17, [255, 8193], "bfloat16", 0, [-1, 3], "S-bfloat16-unaligned-dim=0"),
+    (18, [4097, 511], "float16", -1, [-1000, 1000], "S-float16-unaligned-dim=-1"),
+    (19, [2, 511, 2049], "float32", 1, [-0.2, 0.2], "S-float32-3D-dim=1"),
+    (20, [4, 255, 2049], "bfloat16", -1, [-3, 6], "S-bfloat16-3D-dim=-1"),
 ]
 
 
