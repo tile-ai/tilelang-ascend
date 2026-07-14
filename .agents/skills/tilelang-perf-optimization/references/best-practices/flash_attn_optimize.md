@@ -574,7 +574,7 @@ mask[0, S_kv:] = -1e4       # 真实列 0，padding 列 -1e4
 
 # kernel 内 softmax 前
 T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)              # score = QK^T * scale
-T.copy(Mask[0:1, k*block_N:(k+1)*block_N], mask_ub)   # 取当前 KV block 的 mask 段
+T.copy(mask[0:1, k*block_N:(k+1)*block_N], mask_ub)   # 取当前 KV block 的 mask 段
 T.tile.broadcast(mask_2d, mask_ub)                    # [1,block_N] -> [block_M/2, block_N]
 T.tile.add(acc_s_ub, acc_s_ub, mask_2d)               # score += mask  ← 关键
 # 之后正常 online softmax
