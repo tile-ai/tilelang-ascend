@@ -25,8 +25,8 @@ def golden_cummin(x: torch.Tensor, dim: int):
 
 # ========== vectorized operator implementation ==========
 
-_VEC_ALIGN = 64   # 256B compare alignment (fp32: 64 * 4 = 256B)
-_CORE_NUM = 24    # physical AIV cores on A2/A3
+_VEC_ALIGN = 64  # 256B compare alignment (fp32: 64 * 4 = 256B)
+_CORE_NUM = 24  # physical AIV cores on A2/A3
 _VEC_BYTES_PER_ELEM = {"float16": 28, "bfloat16": 28, "float32": 34, "int32": 34}
 _VEC_UB_BUDGET = 172 * 1024  # actual UB 192KB, headroom for stack
 
@@ -55,10 +55,13 @@ def _find_block_L(N, L, dtype):
     return max(1, block_L)
 
 
-@tilelang.jit(out_idx=[1, 2], pass_configs={
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
-    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-})
+@tilelang.jit(
+    out_idx=[1, 2],
+    pass_configs={
+        tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+        tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    },
+)
 def cummin_vec_ker(Rows, L, core_num, single_core_load, N, block_L, has_nan=True, dtype="float16"):
     """Vectorized prefix-min scan. Data layout: [L, Rows] (transposed).
 
@@ -68,8 +71,8 @@ def cummin_vec_ker(Rows, L, core_num, single_core_load, N, block_L, has_nan=True
     cal_dtype = "float32"
     sel_mode = "VSEL_CMPMASK_SPR" if (N <= _VEC_ALIGN and dtype != "int32") else "VSEL_TENSOR_TENSOR_MODE"
     num_chunks = T.ceildiv(Rows, N)
-    n_full = L // block_L      # full blocks
-    partial = L % block_L      # tail rows
+    n_full = L // block_L  # full blocks
+    partial = L % block_L  # tail rows
 
     @T.prim_func
     def main(
@@ -97,7 +100,7 @@ def cummin_vec_ker(Rows, L, core_num, single_core_load, N, block_L, has_nan=True
                     for bi in T.serial(n_full):
                         l_base = bi * block_L
 
-                        T.copy(A[l_base:l_base + block_L, col_base:col_base + N], in_tile)
+                        T.copy(A[l_base : l_base + block_L, col_base : col_base + N], in_tile)
                         T.barrier_all()
                         if low_prec:
                             T.tile.cast(in_cal_tile, in_tile, "CAST_NONE", block_L * N)
@@ -128,13 +131,13 @@ def cummin_vec_ker(Rows, L, core_num, single_core_load, N, block_L, has_nan=True
                         else:
                             T.copy(val_cal_tile, val_tile)
                         T.barrier_all()
-                        T.copy(val_tile, Values[l_base:l_base + block_L, col_base:col_base + N])
-                        T.copy(idx_tile, Indices[l_base:l_base + block_L, col_base:col_base + N])
+                        T.copy(val_tile, Values[l_base : l_base + block_L, col_base : col_base + N])
+                        T.copy(idx_tile, Indices[l_base : l_base + block_L, col_base : col_base + N])
                         T.barrier_all()
 
                     if partial > 0:
                         tb = n_full * block_L
-                        T.copy(A[tb:tb + partial, col_base:col_base + N], in_tile)
+                        T.copy(A[tb : tb + partial, col_base : col_base + N], in_tile)
                         T.barrier_all()
                         if low_prec:
                             T.tile.cast(in_cal_tile, in_tile, "CAST_NONE", partial * N)
@@ -159,14 +162,15 @@ def cummin_vec_ker(Rows, L, core_num, single_core_load, N, block_L, has_nan=True
                         else:
                             T.copy(val_cal_tile[0:partial, :], val_tile[0:partial, :])
                         T.barrier_all()
-                        T.copy(val_tile[0:partial, :], Values[tb:tb + partial, col_base:col_base + N])
-                        T.copy(idx_tile[0:partial, :], Indices[tb:tb + partial, col_base:col_base + N])
+                        T.copy(val_tile[0:partial, :], Values[tb : tb + partial, col_base : col_base + N])
+                        T.copy(idx_tile[0:partial, :], Indices[tb : tb + partial, col_base : col_base + N])
                         T.barrier_all()
 
     return main
 
 
 # ========== vectorized operator implementation v2 (no-transpose) ==========
+
 
 def _find_vec_N_v2(M, N, dtype):
     """Reverse-derive vector width block_N for [M, R, N] layout."""
@@ -189,12 +193,14 @@ def _find_block_R(block_N, R, dtype):
     return max(1, block_R)
 
 
-@tilelang.jit(out_idx=[1, 2], pass_configs={
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
-    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-})
-def cummin_vec_ker_v2(M, R, N, core_num, single_core_load, block_N, block_R,
-                      has_nan=True, dtype="float16"):
+@tilelang.jit(
+    out_idx=[1, 2],
+    pass_configs={
+        tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+        tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    },
+)
+def cummin_vec_ker_v2(M, R, N, core_num, single_core_load, block_N, block_R, has_nan=True, dtype="float16"):
     """Vectorized prefix-min scan on [M*R, N] physical layout (no transpose)."""
     low_prec = dtype in ("float16", "bfloat16", "int32")
     cal_dtype = "float32"
@@ -234,7 +240,7 @@ def cummin_vec_ker_v2(M, R, N, core_num, single_core_load, block_N, block_R,
                     for bi in T.serial(n_full):
                         l_base = row_base + bi * block_R
 
-                        T.copy(A[l_base:l_base + block_R, col_base:col_base + block_N], in_tile)
+                        T.copy(A[l_base : l_base + block_R, col_base : col_base + block_N], in_tile)
                         T.barrier_all()
                         if low_prec:
                             T.tile.cast(in_cal_tile, in_tile, "CAST_NONE", block_R * block_N)
@@ -265,13 +271,13 @@ def cummin_vec_ker_v2(M, R, N, core_num, single_core_load, block_N, block_R,
                         else:
                             T.copy(val_cal_tile, val_tile)
                         T.barrier_all()
-                        T.copy(val_tile, Values[l_base:l_base + block_R, col_base:col_base + block_N])
-                        T.copy(idx_tile, Indices[l_base:l_base + block_R, col_base:col_base + block_N])
+                        T.copy(val_tile, Values[l_base : l_base + block_R, col_base : col_base + block_N])
+                        T.copy(idx_tile, Indices[l_base : l_base + block_R, col_base : col_base + block_N])
                         T.barrier_all()
 
                     if partial > 0:
                         tb = row_base + n_full * block_R
-                        T.copy(A[tb:tb + partial, col_base:col_base + block_N], in_tile)
+                        T.copy(A[tb : tb + partial, col_base : col_base + block_N], in_tile)
                         T.barrier_all()
                         if low_prec:
                             T.tile.cast(in_cal_tile, in_tile, "CAST_NONE", partial * block_N)
@@ -296,8 +302,8 @@ def cummin_vec_ker_v2(M, R, N, core_num, single_core_load, block_N, block_R,
                         else:
                             T.copy(val_cal_tile[0:partial, :], val_tile[0:partial, :])
                         T.barrier_all()
-                        T.copy(val_tile[0:partial, :], Values[tb:tb + partial, col_base:col_base + block_N])
-                        T.copy(idx_tile[0:partial, :], Indices[tb:tb + partial, col_base:col_base + block_N])
+                        T.copy(val_tile[0:partial, :], Values[tb : tb + partial, col_base : col_base + block_N])
+                        T.copy(idx_tile[0:partial, :], Indices[tb : tb + partial, col_base : col_base + block_N])
                         T.barrier_all()
 
     return main
@@ -315,8 +321,7 @@ def _run_vec_kernel_v2(x_npu, M, R, N, dtype, has_nan=True):
 
     x_2d = x_npu.reshape(M * R, N)
 
-    ker = cummin_vec_ker_v2(M, R, N, core_num, single_core_load,
-                            block_N, block_R, has_nan, dtype=dtype)
+    ker = cummin_vec_ker_v2(M, R, N, core_num, single_core_load, block_N, block_R, has_nan, dtype=dtype)
     out_v_t, out_i32_t = ker(x_2d)
 
     out_v = out_v_t.reshape(M, R, N)
@@ -448,9 +453,7 @@ def _compare(out_v_cpu, out_i_cpu, ref_v, ref_i, dtype):
         max_diff = 0.0 if v_ok else (out_v_cpu - ref_v).abs().max().item()
         vmsg = "values_exact" if v_ok else "values_MISMATCH"
     else:
-        v_ok = torch.allclose(
-            out_v_cpu.float(), ref_v.float(), atol=atol, rtol=rtol, equal_nan=True
-        )
+        v_ok = torch.allclose(out_v_cpu.float(), ref_v.float(), atol=atol, rtol=rtol, equal_nan=True)
         has_special = torch.isinf(out_v_cpu).any() or torch.isnan(out_v_cpu).any()
         if has_special:
             max_diff = float("nan")
@@ -539,7 +542,12 @@ def test_cummin_all():
     for case_id, shape, dtype, dim, value_range, note in _CASES:
         try:
             case_ok, msg = _run_case_wrapped(
-                case_id, shape, dtype, dim, value_range, note,
+                case_id,
+                shape,
+                dtype,
+                dim,
+                value_range,
+                note,
             )
             if case_ok:
                 print(f"[PRECISION_PASS] case_{case_id} {note}: {msg}")
@@ -554,10 +562,8 @@ def test_cummin_all():
 
 def main():
     parser = argparse.ArgumentParser(description="cummin NPU kernel test")
-    parser.add_argument(
-        "--level", default="all", choices=["all"]
-    )
-    args = parser.parse_args()
+    parser.add_argument("--level", default="all", choices=["all"])
+    parser.parse_args()
 
     tilelang.disable_cache()
     torch.manual_seed(0)
