@@ -13,6 +13,7 @@
 - [tile size 过小导致片上内存浪费](#tile-size-过小导致片上内存浪费)
 - [AIC/AIV 混合算子未开启 CV overlap](#aicaiv-混合算子未开启-cv-overlap)
 - [纯 AIV memory bound 算子未做流水/双 buffer](#纯-aiv-memory-bound-算子未做流水双-buffer)
+- [正交轴串行化（Scalar Scan on Parallelizable Axis）](#正交轴串行化scalar-scan-on-parallelizable-axis)
 - [评审记录模板](#评审记录模板)
 
 ---
@@ -413,6 +414,47 @@ T.reduce_sum(row_buf, result, dim=-1)  # [rows] → scalar
 ```
 
 **检查点**：循环内是否有 `reduce_sum` 调用？循环外是否只用 `dim=-1`？详见 optimization-guide.md §2.13 铁律 P1。
+
+---
+
+## 正交轴串行化（Scalar Scan on Parallelizable Axis）
+
+**识别特征**：两层嵌套循环中，外层遍历正交轴（如行），内层沿扫描轴逐元素处理，且外层各迭代独立无依赖。内层操作是标量（`if`/`GetValue`/`SetValue`），而非 `T.tile` 向量操作。
+
+```python
+# ❌ 正交轴被串行化，内层是标量操作
+for r in range(sub_block_R):
+    for i in range(1, L):
+        if a[r, i] <= v[r, i - 1]:    # 标量 if-else
+            v[r, i] = a[r, i]
+            idx[r, i] = i
+        else:
+            v[r, i] = v[r, i - 1]
+            idx[r, i] = idx[r, i - 1]
+```
+
+**性能原因**：扫描轴有真依赖无法消除，但正交轴各元素独立——串行处理正交轴浪费了向量化的并行能力。标量操作导致指令数和 icache miss 随并行轴规模线性增长。
+
+**与 §Vector Core 内逐元素/逐行 for loop 计算的区别**：
+- 那里的循环内已经是 `T.tile` 操作（broadcast 即可消除循环）
+- 这里的循环内是标量 `if`/`GetValue`/`SetValue`，且扫描轴有依赖无法直接消除
+
+**替代写法**：识别正交轴 → transpose 使并行轴内存连续 → 折叠为 `T.tile.compare/select/min` 向量操作。详见 optimization-guide.md §2.15。
+
+```python
+# ✅ 正交轴向量化：transpose [Rows, L] -> [L, Rows]，向量扫描
+for j in range(1, L):
+    T.copy(A[j, col_base:col_base + N], curr_ub)      # N 行连续
+    T.tile.compare(mask, curr_cal, run_min_cal, "LE")  # 向量比较
+    T.tile.select(run_idx, mask, idx_curr, run_idx, ...) # 向量选择
+    T.tile.min(run_min_cal, run_min_cal, curr_cal)     # 向量 min (NaN 正确传播)
+```
+
+**检查点**：
+- 两层嵌套循环中，外层各迭代是否独立（交换顺序结果不变）？
+- 内层是否是标量 `if`/`GetValue`/`SetValue` 而非 `T.tile` 操作？
+- 扫描轴是否有真依赖（无法直接消除内层循环）？
+- 若全部满足，参考 §2.15 正交轴向量化
 
 ---
 

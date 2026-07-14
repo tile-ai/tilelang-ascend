@@ -29,7 +29,8 @@ Step 1: 基线采集（性能 + 精度）
 - **同步原语**：[sync-primitives-guide.md](references/sync-primitives-guide.md)
 - **API 用法**：[tilelang-api-best-practices](../tilelang-custom-skill/tilelang-api-best-practices/SKILL.md)
 - **编程模式**：[tilelang-expert-to-developer](../tilelang-custom-skill/tilelang-expert-to-developer/SKILL.md)
-- **cube最佳实践**：[tilelang-expert-to-developer](references/best-practices/cube_optimization_path.md)
+- **cube最佳实践**：[cube_optimization_path.md](references/best-practices/cube_optimization_path.md)
+- **vector最佳实践**：[vector-practices/](references/vector-practices/)
 
 ---
 
@@ -66,7 +67,7 @@ print(func.get_kernel_source())
 
 ### Step 3: 识别优化点（强制，禁止与 Step 4 合并）
 
-根据算子类型阅读 `optimization-guide.md` 对应章节 + `performance-antipatterns.md`，如果是 cube 核额外参考最佳实践 `best-practices/cube_optimization_path.md`，在 `optimization_log.md` 中输出：
+根据算子类型阅读 `optimization-guide.md` 对应章节 + `performance-antipatterns.md`，如果是 cube 核额外参考 `best-practices/cube_optimization_path.md`，如果是 vector 核额外参考 `vector-practices/` 目录下的文档，在 `optimization_log.md` 中输出：
 
 **Part A 优化点清单**：逐条标注适用/不适用 + 原因 + 参考文件行号。`pass_configs` 不是独立优化点，是伴随修改。
 
@@ -111,7 +112,7 @@ print(func.get_kernel_source())
 
 | 算子类型 | 文档 |
 |---------|------|
-| Vector 型 | [RoPE 优化](references/best-practices/rope-developer-mode.md) |
+| Vector 型 | [RoPE 优化](references/best-practices/rope-developer-mode.md)、[归约遍数融合](references/vector-practices/vector_reduce_pass_fusion.md) |
 | Cube 型 | [GEMM Intrinsic](references/best-practices/gemm_intrinsic_optimize.md) |
 | CV 融合型 | [Flash Attention](references/best-practices/flash_attn_optimize.md) |
 

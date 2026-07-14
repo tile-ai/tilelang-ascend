@@ -342,6 +342,12 @@ T.tile.compare(c_ub, a_ub, b_ub, "EQ")   # tensor vs tensor
 T.tile.compare(c_ub, a_ub, 1.0, "GT")     # tensor vs scalar
 ```
 
+**约束**：
+
+- **256B 对齐**：compare 要求操作数据总量 256 字节对齐（fp32=64 元素，fp16=128 元素），不足时需分块
+- **int32 限制**：int32 只有 `EQ` 有效，`LT/LE/GT/GE` 会被底层强制退化成 `vcmpv_eq`，结果错误。推荐 int32 先 `T.tile.cast` 到 fp32 再比较
+- **NaN 行为**：所有 mode（含 `EQ`）遇到 NaN 都返回 False（IEEE 754）。`EQ(NaN, NaN)` = False。利用此特性可检测 NaN：`compare(mask, x, x, "EQ")` → 正常值/inf 为 True，NaN 为 False
+
 ### 4.7 选择操作
 
 #### T.tile.select(dst, selMask, src0, src1, selMode)
@@ -359,6 +365,41 @@ T.tile.select(c_ub, selmask_ub, a_ub, b_ub, "VSEL_CMPMASK_SPR")
 T.tile.select(c_ub, selmask_ub, a_ub, 1.0, "VSEL_TENSOR_SCALAR_MODE")
 T.tile.select(c_ub, mask_ub, a_ub, b_ub, "VSEL_TENSOR_TENSOR_MODE")
 ```
+
+#### compare + select 使用注意事项
+
+**select 模式选择（影响正确性与性能）**：
+
+`VSEL_CMPMASK_SPR` 从 64 位 CMPMASK 特殊寄存器读掩码，速度快但**上限 64 元素**。当向量宽度 N > 64 时，compare 被拆成多条子指令，SPR 只保留最后一块掩码，导致 select **静默错误**（值正确，索引错误）。int32 在 SPR 模式下也不可用。
+
+```python
+# 按 N 和 dtype 编译期选择（N 是 JIT 常量，零运行时开销）
+sel_mode = "VSEL_CMPMASK_SPR" if (N <= 64 and dtype != "int32") \
+           else "VSEL_TENSOR_TENSOR_MODE"
+```
+
+**NaN 行为（IEEE 754）**：
+
+所有 compare 模式（包括 `EQ`）遇到 NaN 都返回 False。这意味着 `compare(curr, run_min, "LE")` 在 `curr=NaN` 时返回 False → 索引不更新，但 torch.cummin 等 API 期望 NaN 位置索引更新为当前位置。
+
+解法：用 `EQ(curr, curr)` 自比较检测 NaN（NaN 时返回 False，正常值和 inf 返回 True），串联两次 select：
+
+```python
+T.tile.compare(mask_le, curr, run_min, "LE")       # 正常比较
+T.tile.compare(mask_nan, curr, curr, "EQ")          # NaN 检测
+T.tile.select(run_idx, mask_le, idx_curr, run_idx, sel_mode)   # 正常更新
+T.tile.select(run_idx, mask_nan, run_idx, idx_curr, sel_mode)  # NaN 时强制更新
+```
+
+性能优化：host 侧用 `torch.isnan(x).any()` 检测，作为 JIT 编译期常量 `has_nan` 分路——无 NaN 时省掉 NaN 检测的 2 条指令（4 op vs 6 op）。inf 是有序值，不需要走 NaN 慢路径。
+
+**int32 限制**：
+
+- `T.tile.compare`：int32 只有 `EQ` 有效，`LT/LE/GT/GE` 会被底层强制退化成 `vcmpv_eq`，结果错误
+- `T.tile.select`：int32 在 SPR 模式下不可用，必须用 `VSEL_TENSOR_TENSOR_MODE`
+- 推荐方案：int32 转 fp32 处理（`T.tile.cast` 到 float32 后复用 fp 路径），避免 int32 compare 限制
+
+> 详细的分路策略和性能优化见性能优化指南 §2.15。
 
 ### 4.8 gather_mask
 
