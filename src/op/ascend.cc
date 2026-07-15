@@ -209,7 +209,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     ss << "copy_l0c_to_gm";
     config.l0c2gm = true;
     config.print_gm_layout = true;
-  } else if (src.scope() == "shared" || dst.scope() == "shared") {
+  } else if (src.scope() == "shared.ub" || dst.scope() == "shared.ub") {
     config.print_ub = true;
 
     if (src.scope() == "global") {

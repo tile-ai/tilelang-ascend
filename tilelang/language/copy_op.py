@@ -199,8 +199,8 @@ def _is_cross_cv_copy(src: tir.Buffer, dst: tir.Buffer) -> bool:
     src_scope: str = src.scope()
     dst_scope: str = dst.scope()
     return (
-        (src_scope == "shared" and dst_scope == "shared.l1")  # UB → L1
-        or (src_scope == "wmma.accumulator" and dst_scope == "shared")  # L0C → UB
+        (src_scope == "shared.ub" and dst_scope == "shared.l1")  # UB → L1
+        or (src_scope == "wmma.accumulator" and dst_scope == "shared.ub")  # L0C → UB
     )
 
 
@@ -373,7 +373,7 @@ def copy_cv_experiment(src: tir.Buffer, dst: tir.Buffer, mode: int | CopyCVMode 
     """L0C to UB direct copy using TMOV (PTO A5 only).
 
     Args:
-        dst: Destination buffer (UB, 'shared' scope)
+        dst: Destination buffer (UB, 'shared.ub' scope)
         src: Source buffer (L0C, 'wmma.accumulator' scope)
         mode: CopyCVMode (TMOV AccToVecMode)  (default CopyCVMode.DualSplitM)
     """
@@ -403,8 +403,8 @@ def copy_vc_experiment(
              - dst_l1[x, y]    → index_row=x, index_col=y (BufferLoad)
              - dst_l1[:, :]    → index_row=0, index_col=0 (full slice)
              Partial slices (e.g. dst_l1[16:32, :]) raise ValueError.
-        src: Source buffer (UB, 'shared' scope) — ND format
-        tmp: Temporary buffer (UB, 'shared' scope) — scratch for NZ conversion
+        src: Source buffer (UB, 'shared.ub' scope) — ND format
+        tmp: Temporary buffer (UB, 'shared.ub' scope) — scratch for NZ conversion
         index_row: Row insert offset (default 0). Overridden by dst slice syntax.
         index_col: Column insert offset (default 0). Overridden by dst slice syntax.
         mode: TINSERT TInsertMode (0=default, 2=SPLIT2, 3=SPLIT4)
