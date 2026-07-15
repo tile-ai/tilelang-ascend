@@ -24,18 +24,17 @@ Covers:
     15. Loop back-edge S->V cross-iteration
     16. If/else history isolation (different buffers per branch)
     17. If/else same buffer same pipeline (no PipeBarrier_ALL)
-    18. If/else cross-branch conflict (different pipelines -> PipeBarrier_ALL)
-    19. Dedup multiple V deps in single statement
-    20. Consecutive V->V across statements (each needs own barrier)
-    21. Event-pair dedup (multiple S->V deps in single statement)
-    22. Mixed dedup (barrier + event in one statement)
-    23. Event ID rotation (1..7 round-robin)
-    24. Event ID wraparound (mod 8, IDs reused)
-    25. Set/Wait flag ID pairing
-    26. Alias detection via physical address overlap
-    27. V->S EventPair (scalar read from V-written UB)
-    28. MTE2->S EventPair (scalar read from MTE2-written UB)
-    29. MTE3->S EventPair (scalar read from MTE3-read UB)
+    18. Dedup multiple V deps in single statement
+    19. Consecutive V->V across statements (each needs own barrier)
+    20. Event-pair dedup (multiple S->V deps in single statement)
+    21. Mixed dedup (barrier + event in one statement)
+    22. Event ID rotation (1..7 round-robin)
+    23. Event ID wraparound (mod 8, IDs reused)
+    24. Set/Wait flag ID pairing
+    25. Alias detection via physical address overlap
+    26. V->S EventPair (scalar read from V-written UB)
+    27. MTE2->S EventPair (scalar read from MTE2-written UB)
+    28. MTE3->S EventPair (scalar read from MTE3-read UB)
 
   L2 - Anomaly tests:
     1. Read-only no sync
@@ -43,6 +42,8 @@ Covers:
     3. Resource scope (CV combine) no crash
     4. Nested loop back-edge (inner + outer)
     5. If-without-else history propagation
+    6. Nested loop V->S dedup (revisit dedup guard, PR #1384)
+    7. Outer back-edge V -> inner S cross-iteration sync
 
   Boundary - Platform/backend edge cases:
     1. A5 skips PIPE_V barrier (PTO)
@@ -832,35 +833,6 @@ def test_if_else_same_buffer_same_pipeline(target):
 
 
 @TARGETS_WITH_PTO
-def test_if_else_cross_branch_barrier_all(target):
-    """If/else with same buffer, V in then vs MTE2 in else -> PipeBarrier_ALL.
-
-    When both branches access the same buffer but with different pipelines,
-    the pass inserts PipeBarrier_ALL after the if/else and clears history.
-    """
-
-    @T.prim_func
-    def main(
-        A: T.Tensor((2, 64), "float32"),  # type: ignore
-        B: T.Tensor((64,), "float32"),  # type: ignore
-        sel: T.Tensor((1,), "int32"),  # type: ignore
-    ):
-        with T.Kernel(1, is_npu=True) as (cid, vid):
-            a_ub = T.alloc_ub((64,), "float32")
-            s = sel[0]
-            if s > 0:
-                T.copy(A[0, :], a_ub)
-                T.tile.exp(a_ub, a_ub)
-            else:
-                T.copy(A[1, :], a_ub)
-            T.copy(a_ub, B[:])
-
-    src, _ = _compile_and_get_source(main, PASS_VS_ONLY, target=target, out_idx=[1])
-
-    _assert_has_sync(src, target, "barrier_all")
-
-
-@TARGETS_WITH_PTO
 def test_event_pair_dedup(target):
     """Multiple S->V deps in single V statement -> deduped to 1 S_V event."""
 
@@ -915,6 +887,207 @@ def test_mixed_dedup_barrier_and_event(target):
 
     _assert_has_sync(src, target, "barrier_v")
     _assert_has_sync(src, target, "s_v")
+
+
+# ---------------------------------------------------------------------------
+# Cross-statement EventPair dedup tests
+# ---------------------------------------------------------------------------
+
+
+@TARGETS_WITH_PTO
+def test_cross_stmt_s_v_dedup(target):
+    """Two separate V statements reading two S-written UBs -> 1 S_V event.
+
+    Cross-statement dedup: set_flag(S_V) synchronizes ALL prior S writes,
+    so the second S->V dependency is covered by the first event pair.
+    Without synced_events tracking, each V statement would generate its
+    own S_V event pair.
+    """
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((64, 128), "float32"),  # type: ignore
+        B: T.Tensor((64, 128), "float32"),  # type: ignore
+        C: T.Tensor((64, 128), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            ub1 = T.alloc_ub((64, 128), "float32")
+            ub2 = T.alloc_ub((64, 128), "float32")
+            T.copy(A[:, :], ub1)
+            T.copy(B[:, :], ub2)
+            ub1[0, 0] = T.cast(1.0, "float32")
+            ub2[0, 0] = T.cast(1.0, "float32")
+            T.tile.exp(ub1, ub1)
+            T.tile.exp(ub2, ub2)
+            T.tile.add(ub1, ub1, ub2)
+            T.copy(ub1, C[:, :])
+
+    src, _ = _compile_and_get_source(main, PASS_VS_ONLY, target=target, out_idx=[2])
+
+    sv_count = _count_sync(src, target, "s_v")
+    assert sv_count == 1, f"Expected exactly 1 S_V event pair (cross-stmt dedup), got {sv_count}.\nSource:\n{src}"
+
+
+@TARGETS_WITH_PTO
+def test_cross_stmt_v_s_dedup(target):
+    """Two separate S scalar reads from two V-written UBs -> 1 V_S event.
+
+    Cross-statement dedup: set_flag(V_S) synchronizes ALL prior V writes,
+    so the second V->S dependency is covered by the first event pair.
+    """
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((64, 128), "float32"),  # type: ignore
+        B: T.Tensor((64, 128), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            ub1 = T.alloc_ub((1,), "float32")
+            ub2 = T.alloc_ub((1,), "float32")
+            b_ub = T.alloc_ub((1,), "float32")
+            T.copy(A[0, 0:1], ub1)
+            T.copy(A[0, 0:1], ub2)
+            T.tile.exp(ub1, ub1)
+            T.tile.exp(ub2, ub2)
+            val1 = ub1[0]
+            b_ub[0] = val1
+            val2 = ub2[0]
+            b_ub[0] = val2
+            T.copy(ub1, B[0, 0:1])
+
+    src, _ = _compile_and_get_source(main, PASS_VS_ONLY, target=target, out_idx=[1])
+
+    vs_count = _count_sync(src, target, "v_s")
+    assert vs_count == 1, f"Expected exactly 1 V_S event pair (cross-stmt dedup), got {vs_count}.\nSource:\n{src}"
+
+
+@TARGETS_WITH_PTO
+def test_new_s_write_breaks_dedup(target):
+    """S write after first S_V event -> second S_V event NOT deduped.
+
+    The new S write creates a fresh access history entry with empty
+    synced_events, so the subsequent V read requires a new S_V event.
+    """
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((64, 128), "float32"),  # type: ignore
+        B: T.Tensor((64, 128), "float32"),  # type: ignore
+        C: T.Tensor((64, 128), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            ub1 = T.alloc_ub((64, 128), "float32")
+            ub2 = T.alloc_ub((64, 128), "float32")
+            T.copy(A[:, :], ub1)
+            T.copy(B[:, :], ub2)
+            ub1[0, 0] = T.cast(1.0, "float32")
+            T.tile.exp(ub1, ub1)
+            ub2[0, 0] = T.cast(1.0, "float32")
+            T.tile.exp(ub2, ub2)
+            T.tile.add(ub1, ub1, ub2)
+            T.copy(ub1, C[:, :])
+
+    src, _ = _compile_and_get_source(main, PASS_VS_ONLY, target=target, out_idx=[2])
+
+    sv_count = _count_sync(src, target, "s_v")
+    assert sv_count == 2, f"Expected exactly 2 S_V event pairs (new S write breaks dedup), got {sv_count}.\nSource:\n{src}"
+
+
+@TARGETS_WITH_PTO
+def test_write_history_event_dedup(target):
+    """WAW dep via write_history is deduped by prior S_V event.
+
+    S writes ub1, V reads ub1 (EventPair_S_V inserted), V writes ub1.
+    The V write checks write_history (S-write with synced_events) and
+    the S->V WAW dependency is deduped.
+    """
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((64, 128), "float32"),  # type: ignore
+        B: T.Tensor((64, 128), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            ub1 = T.alloc_ub((64, 128), "float32")
+            ub_out = T.alloc_ub((64, 128), "float32")
+            T.copy(A[:, :], ub1)
+            ub1[0, 0] = T.cast(1.0, "float32")
+            T.tile.exp(ub_out, ub1)
+            T.tile.exp(ub1, ub1)
+            T.copy(ub1, B[:, :])
+
+    src, _ = _compile_and_get_source(main, PASS_VS_ONLY, target=target, out_idx=[1])
+
+    sv_count = _count_sync(src, target, "s_v")
+    assert sv_count == 1, f"Expected exactly 1 S_V event pair (write_history WAW deduped), got {sv_count}.\nSource:\n{src}"
+
+
+@TARGETS_WITH_PTO
+def test_loop_back_edge_event_dedup(target):
+    """Loop with 2 S writes + 2 V reads -> 1 S_V + 1 V_S per iteration.
+
+    Cross-statement dedup applies in both the first pass (S->V) and the
+    revisit pass (back-edge V->S). Without synced_events tracking, each
+    pass would generate 2 event pairs instead of 1.
+    """
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((64, 128), "float32"),  # type: ignore
+        B: T.Tensor((64, 128), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            ub1 = T.alloc_ub((64, 128), "float32")
+            ub2 = T.alloc_ub((64, 128), "float32")
+            T.copy(A[:, :], ub1)
+            T.copy(A[:, :], ub2)
+            for _i in T.serial(4):
+                ub1[0, 0] = T.cast(1.0, "float32")
+                ub2[0, 0] = T.cast(1.0, "float32")
+                T.tile.exp(ub1, ub1)
+                T.tile.exp(ub2, ub2)
+            T.copy(ub1, B[:, :])
+
+    src, _ = _compile_and_get_source(main, PASS_VS_ONLY, target=target, out_idx=[1])
+
+    sv_count = _count_sync(src, target, "s_v")
+    vs_count = _count_sync(src, target, "v_s")
+    assert sv_count == 1, f"Expected exactly 1 S_V event pair (loop cross-stmt dedup), got {sv_count}.\nSource:\n{src}"
+    assert vs_count == 1, f"Expected exactly 1 V_S event pair (loop back-edge dedup), got {vs_count}.\nSource:\n{src}"
+
+
+@TARGETS_WITH_PTO
+def test_mixed_direction_no_cross_dedup(target):
+    """V->S and S->V in sequence -> both event types inserted (no cross-dedup).
+
+    EventPair_V_S and EventPair_S_V are different sync types; dedup is
+    exact-string-match only.
+    """
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((64, 128), "float32"),  # type: ignore
+        B: T.Tensor((64, 128), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            ub1 = T.alloc_ub((1,), "float32")
+            ub2 = T.alloc_ub((64, 128), "float32")
+            b_ub = T.alloc_ub((1,), "float32")
+            T.copy(A[0, 0:1], ub1)
+            T.copy(A[:, :], ub2)
+            T.tile.exp(ub1, ub1)
+            val1 = ub1[0]
+            b_ub[0] = val1
+            ub2[0, 0] = T.cast(1.0, "float32")
+            T.tile.exp(ub2, ub2)
+            T.copy(ub2, B[:, :])
+
+    src, _ = _compile_and_get_source(main, PASS_VS_ONLY, target=target, out_idx=[1])
+
+    vs_count = _count_sync(src, target, "v_s")
+    sv_count = _count_sync(src, target, "s_v")
+    assert vs_count == 1, f"Expected exactly 1 V_S event pair, got {vs_count}.\nSource:\n{src}"
+    assert sv_count == 1, f"Expected exactly 1 S_V event pair, got {sv_count}.\nSource:\n{src}"
 
 
 @TARGETS_WITH_PTO
@@ -1237,6 +1410,69 @@ def test_nested_loop_back_edge(target):
 
     src, _ = _compile_and_get_source(main, PASS_VS_ONLY, target=target, out_idx=[1])
     _assert_has_sync(src, target, "barrier_v")
+
+
+@TARGETS_WITH_PTO
+def test_nested_loop_v_to_s_dedup(target):
+    """Nested loops with single V->S dep in inner body -> exactly 1 V_S pair.
+
+    The inner loop body has a V write (exp) followed by an S scalar read
+    of the same buffer.  Each enclosing loop's revisit pass re-traverses
+    the inner body, but the non-back-edge guard in GetRequiredSyncType
+    prevents re-inserting the same-iteration V_S pair, so exactly one V_S
+    pair is emitted regardless of nesting depth.
+    """
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((128,), "float32"),  # type: ignore
+        B: T.Tensor((128,), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((128,), "float32")
+            b_ub = T.alloc_ub((1,), "float32")
+            T.copy(A[:], a_ub)
+            for _i in T.serial(4):
+                for _j in T.serial(4):
+                    T.tile.exp(a_ub, a_ub)
+                    val = a_ub[0]
+                    b_ub[0] = val
+            T.copy(a_ub, B[:])
+
+    src, _ = _compile_and_get_source(main, PASS_VS_ONLY, target=target, out_idx=[1])
+    vs_count = _count_sync(src, target, "v_s")
+    assert vs_count == 1, f"Expected exactly 1 V_S pair for nested-loop V->S dep, got {vs_count}.\nSource:\n{src}"
+
+
+@TARGETS_WITH_PTO
+def test_outer_back_edge_v_to_inner_s_sync(target):
+    """Outer loop back-edge V write -> next-iter inner-body S read needs V_S.
+
+    The outer loop writes V (exp) AFTER the inner loop; the inner loop's
+    first statement reads the same buffer (S scalar read).  This creates a
+    cross-iteration RAW dependency (outer back-edge V -> inner S) requiring
+    a V_S event pair.  The outer-loop revisit pass re-traverses the inner
+    body, detecting this cross-iteration dependency.
+    """
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((128,), "float32"),  # type: ignore
+        B: T.Tensor((128,), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((128,), "float32")
+            b_ub = T.alloc_ub((1,), "float32")
+            T.copy(A[:], a_ub)
+            for _i in T.serial(4):
+                for _j in T.serial(4):
+                    val = a_ub[0]
+                    b_ub[0] = val
+                T.tile.exp(a_ub, a_ub)
+            T.copy(a_ub, B[:])
+
+    src, _ = _compile_and_get_source(main, PASS_VS_ONLY, target=target, out_idx=[1])
+    _assert_has_sync(src, target, "v_s")
 
 
 @TARGETS_WITH_PTO

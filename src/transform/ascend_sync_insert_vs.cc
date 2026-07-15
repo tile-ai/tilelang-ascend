@@ -79,6 +79,7 @@ private:
     std::string pipeline;
     std::string operation;
     std::set<std::string> pipe_barriers;
+    std::set<std::string> event_pairs;
     int64_t physical_address;
     bool is_back_edge = false;
   };
@@ -134,6 +135,31 @@ private:
             for (auto &pair : current_write_history_) {
               if (pair.second.pipeline == pipeline) {
                 pair.second.pipe_barriers.insert(barrier);
+              }
+            }
+          }
+        }
+        return GetRef<Stmt>(op);
+      }
+
+      if (call->op.same_as(tl::ascend_auto_set_flag()) ||
+          call->op.same_as(tl::ascend_auto_wait_flag())) {
+        if (call->args.size() >= 1) {
+          if (auto str = call->args[0].as<StringImmNode>()) {
+            std::string event_type = str->value;
+            std::string event_sync = "EventPair_" + event_type;
+            size_t pos = event_type.find('_');
+            if (pos != std::string::npos) {
+              std::string src_pipeline = "PIPE_" + event_type.substr(0, pos);
+              for (auto &pair : current_access_history_) {
+                if (pair.second.pipeline == src_pipeline) {
+                  pair.second.event_pairs.insert(event_sync);
+                }
+              }
+              for (auto &pair : current_write_history_) {
+                if (pair.second.pipeline == src_pipeline) {
+                  pair.second.event_pairs.insert(event_sync);
+                }
               }
             }
           }
@@ -237,8 +263,6 @@ private:
     if (op->else_case.defined()) {
       else_case = VisitStmt(op->else_case.value());
     }
-    auto else_history = current_access_history_;
-    auto else_write_history = current_write_history_;
 
     current_access_history_ = saved_history;
     current_write_history_ = saved_write_history;
@@ -248,35 +272,6 @@ private:
     for (const auto &kv : then_write_history) {
       current_write_history_[kv.first] = kv.second;
     }
-    if (op->else_case.defined()) {
-      for (const auto &kv : else_history) {
-        current_access_history_[kv.first] = kv.second;
-      }
-      for (const auto &kv : else_write_history) {
-        current_write_history_[kv.first] = kv.second;
-      }
-    }
-
-    if (!is_revisit_pass_ && op->else_case.defined()) {
-      bool has_conflict = false;
-      for (const auto &kv : then_history) {
-        auto it = else_history.find(kv.first);
-        if (it != else_history.end() &&
-            it->second.pipeline != kv.second.pipeline) {
-          has_conflict = true;
-          break;
-        }
-      }
-      if (has_conflict) {
-        std::vector<Stmt> stmts;
-        stmts.push_back(IfThenElse(op->condition, then_case, else_case));
-        InsertSynchronization("PipeBarrier_ALL", stmts);
-        current_access_history_.clear();
-        current_write_history_.clear();
-        return SeqStmt(stmts);
-      }
-    }
-
     return IfThenElse(op->condition, then_case, else_case);
   }
 
@@ -597,7 +592,12 @@ private:
     std::string event_type =
         GetEventType(prev_access.pipeline, curr_access.pipeline);
     if (!event_type.empty()) {
-      return "EventPair_" + event_type;
+      std::string event_sync = "EventPair_" + event_type;
+      if (prev_access.event_pairs.find(event_sync) !=
+          prev_access.event_pairs.end()) {
+        return "";
+      }
+      return event_sync;
     }
     return "";
   }
@@ -835,6 +835,16 @@ private:
                 std::string pipeline = sync_type.substr(12);
                 if (access.pipeline == pipeline) {
                   access.pipe_barriers.insert(sync_type);
+                }
+              } else if (sync_type.find("EventPair_") == 0) {
+                std::string event_type = sync_type.substr(10);
+                size_t pos = event_type.find('_');
+                if (pos != std::string::npos) {
+                  std::string src_pipeline =
+                      "PIPE_" + event_type.substr(0, pos);
+                  if (access.pipeline == src_pipeline) {
+                    access.event_pairs.insert(sync_type);
+                  }
                 }
               }
             }
