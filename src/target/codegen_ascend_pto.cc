@@ -741,18 +741,22 @@ void CodeGenTileLangAscendPto::VisitExpr_(const BufferLoadNode *op,
 
 void CodeGenTileLangAscendPto::VisitStmt_(const BufferStoreNode *op) {
   auto var_name = var_idmap_[op->buffer->data.get()];
-  this->PrintIndent();
   std::string scope = op->buffer.scope();
+  std::string value = PrintExpr(op->value);
+  std::string index;
+  if (scope != "local.var") {
+    index = PrintExpr(op->indices.back());
+  }
+  this->PrintIndent();
 
   if (scope == "" || scope == "global") {
-    this->stream << "*(" << var_name << "_handle + "
-                 << PrintExpr(op->indices.back())
-                 << ") = " << PrintExpr(op->value) << ";\n";
+    this->stream << "*(" << var_name << "_handle + " << index << ") = " << value
+                 << ";\n";
   } else if (scope == "local.var") {
-    this->stream << var_name << " = " << PrintExpr(op->value) << ";\n";
+    this->stream << var_name << " = " << value << ";\n";
   } else {
-    this->stream << var_name << ".SetValue(" << PrintExpr(op->indices.back())
-                 << ", " << PrintExpr(op->value) << ");\n";
+    this->stream << var_name << ".SetValue(" << index << ", " << value
+                 << ");\n";
   }
 }
 
