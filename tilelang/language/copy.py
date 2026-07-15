@@ -79,6 +79,24 @@ def buffer_region_to_tile_region(buffer_region: tir.BufferRegion, access_type: s
     return region(T.BufferLoad(buffer_region.buffer, mins), access_type, *region_extents)
 
 
+def _copy_rank_zero_source(src, dst) -> bool:
+    """Copy a rank-zero source through scalar load and store operations."""
+    if isinstance(src, tir.Var) and T.has_let_value(src):
+        src = T.get_let_value(src)
+    if isinstance(dst, tir.Var) and T.has_let_value(dst):
+        dst = T.get_let_value(dst)
+    if not isinstance(src, tir.Buffer) or not isinstance(dst, tir.Buffer):
+        return False
+    if len(src.shape) != 0 or dst.scope() != "shared.ub":
+        return False
+
+    src = src.get_flattened_buffer()
+    dst = dst.get_flattened_buffer() if len(dst.shape) == 0 else dst
+    ir.assert_structural_equal(src.shape, dst.shape)
+    T.buffer_store(dst, tir.BufferLoad(src, [0]), [0])
+    return True
+
+
 def copy(
     src: tir.Buffer | tir.BufferLoad | tir.BufferRegion,
     dst: tir.Buffer | tir.BufferLoad,
@@ -217,6 +235,9 @@ def npu_copy_v2(
     Returns:
         tir.Call: A handle to the copy operation
     """
+    if not enable_relu and not transpose and pad_value is None and _copy_rank_zero_source(src, dst):
+        return None
+
     if isinstance(src, tir.Buffer) and isinstance(dst, tir.Buffer) and not transpose:
         ir.assert_structural_equal(src.shape, dst.shape)
 
