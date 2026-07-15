@@ -2437,9 +2437,7 @@ void CodeGenTileLangAscendPto::RowExpandBinOpExperimentCodegenPto(
   std::string src1_name = src1.ub_name;
   if (src1.is_slice) {
     src1_name = GetTempVarName(src1.ub_name);
-    ShapeInfo src1_aligned = src1;
-    src1_aligned.slice_valid_col = src1.slice_col;
-    CreateUbVariableND(src1_name, src1_aligned);
+    CreateUbVariableND(src1_name, src1);
   }
 
   std::string dst_name = dst.ub_name;
@@ -2454,14 +2452,17 @@ void CodeGenTileLangAscendPto::RowExpandBinOpExperimentCodegenPto(
     CreateUbVariableND(src0_name, src0);
   }
 
-  int32_t src1_len = src1.slice_col;
-  int32_t dst_rows = dst.is_slice ? dst.slice_valid_row : dst.row;
-  int32_t dst_cols = dst.is_slice ? dst.slice_valid_col : dst.col;
+  int32_t dst_rows = dst.is_slice ? dst.slice_row : dst.row;
+  int32_t dst_cols = dst.is_slice ? dst.slice_col : dst.col;
+  int32_t dst_row_valid = dst.is_slice ? dst.slice_valid_row : dst.row;
+  int32_t dst_col_valid = dst.is_slice ? dst.slice_valid_col : dst.col;
+  int32_t src1_len = dst_row_valid;
 
   this->PrintIndent();
   this->stream << kAscendPtoScope << pto_op_name << "<" << src1.type << ", "
-               << dst_rows << ", " << dst_cols << ", " << src1_len << ">("
-               << dst_name << ", " << src0_name << ", " << src1_name << ", "
+               << dst_rows << ", " << dst_cols << ", " << dst_row_valid << ", "
+               << dst_col_valid << ", " << src1_len << ">(" << dst_name << ", "
+               << src0_name << ", " << src1_name << ", "
                << PrintExpr(src1.first_addr) << ", " << src1.offset;
   if (has_tmp) {
     this->stream << ", " << tmp.ub_name;
