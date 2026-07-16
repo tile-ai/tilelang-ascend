@@ -481,12 +481,16 @@ void CodeGenTileLangAscend::VisitExpr_(const BufferLoadNode *op,
 void CodeGenTileLangAscend::VisitStmt_(const BufferStoreNode *op) {
   auto var_name = var_idmap_[op->buffer->data.get()];
   std::string scope = GetPtrStorageScope(op->buffer->data);
-  this->PrintIndent();
   if (scope == "local.var") {
-    this->stream << var_name << " = " << PrintExpr(op->value) << ";\n";
+    std::string value = PrintExpr(op->value);
+    this->PrintIndent();
+    this->stream << var_name << " = " << value << ";\n";
   } else {
-    this->stream << var_name << ".SetValue(" << PrintExpr(op->indices.back())
-                 << ", " << PrintExpr(op->value) << ");\n";
+    std::string index = PrintExpr(op->indices.back());
+    std::string value = PrintExpr(op->value);
+    this->PrintIndent();
+    this->stream << var_name << ".SetValue(" << index << ", " << value
+                 << ");\n";
   }
 }
 
