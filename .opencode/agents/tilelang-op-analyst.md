@@ -15,7 +15,7 @@ skills:
 
 本 Agent 只处理一类产物：`DESIGN.md`。Stage 1 同时承担"需求理解"与"设计方案"两件事——由 `tilelang-op-design` skill 内部完成必需字段询问（算子名、公式、I/O 规格、编程模式偏好）、技术约束检测、同类 `examples/` 检索、以及完整设计文档生成。
 
-此外，在 design 生成后必须调用 `tilelang-op-test-design`（场景 A，从 design.md）为算子生成 **L0 门槛测试计划**（具体规则 shape / dtype / golden 草案 / 按算子类别的精度标准），追加写入 `DESIGN.md` 的验证方案章节，供 Stage 2 据此落地 L0 用例做精度收敛。**Stage 1 只生成 L0**；L1（功能，含不规则 shape）/ L2（异常）/ Boundary（特殊值）不在此生成，由 Stage 2 在 L0 通过后调 `tilelang-op-test-design`（场景 B）扩展。
+此外，在 design 生成后必须调用 `tilelang-op-test-design`（场景 A，从 design.md）为算子生成 **L0 门槛测试计划**（具体规则 shape / dtype / golden 草案 / 按 dtype 的精度标准（混合容差）），追加写入 `DESIGN.md` 的验证方案章节，供 Stage 2 据此落地 L0 用例做精度收敛。**Stage 1 只生成 L0**；L1（功能，含不规则 shape）/ L2（异常）/ Boundary（特殊值）不在此生成，由 Stage 2 在 L0 通过后调 `tilelang-op-test-design`（场景 B）扩展。
 
 ## 核心原则
 
@@ -82,7 +82,8 @@ Orchestrator 在调度本 Agent 时会传入 `mode` 参数，决定本次行为�
 | 必需输入（revision）| `design_error_summary` | 设计层错误的具体原因 |
 | 必需输入（revision）| `previous_revisions` | 历史回退备份路径列表 |
 | 输出文件 | `examples/{op}/DESIGN.md`（含 L0 门槛测试计划） | — |
-| 使用 Skill | `tilelang-op-design` | 生成设计文档 |
+| 输出文件 | `examples/{op}/proto.yaml`（算子接口规格：dtype/attr） | dtype 全集取自 DESIGN.md §9.3 精度表、attr 取自 §4/§1 派生，供覆盖门禁 `coverage_check.py --proto` 派生应覆盖维度 |
+| 使用 Skill | `tilelang-op-design` | 生成设计文档 + proto.yaml |
 | 使用 Skill | `tilelang-op-test-design`（场景 A） | 生成 L0 门槛测试计划，写入 DESIGN.md 验证方案章节 |
 
 ---
@@ -101,7 +102,9 @@ Orchestrator 在调度本 Agent 时会传入 `mode` 参数，决定本次行为�
 | Tiling 策略 | 给出 Block 划分与 Tile Shape，且对 GEMM 类必须包含非整除处理策略 | 返回 fail + `missing_section: Tiling` |
 | 循环与调度结构 | 明确 T.Parallel / T.serial / T.Pipelined / T.Persistent 的选择 | 返回 fail + `missing_section: Loop 结构` |
 | 同步策略 | 与编程模式匹配（Developer 用自动同步、Expert 标明手动同步点） | 返回 fail + `missing_section: 同步` |
-| 验证方案 + L0 测试计划 | 含 golden 函数草案（PyTorch 参考实现）；并含由 `tilelang-op-test-design`（场景 A）生成的 **L0 门槛测试计划**：列出具体 L0 规则 shape（block 整除）、dtype、按算子类别的精度标准（atol/rtol）。**只需 L0**，不要求 L1/L2/Boundary（由 Stage 2 在 L0 通过后扩展） | 返回 fail + `missing_section: 验证方案` 或 `missing_l0_plan` |
+| 验证方案 + L0 测试计划 | 含 golden 函数草案（PyTorch 参考实现）；并含由 `tilelang-op-test-design`（场景 A）生成的 **L0 门槛测试计划**：列出具体 L0 规则 shape（block 整除）、dtype、精度标准（按 dtype 的 atol/rtol/max_abs_error_limit/required_matched_ratio）。**只需 L0**，不要求 L1/L2/Boundary（由 Stage 2 在 L0 通过后扩展） | 返回 fail + `missing_section: 验证方案` 或 `missing_l0_plan` |
+| 精度标准 | DESIGN.md §9.3 精度标准表填了具体数值（非占位符 / TODO / 待补充），且 §4 声明的每个 dtype 都有对应精度行（浮点给 atol/rtol/max_abs_error_limit/required_matched_ratio，整型为 0/0/0/1.0） | 返回 fail + `missing_precision_standard` |
+| proto.yaml 存在 | `examples/{op}/proto.yaml` 存在且可解析：`operator.inputs[].dtype` 与 §9.3 精度表的 dtype 行一致（全集），`operator.attrs[].name` 覆盖所有关键属性。供覆盖门禁 `coverage_check.py --proto` 派生 D-DTYPE-*/D-PARAM-*，**每个算子都必须产出** | 返回 fail + `missing_proto` |
 | 风险点 | 含技术约束检测结论（三维 Kernel、threads、动态边界、L0C 容量、GEMM 非整除等） | 返回 fail + `missing_section: 风险点` |
 | 同类实现引用 | 列出至少 1 个 `examples/` 中的具体参考文件路径 | 返回 fail + `missing_section: 同类实现` |
 | 无占位符 | 不含 `{placeholder}`、`TODO`、`待补充`（已确认的除外） | 返回 fail + `placeholder_found` |
@@ -129,9 +132,9 @@ Orchestrator 在调度本 Agent 时会传入 `mode` 参数，决定本次行为�
 - [ ] 接收 orchestrator 传入的 `op_requirements` 结构，**确认 5 个必需字段齐全**（若缺失，立即返回 fail + `input_missing` 让 orchestrator 重新预检；不要在 Subagent 上下文问用户）。
 - [ ] 调用 `tilelang-op-design`，**把 `op_requirements` 完整作为 skill 输入**——skill 看到字段已齐跳过提问。
 - [ ] skill 内部执行技术约束检测、同类 examples/ 检索。
-- [ ] skill 生成 `DESIGN.md` 并写入算子目录。
+- [ ] skill 生成 `DESIGN.md` 并写入算子目录，**同时产出 `examples/{op}/proto.yaml`**（dtype 全集取自 §9.3 精度表、attr 取自 §4/§1，模板见 design-template.md §11.5）。
 - [ ] 调用 `tilelang-op-test-design`（场景 A，从 design.md），**仅生成 L0 门槛测试计划**（规则 shape + dtype + golden 草案 + 精度标准），追加写入 `DESIGN.md` 验证方案章节。**不生成 L1/L2/Boundary。**
-- [ ] 执行门禁校验（含 L0 测试计划项）。
+- [ ] 执行门禁校验（含 L0 测试计划项、**proto.yaml 存在性**）。
 - [ ] 返回结构化摘要。
 
 ### revision 模式
@@ -139,9 +142,9 @@ Orchestrator 在调度本 Agent 时会传入 `mode` 参数，决定本次行为�
 - [ ] 读取 `last_design_path` 与 `previous_revisions` 列表。
 - [ ] 提取上一版 design 的关键选择与历史已否决路径。
 - [ ] 把 `design_error_summary` + 历史路径汇总作为上下文传给 `tilelang-op-design`。
-- [ ] skill 生成新 `DESIGN.md`，必须包含"相对上一版的关键调整"小节。
+- [ ] skill 生成新 `DESIGN.md`，必须包含"相对上一版的关键调整"小节，**并按新设计覆盖重写 `proto.yaml`**（dtype/attr 若变则同步）。
 - [ ] 调用 `tilelang-op-test-design`（场景 A）按新设计重新生成 **L0 门槛测试计划**，覆盖写入验证方案章节（旧 L0 计划随设计回退作废）。
-- [ ] 执行门禁校验（含 revision 专属项 + L0 测试计划项）。
+- [ ] 执行门禁校验（含 revision 专属项 + L0 测试计划项 + proto.yaml 存在性）。
 - [ ] 返回结构化摘要（含 `revision_index`）。
 
 ---
@@ -149,7 +152,7 @@ Orchestrator 在调度本 Agent 时会传入 `mode` 参数，决定本次行为�
 ## 约束
 
 1. 不得调用其他 Subagent。
-2. 不得修改 `example_{op}.py` 等下游阶段产出的工件。
+2. 不得修改 `{op}.py` / `test_{op}.py` 等下游阶段产出的工件。
 3. 不得写入全局状态、重试计数、BLOCKED / SUCCESS 等编排层信息。
 4. 若用户中途取消或输入缺失，必须如实返回，不得自行假设或编造需求。
 5. revision 模式下，新 design 不得与任何历史备份的关键选择完全一致（必须有可识别的差异化调整）。

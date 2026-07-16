@@ -1,295 +1,169 @@
-# TileLang-Ascend 精度标准体系
+# TileLang-Ascend 精度标准体系（混合容差）
 
-**参考来源**：cannbot-skills ops-precision-standard
-
----
-
-## 一、精度标准定义
-
-### 1.1 基本概念
-
-| 概念 | 定义 | 说明 |
-|------|------|------|
-| **atol** | Absolute tolerance | 绝对误差容忍度 |
-| **rtol** | Relative tolerance | 相对误差容忍度 |
-| **精度验证** | `abs(actual - expected) ≤ atol + rtol * abs(expected)` | PyTorch 默认验证公式 |
+**对齐来源**：opbase 生态算子开源精度标准。
+本体系采用**混合容差（Mixed Tolerance）+ 通过率 + 最大绝对误差硬帽**的判定方式，阈值**仅按 dtype**划分。
 
 ---
 
-### 1.2 计算类型精度标准
+## 〇、适用范围
 
-| 计算类型 | dtype | atol | rtol | 说明 |
-|---------|-------|------|------|------|
-| **整数运算** | int8 | 0 | 0 | 精确匹配 |
-| | int16 | 0 | 0 | 精确匹配 |
-| | int32 | 0 | 0 | 精确匹配 |
-| | uint8 | 0 | 0 | 精确匹配 |
-| **浮点运算** | float16 | 1e-3 | 1e-3 | FP16 精度（半精度） |
-| | float32 | 1e-5 | 1e-5 | FP32 精度（单精度） |
-| | bfloat16 | 1e-2 | 5e-3 | BF16 精度（脑浮点） |
-| **量化运算** | qint8 | 1e-2 | 1e-2 | 量化精度（8位量化） |
-| | qint32 | 1e-5 | 1e-5 | 量化精度（32位量化） |
+- 本标准适用于**浮点计算类算子**（float16 / bfloat16 / float32 / hifloat32 / float8_e4m3 / float8_e5m2）。
+- **整型算子**（int8/int16/int32/int64/uint8）按 **0 误差精确匹配**：逐元素必须完全相等，`required_matched_ratio = 1.0`，一个元素不符即 `[PRECISION_FAIL]`。
+- 搬运类 / 其他非计算类算子需按各算子实际业务场景单独制定，不在本标准范围内。
 
 ---
 
-### 1.3 算子类别精度标准
+## 一、误差指标与通过标准
 
-#### GEMM 类（纯 Cube + Single）
+### 1.1 逐元素通过条件（混合容差）
 
-| dtype | atol | rtol | 特殊场景 |
-|-------|------|------|---------|
-| float16 | 1e-3 | 1e-3 | 大矩阵（M/N/K > 1024）可放宽到 5e-3 |
-| float32 | 1e-5 | 1e-5 | 无特殊要求 |
-| bfloat16 | 1e-2 | 5e-3 | 无特殊要求 |
+对输出张量中的每个（有限值）元素，满足下式即判定该元素通过：
 
-**说明**：
-- GEMM 计算精度受累加次数影响
-- 大矩阵累加次数多，精度误差累积
-- 建议根据矩阵大小调整精度标准
-
----
-
-#### Softmax 类（纯 Vector + Multi）
-
-| dtype | atol | rtol | 特殊场景 |
-|-------|------|------|---------|
-| float16 | 1e-3 | 1e-3 | 无特殊要求 |
-| float32 | 1e-4 | 1e-4 | 要求更严格（多步计算） |
-| bfloat16 | 1e-2 | 5e-3 | 无特殊要求 |
-
-**说明**：
-- Softmax 有 4 个计算步骤（max → exp → sum → div）
-- FP32 要求更严格（1e-4）
-- exp 计算可能导致精度损失
-
----
-
-#### Normalization 类（纯 Vector + Multi）
-
-| dtype | atol | rtol | 特殊场景 |
-|-------|------|------|---------|
-| float16 | 1e-3 | 1e-3 | eps < 1e-5 时可能不稳定 |
-| float32 | 1e-4 | 1e-4 | 无特殊要求 |
-| bfloat16 | 1e-2 | 5e-3 | 无特殊要求 |
-
-**说明**：
-- Normalization 计算 mean/var/sqrt，多步计算
-- eps 参数影响精度（过小可能导致除零）
-- FP32 要求更严格（1e-4）
-
----
-
-#### Activation 类（纯 Vector + Single）
-
-| dtype | atol | rtol | 特殊场景 |
-|-------|------|------|---------|
-| float16 | 1e-3 | 1e-3 | sigmoid/gelu 可放宽到 5e-3 |
-| float32 | 1e-5 | 1e-5 | 无特殊要求 |
-| bfloat16 | 1e-2 | 5e-3 | 无特殊要求 |
-
-**说明**：
-- Activation 类计算简单（单步）
-- sigmoid/gelu 涉及指数计算，精度可能略低
-- FP16 可放宽到 5e-3
-
----
-
-#### Reduction 类（纯 Vector + Single）
-
-| dtype | atol | rtol | 特殊场景 |
-|-------|------|------|---------|
-| float16 | 1e-3 | 1e-3 | 大规模归约可放宽到 5e-3 |
-| float32 | 1e-5 | 1e-5 | 无特殊要求 |
-| bfloat16 | 1e-2 | 5e-3 | 无特殊要求 |
-
-**说明**：
-- Reduction 类涉及累加（sum）或比较（max）
-- 大规模归约累加次数多，精度误差累积
-- FP16 可放宽到 5e-3
-
----
-
-#### Fusion 类（混合 + Fusion）
-
-| dtype | atol | rtol | 特殊场景 |
-|-------|------|------|---------|
-| float16 | 1e-3 | 1e-3 | FlashAttention 可放宽到 5e-3 |
-| float32 | 1e-4 | 1e-4 | 无特殊要求 |
-
-**说明**：
-- Fusion 类涉及多个算子组合
-- 精度误差累积更明显
-- FlashAttention 可放宽到 5e-3
-
----
-
-## 二、特殊场景精度标准
-
-### 2.1 特殊值处理
-
-| 特殊值 | 处理方法 | 精度标准 |
-|--------|---------|---------|
-| **INF（无穷）** | 验证 `isinf(actual) == isinf(expected)` | 不验证数值误差 |
-| **NAN（非数）** | 验证 `isnan(actual) == isnan(expected)` | 不验证数值误差 |
-| **零值（±0）** | 验证 `abs(actual) < eps` | atol = 1e-7 |
-| **极小值（< 1e-5）** | 仅验证 atol，忽略 rtol | atol = 1e-7 |
-
-**示例**：
-```python
-def verify_special_values(actual, expected, dtype):
-    if torch.isinf(expected):
-        assert torch.isinf(actual), "INF mismatch"
-    elif torch.isnan(expected):
-        assert torch.isnan(actual), "NAN mismatch"
-    elif abs(expected) < 1e-5:
-        torch.testing.assert_close(actual, expected, atol=1e-7, rtol=0)
-    else:
-        atol, rtol = get_precision(dtype)
-        torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
+```
+|actual - golden| ≤ atol + rtol * |golden|
 ```
 
+- **atol**（绝对容差）：保证小值（golden 接近 0）场景的合理误差范围，天然避免除零。
+- **rtol**（相对容差）：保证大值场景的相对精度。
+
+### 1.2 整体通过条件（双门限）
+
+定义**通过率**：
+
+```
+matched_ratio = 通过元素数 / 总元素数
+```
+
+当**同时**满足以下两个条件时，判定该用例通过：
+
+```
+(1) matched_ratio    ≥ required_matched_ratio
+(2) max_abs_error    ≤ max_abs_error_limit
+```
+
+其中 `max_abs_error` 为该用例中任意元素的最大绝对误差，`max_abs_error_limit` 为绝对误差硬上限。
+二者是**与**关系：允许至多 `1 - required_matched_ratio` 比例的元素超出逐元素容差，但**任何单个元素的绝对误差都不得超过硬帽**。整型为逐元素精确匹配（等价 `required_matched_ratio = 1.0`、硬帽 = 0）。
+
 ---
 
-### 2.2 小值域精度标准
+## 二、混合容差阈值表（按 dtype）
 
-| 值域范围 | dtype | atol | rtol | 说明 |
-|---------|-------|------|------|------|
-| **< 1e-5** | float16 | 1e-7 | 0 | 仅验证绝对误差 |
-| | float32 | 1e-7 | 0 | 仅验证绝对误差 |
-| **1e-5 ~ 1e-3** | float16 | 1e-5 | 1e-3 | 小值域精度 |
-| | float32 | 1e-6 | 1e-5 | 小值域精度 |
-| **> 1e-3** | float16 | 1e-3 | 1e-3 | 正常精度 |
-| | float32 | 1e-5 | 1e-5 | 正常精度 |
+| 数据类型 | rtol | atol | max_abs_error_limit | required_matched_ratio |
+|---|---|---|---|---|
+| **float16** | 2⁻⁹ (1.95e-3) | 2⁻¹⁴ (6.10e-5) | 1e-1 | 0.99 |
+| **bfloat16** | 2⁻⁶ (1.56e-2) | 2⁻¹⁰ (9.77e-4) | 1e0 | 0.99 |
+| **float32** | 2⁻¹⁰ (9.77e-4) | 2⁻¹⁶ (1.53e-5) | 1e-2 | 0.99 |
+| **hifloat32** | 2⁻¹⁰ (9.77e-4) | 2⁻¹⁶ (1.53e-5) | 1e-2 | 0.99 |
+| **float8_e4m3** | 2⁻² (0.25) | 2⁻⁴ (0.0625) | 1e0 | 0.99 |
+| **float8_e5m2** | 2⁻¹ (0.5) | 2⁻³ (0.125) | 1e-1 | 0.99 |
+| **int8/16/32/64, uint8** | 0 | 0 | 0 | 1.0（精确匹配） |
 
 **说明**：
-- 小值域（< 1e-5）仅验证绝对误差
-- 避免 rtol 导致的小值验证失败
+- rtol / atol 均以 **2 的幂**给出。
+- `required_matched_ratio` 浮点统一 0.99；整型必须 1.0。
+- 阈值**只看 dtype，不看算子类别**——GEMM / Softmax / Normalization / Activation / Reduction / Fusion 统一用本表。
 
 ---
 
-### 2.3 量化精度标准
+## 三、通过判定（单标杆）
 
-| 量化类型 | atol | rtol | 说明 |
-|---------|------|------|------|
-| **对称量化** | 1e-2 | 1e-2 | int8 量化精度 |
-| **非对称量化** | 5e-3 | 5e-3 | uint8 量化精度（更严格） |
-| **混合精度量化** | 1e-3 | 1e-3 | 高精度量化 |
+- **单标杆比对**：与更高精度的实现（CPU 或昇腾小算子拼接）的单一精度标杆直接比较作为 golden。
+- 当用例同时满足 `matched_ratio ≥ required_matched_ratio` 且 `max_abs_error ≤ max_abs_error_limit` 时，判定该用例精度通过。
 
-**说明**：
-- 量化精度受量化范围影响
-- 非对称量化精度更高（范围更小）
+### 3.1 特殊值（INF / NAN）处理
+
+`|inf - inf|` 会得到 `nan`，无法计入数值容差，因此 inf/nan 位置做**结构比对**，不参与 `matched_ratio` / `max_abs_error` 计算：
+
+- `isinf(actual)` 与 `isinf(golden)` 位置一致；
+- `isnan(actual)` 与 `isnan(golden)` 位置一致；
+- 其余有限值位置按 §1 混合容差判定。
 
 ---
 
-## 三、精度标准应用方法
+## 四、精度标准应用方法
 
-### 3.1 在测试设计中的应用
+### 4.1 标准查询与判定函数
 
-**步骤 1：提取精度标准**
-- 从 design.md §8 提取精度标准（如有）
-- 或根据算子类别和 dtype 自动选择精度标准
+```python
+import torch
 
-**步骤 2：生成测试代码**
-- 在测试代码中使用 `torch.testing.assert_close`
-- 设置正确的 atol 和 rtol
 
-**示例代码**：
+def get_precision(dtype):
+    """返回 (atol, rtol, max_abs_error_limit, required_matched_ratio)。
+    浮点：混合容差；整型：精确匹配（0 误差）。"""
+    fp_table = {
+        # dtype       : (atol,   rtol,   max_abs_error_limit, required_matched_ratio)
+        "float16":     (2**-14, 2**-9,  1e-1, 0.99),   # atol 6.10e-5, rtol 1.95e-3
+        "bfloat16":    (2**-10, 2**-6,  1e0,  0.99),   # atol 9.77e-4, rtol 1.56e-2
+        "float32":     (2**-16, 2**-10, 1e-2, 0.99),   # atol 1.53e-5, rtol 9.77e-4
+        "hifloat32":   (2**-16, 2**-10, 1e-2, 0.99),
+        "float8_e4m3": (2**-4,  2**-2,  1e0,  0.99),   # atol 0.0625, rtol 0.25
+        "float8_e5m2": (2**-3,  2**-1,  1e-1, 0.99),   # atol 0.125,  rtol 0.5
+    }
+    int_types = {"int8", "int16", "int32", "int64", "uint8"}
+    if dtype in int_types:
+        return (0.0, 0.0, 0.0, 1.0)          # 整型：精确匹配，一个元素不符即 FAIL
+    return fp_table.get(dtype, (2**-14, 2**-9, 1e-1, 0.99))
+
+
+def check_precision(actual, golden, dtype):
+    """精度判定：返回 (passed, matched_ratio, max_abs_error)。
+    浮点双门限：matched_ratio ≥ required 且 max_abs_error ≤ max_abs_error_limit；
+    整型：逐元素精确相等。inf/nan 位置做结构比对，不计入数值容差。"""
+    atol, rtol, max_abs_limit, required_ratio = get_precision(dtype)
+    a = actual.detach().cpu()
+    g = golden.detach().cpu()
+    if atol == 0.0 and rtol == 0.0:                      # 整型精确匹配
+        mism = (a != g).sum().item()
+        total = max(a.numel(), 1)
+        return mism == 0, 1.0 - mism / total, (0.0 if mism == 0 else float("inf"))
+    a = a.float()
+    g = g.float()
+    special = ~torch.isfinite(g)                         # inf/nan 位置结构比对
+    if special.any():
+        if not torch.equal(torch.isnan(a[special]), torch.isnan(g[special])) or \
+           not torch.equal(torch.isinf(a[special]), torch.isinf(g[special])):
+            return False, 0.0, float("inf")
+    m = torch.isfinite(g)                                # golden 有限值位置全比：actual 若为 inf/nan 则计为不达标
+    if m.sum().item() == 0:
+        return True, 1.0, 0.0
+    abs_err = (a[m] - g[m]).abs()                        # actual 为 inf/nan 处 abs_err=inf/nan → 逐元素判 False 且拉高 max_abs
+    matched_ratio = (abs_err <= (atol + rtol * g[m].abs())).float().mean().item()
+    max_abs_error = abs_err.max().item()
+    passed = (matched_ratio >= required_ratio) and (max_abs_error <= max_abs_limit)
+    return passed, matched_ratio, max_abs_error
+```
+
+### 4.2 在测试代码中的应用
+
 ```python
 def test_silu_float16():
-    dtype = torch.float16
-    atol, rtol = 1e-3, 1e-3  # Activation 类 + FP16
-    
-    x = torch.randn(128, 256, dtype=dtype, device="npu")
+    dtype = "float16"
+    x = torch.randn(128, 256, dtype=torch.float16, device="npu")
     y_actual = silu_kernel(x)
     y_expected = torch.nn.functional.silu(x)
-    
-    torch.testing.assert_close(y_actual, y_expected, atol=atol, rtol=rtol)
+
+    passed, ratio, max_abs = check_precision(y_actual, y_expected, dtype)
+    assert passed, f"matched_ratio={ratio:.4f}, max_abs={max_abs:.3e}"
 ```
 
----
+### 4.3 在用户交互中的应用
 
-### 3.2 在用户交互中的应用
+Phase 3 用户交互中询问精度标准（如 design.md §9.3 未定义）：
 
-**场景 A：design.md 输入**
-
-Phase 3 用户交互中询问精度标准：
 ```
-询问精度标准（如 §8 未定义）：
-[1] 使用默认精度标准（根据算子类别和 dtype 自动选择）
-[2] 自定义精度标准（atol=xxx, rtol=xxx）
+询问精度标准（如 §9.3 未定义）：
+[1] 使用默认混合容差标准（按 dtype 自动选择，见 §二）
+[2] 自定义（atol / rtol / max_abs_error_limit / required_matched_ratio）
 [3] 不验证精度（仅验证功能）
 ```
 
 ---
 
-### 3.3 精度标准查询函数
-
-```python
-def get_precision(op_category, dtype, special_case=None):
-    """
-    根据算子类别、dtype 和特殊场景获取精度标准
-    
-    参数：
-        op_category: str - 算子类别（GEMM/Softmax/Activation等）
-        dtype: str - 数据类型（float16/float32/bfloat16）
-        special_case: str - 特殊场景（large_matrix/small_value等）
-    
-    返回：
-        (atol, rtol) - 精度标准
-    """
-    precision_table = {
-        "GEMM": {
-            "float16": (1e-3, 1e-3),
-            "float32": (1e-5, 1e-5),
-            "bfloat16": (1e-2, 5e-3),
-        },
-        "Softmax": {
-            "float16": (1e-3, 1e-3),
-            "float32": (1e-4, 1e-4),
-            "bfloat16": (1e-2, 5e-3),
-        },
-        "Activation": {
-            "float16": (1e-3, 1e-3),
-            "float32": (1e-5, 1e-5),
-            "bfloat16": (1e-2, 5e-3),
-        },
-    }
-    
-    atol, rtol = precision_table[op_category][dtype]
-    
-    if special_case == "large_matrix":
-        atol = atol * 5  # 大矩阵放宽精度
-    elif special_case == "small_value":
-        rtol = 0  # 小值仅验证绝对误差
-    
-    return atol, rtol
-```
-
----
-
-## 四、与 cannbot 精度标准对比
-
-| 维度 | cannbot ops-precision-standard | TileLang precision-standard |
-|------|-------------------------------|------------------------------|
-| **覆盖范围** | 整数、浮点、量化、混合精度 | 整数、浮点、量化 |
-| **特殊场景** | INF/NAN、小值域、量化范围 | INF/NAN、小值域、大规模累加 |
-| **算子类别** | 未区分算子类别 | 区分算子类别（GEMM/Softmax等） |
-| **动态调整** | 支持 | 支持（large_matrix/small_value） |
-
----
-
 ## 五、总结
 
-### 5.1 核心要点
-
-1. **精度标准体系完整**：覆盖整数、浮点、量化运算
-2. **算子类别区分**：不同算子类别有不同精度标准
-3. **特殊场景处理**：INF/NAN、小值域、大规模累加
-4. **动态调整机制**：根据特殊场景调整精度标准
-
-### 5.2 应用建议
-
-- **Phase 3 用户交互**：询问精度标准（如未定义）
-- **Phase 4 测试配置**：根据算子类别和 dtype 选择精度标准
-- **测试代码生成**：使用正确的 atol 和 rtol
-- **特殊值验证**：单独处理 INF/NAN/零值/极小值
+1. **混合容差 + 双门限**：逐元素 `|actual-golden| ≤ atol + rtol·|golden|`，整体看 `matched_ratio ≥ required` 且 `max_abs ≤ limit`。
+2. **阈值仅按 dtype**：查 §二 表，与算子类别无关。
+3. **整型精确匹配**：atol=rtol=0、required=1.0，逐元素必须相等。
+4. **单标杆 golden**：CPU 或昇腾小算子拼接的高精度实现。
+5. **INF/NAN 结构比对**：不计入数值容差，位置一致即可。

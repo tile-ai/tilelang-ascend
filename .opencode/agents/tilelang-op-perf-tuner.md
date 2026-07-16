@@ -53,16 +53,17 @@ tools:
 
 ### 场景说明
 
-当 Orchestrator 指定执行 Stage 3 时，你负责在精度通过的 `example_{op}.py` 基础上完成一轮性能分析与调优，并在本轮内复验精度。
+当 Orchestrator 指定执行 Stage 3 时，你负责在精度通过的 kernel `{op}.py` 基础上完成一轮性能分析与调优，并用 `test_{op}.py` 在本轮内复验精度。
 
 ### 输入 / 输出契约
 
 | 类型 | 内容 | 需要读取的信息 |
 |------|------|---------------|
-| 必需输入 | `examples/{op}/example_{op}.py` | 单一文件：当前实现 + 内嵌 golden + test 用例（既是调优基础，也是精度复验入口） |
+| 必需输入 | `examples/{op}/{op}.py` | kernel（调优对象） |
+| 必需输入 | `examples/{op}/test_{op}.py` | golden + 分层测试（精度复验入口，`from {op} import kernel`；不改） |
 | 可选输入 | `examples/{op}/DESIGN.md` | 性能目标、编程模式、可调优维度（若定义） |
 | 使用 Skill | `tilelang-perf-optimization` | — |
-| 输出对象 | 更新后的 `example_{op}.py` 与 `perf_tuning/` 目录下的迭代日志 | — |
+| 输出对象 | 更新后的 kernel `{op}.py` 与 `perf_tuning/` 目录下的迭代日志 | — |
 | 前置条件 | 当前实现已通过精度验证 | — |
 | 回滚基线 | 当前轮开始前备份的上一版本实现 | — |
 
@@ -87,17 +88,17 @@ tools:
 | 环节 | 输出内容 | 下游消费方式 |
 |------|---------|-------------|
 | `tilelang-perf-optimization`（分析） | 瓶颈类型（compute / transfer / sync）、热点位置、优化建议清单 | perftuner 选择优先级最高的建议进行实施 |
-| `tilelang-perf-optimization`（调优） | 修改后的实现 + 优化说明 | perftuner 写回 `example_{op}.py` 并执行精度复验与性能对比 |
+| `tilelang-perf-optimization`（调优） | 修改后的 kernel + 优化说明 | perftuner 写回 `{op}.py` 并用 `test_{op}.py` 执行精度复验与性能对比 |
 
 ### 单轮执行清单
 
-- [ ] 读取当前 `example_{op}.py`（含 kernel + golden + test 用例）。
+- [ ] 读取当前 kernel `{op}.py` 与 `test_{op}.py`（golden + test 用例，`from {op} import kernel`）。
 - [ ] 记录当前性能基线（按基线记录要求），写入 `perf_tuning/baseline_iter{N}.json`。
-- [ ] 在本轮修改前备份当前 `example_{op}.py` 到 `perf_tuning/{op}_impl_iter{N}_before.py` 作为回滚基线。
+- [ ] 在本轮修改前备份当前 kernel `{op}.py` 到 `perf_tuning/{op}_impl_iter{N}_before.py` 作为回滚基线。
 - [ ] **对照** [tilelang-perf-optimization/references/performance-antipatterns.md](../../.agents/skills/tilelang-perf-optimization/references/performance-antipatterns.md) 检查当前实现是否存在性能反模式；若存在但**有意保留**，须在 `perf_tuning/perf_log.md` 写明保留原因。
 - [ ] 调用 `tilelang-perf-optimization` 获取瓶颈分析与优化方案。
-- [ ] 将候选实现写回 `example_{op}.py`。
-- [ ] 执行 `source set_env.sh && python examples/{op}/example_{op}.py` 复验精度。
+- [ ] 将候选实现写回 kernel `{op}.py`。
+- [ ] 执行 `source set_env.sh && python examples/{op}/test_{op}.py --level all` 复验精度。
 - [ ] 采集候选版本性能数据。
 - [ ] 比较新旧性能并按失败分类规则决定采纳或回滚。
 - [ ] 将本轮结果追加到 `perf_tuning/perf_log.md`。

@@ -22,9 +22,9 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 | 输入输出 shape 和 dtype | §4 数据规格 | 函数签名和测试数据 |
 | block 大小 | §5 Tiling 策略 | 分块参数 |
 | pass_configs | §7 同步策略 | JIT 配置 |
-| Golden 函数 | §8 验证方案 | 测试对比基准 |
-| 测试用例表 | §8 验证方案 | 测试配置 |
-| 精度标准 | §8 验证方案 | atol / rtol |
+| Golden 函数 | §9.1 Golden 函数 | 测试对比基准 |
+| 测试用例表 | §9.2 L0 门槛测试计划 | 测试配置 |
+| 精度标准 | §9.3 精度标准 | 混合容差：atol / rtol / max_abs_error_limit / required_matched_ratio（按 dtype） |
 
 **明确忽略的内容**（这些容易误导）：
 - 模式选型的分析推理过程
@@ -106,7 +106,7 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 
 ### 步骤 3：生成实现代码
 
-基于 design.md 的 API 映射 + 参考示例的代码风格，生成 `example_{op}.py`。完整文件结构骨架与融合算子注意事项见 [examples/code-skeleton.md](examples/code-skeleton.md)。
+基于 design.md 的 API 映射 + 参考示例的代码风格，生成**两个文件**：`{op}.py`（纯 kernel）与 `test_{op}.py`（golden + L0 + main，L1/L2/Boundary 留桩，从 `{op}.py` import kernel）。完整文件结构骨架与融合算子注意事项见 [examples/code-skeleton.md](examples/code-skeleton.md)。
 
 > **写代码时遇到**具体编码规范问题（Buffer 分配 / 索引一致性 / 同步 / 广播 / 测试模板）查 [references/coding-conventions.md](references/coding-conventions.md)。
 >
@@ -119,7 +119,7 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 本 skill 只负责 L0（精度收敛）。先只跑 L0：
 
 ```bash
-python examples/{op}/example_{op}.py --level l0
+python examples/{op}/test_{op}.py --level l0
 ```
 
 > L0 通过后，由 `tilelang-op-test-design`（场景 B）填充 L1/L2/Boundary 桩体，再 `--level all` 跑全量。
@@ -170,4 +170,4 @@ python examples/{op}/example_{op}.py --level l0
 - [references/checklist.md](references/checklist.md) — 22 项上库前检查清单（生成代码后逐项过）
 - [references/troubleshooting.md](references/troubleshooting.md) — 编译 / 运行 / 精度错误排查手册（遇到具体错误时查）
 - [references/skill-feedback.md](references/skill-feedback.md) — Skill 反馈采集流程（流程结束时查，orchestrator 模式跳过）
-- [examples/code-skeleton.md](examples/code-skeleton.md) — example_{op}.py 文件结构骨架
+- [examples/code-skeleton.md](examples/code-skeleton.md) — `{op}.py`（kernel）+ `test_{op}.py`（测试）文件结构骨架

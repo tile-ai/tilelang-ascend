@@ -96,12 +96,16 @@ T.tile.broadcast(max_2d_ub, max_ub)
 
 ## 5. 测试模板
 
-分层结构、main 分发器、`--level` 与分层标记见 [examples/code-skeleton.md](../examples/code-skeleton.md) 的「测试（分层）」段。单个用例的 golden 对比写法：
+分层结构、main 分发器、`--level` 与分层标记见 [examples/code-skeleton.md](../examples/code-skeleton.md) 的 `test_{op}.py` 段（kernel 与测试分文件：kernel 在 `{op}.py`，测试在 `test_{op}.py` 并 `from {op} import {op}`）。单个用例的 golden 对比写法：
 
 ```python
-# golden 对比（放在 try/except 内，按层打标记）
+# golden 对比（混合容差双门限，放在 try/except 内，按层打标记）
+# get_precision/check_precision 见 examples/code-skeleton.md，阈值定义见
+# tilelang-op-test-design/references/precision-standard.md（按 dtype，整型 0 误差精确匹配）
 ref_output = torch.nn.functional.softmax(input_data, dim=-1)  # 或手写 golden
-torch.testing.assert_close(output.cpu(), ref_output.cpu(), rtol=rtol, atol=atol)
-# L0/L1 通过 → print("[PRECISION_PASS] ...")；失败 → print("[PRECISION_FAIL] ...") 且 ok=False
-# L2/Boundary 通过 → print("[BOUNDARY_PASS] ...")；失败 → print("[BOUNDARY_WARN] ...") 后继续
+passed, ratio, max_abs = check_precision(output, ref_output, dtype)
+# 通过条件：matched_ratio ≥ required_matched_ratio 且 max_abs_error ≤ max_abs_error_limit
+# L0/L1（阻塞）：通过 → print("[PRECISION_PASS] ...")；失败 → print("[PRECISION_FAIL] ...") 且 ok=False
+# Boundary（合法特殊值，非阻塞）：同上比精度，精度过 → "[BOUNDARY_PASS]"；不过或抛异常 → "[BOUNDARY_WARN]"
+# L2（负向，非阻塞）：不比精度——非法输入正确抛异常 → "[BOUNDARY_PASS]"；静默接受 → "[BOUNDARY_WARN]"
 ```
