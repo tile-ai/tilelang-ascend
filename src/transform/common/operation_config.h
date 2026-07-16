@@ -56,6 +56,13 @@ GetOperationConfig() {
       {"copy_l0c_to_gm", {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
       {"copy_l0c_to_l1", {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
       {"copy_ub_to_ub", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
+      {"copy_ub_to_ub_Nz", {{{0, "read"}, {1, "write"}}, "PIPE_V"}},
+      {"copy_ub_to_pipe",
+       {{{0, "read"}, {1, "read"}, {3, "write"}}, "PIPE_MTE3"}},
+      {"copy_pipe_to_l1", {{{0, "write"}, {1, "write"}}, "PIPE_MTE3"}},
+      {"copy_l0c_to_pipe", {{{0, "read"}, {1, "read"}}, "PIPE_FIX"}},
+      {"copy_pipe_to_ub", {{{0, "write"}, {1, "write"}}, "PIPE_MTE2"}},
+      {"copy_pipe_to_ub_V", {{{0, "write"}, {1, "write"}}, "PIPE_V"}},
       {"mma", {{{0, "read"}, {1, "read"}, {2, "write"}}, "PIPE_M"}},
       {"gemm_v0", {{{0, "read"}, {1, "read"}, {2, "write"}}, "PIPE_M"}},
       {"gemm_v1", {{{0, "read"}, {1, "read"}, {2, "write"}}, "PIPE_M"}},
@@ -277,6 +284,19 @@ GetOperationConfig() {
        {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
       {"tl.ascend_row_expand_div_experiment",
        {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+
+      // Internal tail-aware ops (AscendTailMaskPropagation). arg0 is the
+      // AscendC op-tag string, hence buffer indices start at 1.
+      {"tl.ascend_tail_unary", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_tail_binary",
+       {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+      {"tl.ascend_tail_scalar", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_tail_reduce",
+       {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+      {"tl.ascend_copy_cv_experiment",
+       {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
+      {"tl.ascend_copy_vc_experiment",
+       {{{0, "read"}, {1, "write"}, {2, "write"}}, "PIPE_V"}},
   };
 
   return operation_config_;
@@ -323,13 +343,13 @@ inline const std::unordered_map<std::string, std::string> &GetEventMapping() {
 /*! \brief A set of memory scopes that require their layout to be flattened.
  */
 const std::unordered_set<std::string> kScopesToFlatten = {
-    "shared", "shared.dyn", "wmma.matrix_a", "wmma.matrix_b",
-    "wmma.accumulator"};
+    "shared",        "shared.ub",     "shared.l1",
+    "wmma.matrix_a", "wmma.matrix_b", "wmma.accumulator"};
 
 /*! \brief The memory scope that requires alignment for its inner
  * dimension. */
 const std::unordered_map<std::string, int> kScopeForAlignment = {
-    {"shared", 32 * 8}};
+    {"shared.ub", 32 * 8}};
 
 const std::unordered_map<const tvm::OpNode *, int64_t> ascendc_tmp_arg_ops = {
     {tl::ascend_clamp().get(), 3},

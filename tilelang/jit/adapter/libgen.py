@@ -108,11 +108,15 @@ class LibraryGenerator:
         libpath = src.name.replace(".cpp", ".so")
         ASCEND_HOME_PATH = _get_ascend_home_path()
         TL_ROOT = _get_tl_root()
+        auto_sync = os.environ.get("TL_CCE_AUTO_SYNC", "on").lower()
+        opt_level = os.environ.get("TL_CCE_OPT_LEVEL", "2").lower()
+        if opt_level not in ("0", "1", "2", "3"):
+            raise ValueError(f"Invalid TL_CCE_OPT_LEVEL={opt_level!r}, expected one of: 0, 1, 2, 3")
         if self.target == "ascendc" or self.target == "auto":
             command = [
                 "bisheng",
                 "--npu-arch=dav-2201",
-                "-O2",
+                f"-O{opt_level}",
                 "-std=c++17",
                 "-xasc",
                 f"-I{ASCEND_HOME_PATH}/include",
@@ -141,6 +145,12 @@ class LibraryGenerator:
                 "--shared",
                 src.name,
             ]
+
+            # pto do not support the compile arg like "--cce-auto-sync=on/off".
+            # pto default behavior equals ascendc "--cce-auto-sync=off".
+            # so auto_sync only affect ascendc
+            if auto_sync == "off":
+                command.append("--cce-auto-sync=off")
         elif self.target == "pto":
             ccec = "dav-c310" if self.platform == "A5" else "dav-c220"
             memory = "REGISTER_BASE" if self.platform == "A5" else "MEMORY_BASE"
@@ -148,7 +158,7 @@ class LibraryGenerator:
                 "bisheng",
                 f"--cce-aicore-arch={ccec}",
                 f"-D{memory}",
-                "-O2",
+                f"-O{opt_level}",
                 "-std=gnu++17",
                 "-xcce",
                 "-mllvm",

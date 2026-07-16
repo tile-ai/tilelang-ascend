@@ -51,6 +51,10 @@ public:
   void VisitExpr_(const CallNode *op, std::ostream &os) final;
   void VisitExpr_(const FloorDivNode *op, std::ostream &os);
   void VisitExpr_(const FloorModNode *op, std::ostream &os);
+  void VisitExpr_(const MaxNode *op, std::ostream &os);
+  void VisitExpr_(const MinNode *op, std::ostream &os);
+  void PrintIntMinMaxTernary(const PrimExpr &a, const PrimExpr &b,
+                             const char *cmp, std::ostream &os);
   void VisitExpr_(const MulNode *op, std::ostream &os) final;
   void VisitExpr_(const SelectNode *op, std::ostream &os) final;
   void VisitExpr_(const BufferLoadNode *op, std::ostream &os) final;
@@ -138,6 +142,14 @@ private:
 
   void BroadcastOpCodegen(const CallNode *op);
 
+  void TailUnaryOpCodegen(const CallNode *op);
+
+  void TailBinaryOpCodegen(const CallNode *op);
+
+  void TailScalarOpCodegen(const CallNode *op);
+
+  void TailReduceOpCodegen(const CallNode *op);
+
   void RowExpandMulCodegen(const CallNode *op);
 
   void RowExpandMulExperimentCodegen(const CallNode *op);
@@ -160,6 +172,8 @@ private:
   void PrintfOpCodegen(const CallNode *op, const std::string &op_name);
 
   void DumpTensorCodegen(const CallNode *op);
+
+  void SrcCodeCodegen(const CallNode *op);
 
   void BilinearInterpolationCodegen(const CallNode *op);
 

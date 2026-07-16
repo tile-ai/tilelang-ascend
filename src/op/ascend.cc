@@ -57,6 +57,18 @@ AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
   } else {
     padValue = Integer(0);
   }
+  // Handle tmp parameter: check if it's a valid region (not IntImm(0) marker)
+  if (args.size() >= 6) {
+    auto tmp_expr = args[5];
+    // Check if tmp is a Call (valid region) or IntImm (none marker)
+    if (auto *tmp_call = tmp_expr.as<CallNode>()) {
+      auto tmp_region = RegionOp(tmp_call->args, vmap);
+      this->tmp = tmp_region.GetBuffer();
+      this->tmp_range = tmp_region.GetRanges();
+      this->tmp_extents = tmp_region.GetExtents();
+    }
+    // If tmp_expr is IntImm(0), leave tmp as undefined (default)
+  }
   std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);
   std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
   std::tie(this->src_extents, this->dst_extents) = std::tie(ets[0], ets[1]);
@@ -180,15 +192,15 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   ss << "tl::ascend::";
   PrimExpr strideN;
 
-  if (src.scope() == "global" && dst.scope() == "shared.dyn") {
+  if (src.scope() == "global" && dst.scope() == "shared.l1") {
     ss << "copy_gm_to_l1";
     config.gm2l1 = true;
-  } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_a") {
+  } else if (src.scope() == "shared.l1" && dst.scope() == "wmma.matrix_a") {
     ss << "copy_l1_to_l0a";
     // config.print_src_layout = true;
     config.l12l0 = true;
     config.l0_dst_split = true;
-  } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_b") {
+  } else if (src.scope() == "shared.l1" && dst.scope() == "wmma.matrix_b") {
     ss << "copy_l1_to_l0b";
     // config.print_src_layout = true;
     config.l12l0 = true;
@@ -197,7 +209,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     ss << "copy_l0c_to_gm";
     config.l0c2gm = true;
     config.print_gm_layout = true;
-  } else if (src.scope() == "shared" || dst.scope() == "shared") {
+  } else if (src.scope() == "shared.ub" || dst.scope() == "shared.ub") {
     config.print_ub = true;
 
     if (src.scope() == "global") {
@@ -226,20 +238,20 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
         ss << ", " << compute_blocklen(src, src_extents);
       }
       ss << ">";
-    } else if (dst.scope() == "shared.dyn") {
+    } else if (dst.scope() == "shared.l1") {
       config.virtual_channel = true;
-      ss << "copy_ub_to_l1<"; // real channel is "ub -> gm -> l1"
+      ss << "copy_ub_to_l1<";
       ss << get_dtype(dst) << ", ";
-      ss << src->shape[src->shape.size() - 1];
+      ss << src_extents[src->shape.size() - 1];
       if (src->shape.size() > 1) {
-        ss << ", " << src->shape[src->shape.size() - 2];
+        ss << ", " << compute_blocklen(src, src_extents);
       }
       ss << ">";
     } else if (src.scope() == "wmma.accumulator") {
       config.virtual_channel = true;
       ss << "copy_l0c_to_ub<";
       ss << get_dtype(src) << ", " << get_dtype(dst) << ", ";
-      ss << "layout::RowMajor, "; // real channel is "ub -> gm -> l1", so gm is
+      ss << "layout::RowMajor, "; // In "ub -> gm -> l1" path, gm is
                                   // always row major
       ss << src->shape[src->shape.size() - 2] << ", "
          << src->shape[src->shape.size() - 1];
@@ -332,6 +344,22 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   auto dst_ptr = dst_new_buffer.access_ptr(
       2, dst_new_buffer->dtype, 1,
       dst_new_buffer.OffsetOf(dst_new_indices).back(), dst_len);
+
+  PrimExpr tmp_ptr;
+  if (tmp.defined()) {
+    auto tmp_new_indices =
+        T.layout_map.count(tmp)
+            ? T.layout_map[tmp]->Forward(build_indices(tmp_range))
+            : build_indices(tmp_range);
+    auto tmp_new_buffer = T.buffer_remap.count(tmp) ? T.buffer_remap[tmp] : tmp;
+    PrimExpr tmp_len = 1;
+    for (auto &shape : tmp_extents) {
+      tmp_len *= shape;
+    }
+    tmp_ptr = tmp_new_buffer.access_ptr(
+        3, tmp_new_buffer->dtype, 1,
+        tmp_new_buffer.OffsetOf(tmp_new_indices).back(), tmp_len);
+  }
 
   auto compute_valid_extent = [](PrimExpr min_val, PrimExpr extent,
                                  PrimExpr shape) -> PrimExpr {
@@ -460,6 +488,9 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       pad_val = Cast(dst->dtype, pad_val);
     }
     new_args.push_back(pad_val);
+    // Physical UB tile dims (row pitch). These trail pad_val and are consumed
+    // by AscendTailMaskPropagation to model the tail rect; CopyCodegen prints
+    // only the first 4 extra args (strideN, validRow, validCol, pad_val).
     if (dst->shape.size() > 1) {
       new_args.push_back(dst->shape[dst->shape.size() - 2]);
     }
@@ -476,10 +507,20 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   }
 
   if (config.virtual_channel) {
-    new_args.push_back(
-        src->shape[src->shape.size() -
-                   1]); // ub/l0c -> gm need realdstN which is equal to srcN in
-                        // virtural channel scenario
+    new_args.push_back(src_extents[src_extents.size() - 1]); // src_N
+    if (src_extents.size() >= 2) {
+      new_args.push_back(src_extents[src_extents.size() - 2]); // src_M
+    } else {
+      new_args.push_back(IntImm(DataType::Int(32), 0)); // 1D: no M dim
+    }
+    new_args.push_back(dst_extents[dst_extents.size() - 2]); // dst_M
+    new_args.push_back(dst_extents[dst_extents.size() - 1]); // dst_N
+    // Add tmp buffer for UB->L1 copy on A5 (for ND->Nz conversion)
+    if (tmp.defined()) {
+      new_args.push_back(tmp_ptr);
+      new_args.push_back(tmp_extents[tmp_extents.size() - 2]); // tmp_M
+      new_args.push_back(tmp_extents[tmp_extents.size() - 1]); // tmp_N
+    }
   }
 
   if (config.ub2ub) {
@@ -635,7 +676,7 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
 
   ICHECK(dst.scope() == "global")
       << "tl.ascend_atomic_add V1 requires global dst, got " << dst.scope();
-  ICHECK(src.scope() == "shared" || src.scope() == "wmma.accumulator")
+  ICHECK(src.scope() == "shared.ub" || src.scope() == "wmma.accumulator")
       << "tl.ascend_atomic_add V1 requires UB/shared or L0C/wmma.accumulator "
          "src, got "
       << src.scope();
@@ -650,7 +691,7 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
          "destination buffer rank";
 
   std::stringstream ss;
-  if (src.scope() == "shared") {
+  if (src.scope() == "shared.ub") {
     ss << "tl::ascend::atomic_add_ub_to_gm<";
     ss << get_dtype(dst) << ", " << src_extents[src->shape.size() - 1];
     if (src->shape.size() > 1) {
@@ -1159,6 +1200,11 @@ TIR_DEFINE_TL_BUILTIN(ascend_pipe_barrier)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
+TIR_DEFINE_TL_BUILTIN(ascend_free_pipe)
+    .set_num_inputs(2)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
 TIR_DEFINE_TL_BUILTIN(ascend_sync_all)
     .set_num_inputs(0)
     .set_attr<TCallEffectKind>("TCallEffectKind",
@@ -1180,6 +1226,11 @@ TIR_DEFINE_TL_BUILTIN(ascend_printf)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_dump_tensor)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_src_code)
     .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
@@ -1335,6 +1386,37 @@ TIR_DEFINE_TL_BUILTIN(ascend_row_expand_sub_experiment)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_row_expand_div_experiment)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+TIR_DEFINE_TL_BUILTIN(ascend_copy_cv_experiment)
+    .set_num_inputs(3)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_copy_vc_experiment)
+    .set_num_inputs(6)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+// Internal tail-aware ops (see ascend.h). Variadic: they carry an AscendC op
+// tag string, buffer pointers, and the runtime tail rect.
+TIR_DEFINE_TL_BUILTIN(ascend_tail_unary)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_tail_binary)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_tail_scalar)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_tail_reduce)
     .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));

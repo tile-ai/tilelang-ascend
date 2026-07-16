@@ -60,6 +60,11 @@ pip install -r requirements.txt
 echo "Updating git submodules..."
 git submodule update --init --recursive
 
+# Apply local patches to the tvm submodule (same as install_ascend.sh and
+# setup.py). Without this the wheel would be built against an unpatched TVM
+# (e.g. missing the dynamic-slice fix for issue #1207).
+bash "$SCRIPT_DIR/3rdparty/patches/apply_tvm_patches.sh"
+
 # Clean previous build
 if [ -d dist ]; then
     rm -r dist

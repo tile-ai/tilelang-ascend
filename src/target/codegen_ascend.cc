@@ -14,6 +14,7 @@
 #include <tvm/tir/expr.h>
 
 #include <cmath>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -425,6 +426,47 @@ void CodeGenTileLangAscend::VisitExpr_(const FloorModNode *op,
   os << ")";
 }
 
+// Emit an INTEGER max/min as a ternary instead of the bare max(a, b) / min(a,
+// b) CodeGenC produces: in the Ascend (bisheng/CANN) C++ environment those
+// unqualified names are ambiguous for mixed integer widths (e.g. max(int64_t,
+// int) from an int64 loop var and an int literal), and a ternary needs no
+// overload resolution. We avoid std::max<T> because the generated AscendC
+// kernel prelude does not include <algorithm>. Shared by MaxNode (">") and
+// MinNode ("<").
+void CodeGenTileLangAscend::PrintIntMinMaxTernary(const PrimExpr &a,
+                                                  const PrimExpr &b,
+                                                  const char *cmp,
+                                                  std::ostream &os) {
+  os << "(";
+  PrintExpr(a, os);
+  os << " " << cmp << " ";
+  PrintExpr(b, os);
+  os << " ? ";
+  PrintExpr(a, os);
+  os << " : ";
+  PrintExpr(b, os);
+  os << ")";
+}
+
+// Scope to SCALAR integer/uint (lanes == 1) so float and vector max/min keep
+// CodeGenC's default (unchanged NaN / vector semantics), keeping the change
+// strictly additive for everything else.
+void CodeGenTileLangAscend::VisitExpr_(const MaxNode *op, std::ostream &os) {
+  if ((op->dtype.is_int() || op->dtype.is_uint()) && op->dtype.lanes() == 1) {
+    PrintIntMinMaxTernary(op->a, op->b, ">", os);
+  } else {
+    CodeGenC::VisitExpr_(op, os);
+  }
+}
+
+void CodeGenTileLangAscend::VisitExpr_(const MinNode *op, std::ostream &os) {
+  if ((op->dtype.is_int() || op->dtype.is_uint()) && op->dtype.lanes() == 1) {
+    PrintIntMinMaxTernary(op->a, op->b, "<", os);
+  } else {
+    CodeGenC::VisitExpr_(op, os);
+  }
+}
+
 void CodeGenTileLangAscend::VisitExpr_(const BufferLoadNode *op,
                                        std::ostream &os) {
   auto var_name = var_idmap_[op->buffer->data.get()];
@@ -439,12 +481,16 @@ void CodeGenTileLangAscend::VisitExpr_(const BufferLoadNode *op,
 void CodeGenTileLangAscend::VisitStmt_(const BufferStoreNode *op) {
   auto var_name = var_idmap_[op->buffer->data.get()];
   std::string scope = GetPtrStorageScope(op->buffer->data);
-  this->PrintIndent();
   if (scope == "local.var") {
-    this->stream << var_name << " = " << PrintExpr(op->value) << ";\n";
+    std::string value = PrintExpr(op->value);
+    this->PrintIndent();
+    this->stream << var_name << " = " << value << ";\n";
   } else {
-    this->stream << var_name << ".SetValue(" << PrintExpr(op->indices.back())
-                 << ", " << PrintExpr(op->value) << ");\n";
+    std::string index = PrintExpr(op->indices.back());
+    std::string value = PrintExpr(op->value);
+    this->PrintIndent();
+    this->stream << var_name << ".SetValue(" << index << ", " << value
+                 << ");\n";
   }
 }
 
@@ -575,6 +621,14 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     PrintOpCall(op, "AscendC::Xor", {0, op->args.size() - 1}, {0, 0});
   } else if (op->op.same_as(tl::ascend_broadcast())) {
     BroadcastOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_tail_unary())) {
+    TailUnaryOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_tail_binary())) {
+    TailBinaryOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_tail_scalar())) {
+    TailScalarOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_tail_reduce())) {
+    TailReduceOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_row_expand_mul())) {
     RowExpandMulCodegen(op);
   } else if (op->op.same_as(tl::ascend_row_expand_mul_experiment())) {
@@ -601,6 +655,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     PrintfOpCodegen(op, "AscendC::PRINTF");
   } else if (op->op.same_as(tl::ascend_dump_tensor())) {
     DumpTensorCodegen(op);
+  } else if (op->op.same_as(tl::ascend_src_code())) {
+    SrcCodeCodegen(op);
   } else if (op->op.same_as(tl::ascend_bilinear_interpolation())) {
     BilinearInterpolationCodegen(op);
   } else if (op->op.same_as(tl::ascend_wholereducemax())) {
@@ -777,10 +833,16 @@ void CodeGenTileLangAscend::VisitStmt_(const AllocateNode *op) {
     print_buffer("ascend_l0b");
   } else if (scope == "wmma.accumulator") {
     print_buffer("ascend_l0c");
-  } else if (scope == "shared.dyn") {
+  } else if (scope == "shared.l1") {
     print_buffer("ascend_l1");
-  } else if (scope == "shared") {
+  } else if (scope == "shared.ub") {
     print_buffer("ascend_ub");
+  } else if (scope == "shared") {
+    LOG(FATAL) << "CodeGenTileLangAscend: buffer '" << op->buffer_var->name_hint
+               << "' has unresolved dynamic storage scope \"shared\". "
+               << "The InferAllocScope pass should have resolved it to "
+               << "\"shared.l1\" or \"shared.ub\". This usually means the "
+               << "buffer is not used in any Cube/Vector operation.";
   } else if (scope == "local.var") {
     PrimExpr init = tir::make_const(op->dtype, 0);
     std::string init_type = type;
@@ -2168,6 +2230,81 @@ void CodeGenTileLangAscend::BroadcastOpCodegen(const CallNode *op) {
   this->stream << ");\n";
 }
 
+void CodeGenTileLangAscend::TailUnaryOpCodegen(const CallNode *op) {
+  // args: tag(0) dst(1) src(2) validRow(3) validCol(4) physCol(5)
+  std::string tag = Downcast<StringImm>(op->args[0])->value;
+  std::string dtype = getType(GetAccessPtrDtype(op->args[1].as<CallNode>()));
+  std::string dst = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string src = PrintBufferOffset(op->args[2].as<CallNode>());
+  // Bind valid-region expressions first: they may contain nested Select/min
+  // that the base codegen lowers to let-binding statements (condval_N).  These
+  // statements must be emitted to the stream *before* the call line so they
+  // land in statement position, not inside the argument list.
+  std::string vrow = PrintExpr(op->args[3]);
+  std::string vcol = PrintExpr(op->args[4]);
+  std::string pcol = PrintExpr(op->args[5]);
+  this->PrintIndent();
+  this->stream << "tl::ascend::tail_unary<" << dtype
+               << ">(tl::ascend::TailVecUnOp::" << tag << ", " << dst << ", "
+               << src << ", " << vrow << ", " << vcol << ", " << pcol << ");\n";
+}
+
+void CodeGenTileLangAscend::TailBinaryOpCodegen(const CallNode *op) {
+  // args: tag(0) dst(1) src0(2) src1(3) validRow(4) validCol(5) physCol(6)
+  std::string tag = Downcast<StringImm>(op->args[0])->value;
+  std::string dtype = getType(GetAccessPtrDtype(op->args[1].as<CallNode>()));
+  std::string dst = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string src0 = PrintBufferOffset(op->args[2].as<CallNode>());
+  std::string src1 = PrintBufferOffset(op->args[3].as<CallNode>());
+  // Bind valid-region expressions first (see TailUnaryOpCodegen).
+  std::string vrow = PrintExpr(op->args[4]);
+  std::string vcol = PrintExpr(op->args[5]);
+  std::string pcol = PrintExpr(op->args[6]);
+  this->PrintIndent();
+  this->stream << "tl::ascend::tail_binary<" << dtype
+               << ">(tl::ascend::TailVecBinOp::" << tag << ", " << dst << ", "
+               << src0 << ", " << src1 << ", " << vrow << ", " << vcol << ", "
+               << pcol << ");\n";
+}
+
+void CodeGenTileLangAscend::TailScalarOpCodegen(const CallNode *op) {
+  // args: tag(0) dst(1) src(2) scalar(3) validRow(4) validCol(5) physCol(6)
+  std::string tag = Downcast<StringImm>(op->args[0])->value;
+  std::string dtype = getType(GetAccessPtrDtype(op->args[1].as<CallNode>()));
+  std::string dst = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string src = PrintBufferOffset(op->args[2].as<CallNode>());
+  std::string scalar = dtype + "(" + PrintExpr(op->args[3]) + ")";
+  // Bind valid-region expressions first (see TailUnaryOpCodegen).
+  std::string vrow = PrintExpr(op->args[4]);
+  std::string vcol = PrintExpr(op->args[5]);
+  std::string pcol = PrintExpr(op->args[6]);
+  this->PrintIndent();
+  this->stream << "tl::ascend::tail_scalar<" << dtype
+               << ">(tl::ascend::TailVecScalarOp::" << tag << ", " << dst
+               << ", " << src << ", " << scalar << ", " << vrow << ", " << vcol
+               << ", " << pcol << ");\n";
+}
+
+void CodeGenTileLangAscend::TailReduceOpCodegen(const CallNode *op) {
+  // args: kind(0) out(1) src(2) tmp(3) dim(4) validRow(5) validCol(6)
+  //       physCol(7) clear(8)
+  std::string kind = Downcast<StringImm>(op->args[0])->value; // reduce_sum/...
+  std::string dtype = getType(GetAccessPtrDtype(op->args[1].as<CallNode>()));
+  std::string out = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string src = PrintBufferOffset(op->args[2].as<CallNode>());
+  std::string tmp = PrintBufferOffset(op->args[3].as<CallNode>(), false);
+  // Bind valid-region expressions first (see TailUnaryOpCodegen).
+  std::string dim_str = PrintExpr(op->args[4]);
+  std::string vrow = PrintExpr(op->args[5]);
+  std::string vcol = PrintExpr(op->args[6]);
+  std::string pcol = PrintExpr(op->args[7]);
+  std::string clear_str = is_zero(op->args[8]) ? "false" : "true";
+  this->PrintIndent();
+  this->stream << "tl::ascend::tail_" << kind << "<" << dtype << ">(" << out
+               << ", " << src << ", " << tmp << ", " << dim_str << ", " << vrow
+               << ", " << vcol << ", " << pcol << ", " << clear_str << ");\n";
+}
+
 void CodeGenTileLangAscend::SetCrossFlagCodegen(const CallNode *op) {
   std::string pipe = Downcast<StringImm>(op->args[0])->value;
   int mode = op->args[2].as<IntImmNode>()->value;
@@ -2273,6 +2410,18 @@ void CodeGenTileLangAscend::DumpTensorCodegen(const CallNode *op) {
   }
 
   this->stream << ");\n";
+}
+
+void CodeGenTileLangAscend::SrcCodeCodegen(const CallNode *op) {
+  auto *str = op->args[0].as<StringImmNode>();
+  ICHECK(str) << "T._src_code() expects a string literal argument";
+  std::string code = str->value;
+  std::istringstream iss(code);
+  std::string line;
+  while (std::getline(iss, line)) {
+    this->PrintIndent();
+    this->stream << line << "\n";
+  }
 }
 
 void CodeGenTileLangAscend::BilinearInterpolationCodegen(const CallNode *op) {

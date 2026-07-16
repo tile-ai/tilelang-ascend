@@ -199,7 +199,13 @@ CATLASS_DEVICE void
 copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
               uint32_t realSrcN = 1, uint32_t maskShapeM = dstM,
               uint32_t maskShapeN = dstN, T padValue = T(0)) {
-
+  // Hybrid scheme: the UB gap ([maskShapeN, dstN) / [maskShapeM, dstM)) is
+  // filled with ``padValue`` via Duplicate so that downstream reduce /
+  // broadcast / compare / select ops (which still read the full tile) observe a
+  // defined value. AscendTailMaskPropagation additionally rewrites unary /
+  // binary / scalar ops to tail_* helpers that compute only over the valid
+  // region, so the pad value in the gap is preserved (not corrupted by
+  // elementwise ops) and reaches the unreduced readers intact.
   bool isPad = true;
   uint32_t rightPadding = 1;
   if (maskShapeN == dstN || (maskShapeN * sizeof(T)) % 32 == 0) {
@@ -586,6 +592,451 @@ reduce_min(LocalTensor<T> const &dstTensor, LocalTensor<T> const &srcTensor,
   }
 }
 
+// ===================== Tail-aware vector helpers =========================
+// AscendTailMaskPropagation rewrites vector ops on tail UB tiles to these
+// helpers. A tail tile carries a valid rectangle [validRow, validCol] laid out
+// with a physical row pitch of physCol (the allocated tile width). We choose
+// the cheapest correct execution:
+//   - full rows (validCol == physCol): one contiguous count call;
+//   - narrow tail (validCol <= elements-per-256B-repeat): native mask + repeat,
+//     one repeat per row with the repeat stride derived from physCol;
+//   - otherwise: per-row contiguous fallback (skips only the gap rows).
+// Masking does not make a single repeat cheaper; the saving comes from issuing
+// fewer 256B repeats (fewer rows and/or fewer whole column blocks).
+
+enum class TailVecUnOp { Exp, Ln, Abs, Reciprocal, Sqrt, Rsqrt, Relu };
+enum class TailVecBinOp { Add, Sub, Mul, Div, Max, Min };
+enum class TailVecScalarOp { Adds, Muls, Maxs, Mins };
+
+template <typename T> struct TailIsFloatLike {
+  static constexpr bool value = std::is_same_v<T, float> ||
+                                std::is_same_v<T, half> ||
+                                std::is_same_v<T, bfloat16_t>;
+};
+
+// ---- binary ----
+template <typename T>
+CATLASS_DEVICE void TailApplyBinCount(TailVecBinOp op, LocalTensor<T> d,
+                                      LocalTensor<T> s0, LocalTensor<T> s1,
+                                      int32_t n) {
+  switch (op) {
+  case TailVecBinOp::Add:
+    AscendC::Add(d, s0, s1, n);
+    break;
+  case TailVecBinOp::Sub:
+    AscendC::Sub(d, s0, s1, n);
+    break;
+  case TailVecBinOp::Mul:
+    AscendC::Mul(d, s0, s1, n);
+    break;
+  case TailVecBinOp::Div:
+    AscendC::Div(d, s0, s1, n);
+    break;
+  case TailVecBinOp::Max:
+    AscendC::Max(d, s0, s1, n);
+    break;
+  case TailVecBinOp::Min:
+    AscendC::Min(d, s0, s1, n);
+    break;
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE void TailApplyBinMask(TailVecBinOp op, LocalTensor<T> d,
+                                     LocalTensor<T> s0, LocalTensor<T> s1,
+                                     uint64_t mask, uint8_t repeat,
+                                     const AscendC::BinaryRepeatParams &rp) {
+  switch (op) {
+  case TailVecBinOp::Add:
+    AscendC::Add(d, s0, s1, mask, repeat, rp);
+    break;
+  case TailVecBinOp::Sub:
+    AscendC::Sub(d, s0, s1, mask, repeat, rp);
+    break;
+  case TailVecBinOp::Mul:
+    AscendC::Mul(d, s0, s1, mask, repeat, rp);
+    break;
+  case TailVecBinOp::Div:
+    AscendC::Div(d, s0, s1, mask, repeat, rp);
+    break;
+  case TailVecBinOp::Max:
+    AscendC::Max(d, s0, s1, mask, repeat, rp);
+    break;
+  case TailVecBinOp::Min:
+    AscendC::Min(d, s0, s1, mask, repeat, rp);
+    break;
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE void tail_binary(TailVecBinOp op, LocalTensor<T> dst,
+                                LocalTensor<T> src0, LocalTensor<T> src1,
+                                uint32_t validRow, uint32_t validCol,
+                                uint32_t physCol) {
+  if (validRow == 0 || validCol == 0)
+    return;
+  if (validCol == physCol) {
+    TailApplyBinCount<T>(op, dst, src0, src1,
+                         static_cast<int32_t>(validRow * physCol));
+    return;
+  }
+  constexpr uint32_t vl = 256 / sizeof(T);
+  constexpr uint32_t blk = 32 / sizeof(T);
+  uint32_t repStride = physCol / blk;
+  if (validCol <= vl && validRow <= 255 && (physCol % blk == 0) &&
+      repStride <= 255) {
+    AscendC::BinaryRepeatParams rp;
+    rp.dstBlkStride = 1;
+    rp.src0BlkStride = 1;
+    rp.src1BlkStride = 1;
+    rp.dstRepStride = repStride;
+    rp.src0RepStride = repStride;
+    rp.src1RepStride = repStride;
+    TailApplyBinMask<T>(op, dst, src0, src1, static_cast<uint64_t>(validCol),
+                        static_cast<uint8_t>(validRow), rp);
+    return;
+  }
+  for (uint32_t r = 0; r < validRow; ++r) {
+    TailApplyBinCount<T>(op, dst[r * physCol], src0[r * physCol],
+                         src1[r * physCol], static_cast<int32_t>(validCol));
+  }
+}
+
+// ---- unary ----
+template <typename T>
+CATLASS_DEVICE void TailApplyUnCount(TailVecUnOp op, LocalTensor<T> d,
+                                     LocalTensor<T> s, int32_t n) {
+  if constexpr (TailIsFloatLike<T>::value) {
+    switch (op) {
+    case TailVecUnOp::Exp:
+      AscendC::Exp(d, s, n);
+      break;
+    case TailVecUnOp::Ln:
+      AscendC::Ln(d, s, n);
+      break;
+    case TailVecUnOp::Abs:
+      AscendC::Abs(d, s, n);
+      break;
+    case TailVecUnOp::Reciprocal:
+      AscendC::Reciprocal(d, s, n);
+      break;
+    case TailVecUnOp::Sqrt:
+      AscendC::Sqrt(d, s, n);
+      break;
+    case TailVecUnOp::Rsqrt:
+      AscendC::Rsqrt(d, s, n);
+      break;
+    case TailVecUnOp::Relu:
+      AscendC::Relu(d, s, n);
+      break;
+    }
+  } else {
+    switch (op) {
+    case TailVecUnOp::Abs:
+      AscendC::Abs(d, s, n);
+      break;
+    default:
+      break;
+    }
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE void TailApplyUnMask(TailVecUnOp op, LocalTensor<T> d,
+                                    LocalTensor<T> s, uint64_t mask,
+                                    uint8_t repeat,
+                                    const AscendC::UnaryRepeatParams &rp) {
+  if constexpr (TailIsFloatLike<T>::value) {
+    switch (op) {
+    case TailVecUnOp::Exp:
+      AscendC::Exp(d, s, mask, repeat, rp);
+      break;
+    case TailVecUnOp::Ln:
+      AscendC::Ln(d, s, mask, repeat, rp);
+      break;
+    case TailVecUnOp::Abs:
+      AscendC::Abs(d, s, mask, repeat, rp);
+      break;
+    case TailVecUnOp::Reciprocal:
+      AscendC::Reciprocal(d, s, mask, repeat, rp);
+      break;
+    case TailVecUnOp::Sqrt:
+      AscendC::Sqrt(d, s, mask, repeat, rp);
+      break;
+    case TailVecUnOp::Rsqrt:
+      AscendC::Rsqrt(d, s, mask, repeat, rp);
+      break;
+    case TailVecUnOp::Relu:
+      AscendC::Relu(d, s, mask, repeat, rp);
+      break;
+    }
+  } else {
+    switch (op) {
+    case TailVecUnOp::Abs:
+      AscendC::Abs(d, s, mask, repeat, rp);
+      break;
+    default:
+      break;
+    }
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE void tail_unary(TailVecUnOp op, LocalTensor<T> dst,
+                               LocalTensor<T> src, uint32_t validRow,
+                               uint32_t validCol, uint32_t physCol) {
+  if (validRow == 0 || validCol == 0)
+    return;
+  if (validCol == physCol) {
+    TailApplyUnCount<T>(op, dst, src, static_cast<int32_t>(validRow * physCol));
+    return;
+  }
+  constexpr uint32_t vl = 256 / sizeof(T);
+  constexpr uint32_t blk = 32 / sizeof(T);
+  uint32_t repStride = physCol / blk;
+  if (validCol <= vl && validRow <= 255 && (physCol % blk == 0) &&
+      repStride <= 255) {
+    AscendC::UnaryRepeatParams rp;
+    rp.dstBlkStride = 1;
+    rp.srcBlkStride = 1;
+    rp.dstRepStride = repStride;
+    rp.srcRepStride = repStride;
+    TailApplyUnMask<T>(op, dst, src, static_cast<uint64_t>(validCol),
+                       static_cast<uint8_t>(validRow), rp);
+    return;
+  }
+  for (uint32_t r = 0; r < validRow; ++r) {
+    TailApplyUnCount<T>(op, dst[r * physCol], src[r * physCol],
+                        static_cast<int32_t>(validCol));
+  }
+}
+
+// ---- scalar ----
+template <typename T>
+CATLASS_DEVICE void TailApplyScalarCount(TailVecScalarOp op, LocalTensor<T> d,
+                                         LocalTensor<T> s, T v, int32_t n) {
+  switch (op) {
+  case TailVecScalarOp::Adds:
+    AscendC::Adds(d, s, v, n);
+    break;
+  case TailVecScalarOp::Muls:
+    AscendC::Muls(d, s, v, n);
+    break;
+  case TailVecScalarOp::Maxs:
+    AscendC::Maxs(d, s, v, n);
+    break;
+  case TailVecScalarOp::Mins:
+    AscendC::Mins(d, s, v, n);
+    break;
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE void TailApplyScalarMask(TailVecScalarOp op, LocalTensor<T> d,
+                                        LocalTensor<T> s, T v, uint64_t mask,
+                                        uint8_t repeat,
+                                        const AscendC::UnaryRepeatParams &rp) {
+  switch (op) {
+  case TailVecScalarOp::Adds:
+    AscendC::Adds(d, s, v, mask, repeat, rp);
+    break;
+  case TailVecScalarOp::Muls:
+    AscendC::Muls(d, s, v, mask, repeat, rp);
+    break;
+  case TailVecScalarOp::Maxs:
+    AscendC::Maxs(d, s, v, mask, repeat, rp);
+    break;
+  case TailVecScalarOp::Mins:
+    AscendC::Mins(d, s, v, mask, repeat, rp);
+    break;
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE void tail_scalar(TailVecScalarOp op, LocalTensor<T> dst,
+                                LocalTensor<T> src, T scalar, uint32_t validRow,
+                                uint32_t validCol, uint32_t physCol) {
+  if (validRow == 0 || validCol == 0)
+    return;
+  if (validCol == physCol) {
+    TailApplyScalarCount<T>(op, dst, src, scalar,
+                            static_cast<int32_t>(validRow * physCol));
+    return;
+  }
+  constexpr uint32_t vl = 256 / sizeof(T);
+  constexpr uint32_t blk = 32 / sizeof(T);
+  uint32_t repStride = physCol / blk;
+  if (validCol <= vl && validRow <= 255 && (physCol % blk == 0) &&
+      repStride <= 255) {
+    AscendC::UnaryRepeatParams rp;
+    rp.dstBlkStride = 1;
+    rp.srcBlkStride = 1;
+    rp.dstRepStride = repStride;
+    rp.srcRepStride = repStride;
+    TailApplyScalarMask<T>(op, dst, src, scalar,
+                           static_cast<uint64_t>(validCol),
+                           static_cast<uint8_t>(validRow), rp);
+    return;
+  }
+  for (uint32_t r = 0; r < validRow; ++r) {
+    TailApplyScalarCount<T>(op, dst[r * physCol], src[r * physCol], scalar,
+                            static_cast<int32_t>(validCol));
+  }
+}
+
+// ---- reduce ----
+// dim == -1 : reduce each row over its valid columns -> out[0..validRow).
+// dim == 0  : reduce down the valid rows           -> out[0..validCol).
+template <typename T>
+CATLASS_DEVICE void tail_reduce_sum(LocalTensor<T> out, LocalTensor<T> src,
+                                    LocalTensor<uint8_t> tmp, int dim,
+                                    uint32_t validRow, uint32_t validCol,
+                                    uint32_t physCol, bool clear) {
+  if (validRow == 0 || validCol == 0)
+    return;
+  if (dim == 0) {
+    uint32_t r0 = 0;
+    if (clear) {
+      AscendC::Adds(out, src, static_cast<T>(0),
+                    static_cast<int32_t>(validCol));
+      r0 = 1;
+    }
+    for (uint32_t r = r0; r < validRow; ++r) {
+      AscendC::Add(out, out, src[r * physCol], static_cast<int32_t>(validCol));
+    }
+    return;
+  }
+  // dim == -1: reduce each row over its valid columns -> out[0..validRow).
+  // Use the proven Pattern-AR reduce: one contiguous block reduce when
+  // validCol == physCol, otherwise per-row (each row is contiguous internally).
+  // clear == false is handled by backing up the old result and merging.
+  constexpr uint32_t kTailMaxRows = 256;
+  T backup[kTailMaxRows];
+  bool merge = (!clear) && (validRow <= kTailMaxRows);
+  if (merge) {
+    for (uint32_t r = 0; r < validRow; ++r)
+      backup[r] = out.GetValue(r);
+  }
+  if (validCol == physCol) {
+    uint32_t shape[2] = {validRow, validCol};
+    AscendC::ReduceSum<T, AscendC::Pattern::Reduce::AR>(out, src, tmp, shape,
+                                                        true);
+  } else {
+    // validCol != physCol (tail columns): AR-pattern ReduceSum with a sub-tile
+    // shape {1, validCol} triggers aicore exceptions on some tiles, so fall
+    // back to explicit scalar accumulation (always correct; tail validCol is
+    // small so the cost is bounded). merge (clear==false) handled below.
+    for (uint32_t r = 0; r < validRow; ++r) {
+      T acc = static_cast<T>(0);
+      for (uint32_t c = 0; c < validCol; ++c)
+        acc = static_cast<T>(acc + src.GetValue(r * physCol + c));
+      out.SetValue(r, acc);
+    }
+  }
+  if (merge) {
+    for (uint32_t r = 0; r < validRow; ++r)
+      out.SetValue(r, static_cast<T>(out.GetValue(r) + backup[r]));
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE void tail_reduce_max(LocalTensor<T> out, LocalTensor<T> src,
+                                    LocalTensor<uint8_t> tmp, int dim,
+                                    uint32_t validRow, uint32_t validCol,
+                                    uint32_t physCol, bool clear) {
+  if (validRow == 0 || validCol == 0)
+    return;
+  if (dim == 0) {
+    uint32_t r0 = 0;
+    if (clear) {
+      AscendC::Adds(out, src, static_cast<T>(0),
+                    static_cast<int32_t>(validCol));
+      r0 = 1;
+    }
+    for (uint32_t r = r0; r < validRow; ++r) {
+      AscendC::Max(out, out, src[r * physCol], static_cast<int32_t>(validCol));
+    }
+    return;
+  }
+  // dim == -1: reduce each row over its valid columns (Pattern-AR).
+  constexpr uint32_t kTailMaxRows = 256;
+  T backup[kTailMaxRows];
+  bool merge = (!clear) && (validRow <= kTailMaxRows);
+  if (merge) {
+    for (uint32_t r = 0; r < validRow; ++r)
+      backup[r] = out.GetValue(r);
+  }
+  if (validCol == physCol) {
+    uint32_t shape[2] = {validRow, validCol};
+    AscendC::ReduceMax<T, AscendC::Pattern::Reduce::AR>(out, src, tmp, shape,
+                                                        true);
+  } else {
+    // validCol != physCol (tail columns): scalar fallback (see
+    // tail_reduce_sum).
+    for (uint32_t r = 0; r < validRow; ++r) {
+      T acc = src.GetValue(r * physCol);
+      for (uint32_t c = 1; c < validCol; ++c) {
+        T v = src.GetValue(r * physCol + c);
+        acc = reduce_scalar_max_safe(acc, v);
+      }
+      out.SetValue(r, acc);
+    }
+  }
+  if (merge) {
+    for (uint32_t r = 0; r < validRow; ++r)
+      out.SetValue(r, reduce_scalar_max_safe(out.GetValue(r), backup[r]));
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE void tail_reduce_min(LocalTensor<T> out, LocalTensor<T> src,
+                                    LocalTensor<uint8_t> tmp, int dim,
+                                    uint32_t validRow, uint32_t validCol,
+                                    uint32_t physCol, bool clear) {
+  if (validRow == 0 || validCol == 0)
+    return;
+  if (dim == 0) {
+    uint32_t r0 = 0;
+    if (clear) {
+      AscendC::Adds(out, src, static_cast<T>(0),
+                    static_cast<int32_t>(validCol));
+      r0 = 1;
+    }
+    for (uint32_t r = r0; r < validRow; ++r) {
+      AscendC::Min(out, out, src[r * physCol], static_cast<int32_t>(validCol));
+    }
+    return;
+  }
+  // dim == -1: reduce each row over its valid columns (Pattern-AR).
+  constexpr uint32_t kTailMaxRows = 256;
+  T backup[kTailMaxRows];
+  bool merge = (!clear) && (validRow <= kTailMaxRows);
+  if (merge) {
+    for (uint32_t r = 0; r < validRow; ++r)
+      backup[r] = out.GetValue(r);
+  }
+  if (validCol == physCol) {
+    uint32_t shape[2] = {validRow, validCol};
+    AscendC::ReduceMin<T, AscendC::Pattern::Reduce::AR>(out, src, tmp, shape,
+                                                        true);
+  } else {
+    // validCol != physCol (tail columns): scalar fallback (see
+    // tail_reduce_sum).
+    for (uint32_t r = 0; r < validRow; ++r) {
+      T acc = src.GetValue(r * physCol);
+      for (uint32_t c = 1; c < validCol; ++c) {
+        T v = src.GetValue(r * physCol + c);
+        acc = reduce_scalar_min_safe(acc, v);
+      }
+      out.SetValue(r, acc);
+    }
+  }
+  if (merge) {
+    for (uint32_t r = 0; r < validRow; ++r)
+      out.SetValue(r, reduce_scalar_min_safe(out.GetValue(r), backup[r]));
+  }
+}
+
 static constexpr uint32_t L0AB_EVENT = 0;
 
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
@@ -602,6 +1053,67 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
   uint32_t kL0Tail = K - (kL0split - 1) * kL0Size;
   bool initflag = false;
 
+  // ---- N tiling -----------------------------------------------------------
+  // The B operand tile loaded into L0B is (kL0Size x nTile); L0B holds 64KB,
+  // and with the kL0 ping-pong the per-slot budget is 32KB. So a single mma
+  // over the whole N (l0b slot = N*kL0Size) overflows L0B once N is large
+  // (e.g. the PV matmul's N = headDim = 512 -> 512*128*2 = 128KB). Tile N into
+  // nTile columns just like the Ascend C reference (N_SPLIT_SIZE = 128): each
+  // tile loads its own (kL0Size x nTile) B sub-block and writes its own column
+  // band of the L0C accumulator. Only the non-transpose-B path is tiled; the
+  // transpose-B callers (e.g. QK with N = block_I <= 128) already fit, so they
+  // keep nTile == N (a single pass, byte-for-byte the original behaviour) and
+  // need no L1 column-offset formula. Compatibility: any existing caller with
+  // N <= nMaxByL0B (transpose or not) sees nL0split == 1 and identical codegen.
+  //
+  // Sub-tile offsets come straight from the catlass tla fractal layouts:
+  //   L0C column n0  ->  n0 * roundUp16(M)   (tla::MakeLayoutL0C N1 stride)
+  //   L1 zN B col n0 ->  n0 * roundUp16(K)   (tla::MakeLayout<zN>  C1 stride)
+  // both of which are consistent with the original K-offset
+  // B[kL0Idx*16*kL0Size] (zN K-row stride) already used below.
+  constexpr uint32_t nMaxByL0B = (32u * 1024u) / (kL0Size * sizeof(T1));
+  constexpr uint32_t nTile = (transpose_B || N <= nMaxByL0B) ? N : nMaxByL0B;
+  static_assert(transpose_B || (N % nTile == 0),
+                "gemm_v0 N-tiling requires N divisible by the N tile size");
+  constexpr uint32_t nL0split = N / nTile;
+  // L0A and L0B are each 64KB. The kL0/N ping-pong uses two slots only when
+  // there is more than one (N-tile, K-tile) step; a single step uses one slot
+  // and may occupy the whole 64KB -- which is why a transpose-B caller with a
+  // single K-tile and N up to 64KB/(kL0Size*sizeof(T)) fits (e.g. fp32 N=128 =
+  // 64KB). So the per-slot budget is 64KB for a single step, 32KB once the
+  // ping-pong actually alternates.
+  constexpr uint32_t kNumSteps = ((K + kL0Size - 1) / kL0Size) * nL0split;
+  constexpr uint32_t kL0Budget = (64u * 1024u) / (kNumSteps > 1 ? 2u : 1u);
+  // The B tile in L0B is (kL0Size x nTile) -- only the transpose-B path keeps
+  // nTile == N, so a large-N transpose-B caller could overflow its L0B slot.
+  static_assert(nTile * kL0Size * sizeof(T1) <= kL0Budget,
+                "gemm_v0: the (kL0Size x nTile) B tile does not fit its L0B "
+                "ping-pong slot");
+  // M is not tiled, so a large M would overflow its L0A slot.
+  static_assert(M * kL0Size * sizeof(T1) <= kL0Budget,
+                "gemm_v0: the (M x kL0Size) A tile does not fit its L0A "
+                "ping-pong slot");
+  // L0C is caller-allocated (the `C` operand) and holds the full (M x N)
+  // accumulator: roundUp16(M) * N * sizeof(T2). It must fit the target's L0C
+  // (A2/A3 128KB, A5 256KB) -- e.g. M=128, N=512, fp32 needs 256KB and only
+  // fits A5. Unlike the L0A/L0B guards above this can't be a static_assert
+  // here: L0C capacity is device-dependent, whereas L0A/L0B are 64KB on both
+  // archs (which is why those two use a literal budget). This device-side
+  // template has no arch macro or L0C-size constant to branch on
+  // (ASCEND_*_L0C_SIZE live in the host codegen), so a literal guard would
+  // reject a valid A5 caller or silently pass on A2/A3. The constraint is
+  // therefore documented here; the caller sizes its L0C tile accordingly.
+  constexpr uint32_t mRound = ((M + 15u) / 16u) * 16u;
+  constexpr uint32_t kRound = ((K + 15u) / 16u) * 16u;
+
+  // ---- Pipelined main loop. Prime/drain the L0A/L0B ping-pong buffers ONCE
+  // and let the ping-pong run continuously across the WHOLE (N-tile, K-tile)
+  // sequence (flattened by tileIdx). Each tile's L1->L0 load goes into the
+  // free buffer while the previous tile's mma runs, so N-tiles overlap with K
+  // exactly like the Ascend C matmul pipeline -- a per-N-tile drain (the first
+  // N-tiling version) instead serialised the tiles. For nL0split == 1 (every
+  // pre-existing caller, and the QK transpose-B path) tileIdx == kL0Idx, so
+  // this is byte-for-byte the original K ping-pong.
   SetFlag<HardEvent::MTE2_MTE1>(L0AB_EVENT);
   WaitFlag<HardEvent::MTE2_MTE1>(L0AB_EVENT);
   SetFlag<HardEvent::FIX_M>(L0AB_EVENT);
@@ -610,35 +1122,48 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
   SetFlag<HardEvent::M_MTE1>(L0AB_EVENT);
   SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
 
-  for (uint32_t kL0Idx = 0; kL0Idx < kL0split; kL0Idx++) {
-    initflag = (clear && (kL0Idx == 0));
-    uint32_t kSize = (kL0Idx == kL0split - 1) ? kL0Tail : kL0Size;
-    uint32_t pp = (kL0Idx & 1);
+  uint32_t tileIdx = 0;
+  for (uint32_t nL0Idx = 0; nL0Idx < nL0split; nL0Idx++) {
+    // Non-transpose B is zN in L1: its column n0 lives at n0 * roundUp16(K)
+    // (the zN C1 stride), so this N-tile's B sub-block starts at
+    // nL0Idx*nTile*kRound. This column-offset formula is correct only for a zN
+    // B_L1; a different B layout would need a different per-column stride here.
+    uint32_t bNOffset = transpose_B ? 0u : (nL0Idx * nTile * kRound);
+    uint32_t cNOffset = nL0Idx * nTile * mRound;
 
-    uint32_t l0a_base = pp * (M * kL0Size);
-    uint32_t l0b_base = pp * (N * kL0Size);
+    for (uint32_t kL0Idx = 0; kL0Idx < kL0split; kL0Idx++) {
+      // clear THIS N-tile's C column band on its first K-tile (each band is an
+      // independent accumulation over K).
+      initflag = (clear && (kL0Idx == 0));
+      uint32_t kSize = (kL0Idx == kL0split - 1) ? kL0Tail : kL0Size;
+      uint32_t pp = (tileIdx & 1);
 
-    WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + pp);
-    if constexpr (!transpose_A) {
-      tl::ascend::copy_l1_to_l0a<T1, M, K>(l0a[l0a_base],
-                                           A[kL0Idx * M * kL0Size], M, kSize);
-    } else {
-      tl::ascend::copy_l1_to_l0a<T1, K, M, true>(
-          l0a[l0a_base], A[kL0Idx * 16 * kL0Size], M, kSize);
+      uint32_t l0a_base = pp * (M * kL0Size);
+      uint32_t l0b_base = pp * (nTile * kL0Size);
+
+      WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + pp);
+      if constexpr (!transpose_A) {
+        tl::ascend::copy_l1_to_l0a<T1, M, K>(l0a[l0a_base],
+                                             A[kL0Idx * M * kL0Size], M, kSize);
+      } else {
+        tl::ascend::copy_l1_to_l0a<T1, K, M, true>(
+            l0a[l0a_base], A[kL0Idx * 16 * kL0Size], M, kSize);
+      }
+      if constexpr (!transpose_B) {
+        tl::ascend::copy_l1_to_l0b<T1, K, N>(
+            l0b[l0b_base], B[bNOffset + kL0Idx * 16 * kL0Size], kSize, nTile);
+      } else {
+        tl::ascend::copy_l1_to_l0b<T1, N, K, true>(
+            l0b[l0b_base], B[kL0Idx * N * kL0Size], kSize, N);
+      }
+      SetFlag<HardEvent::MTE1_M>(L0AB_EVENT + pp);
+      WaitFlag<HardEvent::MTE1_M>(L0AB_EVENT + pp);
+      PipeBarrier<PIPE_M>();
+      tl::ascend::mma<T1, T2, M, nTile>(l0a[l0a_base], l0b[l0b_base],
+                                        C[cNOffset], initflag, kSize);
+      SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + pp);
+      tileIdx++;
     }
-    if constexpr (!transpose_B) {
-      tl::ascend::copy_l1_to_l0b<T1, K, N>(l0b[l0b_base],
-                                           B[kL0Idx * 16 * kL0Size], kSize, N);
-    } else {
-      tl::ascend::copy_l1_to_l0b<T1, N, K, true>(
-          l0b[l0b_base], B[kL0Idx * N * kL0Size], kSize, N);
-    }
-    SetFlag<HardEvent::MTE1_M>(L0AB_EVENT + pp);
-    WaitFlag<HardEvent::MTE1_M>(L0AB_EVENT + pp);
-    PipeBarrier<PIPE_M>();
-    tl::ascend::mma<T1, T2, M, N>(l0a[l0a_base], l0b[l0b_base], C, initflag,
-                                  kSize);
-    SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + pp);
   }
   WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT);
   WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + 1);
