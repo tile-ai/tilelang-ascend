@@ -151,16 +151,16 @@ private:
             size_t pos = event_type.find('_');
             if (pos != std::string::npos) {
               std::string src_pipeline = "PIPE_" + event_type.substr(0, pos);
-              for (auto &pair : current_access_history_) {
-                if (pair.second.pipeline == src_pipeline) {
-                  pair.second.event_pairs.insert(event_sync);
-                }
-              }
-              for (auto &pair : current_write_history_) {
-                if (pair.second.pipeline == src_pipeline) {
-                  pair.second.event_pairs.insert(event_sync);
-                }
-              }
+              auto update_hist =
+                  [&](std::unordered_map<std::string, BufferAccess> &hist) {
+                    for (auto &pair : hist) {
+                      if (pair.second.pipeline == src_pipeline) {
+                        pair.second.event_pairs.insert(event_sync);
+                      }
+                    }
+                  };
+              update_hist(current_access_history_);
+              update_hist(current_write_history_);
             }
           }
         }
