@@ -60,7 +60,7 @@ def _find_block_L(N, L, dtype):
     pass_configs={
         tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
         tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-    }
+    },
 )
 def cummin_vec_ker(Rows, L, core_num, single_core_load, N, block_L, has_nan=True, dtype="float16"):
     """Vectorized prefix-min scan. Data layout: [L, Rows] (transposed).
@@ -199,7 +199,7 @@ def _find_block_R(block_N, R, dtype):
     pass_configs={
         tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
         tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-    }
+    },
 )
 def cummin_vec_ker_v2(M, R, N, core_num, single_core_load, block_N, block_R, has_nan=True, dtype="float16"):
     """Vectorized prefix-min scan on [M*R, N] physical layout (no transpose)."""
