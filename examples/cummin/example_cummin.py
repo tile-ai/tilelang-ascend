@@ -60,7 +60,7 @@ def _find_block_L(N, L, dtype):
     pass_configs={
         tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
         tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-    },
+    }
 )
 def cummin_vec_ker(Rows, L, core_num, single_core_load, N, block_L, has_nan=True, dtype="float16"):
     """Vectorized prefix-min scan. Data layout: [L, Rows] (transposed).
@@ -92,79 +92,80 @@ def cummin_vec_ker(Rows, L, core_num, single_core_load, N, block_L, has_nan=True
             mask_le_ub = T.alloc_shared([1, N], "uint8")
             mask_nan_ub = T.alloc_shared([1, N], "uint8")
 
-            for inner in T.serial(single_core_load):
-                c = cid * single_core_load + inner
-                if c < num_chunks:
-                    col_base = c * N
+            with T.Scope("V"):
+                for inner in T.serial(single_core_load):
+                    c = cid * single_core_load + inner
+                    if c < num_chunks:
+                        col_base = c * N
 
-                    for bi in T.serial(n_full):
-                        l_base = bi * block_L
+                        for bi in T.serial(n_full):
+                            l_base = bi * block_L
 
-                        T.copy(A[l_base : l_base + block_L, col_base : col_base + N], in_tile)
-                        T.barrier_all()
-                        if low_prec:
-                            T.tile.cast(in_cal_tile, in_tile, "CAST_NONE", block_L * N)
-                        else:
-                            T.copy(in_tile, in_cal_tile)
-
-                        if bi == 0:
-                            T.copy(in_cal_tile[0, :], run_min_cal_ub[0, :])
-                            T.tile.fill(run_idx_ub, 0.0)
-
-                        for jj in range(block_L):
-                            T.tile.fill(idx_curr_ub, T.cast(l_base + jj, "float32"))
-                            if has_nan:
-                                T.tile.compare(mask_le_ub, in_cal_tile[jj, :], run_min_cal_ub, "LE")
-                                T.tile.compare(mask_nan_ub, in_cal_tile[jj, :], in_cal_tile[jj, :], "EQ")
-                                T.tile.select(run_idx_ub, mask_le_ub, idx_curr_ub, run_idx_ub, sel_mode)
-                                T.tile.select(run_idx_ub, mask_nan_ub, run_idx_ub, idx_curr_ub, sel_mode)
-                                T.tile.min(run_min_cal_ub, run_min_cal_ub, in_cal_tile[jj, :])
+                            T.copy(A[l_base : l_base + block_L, col_base : col_base + N], in_tile)
+                            T.barrier_all()
+                            if low_prec:
+                                T.tile.cast(in_cal_tile, in_tile, "CAST_NONE", block_L * N)
                             else:
-                                T.tile.compare(mask_le_ub, in_cal_tile[jj, :], run_min_cal_ub, "LE")
-                                T.tile.select(run_idx_ub, mask_le_ub, idx_curr_ub, run_idx_ub, sel_mode)
-                                T.tile.min(run_min_cal_ub, run_min_cal_ub, in_cal_tile[jj, :])
-                            T.copy(run_min_cal_ub[0, :], val_cal_tile[jj, :])
-                            T.copy(run_idx_ub[0, :], idx_tile[jj, :])
+                                T.copy(in_tile, in_cal_tile)
 
-                        if low_prec:
-                            T.tile.cast(val_tile, val_cal_tile, "CAST_RINT", block_L * N)
-                        else:
-                            T.copy(val_cal_tile, val_tile)
-                        T.barrier_all()
-                        T.copy(val_tile, Values[l_base : l_base + block_L, col_base : col_base + N])
-                        T.copy(idx_tile, Indices[l_base : l_base + block_L, col_base : col_base + N])
-                        T.barrier_all()
+                            if bi == 0:
+                                T.copy(in_cal_tile[0, :], run_min_cal_ub[0, :])
+                                T.tile.fill(run_idx_ub, 0.0)
 
-                    if partial > 0:
-                        tb = n_full * block_L
-                        T.copy(A[tb : tb + partial, col_base : col_base + N], in_tile)
-                        T.barrier_all()
-                        if low_prec:
-                            T.tile.cast(in_cal_tile, in_tile, "CAST_NONE", partial * N)
-                        else:
-                            T.copy(in_tile[0:partial, :], in_cal_tile[0:partial, :])
-                        for jj in range(partial):
-                            T.tile.fill(idx_curr_ub, T.cast(tb + jj, "float32"))
-                            if has_nan:
-                                T.tile.compare(mask_le_ub, in_cal_tile[jj, :], run_min_cal_ub, "LE")
-                                T.tile.compare(mask_nan_ub, in_cal_tile[jj, :], in_cal_tile[jj, :], "EQ")
-                                T.tile.select(run_idx_ub, mask_le_ub, idx_curr_ub, run_idx_ub, sel_mode)
-                                T.tile.select(run_idx_ub, mask_nan_ub, run_idx_ub, idx_curr_ub, sel_mode)
-                                T.tile.min(run_min_cal_ub, run_min_cal_ub, in_cal_tile[jj, :])
+                            for jj in range(block_L):
+                                T.tile.fill(idx_curr_ub, T.cast(l_base + jj, "float32"))
+                                if has_nan:
+                                    T.tile.compare(mask_le_ub, in_cal_tile[jj, :], run_min_cal_ub, "LE")
+                                    T.tile.compare(mask_nan_ub, in_cal_tile[jj, :], in_cal_tile[jj, :], "EQ")
+                                    T.tile.select(run_idx_ub, mask_le_ub, idx_curr_ub, run_idx_ub, sel_mode)
+                                    T.tile.select(run_idx_ub, mask_nan_ub, run_idx_ub, idx_curr_ub, sel_mode)
+                                    T.tile.min(run_min_cal_ub, run_min_cal_ub, in_cal_tile[jj, :])
+                                else:
+                                    T.tile.compare(mask_le_ub, in_cal_tile[jj, :], run_min_cal_ub, "LE")
+                                    T.tile.select(run_idx_ub, mask_le_ub, idx_curr_ub, run_idx_ub, sel_mode)
+                                    T.tile.min(run_min_cal_ub, run_min_cal_ub, in_cal_tile[jj, :])
+                                T.copy(run_min_cal_ub[0, :], val_cal_tile[jj, :])
+                                T.copy(run_idx_ub[0, :], idx_tile[jj, :])
+
+                            if low_prec:
+                                T.tile.cast(val_tile, val_cal_tile, "CAST_RINT", block_L * N)
                             else:
-                                T.tile.compare(mask_le_ub, in_cal_tile[jj, :], run_min_cal_ub, "LE")
-                                T.tile.select(run_idx_ub, mask_le_ub, idx_curr_ub, run_idx_ub, sel_mode)
-                                T.tile.min(run_min_cal_ub, run_min_cal_ub, in_cal_tile[jj, :])
-                            T.copy(run_min_cal_ub[0, :], val_cal_tile[jj, :])
-                            T.copy(run_idx_ub[0, :], idx_tile[jj, :])
-                        if low_prec:
-                            T.tile.cast(val_tile, val_cal_tile, "CAST_RINT", partial * N)
-                        else:
-                            T.copy(val_cal_tile[0:partial, :], val_tile[0:partial, :])
-                        T.barrier_all()
-                        T.copy(val_tile[0:partial, :], Values[tb : tb + partial, col_base : col_base + N])
-                        T.copy(idx_tile[0:partial, :], Indices[tb : tb + partial, col_base : col_base + N])
-                        T.barrier_all()
+                                T.copy(val_cal_tile, val_tile)
+                            T.barrier_all()
+                            T.copy(val_tile, Values[l_base : l_base + block_L, col_base : col_base + N])
+                            T.copy(idx_tile, Indices[l_base : l_base + block_L, col_base : col_base + N])
+                            T.barrier_all()
+
+                        if partial > 0:
+                            tb = n_full * block_L
+                            T.copy(A[tb : tb + partial, col_base : col_base + N], in_tile)
+                            T.barrier_all()
+                            if low_prec:
+                                T.tile.cast(in_cal_tile, in_tile, "CAST_NONE", partial * N)
+                            else:
+                                T.copy(in_tile[0:partial, :], in_cal_tile[0:partial, :])
+                            for jj in range(partial):
+                                T.tile.fill(idx_curr_ub, T.cast(tb + jj, "float32"))
+                                if has_nan:
+                                    T.tile.compare(mask_le_ub, in_cal_tile[jj, :], run_min_cal_ub, "LE")
+                                    T.tile.compare(mask_nan_ub, in_cal_tile[jj, :], in_cal_tile[jj, :], "EQ")
+                                    T.tile.select(run_idx_ub, mask_le_ub, idx_curr_ub, run_idx_ub, sel_mode)
+                                    T.tile.select(run_idx_ub, mask_nan_ub, run_idx_ub, idx_curr_ub, sel_mode)
+                                    T.tile.min(run_min_cal_ub, run_min_cal_ub, in_cal_tile[jj, :])
+                                else:
+                                    T.tile.compare(mask_le_ub, in_cal_tile[jj, :], run_min_cal_ub, "LE")
+                                    T.tile.select(run_idx_ub, mask_le_ub, idx_curr_ub, run_idx_ub, sel_mode)
+                                    T.tile.min(run_min_cal_ub, run_min_cal_ub, in_cal_tile[jj, :])
+                                T.copy(run_min_cal_ub[0, :], val_cal_tile[jj, :])
+                                T.copy(run_idx_ub[0, :], idx_tile[jj, :])
+                            if low_prec:
+                                T.tile.cast(val_tile, val_cal_tile, "CAST_RINT", partial * N)
+                            else:
+                                T.copy(val_cal_tile[0:partial, :], val_tile[0:partial, :])
+                            T.barrier_all()
+                            T.copy(val_tile[0:partial, :], Values[tb : tb + partial, col_base : col_base + N])
+                            T.copy(idx_tile[0:partial, :], Indices[tb : tb + partial, col_base : col_base + N])
+                            T.barrier_all()
 
     return main
 
@@ -198,7 +199,7 @@ def _find_block_R(block_N, R, dtype):
     pass_configs={
         tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
         tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-    },
+    }
 )
 def cummin_vec_ker_v2(M, R, N, core_num, single_core_load, block_N, block_R, has_nan=True, dtype="float16"):
     """Vectorized prefix-min scan on [M*R, N] physical layout (no transpose)."""
@@ -229,82 +230,83 @@ def cummin_vec_ker_v2(M, R, N, core_num, single_core_load, block_N, block_R, has
             mask_le_ub = T.alloc_shared([1, block_N], "uint8")
             mask_nan_ub = T.alloc_shared([1, block_N], "uint8")
 
-            for inner in T.serial(single_core_load):
-                c = cid * single_core_load + inner
-                if c < total_tasks:
-                    m = c // num_chunks
-                    n_chunk = c % num_chunks
-                    col_base = n_chunk * block_N
-                    row_base = m * R
+            with T.Scope("V"):
+                for inner in T.serial(single_core_load):
+                    c = cid * single_core_load + inner
+                    if c < total_tasks:
+                        m = c // num_chunks
+                        n_chunk = c % num_chunks
+                        col_base = n_chunk * block_N
+                        row_base = m * R
 
-                    for bi in T.serial(n_full):
-                        l_base = row_base + bi * block_R
+                        for bi in T.serial(n_full):
+                            l_base = row_base + bi * block_R
 
-                        T.copy(A[l_base : l_base + block_R, col_base : col_base + block_N], in_tile)
-                        T.barrier_all()
-                        if low_prec:
-                            T.tile.cast(in_cal_tile, in_tile, "CAST_NONE", block_R * block_N)
-                        else:
-                            T.copy(in_tile, in_cal_tile)
-
-                        if bi == 0:
-                            T.copy(in_cal_tile[0, :], run_min_cal_ub[0, :])
-                            T.tile.fill(run_idx_ub, 0.0)
-
-                        for jj in range(block_R):
-                            T.tile.fill(idx_curr_ub, T.cast(bi * block_R + jj, "float32"))
-                            if has_nan:
-                                T.tile.compare(mask_le_ub, in_cal_tile[jj, :], run_min_cal_ub, "LE")
-                                T.tile.compare(mask_nan_ub, in_cal_tile[jj, :], in_cal_tile[jj, :], "EQ")
-                                T.tile.select(run_idx_ub, mask_le_ub, idx_curr_ub, run_idx_ub, sel_mode)
-                                T.tile.select(run_idx_ub, mask_nan_ub, run_idx_ub, idx_curr_ub, sel_mode)
-                                T.tile.min(run_min_cal_ub, run_min_cal_ub, in_cal_tile[jj, :])
+                            T.copy(A[l_base : l_base + block_R, col_base : col_base + block_N], in_tile)
+                            T.barrier_all()
+                            if low_prec:
+                                T.tile.cast(in_cal_tile, in_tile, "CAST_NONE", block_R * block_N)
                             else:
-                                T.tile.compare(mask_le_ub, in_cal_tile[jj, :], run_min_cal_ub, "LE")
-                                T.tile.select(run_idx_ub, mask_le_ub, idx_curr_ub, run_idx_ub, sel_mode)
-                                T.tile.min(run_min_cal_ub, run_min_cal_ub, in_cal_tile[jj, :])
-                            T.copy(run_min_cal_ub[0, :], val_cal_tile[jj, :])
-                            T.copy(run_idx_ub[0, :], idx_tile[jj, :])
+                                T.copy(in_tile, in_cal_tile)
 
-                        if low_prec:
-                            T.tile.cast(val_tile, val_cal_tile, "CAST_RINT", block_R * block_N)
-                        else:
-                            T.copy(val_cal_tile, val_tile)
-                        T.barrier_all()
-                        T.copy(val_tile, Values[l_base : l_base + block_R, col_base : col_base + block_N])
-                        T.copy(idx_tile, Indices[l_base : l_base + block_R, col_base : col_base + block_N])
-                        T.barrier_all()
+                            if bi == 0:
+                                T.copy(in_cal_tile[0, :], run_min_cal_ub[0, :])
+                                T.tile.fill(run_idx_ub, 0.0)
 
-                    if partial > 0:
-                        tb = row_base + n_full * block_R
-                        T.copy(A[tb : tb + partial, col_base : col_base + block_N], in_tile)
-                        T.barrier_all()
-                        if low_prec:
-                            T.tile.cast(in_cal_tile, in_tile, "CAST_NONE", partial * block_N)
-                        else:
-                            T.copy(in_tile[0:partial, :], in_cal_tile[0:partial, :])
-                        for jj in range(partial):
-                            T.tile.fill(idx_curr_ub, T.cast(n_full * block_R + jj, "float32"))
-                            if has_nan:
-                                T.tile.compare(mask_le_ub, in_cal_tile[jj, :], run_min_cal_ub, "LE")
-                                T.tile.compare(mask_nan_ub, in_cal_tile[jj, :], in_cal_tile[jj, :], "EQ")
-                                T.tile.select(run_idx_ub, mask_le_ub, idx_curr_ub, run_idx_ub, sel_mode)
-                                T.tile.select(run_idx_ub, mask_nan_ub, run_idx_ub, idx_curr_ub, sel_mode)
-                                T.tile.min(run_min_cal_ub, run_min_cal_ub, in_cal_tile[jj, :])
+                            for jj in range(block_R):
+                                T.tile.fill(idx_curr_ub, T.cast(bi * block_R + jj, "float32"))
+                                if has_nan:
+                                    T.tile.compare(mask_le_ub, in_cal_tile[jj, :], run_min_cal_ub, "LE")
+                                    T.tile.compare(mask_nan_ub, in_cal_tile[jj, :], in_cal_tile[jj, :], "EQ")
+                                    T.tile.select(run_idx_ub, mask_le_ub, idx_curr_ub, run_idx_ub, sel_mode)
+                                    T.tile.select(run_idx_ub, mask_nan_ub, run_idx_ub, idx_curr_ub, sel_mode)
+                                    T.tile.min(run_min_cal_ub, run_min_cal_ub, in_cal_tile[jj, :])
+                                else:
+                                    T.tile.compare(mask_le_ub, in_cal_tile[jj, :], run_min_cal_ub, "LE")
+                                    T.tile.select(run_idx_ub, mask_le_ub, idx_curr_ub, run_idx_ub, sel_mode)
+                                    T.tile.min(run_min_cal_ub, run_min_cal_ub, in_cal_tile[jj, :])
+                                T.copy(run_min_cal_ub[0, :], val_cal_tile[jj, :])
+                                T.copy(run_idx_ub[0, :], idx_tile[jj, :])
+
+                            if low_prec:
+                                T.tile.cast(val_tile, val_cal_tile, "CAST_RINT", block_R * block_N)
                             else:
-                                T.tile.compare(mask_le_ub, in_cal_tile[jj, :], run_min_cal_ub, "LE")
-                                T.tile.select(run_idx_ub, mask_le_ub, idx_curr_ub, run_idx_ub, sel_mode)
-                                T.tile.min(run_min_cal_ub, run_min_cal_ub, in_cal_tile[jj, :])
-                            T.copy(run_min_cal_ub[0, :], val_cal_tile[jj, :])
-                            T.copy(run_idx_ub[0, :], idx_tile[jj, :])
-                        if low_prec:
-                            T.tile.cast(val_tile, val_cal_tile, "CAST_RINT", partial * block_N)
-                        else:
-                            T.copy(val_cal_tile[0:partial, :], val_tile[0:partial, :])
-                        T.barrier_all()
-                        T.copy(val_tile[0:partial, :], Values[tb : tb + partial, col_base : col_base + block_N])
-                        T.copy(idx_tile[0:partial, :], Indices[tb : tb + partial, col_base : col_base + block_N])
-                        T.barrier_all()
+                                T.copy(val_cal_tile, val_tile)
+                            T.barrier_all()
+                            T.copy(val_tile, Values[l_base : l_base + block_R, col_base : col_base + block_N])
+                            T.copy(idx_tile, Indices[l_base : l_base + block_R, col_base : col_base + block_N])
+                            T.barrier_all()
+
+                        if partial > 0:
+                            tb = row_base + n_full * block_R
+                            T.copy(A[tb : tb + partial, col_base : col_base + block_N], in_tile)
+                            T.barrier_all()
+                            if low_prec:
+                                T.tile.cast(in_cal_tile, in_tile, "CAST_NONE", partial * block_N)
+                            else:
+                                T.copy(in_tile[0:partial, :], in_cal_tile[0:partial, :])
+                            for jj in range(partial):
+                                T.tile.fill(idx_curr_ub, T.cast(n_full * block_R + jj, "float32"))
+                                if has_nan:
+                                    T.tile.compare(mask_le_ub, in_cal_tile[jj, :], run_min_cal_ub, "LE")
+                                    T.tile.compare(mask_nan_ub, in_cal_tile[jj, :], in_cal_tile[jj, :], "EQ")
+                                    T.tile.select(run_idx_ub, mask_le_ub, idx_curr_ub, run_idx_ub, sel_mode)
+                                    T.tile.select(run_idx_ub, mask_nan_ub, run_idx_ub, idx_curr_ub, sel_mode)
+                                    T.tile.min(run_min_cal_ub, run_min_cal_ub, in_cal_tile[jj, :])
+                                else:
+                                    T.tile.compare(mask_le_ub, in_cal_tile[jj, :], run_min_cal_ub, "LE")
+                                    T.tile.select(run_idx_ub, mask_le_ub, idx_curr_ub, run_idx_ub, sel_mode)
+                                    T.tile.min(run_min_cal_ub, run_min_cal_ub, in_cal_tile[jj, :])
+                                T.copy(run_min_cal_ub[0, :], val_cal_tile[jj, :])
+                                T.copy(run_idx_ub[0, :], idx_tile[jj, :])
+                            if low_prec:
+                                T.tile.cast(val_tile, val_cal_tile, "CAST_RINT", partial * block_N)
+                            else:
+                                T.copy(val_cal_tile[0:partial, :], val_tile[0:partial, :])
+                            T.barrier_all()
+                            T.copy(val_tile[0:partial, :], Values[tb : tb + partial, col_base : col_base + block_N])
+                            T.copy(idx_tile[0:partial, :], Indices[tb : tb + partial, col_base : col_base + block_N])
+                            T.barrier_all()
 
     return main
 
