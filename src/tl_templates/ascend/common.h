@@ -1400,6 +1400,24 @@ div_mask(const LocalTensor<T> &dst, const LocalTensor<T> &src0,
   AscendC::Div<T, false>(dst, src0, src1, mask, repeatTime, params);
 }
 
+// Strided masked exp for the narrow online-softmax window: exp only the `mask`
+// valid columns of each row, striding `srcRepStride`/`dstRepStride` 32B-blocks
+// between rows so one call touches just the [0:tw] window of a wider,
+// physically-strided score buffer (no compaction). Unary mirror of sub_mask;
+// ExpExperimentCodegen derives repeatTime/rep_stride from the buffer's physical
+// column count, and callers loop 64-column (fp32) chunks over the valid window.
+template <typename T>
+CATLASS_DEVICE void
+exp_mask(const LocalTensor<T> &dst, const LocalTensor<T> &src,
+         const uint64_t mask0, const uint64_t mask1, const uint8_t repeatTime,
+         const uint8_t dstBlkStride, const uint8_t srcBlkStride,
+         const uint8_t dstRepStride, const uint8_t srcRepStride) {
+  uint64_t mask[2] = {mask0, mask1};
+  AscendC::UnaryRepeatParams params(dstBlkStride, srcBlkStride, dstRepStride,
+                                    srcRepStride);
+  AscendC::Exp<T, false>(dst, src, mask, repeatTime, params);
+}
+
 template <typename T1, typename T2, typename LayOutL1, typename LayoutGM,
           uint32_t M, uint32_t N, uint32_t K, uint32_t baseM, uint32_t baseN,
           uint32_t baseK, bool init, bool is_transpose_A = false,

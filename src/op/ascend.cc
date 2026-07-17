@@ -1389,6 +1389,12 @@ TIR_DEFINE_TL_BUILTIN(ascend_row_expand_div_experiment)
     .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_exp_experiment)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
 TIR_DEFINE_TL_BUILTIN(ascend_copy_cv_experiment)
     .set_num_inputs(3)
     .set_attr<TCallEffectKind>("TCallEffectKind",

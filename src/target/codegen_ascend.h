@@ -161,6 +161,8 @@ private:
   void RowExpandBinOpExperimentCodegen(const CallNode *op,
                                        const std::string &mask_op_name);
 
+  void ExpExperimentCodegen(const CallNode *op);
+
   void SetCrossFlagCodegen(const CallNode *op);
 
   void FlagOpCodegen(const CallNode *op, std::string op_name);

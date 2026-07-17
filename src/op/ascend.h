@@ -259,6 +259,8 @@ TVM_DLL const Op &ascend_row_expand_sub_experiment();
 
 TVM_DLL const Op &ascend_row_expand_div_experiment();
 
+TVM_DLL const Op &ascend_exp_experiment();
+
 // ---------------------------------------------------------------------------
 // Internal tail-aware vector ops produced by AscendTailMaskPropagation. These
 // are never emitted by the front-end; the pass rewrites the corresponding

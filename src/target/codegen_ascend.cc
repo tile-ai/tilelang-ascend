@@ -637,6 +637,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     RowExpandSubExperimentCodegen(op);
   } else if (op->op.same_as(tl::ascend_row_expand_div_experiment())) {
     RowExpandDivExperimentCodegen(op);
+  } else if (op->op.same_as(tl::ascend_exp_experiment())) {
+    ExpExperimentCodegen(op);
   } else if (op->op.same_as(tl::ascend_wait_cross_flag())) {
     PrintOpCall(op, "AscendC::CrossCoreWaitFlag", {0, 0}, {0, 1});
   } else if (op->op.same_as(tl::ascend_set_cross_flag())) {
@@ -2207,6 +2209,57 @@ void CodeGenTileLangAscend::RowExpandBinOpExperimentCodegen(
                  << ", 1, 1, 0, " << rep_stride << ", " << rep_stride
                  << ", 1);\n";
   }
+}
+
+void CodeGenTileLangAscend::ExpExperimentCodegen(const CallNode *op) {
+  // args[0] = op name string, args[1] = dst, args[2] = src.
+  // Unary mirror of RowExpandBinOpExperimentCodegen: exp the `mask` valid
+  // columns of each row in place, striding by the buffer's physical column
+  // count so one call covers all rows of a 64-column (fp32) chunk of a wider
+  // N-strided score buffer. rep_stride = physical_cols / elems_per_block;
+  // repeat_time = extent / (8 * elems_per_block) = one repeat per row when the
+  // slice is a 64-col chunk.
+  DataType dtype = GetAccessPtrDtype(op->args[1].as<CallNode>());
+  std::string type_str = getType(dtype);
+  int elems_per_block = 256 / dtype.bits();
+
+  auto *dst_access = op->args[1].as<CallNode>();
+  Var dst_var = Downcast<Var>(dst_access->args[1]);
+  int cols = 0;
+  if (buffer_shapes_.count(dst_var)) {
+    auto shape = buffer_shapes_.at(dst_var);
+    if (shape.size() >= 1 && shape[shape.size() - 1].as<IntImmNode>()) {
+      cols = static_cast<int>(shape[shape.size() - 1].as<IntImmNode>()->value);
+    }
+  }
+  int rep_stride = cols / elems_per_block;
+  int repeat_time = 0;
+  if (auto *extent_imm = dst_access->args[3].as<IntImmNode>()) {
+    int extent = static_cast<int>(extent_imm->value);
+    int elems_per_repeat = 8 * elems_per_block;
+    ICHECK(extent > 0 && extent % elems_per_repeat == 0)
+        << "ExpExperimentCodegen: extent=" << extent
+        << " must be a positive multiple of " << elems_per_repeat;
+    repeat_time = extent / elems_per_repeat;
+  } else {
+    ICHECK(false) << "ExpExperimentCodegen: dynamic extent not supported";
+  }
+  ICHECK(repeat_time > 0 && cols > 0)
+      << "ExpExperimentCodegen: failed to derive repeat_time/cols";
+  ICHECK(cols % elems_per_block == 0)
+      << "ExpExperimentCodegen: physical columns " << cols
+      << " must be a multiple of elems_per_block " << elems_per_block;
+
+  uint64_t mask1 = (dtype.bits() == 16) ? 0xFFFFFFFFFFFFFFFF : 0;
+
+  std::string dst_name = PrintBufferOffset(op->args[1].as<CallNode>(), true);
+  std::string src_name = PrintBufferOffset(op->args[2].as<CallNode>(), true);
+
+  this->PrintIndent();
+  this->stream << "tl::ascend::exp_mask<" << type_str << ">(" << dst_name
+               << ", " << src_name << ", 0xFFFFFFFFFFFFFFFF, " << mask1 << ", "
+               << repeat_time << ", 1, 1, " << rep_stride << ", " << rep_stride
+               << ");\n";
 }
 
 void CodeGenTileLangAscend::BroadcastOpCodegen(const CallNode *op) {
