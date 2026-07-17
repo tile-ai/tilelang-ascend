@@ -96,8 +96,8 @@ attempt 1，首次进入 Stage 2。你负责根据 `DESIGN.md` 生成**两个文
 | 三态标记输出存在 | **`test_{op}.py`** main 块中包含 `[PRECISION_PASS]` / `[PRECISION_FAIL]` 打印 | 返回 fail + `missing_tri_state_marker` |
 | L0 用例与计划一致 | **`test_{op}.py`** main 块（首跑阶段）的 test 用例与 DESIGN.md「L0 门槛测试计划」一致（数量、shape、dtype）；**首跑阶段只含 L0，不擅自扩展 L1/L2/Boundary** | 返回 fail + `l0_plan_mismatch` |
 | 精度判定符合 §9.3 标准 | **`test_{op}.py`** 的精度对比按 DESIGN.md §9.3 精度标准落地：用混合容差判定（按 dtype 取 atol/rtol/max_abs_error_limit/required_matched_ratio，整型精确匹配），未用旧式 `assert_close` 或自造阈值 | 返回 fail + `precision_impl_mismatch` |
-| `tilelang.disable_cache()` 调用 | **`test_{op}.py`** 的 `__main__` 块内（或 `main()` 内部）存在此调用，防止旧编译产物干扰；对应 SKILL.md §8 Checklist #11 | 返回 fail + `missing_disable_cache` |
-| 最终完成标记 | **`test_{op}.py`** main 块末尾含 `print("Test Passed!")` 或 `print("Kernel Output Match!")`，表示全部用例通过；对应 SKILL.md §8 Checklist #16 | 返回 fail + `missing_final_output` |
+| `tilelang.disable_cache()` 调用 | **`test_{op}.py`** 的 `__main__` 块内（或 `main()` 内部）存在此调用，防止旧编译产物干扰；对应 `tilelang-op-generate` checklist.md #11 | 返回 fail + `missing_disable_cache` |
+| 最终完成标记 | **`test_{op}.py`** main 块末尾含 `print("Test Passed!")` 或 `print("Kernel Output Match!")`，表示全部用例通过；对应 `tilelang-op-generate` checklist.md #16 | 返回 fail + `missing_final_output` |
 | 覆盖门禁通过（扩展后） | 扩展 L1/L2/Boundary 后 `coverage_check.py` 退出码 0（无未豁免强制维度 MISS）；见「分层测试与扩展流程」步骤 3.5 | 返回 fail + `coverage_miss`，补齐缺失维度用例后重跑 |
 
 ### 执行清单
@@ -353,7 +353,7 @@ Orchestrator 依赖该日志做重试决策和设计回退判断，必须在返�
 - backup_path: <备份文件路径>（仅 precision_fix）
 - instrumentation_cleaned: yes / n/a（仅 precision_fix）
 - debug_log_appended: true
-- pr_ready_checks: pass / fail / n/a（仅 first_impl 且 result=precision_pass 时填；按 [tilelang-op-generate SKILL.md §8 Checklist](../../.agents/skills/tilelang-op-generate/SKILL.md) 第 #9-18 项逐项对照 Golden 一致性、参数灵活性、最终完成标记、ruff 通过等）
+- pr_ready_checks: pass / fail / n/a（仅 first_impl 且 result=precision_pass 时填；按 [tilelang-op-generate checklist.md](../../.agents/skills/tilelang-op-generate/references/checklist.md) 第 #9-18 项逐项对照 Golden 一致性、参数灵活性、最终完成标记、ruff 通过等）
 - skills_consulted: <本次实际查阅 / 引用过的 skill 路径列表，相对 .agents/skills/；如 tilelang-op-generate / tilelang-op-test-design / tilelang-custom-skill/tilelang-api-best-practices / tilelang-custom-skill/tilelang-error-fixer>
 - summary: <一句话说明>
 - issues: <若无则写 none>

@@ -43,7 +43,7 @@ description: TileLang-Ascend 新增 Ascend 专属 T.tile.xxx 小 API 的端到�
 
 在 `tilelang/language/ascend_tile.py` 中新增用户入口。
 
-优先复用该文件和 `tilelang/language/copy.py` 里的本地 helper 模式：
+优先复用该文件和 `tilelang/language/copy_op.py` 里的本地 helper 模式：
 
 - 如果现有 API 会解析 let-bound value，新 API 也应保持一致。
 - 只在语义明确时接受 `Buffer`、`BufferLoad` 或 `BufferRegion`。

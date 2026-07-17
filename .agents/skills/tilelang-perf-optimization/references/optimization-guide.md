@@ -86,7 +86,7 @@ for k in T.serial(loop_k):
   - Vector 核：切分后每个数据块元素数应 ≥ 128
   - Cube 核：切分后每个数据块元素数应 ≥ 256
 - 实现方式：手写 Double Buffer（手动分配双份 buffer，通过 `side = k % 2` 交替使用）
-- 同步方式：Vector/Cube 核内流水当前需要手动控制不同流之间的同步。同步模式选择见下方 §2.2.0 决策表。**`set_flag` / `wait_flag` / `barrier_all` 的底层机理、双缓冲 Flag 完整模式详见 [sync-primitives-guide.md](../sync-primitives-guide.md)**
+- 同步方式：Vector/Cube 核内流水当前需要手动控制不同流之间的同步。同步模式选择见下方 §2.2.0 决策表。**`set_flag` / `wait_flag` / `barrier_all` 的底层机理、双缓冲 Flag 完整模式详见 [api-schedule-sync.md](../../tilelang-custom-skill/tilelang-api-best-practices/references/api-schedule-sync.md)**
 
 #### 2.2.0 同步模式决策表（Double Buffer 实施前必须先判断）
 

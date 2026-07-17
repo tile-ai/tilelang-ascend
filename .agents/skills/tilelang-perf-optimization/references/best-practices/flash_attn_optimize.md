@@ -714,7 +714,7 @@ NUM_CORES = torch.npu.get_device_properties(0).cube_core_num
 - Expert 优化：`examples/flash_attention/fa_opt/flash_attn_bhsd_expert_h16_d128.py`
 - API 参考：`.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/SKILL.md`
 - 流水线同步：`.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-schedule-sync.md`
-- GEMM 优化：`examples/gemm/gemm_intrinsic_optimize.md`
+- GEMM 优化：`./gemm_intrinsic_optimize.md`
 
 ---
 

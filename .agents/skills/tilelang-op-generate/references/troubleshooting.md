@@ -205,7 +205,7 @@ expected = ref_program(A, B)  # (N, M)
 passed, ratio, max_abs = check_precision(result.transpose(0, 1), expected, dtype)
 ```
 
-**详细参考**：[tilelang-op-generate SKILL.md §8 Checklist #9-#10](../SKILL.md)（Golden 一致性 / 输出形状匹配）
+**详细参考**：[checklist.md #9 Golden 实现一致 / #10 输出形状匹配](checklist.md)（Golden 一致性 / 输出形状匹配）
 
 #### 2. float16 精度问题
 

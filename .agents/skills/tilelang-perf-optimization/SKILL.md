@@ -26,7 +26,7 @@ Step 1: 基线采集（性能 + 精度）
 
 - **优化指南**：[optimization-guide.md](references/optimization-guide.md)
 - **反模式清单**：[performance-antipatterns.md](references/performance-antipatterns.md)
-- **同步原语**：[sync-primitives-guide.md](references/sync-primitives-guide.md)
+- **同步原语**：[api-schedule-sync.md](../tilelang-custom-skill/tilelang-api-best-practices/references/api-schedule-sync.md)（set_flag / wait_flag / barrier_all / cross_flag 语义与用法）
 - **API 用法**：[tilelang-api-best-practices](../tilelang-custom-skill/tilelang-api-best-practices/SKILL.md)
 - **编程模式**：[tilelang-expert-to-developer](../tilelang-custom-skill/tilelang-expert-to-developer/SKILL.md)
 - **cube最佳实践**：[tilelang-expert-to-developer](references/best-practices/cube_optimization_path.md)

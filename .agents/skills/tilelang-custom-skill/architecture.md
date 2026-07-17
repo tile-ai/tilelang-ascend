@@ -30,7 +30,7 @@ tilelang-ascend/
 │   │   ├── ascend_tile.py # Tile 级操作 (56KB, 最大模块)
 │   │   ├── pto.py         # PTO 模式
 │   │   ├── gemm.py        # 矩阵乘法
-│   │   ├── copy.py        # 数据搬运
+│   │   ├── copy_op.py     # 数据搬运
 │   │   ├── reduce.py      # 归约操作
 │   │   ├── allocate.py    # 内存分配
 │   │   └── parallel.py    # 并行化
