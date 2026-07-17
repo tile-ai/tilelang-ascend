@@ -11,6 +11,7 @@ _PASS_CONFIGS = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
+
 @tilelang.jit(pass_configs=_PASS_CONFIGS)
 def _mhc_pre_split_mixes_fwd(
     mhc_mult: int,
@@ -18,7 +19,7 @@ def _mhc_pre_split_mixes_fwd(
     mhc_pre_eps: float,
     token_block_size: int,
 ) -> tilelang.JITKernel:
-    num_tokens = T.symbolic('num_tokens')
+    num_tokens = T.symbolic("num_tokens")
     dtype = "float32"
     mhc_mult2 = mhc_mult * mhc_mult
     mhc_mult3 = mhc_mult * 2 + mhc_mult2
@@ -30,7 +31,6 @@ def _mhc_pre_split_mixes_fwd(
     assert mhc_mult2 % VEC_NUM == 0
 
     pad_block = T.ceildiv(token_block_size, 8) * 8
-    pad_sub_mhc = T.ceildiv(sub_mhc, 8) * 8
     pad_sub_mhc2 = T.ceildiv(sub_mhc2, 8) * 8
 
     @T.prim_func
@@ -49,51 +49,61 @@ def _mhc_pre_split_mixes_fwd(
             mhc_start = vid * sub_mhc
             mhc2_start = vid * sub_mhc2
 
-            inSlice0_ub = T.alloc_ub((pad_block, pad_sub_mhc), dtype)
-            inSlice1_ub = T.alloc_ub((pad_block, pad_sub_mhc), dtype)
-            inSlice2_ub = T.alloc_ub((pad_block, pad_sub_mhc2), dtype)
-
-            base_slice0_ub = T.alloc_ub((pad_sub_mhc,), dtype)
-            base_slice1_ub = T.alloc_ub((pad_sub_mhc,), dtype)
-            base_slice2_ub = T.alloc_ub((pad_sub_mhc2,), dtype)
-
-            pre_out_ub = T.alloc_ub((pad_block, pad_sub_mhc), dtype)
-            post_out_ub = T.alloc_ub((pad_block, pad_sub_mhc), dtype)
-            comb_out_ub = T.alloc_ub((pad_block, pad_sub_mhc2), dtype)
-
+            in_ub = T.alloc_ub((pad_block, pad_sub_mhc2), dtype)
+            base_ub = T.alloc_ub((pad_sub_mhc2,), dtype)
+            out_ub = T.alloc_ub((pad_block, pad_sub_mhc2), dtype)
             scale_ub = T.alloc_ub((8,), dtype)
 
-            T.tile.fill(inSlice0_ub, 0.0)
-            T.tile.fill(inSlice1_ub, 0.0)
-            T.tile.fill(inSlice2_ub, 0.0)
-            T.tile.fill(base_slice0_ub, 0.0)
-            T.tile.fill(base_slice1_ub, 0.0)
-            T.tile.fill(base_slice2_ub, 0.0)
-
             T.copy(mhc_scale[0:3], scale_ub[0:3])
-            T.copy(mhc_base[mhc_start : mhc_start + sub_mhc], base_slice0_ub[0:sub_mhc])
-            T.copy(mhc_base[mhc_mult + mhc_start : mhc_mult + mhc_start + sub_mhc], base_slice1_ub[0:sub_mhc])
-            T.copy(mhc_base[mhc_mult * 2 + mhc2_start : mhc_mult * 2 + mhc2_start + sub_mhc2], base_slice2_ub[0:sub_mhc2])
-            T.copy(input_mixes[row_start : row_start + cur_block_tokens, mhc_start : mhc_start + sub_mhc], inSlice0_ub[0:cur_block_tokens, 0:sub_mhc])
-            T.copy(input_mixes[row_start : row_start + cur_block_tokens, mhc_mult + mhc_start : mhc_mult + mhc_start + sub_mhc], inSlice1_ub[0:cur_block_tokens, 0:sub_mhc])
-            T.copy(input_mixes[row_start : row_start + cur_block_tokens, mhc_mult * 2 + mhc2_start : mhc_mult * 2 + mhc2_start + sub_mhc2], inSlice2_ub[0:cur_block_tokens, 0:sub_mhc2])
 
-            T.tile.broadcast(pre_out_ub, base_slice0_ub)
-            T.tile.axpy(pre_out_ub, inSlice0_ub, scale_ub[0])
-            T.tile.sigmoid(pre_out_ub, pre_out_ub)
-            T.tile.add(pre_out_ub, pre_out_ub, mhc_pre_eps)
+            # Slice 0: pre_layer_mix
+            T.tile.fill(in_ub, 0.0)
+            T.tile.fill(base_ub, 0.0)
+            T.copy(mhc_base[mhc_start : mhc_start + sub_mhc], base_ub[0:sub_mhc])
+            T.copy(
+                input_mixes[row_start : row_start + cur_block_tokens, mhc_start : mhc_start + sub_mhc],
+                in_ub[0:cur_block_tokens, 0:sub_mhc],
+            )
+            T.tile.broadcast(out_ub, base_ub)
+            T.tile.axpy(out_ub, in_ub, scale_ub[0])
+            T.tile.sigmoid(out_ub, out_ub)
+            T.tile.add(out_ub, out_ub, mhc_pre_eps)
+            T.copy(
+                out_ub[0:cur_block_tokens, 0:sub_mhc],
+                pre_layer_mix[row_start : row_start + cur_block_tokens, mhc_start : mhc_start + sub_mhc],
+            )
 
-            T.tile.broadcast(post_out_ub, base_slice1_ub)
-            T.tile.axpy(post_out_ub, inSlice1_ub, scale_ub[1])
-            T.tile.sigmoid(post_out_ub, post_out_ub)
-            T.tile.mul(post_out_ub, post_out_ub, mhc_post_mult_value)
+            # Slice 1: post_layer_mix
+            T.tile.fill(in_ub, 0.0)
+            T.tile.fill(base_ub, 0.0)
+            T.copy(mhc_base[mhc_mult + mhc_start : mhc_mult + mhc_start + sub_mhc], base_ub[0:sub_mhc])
+            T.copy(
+                input_mixes[row_start : row_start + cur_block_tokens, mhc_mult + mhc_start : mhc_mult + mhc_start + sub_mhc],
+                in_ub[0:cur_block_tokens, 0:sub_mhc],
+            )
+            T.tile.broadcast(out_ub, base_ub)
+            T.tile.axpy(out_ub, in_ub, scale_ub[1])
+            T.tile.sigmoid(out_ub, out_ub)
+            T.tile.mul(out_ub, out_ub, mhc_post_mult_value)
+            T.copy(
+                out_ub[0:cur_block_tokens, 0:sub_mhc],
+                post_layer_mix[row_start : row_start + cur_block_tokens, mhc_start : mhc_start + sub_mhc],
+            )
 
-            T.tile.broadcast(comb_out_ub, base_slice2_ub)
-            T.tile.axpy(comb_out_ub, inSlice2_ub, scale_ub[2])
-
-            T.copy(pre_out_ub[0:cur_block_tokens, 0:sub_mhc], pre_layer_mix[row_start : row_start + cur_block_tokens, mhc_start : mhc_start + sub_mhc])
-            T.copy(post_out_ub[0:cur_block_tokens, 0:sub_mhc], post_layer_mix[row_start : row_start + cur_block_tokens, mhc_start : mhc_start + sub_mhc])
-            T.copy(comb_out_ub[0:cur_block_tokens, 0:sub_mhc2], comb_res_mix[row_start : row_start + cur_block_tokens, mhc2_start : mhc2_start + sub_mhc2])
+            # Slice 2: comb_res_mix
+            T.tile.fill(in_ub, 0.0)
+            T.tile.fill(base_ub, 0.0)
+            T.copy(mhc_base[mhc_mult * 2 + mhc2_start : mhc_mult * 2 + mhc2_start + sub_mhc2], base_ub[0:sub_mhc2])
+            T.copy(
+                input_mixes[row_start : row_start + cur_block_tokens, mhc_mult * 2 + mhc2_start : mhc_mult * 2 + mhc2_start + sub_mhc2],
+                in_ub[0:cur_block_tokens, 0:sub_mhc2],
+            )
+            T.tile.broadcast(out_ub, base_ub)
+            T.tile.axpy(out_ub, in_ub, scale_ub[2])
+            T.copy(
+                out_ub[0:cur_block_tokens, 0:sub_mhc2],
+                comb_res_mix[row_start : row_start + cur_block_tokens, mhc2_start : mhc2_start + sub_mhc2],
+            )
 
     return mhc_pre_split_mixes_fwd_kernel
 
@@ -105,7 +115,7 @@ def _mhc_pre_split_mixes_bwd(
     token_block_size: int,
     partial_size: int,
 ) -> tilelang.JITKernel:
-    num_tokens = T.symbolic('num_tokens')
+    num_tokens = T.symbolic("num_tokens")
     dtype = "float32"
     mhc_mult2 = mhc_mult * mhc_mult
     mhc_mult3 = mhc_mult * 2 + mhc_mult2
@@ -114,7 +124,6 @@ def _mhc_pre_split_mixes_bwd(
     pad_sub_block = T.ceildiv(sub_block_tokens, 8) * 8
     pad_mhc = T.ceildiv(mhc_mult, 8) * 8
     pad_mhc2 = T.ceildiv(mhc_mult2, 8) * 8
-    pad_mhc3 = T.ceildiv(mhc_mult3, 8) * 8
 
     inv_post_mult = 1.0 / mhc_post_mult_value
     grid_size = T.ceildiv(num_tokens, token_block_size)
@@ -135,7 +144,7 @@ def _mhc_pre_split_mixes_bwd(
         with T.Kernel(grid_size, is_npu=True) as (cid, vid):
             partial_idx = cid * VEC_NUM + vid
             row_start = cid * token_block_size + vid * sub_block_tokens
-            cur_tokens = T.min(sub_block_tokens, num_tokens - row_start)
+            cur_tokens = T.max(0, T.min(sub_block_tokens, num_tokens - row_start))
 
             grad_in_ub = T.alloc_ub((pad_sub_block, pad_mhc), dtype)
             fwd_out_ub = T.alloc_ub((pad_sub_block, pad_mhc), dtype)
@@ -291,9 +300,7 @@ def test_fwd():
         mhc_scale = torch.randn(3, dtype=torch.float32, device=device)
         mhc_base = torch.randn(mhc_mult3, dtype=torch.float32, device=device)
 
-        pre_ref, post_ref, comb_ref = mhc_pre_split_mixes_fwd_ref(
-            input_mixes, mhc_scale, mhc_base, mhc_mult, 2.0, 1e-2
-        )
+        pre_ref, post_ref, comb_ref = mhc_pre_split_mixes_fwd_ref(input_mixes, mhc_scale, mhc_base, mhc_mult, 2.0, 1e-2)
 
         pre_layer_mix = torch.empty(n0 * n1, mhc_mult, dtype=torch.float32, device=device)
         post_layer_mix = torch.empty(n0 * n1, mhc_mult, dtype=torch.float32, device=device)
@@ -380,9 +387,16 @@ def test_bwd():
 
     bwd_kernel = _mhc_pre_split_mixes_bwd(mhc_mult, mhc_post_mult_value, token_block_size=token_block_size, partial_size=partial_size)
     bwd_kernel(
-        pre_grad_flat, post_grad_flat, comb_grad_flat,
-        input_mixes_flat, post_layer_mix_out, mhc_scale_flat, mhc_base_flat,
-        input_mixes_grad, mhc_scale_grad_partial, mhc_base_grad_partial,
+        pre_grad_flat,
+        post_grad_flat,
+        comb_grad_flat,
+        input_mixes_flat,
+        post_layer_mix_out,
+        mhc_scale_flat,
+        mhc_base_flat,
+        input_mixes_grad,
+        mhc_scale_grad_partial,
+        mhc_base_grad_partial,
     )
 
     mhc_scale_grad_tl = mhc_scale_grad_partial.sum(0)
