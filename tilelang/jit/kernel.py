@@ -54,6 +54,7 @@ class JITKernel:
         platform: str = "auto",
         verbose: bool = False,
         pass_configs: dict[str, Any] | None = None,
+        compile_flags: list[str] | str | None = None,
         from_database: bool = False,
     ):
         """
@@ -97,6 +98,7 @@ class JITKernel:
         if pass_configs is None:
             pass_configs = {}
         self.pass_configs = pass_configs
+        self.compile_flags = compile_flags
 
         # Validate the execution backend.
         assert execution_backend in [
@@ -134,6 +136,7 @@ class JITKernel:
         auto_gm_idx: list[int] | int,
         execution_backend: Literal["dlpack", "ctypes", "cython"],
         pass_configs: dict[str, Any] | None = None,
+        compile_flags: list[str] | str | None = None,
     ):
         """
         Alternative constructor to create a TorchFunction directly from a database.
@@ -147,6 +150,7 @@ class JITKernel:
             target_host=target_host,
             platform=platform,
             pass_configs=pass_configs,
+            compile_flags=compile_flags,
             from_database=True,
         )
 
@@ -161,6 +165,7 @@ class JITKernel:
             kernel_global_source=kernel_global_source,
             kernel_lib_path=kernel_lib_path,
             pass_configs=pass_configs,
+            compile_flags=compile_flags,
         )
         instance.torch_function = instance.adapter.func
         return instance
@@ -277,6 +282,7 @@ class JITKernel:
                 kernel_global_source=artifact.kernel_source,
                 verbose=verbose,
                 pass_configs=pass_configs,
+                compile_flags=self.compile_flags,
             )
         else:
             # Handle invalid backend.
@@ -296,6 +302,7 @@ class JITKernel:
         kernel_global_source: str,
         kernel_lib_path: str,
         pass_configs: dict[str, Any] | None = None,
+        compile_flags: list[str] | str | None = None,
     ) -> BaseKernelAdapter:
         target = self.target
         execution_backend = self.execution_backend
@@ -325,6 +332,7 @@ class JITKernel:
                 kernel_global_source=kernel_global_source,
                 kernel_lib_path=kernel_lib_path,
                 pass_configs=pass_configs,
+                compile_flags=compile_flags,
             )
         else:
             # Handle invalid backend.

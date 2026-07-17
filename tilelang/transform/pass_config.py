@@ -170,16 +170,52 @@ def _apply_target_pass_defaults(
     return configs
 
 
-def _process_for_auto_sync_insert_vs(pass_configs):
-    vs_enabled = bool(pass_configs and pass_configs.get(PassConfigKey.TL_ASCEND_AUTO_SYNC_VS, False))
-    if vs_enabled:
-        if "TL_CCE_AUTO_SYNC" not in environ:
-            environ["TL_CCE_AUTO_SYNC"] = "off"
-        if "TL_CCE_OPT_LEVEL" not in environ:
-            environ["TL_CCE_OPT_LEVEL"] = "3"
+# Framework-derived Bisheng options for a single kernel. Historically the VS-sync
+# pairing (#1346) was applied by writing TL_CCE_* into ``os.environ``, which leaked
+# across kernels (#1386); it is now derived per kernel here and turned into compile
+# flags by ``LibraryGenerator.resolve_compile_flags``. ``os.environ`` is only read.
+_DEFAULT_COMPILER_OPTIONS = {"cce_auto_sync": True, "opt_level": 2, "pto_debug": False}
+
+
+def _coerce_opt_level(value) -> int:
+    text = str(value).strip()
+    if text not in ("0", "1", "2", "3"):
+        raise ValueError(f"Invalid opt_level={value!r}, expected one of: 0, 1, 2, 3")
+    return int(text)
+
+
+def normalize_compiler_options(pass_configs=None) -> dict:
+    """Derive a kernel's Bisheng options: ``{cce_auto_sync, opt_level, pto_debug}``.
+
+    Resolved from ``pass_configs`` (``TL_ASCEND_AUTO_SYNC_VS`` pairs with
+    ``cce_auto_sync=False`` / ``opt_level=3``, preserving #1346) and the
+    ``TL_CCE_AUTO_SYNC`` / ``TL_CCE_OPT_LEVEL`` / ``TL_PTO_DEBUG`` env vars. The env
+    vars are lenient read-only fallbacks keeping their exact pre-existing semantics
+    -- only ``"off"`` disables auto-sync, only ``"1"`` enables PTO debug -- so a
+    malformed value never raises and a stray env var cannot break a compile for a
+    target that ignores the option. Never mutates ``os.environ``.
+
+    These are the framework's defaults; callers override the resulting flags via
+    ``compile_flags``, which are appended last (bisheng is last-wins).
+    """
+    resolved = dict(_DEFAULT_COMPILER_OPTIONS)
+
+    # VS sync pairs with cce-auto-sync=off + O3 (#1346).
+    if pass_configs and pass_configs.get(PassConfigKey.TL_ASCEND_AUTO_SYNC_VS, False):
+        resolved.update(cce_auto_sync=False, opt_level=3)
+
+    env_auto_sync = environ.get("TL_CCE_AUTO_SYNC")
+    if env_auto_sync is not None:
+        resolved["cce_auto_sync"] = env_auto_sync.strip().lower() != "off"
+    env_opt_level = environ.get("TL_CCE_OPT_LEVEL")
+    if env_opt_level is not None:
+        resolved["opt_level"] = _coerce_opt_level(env_opt_level)
+    env_pto_debug = environ.get("TL_PTO_DEBUG")
+    if env_pto_debug is not None:
+        resolved["pto_debug"] = env_pto_debug.strip() == "1"
+
+    return resolved
 
 
 def process_default_pass_config(target, pass_configs):
-    pass_configs = _apply_target_pass_defaults(target, pass_configs)
-    _process_for_auto_sync_insert_vs(pass_configs)
-    return pass_configs
+    return _apply_target_pass_defaults(target, pass_configs)

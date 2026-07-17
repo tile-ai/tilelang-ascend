@@ -78,14 +78,50 @@ def _get_simulator_lib_path(ascend_home: str, platform: str) -> str:
     )
 
 
+def resolve_compile_flags(
+    target: str,
+    pass_configs: dict | None = None,
+    compile_flags: list[str] | str | None = None,
+) -> list[str]:
+    """Resolve the Bisheng flags for one kernel.
+
+    Emits the framework's derived defaults first (see
+    :func:`normalize_compiler_options`: the #1346 VS-sync pairing plus the
+    ``TL_CCE_*`` / ``TL_PTO_DEBUG`` env fallbacks), then appends the caller's
+    ``compile_flags`` last -- bisheng is last-wins for repeated flags, so caller
+    flags override the derived ones (e.g. ``["--cce-auto-sync=on"]`` re-enables
+    auto-sync, ``["-O0"]`` lowers the level). ``os.environ`` is only read.
+
+    Resolved once per kernel in :func:`tilelang.compile` so the same list feeds
+    both the kernel cache key and codegen.
+    """
+    from tilelang.transform.pass_config import normalize_compiler_options
+
+    options = normalize_compiler_options(pass_configs)
+    flags = [f"-O{options['opt_level']}"]
+    if target in ("ascendc", "auto") and not options["cce_auto_sync"]:
+        # AscendC-only: PTO has no auto-sync to disable (its default already
+        # matches --cce-auto-sync=off), so the flag is not emitted there.
+        flags.append("--cce-auto-sync=off")
+    if target == "pto" and options["pto_debug"]:
+        flags += ["-D_DEBUG", "--cce-enable-print"]
+    if compile_flags:
+        flags += [compile_flags] if isinstance(compile_flags, str) else list(compile_flags)
+    return flags
+
+
 class LibraryGenerator:
     srcpath: str | None = None
     libpath: str | None = None
     lib_code: str | None = None
 
-    def __init__(self, target: str, platform: str):
+    def __init__(self, target: str, platform: str, compile_flags: list[str] | str | None = None):
         self.target = target
         self.platform = platform
+        # Fully-resolved Bisheng flags for this kernel (derived defaults + caller
+        # flags). None means a direct/legacy caller: fall back to the derived
+        # defaults in compile_lib.
+        self.compile_flags = compile_flags
 
     def update_lib_code(self, lib_code: str):
         self.lib_code = lib_code
@@ -108,15 +144,15 @@ class LibraryGenerator:
         libpath = src.name.replace(".cpp", ".so")
         ASCEND_HOME_PATH = _get_ascend_home_path()
         TL_ROOT = _get_tl_root()
-        auto_sync = os.environ.get("TL_CCE_AUTO_SYNC", "on").lower()
-        opt_level = os.environ.get("TL_CCE_OPT_LEVEL", "2").lower()
-        if opt_level not in ("0", "1", "2", "3"):
-            raise ValueError(f"Invalid TL_CCE_OPT_LEVEL={opt_level!r}, expected one of: 0, 1, 2, 3")
+        # The JIT pipeline resolves these up front; a direct caller gets the
+        # framework defaults (pass-config-free, env fallbacks still apply).
+        compile_flags = self.compile_flags
+        if compile_flags is None:
+            compile_flags = resolve_compile_flags(self.target)
         if self.target == "ascendc" or self.target == "auto":
             command = [
                 "bisheng",
                 "--npu-arch=dav-2201",
-                f"-O{opt_level}",
                 "-std=c++17",
                 "-xasc",
                 f"-I{ASCEND_HOME_PATH}/include",
@@ -145,12 +181,6 @@ class LibraryGenerator:
                 "--shared",
                 src.name,
             ]
-
-            # pto do not support the compile arg like "--cce-auto-sync=on/off".
-            # pto default behavior equals ascendc "--cce-auto-sync=off".
-            # so auto_sync only affect ascendc
-            if auto_sync == "off":
-                command.append("--cce-auto-sync=off")
         elif self.target == "pto":
             ccec = "dav-c310" if self.platform == "A5" else "dav-c220"
             memory = "REGISTER_BASE" if self.platform == "A5" else "MEMORY_BASE"
@@ -158,7 +188,6 @@ class LibraryGenerator:
                 "bisheng",
                 f"--cce-aicore-arch={ccec}",
                 f"-D{memory}",
-                f"-O{opt_level}",
                 "-std=gnu++17",
                 "-xcce",
                 "-mllvm",
@@ -197,8 +226,6 @@ class LibraryGenerator:
                 "--shared",
                 src.name,
             ]
-            if os.environ.get("TL_PTO_DEBUG") == "1":
-                command += ["-D_DEBUG", "--cce-enable-print"]
 
         # --- camodel (simulator) support ---
         run_mode = os.environ.get("TL_RUN_MODE", "npu")
@@ -225,6 +252,10 @@ class LibraryGenerator:
             except ValueError:
                 pass
             logger.info("camodel sim mode: using %s", sim_lib_path)
+
+        # Append the resolved flags last so they win (bisheng is last-wins);
+        # whitespace-split and de-duplicated, matching upstream tilelang.
+        command += [item for flag in compile_flags for item in flag.split() if item not in command]
 
         command += ["-o", libpath]
 

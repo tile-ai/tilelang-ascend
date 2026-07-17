@@ -39,6 +39,7 @@ def compile(
     platform: str = "auto",
     verbose: bool = False,
     pass_configs: dict[str, Any] | None = None,
+    compile_flags: list[str] | str | None = None,
 ) -> JITKernel:
     """
     Compile the given TileLang PrimFunc with TVM and build a JITKernel.
@@ -72,11 +73,21 @@ def compile(
             "tl.disable_safe_memory_legalize": bool, default: False
             "tl.ascend_auto_sync": bool, default: False
             "tl.ascend_memory_planning": bool, default: False
+    compile_flags : list[str] | str, optional
+        Extra Bisheng compiler flags for this kernel, e.g.
+        ``["--cce-auto-sync=off", "-O3"]``. They are appended after the flags the
+        framework derives from ``pass_configs`` and the ``TL_CCE_*`` /
+        ``TL_PTO_DEBUG`` environment variables, and therefore win (bisheng is
+        last-wins for repeated flags). Resolved per kernel; the process
+        environment is never mutated.
     """
 
     from tilelang.transform.pass_config import process_default_pass_config
+    from tilelang.jit.adapter.libgen import resolve_compile_flags
 
     pass_configs = process_default_pass_config(target, pass_configs)
+    # Resolve once here so the same flag list feeds both the cache key and codegen.
+    compile_flags = resolve_compile_flags(target, pass_configs, compile_flags)
 
     return cached(
         func=func,
@@ -88,6 +99,7 @@ def compile(
         platform=platform,
         verbose=verbose,
         pass_configs=pass_configs,
+        compile_flags=compile_flags,
     )
 
 
@@ -100,6 +112,7 @@ class _JitImplementation:
     execution_backend: Literal["dlpack", "ctypes", "cython"]
     verbose: bool
     pass_configs: dict[str, Any] | None
+    compile_flags: list[str] | str | None
     debug_root_path: str | None
     func: Callable | None = None  # Store the original function
     signature: Any | None = None  # Store the signature
@@ -115,6 +128,7 @@ class _JitImplementation:
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         verbose: bool = False,
         pass_configs: dict[str, Any] | None = None,
+        compile_flags: list[str] | str | None = None,
         debug_root_path: str | None = None,
     ):
         """
@@ -162,6 +176,7 @@ class _JitImplementation:
         self.platform = platform
         self.verbose = verbose
         self.pass_configs = pass_configs
+        self.compile_flags = compile_flags
         self.func = None
         self.signature = None
 
@@ -222,6 +237,7 @@ class _JitImplementation:
                     platform=self.platform,
                     verbose=self.verbose,
                     pass_configs=self.pass_configs,
+                    compile_flags=self.compile_flags,
                 )
 
                 if self.debug_root_path:
@@ -257,6 +273,7 @@ def jit(  # This is the new public interface
     execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
     verbose: bool = False,
     pass_configs: dict[str, Any] | None = None,
+    compile_flags: list[str] | str | None = None,
     debug_root_path: str | None = None,
 ):
     """
@@ -285,6 +302,10 @@ def jit(  # This is the new public interface
         Enables verbose logging during compilation. Defaults to False.
     pass_configs : dict[str, Any] | None
         Configurations for TVM's pass context. Defaults to None.
+    compile_flags : list[str] | str | None
+        Extra Bisheng compiler flags for this kernel (e.g.
+        ``["--cce-auto-sync=off", "-O3"]``). Appended after the framework-derived
+        flags and folded into the cache key; see :func:`compile`. Defaults to None.
     debug_root_path : Optional[str], optional
         Directory to save compiled kernel source for debugging. Defaults to None.
 
@@ -306,6 +327,7 @@ def jit(  # This is the new public interface
             execution_backend=execution_backend,
             verbose=verbose,
             pass_configs=pass_configs,
+            compile_flags=compile_flags,
             debug_root_path=debug_root_path,
         )
         return default_decorator(func)
@@ -324,6 +346,7 @@ def jit(  # This is the new public interface
             execution_backend=execution_backend,
             verbose=verbose,
             pass_configs=pass_configs,
+            compile_flags=compile_flags,
             debug_root_path=debug_root_path,
         )
         return configured_decorator

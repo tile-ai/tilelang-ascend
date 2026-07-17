@@ -147,8 +147,10 @@ class AutoTuner:
         target: Literal["auto", "cuda", "hip", "ascendc", "pto"] = "auto",
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         target_host: str | Target = None,
+        platform: str = "auto",
         verbose: bool = False,
         pass_configs: dict[str, Any] | None = None,
+        compile_flags: list[str] | str | None = None,
     ):
         """Set compilation arguments for the auto-tuner.
 
@@ -157,8 +159,10 @@ class AutoTuner:
             target: Target platform.
             execution_backend: Execution backend to use for kernel execution.
             target_host: Target host for cross-compilation.
+            platform: Target hardware platform generation (e.g. "A2"/"A3"/"A5"; default "auto").
             verbose: Whether to enable verbose output.
             pass_configs: Additional keyword arguments to pass to the Compiler PassContext.
+            compile_flags: Extra Bisheng compiler flags. See `tilelang.jit.compile`.
 
         Returns:
             AutoTuner: Self for method chaining.
@@ -168,8 +172,10 @@ class AutoTuner:
             target=Target(determine_target(target)),
             execution_backend=execution_backend,
             target_host=target_host,
+            platform=platform,
             verbose=verbose,
             pass_configs=pass_configs,
+            compile_flags=compile_flags,
         )
 
         return self
@@ -634,8 +640,10 @@ class AutoTuneImpl(Generic[_P, _T]):
                 execution_backend=self.jit_impl.execution_backend,
                 target=self.jit_impl.target,
                 target_host=self.jit_impl.target_host,
+                platform=self.jit_impl.platform,
                 verbose=self.jit_impl.verbose,
                 pass_configs=self.jit_impl.pass_configs,
+                compile_flags=self.jit_impl.compile_flags,
             )
         )
         autotuner.run = partial(autotuner.run, self.warmup, self.rep, self.timeout)
