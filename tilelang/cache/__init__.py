@@ -2,7 +2,9 @@
 # Licensed under the MIT License.
 """The cache utils with class and database persistence - Init file"""
 
-from typing import List, Union, Literal, Optional
+from __future__ import annotations
+
+from typing import Literal
 from pathlib import Path
 from tvm.target import Target
 from tvm.tir import PrimFunc
@@ -16,15 +18,15 @@ _kernel_cache_instance = KernelCache()
 
 def cached(
     func: PrimFunc = None,
-    out_idx: List[int] = None,
-    workspace_idx: List[int] = None,
+    out_idx: list[int] = None,
+    workspace_idx: list[int] = None,
     *args,
-    target: Union[str, Target] = "auto",
-    target_host: Union[str, Target] = None,
+    target: str | Target = "auto",
+    target_host: str | Target = None,
     platform: str = "auto",
-    execution_backend: Optional[Literal["dlpack", "ctypes", "cython"]] = "cython",
-    verbose: Optional[bool] = False,
-    pass_configs: Optional[dict] = None,
+    execution_backend: Literal["dlpack", "ctypes", "cython"] | None = "cython",
+    verbose: bool | None = False,
+    pass_configs: dict | None = None,
 ) -> JITKernel:
     """
     Caches and reuses compiled kerne(ls (using KernelCache class).

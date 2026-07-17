@@ -1,5 +1,5 @@
-"""The auto-tune parameters.
-"""
+"""The auto-tune parameters."""
+
 from __future__ import annotations
 
 import tilelang
@@ -43,7 +43,7 @@ class CompileArgs:
 
     out_idx: list[int] | int | None = None
     execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython"
-    target: Literal['auto', 'cuda', 'hip'] = 'auto'
+    target: Literal["auto", "cuda", "hip"] = "auto"
     target_host: str | Target = None
     verbose: bool = False
     pass_configs: dict[str, Any] | None = None
@@ -55,24 +55,20 @@ class CompileArgs:
             target=self.target,
             target_host=self.target_host,
             verbose=self.verbose,
-            pass_configs=self.pass_configs)
+            pass_configs=self.pass_configs,
+        )
 
     def __hash__(self):
         data = {
-            "execution_backend":
-                self.execution_backend,
-            "target":
-                str(self.target),
-            "target_host":
-                str(self.target_host) if self.target_host else None,
-            "verbose":
-                self.verbose,
-            "pass_configs":
-                json.dumps(self.pass_configs, sort_keys=True) if self.pass_configs else None,
+            "execution_backend": self.execution_backend,
+            "target": str(self.target),
+            "target_host": str(self.target_host) if self.target_host else None,
+            "verbose": self.verbose,
+            "pass_configs": json.dumps(self.pass_configs, sort_keys=True) if self.pass_configs else None,
         }
 
-        hash_obj = hashlib.sha256(json.dumps(data, sort_keys=True).encode('utf-8'))
-        return int.from_bytes(hash_obj.digest(), byteorder='big')
+        hash_obj = hashlib.sha256(json.dumps(data, sort_keys=True).encode("utf-8"))
+        return int.from_bytes(hash_obj.digest(), byteorder="big")
 
 
 @dataclass(frozen=True)
@@ -97,6 +93,7 @@ class ProfileArgs:
         manual_check_prog: Callable = None
         cache_input_tensors: bool = True
     """
+
     warmup: int = 25
     rep: int = 100
     timeout: int = 30
@@ -120,8 +117,8 @@ class ProfileArgs:
             "atol": self.atol,
             "max_mismatched_ratio": self.max_mismatched_ratio,
         }
-        hash_obj = hashlib.sha256(json.dumps(data, sort_keys=True).encode('utf-8'))
-        return int.from_bytes(hash_obj.digest(), byteorder='big')
+        hash_obj = hashlib.sha256(json.dumps(data, sort_keys=True).encode("utf-8"))
+        return int.from_bytes(hash_obj.digest(), byteorder="big")
 
 
 @dataclass(frozen=True)
@@ -136,6 +133,7 @@ class AutotuneResult:
         func: Optimized function.
         kernel: Compiled kernel function.
     """
+
     latency: float | None = None
     config: dict | None = None
     ref_latency: float | None = None
@@ -292,10 +290,13 @@ class AutotuneResult:
         if verbose:
             logger.debug(f"Saving latency to file: {path / LATENCY_PATH}")
         with open(path / LATENCY_PATH, "w") as f:
-            json.dump({
-                "latency": self.latency,
-                "ref_latency": self.ref_latency,
-            }, f)
+            json.dump(
+                {
+                    "latency": self.latency,
+                    "ref_latency": self.ref_latency,
+                },
+                f,
+            )
 
         # save kernel
         self._save_kernel_to_disk(path, self.kernel)
@@ -325,10 +326,16 @@ class AutotuneResult:
             latency = json.load(f)
             latency, ref_latency = latency["latency"], latency["ref_latency"]
 
-        kernel = cls._load_kernel_from_disk(cls, path, compile_args.target,
-                                            compile_args.target_host, compile_args.out_idx,
-                                            compile_args.execution_backend,
-                                            compile_args.pass_configs, func)
+        kernel = cls._load_kernel_from_disk(
+            cls,
+            path,
+            compile_args.target,
+            compile_args.target_host,
+            compile_args.out_idx,
+            compile_args.execution_backend,
+            compile_args.pass_configs,
+            func,
+        )
         if kernel is None:
             return None
         kernel.update_tuner_result(
