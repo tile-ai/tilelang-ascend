@@ -1048,6 +1048,11 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
         AscendC::TBuf<AscendC::TPosition::A2> &l0a_,
         AscendC::TBuf<AscendC::TPosition::B2> &l0b_, bool clear) {
   static_assert(kL0Size % 16 == 0, "kL0Size must be a multiple of 16");
+  // Elements per C0 block (32 bytes). Equals 16 only for half; for int8 it is
+  // 32, for float it is 8. The fractal (zN/zZ/nZ) K-stride used below to step
+  // between L0 K-tiles is ELE_NUM_PER_C0 * kL0Size, so hardcoding 16 breaks
+  // int8 (and any dtype where sizeof(T1) != 2) once kL0split > 1.
+  constexpr uint32_t ELE_NUM_PER_C0 = BYTE_PER_C0 / sizeof(T1);
   constexpr uint32_t kL0split = (K + kL0Size - 1) / kL0Size;
   auto l0a = l0a_.Get<T1>();
   auto l0b = l0b_.Get<T1>();
@@ -1071,7 +1076,7 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
   //   L0C column n0  ->  n0 * roundUp16(M)   (tla::MakeLayoutL0C N1 stride)
   //   L1 zN B col n0 ->  n0 * roundUp16(K)   (tla::MakeLayout<zN>  C1 stride)
   // both of which are consistent with the original K-offset
-  // B[kL0Idx*16*kL0Size] (zN K-row stride) already used below.
+  // B[kL0Idx*ELE_NUM_PER_C0*kL0Size] (zN K-row stride) already used below.
   constexpr uint32_t nMaxByL0B = (32u * 1024u) / (kL0Size * sizeof(T1));
   constexpr uint32_t nTile = (transpose_B || N <= nMaxByL0B) ? N : nMaxByL0B;
   static_assert(transpose_B || (N % nTile == 0),
@@ -1148,11 +1153,11 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
                                              A[kL0Idx * M * kL0Size], M, kSize);
       } else {
         tl::ascend::copy_l1_to_l0a<T1, K, M, true>(
-            l0a[l0a_base], A[kL0Idx * 16 * kL0Size], M, kSize);
+            l0a[l0a_base], A[kL0Idx * ELE_NUM_PER_C0 * kL0Size], M, kSize);
       }
       if constexpr (!transpose_B) {
         tl::ascend::copy_l1_to_l0b<T1, K, N>(
-            l0b[l0b_base], B[bNOffset + kL0Idx * 16 * kL0Size], kSize, nTile);
+            l0b[l0b_base], B[bNOffset + kL0Idx * ELE_NUM_PER_C0 * kL0Size], kSize, nTile);
       } else {
         tl::ascend::copy_l1_to_l0b<T1, N, K, true>(
             l0b[l0b_base], B[kL0Idx * N * kL0Size], kSize, N);
