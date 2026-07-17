@@ -253,9 +253,13 @@ def _gemm_v0_int8_kernel(M, N, K, block_M, block_N, K_L1, transpose_A=False, tra
 
                     T.barrier_all()
                     T.gemm_v0(
-                        A_L1, B_L1, C_L0,
-                        transpose_A=transpose_A, transpose_B=transpose_B,
-                        init=(k == 0), kL0Size=kL0Size,
+                        A_L1,
+                        B_L1,
+                        C_L0,
+                        transpose_A=transpose_A,
+                        transpose_B=transpose_B,
+                        init=(k == 0),
+                        kL0Size=kL0Size,
                     )
                     T.barrier_all()
 
@@ -274,8 +278,15 @@ def _run_int8_kl0split_case(transpose_A, transpose_B, kL0Size, K_L1):
     block_M, block_N = 128, 128
 
     program = _gemm_v0_int8_kernel(
-        M, N, K, block_M, block_N, K_L1,
-        transpose_A=transpose_A, transpose_B=transpose_B, kL0Size=kL0Size,
+        M,
+        N,
+        K,
+        block_M,
+        block_N,
+        K_L1,
+        transpose_A=transpose_A,
+        transpose_B=transpose_B,
+        kL0Size=kL0Size,
     )
     kernel = _compile(program, "ascendc")
 
