@@ -102,7 +102,6 @@ def cummin_vec_ker(Rows, L, core_num, single_core_load, N, block_L, has_nan=True
                             l_base = bi * block_L
 
                             T.copy(A[l_base : l_base + block_L, col_base : col_base + N], in_tile)
-                            T.barrier_all()
                             if low_prec:
                                 T.tile.cast(in_cal_tile, in_tile, "CAST_NONE", block_L * N)
                             else:
@@ -131,15 +130,12 @@ def cummin_vec_ker(Rows, L, core_num, single_core_load, N, block_L, has_nan=True
                                 T.tile.cast(val_tile, val_cal_tile, "CAST_RINT", block_L * N)
                             else:
                                 T.copy(val_cal_tile, val_tile)
-                            T.barrier_all()
                             T.copy(val_tile, Values[l_base : l_base + block_L, col_base : col_base + N])
                             T.copy(idx_tile, Indices[l_base : l_base + block_L, col_base : col_base + N])
-                            T.barrier_all()
 
                         if partial > 0:
                             tb = n_full * block_L
                             T.copy(A[tb : tb + partial, col_base : col_base + N], in_tile)
-                            T.barrier_all()
                             if low_prec:
                                 T.tile.cast(in_cal_tile, in_tile, "CAST_NONE", partial * N)
                             else:
@@ -162,10 +158,8 @@ def cummin_vec_ker(Rows, L, core_num, single_core_load, N, block_L, has_nan=True
                                 T.tile.cast(val_tile, val_cal_tile, "CAST_RINT", partial * N)
                             else:
                                 T.copy(val_cal_tile[0:partial, :], val_tile[0:partial, :])
-                            T.barrier_all()
                             T.copy(val_tile[0:partial, :], Values[tb : tb + partial, col_base : col_base + N])
                             T.copy(idx_tile[0:partial, :], Indices[tb : tb + partial, col_base : col_base + N])
-                            T.barrier_all()
 
     return main
 
@@ -243,7 +237,6 @@ def cummin_vec_ker_v2(M, R, N, core_num, single_core_load, block_N, block_R, has
                             l_base = row_base + bi * block_R
 
                             T.copy(A[l_base : l_base + block_R, col_base : col_base + block_N], in_tile)
-                            T.barrier_all()
                             if low_prec:
                                 T.tile.cast(in_cal_tile, in_tile, "CAST_NONE", block_R * block_N)
                             else:
@@ -272,15 +265,12 @@ def cummin_vec_ker_v2(M, R, N, core_num, single_core_load, block_N, block_R, has
                                 T.tile.cast(val_tile, val_cal_tile, "CAST_RINT", block_R * block_N)
                             else:
                                 T.copy(val_cal_tile, val_tile)
-                            T.barrier_all()
                             T.copy(val_tile, Values[l_base : l_base + block_R, col_base : col_base + block_N])
                             T.copy(idx_tile, Indices[l_base : l_base + block_R, col_base : col_base + block_N])
-                            T.barrier_all()
 
                         if partial > 0:
                             tb = row_base + n_full * block_R
                             T.copy(A[tb : tb + partial, col_base : col_base + block_N], in_tile)
-                            T.barrier_all()
                             if low_prec:
                                 T.tile.cast(in_cal_tile, in_tile, "CAST_NONE", partial * block_N)
                             else:
@@ -303,10 +293,8 @@ def cummin_vec_ker_v2(M, R, N, core_num, single_core_load, block_N, block_R, has
                                 T.tile.cast(val_tile, val_cal_tile, "CAST_RINT", partial * block_N)
                             else:
                                 T.copy(val_cal_tile[0:partial, :], val_tile[0:partial, :])
-                            T.barrier_all()
                             T.copy(val_tile[0:partial, :], Values[tb : tb + partial, col_base : col_base + block_N])
                             T.copy(idx_tile[0:partial, :], Indices[tb : tb + partial, col_base : col_base + block_N])
-                            T.barrier_all()
 
     return main
 
@@ -464,7 +452,7 @@ def _compare(out_v_cpu, out_i_cpu, ref_v, ref_i, dtype):
         else:
             max_diff = (out_v_cpu.float() - ref_v.float()).abs().max().item()
             mere, mare = _rel_stats(out_v_cpu, ref_v)
-        vmsg = f"values max_diff={max_diff:.3e} MERE={mere:.3e} MARE={mare:.3e}"
+        vmsg = f"values MERE={mere:.3e} MARE={mare:.3e}"
 
     i_ok = torch.equal(out_i_cpu, ref_i)
     idx_mismatch = int((out_i_cpu != ref_i).sum().item())
