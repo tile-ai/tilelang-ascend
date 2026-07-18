@@ -159,6 +159,8 @@ collect_test_scripts() {
         -not -name "sfa_golden.py" \
         -not -name "utils.py" \
         -not -path "*/bench_sfa/*" \
+        -not -path "*/generative_recommendation/golden.py" \
+        -not -path "*/generative_recommendation/testcase.py" \
         | sort)
     for f in $py_files; do scripts+=("$f"); done
     
