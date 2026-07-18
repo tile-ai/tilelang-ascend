@@ -1157,7 +1157,8 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
       }
       if constexpr (!transpose_B) {
         tl::ascend::copy_l1_to_l0b<T1, K, N>(
-            l0b[l0b_base], B[bNOffset + kL0Idx * ELE_NUM_PER_C0 * kL0Size], kSize, nTile);
+            l0b[l0b_base], B[bNOffset + kL0Idx * ELE_NUM_PER_C0 * kL0Size],
+            kSize, nTile);
       } else {
         tl::ascend::copy_l1_to_l0b<T1, N, K, true>(
             l0b[l0b_base], B[kL0Idx * N * kL0Size], kSize, N);
