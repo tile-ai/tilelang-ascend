@@ -4385,6 +4385,8 @@ def run_test_transpose(M, N, block_M, block_N, dtype, target):
     dtype_map = {
         "float": torch.float32,
         "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "int8": torch.int8,
         "int16": torch.int16,
         "int32": torch.int32,
         "uint16": torch.uint16,
@@ -4392,10 +4394,10 @@ def run_test_transpose(M, N, block_M, block_N, dtype, target):
     }
     torch_dtype = dtype_map.get(dtype, torch.float32)
 
-    if dtype in ["int16", "int32", "uint16", "uint32"]:
-        a = torch.randint(
-            -100 if dtype in ["int16", "int32"] else 0, 100 if dtype in ["int16", "int32"] else 200, (M, N), dtype=torch_dtype
-        ).npu()
+    if dtype in ["int8", "int16", "int32", "uint16", "uint32"]:
+        lo = -100 if dtype in ["int8", "int16", "int32"] else 0
+        hi = 100 if dtype in ["int8", "int16", "int32"] else 200
+        a = torch.randint(lo, hi, (M, N), dtype=torch_dtype).npu()
     else:
         a = torch.randn(M, N, dtype=torch_dtype).npu()
 
@@ -4437,6 +4439,43 @@ def test_transpose(dtype, target, shape):
 def test_transpose_tiled(dtype, target, shape):
     M, N = shape
     run_test_transpose(M, N, M, N, dtype, target)
+
+
+@pytest.mark.parametrize("dtype", ["float16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("shape", [(48, 48), (16, 48), (48, 16), (128, 128)])
+def test_transpose_block_b16(dtype, target, shape):
+    M, N = shape
+    run_test_transpose(M, N, M, N, dtype, target)
+
+
+@pytest.mark.parametrize("dtype", ["float", "uint32", "uint16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("shape", [(16, 16), (32, 32)])
+def test_transpose_block_b32(dtype, target, shape):
+    M, N = shape
+    run_test_transpose(M, N, M, N, dtype, target)
+
+
+@pytest.mark.parametrize("dtype", ["int8", "bfloat16"])
+@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("shape", [(32, 32)])
+def test_transpose_fallback_dtype(dtype, target, shape):
+    M, N = shape
+    run_test_transpose(M, N, M, N, dtype, target)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [(20, 36), (17, 33), (24, 40), (16, 33), (33, 16)],
+    ids=lambda s: f"{s[0]}x{s[1]}",
+)
+def test_transpose_non_aligned_shape_raises(shape):
+    M, N = shape
+    src = tir.decl_buffer((M, N), "float16")
+    dst = tir.decl_buffer((N, M), "float16")
+    with pytest.raises(ValueError, match="multiples of 16"):
+        T.tile.transpose(dst, src)
 
 
 def wholereducemax(M, N, block_M, block_N, mask, repeatTimes, dstRepStride, srcBlkStride, srcRepStride, dtype="float16"):

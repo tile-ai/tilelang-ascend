@@ -1963,10 +1963,17 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   **参数**：
 
-  - dst：计算结果存放目的buffer
-  - src：源操作数
+  - dst：计算结果存放目的buffer，shape 为 [W, H]
+  - src：源操作数，shape 为 [H, W]
 
-  **功能**：当前仅支持用于实现16*16的二维矩阵数据块转置。更完毕功能待完善。
+  **功能**：对 UB 中的二维矩阵执行 `dst[j][i] = src[i][j]` 转置。底层使用 `TransDataTo5HD` 硬件指令（`scatter_vnchwconv`）完成数据搬移。
+
+  **约束**：
+
+  - **H 和 W 必须均为 16 的倍数**（硬件 32B 对齐要求）。非 16 对齐的 shape 会在编译期被拒绝并报错。
+  - dtype 支持 B16（half/int16/uint16）和 B32（float/int32/uint32），走硬件指令快速路径。
+  - 16×16 + half 场景走 `AscendC::Transpose`（`vtranspose` 指令）。
+  - int8/bfloat16 走标量回退（GetValue/SetValue），shape 仍需 16 对齐。
 
   **举例**：
 

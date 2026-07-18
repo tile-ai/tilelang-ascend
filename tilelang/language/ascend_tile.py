@@ -1442,9 +1442,35 @@ def transpose(dst: Buffer, src: Buffer):
     buffer into the destination buffer.
 
     Args:
-        dst: The destination buffer.
-        src: The source buffer to be transposed.
+        dst: The destination buffer, shape [W, H].
+        src: The source buffer to be transposed, shape [H, W].
+
+    Note:
+        Both H and W must be multiples of 16.
     """
+    src_shape = list(src.shape)
+    if len(src_shape) < 2:
+        raise ValueError(
+            f"transpose requires a 2D source buffer. Got shape: {src_shape}"
+        )
+
+    for axis_name, dim in [("H", src_shape[-2]), ("W", src_shape[-1])]:
+        if isinstance(dim, tir.IntImm):
+            val = dim.value
+        elif isinstance(dim, int):
+            val = dim
+        else:
+            raise ValueError(
+                f"transpose requires src buffer with static shape (multiples of 16). "
+                f"Found dynamic dimension: {dim}."
+            )
+        if val % 16 != 0:
+            raise ValueError(
+                f"transpose requires both H and W to be multiples of 16. "
+                f"Got src shape {src_shape}, "
+                f"{axis_name} = {val} is not a multiple of 16."
+            )
+
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_transpose"),
