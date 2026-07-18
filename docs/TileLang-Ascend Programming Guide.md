@@ -641,7 +641,7 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
 
 ##### 4.1.3.1 矩阵计算
 
-- `T.gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False):`
+- `T.gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False, kL0Size=128):`
 
   **参数**：
 
@@ -658,6 +658,8 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
     transpose_B：是否要对B输入矩阵进行转置
 
     init：在计算前下对累加矩阵C进行清零，一般情况下由于需要对矩阵进行切片，第一次计算需要对累加矩阵清零，后续在基础上累加。
+
+    kL0Size（高级参数，optional）：L1→L0 数据搬运时的 K 轴切分大小。控制 K 维度从 L1 搬到 L0A/L0B 时的切分粒度。必须是 16 的倍数，默认 128。通常不需要修改此参数。当 L0C 利用率不高（如 block_M × block_N × 4 < 128KB）或 kL0Size=128 导致 L0A/L0B 双缓冲溢出时，可以考虑调小 kL0Size。更小的 kL0Size 允许更大的 block_M/block_N（提高 L0C 利用率），代价是更多的 L1→L0 搬运次数。对于 half 精度，block_M=128, block_N=256 时推荐 kL0Size=64。
 
   **功能说明**：gemm操作用来实现两个tile的矩阵乘操作，特别的是它的左矩阵（A_shared）和右矩阵（B_shared）都是位于shared存储层级，输出（C_fragment）位于fragment存储层级，A_shared和B_shared的进行矩阵乘操作，然后结果和C_fragment已有值进行累加并赋值到C_fragment。
 

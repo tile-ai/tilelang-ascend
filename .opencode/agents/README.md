@@ -50,7 +50,7 @@ disable: true
     │                    - first_impl: 生成 + 首跑
     │                    - retry_impl: 修运行错误 + 重跑
     │                    - precision_fix: 备份 + 调试 + 改 + 复测
-    │                    产物：example_{op}.py（含 kernel + golden + test 用例）
+    │                    产物：{op}.py（纯 kernel）+ test_{op}.py（golden + 分层测试套件 + main）
     │                          history_version/{op}_impl_s2_attempt{N}.py（precision_fix 备份）
     │
     ├─ PRECISION_FAIL ─→ 留在 Stage 2，下次 mode=precision_fix（最多 5 次 attempt）
@@ -74,8 +74,8 @@ disable: true
 | Stage | 名称 | 必填？ | 复用 Skill | 主要产物 |
 |-------|------|--------|-----------|---------|
 | 0 | 环境预检 | ✅ 一次性 | `tilelang-env-check` | `env_check_passed=true` |
-| 1 | 算子设计 | ✅ | `tilelang-op-design` | `DESIGN.md` |
-| 2 | 代码实现+测试+精度调试 | ✅ | `tilelang-op-generate` + 内置精度调试方法学 | `example_{op}.py` + 精度调试备份 |
+| 1 | 算子设计 | ✅ | `tilelang-op-design` | `DESIGN.md` + `proto.yaml` |
+| 2 | 代码实现+测试+精度调试 | ✅ | `tilelang-op-generate` + 内置精度调试方法学 | `{op}.py` + `test_{op}.py` + 精度调试备份 |
 | 3 | 性能调优 | ⭕ 用户确认 | `tilelang-perf-optimization` | `perf_tuning/` |
 
 ## 关键机制
@@ -168,7 +168,9 @@ Orchestrator 唯一会反向询问的关键信息：
 ```
 examples/{op}/
 ├── DESIGN.md                              # Stage 1
-├── example_{op}.py                        # Stage 2 / 3 单一交付文件（@tilelang.jit kernel + 内嵌 golden + 用户指定 shape 的 test 用例 + main）
+├── proto.yaml                             # Stage 1（算子接口规格 dtype/attr，供覆盖门禁派生应覆盖维度）
+├── {op}.py                                # Stage 2 / 3 纯 kernel（@tilelang.jit，可 import，无 golden/测试/__main__）
+├── test_{op}.py                           # Stage 2 from {op} import kernel + golden + 分层测试套件 L0/L1/L2/Boundary + main
 ├── README.md                              # Stage 2（可选）
 ├── debug_log.md                           # Stage 2 / 3 每次调度追加一条记录
 ├── perf_tuning/                           # Stage 3（仅当用户启用）
@@ -181,14 +183,16 @@ examples/{op}/
 └── .orchestrator_state.json               # 状态文件（仅 orchestrator 可写）
 ```
 
-### 单文件交付原则
+### kernel 与测试分文件交付
 
 | 文件 | 内容 |
 |------|------|
-| `example_{op}.py` | **单一交付文件**：`@tilelang.jit` kernel + 内嵌 PyTorch golden + **用户指定 shape** 的 test 用例 + main 块（含三态标记输出） |
+| `{op}.py` | **纯 kernel**：`@tilelang.jit` kernel + `pass_configs`（可 import；无 golden、无测试、无 `__main__`）；`precision_fix` 与 perf 调优只改此文件 |
+| `test_{op}.py` | `from {op} import {op}` + PyTorch golden + **分层测试套件**（L0 按 DESIGN.md 计划落地；L0 通过后由 `tilelang-op-test-design` 场景 B 扩展 L1/L2/Boundary）+ main 块（含分层标记输出，`--level` 分发） |
 | `DESIGN.md` | 设计文档（11 章节：编程模式 / API 映射 / 内存规划 / Tiling / Loop / 同步 / 验证方案 / 风险点 等） |
+| `proto.yaml` | Stage 1 派生的算子接口规格（dtype 全集 + attr），供覆盖门禁 `coverage_check.py --proto` 派生应覆盖维度 |
 
-> Golden 函数和 test 用例**全部内嵌**在 `example_{op}.py` 内，不单独成文件（符合 TileLang-Ascend 现有 examples 惯例）。Test 用例**严格使用 DESIGN.md 中用户指定的 shape**，Developer 不主动扩展。
+> Golden 函数写在 `test_{op}.py` 内，与 kernel **分文件**；测试文件通过 `from {op} import {op}` 导入 kernel，main 块中完成精度对比。分层测试的 shape 由 §6 确定性生成（非对齐/尾块/质数必出），扩展只改 `test_{op}.py`、不动 kernel。
 
 ## 状态文件
 
