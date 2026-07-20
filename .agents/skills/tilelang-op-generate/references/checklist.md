@@ -28,7 +28,7 @@
 | 3 | 所有 `T.alloc_ub` 的 shape 乘积不超 UB 容量 |
 | 4 | Expert 模式有 `T.Scope("V")` 和 `T.barrier_all()` |
 | 5 | Developer 模式有对应的 `pass_configs` |
-| 6 | `test_{op}_l0()` 落地 DESIGN.md §9.2「L0 门槛测试计划」的全部 L0 用例（规则 shape）；L1/L2/Boundary 先留桩（由 tilelang-op-test-design 场景 B 填充） |
+| 6 | **kernel 与测试分文件**：`{op}.py` 只含 `@tilelang.jit` kernel（无 golden、无测试、无 `__main__`）；`test_{op}.py` 顶部 `from {op} import {op}`，含 golden + `test_{op}_l0()`（落地 DESIGN.md §9.2 全部 L0 用例，规则 shape）+ main；L1/L2/Boundary 先留桩（由 tilelang-op-test-design 场景 B 填充） |
 | 7 | 含 GEMM：`gemm_v0` 第一次调用有 `init=True`（细节参 SKILL §子目录索引 `gemm-cv-fusion.md`） |
 | 8 | 含 GEMM：block size 满足分形限制（细节参 SKILL §子目录索引 `gemm-cv-fusion.md`） |
 
@@ -48,9 +48,9 @@
 | 13 | **`# type: ignore`** | `T.Tensor` 参数定义后追加，避免 Pylance 报错 |
 | 14 | **分层异常处理** | L0/L1 用例用 `try/except` 包裹：通过打 `[PRECISION_PASS]`、失败打 `[PRECISION_FAIL]` 并记 `ok=False`（不中断本层其余用例）。L2/Boundary 失败打 `[BOUNDARY_WARN]` 后继续，**不影响退出码**。不要裸 `assert` 直接崩 |
 | 15 | **分层标记输出** | 每个用例按层打标记：L0/L1 → `[PRECISION_PASS]`/`[PRECISION_FAIL]`；L2/Boundary → `[BOUNDARY_PASS]`/`[BOUNDARY_WARN]`，含 shape/dtype，避免看似卡住 |
-| 16 | **最终输出 + 退出码** | L0/L1 全过时最后一行 `print("Test Passed!")`（或 `"Kernel Output Match!"`）并 `sys.exit(0)`，bench_test.sh 据此判定；L0/L1 任一失败 `sys.exit(1)`。L2/Boundary 的 `[BOUNDARY_WARN]` 不改变退出码 |
+| 16 | **最终输出 + 退出码** | `test_{op}.py` 的 main 在 L0/L1 全过时最后一行 `print("Test Passed!")`（或 `"Kernel Output Match!"`）并 `sys.exit(0)`（据退出码 + 该行判定）；L0/L1 任一失败 `sys.exit(1)`。L2/Boundary 的 `[BOUNDARY_WARN]` 不改变退出码 |
 | 17 | **--level 参数** | `argparse` 提供 `--level {l0,l1,l2,boundary,all}`（默认 `l0`）：精度收敛跑 `l0`、扩展后跑 `all`；main 按 level 分发各层函数 |
-| 18 | **代码格式检查** | `ruff check examples/{op}/example_{op}.py` + `ruff format --check examples/{op}/example_{op}.py` 通过 |
+| 18 | **代码格式检查** | `ruff check examples/{op}/{op}.py examples/{op}/test_{op}.py` + `ruff format --check examples/{op}/{op}.py examples/{op}/test_{op}.py` 通过 |
 
 ## 4. 融合算子专项检查
 

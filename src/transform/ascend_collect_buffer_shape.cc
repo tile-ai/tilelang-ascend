@@ -178,7 +178,7 @@ tvm::transform::Pass CreateFlatten2DPass() {
 
       // handle DN/ND
       bool is_inner_dim_one = analyzer.CanProve(inner_dim == 1);
-      if (scope == "shared" && is_inner_dim_one) {
+      if (scope == "shared.ub" && is_inner_dim_one) {
         logical_2d_shapes.Set(buffer_var, {inner_dim, outer_dim});
       } else {
         logical_2d_shapes.Set(buffer_var, {outer_dim, inner_dim});

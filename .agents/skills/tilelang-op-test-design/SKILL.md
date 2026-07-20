@@ -252,7 +252,7 @@ Phase 1：信息提取（强制步骤）
     ├─ 提取 §2 编程模式
     ├─ 提取 §4 输入输出规格（shape/dtype）
     ├─ 提取 §5 block size
-    └─ 提取 §8 精度标准（如有）
+    └─ 提取 §9.3 精度标准（未定义则阻塞，回 Stage 1 补齐）
 
 Phase 2：理解判断
     ├─ 阅读数学公式，理解计算逻辑
@@ -266,7 +266,7 @@ Phase 3：用户交互（补充决策）
     ├─ 询问用例数量（快速冒烟/标准测试/全面测试）
     ├─ 询问不规则 shape（自然包含/重点测试/不需要）
     ├─ 询问特殊场景（空 tensor/极值/INF/NAN等）
-    └─ 询问精度标准（如 §8 未定义）
+    └─ 询问精度标准（如 §9.3 未定义）
 
 Phase 3.5：闸门确认（可选，防止错误扩散）
     ├─ 展示测试配置摘要（dtype 组合、shape 组合、特殊场景）
@@ -316,15 +316,15 @@ Phase 4：分析测试空白
     ├─ 识别缺失场景（dtype组合/shape组合/异常场景）
     └─ 生成补充配置
 
-Phase 5：输出补充测试（追加到现有 example_{op}.py，不新建文件）
-    ├─ 定位 generate 已生成的 example_{op}.py 中 test_{op}_l1/l2/boundary 三个桩函数
+Phase 5：输出补充测试（填充现有 test_{op}.py 的桩体，不新建文件、不碰 kernel）
+    ├─ 定位 generate 已生成的 test_{op}.py 中 test_{op}_l1/l2/boundary 三个桩函数
     ├─ 用真实分层用例替换桩体（参 §9.1）：
-    │     L1 → 规则+不规则 shape（含尾块）；L2 → 异常输入；Boundary → INF/NAN/极值
-    ├─ L1 用 _run_precision（[PRECISION_*]，阻塞）；L2/Boundary 用 _run_boundary（[BOUNDARY_*]，非阻塞）
-    └─ 保持 main 分发器与 --level 接口不变（不改 generate 已写好的 main）
+    │     L1 → 规则+不规则 shape（含尾块）；L2 → 非法输入（应被拒绝）；Boundary → INF/NAN/极值（合法）
+    ├─ L1 用 _run_precision（[PRECISION_*]，阻塞）；L2 用 _run_exception（期望拒绝）、Boundary 用 _run_boundary（比精度，不过 WARN）（均 [BOUNDARY_*]，非阻塞）
+    └─ 保持 main 分发器与 --level 接口不变（不改 generate 已写好的 main），kernel 仍从 {op}.py import
 ```
 
-> **场景 B 输出形式（强约束）**：**追加/填充到现有 `example_{op}.py`**，不新建独立 test 文件。generate 在 first_impl 已生成 `test_{op}_l1/l2/boundary` 桩 + 稳定的 `main` 分发器；场景 B 只替换这三个桩函数的函数体，**不改 main、不改 `--level` 接口、不动 L0 与 kernel**。替换后用 `--level all` 跑全量验证。
+> **场景 B 输出形式（强约束）**：**只填充现有 `test_{op}.py`** 的三个桩函数体，不新建独立 test 文件、**不改 `{op}.py`（kernel）**。generate 在 first_impl 已生成 `test_{op}.py`（含 `from {op} import {op}`、`test_{op}_l1/l2/boundary` 桩 + 稳定的 `main` 分发器）；场景 B 只替换这三个桩函数的函数体，**不改 main、不改 `--level` 接口、不动 L0 与 kernel 文件**。替换后用 `python examples/{op}/test_{op}.py --level all` 跑全量验证。
 
 ---
 
@@ -398,28 +398,33 @@ Phase 5：输出补充测试代码
 |------|------|--------|---------|-----------|
 | **L0** | 门槛测试 | ≤50 | 核心功能验证 | 规则 shape（快速冒烟） |
 | **L1** | 功能测试 | 100-200 | 参数组合覆盖 | **规则 + 不规则 shape**（自然包含） |
-| **L2** | 异常测试 | ≤20 | 异常场景验证 | 任意 shape |
-| **Boundary** | 边界测试 | ≤10 | 特殊值验证 | 特殊 shape |
+| **L2** | 异常测试 | ≤20 | 非法输入拒绝验证（负向，不比精度） | 非法 shape / 不支持 dtype |
+| **Boundary** | 边界测试 | ≤10 | 合法特殊值精度验证（比精度，不过报 WARN） | INF/NAN/极值/空 tensor |
 
 ---
 
-## 6. 不规则 Shape 自然包含
+## 6. 确定性 Shape 生成（强制非对齐必出）
 
-**规则**：在 L1 测试中自然包含不规则 shape，根据用户需求调整数量。
+**规则**：L1 的 shape 集合由 block 反推**确定性生成**，非对齐 / 尾块 / 质数 shape **默认必出**——不再用"是否需要不规则 shape"的软问法。用户只能在此基线上**加量**，不能减到 0。覆盖维度 ID 与判定见 `references/coverage-matrix.md`。
 
-**生成逻辑**：
-- 规则 shape：block size 整除的典型配置
-- 不规则 shape：有余数的配置（自然包含尾块场景）
-
-**常见不规则配置**：
+**生成公式**（给定主分块 `block=(bM, bN[, bK])`，`k` 为倍数）：
 ```python
-# 自然包含在 L1 中
-irregular_shapes = [
-    (32*3+30, 32*2),   # 余数30
-    (32*3+1, 32*2),    # 余数1
-    (100, 100),         # 余数4
-]
+def gen_l1_shapes(bM, bN, k=4):
+    return {
+        "D-SHAPE-ALIGNED":  (bM*k,            bN*k),             # block 整除（规则）
+        "D-SHAPE-TAIL-1":   (bM*k + 1,        bN*k),             # 余数 1（最易暴露边界 bug）
+        "D-SHAPE-TAIL-MID": (bM*k + bM//2,    bN*k + bN//2),     # 中间余数
+        "D-SHAPE-PRIME":    (nearest_prime(bM*k), nearest_prime(bN*k)),  # 完全非对齐
+        "D-SHAPE-EDGE":     (1, bN*k),                           # 退化（另配 (bM*k,1)/单元素）
+    }
 ```
+
+**类别特例**：
+- **GEMM / 含 matmul**：上式扩到 K 轴——至少一条 `K=bK*k+1` 或质数 K，保证 M/N/K **三轴都出现过非对齐**（不能只非对齐 M）。
+- **多维算子**：对 proto 支持的每个 rank（2D/3D/4D/5D…）重复「ALIGNED + 一条非对齐」，命中 `D-SHAPE-RANK-<r>`。
+- **逐元素激活（无 tiling 边界）**：尾块与对齐路径等价，可对 `D-SHAPE-TAIL-*`/`PRIME` 走豁免（写入 `COVERAGE_NA`，见 §9）。
+
+`nearest_prime(n)` 取 ≤ n 的最近质数，避免超出 proto 支持范围。
 
 ---
 
@@ -454,13 +459,13 @@ irregular_shapes = [
 [3] 全面测试（L0≤50, L1=200-300）
 ```
 
-**步骤 3：不规则 shape**
+**步骤 3：不规则 shape 加量（非对齐为强制基线，不可关闭）**
 ```
-是否需要测试不规则 shape（含尾块场景）？
-[1] 自然包含（推荐） - 在 L1 中自然包含不规则 shape
-[2] 重点测试 - 特别关注尾块场景，生成更多不规则配置
-[3] 不需要 - 仅测试规则 shape
+不规则 shape（尾块/质数）已由 §6 确定性生成强制包含。请选择是否额外加量：
+[1] 标准（推荐） - 仅 §6 强制基线（ALIGNED/TAIL-1/TAIL-MID/PRIME/EDGE 各 1）
+[2] 重点加量 - 在强制基线上额外生成更多尾块/质数配置
 ```
+> 说明：不再提供"不需要不规则 shape"选项——非对齐覆盖为覆盖矩阵强制维度，关闭会被 checker 判 MISS。
 
 ---
 
@@ -494,6 +499,18 @@ irregular_shapes = [
 - L2: {n} 个用例
 - Boundary: {n} 个用例
 
+### 覆盖矩阵（逐维度，来自 coverage_check.py）
+| 维度 ID | 应覆盖 | 实际数量 | 状态 |
+|---|---|---|---|
+| D-DTYPE-fp16 | ≥1 | {n} | PASS |
+| D-SHAPE-PRIME | ≥1 | {n} | PASS / MISS |
+| D-VALRANGE-L | ≥1 | {n} | PASS / MISS |
+| D-SPECIAL-INF | ≥1 | {n} | PASS / N/A（理由） |
+| ... | ... | ... | ... |
+
+**覆盖结论**：{x} PASS / {y} MISS / {z} N/A → {PASS 全绿 / FAIL 有未豁免 MISS}
+> 有未豁免 MISS 时必须先补齐用例再交付，不得直接报 `[PRECISION_PASS]`。
+
 ### 输出文件
 - 路径: {output_file}
 ```
@@ -504,22 +521,64 @@ irregular_shapes = [
 
 ### 9.1 标准测试结构
 
+> 这是 **`test_{op}.py`** 的结构（kernel 在同目录 `{op}.py`，此处从中 import）。测试文件不含 kernel 定义。
+
 ```python
 import argparse
+import os
 import sys
 
 import tilelang
-import tilelang.language as T
 import torch
 
-# ========== 精度标准定义 ==========
+# 从同目录 kernel 文件导入被测 kernel
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from {op} import {op}   # noqa: E402
+
+# ========== 精度标准定义（混合容差，详见 references/precision-standard.md）==========
 def get_precision(dtype):
-    precision_map = {
-        "float16": (1e-3, 1e-3),
-        "float32": (1e-5, 1e-5),
-        "bfloat16": (1e-2, 5e-3),
+    """返回 (atol, rtol, max_abs_error_limit, required_matched_ratio)。
+    浮点：混合容差；整型：精确匹配（0 误差）。"""
+    fp_table = {
+        # dtype       : (atol,   rtol,   max_abs_error_limit, required_matched_ratio)
+        "float16":     (2**-14, 2**-9,  1e-1, 0.99),   # atol 6.10e-5, rtol 1.95e-3
+        "bfloat16":    (2**-10, 2**-6,  1e0,  0.99),   # atol 9.77e-4, rtol 1.56e-2
+        "float32":     (2**-16, 2**-10, 1e-2, 0.99),   # atol 1.53e-5, rtol 9.77e-4
+        "hifloat32":   (2**-16, 2**-10, 1e-2, 0.99),
+        "float8_e4m3": (2**-4,  2**-2,  1e0,  0.99),   # atol 0.0625, rtol 0.25
+        "float8_e5m2": (2**-3,  2**-1,  1e-1, 0.99),   # atol 0.125,  rtol 0.5
     }
-    return precision_map.get(dtype, (1e-3, 1e-3))
+    int_types = {"int8", "int16", "int32", "int64", "uint8"}
+    if dtype in int_types:
+        return (0.0, 0.0, 0.0, 1.0)          # 整型：精确匹配，一个元素不符即 FAIL
+    return fp_table.get(dtype, (2**-14, 2**-9, 1e-1, 0.99))
+
+def check_precision(actual, golden, dtype):
+    """精度判定：返回 (passed, matched_ratio, max_abs_error)。
+    浮点双门限：matched_ratio ≥ required 且 max_abs_error ≤ max_abs_error_limit；
+    整型逐元素精确相等；inf/nan 位置做结构比对，不计入数值容差。"""
+    atol, rtol, max_abs_limit, required_ratio = get_precision(dtype)
+    a = actual.detach().cpu()
+    g = golden.detach().cpu()
+    if atol == 0.0 and rtol == 0.0:                      # 整型精确匹配
+        mism = (a != g).sum().item()
+        total = max(a.numel(), 1)
+        return mism == 0, 1.0 - mism / total, (0.0 if mism == 0 else float("inf"))
+    a = a.float()
+    g = g.float()
+    special = ~torch.isfinite(g)                         # inf/nan 位置结构比对
+    if special.any():
+        if not torch.equal(torch.isnan(a[special]), torch.isnan(g[special])) or \
+           not torch.equal(torch.isinf(a[special]), torch.isinf(g[special])):
+            return False, 0.0, float("inf")
+    m = torch.isfinite(g)                                # golden 有限值位置全比：actual 若为 inf/nan 则计为不达标
+    if m.sum().item() == 0:
+        return True, 1.0, 0.0
+    abs_err = (a[m] - g[m]).abs()                        # actual 为 inf/nan 处 abs_err=inf/nan → 逐元素判 False 且拉高 max_abs
+    matched_ratio = (abs_err <= (atol + rtol * g[m].abs())).float().mean().item()
+    max_abs_error = abs_err.max().item()
+    passed = (matched_ratio >= required_ratio) and (max_abs_error <= max_abs_limit)
+    return passed, matched_ratio, max_abs_error
 
 # ========== Golden 函数定义 ==========
 def golden_{op}(input_data):
@@ -529,24 +588,41 @@ def golden_{op}(input_data):
 # ========== L0/L1：阻塞层（精度），失败打 [PRECISION_FAIL] 计入退出码 ==========
 def _run_precision(level, shape, dtype, block):
     """L0/L1 单用例：通过打 [PRECISION_PASS]，失败打 [PRECISION_FAIL] 并返回 False。"""
-    atol, rtol = get_precision(dtype)
     try:
-        # 运行 kernel + golden 对比
-        torch.testing.assert_close(out.cpu(), ref.cpu(), rtol=rtol, atol=atol)
-        print(f"[PRECISION_PASS] {level} shape={shape} dtype={dtype}")
-        return True
+        # 运行 kernel + golden 对比 → out, ref
+        passed, ratio, max_abs = check_precision(out, ref, dtype)
+        tag = "PASS" if passed else "FAIL"
+        print(f"[PRECISION_{tag}] {level} shape={shape} dtype={dtype} "
+              f"matched_ratio={ratio:.4f} max_abs={max_abs:.3e}")
+        return passed
     except Exception as e:
         print(f"[PRECISION_FAIL] {level} shape={shape} dtype={dtype}: {e}")
         return False
 
-# ========== L2/Boundary：非阻塞层，失败打 [BOUNDARY_WARN] 后继续，不改退出码 ==========
-def _run_boundary(level, name, fn):
-    """L2/Boundary 单用例：通过打 [BOUNDARY_PASS]，失败打 [BOUNDARY_WARN] 后继续。"""
+# ========== L2：异常测试（负向，非阻塞）——非法输入应被拒绝 ==========
+def _run_exception(name, fn):
+    """L2 单用例：fn() 喂非法输入，期望被算子拒绝。
+    抛异常 → [BOUNDARY_PASS]（正确拒绝）；未抛 → [BOUNDARY_WARN]（应拒绝却静默接受）。均非阻塞。"""
     try:
         fn()
-        print(f"[BOUNDARY_PASS] {level} {name}")
     except Exception as e:
-        print(f"[BOUNDARY_WARN] {level} {name}: {e}")
+        print(f"[BOUNDARY_PASS] l2 {name}: 正确拒绝 ({type(e).__name__})")
+        return
+    print(f"[BOUNDARY_WARN] l2 {name}: 非法输入未被拒绝（静默接受）")
+
+# ========== Boundary：边界/特殊值（精度，非阻塞）——合法极值需满足精度验收标准 ==========
+def _run_boundary(name, dtype, fn):
+    """Boundary 单用例：合法特殊值（INF/NAN/极值/空 tensor），fn() 返回 (out, ref)。
+    按精度验收标准比对（check_precision，与 L0/L1 同一套 dtype 阈值）：
+    精度过 → [BOUNDARY_PASS]；精度不过或抛异常 → [BOUNDARY_WARN]。均非阻塞，不计入退出码。"""
+    try:
+        out, ref = fn()
+        passed, ratio, max_abs = check_precision(out, ref, dtype)
+        tag = "PASS" if passed else "WARN"
+        print(f"[BOUNDARY_{tag}] boundary {name} dtype={dtype} "
+              f"matched_ratio={ratio:.4f} max_abs={max_abs:.3e}")
+    except Exception as e:
+        print(f"[BOUNDARY_WARN] boundary {name} dtype={dtype}: {e}")
 
 # ========== L0 测试：门槛测试（规则 shape，block 整除）==========
 def test_{op}_l0():
@@ -560,33 +636,46 @@ def test_{op}_l0():
         ok &= _run_precision("l0", shape, dtype, block)
     return ok
 
-# ========== L1 测试：功能测试（规则 + 不规则 shape）==========
+# ========== 覆盖标注（机器可校验，详见 references/coverage-matrix.md）==========
+# 每条 L1 用例带 tags=命中的覆盖维度 ID；coverage_check.py 反查命中集合。
+# (shape, dtype, block, value_range, tags)
+L1_CASES = [
+    ((512, 512),        "float16",  {block}, (-1, 1),   ["D-DTYPE-fp16","D-SHAPE-ALIGNED","D-VALRANGE-S"]),
+    ((512, 512),        "float32",  {block}, (-10, 10), ["D-DTYPE-fp32","D-SHAPE-ALIGNED","D-VALRANGE-M"]),
+    ((512, 512),        "bfloat16", {block}, (-1, 1),   ["D-DTYPE-bf16","D-SHAPE-ALIGNED"]),
+    ((513, 512),        "float16",  {block}, (-1, 1),   ["D-SHAPE-TAIL-1"]),           # 余数1
+    ((512+64, 512+64),  "float16",  {block}, (-1, 1),   ["D-SHAPE-TAIL-MID"]),         # 中间余数
+    ((509, 503),        "bfloat16", {block}, (-1, 1),   ["D-SHAPE-PRIME"]),            # 质数非对齐
+    ((1, 512),          "float16",  {block}, (-1, 1),   ["D-SHAPE-EDGE"]),             # 退化
+    ((512, 512),        "float16",  {block}, (-50, 50), ["D-VALRANGE-L"]),             # 大值域
+    ((512, 512),        "float16",  {block}, (-5, 10),  ["D-VALRANGE-ASYM"]),          # 非对称
+]
+# 覆盖汇总（coverage_check.py 与上面 tags 二选一，建议同时给出便于核对）
+COVERAGE_MANIFEST = {}      # 由 tags 自动汇总，或手填各维度计数
+COVERAGE_NA = {}            # 合理缺失的豁免：{"D-SPECIAL-INF": "纯整数算子无浮点特殊值"}
+
+# ========== L1 测试：功能测试（确定性非对齐 shape，见 §6）==========
 def test_{op}_l1():
-    """L1 功能测试：参数组合覆盖，⭐ 自然包含尾块。返回是否全过。"""
-    dtypes = ["float16", "float32", "bfloat16"]
-    shapes = [
-        (128, 128),      # 规则 shape
-        (512, 512),      # 规则 shape
-        (100, 100),      # 不规则 shape（余数4）
-        (32*3+30, 32*2), # 不规则 shape（余数30）
-    ]
+    """L1 功能测试：参数组合覆盖，⭐ 强制含尾块/质数 shape。返回是否全过。"""
     ok = True
-    for dtype in dtypes:
-        for shape in shapes:
-            ok &= _run_precision("l1", shape, dtype, {block})
+    for shape, dtype, block, vrange, tags in L1_CASES:
+        ok &= _run_precision("l1", shape, dtype, block)  # 可用 vrange 控制输入分布
     return ok
 
-# ========== L2 测试：异常测试（非阻塞）==========
+# ========== L2 测试：异常测试（负向，非阻塞）——非法输入应被拒绝 ==========
 def test_{op}_l2():
-    """L2 异常测试：不支持的 dtype / 不合法 shape。失败只记录，不阻塞。"""
-    _run_boundary("l2", "unsupported_dtype", lambda: ...)
-    _run_boundary("l2", "illegal_shape", lambda: ...)
+    """L2 异常测试：不支持的 dtype / 非法 shape 应被算子拒绝。
+    正确抛异常 = PASS，静默接受 = WARN。仅记录，不阻塞。"""
+    _run_exception("unsupported_dtype", lambda: ...)  # 喂不支持的 dtype，期望报错
+    _run_exception("illegal_shape",     lambda: ...)  # 喂非法 shape，期望报错
 
-# ========== Boundary 测试：边界/特殊值（非阻塞）==========
+# ========== Boundary 测试：边界/特殊值（精度，非阻塞）==========
 def test_{op}_boundary():
-    """Boundary 测试：INF/NAN/极值/空 tensor。失败只记录，不阻塞。"""
-    _run_boundary("boundary", "inf", lambda: ...)
-    _run_boundary("boundary", "nan", lambda: ...)
+    """Boundary 测试：INF/NAN/极值/空 tensor（合法输入），按精度验收标准比对；
+    精度不过打 [BOUNDARY_WARN]，不阻塞。每个 lambda 造特殊值输入 → 跑 kernel + golden → 返回 (out, ref)。"""
+    _run_boundary("inf",   {dtype}, lambda: ...)  # 造含 inf 输入 → (out, ref)
+    _run_boundary("nan",   {dtype}, lambda: ...)  # 造含 nan 输入 → (out, ref)
+    _run_boundary("empty", {dtype}, lambda: ...)  # 造空 tensor 输入 → (out, ref)
 
 # ========== 主函数：--level 分发 + 退出码 ==========
 def main():
@@ -617,8 +706,8 @@ if __name__ == "__main__":
     main()
 ```
 
-> **导入**：文件顶部需 `import argparse, sys`（连同 `tilelang` / `torch`）。
-> **场景 B 扩展时**：保留 generate 生成的 `main` 分发器与 `--level` 接口不变，仅把 `test_{op}_l1/l2/boundary` 的桩体替换为上述真实实现（见 §4.2）。
+> **导入**：`test_{op}.py` 顶部需 `import argparse, os, sys`（连同 `tilelang` / `torch`），并 `sys.path.insert(0, ...)` + `from {op} import {op}` 导入 kernel。**kernel 定义在 `{op}.py`，测试文件不含 kernel。**
+> **场景 B 扩展时**：保留 generate 生成的 `main` 分发器与 `--level` 接口不变，仅把 `test_{op}.py` 里 `test_{op}_l1/l2/boundary` 的桩体替换为上述真实实现（见 §4.2）；**不改 `{op}.py`**。
 
 ---
 
@@ -626,39 +715,74 @@ if __name__ == "__main__":
 
 | 要点 | 说明 |
 |------|------|
-| **精度标准** | 根据算子类别和 dtype 定义 rtol/atol |
+| **精度标准** | 混合容差：按 **dtype** 取 (atol, rtol, max_abs_error_limit, required_matched_ratio)，与算子类别无关；整型 0 误差精确匹配（详见 references/precision-standard.md） |
 | **Golden 函数** | 根据数学公式实现，可用 PyTorch 标准实现 |
 | **L0 测试** | 规则 shape，快速冒烟（≤10 用例） |
 | **L1 测试** | 规则 + 不规则 shape，自然包含尾块（100-200 用例） |
-| **L2 测试** | 异常场景（≤20 用例） |
-| **Boundary 测试** | 极值、空 tensor（≤10 用例） |
+| **L2 测试** | 负向测试：非法 dtype / shape 应被拒绝——**正确抛异常 = PASS，静默接受 = WARN**；用 `_run_exception`，不比精度（无合法 golden），≤20 用例，非阻塞 |
+| **Boundary 测试** | 合法特殊值（INF/NAN/极值/空 tensor）——用 `_run_boundary` 跑 kernel+golden，**按精度验收标准（check_precision）比对，精度不过 = WARN**，≤10 用例，非阻塞 |
 | **分层标记** | L0/L1 → `[PRECISION_PASS]`/`[PRECISION_FAIL]`（阻塞，计入退出码）；L2/Boundary → `[BOUNDARY_PASS]`/`[BOUNDARY_WARN]`（非阻塞，不改退出码） |
 | **退出码** | L0/L1 全过 → 打印 `"Test Passed!"` 且 `exit(0)`；L0/L1 任一失败 → `exit(1)`；L2/Boundary 失败不影响退出码 |
 | **--level 分发** | main 支持 `--level {l0,l1,l2,boundary,all}`；精度收敛跑 `l0`，扩展后跑 `all` |
-| **异常隔离** | L2/Boundary 用例必须 `try/except` 包裹，失败打 `[BOUNDARY_WARN]` 后继续，不得中断后续用例 |
+| **异常隔离** | L2 用 `_run_exception`（期望拒绝，抛异常 = PASS）、Boundary 用 `_run_boundary`（比精度，精度不过 = WARN）；两者都 `try/except` 包裹、非阻塞、失败后继续，不得中断后续用例 |
+| **覆盖标注** | 每条 L1 用例带 `tags=`（命中的 `D-*` 维度 ID）；文件含 `COVERAGE_MANIFEST` / `COVERAGE_NA`。无标注 → checker 判 MISS |
+| **覆盖门禁** | 扩展完成后必须跑 `scripts/coverage_check.py test_{op}.py`；任一**强制维度** MISS → 退出码 1，等同自检失败，须补齐用例后再判 `[PRECISION_PASS]`（见 §10.1） |
 
 ---
 
-## 10. 总结
+## 10. 覆盖门禁与总结
 
-### 核心要点
+### 10.1 覆盖自检门禁（强制步骤）
+
+生成 / 扩展用例后，**必须**执行覆盖自检，确保"skill 描述的每类场景"真正落进了 `test_{op}.py`：
+
+```
+步骤 1：判定应覆盖维度
+    └─ 用 references/operator-category.md 判出算子类别
+    └─ 查 references/coverage-matrix.md 第二节得到「强制维度集」
+    └─ 结合 proto.yaml 的 dtype/attr/shape 范围实例化各维度最小数量
+
+步骤 2：生成带标注的用例
+    └─ 每条 L1 用例带 tags（命中的 D-* 维度 ID）
+    └─ 写 COVERAGE_MANIFEST（计数）+ COVERAGE_NA（合理缺失 + 理由）
+    └─ shape 集合遵循 §6 确定性生成（非对齐必出）
+
+步骤 3：跑 checker
+    └─ python scripts/coverage_check.py examples/{op}/test_{op}.py --proto examples/{op}/proto.yaml
+    └─ 打印逐维度 PASS / MISS / N/A 覆盖矩阵
+
+步骤 4：判定
+    └─ 任一【强制维度】MISS（未豁免，或对强制项写了豁免）→ 退出码 1
+       视为自检失败：补齐缺失维度的用例 → 重跑 checker，直至全 PASS/N/A
+    └─ 全 PASS / N/A → 退出码 0，方可交付 / 报 [PRECISION_PASS]
+```
+
+> **与 orchestrator 衔接**：场景 B（developer agent Stage 2 扩展 L1/L2/Boundary）完成后，覆盖门禁与 `[PRECISION_PASS]` 并列为交付前置条件——覆盖矩阵有未豁免 MISS 时不得返回 `[PRECISION_PASS]`。详见 developer agent「分层测试与扩展流程」与 AGENTS.md Stage 2 门禁。
+
+### 10.2 总结
+
+#### 核心要点
 
 1. **支持多种场景**：不只是 design.md，还支持 examples/{op}/*.py、用户描述、测试分析
 2. **算子类别划分依据科学**：基于硬件特性、计算步骤、数学公式三个维度
 3. **算子类别识别方法正确**：理解实现逻辑后判断
-4. **不规则 shape 自然包含**：在 L1 中自然包含，不特殊强调
+4. **覆盖从"描述性"转"契约式"**：非对齐等场景由 §6 确定性生成 + 覆盖矩阵强制 + checker 门禁三重保证，杜绝"漏场景"
 
-### 技能文件结构
+#### 技能文件结构
 
 ```
 tilelang-op-test-design/
-├── SKILL.md                    # 主文档（多场景 + 判断）
+├── SKILL.md                    # 主文档（多场景 + 判断 + 覆盖门禁）
+├── scripts/
+│   └── coverage_check.py       # 覆盖自检 checker（应覆盖 vs 实际覆盖）
 └── references/
     ├── operator-category.md    # 算子类别划分依据（详细）
-    └── precision-standard.md   # 精度标准体系
+    ├── precision-standard.md   # 精度标准体系
+    └── coverage-matrix.md      # 测试覆盖矩阵（强制契约：维度 ID / 谓词 / 最小数量）
 ```
 
 **说明**：
-- SKILL.md 包含完整方法论和测试代码结构示例（§9）
+- SKILL.md 包含完整方法论、测试代码结构示例（§9）、覆盖门禁（§10.1）
 - references/operator-category.md 提供算子类别划分详细说明
-- references/precision-standard.md 提供精度标准体系（不同 dtype/算子类别的 rtol/atol）
+- references/precision-standard.md 提供混合容差精度标准体系（按 dtype 的 atol/rtol/max_abs_error_limit/required_matched_ratio；整型 0 误差精确匹配）
+- references/coverage-matrix.md 提供覆盖维度强制契约，是 coverage_check.py 的判定依据

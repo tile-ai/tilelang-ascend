@@ -2416,6 +2416,57 @@ def row_expand_div_experiment(
     )
 
 
+def exp_experiment(dst, src):
+    """Strided masked exp over a 64-column (fp32) chunk of a wider N-strided buffer.
+
+    Exps ``dst[i, 0:64] = exp(src[i, 0:64])`` for every row in one call, striding by
+    the buffer's physical column count (read from the declaration by
+    ExpExperimentCodegen) so it touches just the valid window of an [M, N]-strided
+    score buffer without compaction. Callers loop 64-column chunks over the valid
+    window (same shape row_expand_sub_experiment expects). Unary mirror of the
+    experiment row-ops: emits ``tl::ascend::exp_mask<dtype>(dst, src, ...)``.
+
+    Args:
+        dst: Destination [rows, chunk_cols] buffer region (chunk_cols = 64 for fp32).
+        src: Source buffer region of matching shape (may equal dst for in-place exp).
+    """
+    dst = _normalize_buffer_arg(dst)
+    src = _normalize_buffer_arg(src)
+
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_shape = _handle_buffer_region_2d(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
+        dst_shape = list(dst.shape[-2:])
+
+    if isinstance(src, BufferRegion):
+        src_ptr, src_shape = _handle_buffer_region_2d(src, "r")
+    else:
+        src_ptr = src.access_ptr("r")
+        src_shape = list(src.shape[-2:])
+
+    if len(dst_shape) != 2 or len(src_shape) != 2:
+        raise ValueError("exp_experiment requires 2D buffers for dst and src.")
+    if not _shapes_equal(dst_shape, src_shape):
+        raise ValueError(f"dst and src shapes must match: dst={dst_shape}, src={src_shape}")
+
+    dtype = _dtype(src)
+    if dtype not in ("float16", "half", "float32", "float"):
+        raise ValueError(f"exp_experiment only supports float16 or float32, got {dtype}")
+    expected_chunk = 128 if dtype in ("float16", "half") else 64
+    if not _const_equal(dst_shape[1], expected_chunk):
+        raise ValueError(
+            f"exp_experiment requires the chunk size (last dimension) to be exactly {expected_chunk} for {dtype}, but got {dst_shape[1]}."
+        )
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_exp_experiment"),
+        f"exp_mask<{dtype}>",
+        dst_ptr,
+        src_ptr,
+    )
+
+
 def sub_experiment(dst: Buffer, src0: Buffer, src1: Buffer, count: PrimExpr):
     """Performs element-wise subtraction(with count function): dst = src0 - src1.
 

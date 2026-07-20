@@ -145,7 +145,7 @@ print(kernel.get_kernel_source())
 
 ### Developer 模式
 
-TileLang 对存储层级进行了抽象，分为 global、shared 和 fragment 三个级别。在 Ascend 平台中，shared 层级对应 L1 Buffer 和 Unified Buffer (UB)，fragment 层级对应 L0A/L0B/L0C Buffer。用户无需指定具体硬件存储，TileLang 编译器会根据程序上下文自动识别。
+TileLang 对存储层级进行了抽象，分为 global、shared 和 fragment 三个级别。在 Ascend 平台中，shared 层级对应 L1 Buffer（TIR scope `shared.l1`）和 Unified Buffer/UB（TIR scope `shared.ub`），fragment 层级对应 L0A/L0B/L0C Buffer。Developer 模式下 `T.alloc_shared` 默认使用动态 scope `shared`，由编译器推断为 `shared.l1` 或 `shared.ub`。用户无需指定具体硬件存储，TileLang 编译器会根据程序上下文自动识别。
 
 #### T.alloc_shared(shape, dtype)
 
@@ -177,13 +177,13 @@ b = T.alloc_var("int32", init=a)  # 用另一个变量的值初始化
 
 显式指定存储位置，适用于需要精确控制内存分配的场景。
 
-| API | 存储层级 | 抽象层级 | 说明 |
+| API | 存储层级 | TIR scope | 说明 |
 |-----|---------|---------|-----|
-| `T.alloc_ub(shape, dtype)` | Unified Buffer | shared | Vector 存储单元 |
-| `T.alloc_L1(shape, dtype)` | L1 Buffer | shared | Cube 存储单元 |
-| `T.alloc_L0A(shape, dtype)` | L0A Buffer | fragment | Cube 左矩阵 |
-| `T.alloc_L0B(shape, dtype)` | L0B Buffer | fragment | Cube 右矩阵 |
-| `T.alloc_L0C(shape, dtype)` | L0C Buffer | fragment | Cube 输出/累加 |
+| `T.alloc_ub(shape, dtype)` | Unified Buffer | `shared.ub` | Vector 存储单元 |
+| `T.alloc_L1(shape, dtype)` | L1 Buffer | `shared.l1` | Cube 存储单元 |
+| `T.alloc_L0A(shape, dtype)` | L0A Buffer | `wmma.matrix_a` | Cube 左矩阵 |
+| `T.alloc_L0B(shape, dtype)` | L0B Buffer | `wmma.matrix_b` | Cube 右矩阵 |
+| `T.alloc_L0C(shape, dtype)` | L0C Buffer | `wmma.accumulator` | Cube 输出/累加 |
 
 **实际使用示例**（来自 `examples/gemm/example_gemm.py`）：
 
@@ -262,6 +262,26 @@ T.copy(C_L0, C[bx * block_M, by * block_N])
 # BufferRegion 切片搬运
 T.copy(K[bz, by, k * block_N:(k + 1) * block_N, :], k_l1)
 ```
+
+#### T.copy 动态 shape 切片
+
+`T.copy` 支持用**运行期动态变量**做切片范围，自动处理尾块（非整除 shape），**不需要 host 侧 zero-padding**。
+
+**用法**：
+
+```python
+# 运行期动态值做切片范围
+actual_len = T.if_then_else(T_len < BT, T_len, BT)
+T.copy(A[bos : bos + actual_len, ...], A_L1)  # 只搬 actual_len 行
+
+# valid_m 限制写入范围（多 group 避免竞态）
+valid_m = block_metadata[bx, 2]
+T.copy(C_L0, Y[m_start : m_start + valid_m, ...])  # 只写 valid_m 行，不溢出到隔壁 group
+```
+
+**适用场景**：
+- 尾块处理（维度非 block 整数倍）：非整除时，最后的尾块无需特殊处理，框架已支持自动尾块搬运。
+- 变长序列：每次要搬运的序列长度是动态的，框架支持切片范围为运行期动态变量。
 
 ---
 
