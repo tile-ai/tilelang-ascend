@@ -1450,9 +1450,7 @@ def transpose(dst: Buffer, src: Buffer):
     """
     src_shape = list(src.shape)
     if len(src_shape) < 2:
-        raise ValueError(
-            f"transpose requires a 2D source buffer. Got shape: {src_shape}"
-        )
+        raise ValueError(f"transpose requires a 2D source buffer. Got shape: {src_shape}")
 
     for axis_name, dim in [("H", src_shape[-2]), ("W", src_shape[-1])]:
         if isinstance(dim, tir.IntImm):
@@ -1460,10 +1458,7 @@ def transpose(dst: Buffer, src: Buffer):
         elif isinstance(dim, int):
             val = dim
         else:
-            raise ValueError(
-                f"transpose requires src buffer with static shape (multiples of 16). "
-                f"Found dynamic dimension: {dim}."
-            )
+            raise ValueError(f"transpose requires src buffer with static shape (multiples of 16). Found dynamic dimension: {dim}.")
         if val % 16 != 0:
             raise ValueError(
                 f"transpose requires both H and W to be multiples of 16. "
