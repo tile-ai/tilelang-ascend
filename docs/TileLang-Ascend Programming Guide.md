@@ -1972,9 +1972,9 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   **约束**：
 
-  - **H 和 W 必须均为 16 的倍数**（硬件 32B 对齐要求）。非 16 对齐的 shape 会在编译期被拒绝并报错。
+  - **H 和 W 必须满足 32B 对齐**（即 `H × sizeof(dtype)` 和 `W × sizeof(dtype)` 均为 32 的倍数）。对 B16（half/int16/uint16）和 B32（float/int32/uint32），H 和 W 需为 16 的倍数；对 int8，需为 32 的倍数。不满足时会在编译期被拒绝并报错。
   - dtype 支持 B16（half/int16/uint16）和 B32（float/int32/uint32），走硬件指令快速路径。
-  - int8/bfloat16 走标量回退（GetValue/SetValue），shape 仍需 16 对齐。
+  - int8/bfloat16 走标量回退（GetValue/SetValue），shape 仍需满足 32B 对齐。
 
   **举例**：
 

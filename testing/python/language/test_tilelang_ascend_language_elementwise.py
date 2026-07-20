@@ -4473,15 +4473,22 @@ def test_transpose_fallback_dtype_16x16(dtype, target, shape):
 
 
 @pytest.mark.parametrize(
-    "shape",
-    [(20, 36), (17, 33), (24, 40), (16, 33), (33, 16)],
-    ids=lambda s: f"{s[0]}x{s[1]}",
+    "shape,dtype",
+    [
+        ((20, 36), "float16"),
+        ((17, 33), "float16"),
+        ((24, 40), "float16"),
+        ((16, 33), "float16"),
+        ((33, 16), "float16"),
+        ((16, 16), "int8"),
+    ],
+    ids=["20x36-f16", "17x33-f16", "24x40-f16", "16x33-f16", "33x16-f16", "16x16-i8"],
 )
-def test_transpose_non_aligned_shape_raises(shape):
+def test_transpose_non_aligned_shape_raises(shape, dtype):
     M, N = shape
-    src = tir.decl_buffer((M, N), "float16")
-    dst = tir.decl_buffer((N, M), "float16")
-    with pytest.raises(ValueError, match="multiples of 16"):
+    src = tir.decl_buffer((M, N), dtype)
+    dst = tir.decl_buffer((N, M), dtype)
+    with pytest.raises(ValueError, match="32-byte alignment"):
         T.tile.transpose(dst, src)
 
 
