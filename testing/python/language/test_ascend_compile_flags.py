@@ -4,13 +4,16 @@
 into ``os.environ`` (process-wide, never restored), so compiling one kernel
 changed how later kernels were compiled. Flags are now derived per kernel and
 threaded through the JIT pipeline, with ``compile_flags`` appended last for
-caller overrides. These tests are hermetic (no NPU / bisheng).
+caller overrides. The flag-resolution tests are hermetic (no NPU / bisheng);
+the final NPU-gated regression covers the intentionally unsynchronized runtime
+case.
 """
 
 import types
 from unittest import mock
 
 import pytest
+import torch
 
 import tilelang
 import tilelang.language as T
@@ -240,6 +243,71 @@ def test_compile_args_hash_scopes_platform_and_flags():
     # Distinct platforms / compile flags -> distinct auto-tuner cache keys.
     assert hash(CompileArgs(platform="A2")) != hash(CompileArgs(platform="A3"))
     assert hash(CompileArgs(compile_flags=["-O3"])) != hash(CompileArgs())
+
+
+# ---------------------------------------------------------------------------
+# Runtime regression: negative synchronization case belongs in testing
+# ---------------------------------------------------------------------------
+
+
+def _build_sync_dependency_kernel(auto_sync):
+    M = N = 256
+    block_M = block_N = 64
+    vec_num = 2
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+    pass_configs = {
+        PassConfigKey.TL_ASCEND_AUTO_SYNC: auto_sync,
+        PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    }
+
+    @tilelang.jit(
+        out_idx=[1],
+        target="ascendc",
+        pass_configs=pass_configs,
+        compile_flags=["--cce-auto-sync=off", "-O3"],
+    )
+    def build():
+        @T.prim_func
+        def main(A: T.Tensor((M, N), "float"), B: T.Tensor((M, N), "float")):
+            with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+                bx = cid // n_num
+                by = cid % n_num
+                row_offset = bx * block_M + vid * block_M // vec_num
+
+                a_ub = T.alloc_shared((block_M // vec_num, block_N), "float")
+                b_ub = T.alloc_shared((block_M // vec_num, block_N), "float")
+                zero_ub = T.alloc_shared((block_M // vec_num, block_N), "float")
+
+                T.copy(A[row_offset, by * block_N], a_ub)
+                T.tile.fill(zero_ub, 0.0)
+                T.tile.sub(a_ub, zero_ub, a_ub)
+                T.tile.exp(a_ub, a_ub)
+                T.tile.add(a_ub, a_ub, 1.0)
+                T.tile.reciprocal(b_ub, a_ub)
+                T.copy(b_ub, B[row_offset, by * block_N])
+
+        return main
+
+    return build()
+
+
+@pytest.mark.skipif(
+    not hasattr(torch, "npu") or not torch.npu.is_available(),
+    reason="requires an Ascend NPU",
+)
+def test_auto_sync_pass_prevents_dependency_hazard(clean_env):
+    torch.manual_seed(0)
+    a = torch.randn(256, 256).npu()
+    ref = torch.sigmoid(a)
+
+    kernel_with_sync = _build_sync_dependency_kernel(auto_sync=True)
+    kernel_without_sync = _build_sync_dependency_kernel(auto_sync=False)
+    out_with_sync = kernel_with_sync(a)
+    out_without_sync = kernel_without_sync(a)
+
+    torch.testing.assert_close(out_with_sync, ref, rtol=1e-2, atol=1e-2)
+    assert not torch.allclose(out_without_sync, ref, rtol=1e-2, atol=1e-2)
 
 
 if __name__ == "__main__":

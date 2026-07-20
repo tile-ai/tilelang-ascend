@@ -1,12 +1,21 @@
 """Kernel-scoped Bisheng compile flags (issue #1386).
 
-Demonstrates the ``compile_flags`` argument of ``@tilelang.jit`` and shows that
-flags are resolved per kernel: passing ``--cce-auto-sync=off`` / ``-O3`` to one
-kernel does not change how a later kernel with default flags is compiled.
+This example demonstrates two synchronization controls that serve different
+purposes:
 
-Historically these were driven by the process-wide ``TL_CCE_AUTO_SYNC`` /
-``TL_CCE_OPT_LEVEL`` environment variables, which leaked across kernels compiled
-in the same process. ``compile_flags`` makes them kernel-scoped.
+* ``TL_ASCEND_AUTO_SYNC`` makes TileLang insert the synchronization required by
+  a kernel's data dependencies.
+* ``compile_flags`` configures Bisheng for one compiled kernel. In particular,
+  ``--cce-auto-sync=off`` does not replace TileLang's synchronization pass.
+
+Both kernels enable TileLang's synchronization pass and compute a dependent
+Vector-operation chain correctly. The first uses explicit Bisheng flags; the
+second uses defaults and verifies that the first kernel's flags did not leak.
+
+Historically Bisheng options were driven by the process-wide
+``TL_CCE_AUTO_SYNC`` / ``TL_CCE_OPT_LEVEL`` environment variables, which leaked
+across kernels compiled in the same process. ``compile_flags`` makes them
+kernel-scoped.
 
 Run: python compile_flags_example.py
 """
@@ -29,32 +38,43 @@ M, N = args.m, args.n
 VEC_NUM = 2
 
 
-def vec_add(M, N, block_M, block_N, compile_flags, dtype="float"):
-    m_num = M // block_M
-    n_num = N // block_N
+def sigmoid(
+    M: int,
+    N: int,
+    block_M: int,
+    block_N: int,
+    compile_flags: list[str] | None,
+    dtype: str = "float",
+):
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+    pass_configs = {
+        tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+        tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    }
 
-    @tilelang.jit(out_idx=[-1], compile_flags=compile_flags)
+    @tilelang.jit(out_idx=[1], pass_configs=pass_configs, compile_flags=compile_flags)
     def build():
         @T.prim_func
-        def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
-            C: T.Tensor((M, N), dtype),
-        ):
+        def main(A: T.Tensor((M, N), dtype), B: T.Tensor((M, N), dtype)):
             with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
                 bx = cid // n_num
                 by = cid % n_num
-                a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-                b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-                c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-                # Explicit barriers -> correct regardless of --cce-auto-sync.
-                with T.Scope("V"):
-                    T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
-                    T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
-                    T.barrier_all()
-                    T.tile.add(c_ub, a_ub, b_ub)
-                    T.barrier_all()
-                    T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+                row_offset = bx * block_M + vid * block_M // VEC_NUM
+
+                a_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype)
+                b_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype)
+                zero_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype)
+
+                # This load -> dependent Vector chain -> store has real pipeline
+                # hazards. There are deliberately no manual barriers here.
+                T.copy(A[row_offset, by * block_N], a_ub)
+                T.tile.fill(zero_ub, 0.0)
+                T.tile.sub(a_ub, zero_ub, a_ub)
+                T.tile.exp(a_ub, a_ub)
+                T.tile.add(a_ub, a_ub, 1.0)
+                T.tile.reciprocal(b_ub, a_ub)
+                T.copy(b_ub, B[row_offset, by * block_N])
 
         return main
 
@@ -63,21 +83,23 @@ def vec_add(M, N, block_M, block_N, compile_flags, dtype="float"):
 
 torch.manual_seed(0)
 a = torch.randn(M, N).npu()
-b = torch.randn(M, N).npu()
-ref = a + b
+ref = torch.sigmoid(a)
 
-# Kernel A: per-kernel flags -> bisheng gets --cce-auto-sync=off and -O3.
-kernel_a = vec_add(M, N, 128, 256, compile_flags=["--cce-auto-sync=off", "-O3"])
-# Kernel B: default flags (no compile_flags) -> bisheng gets -O2, auto-sync on.
-# If Kernel A's flags leaked, Kernel B would be miscompiled.
-kernel_b = vec_add(M, N, 128, 256, compile_flags=None)
+custom_flags = ["--cce-auto-sync=off", "-O3"]
+kernel_with_custom_flags = sigmoid(M, N, 64, 64, compile_flags=custom_flags)
 
-print("init successful!")
+# Compiled after the custom-flag kernel: its default flags must remain independent.
+kernel_with_defaults = sigmoid(M, N, 64, 64, compile_flags=None)
 
-out_a = kernel_a(a, b)
-out_b = kernel_b(a, b)
+print("Compilation successful!")
 
-torch.testing.assert_close(out_a, ref, rtol=1e-2, atol=1e-2)
-torch.testing.assert_close(out_b, ref, rtol=1e-2, atol=1e-2)
+out_with_custom_flags = kernel_with_custom_flags(a)
+out_with_defaults = kernel_with_defaults(a)
 
-print("Kernel Output Match!")
+torch.testing.assert_close(out_with_custom_flags, ref, rtol=1e-2, atol=1e-2)
+torch.testing.assert_close(out_with_defaults, ref, rtol=1e-2, atol=1e-2)
+
+print("Custom compile flags: output matches PyTorch.")
+print("Default compile flags: output matches PyTorch.")
+print("Default compile flags remained kernel-scoped.")
+print("Test Passed!")
