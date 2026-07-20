@@ -1842,7 +1842,8 @@ CATLASS_DEVICE void transpose_block(LocalTensor<T> const &dst,
 template <typename T, uint32_t FullM = 16, uint32_t FullN = 16>
 CATLASS_DEVICE void transpose(LocalTensor<T> const &dst,
                               LocalTensor<T> const &src) {
-  if constexpr (FullM == 16 && FullN == 16 && sizeof(T) == 2) {
+  if constexpr (FullM == 16 && FullN == 16 && sizeof(T) == 2 &&
+                !std::is_same_v<T, bfloat16_t>) {
     AscendC::Transpose(dst, src);
     return;
   }
