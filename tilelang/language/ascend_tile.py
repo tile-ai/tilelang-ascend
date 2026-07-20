@@ -1446,7 +1446,9 @@ def transpose(dst: Buffer, src: Buffer):
         src: The source buffer to be transposed, shape [H, W].
 
     Note:
-        Both H and W must be multiples of 16.
+        Both H and W must be multiples of 16. Supports B16 (half/int16/uint16)
+        and B32 (float/int32/uint32) via hardware instruction; int8 and bfloat16
+        fall back to scalar implementation.
     """
     src_shape = list(src.shape)
     if len(src_shape) < 2:

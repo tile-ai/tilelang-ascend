@@ -4458,10 +4458,16 @@ def test_transpose_block_b32(dtype, target, shape):
 
 
 @pytest.mark.parametrize("dtype,target", [("int8", "ascendc"), ("bfloat16", "ascendc")])
-@pytest.mark.parametrize("shape", [(16, 16), (32, 32)])
+@pytest.mark.parametrize("shape", [(32, 32)])
 def test_transpose_fallback_dtype(dtype, target, shape):
-    if dtype == "int8" and shape == (16, 16):
-        pytest.skip("int8 16x16 UB buffer padding causes index mismatch (pre-existing codegen limitation)")
+    M, N = shape
+    run_test_transpose(M, N, M, N, dtype, target)
+
+
+@pytest.mark.parametrize("dtype", ["bfloat16"])
+@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("shape", [(16, 16)])
+def test_transpose_fallback_dtype_16x16(dtype, target, shape):
     M, N = shape
     run_test_transpose(M, N, M, N, dtype, target)
 
