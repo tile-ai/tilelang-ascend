@@ -1764,43 +1764,6 @@ Sum_experiment(const LocalTensor<T> &dst, const LocalTensor<T> &src,
   AscendC::Sum(dst, src, sumParams);
 }
 
-template <typename T, uint32_t M, uint32_t N>
-CATLASS_DEVICE void transpose_16x16(LocalTensor<T> const &dst,
-                                    LocalTensor<T> const &src) {
-  TransDataTo5HDParams transDataParams;
-  transDataParams.dstHighHalf = false;
-  transDataParams.srcHighHalf = false;
-  transDataParams.repeatTimes = N;
-  if (transDataParams.repeatTimes == 1) {
-    transDataParams.dstRepStride = 0;
-    transDataParams.srcRepStride = 0;
-  } else {
-    transDataParams.dstRepStride = M;
-    transDataParams.srcRepStride = 1;
-  }
-
-  __ubuf__ T *dstList[16];
-  __ubuf__ T *srcList[16];
-
-  if constexpr (sizeof(T) == 4) {
-    for (int32_t m = 0; m < 16; m = m + 2) {
-      dstList[m] = (__ubuf__ T *)dst[16 * (m / 2)].GetPhyAddr();
-      dstList[m + 1] = (__ubuf__ T *)dst[16 * (m / 2) + 16].GetPhyAddr();
-    }
-    for (int32_t n = 0; n < 16; n++) {
-      srcList[n] = (__ubuf__ T *)src[n * 16].GetPhyAddr();
-    }
-  } else {
-    for (int i = 0; i < 16; i++) {
-      dstList[i] = (__ubuf__ T *)dst[i * N].GetPhyAddr();
-      srcList[i] = (__ubuf__ T *)src[i * M].GetPhyAddr();
-    }
-  }
-
-  AscendC::TransDataTo5HDImpl<T>(dstList, srcList, transDataParams);
-  AscendC::PipeBarrier<PIPE_V>();
-}
-
 template <typename T, uint32_t H, uint32_t W>
 CATLASS_DEVICE void transpose_block(LocalTensor<T> const &dst,
                                     LocalTensor<T> const &src) {
