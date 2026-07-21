@@ -5,6 +5,7 @@ SKIP_PYTEST=false
 ENABLE_COVERAGE=false
 ENABLE_CPP_COVERAGE=false
 TEST_DIRS=""
+EXPERIMENT_DIRS=""
 PYTEST_MARKERS=""
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -21,12 +22,27 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --dirs)
-            if [[ $# -lt 2 ]]; then
+            shift
+            if [[ $# -eq 0 || "$1" == --* ]]; then
                 echo "Error: --dirs requires an argument" >&2
                 exit 1
             fi
-            TEST_DIRS="$2"
-            shift 2
+            # 吃掉后续所有非 -- 开头的 token（支持 CI 的 unquoted 多目录传参）
+            while [[ $# -gt 0 && "$1" != --* ]]; do
+                TEST_DIRS="${TEST_DIRS:+$TEST_DIRS }$1"
+                shift
+            done
+            ;;
+        --experiment-dirs)
+            shift
+            if [[ $# -eq 0 || "$1" == --* ]]; then
+                echo "Error: --experiment-dirs requires an argument" >&2
+                exit 1
+            fi
+            while [[ $# -gt 0 && "$1" != --* ]]; do
+                EXPERIMENT_DIRS="${EXPERIMENT_DIRS:+$EXPERIMENT_DIRS }$1"
+                shift
+            done
             ;;
         --pytest-markers)
             if [[ $# -lt 2 ]]; then
@@ -45,12 +61,22 @@ done
 # ================= 全局环境变量设置 =================
 PROJECT_ROOT="$(cd .. && pwd)"
 
-# 解析 TEST_DIRS 为数组
+# experiment 算子根目录（相对 examples 工作目录）
+EXPERIMENT_ROOT="../examples_experiment"
+
+# 解析 TEST_DIRS / EXPERIMENT_DIRS 为数组
+DIR_ARRAY=()
+EXP_DIR_ARRAY=()
 if [ -n "$TEST_DIRS" ]; then
     IFS=' ' read -ra DIR_ARRAY <<< "$TEST_DIRS"
-    echo "Running incremental tests for directories: ${DIR_ARRAY[*]}"
+fi
+if [ -n "$EXPERIMENT_DIRS" ]; then
+    IFS=' ' read -ra EXP_DIR_ARRAY <<< "$EXPERIMENT_DIRS"
+fi
+if [ -n "$TEST_DIRS" ] || [ -n "$EXPERIMENT_DIRS" ]; then
+    echo "Running incremental tests - examples: [${DIR_ARRAY[*]}] experiment: [${EXP_DIR_ARRAY[*]}]"
 else
-    echo "Running full tests (all directories)"
+    echo "Running full tests (all directories, examples + experiment)"
 fi
 # ===========================================
 
@@ -172,17 +198,17 @@ collect_test_scripts() {
 }
 
 # 1. 收集脚本逻辑
-if [ -n "$TEST_DIRS" ]; then
+if [ -n "$TEST_DIRS" ] || [ -n "$EXPERIMENT_DIRS" ]; then
     # 增量测试：只运行指定目录
-    echo "Incremental test mode - directories: ${DIR_ARRAY[*]}"
-    
+    echo "Incremental test mode - examples: [${DIR_ARRAY[*]}] experiment: [${EXP_DIR_ARRAY[*]}]"
+
     for dir in "${DIR_ARRAY[@]}"; do
         test_dir="./$dir"
         if [ ! -d "$test_dir" ]; then
             echo "Warning: directory $test_dir not found, skipping"
             continue
         fi
-        
+
         collected=$(collect_test_scripts "$test_dir")
         if [ -n "$collected" ]; then
             for script in $collected; do
@@ -191,14 +217,33 @@ if [ -n "$TEST_DIRS" ]; then
             echo "Collected scripts from $dir: $(echo $collected | wc -w) files"
         fi
     done
-    
+
+    # experiment 增量目录（examples_experiment 根下）
+    for dir in "${EXP_DIR_ARRAY[@]}"; do
+        test_dir="$EXPERIMENT_ROOT/$dir"
+        if [ ! -d "$test_dir" ]; then
+            echo "Warning: experiment directory $test_dir not found, skipping"
+            continue
+        fi
+
+        collected=$(collect_test_scripts "$test_dir")
+        if [ -n "$collected" ]; then
+            for script in $collected; do
+                all_scripts+=("$script")
+            done
+            echo "Collected scripts from experiment/$dir: $(echo $collected | wc -w) files"
+        fi
+    done
+
     # sparse_flash_attention 的 EXTRA_TASKS
     if [[ " ${DIR_ARRAY[*]} " =~ " sparse_flash_attention " ]]; then
         for extra_task in "${EXTRA_TASKS[@]}"; do
+            et_dir=$(echo "$extra_task" | cut -d'|' -f1)
+            [ -d "$et_dir" ] || { echo "Skip EXTRA_TASK (dir missing): $et_dir"; continue; }
             all_scripts+=("CUSTOM_TASK::${extra_task}")
         done
     fi
-    
+
     # flash_attention/fa_opt 单独处理
     if [[ " ${DIR_ARRAY[*]} " =~ " flash_attention " ]]; then
         fa_dir="./flash_attention/fa_opt"
@@ -225,9 +270,11 @@ else
     
     # EXTRA_TASKS
     for extra_task in "${EXTRA_TASKS[@]}"; do
+        et_dir=$(echo "$extra_task" | cut -d'|' -f1)
+        [ -d "$et_dir" ] || { echo "Skip EXTRA_TASK (dir missing): $et_dir"; continue; }
         all_scripts+=("CUSTOM_TASK::${extra_task}")
     done
-    
+
     # flash_attention/fa_opt 单独处理
     fa_dir="./flash_attention/fa_opt"
     if [ -d "$fa_dir" ]; then
@@ -235,6 +282,19 @@ else
         if [ -n "$fa_python_files" ]; then
             for file in $fa_python_files; do all_scripts+=("$file"); done
         fi
+    fi
+
+    # experiment 全量：扫描 examples_experiment 所有一级目录
+    if [ -d "$EXPERIMENT_ROOT" ]; then
+        echo "Full test mode - scanning experiment directories under $EXPERIMENT_ROOT"
+        for dir in $(find "$EXPERIMENT_ROOT" -maxdepth 1 -type d -not -path "$EXPERIMENT_ROOT" | sort); do
+            collected=$(collect_test_scripts "$dir")
+            if [ -n "$collected" ]; then
+                for script in $collected; do
+                    all_scripts+=("$script")
+                done
+            fi
+        done
     fi
 fi
 
