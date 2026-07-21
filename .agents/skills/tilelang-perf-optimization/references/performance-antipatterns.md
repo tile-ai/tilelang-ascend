@@ -14,6 +14,7 @@
 - [AIC/AIV 混合算子未开启 CV overlap](#aicaiv-混合算子未开启-cv-overlap)
 - [纯 AIV memory bound 算子未做流水/双 buffer](#纯-aiv-memory-bound-算子未做流水双-buffer)
 - [正交轴串行化（Scalar Scan on Parallelizable Axis）](#正交轴串行化scalar-scan-on-parallelizable-axis)
+- [单维度递增搜索（未做交叉实验）](#单维度递增搜索未做交叉实验)
 - [评审记录模板](#评审记录模板)
 
 ---
@@ -455,6 +456,23 @@ for j in range(1, L):
 - 内层是否是标量 `if`/`GetValue`/`SetValue` 而非 `T.tile` 操作？
 - 扫描轴是否有真依赖（无法直接消除内层循环）？
 - 若全部满足，参考 §2.15 正交轴向量化
+
+---
+
+## 单维度递增搜索（未做交叉实验）
+
+**识别特征**：优化过程中逐轮递增某个参数（如 block_M: 4→8→16→32），每轮只改一个维度，未与其他维度做交叉实验。
+
+**性能原因**：不同优化维度之间可能存在紧耦合关系。例如 block_M 的最优值取决于 kernel 架构（单 kernel vs 双 kernel），单维度递增无法发现这种交互效应，导致：
+- 在错误方向上浪费多轮迭代（如 R4→R5a 的 block_M 递增搜索）
+- 错过全局最优组合（如"单 kernel + block_M=16"和"双 kernel + block_M=32"的混合策略）
+
+**替代写法**：当存在多个独立优化维度时，构建 2×2 或 3×3 交叉实验矩阵，一轮实验覆盖所有组合。详见 SKILL.md Step 3.5。
+
+**检查点**：
+- 是否识别了所有独立优化维度（Tiling、架构、同步模式、Pass 数量）？
+- 是否构建了交叉矩阵并快速验证了所有组合？
+- 是否在引入双 kernel 前评估了分发开销（`.item()` host 同步约 5~15μs）？
 
 ---
 

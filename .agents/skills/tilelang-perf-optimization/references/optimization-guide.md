@@ -3,7 +3,13 @@
 ## 目录
 
 - [一、优化优先级与算子类型对应](#一优化优先级与算子类型对应)
+- [一.五、算法层优化（最高优先级，先于核内优化）](#一五算法层优化最高优先级先于核内优化)
+  - [1.1 Pass 数量缩减](#11-pass-数量缩减)
+  - [1.2 Readback 模式（避免 Pass 2 重算）](#12-readback-模式避免-pass-2-重算)
+  - [1.3 自适应 Tiling 参数](#13-自适应-tiling-参数)
 - [二、核内优化](#二核内优化)
+  - [2.2.0 同步模式决策表](#220-同步模式决策表double-buffer-实施前必须先判断)
+  - [2.2.2 交替 buffer 消除 V pipe RAW hazard](#222-交替-buffer-消除-v-pipe-raw-hazardauto_synctrue-下)
   - [2.11 UB 预算优化（Vector 核 tile size 首选方法）](#211-ub-预算优化vector-核-tile-size-首选方法)
   - [2.12 Host 侧预处理内化（消除 pad / contiguous）](#212-host-侧预处理内化消除-pad--contiguous)
   - [2.13 多行 Tile 粒度扩展（Multi-row Tile Granularity）](#213-多行-tile-粒度扩展multi-row-tile-granularity)
@@ -26,7 +32,7 @@
 | 算子类型 | 判断依据 | 优化范围 |
 |---------|---------|---------|
 | **Cube 型** | 代码含 `IS_ASCEND_AIC` | Cube 核内优化 + Fixed Core |
-| **Vector 型** | 代码含 `IS_ASCEND_AIV` | Vector 核内优化 + Fixed Core |
+| **Vector 型** | 代码含 `IS_ASCEND_AIV` | **算法层优化**（§一.五）→ Vector 核内优化 + Fixed Core |
 | **CV 融合型** | 代码两者均有 | 先核内优化（Cube + Vector）→ 再核间优化 + Fixed Core |
 
 > **Fixed Core 模式**适用于所有算子类型（核内/核间均可使能），见 2.9 节。
@@ -34,9 +40,76 @@
 优先使用 Developer 特性（自动同步、自动内存规划），按以下顺序尝试优化：
 
 ```
-核内优化 → 核间优化
+算法层优化（多 pass 算子）→ 核内优化 → 核间优化
 ```
 > `pass_configs`（`AUTO_SYNC`、`MEMORY_PLANNING` 等）是其他优化的**伴随修改**，不是独立步骤。需要改动时在对应优化点内部一并处理（如 Double Buffer 时同步设 `AUTO_SYNC=False`）。
+
+---
+
+## 一.五、算法层优化（最高优先级，先于核内优化）
+
+> **核心发现**：AddRmsNormDynamicQuant 七轮优化中，算法层优化贡献了 47% 的总性能提升（R1: 3-pass → 2-pass），远超任何核内优化。多 pass 算子应首先审视算法结构。
+
+### 1.1 Pass 数量缩减
+
+多 pass 算子（需要多次遍历 GM 数据）的 pass 数量直接决定 GM 带宽消耗。每减少一个 pass，GM 读取次数降低 33%~50%。
+
+**排查方法**：
+1. 列出每个 pass 的输入/输出和 GM 读取次数
+2. 分析 pass 间的数据依赖：哪些 pass 必须串行？哪些可以合并？
+3. 寻找行级标量（如 inv_rms、mean、std）——这些标量可以在 pass 间计算，不需要额外 pass
+
+**典型模式**：
+
+```
+3-pass → 2-pass（提取行级标量到 pass 间计算）：
+
+原始 3-pass:
+  Pass 1: 读 x → 写 x_out + 累加 sum_sq
+  Pass 2: 读 x → 计算 normed → 累加 abs_max     ← 需要 inv_rms，必须等 Pass 1
+  Pass 3: 读 x → 计算 normed → 量化 → 写 output  ← 需要 scale，必须等 Pass 2
+
+优化后 2-pass:
+  Pass 1: 读 x → 写 x_out + 累加 sum_sq + 预计算 abs_max(|h*gamma|)
+  Pass 间: inv_rms = rsqrt(sum_sq/H + eps); scale = abs_max * inv_rms / 127
+  Pass 2: 读 x → 计算 normed = h * inv_rms * gamma → 量化 → 写 output
+```
+
+**关键数学变换**：当 max 操作的对象包含行级标量因子时，标量可以提取到 max 外面：
+
+```
+max(|h * inv_rms * gamma|) = inv_rms * max(|h * gamma|)
+```
+
+这使得 Pass 1 可以预计算 `abs_max(|h*gamma|)`（不需要 inv_rms），从而消除 Pass 2。
+
+### 1.2 Readback 模式（避免 Pass 2 重算）
+
+当 Pass 1 已经计算了中间结果 h 并写出到 GM（如 x_out），Pass 2 可以直接读回 x_out 而非重新从 x1+x2 计算 h，减少 GM 读取次数。
+
+**适用条件**：
+- Pass 1 已写出中间结果到 GM
+- 中间结果的 dtype 与计算 dtype 不同（如 fp16 → fp32），readback 引入的精度损失可接受
+- GM 读取从 3x（x1 + x2 + gamma）降至 2x（x_out + gamma）
+
+**精度注意**：readback 引入 dtype 往返误差（如 fp32 → fp16 → fp32）。当输入值域较大（如 |h| ≥ 100 时 fp16 精度不足），应回退到 recompute 模式。推荐做法：运行时检测输入值域，动态选择 readback / recompute kernel。
+
+```python
+max_val = max(x1.abs().max().item(), x2.abs().max().item())
+use_readback = max_val < 100.0  # 精度安全阈值
+```
+
+### 1.3 自适应 Tiling 参数
+
+当某个维度远小于默认 block size 时，使用实际维度作为 block size 可消除尾块处理，提升有效计算比例。
+
+```python
+block_N = 256
+if H < block_N and H % 16 == 0:  # 16 元素对齐要求
+    block_N = H  # 消除尾块，有效计算比例从 50% → 100%
+```
+
+**收益**：H=128 时（block_N=256 → 50% 无效计算），自适应后 2x 加速。
 
 ---
 
@@ -96,20 +169,24 @@ for k in T.serial(loop_k):
 
 | 算子类型 | 判断条件 | AUTO_SYNC | 需要同步的 flag 对 |
 |---------|---------|-----------|------------------|
-| **纯 AIV Vector 算子** | MSProf 报告 aicore compute < 20%，无 MMA/Conv | **False** | `mte3→mte2`、`mte2→v`、`v→mte3` |
+| **纯 AIV Vector 算子** | MSProf 报告 aicore compute < 20%，无 MMA/Conv | **True**（当前编译器推荐） | `mte3→mte2`、`mte2→v`、`v→mte3`（手动 flag + AUTO_SYNC=True 共存） |
 | **纯 AIC Cube 算子（`T.gemm_v0`）** | 使用 `T.gemm_v0`（C++ 模板内部已处理双 buffer 流水同步） | **True** 即可 | 模板内部处理，无需手动 flag |
 | **纯 AIC Cube 算子（`T.mma`）** | 使用 `T.mma` 原语 | **False** | MTE1/M/Cube 层 flag，需手动控制 |
 | **CV 融合算子** | 同时有 AIC+AIV（`KERNEL_TYPE_MIX`） | **False** | `mte3→mte2`、`mte2→v`、`v→mte3`（AIV 侧）+ cross flag（核间） |
 | **任何需要 MTE2↔MTE1 overlap 的场景** | 需要 MTE2 与 MTE1 搬运重叠 | **False** | 手动控制 MTE1/MTE2 flag |
 
-> **铁律**：`AUTO_SYNC=True` 时编译器会在每个 stage 之间自动插入冗余同步，破坏流水线并行重叠。以下场景 **必须从 `AUTO_SYNC=False` 开始**：
-> - **纯 AIV Vector 算子**：使 MTE2/V/MTE3 三条流水线无法并行重叠，双缓冲形同虚设
-> - **使用 `T.mma` 的 Cube 算子**：与 AIV 侧同理，冗余同步破坏 L0 层流水
-> - **需要 MTE2 与 MTE1 overlap 的场景**：无论 `T.gemm_v0` 还是 `T.mma`，均需关闭自动同步
+> **⚠️ 编译器限制（2026-07 验证）**：`AUTO_SYNC=False` 在纯 AIV Vector 算子上存在 V pipe 指令队列排空问题——`barrier_all()` 无法排空 V pipe 异步队列，当 `n_num > 1` 时后续 scalar 操作（reduce_sum、rsqrt 等）读到旧值导致精度失败。详见 [compiler-limitations.md](compiler-limitations.md) §1。
 >
-> 唯一例外：使用 `T.gemm_v0` 且不需要 MTE2↔MTE1 overlap 时，可保持 `AUTO_SYNC=True`（模板内部已处理 L1 内部流水同步）。
+> **当前推荐做法**（纯 AIV Vector 算子）：
+> - 保持 `AUTO_SYNC=True`，手动写 `set_flag`/`wait_flag` 控制 MTE2/V/MTE3 三路流水
+> - 编译器在 `AUTO_SYNC=True` 下会自动插入 `PipeBarrier<PIPE_V>`，V pipe 串行化，连续 tile 指令可安全 in-place 复用 buffer
+> - 若连续 tile 指令存在 RAW 依赖（如 `mul(hw, h, gamma)` → `abs(hw, hw)`），使用**交替 buffer**（hw_a/hw_b）消除 hazard（见 §2.2.2）
 >
-> **自检**：实施 Double Buffer 后性能无明显提升（相对基线 < 10%），第一时间检查 `AUTO_SYNC` 是否为 True。
+> **Cube 算子说明**：
+> - `AUTO_SYNC=True` 时编译器会在每个 stage 之间自动插入同步。对于 `T.gemm_v0`，模板内部已处理 L1 层流水，不受影响
+> - 对于 `T.mma` 或需要 MTE2↔MTE1 overlap 的场景，仍需 `AUTO_SYNC=False`
+>
+> **自检**：实施 Double Buffer 后性能无明显提升（相对基线 < 10%），检查同步模式是否正确、flag 时序是否完整。
 
 **原理**：
 ```
@@ -183,6 +260,8 @@ for k in T.serial(loop_k):
 
 **Vector 核示例**：
 
+> **当前编译器推荐**：Vector 核使用 `AUTO_SYNC=True` + 手动 `set_flag`/`wait_flag` 控制三路流水。`AUTO_SYNC=False` 存在 V pipe 队列排空问题（详见 [compiler-limitations.md](compiler-limitations.md) §1），仅当编译器修复此问题后才可切换到 False。
+
 **优化前**（串行执行）：
 ```python
 for k in T.serial(loop_k):
@@ -191,10 +270,10 @@ for k in T.serial(loop_k):
     T.copy(result_buf, GM_out[k])
 ```
 
-**优化后**（手写 Ping-Pong 双缓冲 + 手动三路 flag，AUTO_SYNC=False）：
+**优化后**（手写 Ping-Pong 双缓冲 + 手动三路 flag，AUTO_SYNC=True）：
 ```python
 pass_configs = {
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,  # Vector 核必须 False
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,  # 当前编译器推荐 True
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
@@ -276,6 +355,43 @@ T.wait_flag("mte3", "mte2", 1)
 > **常见错误**：把 V pipe 的中间计算 buffer（如 `data_cal`、`tmp`）也分配为 `[2, ...]` 双缓冲。这会浪费 `cpg × block_S × dtype_bytes` 的 UB 空间，在 cpg 较大时（如 GroupNorm cpg=257）直接导致 UB 溢出（`Memory allocation failed`），且不带来任何性能收益。
 >
 > **自检方法**：每个 `[2, ...]` buffer 必须能找到对应的 `T.copy(GM_buf, ...)` 或 `T.copy(..., GM_buf)` 语句。找不到 → 该 buffer 改为单份。
+
+#### 2.2.2 交替 buffer 消除 V pipe RAW hazard（AUTO_SYNC=True 下）
+
+**适用场景**：`AUTO_SYNC=True` 下连续 tile 指令存在 RAW（Read-After-Write）依赖，即后一条指令的 src 是前一条指令的 dst。
+
+**原理**：`AUTO_SYNC=True` 时编译器自动插入 `PipeBarrier<PIPE_V>`，V pipe 串行化，in-place 复用 buffer 通常是安全的。但当两条连续 tile 指令形成 `dst → src` 链时（如 `mul(hw, h, gamma)` → `abs(hw, hw)`），V pipe 流水线可能在第二条指令读到第一条的旧值。使用两个独立 buffer 交替可消除此 hazard。
+
+**优化前**（RAW hazard）：
+```python
+hw_fp32 = T.alloc_ub([ROWS, block_N], "float32")
+# ❌ hw_fp32 既是 mul 的 dst 又是 abs 的 src → RAW hazard
+T.tile.mul(hw_fp32, h_fp32, gamma_tile)
+T.tile.abs(hw_fp32, hw_fp32)
+```
+
+**优化后**（交替 buffer）：
+```python
+hw_a = T.alloc_ub([ROWS, block_N], "float32")
+hw_b = T.alloc_ub([ROWS, block_N], "float32")
+# ✅ hw_a → hw_b，无 RAW 依赖
+T.tile.mul(hw_a, h_fp32, gamma_tile)
+T.tile.abs(hw_b, hw_a)
+```
+
+**在 Pass 2 量化链中的应用**（更长的计算链需要交替使用）：
+```python
+# Pass 2: h → normed → quantized
+T.tile.mul(hw_a, h_fp32, inv_rms_tile)     # hw_a = h * inv_rms
+T.tile.mul(hw_b, hw_a, gamma_tile)          # hw_b = hw_a * gamma
+T.tile.div(hw_a, hw_b, scale_tile)          # hw_a = hw_b / scale
+T.tile.round(hw_b, hw_a, tile_elements)     # hw_b = round(hw_a)
+T.tile.clamp(hw_a, hw_b, -128.0, 127.0, tile_elements)  # hw_a = clamp(hw_b)
+```
+
+> **UB 开销**：额外 1 个 `[ROWS, block_N]` fp32 buffer（如 ROWS=8, block_N=256 → 8KB），通常可接受。
+>
+> **参考实现**：`examples/add_rms_norm_dynamic_quant/example_add_rms_norm_dynamic_quant.py` 的 `_kernel_single` 中 hw_a/hw_b 交替模式。
 
 ### 2.3 MTE2 预取优化（Cube 核）
 
