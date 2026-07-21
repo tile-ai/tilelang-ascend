@@ -1,4 +1,5 @@
 import os
+from importlib.util import find_spec
 
 import torch
 import tilelang
@@ -32,75 +33,78 @@ def get_normalize_weight_bwd_kernel(num_topk: int):
         denom: T.Tensor((num_tokens,), "float"),
         result: T.Tensor((num_tokens, num_topk), "float"),
     ):
-        with T.Kernel(num_cores, is_npu=True) as (cid, vid):
-            with T.Scope("V"):
-                d_norm_ub = T.alloc_ub((stages, rows_per_vec, aligned_topk), "float")
-                weights_ub = T.alloc_ub((stages, rows_per_vec, aligned_topk), "float")
-                result_ub = T.alloc_ub((rows_per_vec, aligned_topk), "float")
-                dot_ub = T.alloc_ub((rows_per_vec, 1), "float")
-                denom_ub = T.alloc_ub((rows_per_vec, 1), "float")
-                denom_sq_ub = T.alloc_ub((rows_per_vec, 1), "float")
-                dot_broadcast_ub = T.alloc_ub((rows_per_vec, aligned_topk), "float")
-                denom_broadcast_ub = T.alloc_ub((rows_per_vec, aligned_topk), "float")
-                denom_sq_broadcast_ub = T.alloc_ub((rows_per_vec, aligned_topk), "float")
-                block_id = T.alloc_var("int", init=0)
-                next_block_id = T.alloc_var("int", init=0)
-                token_start = T.alloc_var("int", init=0)
-                next_token_start = T.alloc_var("int", init=0)
+        with T.Kernel(num_cores, is_npu=True) as (cid, vid), T.Scope("V"):
+            d_norm_ub = T.alloc_ub((stages, rows_per_vec, aligned_topk), "float")
+            weights_ub = T.alloc_ub((stages, rows_per_vec, aligned_topk), "float")
+            result_ub = T.alloc_ub((rows_per_vec, aligned_topk), "float")
+            dot_ub = T.alloc_ub((rows_per_vec, 1), "float")
+            denom_ub = T.alloc_ub((rows_per_vec, 1), "float")
+            denom_sq_ub = T.alloc_ub((rows_per_vec, 1), "float")
+            dot_broadcast_ub = T.alloc_ub((rows_per_vec, aligned_topk), "float")
+            denom_broadcast_ub = T.alloc_ub((rows_per_vec, aligned_topk), "float")
+            denom_sq_broadcast_ub = T.alloc_ub((rows_per_vec, aligned_topk), "float")
+            block_id = T.alloc_var("int", init=0)
+            next_block_id = T.alloc_var("int", init=0)
+            token_start = T.alloc_var("int", init=0)
+            next_token_start = T.alloc_var("int", init=0)
 
-                for stage in T.serial(stages):
-                    T.set_flag("v", "mte2", stage)
-                T.set_flag("mte3", "v", mte3_store_flag)
+            for stage in T.serial(stages):
+                T.set_flag("v", "mte2", stage)
+            T.set_flag("mte3", "v", mte3_store_flag)
 
-                if cid < num_token_blocks:
-                    token_start = cid * tokens_per_block + vid * rows_per_vec
-                    T.wait_flag("v", "mte2", 0)
-                    T.copy(d_norm[token_start : token_start + rows_per_vec, 0:num_topk], d_norm_ub[0, :, :], pad_value=0.0)
-                    T.copy(weights[token_start : token_start + rows_per_vec, 0:num_topk], weights_ub[0, :, :], pad_value=0.0)
-                    T.set_flag("mte2", "v", 0)
-
-                for i in T.serial(num_iters):
-                    cur = i % stages
-                    nxt = (i + 1) % stages
-                    block_id = cid + i * num_cores
-                    token_start = block_id * tokens_per_block + vid * rows_per_vec
-                    if block_id < num_token_blocks:
-                        next_block_id = cid + (i + 1) * num_cores
-                        if next_block_id < num_token_blocks:
-                            next_token_start = next_block_id * tokens_per_block + vid * rows_per_vec
-                            T.wait_flag("v", "mte2", nxt)
-                            T.copy(d_norm[next_token_start : next_token_start + rows_per_vec, 0:num_topk], d_norm_ub[nxt, :, :], pad_value=0.0)
-                            T.copy(weights[next_token_start : next_token_start + rows_per_vec, 0:num_topk], weights_ub[nxt, :, :], pad_value=0.0)
-                            T.set_flag("mte2", "v", nxt)
-
-                        T.wait_flag("mte2", "v", cur)
-                        T.wait_flag("mte3", "v", mte3_store_flag)
-
-                        T.tile.mul(result_ub, d_norm_ub[cur, :, :], weights_ub[cur, :, :])
-                        T.reduce_sum(result_ub, dot_ub, dim=-1)
-                        T.reduce_sum(weights_ub[cur, :, :], denom_ub, dim=-1)
-                        T.tile.add(denom_ub, denom_ub, 1.0e-20)
-
-                        T.tile.mul(denom_sq_ub, denom_ub, denom_ub)
-                        T.tile.broadcast(dot_broadcast_ub, dot_ub, axis=1)
-                        T.tile.broadcast(denom_broadcast_ub, denom_ub, axis=1)
-                        T.tile.broadcast(denom_sq_broadcast_ub, denom_sq_ub, axis=1)
-
-                        T.tile.mul(result_ub, d_norm_ub[cur, :, :], denom_broadcast_ub)
-                        T.tile.sub(result_ub, result_ub, dot_broadcast_ub)
-                        T.tile.div(result_ub, result_ub, denom_sq_broadcast_ub)
-
-                        T.set_flag("v", "mte3", cur)
-                        T.wait_flag("v", "mte3", cur)
-                        T.pipe_barrier("mte3")
-                        T.copy(result_ub[:, :num_topk], result[token_start : token_start + rows_per_vec, :])
-                        T.pipe_barrier("mte3")
-                        T.set_flag("mte3", "v", mte3_store_flag)
-                        T.set_flag("v", "mte2", cur)
-
+            if cid < num_token_blocks:
+                token_start = cid * tokens_per_block + vid * rows_per_vec
                 T.wait_flag("v", "mte2", 0)
-                T.wait_flag("v", "mte2", 1)
-                T.wait_flag("mte3", "v", mte3_store_flag)
+                T.copy(d_norm[token_start : token_start + rows_per_vec, 0:num_topk], d_norm_ub[0, :, :], pad_value=0.0)
+                T.copy(weights[token_start : token_start + rows_per_vec, 0:num_topk], weights_ub[0, :, :], pad_value=0.0)
+                T.set_flag("mte2", "v", 0)
+
+            for i in T.serial(num_iters):
+                cur = i % stages
+                nxt = (i + 1) % stages
+                block_id = cid + i * num_cores
+                token_start = block_id * tokens_per_block + vid * rows_per_vec
+                if block_id < num_token_blocks:
+                    next_block_id = cid + (i + 1) * num_cores
+                    if next_block_id < num_token_blocks:
+                        next_token_start = next_block_id * tokens_per_block + vid * rows_per_vec
+                        T.wait_flag("v", "mte2", nxt)
+                        T.copy(d_norm[next_token_start : next_token_start + rows_per_vec, 0:num_topk], d_norm_ub[nxt, :, :], pad_value=0.0)
+                        T.copy(
+                            weights[next_token_start : next_token_start + rows_per_vec, 0:num_topk],
+                            weights_ub[nxt, :, :],
+                            pad_value=0.0,
+                        )
+                        T.set_flag("mte2", "v", nxt)
+
+                    T.wait_flag("mte2", "v", cur)
+                    T.wait_flag("mte3", "v", mte3_store_flag)
+
+                    T.tile.mul(result_ub, d_norm_ub[cur, :, :], weights_ub[cur, :, :])
+                    T.reduce_sum(result_ub, dot_ub, dim=-1)
+                    T.reduce_sum(weights_ub[cur, :, :], denom_ub, dim=-1)
+                    T.tile.add(denom_ub, denom_ub, 1.0e-20)
+
+                    T.tile.mul(denom_sq_ub, denom_ub, denom_ub)
+                    T.tile.broadcast(dot_broadcast_ub, dot_ub, axis=1)
+                    T.tile.broadcast(denom_broadcast_ub, denom_ub, axis=1)
+                    T.tile.broadcast(denom_sq_broadcast_ub, denom_sq_ub, axis=1)
+
+                    T.tile.mul(result_ub, d_norm_ub[cur, :, :], denom_broadcast_ub)
+                    T.tile.sub(result_ub, result_ub, dot_broadcast_ub)
+                    T.tile.div(result_ub, result_ub, denom_sq_broadcast_ub)
+
+                    T.set_flag("v", "mte3", cur)
+                    T.wait_flag("v", "mte3", cur)
+                    T.pipe_barrier("mte3")
+                    T.copy(result_ub[:, :num_topk], result[token_start : token_start + rows_per_vec, :])
+                    T.pipe_barrier("mte3")
+                    T.set_flag("mte3", "v", mte3_store_flag)
+                    T.set_flag("v", "mte2", cur)
+
+            T.wait_flag("v", "mte2", 0)
+            T.wait_flag("v", "mte2", 1)
+            T.wait_flag("mte3", "v", mte3_store_flag)
 
     return normalize_weight_bwd_kernel
 
@@ -128,12 +132,7 @@ def torch_normalize_weight_bwd(d_norm, weights, denom):
     return (d_norm * denom.unsqueeze(1) - dot.unsqueeze(1)) / (denom * denom).unsqueeze(1)
 
 
-try:
-    import torch_npu
-
-    HAS_NPU = True
-except ImportError:
-    HAS_NPU = False
+HAS_NPU = find_spec("torch_npu") is not None
 
 
 def get_device() -> str:
@@ -145,7 +144,20 @@ def get_device() -> str:
 
 
 def get_test_configs():
-    return [(8451, 2), (15013, 2), (25268, 2), (18676, 6), (19443, 6), (26903, 6), (21977, 8), (22451, 8), (34415, 8), (23527, 9), (23688, 9), (37876, 9)]
+    return [
+        (8451, 2),
+        (15013, 2),
+        (25268, 2),
+        (18676, 6),
+        (19443, 6),
+        (26903, 6),
+        (21977, 8),
+        (22451, 8),
+        (34415, 8),
+        (23527, 9),
+        (23688, 9),
+        (37876, 9),
+    ]
 
 
 def generate_test_data(num_tokens, num_topk, device):

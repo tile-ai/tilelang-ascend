@@ -10,7 +10,11 @@ tilelang.cache.clear_cache()
 
 os.environ["TILELANG_PRINT_ON_COMPILATION"] = "0"
 
-pass_configs = {tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False, tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: False, tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True}
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: False,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+}
 
 
 @tilelang.jit(pass_configs=pass_configs)
@@ -64,7 +68,11 @@ def get_normalize_weight_kernel(
                     if next_block_id < num_token_blocks:
                         next_token_start = next_block_id * tokens_per_block + vid * rows_per_vec
                         T.wait_flag("v", "mte2", nxt)
-                        T.copy(topk_weights[next_token_start : next_token_start + rows_per_vec, 0:num_topk], weights_ub[nxt, :, :], pad_value=0.0)
+                        T.copy(
+                            topk_weights[next_token_start : next_token_start + rows_per_vec, 0:num_topk],
+                            weights_ub[nxt, :, :],
+                            pad_value=0.0,
+                        )
                         T.set_flag("mte2", "v", nxt)
 
                     T.wait_flag("mte2", "v", cur)
@@ -123,7 +131,20 @@ def get_device() -> str:
 
 
 def get_test_configs():
-    return [(8451, 2), (15013, 2), (25268, 2), (18676, 6), (19443, 6), (26903, 6), (21977, 8), (22451, 8), (34415, 8), (23527, 9), (23688, 9), (37876, 9)]
+    return [
+        (8451, 2),
+        (15013, 2),
+        (25268, 2),
+        (18676, 6),
+        (19443, 6),
+        (26903, 6),
+        (21977, 8),
+        (22451, 8),
+        (34415, 8),
+        (23527, 9),
+        (23688, 9),
+        (37876, 9),
+    ]
 
 
 def main():
