@@ -349,18 +349,14 @@ def _clamp_block_m_for_barrier(block_M, block_N, tl_dtype):
 def _get_pipeline_kernel(M, N, block_M, block_N, sub_M, scalar, tl_dtype):
     key = (M, N, block_M, block_N, sub_M, scalar, tl_dtype)
     if key not in _pipeline_kernel_cache:
-        _pipeline_kernel_cache[key] = _addcdiv_kernel_pipeline(
-            M, N, block_M, block_N, sub_M, scalar, dtype=tl_dtype
-        )
+        _pipeline_kernel_cache[key] = _addcdiv_kernel_pipeline(M, N, block_M, block_N, sub_M, scalar, dtype=tl_dtype)
     return _pipeline_kernel_cache[key]
 
 
 def _get_barrier_kernel(M, N, block_M, block_N, tl_dtype):
     key = (M, N, block_M, block_N, tl_dtype)
     if key not in _barrier_kernel_cache:
-        _barrier_kernel_cache[key] = _addcdiv_kernel_barrier(
-            M, N, block_M, block_N, dtype=tl_dtype
-        )
+        _barrier_kernel_cache[key] = _addcdiv_kernel_barrier(M, N, block_M, block_N, dtype=tl_dtype)
     return _barrier_kernel_cache[key]
 
 
@@ -390,7 +386,6 @@ def _process_single_tensor(x1_i, x2_i, x3_i, scalar):
 
     if padded_numel > original_numel:
         # 1D tensor needs padding to fit (M, N) reshape
-        pad_size = padded_numel - original_numel
         x1_2d = torch.zeros(M, N, dtype=x1_i.dtype, device=x1_i.device)
         x1_2d.view(-1)[:original_numel] = x1_i.view(-1)
         x2_2d = torch.zeros(M, N, dtype=x2_i.dtype, device=x2_i.device)
@@ -404,9 +399,7 @@ def _process_single_tensor(x1_i, x2_i, x3_i, scalar):
 
     if math.isfinite(scalar):
         # Pipeline kernel: scalar as compile-time parameter
-        kernel = _get_pipeline_kernel(
-            M, N, block_M, block_N, sub_M, scalar, tl_dtype
-        )
+        kernel = _get_pipeline_kernel(M, N, block_M, block_N, sub_M, scalar, tl_dtype)
         y_2d = kernel(x1_2d, x2_2d, x3_2d)
     else:
         # Barrier kernel: scalar_ub for inf/nan (clamp block_M to fit UB)
@@ -661,13 +654,8 @@ def _run_case(case, gen):
     vr = case["vr"]
     list_len = len(shapes)
 
-    scalar_str = (
-        "inf" if scalar == INF else ("nan" if math.isnan(scalar) else str(scalar))
-    )
-    print(
-        f"Case {case_id}: dtype={str(dtype).split('.')[-1]}, "
-        f"shape={shapes[0]}, list_len={list_len}, scalar={scalar_str}"
-    )
+    scalar_str = "inf" if scalar == INF else ("nan" if math.isnan(scalar) else str(scalar))
+    print(f"Case {case_id}: dtype={str(dtype).split('.')[-1]}, shape={shapes[0]}, list_len={list_len}, scalar={scalar_str}")
 
     x1 = [_gen_tensor(s, dtype, vr[0], gen).npu() for s in shapes]
     x2 = [_gen_tensor(s, dtype, vr[1], gen).npu() for s in shapes]
@@ -689,15 +677,9 @@ def _run_case(case, gen):
         ok = (mere < threshold) and (mare < 10 * threshold) and special_ok
         if not ok:
             case_pass = False
-            print(
-                f"  tensor {i}: MERE={mere:.3e}, MARE={mare:.3e}, "
-                f"special_ok={special_ok} -> FAIL (thr={threshold:.3e})"
-            )
+            print(f"  tensor {i}: MERE={mere:.3e}, MARE={mare:.3e}, special_ok={special_ok} -> FAIL (thr={threshold:.3e})")
         else:
-            print(
-                f"  tensor {i}: MERE={mere:.3e}, MARE={mare:.3e}, "
-                f"special_ok={special_ok} -> PASS"
-            )
+            print(f"  tensor {i}: MERE={mere:.3e}, MARE={mare:.3e}, special_ok={special_ok} -> PASS")
     return case_pass, max_mere, max_mare
 
 
@@ -706,9 +688,7 @@ def main():
     torch.manual_seed(0)
     gen = torch.Generator().manual_seed(42)
 
-    parser = argparse.ArgumentParser(
-        description="foreach_addcdiv_scalar precision test"
-    )
+    parser = argparse.ArgumentParser(description="foreach_addcdiv_scalar precision test")
     parser.add_argument(
         "--cases",
         type=str,
@@ -734,19 +714,13 @@ def main():
 
     if all_pass:
         passing = [cid for cid, ok, _, _ in results if ok]
-        print(
-            f"[PRECISION_PASS] max_MERE={overall_mere:.3e} "
-            f"max_MARE={overall_mare:.3e} passing_cases={passing}"
-        )
+        print(f"[PRECISION_PASS] max_MERE={overall_mere:.3e} max_MARE={overall_mare:.3e} passing_cases={passing}")
         # print("Test Passed!")
         print("\nKernel Output Match!")
     else:
         failing = [(cid, mere) for cid, ok, mere, _ in results if not ok]
         failing_str = [f"case_{c}(MERE={m:.3e})" for c, m in failing]
-        print(
-            f"[PRECISION_FAIL] max_MERE={overall_mere:.3e} "
-            f"max_MARE={overall_mare:.3e} failing={failing_str}"
-        )
+        print(f"[PRECISION_FAIL] max_MERE={overall_mere:.3e} max_MARE={overall_mare:.3e} failing={failing_str}")
         sys.exit(1)
 
 
