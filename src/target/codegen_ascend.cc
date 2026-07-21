@@ -474,7 +474,12 @@ void CodeGenTileLangAscend::VisitExpr_(const BufferLoadNode *op,
   if (scope == "local.var") {
     os << var_name;
   } else {
-    os << var_name << ".GetValue(" << PrintExpr(op->indices.back()) << ")";
+    // Flatten every index, not just the innermost one: a scalar access into a
+    // multi-dimensional buffer such as table[b, i] otherwise drops the leading
+    // dimensions and aliases every row onto row 0. OffsetOf is the identity for
+    // a 1-D buffer, so single-dimension accesses are unchanged.
+    os << var_name << ".GetValue("
+       << PrintExpr(op->buffer.OffsetOf(op->indices).back()) << ")";
   }
 }
 
@@ -486,7 +491,8 @@ void CodeGenTileLangAscend::VisitStmt_(const BufferStoreNode *op) {
     this->PrintIndent();
     this->stream << var_name << " = " << value << ";\n";
   } else {
-    std::string index = PrintExpr(op->indices.back());
+    // See VisitExpr_(BufferLoadNode): flatten across all dimensions.
+    std::string index = PrintExpr(op->buffer.OffsetOf(op->indices).back());
     std::string value = PrintExpr(op->value);
     this->PrintIndent();
     this->stream << var_name << ".SetValue(" << index << ", " << value
@@ -1959,6 +1965,16 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
 
   bool is_reduce_sum = (op_name.find("reduce_sum") != std::string::npos);
   int buffer_arg_end = static_cast<int>(op->args.size());
+  // Optional trailing physical row width, emitted only when the logical width
+  // is narrower than the row the data sits in (a sliced region, or a real_shape
+  // narrower than the buffer). It follows `clear`, so peel it off first.
+  int64_t physical_row = 0;
+  if (buffer_arg_end > 0 && !op->args[buffer_arg_end - 1].dtype().is_bool()) {
+    if (const auto *row_imm = op->args[buffer_arg_end - 1].as<IntImmNode>()) {
+      physical_row = row_imm->value;
+      buffer_arg_end--;
+    }
+  }
   bool clear = true;
   if (buffer_arg_end > 0 && op->args[buffer_arg_end - 1].dtype().is_bool()) {
     clear = !is_zero(op->args[buffer_arg_end - 1]);
@@ -1973,6 +1989,85 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
   }
 
   this->PrintIndent();
+
+  // Narrow row-reduce: the logical width is only part of a wider physical row,
+  // so the source cannot be walked as one contiguous M x N block. Route to the
+  // WholeReduce* helpers, which take an explicit per-repeat source stride.
+  if (physical_row > 0) {
+    size_t tpos1 = op_name.find("<");
+    size_t tpos2 = op_name.rfind(">");
+    std::string tparams = op_name.substr(tpos1 + 1, tpos2 - tpos1 - 1);
+    size_t c1 = tparams.find(",");
+    size_t c2 = tparams.find(",", c1 + 1);
+    size_t c3 = tparams.find(",", c2 + 1);
+    auto trim = [](std::string s) {
+      size_t b = s.find_first_not_of(" \t");
+      if (b == std::string::npos)
+        return std::string("");
+      return s.substr(b, s.find_last_not_of(" \t") - b + 1);
+    };
+    std::string ndtype = trim(tparams.substr(0, c1));
+    // The front end only attaches a physical row width once it has resolved the
+    // logical extents to constants, so these parse. Guard anyway: a symbolic
+    // extent reaching here would otherwise throw out of std::stoll and take the
+    // compiler down with it.
+    int64_t nm = 0, nn = 0, ndim = 0;
+    try {
+      nm = std::stoll(trim(tparams.substr(c1 + 1, c2 - c1 - 1)));
+      nn = std::stoll(trim(tparams.substr(c2 + 1, c3 - c2 - 1)));
+      ndim = std::stoll(trim(tparams.substr(c3 + 1)));
+    } catch (const std::exception &) {
+      LOG(FATAL) << "narrow reduce needs compile-time extents, but could not "
+                    "parse the template parameters: "
+                 << tparams;
+    }
+
+    // Enumerated rather than defaulted: guessing 4 bytes for an unrecognised
+    // type would silently scale the stride wrong instead of failing.
+    int64_t elem_bytes = 0;
+    if (ndtype == "float" || ndtype == "int32_t" || ndtype == "uint32_t") {
+      elem_bytes = 4;
+    } else if (ndtype == "half" || ndtype == "bfloat16_t" ||
+               ndtype == "int16_t" || ndtype == "uint16_t") {
+      elem_bytes = 2;
+    } else if (ndtype == "int8_t" || ndtype == "uint8_t" ||
+               ndtype == "float8_e4m3_t" || ndtype == "float8_e5m2_t") {
+      elem_bytes = 1;
+    }
+    ICHECK(elem_bytes > 0)
+        << "narrow reduce does not know the element size of '" << ndtype << "'";
+    ICHECK(ndim == -1) << "narrow reduce is only implemented for a row reduce "
+                          "(dim == -1); got dim "
+                       << ndim << " over a logical width of " << nn
+                       << " inside a physical row of " << physical_row;
+    ICHECK(nn * elem_bytes <= 256)
+        << "narrow reduce needs the logical width to fit one vector repeat "
+           "(256 "
+           "bytes); got "
+        << nn << " elements of " << elem_bytes << " bytes. Split the range and "
+        << "combine the partial results.";
+    ICHECK(clear) << "narrow reduce cannot merge into the destination "
+                     "(clear == false); reduce into a scratch and combine.";
+
+    std::string narrow = "reduce_max_narrow";
+    if (is_reduce_sum) {
+      narrow = "reduce_sum_narrow";
+    } else if (op_name.find("reduce_min") != std::string::npos) {
+      narrow = "reduce_min_narrow";
+    }
+    // srcRepStride steps one physical row, counted in 32-byte blocks, so the
+    // row has to be a whole number of them -- otherwise the division truncates
+    // and the reduce walks a stride that is short (or zero).
+    ICHECK((physical_row * elem_bytes) % 32 == 0)
+        << "narrow reduce needs the physical row (" << physical_row
+        << " elements of " << elem_bytes
+        << " bytes) to be a multiple of the 32-byte block";
+    int64_t src_rep_stride = physical_row * elem_bytes / 32;
+    this->stream << "tl::ascend::" << narrow << "<" << ndtype << ">("
+                 << var_names[0] << ", " << var_names[1] << ", " << nn << ", "
+                 << nm << ", " << src_rep_stride << ");\n";
+    return;
+  }
 
   if (is_reduce_sum) {
     size_t pos1 = op_name.find("<");
@@ -2580,8 +2675,13 @@ void CodeGenTileLangAscend::MmaCodegen(const CallNode *op) {
   this->PrintIndent();
   this->stream << op_name << "(" << a_name << "[" << a_offset << "]," << b_name
                << "[" << b_offset << "]," << c_name << "[" << c_offset << "], "
-               << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5])
-               << ");\n";
+               << PrintExpr(op->args[4]) << ", " << PrintExpr(op->args[5]);
+  // Optional trailing args (n_actual, unitFlag). Absent for the legacy 6-arg
+  // form, where the template supplies n_actual = N and unitFlag = 0.
+  for (size_t i = 6; i < op->args.size(); ++i) {
+    this->stream << ", " << PrintExpr(op->args[i]);
+  }
+  this->stream << ");\n";
 }
 
 void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
@@ -2634,6 +2734,16 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
   }
 
   if (found) {
+    // The count above is the most a call can carry. Not every producer supplies
+    // all of them -- passes that rewrite a copy in place (AscendWorkspace-
+    // Reduction turning copy_l0c_to_ub into copy_l0c_to_gm, say) build their
+    // own argument list and stop at the ones they care about. Every trailing
+    // parameter has a C++ default that reproduces the old behaviour, so emit
+    // what is actually there rather than indexing past the end.
+    int available = static_cast<int>(op->args.size()) - 3;
+    if (extra_args > available) {
+      extra_args = available;
+    }
     std::vector<std::string> var_names;
     for (int i = 0; i < extra_args; ++i) {
       auto expr = op->args[3 + i];
@@ -2658,6 +2768,17 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
     // natural owner of the tail-padding clear.
     if (op_name.find("copy_gm_to_l1") != std::string::npos) {
       this->stream << ", " << (is_zero(dst_offset_expr) ? "true" : "false");
+    }
+
+    // copy_l0c_to_gm's unitFlag rides at the end of the argument list rather
+    // than in call order: the list is shared with the PTO codegen, which reads
+    // the entries in between by position. Emit it where the C++ helper expects
+    // it. A producer that predates it leaves the template default of 0, which
+    // is a standalone fixpipe.
+    constexpr int kL0cToGmArgc = 10;
+    if (op_name.find("copy_l0c_to_gm") != std::string::npos &&
+        static_cast<int>(op->args.size()) >= kL0cToGmArgc) {
+      this->stream << ", " << PrintExpr(op->args[kL0cToGmArgc - 1]);
     }
 
     this->stream << ");\n";

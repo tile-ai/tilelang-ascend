@@ -143,7 +143,18 @@ CATLASS_DEVICE void mma(LocalTensor<T1> const A, LocalTensor<T1> const B,
   mmadParams.n = n_actual;
   mmadParams.k = K;
   mmadParams.cmatrixInitVal = init;
-  // mmadParams.unitFlag = unitFlag;
+  // MmadParams does not default-initialise cmatrixSource, and the hardware
+  // reads it whenever cmatrixInitVal == false (an accumulating mma, C sourced
+  // from L0C). A single-mma caller never notices, but a K-accumulating sequence
+  // that also sets unitFlag reads the uninitialised field and hangs the cube.
+  // false ("source from L0C") is what every accumulating caller already means.
+  mmadParams.cmatrixSource = false;
+  // unitFlag drives the hardware mma->fixpipe pipeline: 0b10 keeps the result
+  // in L0C, 0b11 releases it to a paired fixpipe. That is what lets
+  // fixpipe(tile i) overlap mma(tile i+1) across a two-slot L0C ping-pong,
+  // without a software M_FIX/FIX_M handshake. Defaults to 0 (off), so every
+  // existing caller is byte-for-byte unchanged.
+  mmadParams.unitFlag = unitFlag;
 
   Mmad(C, A, B, mmadParams);
 
@@ -159,7 +170,7 @@ template <typename T1, typename T2, typename LayoutGM, uint32_t srcM,
 CATLASS_DEVICE void
 copy_l0c_to_gm(GlobalTensor<T2> dstTensor, LocalTensor<T1> srcTensor,
                uint32_t realDstN = 1, uint32_t realTailM = 0,
-               uint32_t realTailN = 0) {
+               uint32_t realTailN = 0, uint8_t unitFlag = 0) {
   uint32_t tailM = realTailM == 0 ? srcM : realTailM;
   uint32_t tailN = realTailN == 0 ? srcN : realTailN;
   auto layoutInL0C = tla::MakeLayoutL0C(srcM, srcN);
@@ -176,7 +187,10 @@ copy_l0c_to_gm(GlobalTensor<T2> dstTensor, LocalTensor<T1> srcTensor,
   CopyL0CToGmTla<ArchTag, decltype(src), decltype(dst),
                  ScaleGranularity::NO_QUANT, enRelu>
       tileCopier;
-  tileCopier(dst, src, 0);
+  // unitFlag (default 0 = a standalone fixpipe) pairs with the Mmad unitFlag to
+  // form the hardware mma->fixpipe pipeline; CopyL0CToGmTla already plumbs it
+  // through to FixpipeParams.
+  tileCopier(dst, src, unitFlag);
 }
 
 template <uint32_t M, uint32_t N, uint32_t K, uint32_t block_M,
@@ -443,6 +457,45 @@ CATLASS_DEVICE void
 reduce_sum_half(LocalTensor<T> const &dstTensor,
                 LocalTensor<T> const &srcTensor, const int32_t mask,
                 const int32_t repeatTime, const int32_t srcRepStride) {
+  AscendC::WholeReduceSum<T>(dstTensor, srcTensor, mask, repeatTime, 1, 1,
+                             srcRepStride);
+}
+
+// Row-reduce a narrow column range of a wider tile.
+//
+// AscendC's Reduce* takes a {M, N} shape and reads the source as a CONTIGUOUS
+// M x N block, so it cannot express "N columns out of each row of a wider
+// buffer": for a [M, 512] tile and a logical width of 64 it reads elements
+// [0, M*64), which is row 0's first eight chunks, not the first 64 columns of
+// each of the M rows. WholeReduce* instead takes an explicit per-repeat source
+// stride, so one repeat per row with srcRepStride set to the PHYSICAL row width
+// reduces the intended region. One repeat covers at most 256 bytes, which is
+// what bounds the usable width.
+template <typename T>
+CATLASS_DEVICE void
+reduce_max_narrow(LocalTensor<T> const &dstTensor,
+                  LocalTensor<T> const &srcTensor, const int32_t mask,
+                  const int32_t repeatTime, const int32_t srcRepStride) {
+  AscendC::WholeReduceMax<T>(dstTensor, srcTensor, mask, repeatTime, 1, 1,
+                             srcRepStride,
+                             AscendC::ReduceOrder::ORDER_ONLY_VALUE);
+}
+
+template <typename T>
+CATLASS_DEVICE void
+reduce_min_narrow(LocalTensor<T> const &dstTensor,
+                  LocalTensor<T> const &srcTensor, const int32_t mask,
+                  const int32_t repeatTime, const int32_t srcRepStride) {
+  AscendC::WholeReduceMin<T>(dstTensor, srcTensor, mask, repeatTime, 1, 1,
+                             srcRepStride,
+                             AscendC::ReduceOrder::ORDER_ONLY_VALUE);
+}
+
+template <typename T>
+CATLASS_DEVICE void
+reduce_sum_narrow(LocalTensor<T> const &dstTensor,
+                  LocalTensor<T> const &srcTensor, const int32_t mask,
+                  const int32_t repeatTime, const int32_t srcRepStride) {
   AscendC::WholeReduceSum<T>(dstTensor, srcTensor, mask, repeatTime, 1, 1,
                              srcRepStride);
 }

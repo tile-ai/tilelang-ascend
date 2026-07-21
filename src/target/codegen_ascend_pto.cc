@@ -3497,7 +3497,15 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
   std::string op_name_str = Downcast<StringImm>(op->args[0])->value;
 
   ReduceOpInfo op_info = ParseReduceOpInfo(op_name_str);
-  bool clear = ParseConstBoolArg(op->args[op->args.size() - 1], true);
+  // A narrow reduce may carry a trailing physical row width after `clear`. PTO
+  // tiles keep a strided view, so the width is not needed here -- just skip
+  // past it to find `clear`.
+  int clear_idx = static_cast<int>(op->args.size()) - 1;
+  if (clear_idx > 0 && !op->args[clear_idx].dtype().is_bool() &&
+      op->args[clear_idx].as<IntImmNode>()) {
+    clear_idx--;
+  }
+  bool clear = ParseConstBoolArg(op->args[clear_idx], true);
   ShapeInfo dst = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo src = GetSliceInfo(op->args[2].as<CallNode>());
   bool is_slice = src.slice_valid_row != op_info.buffer_slice_row ||

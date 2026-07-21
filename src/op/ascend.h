@@ -38,6 +38,21 @@ private:
   Buffer tmp;
   Array<Range> tmp_range;
   Array<PrimExpr> tmp_extents;
+  // L0C->GM fixpipe unitFlag (default 0 = a standalone fixpipe). Threaded into
+  // copy_l0c_to_gm so a kernel-driven fixpipe can pair with the preceding mma's
+  // unitFlag and overlap across an L0C ping-pong.
+  PrimExpr unitFlag;
+  // L1->L0 runtime contraction length (default 0 = take the K extent from the
+  // destination L0 buffer). Overrides copy_l1_to_l0a's dstN / copy_l1_to_l0b's
+  // dstM so the loaded fractal matches a following mma's runtime K -- a
+  // full-width load feeding a shorter mma otherwise reads mismatched fractals.
+  PrimExpr realK;
+  // L1->L0B runtime output width (default 0 = take N from the destination L0
+  // buffer). The other axis of what realK covers: L0B's fractal derives its
+  // K-block stride from the column count, so a full-width load followed by a
+  // shorter mma addresses the wrong K-blocks. Applies to matrix_b only, since
+  // matrix_a is [M, K] and has no N.
+  PrimExpr realN;
 };
 
 class AscendAtomicAdd : public Operator {
