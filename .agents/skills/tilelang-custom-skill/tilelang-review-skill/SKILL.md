@@ -139,10 +139,10 @@ fi
 ### Python 检查
 ```bash
 # 仅修改文件
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/check-python.sh
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/check-python.sh
 
 # 全部文件
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/check-python.sh --all
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/check-python.sh --all
 ```
 
 **输出**: JSON 格式
@@ -157,10 +157,10 @@ bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/check-py
 ### C++ 检查
 ```bash
 # 仅修改文件
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/check-cpp.sh
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/check-cpp.sh
 
 # 全部文件
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/check-cpp.sh --all
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/check-cpp.sh --all
 ```
 
 **输出**: JSON 格式
@@ -306,10 +306,10 @@ bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/check-cp
 用户可以在选择 "否" 后，手动执行修复命令：
 ```bash
 # 仅修复 Python
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/fix-python.sh --all
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/fix-python.sh --all
 
 # 仅修复 C++
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/fix-cpp.sh --all
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/fix-cpp.sh --all
 ```
 
 ## 步骤 5: 执行修复
@@ -323,10 +323,10 @@ bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/fix-cpp.
 ### Python 修复
 ```bash
 # 仅修改文件
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/fix-python.sh
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/fix-python.sh
 
 # 全部文件
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/fix-python.sh --all
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/fix-python.sh --all
 ```
 
 **执行命令**:
@@ -336,10 +336,10 @@ bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/fix-pyth
 ### C++ 修复
 ```bash
 # 仅修改文件
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/fix-cpp.sh
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/fix-cpp.sh
 
 # 全部文件
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scritps/fix-cpp.sh --all
+bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/fix-cpp.sh --all
 ```
 
 **执行命令**:

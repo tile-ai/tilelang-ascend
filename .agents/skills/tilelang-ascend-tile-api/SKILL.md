@@ -29,7 +29,7 @@ description: TileLang-Ascend 新增 Ascend 专属 T.tile.xxx 小 API 的端到�
 
 - 用户 API 名称，例如 `T.tile.foo(dst, src, ...)`。
 - 它属于纯 tile 计算、数据搬运、类 reduction 行为，还是带副作用的写回。
-- 支持的 buffer scope，通常是 GM、UB/shared、L1、L0，或其中子集。
+- 支持的 buffer scope，通常是 GM、UB（shared.ub）、L1（shared.l1）、L0（wmma.*），或其中子集。
 - 支持的 dtype 和 rank。
 - 是否接受 `Buffer`、`BufferLoad`、`BufferRegion`。
 - 不支持的参数组合和语义。
@@ -43,7 +43,7 @@ description: TileLang-Ascend 新增 Ascend 专属 T.tile.xxx 小 API 的端到�
 
 在 `tilelang/language/ascend_tile.py` 中新增用户入口。
 
-优先复用该文件和 `tilelang/language/copy.py` 里的本地 helper 模式：
+优先复用该文件和 `tilelang/language/copy_op.py` 里的本地 helper 模式：
 
 - 如果现有 API 会解析 let-bound value，新 API 也应保持一致。
 - 只在语义明确时接受 `Buffer`、`BufferLoad` 或 `BufferRegion`。

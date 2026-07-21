@@ -94,7 +94,7 @@ InternalError: Check failed: pb->value != 0 (0 vs. 0) : Divide by zero
 
 **原因**: `n_num = N // block_N = 0`（当 `block_N > N`），导致 `cid // 0`。
 
-**解决方案**: 在调用 GEMM 前确保 M, N ≥ block size。如果 `M < block_M` 或 `N < block_N`，zero-padding 矩阵到 block 倍数再调用 GEMM，完成后裁剪。
+**解决方案**: 用 `T.ceildiv(M, block_M)` / `T.ceildiv(N, block_N)` 分别代替 `M // block_M` / `N // block_N`——对任意维度 < block 时返回 1（非零），不会产生零 block。
 
 ### 5. Autotune supply_prog IndexError
 
@@ -202,16 +202,17 @@ block_M = [bs for bs in [64, 128] if bs <= M]  # 排除 256
 result = kernel(A, B, workspace, C)  # (M, N)
 expected = ref_program(A, B)  # (N, M)
 
-torch.testing.assert_close(result.cpu().transpose(0, 1), expected)
+passed, ratio, max_abs = check_precision(result.transpose(0, 1), expected, dtype)
 ```
 
-**详细参考**：[tilelang-op-generate SKILL.md §8 Checklist #9-#10](../SKILL.md)（Golden 一致性 / 输出形状匹配）
+**详细参考**：[checklist.md #9 Golden 实现一致 / #10 输出形状匹配](checklist.md)（Golden 一致性 / 输出形状匹配）
 
 #### 2. float16 精度问题
 
-使用 float32 进行计算或调整容差：
+fp16 累积误差偏大时，在 kernel 内用 float32 做累加 / 中间计算（输出再转回 fp16）以降低误差。
+判定沿用按 dtype 的混合容差 `check_precision`（阈值由 dtype 固定，不手改 atol/rtol）：
 ```python
-torch.testing.assert_close(b.cpu(), ref_b.cpu(), rtol=1e-2, atol=1e-2)
+passed, ratio, max_abs = check_precision(b, ref_b, dtype)  # dtype="float16"
 ```
 
 #### 3. 输出形状不匹配
@@ -273,7 +274,7 @@ GEMM 类算子（含 im2col+GEMM 卷积）必须覆盖以下 4 类场景：
 
 生成新代码或修改现有实现后，**必须先用原有默认参数跑通**，确认 baseline 无回归：
 ```bash
-python examples/{op}/example_{op}.py  # 默认参数测试
+python examples/{op}/test_{op}.py  # 默认参数测试
 ```
 确认通过后，再用 `--b/--c/...` 扩维参数测试新场景。
 

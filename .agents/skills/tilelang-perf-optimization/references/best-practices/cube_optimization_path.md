@@ -407,23 +407,23 @@ Fixed Core 的收益本质上是**省掉一笔固定开销（约 200us）**，�
 
 ```python
 core_num = 20  # 910B 物理核数
-    @T.prim_func
-    def main(A, B, C):
-        # 1. 固定核数core_num
-        with T.Kernel(core_num, is_npu=True) as (cid, _):
-            
-            # ... buffer申请 ...
+@T.prim_func
+def main(A, B, C):
+    # 1. 固定核数core_num
+    with T.Kernel(core_num, is_npu=True) as (cid, _):
+        
+        # ... buffer申请 ...
 
-            with T.Scope("C"):
-                # 2. grid-stride 循环处理所有 tile
-                for i in T.serial(T.ceildiv(m_num * n_num, core_num)):
-                    # 3. 计算当前 tile ID
-                    cid_task = i * core_num + cid
-                    # 4. 尾块守卫（tile 数不整除 core_num 时）
-                    if cid_task < m_num * n_num:
-                        bx = cid_task // n_num
-                        by = cid_task % n_num
-                        # ... tile 计算 ...
+        with T.Scope("C"):
+            # 2. grid-stride 循环处理所有 tile
+            for i in T.serial(T.ceildiv(m_num * n_num, core_num)):
+                # 3. 计算当前 tile ID
+                cid_task = i * core_num + cid
+                # 4. 尾块守卫（tile 数不整除 core_num 时）
+                if cid_task < m_num * n_num:
+                    bx = cid_task // n_num
+                    by = cid_task % n_num
+                    # ... tile 计算 ...
 ```
 
 
@@ -593,7 +593,7 @@ def compute_optimal_tiling(dtype_size, accum_size, L0C_capacity=128*1024, L0AB_c
     block_K = min(max_block_K_from_L0A, max_block_K_from_L0B)
     block_K = max(FRACTAL, (block_K // FRACTAL) * FRACTAL)  # 对齐
 
-    # Step 3: 选 K_L1（block_K 的倍数）
+    # Step 3: 选 K_L1（block_K 的倍数），此处保守选择 * 2，实际调优时可在L1的容量约束内增大。
     K_L1 = block_K * 2
 
     return block_M, block_N, block_K, K_L1

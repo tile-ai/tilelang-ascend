@@ -191,7 +191,7 @@ softmax(x_i) = exp(x_i - max) / sum_j(exp(x_j - max))
 
 **测试策略**：
 - dtype 组合多（FP16/FP32/BF16）
-- 精度按 dtype 不同（FP16=1e-3, FP32=1e-4）
+- 精度按 **dtype** 取混合容差（与算子类别无关，见 precision-standard.md §二）
 - 归约维度验证
 
 ---
@@ -272,10 +272,7 @@ ReduceMax: max(x, dim=-1)
     "shape_count": 5,  # M/N/K 组合多
     "block_count": 3,  # block size 重要
     "三维参数": True,
-    "精度标准": {
-        "float16": (1e-3, 1e-3),
-        "float32": (1e-5, 1e-5),
-    }
+    "精度标准": "混合容差，按 dtype 取（见 precision-standard.md §二），与算子类别无关",
 }
 ```
 
@@ -297,11 +294,7 @@ ReduceMax: max(x, dim=-1)
     "shape_count": 4,
     "block_count": 2,
     "精度按 dtype": True,  # 不同 dtype 精度不同
-    "精度标准": {
-        "float16": (1e-3, 1e-3),
-        "float32": (1e-4, 1e-4),
-        "bfloat16": (1e-2, 5e-3),
-    }
+    "精度标准": "混合容差，按 dtype 取（见 precision-standard.md §二），与算子类别无关",
 }
 ```
 
@@ -323,11 +316,7 @@ ReduceMax: max(x, dim=-1)
     "shape_count": 4,
     "block_count": 2,
     "eps参数": True,  # eps 重要
-    "精度标准": {
-        "float16": (1e-3, 1e-3),
-        "float32": (1e-4, 1e-4),
-        "bfloat16": (1e-2, 5e-3),
-    }
+    "精度标准": "混合容差，按 dtype 取（见 precision-standard.md §二），与算子类别无关",
 }
 ```
 
@@ -349,10 +338,7 @@ ReduceMax: max(x, dim=-1)
     "shape_count": 5,
     "block_count": 3,
     "特殊值": True,  # 0值、负值、极值
-    "精度标准": {
-        "float16": (1e-3, 1e-3),
-        "float32": (1e-5, 1e-5),
-    }
+    "精度标准": "混合容差，按 dtype 取（见 precision-standard.md §二），与算子类别无关",
 }
 ```
 
@@ -375,9 +361,7 @@ ReduceMax: max(x, dim=-1)
     "block_count": 2,
     "Developer_vs_Expert": True,  # 需对比两种模式
     "workspace配置": True,  # 仅 Expert/混合或回退写法；Developer 模式默认消除 workspace，此项为 False
-    "精度标准": {
-        "float16": (1e-3, 1e-3),
-    }
+    "精度标准": "混合容差，按 dtype 取（见 precision-standard.md §二），与算子类别无关",
 }
 ```
 
