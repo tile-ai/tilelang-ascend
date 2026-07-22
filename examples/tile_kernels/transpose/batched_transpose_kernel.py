@@ -669,7 +669,7 @@ if __name__ == "__main__":
         (torch.bfloat16, 3072, 8, 8064),
     ]
 
-    _device_id = int(_os.environ.get("ASCEND_DEVICE_ID", "3"))
+    _device_id = int(_os.environ.get("ASCEND_DEVICE_ID", "0"))
     _device = f"npu:{_device_id}"
     if hasattr(torch, "npu"):
         torch.npu.set_device(_device_id)
