@@ -329,7 +329,7 @@ def per_token_cast_back(
 if __name__ == "__main__":
     import sys
 
-    NPU_DEVICE_ID = int(_os.environ.get("ASCEND_DEVICE_ID", "7"))
+    NPU_DEVICE_ID = int(_os.environ.get("ASCEND_DEVICE_ID", "0"))
     NPU_DEVICE = f"npu:{NPU_DEVICE_ID}"
     torch.npu.set_device(NPU_DEVICE_ID)
     torch.manual_seed(42)
