@@ -107,7 +107,7 @@ def dequant_kernel_factory(
 ):
     m_blocks = padded_m // block_M
     n_blocks = padded_n // block_N
-    
+
     sf_dim_M = max(1, block_M // num_per_tokens)
     if num_per_channels >= block_N:
         sf_dim_N = 1
@@ -149,7 +149,7 @@ def dequant_kernel_factory(
                 T.wait_flag("MTE2", "V", i % 2)
                 if i >= 2:
                     T.wait_flag("MTE3", "V", i % 2)
-                
+
                 with T.Scope("V"):
                     # 妫ｅ啯绀堥柨?闁哄秶顭堢缓鐐┍椤旂⒈妲婚柨娑欏哺閸ｆ悂宕?T.Parallel(block_M, block_N)
                     # Keep 2D T.Parallel so vector codegen stays on the legal vector path.
@@ -167,7 +167,7 @@ def dequant_kernel_factory(
                         else:
                             for m, n in T.Parallel(block_M, block_N):
                                 out_ub[i % 2, m, n] = x_ub[i % 2, m, n] * sf_ub[i % 2, 0, n]
-                
+
                 T.set_flag("V", "MTE3", i % 2)
                 T.set_flag("V", "MTE2", i % 2)
 
@@ -180,7 +180,7 @@ def dequant_kernel_factory(
                 step_mte2 = i + 2
                 x_col_mte2 = step_mte2 * block_N
                 sf_col_mte2 = (step_mte2 * block_N) // num_per_channels
-                
+
                 T.wait_flag("V", "MTE2", i % 2) 
                 T.copy(x[x_row_start : x_row_start + block_M, x_col_mte2 : x_col_mte2 + block_N], x_ub[i % 2, 0:block_M, 0:block_N])
                 T.copy(x_sf[sf_row_start : sf_row_start + sf_dim_M, sf_col_mte2 : sf_col_mte2 + sf_dim_N], sf_ub[i % 2, 0:sf_dim_M, 0:sf_dim_N])
@@ -210,7 +210,7 @@ def dequant_kernel_factory(
                             for m, n in T.Parallel(block_M, block_N):
                                 out_ub[idx_2, m, n] = x_ub[idx_2, m, n] * sf_ub[idx_2, 0, n]
                 T.set_flag("V", "MTE3", idx_2)
-                
+
                 T.wait_flag("V", "MTE3", idx_2)
                 T.copy(out_ub[idx_2, 0:block_M, 0:block_N], out[x_row_start : x_row_start + block_M, (n_blocks - 2) * block_N : (n_blocks - 1) * block_N])
 
@@ -234,7 +234,7 @@ def dequant_kernel_factory(
                         for m, n in T.Parallel(block_M, block_N):
                             out_ub[idx_1, m, n] = x_ub[idx_1, m, n] * sf_ub[idx_1, 0, n]
             T.set_flag("V", "MTE3", idx_1)
-            
+
             T.wait_flag("V", "MTE3", idx_1)
             T.copy(out_ub[idx_1, 0:block_M, 0:block_N], out[x_row_start : x_row_start + block_M, (n_blocks - 1) * block_N : n_blocks * block_N])
 
