@@ -690,4 +690,4 @@ if __name__ == "__main__":
         if hasattr(torch, "npu"):
             torch.npu.synchronize()
 
-    print("All test PASSED!", flush=True)
+    print("Kernel Output Match!")
