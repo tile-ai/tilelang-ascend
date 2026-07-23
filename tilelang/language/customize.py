@@ -112,8 +112,24 @@ def view(src: Buffer, shape: list[PrimExpr] | None = None, dtype: str | None = N
     return T.Buffer(shape, dtype, src.data)
 
 
-def npu_gemm(A, B, C, init=False):
-    """NPU GEMM intrinsic. A, B, C can be 2D or higher-order (leading dims must be 1)."""
+def npu_gemm(A, B, C, init=False, n_actual=None, unit_flag=None, k_actual=None):
+    """NPU GEMM intrinsic. A, B, C can be 2D or higher-order (leading dims must be 1).
+
+    n_actual / unit_flag (both default ``None``): optional trailing args mapping to
+    the C++ ``mma`` template's ``n_actual`` (runtime output-column count, <= N) and
+    ``unitFlag`` (0b10 accumulate / 0b11 flush, driving the hardware mma->fixpipe
+    pipeline). When both are ``None`` the call emits the legacy 6-argument form, so
+    every existing caller is byte-for-byte unchanged (the C++ defaults are
+    ``n_actual = N`` and ``unitFlag = 0``). Setting ``unit_flag=0b11`` here and on a
+    following ``T.copy(L0C->GM, unit_flag=0b11)`` fuses the two, letting the fixpipe
+    of one tile overlap the mma of the next across an L0C ping-pong.
+
+    k_actual (default ``None``): runtime contraction length, passed as the C++ mma's
+    ``K`` argument and overriding the value derived from ``A``'s last dim. This lets
+    the operands stay full buffers while the mma contracts only ``k_actual`` columns.
+    Passing a symbolic slice instead (``a_l0[pp, :, 0:k]``) is not an option, since
+    ``access_ptr`` would need a concrete extent.
+    """
 
     def legalize_arguments(arg: Buffer | Var):
         """Convert let-bound variables to their corresponding buffers.
@@ -198,7 +214,18 @@ def npu_gemm(A, B, C, init=False):
     Bptr = retrieve_ptr(B, "r")
     Cptr = retrieve_ptr(C, "w" if init is True else "rw")
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_mma"), f"mma<{_dtype(A)}, {_dtype(C)}, {M}, {N}>", Aptr, Bptr, Cptr, init, K)
+    # k_actual overrides the K derived from A's last dim, so the operands can stay
+    # full buffers while the mma contracts fewer columns. The <M, N> template
+    # params are unaffected.
+    K_runtime = K if k_actual is None else k_actual
+
+    mma_args = [f"mma<{_dtype(A)}, {_dtype(C)}, {M}, {N}>", Aptr, Bptr, Cptr, init, K_runtime]
+    # Trailing args are positional, so n_actual must be materialised (as its no-op
+    # default N) whenever unit_flag is set.
+    if n_actual is not None or unit_flag is not None:
+        mma_args.append(n_actual if n_actual is not None else N)
+        mma_args.append(unit_flag if unit_flag is not None else 0)
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_mma"), *mma_args)
 
 
 def loop_break():

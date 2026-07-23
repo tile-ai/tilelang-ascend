@@ -261,6 +261,9 @@ def npu_copy_v2(
     transpose: bool | None = False,  # for copy_l1_to_l0 param: transpose l1
     pad_value: float | int | tir.PrimExpr | None = None,
     tmp: tir.Buffer | tir.BufferLoad | None = None,
+    unit_flag: int | None = None,
+    real_k: int | tir.PrimExpr | None = None,
+    real_n: int | tir.PrimExpr | None = None,
 ):
     """Copy data between memory regions.
 
@@ -278,6 +281,25 @@ def npu_copy_v2(
         tmp (tir.Buffer | tir.BufferLoad | None): Temporary buffer for UB->L1 copy
             on A5 platform. Used for ND->Nz format conversion. Defaults to None.
             Only required when copying from UB to L1 on A5.
+        unit_flag (int | None): L0C->GM fixpipe unitFlag (0b10 accumulate / 0b11
+            flush). Defaults to None -> the C++ default 0, a standalone fixpipe,
+            leaving every existing copy byte-for-byte unchanged. Set 0b11 to fuse
+            this fixpipe with a preceding ``T.mma(unit_flag=0b11)`` through the
+            hardware mma->fixpipe pipeline; the row stride already comes from the
+            destination buffer's last dim.
+        real_k (int | tir.PrimExpr | None): L1->L0 runtime contraction length.
+            Defaults to None -> the L0 fractal's K extent comes from the
+            destination L0 buffer's dim (byte-identical for every existing copy).
+            Set it so a full-width L0 buffer is loaded as an ``[M, real_k]``
+            (matrix_a) / ``[real_k, N]`` (matrix_b) fractal matching a following
+            ``T.mma(k_actual=real_k)``; a full-width load feeding a shorter mma
+            otherwise reads mismatched fractals and addresses the wrong M-blocks.
+        real_n (int | tir.PrimExpr | None): L1->L0B runtime output width. Defaults
+            to None -> N comes from the destination L0 buffer's dim. The other
+            axis of what ``real_k`` covers: L0B's fractal derives its K-block
+            stride from the column count, so a full-width load followed by a
+            shorter ``T.mma(n_actual=...)`` addresses the wrong K-blocks. Applies
+            to matrix_b only, since matrix_a is ``[M, K]`` and has no N.
 
     Raises:
         TypeError: If copy extents cannot be deduced from arguments
@@ -359,7 +381,23 @@ def npu_copy_v2(
     else:
         tmp_region = _to_region(tmp, "rw")
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu, transpose, pad_value_expr, tmp_region)
+    copy_args = [src, dst, enable_relu, transpose, pad_value_expr, tmp_region]
+
+    # Optional trailing runtime args, appended only when used so every existing
+    # caller emits the exact same 6-argument call. They are positional, so an
+    # inner one has to be materialised (as its no-op default) when an outer one
+    # is set.
+    def _as_expr(value):
+        return value if isinstance(value, tir.PrimExpr) else tir.IntImm("int32", int(value))
+
+    if unit_flag is not None or real_k is not None or real_n is not None:
+        copy_args.append(tir.IntImm("int32", int(unit_flag) if unit_flag is not None else 0))
+        if real_k is not None or real_n is not None:
+            copy_args.append(_as_expr(real_k) if real_k is not None else tir.IntImm("int32", 0))
+            if real_n is not None:
+                copy_args.append(_as_expr(real_n))
+
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), *copy_args)
 
 
 class CopyCVMode(IntEnum):

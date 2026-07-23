@@ -69,6 +69,22 @@ AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
     }
     // If tmp_expr is IntImm(0), leave tmp as undefined (default)
   }
+  // Optional trailing runtime arguments for the kernel-driven cube path. All
+  // default to 0, which reproduces the previous behaviour exactly: unitFlag 0
+  // is a standalone fixpipe, and realK/realN 0 mean "take the extent from the
+  // destination L0 buffer".
+  unitFlag = Integer(0);
+  realK = Integer(0);
+  realN = Integer(0);
+  if (args.size() >= 7) {
+    unitFlag = args[6];
+  }
+  if (args.size() >= 8) {
+    realK = args[7];
+  }
+  if (args.size() >= 9) {
+    realN = args[8];
+  }
   std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);
   std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
   std::tie(this->src_extents, this->dst_extents) = std::tie(ets[0], ets[1]);
@@ -489,8 +505,27 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
   if (config.l0_dst_split) {
     int dst_dim = dst->shape.size();
-    new_args.push_back(dst->shape[dst_dim - 2]);
-    new_args.push_back(dst->shape[dst_dim - 1]);
+    PrimExpr dm = dst->shape[dst_dim - 2];
+    PrimExpr dn = dst->shape[dst_dim - 1];
+    // realK overrides the L0 fractal's K extent so it matches the following
+    // mma's runtime K. K is the trailing dim for matrix_a ([M, K]) and the
+    // leading one for matrix_b ([K, N]). realK == 0 keeps dst->shape, which is
+    // byte-identical for every existing L1->L0 copy.
+    const auto *rk_imm = realK.as<IntImmNode>();
+    if (!(rk_imm && rk_imm->value == 0)) {
+      if (dst.scope() == "wmma.matrix_a") {
+        dn = realK;
+      } else if (dst.scope() == "wmma.matrix_b") {
+        dm = realK;
+      }
+    }
+    // realN overrides matrix_b's N extent, the axis realK does not cover.
+    const auto *rn_imm = realN.as<IntImmNode>();
+    if (!(rn_imm && rn_imm->value == 0) && dst.scope() == "wmma.matrix_b") {
+      dn = realN;
+    }
+    new_args.push_back(dm);
+    new_args.push_back(dn);
   }
 
   if (config.l0c2gm) {
@@ -500,6 +535,11 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     new_args.push_back(src->shape[src->shape.size() - 2]);
     new_args.push_back(src->shape[src->shape.size() - 1]);
     new_args.push_back(Bool(enRelu)); // Add enable_relu parameter
+    // unitFlag goes last, not in call order: this list is shared with the PTO
+    // codegen, which reads several of these by position (the pad enum and the
+    // relu flag among them). The ascendc codegen picks it up off the end and
+    // emits it in the position the C++ helper expects.
+    new_args.push_back(unitFlag);
   }
 
   if (config.gm2l1) {
@@ -1330,8 +1370,10 @@ TIR_DEFINE_TL_BUILTIN(ascend_use_swizzle)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
+// -1 = variadic: the 6 required args (name, A, B, C, init, K) plus the optional
+// trailing n_actual / unitFlag pair.
 TIR_DEFINE_TL_BUILTIN(ascend_mma)
-    .set_num_inputs(6)
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
