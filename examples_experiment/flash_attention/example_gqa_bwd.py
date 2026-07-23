@@ -1229,7 +1229,119 @@ attention = _attention.apply
 
 
 # ============================================================================
-# Main
+# Tests (pytest-discoverable)
+# ============================================================================
+
+
+def _setup():
+    tilelang.disable_cache()
+    torch.set_default_device("npu")
+
+
+def test_forward():
+    """Forward precision: MHA + GQA + causal + D_qk!=D_v."""
+    _setup()
+    configs = [
+        (1, 1, 1, 1, 128, 64, 64, False, "FWD-MHA"),
+        (1, 2, 1, 2, 128, 64, 64, False, "FWD-GQA"),
+        (1, 2, 1, 2, 128, 64, 64, True, "FWD-GQA-causal"),
+        (1, 2, 1, 2, 128, 64, 128, False, "FWD-GQA-Dqk64-Dv128"),
+        (8, 32, 2, 16, 1024, 192, 128, False, "FWD-GQA-golden"),
+    ]
+    for B, H, H_kv, groups, N, D_qk, D_v, causal, _desc in configs:
+        torch.manual_seed(42)
+        Q = torch.randn(B, H, N, D_qk, dtype=torch.float16, device="npu")
+        K = torch.randn(B, H_kv, N, D_qk, dtype=torch.float16, device="npu")
+        V = torch.randn(B, H_kv, N, D_v, dtype=torch.float16, device="npu")
+        mod = flashattn_fwd(B, H, N, D_qk, D_v, causal, 64, 64, groups)
+        O_npu, _ = mod(Q, K, V)
+        torch.npu.synchronize()
+        O_ref = ref_program(Q, K, V, causal, groups)
+        torch.testing.assert_close(O_npu.cpu(), O_ref.cpu(), rtol=1e-2, atol=1e-2)
+
+
+def test_backward():
+    """Backward precision: full pipeline (fwd + prep + bwd_pipeline)."""
+    _setup()
+    configs = [
+        (1, 1, 1, 1, 128, 64, 64, False, "BWD-MHA"),
+        (1, 2, 1, 2, 128, 64, 64, False, "BWD-GQA"),
+        (1, 2, 1, 2, 128, 64, 128, False, "BWD-GQA-Dqk64-Dv128"),
+        (1, 2, 1, 2, 128, 64, 64, True, "BWD-GQA-causal"),
+        (1, 32, 2, 16, 256, 192, 128, False, "BWD-GQA-golden"),
+    ]
+    for B, H, H_kv, groups, N, D_qk, D_v, causal, _desc in configs:
+        torch.manual_seed(42)
+        bM, bN = 64, (64 if causal else 32)
+        D_qk_padded = ((D_qk + 127) // 128) * 128
+        if causal and D_qk_padded > 128:
+            bM = 32
+
+        Q = torch.randn(B, H, N, D_qk, dtype=torch.float16, device="npu")
+        K = torch.randn(B, H_kv, N, D_qk, dtype=torch.float16, device="npu")
+        V = torch.randn(B, H_kv, N, D_v, dtype=torch.float16, device="npu")
+        dO = torch.randn(B, H, N, D_v, dtype=torch.float16, device="npu")
+
+        fwd_mod = flashattn_fwd(B, H, N, D_qk, D_v, causal, bM, bM, groups)
+        O_npu, lse_npu = fwd_mod(Q, K, V)
+        torch.npu.synchronize()
+
+        prep_mod = flashattn_bwd_preprocess(B, H, N, D_v, blk=32)
+        Delta_npu = prep_mod(O_npu, dO)
+        torch.npu.synchronize()
+
+        num_stages = 4
+        dQ = torch.zeros(B, H, N, D_qk_padded, dtype=torch.float32, device="npu")
+        dK = torch.zeros(B, H_kv, N, D_qk_padded, dtype=torch.float32, device="npu")
+        dV = torch.zeros(B, H_kv, N, D_v, dtype=torch.float32, device="npu")
+
+        Q_padded = torch.zeros(B, H, N, D_qk_padded, dtype=torch.float16, device="npu")
+        Q_padded[:, :, :, :D_qk] = Q
+        K_padded = torch.zeros(B, H_kv, N, D_qk_padded, dtype=torch.float16, device="npu")
+        K_padded[:, :, :, :D_qk] = K
+
+        bwd_block_num = (N // bM) * H * B
+        ws_s_dp = torch.empty(bwd_block_num, num_stages, bM, bN, dtype=torch.float32, device="npu")
+        ws_p_ds = torch.empty(bwd_block_num, num_stages, bM, bN, dtype=torch.float16, device="npu")
+        ws_dv_dk = torch.empty(bwd_block_num, num_stages, bN, max(D_qk_padded, D_v), dtype=torch.float32, device="npu")
+
+        bwd_mod = flashattn_bwd_pipeline(B, H, N, D_qk, D_v, causal, bM, bN, groups, num_stages)
+        bwd_mod(Q_padded, K_padded, V, dO, lse_npu, Delta_npu, dQ, dK, dV, ws_s_dp, ws_p_ds, ws_dv_dk)
+        torch.npu.synchronize()
+
+        dQ_ref, dK_ref, dV_ref = ref_bwd(Q, K, V, dO, causal, groups)
+        torch.testing.assert_close(dV.half().cpu(), dV_ref.cpu(), rtol=1e-2, atol=1e-2)
+        torch.testing.assert_close(dK[:, :, :, :D_qk].half().cpu(), dK_ref.cpu(), rtol=1e-2, atol=1e-2)
+        torch.testing.assert_close(dQ[:, :, :, :D_qk].half().cpu(), dQ_ref.cpu(), rtol=1e-2, atol=1e-2)
+
+
+def test_autograd():
+    """End-to-end autograd test (BSHD layout)."""
+    _setup()
+    torch.manual_seed(42)
+    B, N, H, D_qk, D_v, groups = 1, 128, 2, 64, 64, 2
+    H_kv = H // groups
+    q = torch.randn(B, N, H, D_qk, dtype=torch.float16, device="npu", requires_grad=True)
+    k = torch.randn(B, N, H_kv, D_qk, dtype=torch.float16, device="npu", requires_grad=True)
+    v = torch.randn(B, N, H_kv, D_v, dtype=torch.float16, device="npu", requires_grad=True)
+    dO = torch.randn(B, N, H, D_v, dtype=torch.float16, device="npu")
+
+    O = attention(q, k, v, False, groups)
+    O.backward(dO)
+
+    q_bhsd = q.detach().permute(0, 2, 1, 3)
+    k_bhsd = k.detach().permute(0, 2, 1, 3)
+    v_bhsd = v.detach().permute(0, 2, 1, 3)
+    dO_bhsd = dO.permute(0, 2, 1, 3)
+    dQ_ref, dK_ref, dV_ref = ref_bwd(q_bhsd, k_bhsd, v_bhsd, dO_bhsd, False, groups)
+
+    torch.testing.assert_close(q.grad.permute(0, 2, 1, 3).cpu(), dQ_ref.cpu(), rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(k.grad.permute(0, 2, 1, 3).cpu(), dK_ref.cpu(), rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(v.grad.permute(0, 2, 1, 3).cpu(), dV_ref.cpu(), rtol=1e-2, atol=1e-2)
+
+
+# ============================================================================
+# Main (manual bench)
 # ============================================================================
 
 
@@ -1417,4 +1529,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    if len(sys.argv) == 1:
+        print("Running all tests...\n")
+        test_forward()
+        print("test_forward PASSED")
+        test_backward()
+        print("test_backward PASSED")
+        test_autograd()
+        print("test_autograd PASSED")
+        print("\nAll tests passed!")
+    else:
+        main()
