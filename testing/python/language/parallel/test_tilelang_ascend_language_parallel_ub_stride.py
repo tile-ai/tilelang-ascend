@@ -53,6 +53,7 @@ def setup_random_seed():
 # ---------------------------------------------------------------------------
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def compact_to_aligned_kernel(G, src_cols, dst_cols, dtype="int32"):
+
     @T.prim_func
     def main(SRC: T.Tensor((G, src_cols), dtype), DST: T.Tensor((G, dst_cols), dtype)):
         with T.Kernel(1, is_npu=True) as (cid, vid):
@@ -99,6 +100,7 @@ def test_parallel_compact_to_aligned(setup_random_seed, src_cols, dst_cols, dtyp
 # ---------------------------------------------------------------------------
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def row_projection_kernel(rows, lanes, dtype="float32"):
+
     @T.prim_func
     def main(SRC: T.Tensor((rows, lanes), dtype), DST: T.Tensor((lanes,), dtype)):
         with T.Kernel(1, is_npu=True) as (cid, vid):
