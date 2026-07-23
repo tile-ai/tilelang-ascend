@@ -12,7 +12,8 @@ T.Parallel that cannot be vectorized to a scalar serial loop (codegen emits
 SetValue / GetValue element by element).  The same serial fallback also fixes
 the "Find undefined Variable v_thread" codegen error for parallel loops whose
 body cannot be vectorized (e.g. a data-dependent if/else), and rank-changing
-UB projections that cannot be represented by the vector copy helper.
+projections between buffers of different ranks that cannot be represented by
+the vector copy helper.
 
 All row widths here are 32B-aligned (int32 multiples of 8, float16 multiples of
 16) on purpose, so the surrounding GM<->UB T.copy is valid and only the
@@ -123,6 +124,40 @@ def test_parallel_rank_changing_row_projection(setup_random_seed):
     torch.npu.synchronize()
     out = func(src)
     torch.testing.assert_close(out, src[-1], rtol=1e-5, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Rank-changing GM -> UB element mapping. This is the shape pattern from a
+# second failure trajectory: a 2D UB tile selects two fixed axes from a 4D GM
+# tensor. GenerateAscendCopy cannot express the differing index ranks, so the
+# T.Parallel loop must use the serial fallback.
+# ---------------------------------------------------------------------------
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+def rank4_gm_to_rank2_ub_kernel(rows, lanes, dtype="float32"):
+
+    @T.prim_func
+    def main(
+        SRC: T.Tensor((2, rows, 2, lanes), dtype),
+        DST: T.Tensor((rows, lanes), dtype),
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            dst = T.alloc_ub((rows, lanes), dtype)
+            with T.Scope("V"):
+                for row, lane in T.Parallel(rows, lanes):
+                    dst[row, lane] = SRC[1, row, 0, lane]
+                T.copy(dst, DST)
+
+    return main
+
+
+def test_parallel_rank4_gm_to_rank2_ub(setup_random_seed):
+    rows, lanes = 4, 8
+    func = rank4_gm_to_rank2_ub_kernel(rows, lanes)
+    src = torch.randn(2, rows, 2, lanes, dtype=torch.float32).npu()
+
+    torch.npu.synchronize()
+    out = func(src)
+    torch.testing.assert_close(out, src[1, :, 0, :], rtol=1e-5, atol=1e-5)
 
 
 # ---------------------------------------------------------------------------
