@@ -901,6 +901,12 @@ private:
     if (auto load = expr.as<BufferLoadNode>()) {
       Buffer input_buffer = load->buffer;
 
+      // Rank-changing copies require projection-aware regions, which the
+      // vector copy helper cannot represent. Use the scalar serial fallback.
+      if (input_buffer->shape.size() != output_buffer->shape.size()) {
+        return false;
+      }
+
       // Compact->aligned UB->UB copy (different inner/row width) cannot be
       // lowered to copy_ub_to_ub safely: the strided variant needs 32B-aligned
       // per-row UB addresses (sub-32B compact rows trap the VEC instruction),

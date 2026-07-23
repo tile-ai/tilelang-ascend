@@ -1,16 +1,18 @@
-"""Regression tests for issue #1194: T.Parallel compact-to-aligned UB store.
+"""Regression tests for T.Parallel scalar serial fallbacks.
 
-A T.Parallel copy from a compact UB layout to an aligned/padded UB layout
-(different inner/row width, e.g. dst[g, inner] = src[g, inner] with src [G, 8]
-and dst [G, 16]) used to be miscompiled into a copy_ub_to_ub whose source width
-was taken from the destination, packing two source rows into one destination row
-and producing wrong results.
+Issue #1194 covers a T.Parallel copy from a compact UB layout to an
+aligned/padded UB layout (different inner/row width, e.g.
+dst[g, inner] = src[g, inner] with src [G, 8] and dst [G, 16]) that used to be
+miscompiled into a copy_ub_to_ub whose source width was taken from the
+destination, packing two source rows into one destination row and producing
+wrong results.
 
 The fix refuses to vectorize such UB->UB stride-mismatched copies and lowers any
 T.Parallel that cannot be vectorized to a scalar serial loop (codegen emits
 SetValue / GetValue element by element).  The same serial fallback also fixes
 the "Find undefined Variable v_thread" codegen error for parallel loops whose
-body cannot be vectorized (e.g. a data-dependent if/else).
+body cannot be vectorized (e.g. a data-dependent if/else), and rank-changing
+UB projections that cannot be represented by the vector copy helper.
 
 All row widths here are 32B-aligned (int32 multiples of 8, float16 multiples of
 16) on purpose, so the surrounding GM<->UB T.copy is valid and only the
@@ -88,6 +90,37 @@ def test_parallel_compact_to_aligned(setup_random_seed, src_cols, dst_cols, dtyp
 
     torch.testing.assert_close(out[:, :src_cols], src, rtol=1e-2, atol=1e-2)
     torch.testing.assert_close(out[:, src_cols:], torch.zeros_like(out[:, src_cols:]), rtol=1e-2, atol=1e-2)
+
+
+# ---------------------------------------------------------------------------
+# Rank-changing UB projection. The vector copy helper requires matching source
+# and destination ranks, so this 2D -> 1D row projection uses the serial
+# fallback.
+# ---------------------------------------------------------------------------
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+def row_projection_kernel(rows, lanes, dtype="float32"):
+    @T.prim_func
+    def main(SRC: T.Tensor((rows, lanes), dtype), DST: T.Tensor((lanes,), dtype)):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            src = T.alloc_ub((rows, lanes), dtype)
+            dst = T.alloc_ub((lanes,), dtype)
+            with T.Scope("V"):
+                T.copy(SRC, src)
+                for lane in T.Parallel(lanes):
+                    dst[lane] = src[rows - 1, lane]
+                T.copy(dst, DST)
+
+    return main
+
+
+def test_parallel_rank_changing_row_projection(setup_random_seed):
+    rows, lanes = 256, 8
+    func = row_projection_kernel(rows, lanes)
+    src = torch.randn(rows, lanes, dtype=torch.float32).npu()
+
+    torch.npu.synchronize()
+    out = func(src)
+    torch.testing.assert_close(out, src[-1], rtol=1e-5, atol=1e-5)
 
 
 # ---------------------------------------------------------------------------
