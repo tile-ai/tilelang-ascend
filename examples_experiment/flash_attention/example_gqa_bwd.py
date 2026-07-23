@@ -92,89 +92,83 @@ def flashattn_fwd(batch, heads, seq_len, dim_qk, dim_v, is_causal, block_M, bloc
             m_prev_2d = T.alloc_ub([block_M // 2, dim_v], accum_dtype)
             sumexp_2d = T.alloc_ub([block_M // 2, dim_v], accum_dtype)
 
-            T.annotate_address({
-                q_l1: 0,
-                k_l1: block_M * dim_qk * DataType(dtype).bits // 8,
-                acc_s_l1: block_M * dim_qk * DataType(dtype).bits // 8,
-                v_l1: block_M * (block_N + dim_qk) * DataType(dtype).bits // 8,
-
-                acc_s_l0c: 0,
-                acc_o_l0c: 0,
-
-                acc_o: 0,
-                sumexp: (block_M // 2) * dim_v * 4,
-                m_i: (block_M // 2) * dim_v * 4
-                     + (block_M // 2) * 4,
-                acc_s_ub: (block_M // 2) * dim_v * 4
-                          + (block_M // 2) * 4
-                          + (block_M // 2) * 4,
-                m_i_prev: (block_M // 2) * dim_v * 4
-                          + (block_M // 2) * 4
-                          + (block_M // 2) * 4
-                          + (block_M // 2) * block_N * 4,
-                acc_s_ub_: (block_M // 2) * dim_v * 4
-                           + (block_M // 2) * 4
-                           + (block_M // 2) * 4
-                           + (block_M // 2) * block_N * 4
-                           + (block_M // 2) * 4,
-                sumexp_i_ub: (block_M // 2) * dim_v * 4
-                             + (block_M // 2) * 4
-                             + (block_M // 2) * 4
-                             + (block_M // 2) * block_N * 4
-                             + (block_M // 2) * 4
-                             + (block_M // 2) * block_N * 4,
-                acc_s_half: (block_M // 2) * dim_v * 4
-                            + (block_M // 2) * 4
-                            + (block_M // 2) * 4
-                            + (block_M // 2) * block_N * 4
-                            + (block_M // 2) * 4
-                            + (block_M // 2) * block_N * 4
-                            + (block_M // 2) * 4,
-                acc_o_ub: (block_M // 2) * dim_v * 4
-                          + (block_M // 2) * 4
-                          + (block_M // 2) * 4
-                          + (block_M // 2) * block_N * 4
-                          + (block_M // 2) * 4
-                          + (block_M // 2) * block_N * 4
-                          + (block_M // 2) * 4
-                          + (block_M // 2) * block_N * 2,
-                acc_o_half: (block_M // 2) * dim_v * 4
-                            + (block_M // 2) * 4
-                            + (block_M // 2) * 4
-                            + (block_M // 2) * block_N * 4
-                            + (block_M // 2) * 4
-                            + (block_M // 2) * block_N * 4
-                            + (block_M // 2) * 4
-                            + (block_M // 2) * block_N * 2
-                            + (block_M // 2) * dim_v * 4,
-                m_i_2d: (block_M // 2) * dim_v * 4
-                        + (block_M // 2) * 4
-                        + (block_M // 2) * 4
-                        + (block_M // 2) * block_N * 4
-                        + (block_M // 2) * 4,
-                m_prev_2d: (block_M // 2) * dim_v * 4
-                           + (block_M // 2) * 4
-                           + (block_M // 2) * 4
-                           + (block_M // 2) * block_N * 4
-                           + (block_M // 2) * 4
-                           + (block_M // 2) * block_N * 4
-                           + (block_M // 2) * 4
-                           + (block_M // 2) * block_N * 2,
-                sumexp_2d: (block_M // 2) * dim_v * 4
-                           + (block_M // 2) * 4
-                           + (block_M // 2) * 4
-                           + (block_M // 2) * block_N * 4
-                           + (block_M // 2) * 4
-                           + (block_M // 2) * block_N * 4
-                           + (block_M // 2) * 4
-                           + (block_M // 2) * block_N * 2,
-            })
+            T.annotate_address(
+                {
+                    q_l1: 0,
+                    k_l1: block_M * dim_qk * DataType(dtype).bits // 8,
+                    acc_s_l1: block_M * dim_qk * DataType(dtype).bits // 8,
+                    v_l1: block_M * (block_N + dim_qk) * DataType(dtype).bits // 8,
+                    acc_s_l0c: 0,
+                    acc_o_l0c: 0,
+                    acc_o: 0,
+                    sumexp: (block_M // 2) * dim_v * 4,
+                    m_i: (block_M // 2) * dim_v * 4 + (block_M // 2) * 4,
+                    acc_s_ub: (block_M // 2) * dim_v * 4 + (block_M // 2) * 4 + (block_M // 2) * 4,
+                    m_i_prev: (block_M // 2) * dim_v * 4 + (block_M // 2) * 4 + (block_M // 2) * 4 + (block_M // 2) * block_N * 4,
+                    acc_s_ub_: (block_M // 2) * dim_v * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * block_N * 4
+                    + (block_M // 2) * 4,
+                    sumexp_i_ub: (block_M // 2) * dim_v * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * block_N * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * block_N * 4,
+                    acc_s_half: (block_M // 2) * dim_v * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * block_N * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * block_N * 4
+                    + (block_M // 2) * 4,
+                    acc_o_ub: (block_M // 2) * dim_v * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * block_N * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * block_N * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * block_N * 2,
+                    acc_o_half: (block_M // 2) * dim_v * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * block_N * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * block_N * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * block_N * 2
+                    + (block_M // 2) * dim_v * 4,
+                    m_i_2d: (block_M // 2) * dim_v * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * block_N * 4
+                    + (block_M // 2) * 4,
+                    m_prev_2d: (block_M // 2) * dim_v * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * block_N * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * block_N * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * block_N * 2,
+                    sumexp_2d: (block_M // 2) * dim_v * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * block_N * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * block_N * 4
+                    + (block_M // 2) * 4
+                    + (block_M // 2) * block_N * 2,
+                }
+            )
 
             with T.Scope("C"):
-                T.copy(Q[bz, by, bx * block_M:(bx + 1) * block_M, :], q_l1)
+                T.copy(Q[bz, by, bx * block_M : (bx + 1) * block_M, :], q_l1)
                 T.barrier_all()
                 for k in T.serial(T.ceildiv(seq_len, block_N)):
-                    T.copy(K[bz, kv_by, k * block_N:(k + 1) * block_N, :], k_l1)
+                    T.copy(K[bz, kv_by, k * block_N : (k + 1) * block_N, :], k_l1)
                     T.barrier_all()
                     T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
                     T.barrier_all()
@@ -184,7 +178,7 @@ def flashattn_fwd(batch, heads, seq_len, dim_qk, dim_v, is_causal, block_M, bloc
                     T.wait_cross_flag(1)
                     T.barrier_all()
                     T.copy(workspace_2[cid, :, :], acc_s_l1)
-                    T.copy(V[bz, kv_by, k * block_N:(k + 1) * block_N, :], v_l1)
+                    T.copy(V[bz, kv_by, k * block_N : (k + 1) * block_N, :], v_l1)
                     T.barrier_all()
                     T.gemm_v0(acc_s_l1, v_l1, acc_o_l0c, init=True)
                     T.barrier_all()
@@ -196,16 +190,14 @@ def flashattn_fwd(batch, heads, seq_len, dim_qk, dim_v, is_causal, block_M, bloc
             with T.Scope("V"):
                 T.tile.fill(acc_o, 0.0)
                 T.tile.fill(sumexp, 0.0)
-                T.tile.fill(m_i, -2**30)
+                T.tile.fill(m_i, -(2**30))
                 T.barrier_all()
                 for _k in T.serial(T.ceildiv(seq_len, block_N)):
                     T.tile.fill(acc_s_ub, 0.0)
                     T.copy(m_i, m_i_prev)
                     T.barrier_all()
                     T.wait_cross_flag(0)
-                    T.copy(
-                        workspace_1[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :],
-                        acc_s_ub_)
+                    T.copy(workspace_1[cid, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :], acc_s_ub_)
                     T.barrier_all()
                     T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
                     T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
@@ -215,10 +207,7 @@ def flashattn_fwd(batch, heads, seq_len, dim_qk, dim_v, is_causal, block_M, bloc
                         for h_i in range(block_M // 2):
                             row_pos_val = (bx * block_M + vid * block_M // 2 + h_i) * 1.0
                             T.tile.compare(cmp_mask, col_pos, row_pos_val, "LE")
-                            T.tile.select(
-                                acc_s_ub[h_i, :], cmp_mask,
-                                acc_s_ub[h_i, :], -T.infinity(accum_dtype),
-                                "VSEL_TENSOR_SCALAR_MODE")
+                            T.tile.select(acc_s_ub[h_i, :], cmp_mask, acc_s_ub[h_i, :], -T.infinity(accum_dtype), "VSEL_TENSOR_SCALAR_MODE")
 
                     T.reduce_max(acc_s_ub, m_i, dim=-1)
                     T.tile.max(m_i, m_i, m_i_prev)
@@ -234,16 +223,12 @@ def flashattn_fwd(batch, heads, seq_len, dim_qk, dim_v, is_causal, block_M, bloc
                     T.tile.mul(acc_o, acc_o, m_prev_2d)
                     T.copy(acc_s_ub, acc_s_half)
                     T.barrier_all()
-                    T.copy(
-                        acc_s_half,
-                        workspace_2[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :])
+                    T.copy(acc_s_half, workspace_2[cid, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :])
                     T.barrier_all()
                     T.set_cross_flag("MTE3", 1)
                     T.wait_cross_flag(2)
                     T.barrier_all()
-                    T.copy(
-                        workspace_3[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :],
-                        acc_o_ub)
+                    T.copy(workspace_3[cid, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :], acc_o_ub)
                     T.barrier_all()
                     T.tile.add(acc_o, acc_o, acc_o_ub)
                     T.barrier_all()
@@ -253,17 +238,12 @@ def flashattn_fwd(batch, heads, seq_len, dim_qk, dim_v, is_causal, block_M, bloc
                 T.tile.div(acc_o, acc_o, sumexp_2d)
                 T.copy(acc_o, acc_o_half)
                 T.barrier_all()
-                T.copy(
-                    acc_o_half, Output[bz, by,
-                                       bx * block_M + vid * block_M // 2:
-                                       bx * block_M + vid * block_M // 2 + block_M // 2, :])
+                T.copy(acc_o_half, Output[bz, by, bx * block_M + vid * block_M // 2 : bx * block_M + vid * block_M // 2 + block_M // 2, :])
                 T.barrier_all()
                 T.tile.ln(sumexp, sumexp)
                 T.tile.add(sumexp, sumexp, m_i)
                 T.barrier_all()
-                T.copy(sumexp, lse[bz, by,
-                                     bx * block_M + vid * block_M // 2:
-                                     bx * block_M + vid * block_M // 2 + block_M // 2])
+                T.copy(sumexp, lse[bz, by, bx * block_M + vid * block_M // 2 : bx * block_M + vid * block_M // 2 + block_M // 2])
                 T.barrier_all()
 
     return main
@@ -276,9 +256,17 @@ def flashattn_fwd(batch, heads, seq_len, dim_qk, dim_v, is_causal, block_M, bloc
 
 @tilelang.jit(out_idx=[3, 4], workspace_idx=[5, 6, 7], pass_configs=_expert_pass_configs)
 def flashattn_fwd_v4(
-    batch, heads, seq_len, dim_qk, dim_v, is_causal,
-    block_M=32, block_N=64, groups=1,
-    num_stages=14, cross_interval=2,
+    batch,
+    heads,
+    seq_len,
+    dim_qk,
+    dim_v,
+    is_causal,
+    block_M=32,
+    block_N=64,
+    groups=1,
+    num_stages=14,
+    cross_interval=2,
 ):
     """Forward v4: block_M=32 enables L0 double buffering.
 
@@ -325,8 +313,8 @@ def flashattn_fwd_v4(
     SIG_K_L1 = 0
     SIG_P_L1 = 1
     SIG_V_L1 = 2
-    SIG_L0AB = 3   # double-buffer base: slot 0 = SIG_L0AB, slot 1 = SIG_L0AB+1
-    SIG_L0C = 5    # double-buffer base: slot 0 = SIG_L0C,  slot 1 = SIG_L0C+1
+    SIG_L0AB = 3  # double-buffer base: slot 0 = SIG_L0AB, slot 1 = SIG_L0AB+1
+    SIG_L0C = 5  # double-buffer base: slot 0 = SIG_L0C,  slot 1 = SIG_L0C+1
 
     # Intra-core signal IDs (V Scope)
     SIG_IO_UB = 0
@@ -355,12 +343,14 @@ def flashattn_fwd_v4(
             v_l1 = T.alloc_L1([block_N, dim_v], dtype)
             p_l1 = T.alloc_L1([block_M, block_N], dtype)
 
-            T.annotate_layout({
-                q_l1: make_zn_layout(q_l1),
-                k_l1: make_nz_layout(k_l1),
-                p_l1: make_zn_layout(p_l1),
-                v_l1: make_zn_layout(v_l1),
-            })
+            T.annotate_layout(
+                {
+                    q_l1: make_zn_layout(q_l1),
+                    k_l1: make_nz_layout(k_l1),
+                    p_l1: make_zn_layout(p_l1),
+                    v_l1: make_zn_layout(v_l1),
+                }
+            )
 
             # --- GEMM1 L0 double buffer (Q @ K^T) ---
             g1_l0a = T.alloc_L0A([2, block_M, dim_qk], dtype)
@@ -374,19 +364,21 @@ def flashattn_fwd_v4(
 
             # Separate L0A and L0C to avoid double-buffer read/write conflicts
             # L0B can overlap (80KB > 64KB limit, but GEMM1/GEMM2 use L0B serially)
-            T.annotate_address({
-                g1_l0a: 0,
-                g2_l0a: 24576,  # 24KB offset, no overlap with g1_l0a
-                g1_l0b: 0,
-                g2_l0b: 0,      # overlaps g1_l0b (L0B total 80KB > 64KB)
-                g1_l0c: 0,
-                g2_l0c: 16384,  # 16KB offset, no overlap with g1_l0c
-            })
+            T.annotate_address(
+                {
+                    g1_l0a: 0,
+                    g2_l0a: 24576,  # 24KB offset, no overlap with g1_l0a
+                    g1_l0b: 0,
+                    g2_l0b: 0,  # overlaps g1_l0b (L0B total 80KB > 64KB)
+                    g1_l0c: 0,
+                    g2_l0c: 16384,  # 16KB offset, no overlap with g1_l0c
+                }
+            )
 
             # --- UB buffers ---
             # I/O intermediate buffers (for two-step workspace loads, fp16)
-            io_buf = T.alloc_ub([half_M, block_N], dtype)      # for S loads
-            io_buf_o = T.alloc_ub([half_M, dim_v], dtype)      # for O loads
+            io_buf = T.alloc_ub([half_M, block_N], dtype)  # for S loads
+            io_buf_o = T.alloc_ub([half_M, dim_v], dtype)  # for O loads
 
             # Softmax computation
             work_ub = T.alloc_ub([half_M, block_N], accum_dtype)
@@ -436,13 +428,12 @@ def flashattn_fwd_v4(
                     bz = task_id // (num_seq_blocks * heads)
                     kv_by = by // groups
 
-                    T.copy(Q[bz, by, bx * block_M:(bx + 1) * block_M, :], q_l1)
+                    T.copy(Q[bz, by, bx * block_M : (bx + 1) * block_M, :], q_l1)
                     T.barrier_all()
 
                     for k in T.serial(num_outer):
                         _remaining = num_iters - k * num_stages
-                        batch_iters = T.if_then_else(
-                            _remaining < num_stages, _remaining, num_stages)
+                        batch_iters = T.if_then_else(_remaining < num_stages, _remaining, num_stages)
 
                         # --- GEMM1 batch: Q @ K^T → workspace_1 ---
                         T.wait_cross_flag(SEM_WS1_V2C)
@@ -452,8 +443,7 @@ def flashattn_fwd_v4(
 
                             # Load K to L1
                             T.wait_flag("MTE1", "MTE2", SIG_K_L1)
-                            T.copy(K[bz, kv_by,
-                                     idx * block_N:(idx + 1) * block_N, :], k_l1)
+                            T.copy(K[bz, kv_by, idx * block_N : (idx + 1) * block_N, :], k_l1)
                             T.set_flag("MTE2", "MTE1", SIG_K_L1)
 
                             # Copy Q to L0A (only first 2 iters — Q is constant)
@@ -470,15 +460,13 @@ def flashattn_fwd_v4(
                             # MMA
                             T.wait_flag("MTE1", "M", SIG_L0AB + side)
                             T.wait_flag("FIX", "M", SIG_L0C + side)
-                            T.mma(g1_l0a[side, :, :], g1_l0b[side, :, :],
-                                  g1_l0c[side, :, :], init=True)
+                            T.mma(g1_l0a[side, :, :], g1_l0b[side, :, :], g1_l0c[side, :, :], init=True)
                             T.set_flag("M", "MTE1", SIG_L0AB + side)
                             T.set_flag("M", "FIX", SIG_L0C + side)
 
                             # Copy result to workspace
                             T.wait_flag("M", "FIX", SIG_L0C + side)
-                            T.copy(g1_l0c[side, :, :],
-                                   workspace_1[cid, i, :, :])
+                            T.copy(g1_l0c[side, :, :], workspace_1[cid, i, :, :])
                             T.set_flag("FIX", "M", SIG_L0C + side)
                             if (i + 1) % cross_interval == 0 or i == batch_iters - 1:
                                 T.set_cross_flag("FIX", SEM_WS1_C2V)
@@ -491,8 +479,7 @@ def flashattn_fwd_v4(
 
                             # Load V to L1
                             T.wait_flag("MTE1", "MTE2", SIG_V_L1)
-                            T.copy(V[bz, kv_by,
-                                     idx * block_N:(idx + 1) * block_N, :], v_l1)
+                            T.copy(V[bz, kv_by, idx * block_N : (idx + 1) * block_N, :], v_l1)
                             T.set_flag("MTE2", "MTE1", SIG_V_L1)
 
                             # Load P from workspace_2 to L1
@@ -517,15 +504,13 @@ def flashattn_fwd_v4(
                             # MMA
                             T.wait_flag("MTE1", "M", SIG_L0AB + side)
                             T.wait_flag("FIX", "M", SIG_L0C + side)
-                            T.mma(g2_l0a[side, :, :], g2_l0b[side, :, :],
-                                  g2_l0c[side, :, :], init=True)
+                            T.mma(g2_l0a[side, :, :], g2_l0b[side, :, :], g2_l0c[side, :, :], init=True)
                             T.set_flag("M", "MTE1", SIG_L0AB + side)
                             T.set_flag("M", "FIX", SIG_L0C + side)
 
                             # Copy result to workspace
                             T.wait_flag("M", "FIX", SIG_L0C + side)
-                            T.copy(g2_l0c[side, :, :],
-                                   workspace_3[cid, i, :, :])
+                            T.copy(g2_l0c[side, :, :], workspace_3[cid, i, :, :])
                             T.set_flag("FIX", "M", SIG_L0C + side)
                             if (i + 1) % cross_interval == 0 or i == batch_iters - 1:
                                 T.set_cross_flag("FIX", SEM_WS3_C2V)
@@ -563,8 +548,7 @@ def flashattn_fwd_v4(
 
                     for k in T.serial(num_outer):
                         _remaining = num_iters - k * num_stages
-                        batch_iters = T.if_then_else(
-                            _remaining < num_stages, _remaining, num_stages)
+                        batch_iters = T.if_then_else(_remaining < num_stages, _remaining, num_stages)
 
                         # --- Softmax batch (reference two-step pattern) ---
                         T.wait_cross_flag(SEM_WS2_C2V)
@@ -576,9 +560,7 @@ def flashattn_fwd_v4(
                             T.wait_flag("V", "MTE2", SIG_IO_UB)
                             if i % cross_interval == 0:
                                 T.wait_cross_flag(SEM_WS1_C2V)
-                            T.copy(workspace_1[cid, i,
-                                     vid * half_M:vid * half_M + half_M, :],
-                                   io_buf)
+                            T.copy(workspace_1[cid, i, vid * half_M : vid * half_M + half_M, :], io_buf)
                             T.set_flag("MTE2", "V", SIG_IO_UB)
 
                             # Step 2: V copies io_buf → work_ub (fp16→fp32)
@@ -589,25 +571,18 @@ def flashattn_fwd_v4(
                             # Causal mask (V unit, operates on work_ub)
                             if is_causal:
                                 idx = k * num_stages + i
-                                T.tile.arith_progression(
-                                    col_pos, idx * block_N, 1, block_N)
+                                T.tile.arith_progression(col_pos, idx * block_N, 1, block_N)
                                 for h_i in range(half_M):
-                                    row_pos_val = (
-                                        bx * block_M + vid * half_M + h_i) * 1.0
-                                    T.tile.compare(
-                                        cmp_mask, col_pos, row_pos_val, "LE")
+                                    row_pos_val = (bx * block_M + vid * half_M + h_i) * 1.0
+                                    T.tile.compare(cmp_mask, col_pos, row_pos_val, "LE")
                                     T.tile.select(
-                                        work_ub[h_i, :], cmp_mask,
-                                        work_ub[h_i, :],
-                                        -T.infinity(accum_dtype),
-                                        "VSEL_TENSOR_SCALAR_MODE")
+                                        work_ub[h_i, :], cmp_mask, work_ub[h_i, :], -T.infinity(accum_dtype), "VSEL_TENSOR_SCALAR_MODE"
+                                    )
 
                             # Batched softmax computation (V unit, on work_ub)
                             T.reduce_max(work_ub, neg_sm[cur, :, :], dim=-1)
-                            T.tile.mul(neg_sm[cur, :, :],
-                                       neg_sm[cur, :, :], -sm_scale)
-                            T.tile.min(neg_sm[cur, :, :],
-                                       neg_sm[cur, :, :], neg_sm[prv, :, :])
+                            T.tile.mul(neg_sm[cur, :, :], neg_sm[cur, :, :], -sm_scale)
+                            T.tile.min(neg_sm[cur, :, :], neg_sm[cur, :, :], neg_sm[prv, :, :])
                             T.tile.broadcast(buf_2d, neg_sm[cur, :, :])
                             T.tile.axpy(buf_2d, work_ub, sm_scale)
                             T.tile.exp(work_ub, buf_2d)
@@ -619,16 +594,14 @@ def flashattn_fwd_v4(
 
                             # MTE3: acc_s_half → workspace_2 (GM)
                             T.wait_flag("V", "MTE3", SIG_S_HALF)
-                            T.copy(acc_s_half, workspace_2[cid, i,
-                                     vid * half_M:vid * half_M + half_M, :])
+                            T.copy(acc_s_half, workspace_2[cid, i, vid * half_M : vid * half_M + half_M, :])
                             T.set_flag("MTE3", "V", SIG_S_HALF)
                             if (i + 1) % cross_interval == 0 or i == batch_iters - 1:
                                 T.set_cross_flag("MTE3", SEM_WS2_V2C)
 
                             # sumexp_i and r_factor (V unit, reads work_ub)
                             T.reduce_sum(work_ub, sumexp_is[i, :, :], dim=-1)
-                            T.tile.sub(r_factors[i, :, :],
-                                       neg_sm[cur, :, :], neg_sm[prv, :, :])
+                            T.tile.sub(r_factors[i, :, :], neg_sm[cur, :, :], neg_sm[prv, :, :])
 
                         T.set_cross_flag("MTE2", SEM_WS1_V2C)
 
@@ -645,9 +618,7 @@ def flashattn_fwd_v4(
                             T.wait_flag("V", "MTE2", SIG_IO_UB)
                             if i % cross_interval == 0:
                                 T.wait_cross_flag(SEM_WS3_C2V)
-                            T.copy(workspace_3[cid, i,
-                                     vid * half_M:vid * half_M + half_M, :],
-                                   io_buf_o)
+                            T.copy(workspace_3[cid, i, vid * half_M : vid * half_M + half_M, :], io_buf_o)
                             T.set_flag("MTE2", "V", SIG_IO_UB)
 
                             # Step 2: V copies io_buf_o → acc_o_ub (fp16→fp32)
@@ -666,20 +637,15 @@ def flashattn_fwd_v4(
                     # Write output (fp32 → fp16 → GM)
                     T.copy(acc_o, acc_o_half)
                     T.barrier_all()
-                    T.copy(acc_o_half, Output[bz, by,
-                         bx * block_M + vid * half_M:
-                         bx * block_M + vid * half_M + half_M, :])
+                    T.copy(acc_o_half, Output[bz, by, bx * block_M + vid * half_M : bx * block_M + vid * half_M + half_M, :])
 
                     # LSE = ln(sumexp) - neg_sm[0]
                     # neg_sm[0] = -sm_scale * global_max after min merge
-                    T.tile.min(neg_sm[0, :, :],
-                               neg_sm[0, :, :], neg_sm[1, :, :])
+                    T.tile.min(neg_sm[0, :, :], neg_sm[0, :, :], neg_sm[1, :, :])
                     T.tile.ln(lse_buf, sumexp)
                     T.tile.sub(lse_buf, lse_buf, neg_sm[0, :, :])
                     T.barrier_all()
-                    T.copy(lse_buf, lse[bz, by,
-                         bx * block_M + vid * half_M:
-                         bx * block_M + vid * half_M + half_M])
+                    T.copy(lse_buf, lse[bz, by, bx * block_M + vid * half_M : bx * block_M + vid * half_M + half_M])
                     T.barrier_all()
 
                 # Destroy: consume outstanding init-direction flags
@@ -719,28 +685,23 @@ def flashattn_bwd_preprocess(batch, heads, seq_len, dim_v, blk=32):
             do_fp32 = T.alloc_ub([blk // 2, dim_v], accum_dtype)
             delta_ub = T.alloc_ub([blk // 2], accum_dtype)
 
-            T.annotate_address({
-                o_ub: 0,
-                do_ub: blk // 2 * dim_v * DataType(dtype).bits // 8,
-                sum_ub: blk // 2 * dim_v * 2 * DataType(dtype).bits // 8,
-                prod_ub: blk // 2 * dim_v * 2 * DataType(dtype).bits // 8
-                         + blk // 2 * dim_v * DataType(accum_dtype).bits // 8,
-                do_fp32: blk // 2 * dim_v * 2 * DataType(dtype).bits // 8
-                         + 2 * blk // 2 * dim_v * DataType(accum_dtype).bits // 8,
-                delta_ub: blk // 2 * dim_v * 2 * DataType(dtype).bits // 8
-                          + 3 * blk // 2 * dim_v * DataType(accum_dtype).bits // 8,
-            })
+            T.annotate_address(
+                {
+                    o_ub: 0,
+                    do_ub: blk // 2 * dim_v * DataType(dtype).bits // 8,
+                    sum_ub: blk // 2 * dim_v * 2 * DataType(dtype).bits // 8,
+                    prod_ub: blk // 2 * dim_v * 2 * DataType(dtype).bits // 8 + blk // 2 * dim_v * DataType(accum_dtype).bits // 8,
+                    do_fp32: blk // 2 * dim_v * 2 * DataType(dtype).bits // 8 + 2 * blk // 2 * dim_v * DataType(accum_dtype).bits // 8,
+                    delta_ub: blk // 2 * dim_v * 2 * DataType(dtype).bits // 8 + 3 * blk // 2 * dim_v * DataType(accum_dtype).bits // 8,
+                }
+            )
 
             with T.Scope("V"):
                 T.tile.fill(sum_ub, 0.0)
                 T.barrier_all()
-                for k in T.serial(T.ceildiv(dim_v, dim_v)):
-                    T.copy(
-                        O[bz, bx, by * blk + vid * blk // 2:
-                          by * blk + vid * blk // 2 + blk // 2, :], o_ub)
-                    T.copy(
-                        dO[bz, bx, by * blk + vid * blk // 2:
-                           by * blk + vid * blk // 2 + blk // 2, :], do_ub)
+                for _k in T.serial(T.ceildiv(dim_v, dim_v)):
+                    T.copy(O[bz, bx, by * blk + vid * blk // 2 : by * blk + vid * blk // 2 + blk // 2, :], o_ub)
+                    T.copy(dO[bz, bx, by * blk + vid * blk // 2 : by * blk + vid * blk // 2 + blk // 2, :], do_ub)
                     T.barrier_all()
                     T.copy(o_ub, prod_ub)
                     T.copy(do_ub, do_fp32)
@@ -751,10 +712,7 @@ def flashattn_bwd_preprocess(batch, heads, seq_len, dim_v, blk=32):
                     T.barrier_all()
                 T.reduce_sum(sum_ub, delta_ub, dim=-1)
                 T.barrier_all()
-                T.copy(
-                    delta_ub,
-                    Delta[bz, bx, by * blk + vid * blk // 2:
-                          by * blk + vid * blk // 2 + blk // 2])
+                T.copy(delta_ub, Delta[bz, bx, by * blk + vid * blk // 2 : by * blk + vid * blk // 2 + blk // 2])
                 T.barrier_all()
 
     return main
@@ -785,22 +743,19 @@ def flashattn_bwd_postprocess(batch, heads, seq_len, dim_qk, blk=64):
             dq_ub = T.alloc_ub([blk // 2, dim_qk], accum_dtype)
             dq_half = T.alloc_ub([blk // 2, dim_qk], dtype)
 
-            T.annotate_address({
-                dq_ub: 0,
-                dq_half: blk // 2 * dim_qk * DataType(accum_dtype).bits // 8,
-            })
+            T.annotate_address(
+                {
+                    dq_ub: 0,
+                    dq_half: blk // 2 * dim_qk * DataType(accum_dtype).bits // 8,
+                }
+            )
 
             with T.Scope("V"):
-                T.copy(
-                    dQ[bz, by, bx * blk + vid * blk // 2:
-                       bx * blk + vid * blk // 2 + blk // 2, :], dq_ub)
+                T.copy(dQ[bz, by, bx * blk + vid * blk // 2 : bx * blk + vid * blk // 2 + blk // 2, :], dq_ub)
                 T.barrier_all()
                 T.copy(dq_ub, dq_half)
                 T.barrier_all()
-                T.copy(
-                    dq_half,
-                    dQ_out[bz, by, bx * blk + vid * blk // 2:
-                           bx * blk + vid * blk // 2 + blk // 2, :])
+                T.copy(dq_half, dQ_out[bz, by, bx * blk + vid * blk // 2 : bx * blk + vid * blk // 2 + blk // 2, :])
                 T.barrier_all()
 
     return main
@@ -813,8 +768,16 @@ def flashattn_bwd_postprocess(batch, heads, seq_len, dim_qk, blk=64):
 
 @tilelang.jit(pass_configs=_expert_pass_configs)
 def flashattn_bwd_pipeline(
-    batch, heads, seq_len, dim_qk, dim_v, is_causal, block_M, block_N,
-    groups=1, num_stages=4,
+    batch,
+    heads,
+    seq_len,
+    dim_qk,
+    dim_v,
+    is_causal,
+    block_M,
+    block_N,
+    groups=1,
+    num_stages=4,
 ):
     """Backward kernel with fine-grained pipeline sync in C scope.
 
@@ -861,13 +824,9 @@ def flashattn_bwd_pipeline(
         dQ: T.Tensor(dq_shape_padded, accum_dtype),
         dK: T.Tensor(dk_shape_padded, accum_dtype),
         dV: T.Tensor(v_shape, accum_dtype),
-        ws_s_dp: T.Tensor(
-            [bwd_block_num, num_stages, block_M, block_N], accum_dtype),
-        ws_p_ds: T.Tensor(
-            [bwd_block_num, num_stages, block_M, block_N], dtype),
-        ws_dv_dk: T.Tensor(
-            [bwd_block_num, num_stages, block_N,
-             max(dim_qk_padded, dim_v)], accum_dtype),
+        ws_s_dp: T.Tensor([bwd_block_num, num_stages, block_M, block_N], accum_dtype),
+        ws_p_ds: T.Tensor([bwd_block_num, num_stages, block_M, block_N], dtype),
+        ws_dv_dk: T.Tensor([bwd_block_num, num_stages, block_N, max(dim_qk_padded, dim_v)], accum_dtype),
     ):
         with T.Kernel(bwd_block_num, is_npu=True) as (cid, vid):
             bx = cid % (seq_len // block_M)
@@ -892,82 +851,72 @@ def flashattn_bwd_pipeline(
             p_half = T.alloc_ub([block_M // 2, block_N], dtype)
             lse_ub = T.alloc_ub([block_M // 2], accum_dtype)
             delta_ub = T.alloc_ub([block_M // 2], accum_dtype)
-            dv_tmp = T.alloc_ub(
-                [block_N // 2, max(dim_qk_padded, dim_v)], accum_dtype)
+            dv_tmp = T.alloc_ub([block_N // 2, max(dim_qk_padded, dim_v)], accum_dtype)
             col_pos = T.alloc_ub([block_N], accum_dtype)
             cmp_mask = T.alloc_ub([block_N], accum_dtype)
 
-            T.annotate_address({
-                q_l1: 0,
-                do_l1: block_M * dim_qk_padded * DataType(dtype).bits // 8,
-                k_l1: (block_M * dim_qk_padded * DataType(dtype).bits // 8
-                        + block_M * dim_v * DataType(dtype).bits // 8),
-                v_l1: (block_M * dim_qk_padded * DataType(dtype).bits // 8
+            T.annotate_address(
+                {
+                    q_l1: 0,
+                    do_l1: block_M * dim_qk_padded * DataType(dtype).bits // 8,
+                    k_l1: (block_M * dim_qk_padded * DataType(dtype).bits // 8 + block_M * dim_v * DataType(dtype).bits // 8),
+                    v_l1: (
+                        block_M * dim_qk_padded * DataType(dtype).bits // 8
                         + block_M * dim_v * DataType(dtype).bits // 8
-                        + block_N * dim_qk_padded * DataType(dtype).bits // 8),
-                mn_l1: (block_M * dim_qk_padded * DataType(dtype).bits // 8
-                         + block_M * dim_v * DataType(dtype).bits // 8
-                         + block_N * dim_qk_padded * DataType(dtype).bits // 8
-                         + block_N * dim_v * DataType(dtype).bits // 8),
-                k5_l1: (block_M * dim_qk_padded * DataType(dtype).bits // 8
-                         + block_M * dim_v * DataType(dtype).bits // 8
-                         + block_N * dim_qk_padded * DataType(dtype).bits // 8
-                         + block_N * dim_v * DataType(dtype).bits // 8
-                         + block_M * block_N * DataType(dtype).bits // 8),
-
-                l0c_mn: 0,
-                l0c_nd_v: block_M * block_N * DataType(accum_dtype).bits // 8,
-                l0c_nd_qk: block_M * block_N
-                            * DataType(accum_dtype).bits // 8,
-                l0c_dq: (block_M * block_N
-                          + block_N * max(dim_v, dim_qk_padded))
-                         * DataType(accum_dtype).bits // 8,
-
-                work_ub: 0,
-                dp_ub: block_M // 2 * block_N
-                        * DataType(accum_dtype).bits // 8,
-                p_half: 2 * block_M // 2 * block_N
-                         * DataType(accum_dtype).bits // 8,
-                lse_ub: (2 * block_M // 2 * block_N
-                          * DataType(accum_dtype).bits // 8
-                          + block_M // 2 * block_N
-                          * DataType(dtype).bits // 8),
-                delta_ub: (2 * block_M // 2 * block_N
-                            * DataType(accum_dtype).bits // 8
-                            + block_M // 2 * block_N
-                            * DataType(dtype).bits // 8
-                            + block_M // 2
-                            * DataType(accum_dtype).bits // 8),
-                dv_tmp: (2 * block_M // 2 * block_N
-                          * DataType(accum_dtype).bits // 8
-                          + block_M // 2 * block_N
-                          * DataType(dtype).bits // 8
-                          + 2 * block_M // 2
-                          * DataType(accum_dtype).bits // 8),
-                col_pos: (2 * block_M // 2 * block_N
-                           * DataType(accum_dtype).bits // 8
-                           + block_M // 2 * block_N
-                           * DataType(dtype).bits // 8
-                           + 2 * block_M // 2
-                           * DataType(accum_dtype).bits // 8
-                           + block_N // 2 * max(dim_qk_padded, dim_v)
-                           * DataType(accum_dtype).bits // 8),
-                cmp_mask: (2 * block_M // 2 * block_N
-                            * DataType(accum_dtype).bits // 8
-                            + block_M // 2 * block_N
-                            * DataType(dtype).bits // 8
-                            + 2 * block_M // 2
-                            * DataType(accum_dtype).bits // 8
-                            + block_N // 2 * max(dim_qk_padded, dim_v)
-                            * DataType(accum_dtype).bits // 8
-                            + block_N * DataType(accum_dtype).bits // 8),
-            })
+                        + block_N * dim_qk_padded * DataType(dtype).bits // 8
+                    ),
+                    mn_l1: (
+                        block_M * dim_qk_padded * DataType(dtype).bits // 8
+                        + block_M * dim_v * DataType(dtype).bits // 8
+                        + block_N * dim_qk_padded * DataType(dtype).bits // 8
+                        + block_N * dim_v * DataType(dtype).bits // 8
+                    ),
+                    k5_l1: (
+                        block_M * dim_qk_padded * DataType(dtype).bits // 8
+                        + block_M * dim_v * DataType(dtype).bits // 8
+                        + block_N * dim_qk_padded * DataType(dtype).bits // 8
+                        + block_N * dim_v * DataType(dtype).bits // 8
+                        + block_M * block_N * DataType(dtype).bits // 8
+                    ),
+                    l0c_mn: 0,
+                    l0c_nd_v: block_M * block_N * DataType(accum_dtype).bits // 8,
+                    l0c_nd_qk: block_M * block_N * DataType(accum_dtype).bits // 8,
+                    l0c_dq: (block_M * block_N + block_N * max(dim_v, dim_qk_padded)) * DataType(accum_dtype).bits // 8,
+                    work_ub: 0,
+                    dp_ub: block_M // 2 * block_N * DataType(accum_dtype).bits // 8,
+                    p_half: 2 * block_M // 2 * block_N * DataType(accum_dtype).bits // 8,
+                    lse_ub: (
+                        2 * block_M // 2 * block_N * DataType(accum_dtype).bits // 8 + block_M // 2 * block_N * DataType(dtype).bits // 8
+                    ),
+                    delta_ub: (
+                        2 * block_M // 2 * block_N * DataType(accum_dtype).bits // 8
+                        + block_M // 2 * block_N * DataType(dtype).bits // 8
+                        + block_M // 2 * DataType(accum_dtype).bits // 8
+                    ),
+                    dv_tmp: (
+                        2 * block_M // 2 * block_N * DataType(accum_dtype).bits // 8
+                        + block_M // 2 * block_N * DataType(dtype).bits // 8
+                        + 2 * block_M // 2 * DataType(accum_dtype).bits // 8
+                    ),
+                    col_pos: (
+                        2 * block_M // 2 * block_N * DataType(accum_dtype).bits // 8
+                        + block_M // 2 * block_N * DataType(dtype).bits // 8
+                        + 2 * block_M // 2 * DataType(accum_dtype).bits // 8
+                        + block_N // 2 * max(dim_qk_padded, dim_v) * DataType(accum_dtype).bits // 8
+                    ),
+                    cmp_mask: (
+                        2 * block_M // 2 * block_N * DataType(accum_dtype).bits // 8
+                        + block_M // 2 * block_N * DataType(dtype).bits // 8
+                        + 2 * block_M // 2 * DataType(accum_dtype).bits // 8
+                        + block_N // 2 * max(dim_qk_padded, dim_v) * DataType(accum_dtype).bits // 8
+                        + block_N * DataType(accum_dtype).bits // 8
+                    ),
+                }
+            )
 
             with T.Scope("C"):
-                T.copy(
-                    Q[bz, by, bx * block_M:(bx + 1) * block_M, :], q_l1)
-                T.copy(
-                    dO[bz, by, bx * block_M:(bx + 1) * block_M, :], do_l1)
+                T.copy(Q[bz, by, bx * block_M : (bx + 1) * block_M, :], q_l1)
+                T.copy(dO[bz, by, bx * block_M : (bx + 1) * block_M, :], do_l1)
                 T.barrier_all()
 
                 T.set_flag("M", "MTE2", _SIG_K)
@@ -984,16 +933,12 @@ def flashattn_bwd_pipeline(
                         idx = k_outer * num_stages + i
 
                         T.wait_flag("M", "MTE2", _SIG_K)
-                        T.copy(
-                            K[bz, kv_by,
-                              idx * block_N:(idx + 1) * block_N, :], k_l1)
+                        T.copy(K[bz, kv_by, idx * block_N : (idx + 1) * block_N, :], k_l1)
                         T.set_flag("MTE2", "M", _SIG_K)
 
                         T.wait_flag("MTE2", "M", _SIG_K)
                         T.wait_flag("FIX", "M", _SIG_L0C_MN)
-                        T.gemm_v0(
-                            q_l1, k_l1, l0c_mn,
-                            transpose_B=True, init=True)
+                        T.gemm_v0(q_l1, k_l1, l0c_mn, transpose_B=True, init=True)
                         T.set_flag("M", "FIX", _SIG_L0C_MN)
                         T.set_flag("M", "MTE2", _SIG_K)
 
@@ -1015,9 +960,7 @@ def flashattn_bwd_pipeline(
 
                         T.wait_flag("MTE2", "M", _SIG_MN)
                         T.wait_flag("FIX", "M", _SIG_L0C_ND)
-                        T.gemm_v0(
-                            mn_l1, do_l1, l0c_nd_v,
-                            transpose_A=True, init=True)
+                        T.gemm_v0(mn_l1, do_l1, l0c_nd_v, transpose_A=True, init=True)
                         T.set_flag("M", "FIX", _SIG_L0C_ND)
                         T.set_flag("M", "MTE2", _SIG_MN)
 
@@ -1026,16 +969,12 @@ def flashattn_bwd_pipeline(
                         T.set_flag("FIX", "M", _SIG_L0C_ND)
 
                         T.wait_flag("M", "MTE2", _SIG_V)
-                        T.copy(
-                            V[bz, kv_by,
-                              idx * block_N:(idx + 1) * block_N, :], v_l1)
+                        T.copy(V[bz, kv_by, idx * block_N : (idx + 1) * block_N, :], v_l1)
                         T.set_flag("MTE2", "M", _SIG_V)
 
                         T.wait_flag("MTE2", "M", _SIG_V)
                         T.wait_flag("FIX", "M", _SIG_L0C_MN)
-                        T.gemm_v0(
-                            do_l1, v_l1, l0c_mn,
-                            transpose_B=True, init=True)
+                        T.gemm_v0(do_l1, v_l1, l0c_mn, transpose_B=True, init=True)
                         T.set_flag("M", "FIX", _SIG_L0C_MN)
                         T.set_flag("M", "MTE2", _SIG_V)
 
@@ -1057,9 +996,7 @@ def flashattn_bwd_pipeline(
 
                         T.wait_flag("MTE2", "M", _SIG_MN)
                         T.wait_flag("FIX", "M", _SIG_L0C_ND)
-                        T.gemm_v0(
-                            mn_l1, q_l1, l0c_nd_qk,
-                            transpose_A=True, init=True)
+                        T.gemm_v0(mn_l1, q_l1, l0c_nd_qk, transpose_A=True, init=True)
                         T.set_flag("M", "FIX", _SIG_L0C_ND)
 
                         T.wait_flag("M", "FIX", _SIG_L0C_ND)
@@ -1070,27 +1007,19 @@ def flashattn_bwd_pipeline(
                         T.barrier_all()
 
                         T.wait_flag("M", "MTE2", _SIG_K5)
-                        T.copy(
-                            K[bz, kv_by,
-                              idx * block_N:(idx + 1) * block_N, :], k5_l1)
+                        T.copy(K[bz, kv_by, idx * block_N : (idx + 1) * block_N, :], k5_l1)
                         T.set_flag("MTE2", "M", _SIG_K5)
 
                         T.wait_flag("MTE2", "M", _SIG_K5)
                         if k_outer == 0 and i == 0:
-                            T.gemm_v0(
-                                mn_l1, k5_l1, l0c_dq,
-                                init=True)
+                            T.gemm_v0(mn_l1, k5_l1, l0c_dq, init=True)
                         else:
-                            T.gemm_v0(
-                                mn_l1, k5_l1, l0c_dq,
-                                init=False)
+                            T.gemm_v0(mn_l1, k5_l1, l0c_dq, init=False)
                         T.set_flag("M", "MTE2", _SIG_MN)
                         T.set_flag("M", "MTE2", _SIG_K5)
 
                 T.barrier_all()
-                T.copy(
-                    l0c_dq,
-                    dQ[bz, by, bx * block_M:(bx + 1) * block_M, :])
+                T.copy(l0c_dq, dQ[bz, by, bx * block_M : (bx + 1) * block_M, :])
                 T.barrier_all()
 
                 T.wait_flag("M", "MTE2", _SIG_K)
@@ -1110,49 +1039,27 @@ def flashattn_bwd_pipeline(
                     for i in range(batch_iters):
                         idx = _k_outer * num_stages + i
 
-                        T.copy(
-                            ws_s_dp[cid, i,
-                                    vid * block_M // 2:
-                                    vid * block_M // 2 + block_M // 2, :],
-                            work_ub)
+                        T.copy(ws_s_dp[cid, i, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :], work_ub)
                         T.barrier_all()
 
                         T.tile.mul(work_ub, work_ub, sm_scale)
 
-                        T.copy(
-                            lse[bz, by,
-                                bx * block_M + vid * block_M // 2:
-                                bx * block_M + vid * block_M // 2
-                                + block_M // 2],
-                            lse_ub)
+                        T.copy(lse[bz, by, bx * block_M + vid * block_M // 2 : bx * block_M + vid * block_M // 2 + block_M // 2], lse_ub)
                         T.barrier_all()
                         for h_i in range(block_M // 2):
-                            T.tile.sub(
-                                work_ub[h_i, :], work_ub[h_i, :],
-                                lse_ub[h_i])
+                            T.tile.sub(work_ub[h_i, :], work_ub[h_i, :], lse_ub[h_i])
                         T.tile.exp(work_ub, work_ub)
 
                         if is_causal and block_N >= 64:
-                            T.tile.arith_progression(
-                                col_pos, idx * block_N, 1, block_N)
+                            T.tile.arith_progression(col_pos, idx * block_N, 1, block_N)
                             for h_i in range(block_M // 2):
-                                row_pos_val = (
-                                    bx * block_M + vid * block_M // 2
-                                    + h_i) * 1.0
-                                T.tile.compare(
-                                    cmp_mask, col_pos, row_pos_val, "LE")
-                                T.tile.select(
-                                    work_ub[h_i, :], cmp_mask,
-                                    work_ub[h_i, :], 0.0,
-                                    "VSEL_TENSOR_SCALAR_MODE")
+                                row_pos_val = (bx * block_M + vid * block_M // 2 + h_i) * 1.0
+                                T.tile.compare(cmp_mask, col_pos, row_pos_val, "LE")
+                                T.tile.select(work_ub[h_i, :], cmp_mask, work_ub[h_i, :], 0.0, "VSEL_TENSOR_SCALAR_MODE")
 
                         T.copy(work_ub, p_half)
                         T.barrier_all()
-                        T.copy(
-                            p_half,
-                            ws_p_ds[cid, i,
-                                    vid * block_M // 2:
-                                    vid * block_M // 2 + block_M // 2, :])
+                        T.copy(p_half, ws_p_ds[cid, i, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :])
                         T.barrier_all()
                         T.set_cross_flag("MTE3", 1)
 
@@ -1162,57 +1069,32 @@ def flashattn_bwd_pipeline(
                     for i in range(batch_iters):
                         idx = _k_outer * num_stages + i
 
-                        T.copy(
-                            ws_dv_dk[cid, i,
-                                     vid * block_N // 2:
-                                     vid * block_N // 2 + block_N // 2,
-                                     :dim_v],
-                            dv_tmp)
+                        T.copy(ws_dv_dk[cid, i, vid * block_N // 2 : vid * block_N // 2 + block_N // 2, :dim_v], dv_tmp)
                         T.barrier_all()
                         T.tile.atomic_add(
-                            dV[bz, kv_by,
-                               idx * block_N + vid * block_N // 2:
-                               idx * block_N + vid * block_N // 2
-                               + block_N // 2, :],
-                            dv_tmp)
+                            dV[bz, kv_by, idx * block_N + vid * block_N // 2 : idx * block_N + vid * block_N // 2 + block_N // 2, :], dv_tmp
+                        )
 
-                        T.copy(
-                            ws_s_dp[cid, i,
-                                    vid * block_M // 2:
-                                    vid * block_M // 2 + block_M // 2, :],
-                            dp_ub)
+                        T.copy(ws_s_dp[cid, i, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :], dp_ub)
                         T.barrier_all()
 
-                        T.copy(
-                            ws_p_ds[cid, i,
-                                    vid * block_M // 2:
-                                    vid * block_M // 2 + block_M // 2, :],
-                            p_half)
+                        T.copy(ws_p_ds[cid, i, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :], p_half)
                         T.barrier_all()
                         T.copy(p_half, work_ub)
 
                         T.copy(
-                            Delta[bz, by,
-                                  bx * block_M + vid * block_M // 2:
-                                  bx * block_M + vid * block_M // 2
-                                  + block_M // 2],
-                            delta_ub)
+                            Delta[bz, by, bx * block_M + vid * block_M // 2 : bx * block_M + vid * block_M // 2 + block_M // 2], delta_ub
+                        )
                         T.barrier_all()
 
                         for h_i in range(block_M // 2):
-                            T.tile.sub(
-                                dp_ub[h_i, :], dp_ub[h_i, :],
-                                delta_ub[h_i])
+                            T.tile.sub(dp_ub[h_i, :], dp_ub[h_i, :], delta_ub[h_i])
                         T.tile.mul(work_ub, work_ub, dp_ub)
                         T.tile.mul(work_ub, work_ub, sm_scale)
 
                         T.copy(work_ub, p_half)
                         T.barrier_all()
-                        T.copy(
-                            p_half,
-                            ws_p_ds[cid, i,
-                                    vid * block_M // 2:
-                                    vid * block_M // 2 + block_M // 2, :])
+                        T.copy(p_half, ws_p_ds[cid, i, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :])
                         T.barrier_all()
                         T.set_cross_flag("V", 3)
 
@@ -1220,18 +1102,11 @@ def flashattn_bwd_pipeline(
                         idx = _k_outer * num_stages + i
                         T.wait_cross_flag(4)
                         T.barrier_all()
-                        T.copy(
-                            ws_dv_dk[cid, i,
-                                     vid * block_N // 2:
-                                     vid * block_N // 2 + block_N // 2, :],
-                            dv_tmp)
+                        T.copy(ws_dv_dk[cid, i, vid * block_N // 2 : vid * block_N // 2 + block_N // 2, :], dv_tmp)
                         T.barrier_all()
                         T.tile.atomic_add(
-                            dK[bz, kv_by,
-                               idx * block_N + vid * block_N // 2:
-                               idx * block_N + vid * block_N // 2
-                               + block_N // 2, :],
-                            dv_tmp)
+                            dK[bz, kv_by, idx * block_N + vid * block_N // 2 : idx * block_N + vid * block_N // 2 + block_N // 2, :], dv_tmp
+                        )
                         T.barrier_all()
 
     return main
@@ -1247,7 +1122,7 @@ def ref_program(Q, K, V, is_causal, groups=1):
     K_f = K.float().repeat_interleave(groups, dim=1) if groups > 1 else K.float()
     V_f = V.float().repeat_interleave(groups, dim=1) if groups > 1 else V.float()
     dim_qk = Q_f.shape[-1]
-    scale = 1.0 / (dim_qk ** 0.5)
+    scale = 1.0 / (dim_qk**0.5)
     scores = torch.matmul(Q_f, K_f.transpose(-2, -1)) * scale
     if is_causal:
         N = Q.shape[2]
@@ -1265,7 +1140,7 @@ def ref_bwd(Q, K, V, dO, is_causal, groups=1):
     K_rep = K_f.repeat_interleave(groups, dim=1) if groups > 1 else K_f
     V_rep = V_f.repeat_interleave(groups, dim=1) if groups > 1 else V_f
     dim_qk = Q_f.shape[-1]
-    scale = 1.0 / (dim_qk ** 0.5)
+    scale = 1.0 / (dim_qk**0.5)
     scores = torch.matmul(Q_f, K_rep.transpose(-2, -1)) * scale
     if is_causal:
         N = Q.shape[2]
@@ -1287,8 +1162,6 @@ class _attention(torch.autograd.Function):
     def forward(ctx, q, k, v, causal, groups=1):
         B, N, H, D_qk = q.shape
         D_v = v.shape[-1]
-        H_kv = k.shape[2]
-
         q_bhsd = q.permute(0, 2, 1, 3).contiguous()
         k_bhsd = k.permute(0, 2, 1, 3).contiguous()
         v_bhsd = v.permute(0, 2, 1, 3).contiguous()
@@ -1324,28 +1197,22 @@ class _attention(torch.autograd.Function):
         dim_qk_padded = ((D_qk + 127) // 128) * 128
         num_stages = 4
 
-        dQ = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float32, device='npu')
-        dK = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float32, device='npu')
-        dV = torch.zeros(B, H_kv, N, D_v, dtype=torch.float32, device='npu')
+        dQ = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float32, device="npu")
+        dK = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float32, device="npu")
+        dV = torch.zeros(B, H_kv, N, D_v, dtype=torch.float32, device="npu")
 
-        Q_padded = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float16, device='npu')
+        Q_padded = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float16, device="npu")
         Q_padded[:, :, :, :D_qk] = q
-        K_padded = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float16, device='npu')
+        K_padded = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float16, device="npu")
         K_padded[:, :, :, :D_qk] = k
 
         bwd_block_num = (N // block_M) * H * B
-        ws_s_dp = torch.empty(bwd_block_num, num_stages, block_M, block_N,
-                              dtype=torch.float32, device='npu')
-        ws_p_ds = torch.empty(bwd_block_num, num_stages, block_M, block_N,
-                              dtype=torch.float16, device='npu')
-        ws_dv_dk = torch.empty(bwd_block_num, num_stages, block_N,
-                               max(dim_qk_padded, D_v),
-                               dtype=torch.float32, device='npu')
+        ws_s_dp = torch.empty(bwd_block_num, num_stages, block_M, block_N, dtype=torch.float32, device="npu")
+        ws_p_ds = torch.empty(bwd_block_num, num_stages, block_M, block_N, dtype=torch.float16, device="npu")
+        ws_dv_dk = torch.empty(bwd_block_num, num_stages, block_N, max(dim_qk_padded, D_v), dtype=torch.float32, device="npu")
 
-        kernel = flashattn_bwd_pipeline(
-            B, H, N, D_qk, D_v, ctx.causal, block_M, block_N, groups, num_stages)
-        kernel(Q_padded, K_padded, v, do_bhsd, lse, delta, dQ, dK, dV,
-               ws_s_dp, ws_p_ds, ws_dv_dk)
+        kernel = flashattn_bwd_pipeline(B, H, N, D_qk, D_v, ctx.causal, block_M, block_N, groups, num_stages)
+        kernel(Q_padded, K_padded, v, do_bhsd, lse, delta, dQ, dK, dV, ws_s_dp, ws_p_ds, ws_dv_dk)
 
         dQ = dQ[:, :, :, :D_qk].half()
         dK = dK[:, :, :, :D_qk].half()
@@ -1367,8 +1234,7 @@ attention = _attention.apply
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="GQA Flash Attention Forward + Backward (Expert Mode)")
+    parser = argparse.ArgumentParser(description="GQA Flash Attention Forward + Backward (Expert Mode)")
     parser.add_argument("--level", default="l0", choices=["l0", "bench"])
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--h", type=int, default=4)
@@ -1380,7 +1246,7 @@ def main():
     args = parser.parse_args()
 
     tilelang.disable_cache()
-    torch.set_default_device('npu')
+    torch.set_default_device("npu")
     torch.manual_seed(0)
 
     B = args.batch
@@ -1394,10 +1260,10 @@ def main():
 
     if args.level == "l0":
         torch.manual_seed(42)
-        Q = torch.randn(B, H, N, D_qk, dtype=torch.float16, device='npu')
-        K = torch.randn(B, H_kv, N, D_qk, dtype=torch.float16, device='npu')
-        V = torch.randn(B, H_kv, N, D_v, dtype=torch.float16, device='npu')
-        dO = torch.randn(B, H, N, D_v, dtype=torch.float16, device='npu')
+        Q = torch.randn(B, H, N, D_qk, dtype=torch.float16, device="npu")
+        K = torch.randn(B, H_kv, N, D_qk, dtype=torch.float16, device="npu")
+        V = torch.randn(B, H_kv, N, D_v, dtype=torch.float16, device="npu")
+        dO = torch.randn(B, H, N, D_v, dtype=torch.float16, device="npu")
 
         bM, bN = 64, (64 if causal else 32)
 
@@ -1411,44 +1277,33 @@ def main():
 
         dim_qk_padded = ((D_qk + 127) // 128) * 128
         num_stages = 4
-        dQ = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float32, device='npu')
-        dK = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float32, device='npu')
-        dV = torch.zeros(B, H_kv, N, D_v, dtype=torch.float32, device='npu')
+        dQ = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float32, device="npu")
+        dK = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float32, device="npu")
+        dV = torch.zeros(B, H_kv, N, D_v, dtype=torch.float32, device="npu")
 
-        Q_padded = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float16, device='npu')
+        Q_padded = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float16, device="npu")
         Q_padded[:, :, :, :D_qk] = Q
-        K_padded = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float16, device='npu')
+        K_padded = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float16, device="npu")
         K_padded[:, :, :, :D_qk] = K
 
         bwd_block_num = (N // bM) * H * B
-        ws_s_dp = torch.empty(bwd_block_num, num_stages, bM, bN,
-                              dtype=torch.float32, device='npu')
-        ws_p_ds = torch.empty(bwd_block_num, num_stages, bM, bN,
-                              dtype=torch.float16, device='npu')
-        ws_dv_dk = torch.empty(bwd_block_num, num_stages, bN,
-                               max(dim_qk_padded, D_v),
-                               dtype=torch.float32, device='npu')
+        ws_s_dp = torch.empty(bwd_block_num, num_stages, bM, bN, dtype=torch.float32, device="npu")
+        ws_p_ds = torch.empty(bwd_block_num, num_stages, bM, bN, dtype=torch.float16, device="npu")
+        ws_dv_dk = torch.empty(bwd_block_num, num_stages, bN, max(dim_qk_padded, D_v), dtype=torch.float32, device="npu")
 
-        bwd_mod = flashattn_bwd_pipeline(
-            B, H, N, D_qk, D_v, causal, bM, bN, groups, num_stages)
-        bwd_mod(Q_padded, K_padded, V, dO, lse_npu, Delta_npu,
-                dQ, dK, dV, ws_s_dp, ws_p_ds, ws_dv_dk)
+        bwd_mod = flashattn_bwd_pipeline(B, H, N, D_qk, D_v, causal, bM, bN, groups, num_stages)
+        bwd_mod(Q_padded, K_padded, V, dO, lse_npu, Delta_npu, dQ, dK, dV, ws_s_dp, ws_p_ds, ws_dv_dk)
         torch.npu.synchronize()
 
         dQ_ref, dK_ref, dV_ref = ref_bwd(Q, K, V, dO, causal, groups)
 
         try:
-            torch.testing.assert_close(
-                dV.half().cpu(), dV_ref.cpu(), rtol=1e-2, atol=1e-2)
-            torch.testing.assert_close(
-                dK[:, :, :, :D_qk].half().cpu(), dK_ref.cpu(), rtol=1e-2, atol=1e-2)
-            torch.testing.assert_close(
-                dQ[:, :, :, :D_qk].half().cpu(), dQ_ref.cpu(), rtol=1e-2, atol=1e-2)
-            print(f"[PASS] L0 B={B} H={H} N={N} D_qk={D_qk} D_v={D_v} "
-                  f"groups={groups} causal={causal}")
+            torch.testing.assert_close(dV.half().cpu(), dV_ref.cpu(), rtol=1e-2, atol=1e-2)
+            torch.testing.assert_close(dK[:, :, :, :D_qk].half().cpu(), dK_ref.cpu(), rtol=1e-2, atol=1e-2)
+            torch.testing.assert_close(dQ[:, :, :, :D_qk].half().cpu(), dQ_ref.cpu(), rtol=1e-2, atol=1e-2)
+            print(f"[PASS] L0 B={B} H={H} N={N} D_qk={D_qk} D_v={D_v} groups={groups} causal={causal}")
         except AssertionError as e:
-            print(f"[FAIL] L0 B={B} H={H} N={N} D_qk={D_qk} D_v={D_v} "
-                  f"groups={groups} causal={causal}: {e}")
+            print(f"[FAIL] L0 B={B} H={H} N={N} D_qk={D_qk} D_v={D_v} groups={groups} causal={causal}: {e}")
             return 1
         return 0
 
@@ -1456,10 +1311,10 @@ def main():
         import time as _time
 
         torch.manual_seed(42)
-        Q = torch.randn(B, H, N, D_qk, dtype=torch.float16, device='npu')
-        K = torch.randn(B, H_kv, N, D_qk, dtype=torch.float16, device='npu')
-        V = torch.randn(B, H_kv, N, D_v, dtype=torch.float16, device='npu')
-        dO = torch.randn(B, H, N, D_v, dtype=torch.float16, device='npu')
+        Q = torch.randn(B, H, N, D_qk, dtype=torch.float16, device="npu")
+        K = torch.randn(B, H_kv, N, D_qk, dtype=torch.float16, device="npu")
+        V = torch.randn(B, H_kv, N, D_v, dtype=torch.float16, device="npu")
+        dO = torch.randn(B, H, N, D_v, dtype=torch.float16, device="npu")
 
         bM, bN = 64, (64 if causal else 32)
 
@@ -1474,25 +1329,20 @@ def main():
         dim_qk_padded = ((D_qk + 127) // 128) * 128
         num_stages = 4
 
-        Q_padded = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float16, device='npu')
+        Q_padded = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float16, device="npu")
         Q_padded[:, :, :, :D_qk] = Q
-        K_padded = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float16, device='npu')
+        K_padded = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float16, device="npu")
         K_padded[:, :, :, :D_qk] = K
 
         bwd_block_num = (N // bM) * H * B
-        dQ = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float32, device='npu')
-        dK = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float32, device='npu')
-        dV = torch.zeros(B, H_kv, N, D_v, dtype=torch.float32, device='npu')
-        ws_s_dp = torch.empty(bwd_block_num, num_stages, bM, bN,
-                              dtype=torch.float32, device='npu')
-        ws_p_ds = torch.empty(bwd_block_num, num_stages, bM, bN,
-                              dtype=torch.float16, device='npu')
-        ws_dv_dk = torch.empty(bwd_block_num, num_stages, bN,
-                               max(dim_qk_padded, D_v),
-                               dtype=torch.float32, device='npu')
+        dQ = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float32, device="npu")
+        dK = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float32, device="npu")
+        dV = torch.zeros(B, H_kv, N, D_v, dtype=torch.float32, device="npu")
+        ws_s_dp = torch.empty(bwd_block_num, num_stages, bM, bN, dtype=torch.float32, device="npu")
+        ws_p_ds = torch.empty(bwd_block_num, num_stages, bM, bN, dtype=torch.float16, device="npu")
+        ws_dv_dk = torch.empty(bwd_block_num, num_stages, bN, max(dim_qk_padded, D_v), dtype=torch.float32, device="npu")
 
-        bwd_mod = flashattn_bwd_pipeline(
-            B, H, N, D_qk, D_v, causal, bM, bN, groups, num_stages)
+        bwd_mod = flashattn_bwd_pipeline(B, H, N, D_qk, D_v, causal, bM, bN, groups, num_stages)
 
         def _bench(fn, warmup=50, iters=200):
             for _ in range(warmup):
@@ -1509,17 +1359,14 @@ def main():
 
         # Forward v4 (optimized)
         v4_bM, v4_bN = 32, 64
-        fwd_v4_mod = flashattn_fwd_v4(
-            B, H, N, D_qk, D_v, causal, v4_bM, v4_bN, groups,
-            num_stages=14, cross_interval=2)
+        fwd_v4_mod = flashattn_fwd_v4(B, H, N, D_qk, D_v, causal, v4_bM, v4_bN, groups, num_stages=14, cross_interval=2)
         lat_fwd_v4 = _bench(lambda: fwd_v4_mod(Q, K, V))
 
         def _run_bwd():
             dQ.zero_()
             dK.zero_()
             dV.zero_()
-            bwd_mod(Q_padded, K_padded, V, dO, lse_npu, Delta_npu,
-                    dQ, dK, dV, ws_s_dp, ws_p_ds, ws_dv_dk)
+            bwd_mod(Q_padded, K_padded, V, dO, lse_npu, Delta_npu, dQ, dK, dV, ws_s_dp, ws_p_ds, ws_dv_dk)
 
         lat_bwd = _bench(_run_bwd)
 
@@ -1539,7 +1386,7 @@ def main():
             q2 = Q_ref.requires_grad_(True)
             k2 = K_ref.requires_grad_(True)
             v2 = V_ref.requires_grad_(True)
-            scores = torch.matmul(q2, k2.transpose(-2, -1)) * (1.0 / D_qk ** 0.5)
+            scores = torch.matmul(q2, k2.transpose(-2, -1)) * (1.0 / D_qk**0.5)
             if causal:
                 mask = torch.tril(torch.ones(N, N, device=scores.device, dtype=torch.bool))
                 scores = scores.masked_fill(~mask.unsqueeze(0).unsqueeze(0), float("-inf"))
@@ -1550,29 +1397,23 @@ def main():
         lat_ref_e2e = _bench(_run_ref_fwd_bwd, warmup=20, iters=50)
 
         print()
-        print(f"{'='*65}")
-        print(f"  Config: B={B} H={H} H_kv={H_kv} N={N} "
-              f"D_qk={D_qk} D_v={D_v} groups={groups}")
+        print(f"{'=' * 65}")
+        print(f"  Config: B={B} H={H} H_kv={H_kv} N={N} D_qk={D_qk} D_v={D_v} groups={groups}")
         print(f"  causal={causal}  dtype=fp16")
-        print(f"{'='*65}")
+        print(f"{'=' * 65}")
         print(f"  {'Kernel':<30} {'Latency':>10} {'TFlops':>10}")
-        print(f"  {'-'*55}")
-        print(f"  {'TileLang Forward v1':<30} {lat_fwd:>8.2f} ms  "
-              f"{fwd_flops/lat_fwd*1e-9:>8.2f}")
-        print(f"  {'TileLang Forward v4 (best)':<30} {lat_fwd_v4:>8.2f} ms  "
-              f"{fwd_flops/lat_fwd_v4*1e-9:>8.2f}")
-        print(f"  {'TileLang Backward':<30} {lat_bwd:>8.2f} ms  "
-              f"{bwd_flops/lat_bwd*1e-9:>8.2f}")
+        print(f"  {'-' * 55}")
+        print(f"  {'TileLang Forward v1':<30} {lat_fwd:>8.2f} ms  {fwd_flops / lat_fwd * 1e-9:>8.2f}")
+        print(f"  {'TileLang Forward v4 (best)':<30} {lat_fwd_v4:>8.2f} ms  {fwd_flops / lat_fwd_v4 * 1e-9:>8.2f}")
+        print(f"  {'TileLang Backward':<30} {lat_bwd:>8.2f} ms  {bwd_flops / lat_bwd * 1e-9:>8.2f}")
         best_fwd = min(lat_fwd, lat_fwd_v4)
-        print(f"  {'TileLang Fwd+Bwd (best)':<30} {best_fwd+lat_bwd:>8.2f} ms  "
-              f"{total_flops/(best_fwd+lat_bwd)*1e-9:>8.2f}")
-        print(f"  {'-'*55}")
-        print(f"  {'PyTorch Fwd+Bwd (e2e)':<30} {lat_ref_e2e:>8.2f} ms  "
-              f"{total_flops/lat_ref_e2e*1e-9:>8.2f}")
-        print(f"  {'-'*55}")
+        print(f"  {'TileLang Fwd+Bwd (best)':<30} {best_fwd + lat_bwd:>8.2f} ms  {total_flops / (best_fwd + lat_bwd) * 1e-9:>8.2f}")
+        print(f"  {'-' * 55}")
+        print(f"  {'PyTorch Fwd+Bwd (e2e)':<30} {lat_ref_e2e:>8.2f} ms  {total_flops / lat_ref_e2e * 1e-9:>8.2f}")
+        print(f"  {'-' * 55}")
         sp_e2e = lat_ref_e2e / (best_fwd + lat_bwd)
         print(f"  Speedup (fwd+bwd): {sp_e2e:.2f}x")
-        print(f"{'='*65}")
+        print(f"{'=' * 65}")
 
 
 if __name__ == "__main__":
