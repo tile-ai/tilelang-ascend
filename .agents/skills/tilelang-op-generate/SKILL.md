@@ -71,6 +71,17 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 > **⚠️ 核心原则：算子的主要操作必须全部在 kernel 内实现**
 >
 > 算子的所有核心计算逻辑（包括数据搬运、数学运算、归约、归一化等）必须在 `@tilelang.jit` 装饰的 kernel 函数内部完成。**禁止**将算子的主要操作放在 kernel 外部（如 host 端 Python 代码）来实现。kernel 外部只允许做数据准备（输入 tensor 创建）、kernel 调用和结果验证。
+>
+> **⚠️ 特别禁止：chunk + contiguous 多次拷贝**
+>
+> 若算子从输入 tensor 沿某一维等分出多个子张量（如 `silu(x0)*x1`、`x0+x1` 等拆分后分别操作的场景），**禁止**对每个子张量分别调用 `.contiguous()` 后传给多输入 kernel，这会触发 N 次完整的 host 内存拷贝（`torch.chunk` 产生 view，`.contiguous()` 才真正拷贝）。
+>
+> **正确做法**：直接传完整 tensor 给单输入 kernel，kernel 内部通过列/行偏移读取各子张量：
+> - host 端：`kernel(input)` — 0 次 chunk，0 次 contiguous
+> - kernel 端：`T.copy(X[row, col], x0_ub)` 和 `T.copy(X[row, half_k + col], x1_ub)` — `half_k` 为符号表达（`K // 2`），TileLang 编译器支持
+> - host 适配层：dim=-1 时仅 reshape（无拷贝）；dim≠-1 时 permute+contiguous（1 次拷贝）
+>
+> 反模式示例（禁止）、正模式代码、检查清单详见 [tilelang-perf-optimization optimization-guide.md §2.12 子模式](../tilelang-perf-optimization/references/optimization-guide.md)。
 
 ### 步骤 1：读取设计文档
 
