@@ -152,6 +152,112 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     return res;
   };
 
+  auto compute_copy_rows =
+      [analyzer](const Buffer &buf, const Array<Range> &range,
+                 const Array<PrimExpr> &extents) -> PrimExpr {
+    ICHECK_EQ(buf->shape.size(), extents.size());
+    ICHECK_EQ(range.size(), extents.size());
+    if (buf->shape.size() <= 1) {
+      return Integer(1);
+    }
+
+    // The AscendC GM<->UB helpers issue one 2D DMA. A UB operand has no
+    // configurable local row stride, so all row dimensions inside the first
+    // varying one must be dense. A GM operand may additionally end in
+    // singleton row dimensions: compute_strideN folds those dimensions into
+    // the configurable GM row stride.
+    PrimExpr rows = Integer(1);
+    int first_active_row_dim = -1, last_active_row_dim = -1;
+    for (size_t i = 0; i + 1 < extents.size(); ++i) {
+      const auto *extent = extents[i].as<IntImmNode>();
+      rows = rows * extents[i];
+      if (buf->shape.size() <= 2) {
+        continue;
+      }
+      ICHECK(extent)
+          << "High-rank Ascend GM<->UB copies require static row extents, "
+             "but dimension "
+          << i << " of buffer " << buf->name << " is " << extents[i];
+      if (first_active_row_dim < 0 && extent->value != 1) {
+        first_active_row_dim = static_cast<int>(i);
+      }
+      if (extent->value != 1) {
+        last_active_row_dim = static_cast<int>(i);
+      }
+    }
+
+    if (buf->shape.size() <= 2) {
+      return rows;
+    }
+    if (first_active_row_dim < 0) {
+      return rows;
+    }
+
+    int last_dense_dim = buf.scope() == "global"
+                             ? last_active_row_dim
+                             : static_cast<int>(extents.size()) - 2;
+    for (int i = first_active_row_dim + 1; i <= last_dense_dim; ++i) {
+      const auto *extent = extents[i].as<IntImmNode>();
+      const auto *shape = buf->shape[i].as<IntImmNode>();
+      ICHECK(extent && shape && extent->value == shape->value &&
+             analyzer->CanProveEqual(range[i]->min, 0))
+          << "Cannot flatten non-contiguous high-rank Ascend GM<->UB copy "
+             "for buffer "
+          << buf->name << ": dimension " << i << " has region ["
+          << range[i]->min << ", " << range[i]->extent
+          << ") but a zero-based full extent of " << buf->shape[i]
+          << " is required";
+    }
+    return rows;
+  };
+
+  auto compute_ub_template_rows =
+      [&compute_blocklen](const Buffer &ub, const Array<PrimExpr> &extents,
+                          const PrimExpr &region_rows) -> PrimExpr {
+    return ub->shape.size() == 2 ? compute_blocklen(ub, extents) : region_rows;
+  };
+
+  auto compute_buffer_rows = [](const Buffer &buf) -> PrimExpr {
+    PrimExpr rows = Integer(1);
+    for (size_t i = 0; i + 1 < buf->shape.size(); ++i) {
+      rows = rows * buf->shape[i];
+    }
+    return rows;
+  };
+
+  auto validate_high_rank_ub = [analyzer](const Buffer &ub,
+                                          const Array<Range> &range,
+                                          const Array<PrimExpr> &extents,
+                                          const PrimExpr &rows) {
+    ICHECK_EQ(ub.scope(), "shared.ub");
+    for (size_t i = 0; i < range.size(); ++i) {
+      ICHECK(analyzer->CanProveEqual(range[i]->min, 0))
+          << "High-rank Ascend GM<->UB copies require a zero-based UB "
+             "region, but dimension "
+          << i << " of buffer " << ub->name << " starts at " << range[i]->min;
+      ICHECK(analyzer->CanProve(extents[i] <= ub->shape[i]))
+          << "High-rank Ascend GM<->UB copy region exceeds buffer " << ub->name
+          << " at dimension " << i << ": extent " << extents[i]
+          << " is larger than " << ub->shape[i];
+    }
+    ICHECK(analyzer->CanProveEqual(extents.back(), ub->shape.back()))
+        << "High-rank Ascend GM<->UB copies require the full UB row width, "
+           "but buffer "
+        << ub->name << " has region extent " << extents.back()
+        << " and row width " << ub->shape.back();
+
+    const auto *row_count = rows.as<IntImmNode>();
+    const auto *row_width = ub->shape.back().as<IntImmNode>();
+    ICHECK(row_count && row_width)
+        << "High-rank Ascend GM<->UB copies require static UB dimensions";
+    ICHECK(row_count->value <= 1 ||
+           (row_width->value * ub->dtype.bytes()) % 32 == 0)
+        << "High-rank multi-row Ascend GM<->UB copies require a 32-byte "
+           "aligned UB row pitch, but buffer "
+        << ub->name << " has " << row_width->value * ub->dtype.bytes()
+        << " bytes per row";
+  };
+
   auto build_indices = [](const Array<Range> &range) -> Array<PrimExpr> {
     Array<PrimExpr> indices;
     for (size_t i = 0; i < range.size(); i++) {
@@ -204,26 +310,56 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       config.gm2ub = true;
       strideN = compute_strideN(src, src_extents);
       config.needs_strideN = true;
+      PrimExpr src_rows = compute_copy_rows(src, src_range, src_extents);
+      PrimExpr dst_rows = compute_copy_rows(dst, dst_range, dst_extents);
+      PrimExpr dst_template_rows =
+          compute_ub_template_rows(dst, dst_extents, dst_rows);
+      if (src->shape.size() > 2 || dst->shape.size() > 2) {
+        ICHECK(analyzer->CanProveEqual(src_rows, dst_rows))
+            << "High-rank copy_gm_to_ub requires matching source and "
+               "destination row counts, but got "
+            << src_rows << " and " << dst_rows;
+        ICHECK(analyzer->CanProveEqual(src_extents.back(), dst_extents.back()))
+            << "High-rank copy_gm_to_ub requires matching source and "
+               "destination column counts, but got "
+            << src_extents.back() << " and " << dst_extents.back();
+        validate_high_rank_ub(dst, dst_range, dst_extents, dst_rows);
+      }
 
       ss << "copy_gm_to_ub<";
       ss << get_dtype(src) << ", ";
       ss << dst_extents[dst->shape.size() - 1];
       // ss << dst->shape[dst->shape.size() - 1];
       if (dst->shape.size() > 1) {
-        ss << ", " << compute_blocklen(dst, dst_extents);
+        ss << ", " << dst_template_rows;
       }
       ss << ">";
     } else if (dst.scope() == "global") {
       config.ub2gm = true;
       strideN = compute_strideN(dst, dst_extents);
       config.needs_strideN = true;
+      PrimExpr src_rows = compute_copy_rows(src, src_range, src_extents);
+      PrimExpr dst_rows = compute_copy_rows(dst, dst_range, dst_extents);
+      PrimExpr src_template_rows =
+          compute_ub_template_rows(src, src_extents, src_rows);
+      if (src->shape.size() > 2 || dst->shape.size() > 2) {
+        ICHECK(analyzer->CanProveEqual(src_rows, dst_rows))
+            << "High-rank copy_ub_to_gm requires matching source and "
+               "destination row counts, but got "
+            << src_rows << " and " << dst_rows;
+        ICHECK(analyzer->CanProveEqual(src_extents.back(), dst_extents.back()))
+            << "High-rank copy_ub_to_gm requires matching source and "
+               "destination column counts, but got "
+            << src_extents.back() << " and " << dst_extents.back();
+        validate_high_rank_ub(src, src_range, src_extents, src_rows);
+      }
 
       ss << "copy_ub_to_gm<";
       ss << get_dtype(dst) << ", ";
       ss << src_extents[src->shape.size() - 1];
       // ss << src->shape[src->shape.size() - 1];
       if (src->shape.size() > 1) {
-        ss << ", " << compute_blocklen(src, src_extents);
+        ss << ", " << src_template_rows;
       }
       ss << ">";
     } else if (dst.scope() == "shared.dyn") {
@@ -343,6 +479,17 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
                   Select(remaining > 0, remaining, 0));
   };
 
+  auto compute_copy_valid_rows =
+      [&compute_valid_extent](const Buffer &buf, const Array<Range> &range,
+                              const Array<PrimExpr> &extents) -> PrimExpr {
+    PrimExpr rows = Integer(1);
+    for (size_t i = 0; i + 1 < extents.size(); ++i) {
+      rows = rows * compute_valid_extent(range[i]->min, range[i]->extent,
+                                         buf->shape[i]);
+    }
+    return rows;
+  };
+
   auto find_active_dim_indices =
       [](const Array<PrimExpr> &extents) -> std::vector<int> {
     std::vector<int> active_indices;
@@ -453,7 +600,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   }
 
   if (config.gm2ub) {
-    new_args.push_back(validRow_src);
+    new_args.push_back(compute_copy_valid_rows(src, src_range, src_extents));
     new_args.push_back(validCol_src);
     PrimExpr pad_val = padValue;
     if (pad_val->dtype != dst->dtype) {
@@ -461,16 +608,20 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     }
     new_args.push_back(pad_val);
     if (dst->shape.size() > 1) {
-      new_args.push_back(dst->shape[dst->shape.size() - 2]);
+      new_args.push_back(dst->shape.size() > 2
+                             ? compute_buffer_rows(dst)
+                             : dst->shape[dst->shape.size() - 2]);
     }
     new_args.push_back(dst->shape[dst->shape.size() - 1]);
   }
 
   if (config.ub2gm) {
-    new_args.push_back(validRow_dst);
+    new_args.push_back(compute_copy_valid_rows(dst, dst_range, dst_extents));
     new_args.push_back(validCol_dst);
     if (src->shape.size() > 1) {
-      new_args.push_back(src->shape[src->shape.size() - 2]);
+      new_args.push_back(src->shape.size() > 2
+                             ? compute_buffer_rows(src)
+                             : src->shape[src->shape.size() - 2]);
     }
     new_args.push_back(src->shape[src->shape.size() - 1]);
   }
