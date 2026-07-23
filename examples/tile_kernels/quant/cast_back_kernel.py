@@ -88,7 +88,7 @@ def _decode_sf(x_sf: torch.Tensor, sf_rows: int, sf_cols: int) -> torch.Tensor:
         sf_trimmed = sf_u8[:sf_rows, :sf_cols]
         return _get_ue8m0_lut(x_sf.device)[sf_trimmed.to(torch.long)]
     else:
-        is_col_major = (x_sf.dim() == 2 and x_sf.stride(0) == 1 and x_sf.stride(1) > 1)
+        is_col_major = x_sf.dim() == 2 and x_sf.stride(0) == 1 and x_sf.stride(1) > 1
         if is_col_major:
             return x_sf.t()[:sf_rows, :sf_cols].to(torch.float16)
         else:
@@ -107,7 +107,7 @@ def dequant_kernel_factory(
     block_N: int,
     num_per_tokens: int,
     num_per_channels: int,
-    dtype: str
+    dtype: str,
 ):
     m_blocks = padded_m // block_M
     n_blocks = padded_n // block_N
@@ -144,8 +144,8 @@ def dequant_kernel_factory(
             if n_blocks > 1:
                 T.copy(x[x_row_start : x_row_start + block_M, block_N : 2 * block_N], x_ub[1, 0:block_M, 0:block_N])
                 T.copy(
-                    x_sf[sf_row_start : sf_row_start + sf_dim_M, (block_N // num_per_channels) : (block_N // num_per_channels) + sf_dim_N], 
-                    sf_ub[1, 0:sf_dim_M, 0:sf_dim_N]
+                    x_sf[sf_row_start : sf_row_start + sf_dim_M, (block_N // num_per_channels) : (block_N // num_per_channels) + sf_dim_N],
+                    sf_ub[1, 0:sf_dim_M, 0:sf_dim_N],
                 )
                 T.set_flag("MTE2", "V", 1)
 
@@ -191,8 +191,7 @@ def dequant_kernel_factory(
                 T.wait_flag("V", "MTE2", i % 2) 
                 T.copy(x[x_row_start : x_row_start + block_M, x_col_mte2 : x_col_mte2 + block_N], x_ub[i % 2, 0:block_M, 0:block_N])
                 T.copy(
-                    x_sf[sf_row_start : sf_row_start + sf_dim_M,
-                    sf_col_mte2 : sf_col_mte2 + sf_dim_N], sf_ub[i % 2, 0:sf_dim_M, 0:sf_dim_N]
+                    x_sf[sf_row_start : sf_row_start + sf_dim_M, sf_col_mte2 : sf_col_mte2 + sf_dim_N], sf_ub[i % 2, 0:sf_dim_M, 0:sf_dim_N]
                 )
                 T.set_flag("MTE2", "V", i % 2)
 
@@ -223,8 +222,7 @@ def dequant_kernel_factory(
 
                 T.wait_flag("V", "MTE3", idx_2)
                 T.copy(
-                    out_ub[idx_2, 0:block_M, 0:block_N], 
-                    out[x_row_start : x_row_start + block_M, (n_blocks - 2) * block_N : (n_blocks - 1) * block_N]
+                    out_ub[idx_2, 0:block_M, 0:block_N], out[x_row_start : x_row_start + block_M, (n_blocks - 2) * block_N : (n_blocks - 1) * block_N]
                 )
 
             idx_1 = (n_blocks - 1) % 2
@@ -315,7 +313,7 @@ def cast_back(
     kernel = _COMPILED_KERNELS_CACHE.get(kernel_key)
     if kernel is None:
         kernel = dequant_kernel_factory(
-            padded_m, padded_n,sf_rows_padded, sf_cols_padded_aligned, block_M, block_N, num_per_tokens, num_per_channels, dtype="float16"
+            padded_m, padded_n, sf_rows_padded, sf_cols_padded_aligned, block_M, block_N, num_per_tokens, num_per_channels, dtype="float16"
         )
         _COMPILED_KERNELS_CACHE[kernel_key] = kernel
         profile_t = _profile_mark(profile_stages, "kernel_compile", profile_t, out_padded)
@@ -362,8 +360,8 @@ if __name__ == "__main__":
     def _ref_cast_back(x_data, x_sf, npt, npc):
         x_f32 = x_data.to(torch.float32).cpu()
         sf_f32 = x_sf.to(torch.float32).cpu()
-        sf_expanded = sf_f32.repeat_interleave(npt, dim=0)[:x_data.shape[0]]
-        sf_expanded = sf_expanded.repeat_interleave(npc, dim=1)[:, :x_data.shape[1]]
+        sf_expanded = sf_f32.repeat_interleave(npt, dim=0)[: x_data.shape[0]]
+        sf_expanded = sf_expanded.repeat_interleave(npc, dim=1)[:, : x_data.shape[1]]
         return x_f32 * sf_expanded
 
     def _calc_diff(a, b):
@@ -456,16 +454,18 @@ if __name__ == "__main__":
                         for npc in (128, h):
                             for out_dtype in (torch.float32, torch.bfloat16):
                                 if h % npc == 0:
-                                    results.append({
-                                        "num_tokens": nt,
-                                        "hidden": h,
-                                        "fmt": fmt,
-                                        "use_tma_aligned_col_major_sf": col_major,
-                                        "round_sf": rsf,
-                                        "use_packed_ue8m0": ue8m0,
-                                        "num_per_channels": npc,
-                                        "out_dtype": out_dtype,
-                                    })
+                                    results.append(
+                                        {
+                                            "num_tokens": nt,
+                                            "hidden": h,
+                                            "fmt": fmt,
+                                            "use_tma_aligned_col_major_sf": col_major,
+                                            "round_sf": rsf,
+                                            "use_packed_ue8m0": ue8m0,
+                                            "num_per_channels": npc,
+                                            "out_dtype": out_dtype,
+                                        }
+                                    )
         return results
 
     def _gen_block_params():
@@ -475,15 +475,17 @@ if __name__ == "__main__":
                 for rsf in (False, True):
                     for out_dtype in (torch.bfloat16, torch.float32):
                         for npt, npc in ((128, 1), (128, 128)):
-                            results.append({
-                                "num_tokens": nt,
-                                "hidden": h, 
-                                "round_sf": rsf,
-                                "fmt": "e4m3",
-                                "out_dtype": out_dtype,
-                                "num_per_tokens": npt,
-                                "num_per_channels": npc,
-                            })
+                            results.append(
+                                {
+                                    "num_tokens": nt,
+                                    "hidden": h, 
+                                    "round_sf": rsf,
+                                    "fmt": "e4m3",
+                                    "out_dtype": out_dtype,
+                                    "num_per_tokens": npt,
+                                    "num_per_channels": npc,
+                                }
+                            )
         return results
 
     # --- Run tests ---
@@ -503,11 +505,9 @@ if __name__ == "__main__":
         out_dtype = p["out_dtype"]
         try:
             x, x_casted, x_sf, x_sf_f32, out_str = _gen_per_token_data(
-                nt, h, npc, fmt,
-                p["use_tma_aligned_col_major_sf"], p["use_packed_ue8m0"],
-                p["round_sf"], out_dtype)
-            result = per_token_cast_back((x_casted, x_sf), fmt,
-                                         num_per_channels=npc, out_dtype=out_str)
+                nt, h, npc, fmt, p["use_tma_aligned_col_major_sf"], p["use_packed_ue8m0"], p["round_sf"], out_dtype
+            )
+            result = per_token_cast_back((x_casted, x_sf), fmt, num_per_channels=npc, out_dtype=out_str)
             ref = _ref_cast_back(x_casted, x_sf_f32, 1, npc).to(out_dtype)
             diff_vs_ref = _calc_diff(result, ref)
             roundtrip_diff = _calc_diff(result, x)
@@ -522,8 +522,7 @@ if __name__ == "__main__":
                 ref_threshold = 5e-4
                 rt_threshold = 1e-3
 
-            ok = (result.shape == x.shape and result.dtype == out_dtype
-                  and diff_vs_ref < ref_threshold and roundtrip_diff < rt_threshold)
+            ok = result.shape == x.shape and result.dtype == out_dtype and diff_vs_ref < ref_threshold and roundtrip_diff < rt_threshold
             if ok:
                 total_pass += 1
             else:
@@ -531,8 +530,8 @@ if __name__ == "__main__":
                 print(
                     f"  FAIL [{case_num}] nt={nt} h={h} npc={npc} fmt={fmt} "
                     f"ue8m0={p['use_packed_ue8m0']} out={_DTYPE_STR[out_dtype]} "
-                    f"ref_diff={diff_vs_ref:.2e} rt_diff={roundtrip_diff:.2e}", 
-                    flush=True
+                    f"ref_diff={diff_vs_ref:.2e} rt_diff={roundtrip_diff:.2e}",
+                    flush=True,
                 )
         except Exception as e:
             total_fail += 1
@@ -562,7 +561,7 @@ if __name__ == "__main__":
             else:
                 threshold = 1e-5
 
-            ok = (result.shape == x.shape and result.dtype == out_dtype and diff < threshold)
+            ok = result.shape == x.shape and result.dtype == out_dtype and diff < threshold
             if ok:
                 total_pass += 1
             else:
@@ -570,7 +569,7 @@ if __name__ == "__main__":
                 print(
                     f"  FAIL [{case_num}] nt={nt} h={h} ({npt},{npc}) fmt={fmt} "
                     f"out={_DTYPE_STR[out_dtype]} rsf={p['round_sf']} diff={diff:.2e}",
-                    flush=True
+                    flush=True,
                 )
         except Exception as e:
             total_fail += 1
