@@ -1539,6 +1539,6 @@ if __name__ == "__main__":
         print("test_backward PASSED")
         test_autograd()
         print("test_autograd PASSED")
-        print("\nAll tests passed!")
+        print("\nTest Passed!")
     else:
         main()
