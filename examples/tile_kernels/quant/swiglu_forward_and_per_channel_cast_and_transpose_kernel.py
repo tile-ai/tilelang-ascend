@@ -208,7 +208,6 @@ def swiglu_forward_and_per_channel_cast_and_transpose(
     npt = num_per_tokens
     block_M = npt * 2  # VEC_NUM=2, each vid handles npt rows
     block_N = 64 if npt >= 128 else 128  # (128,128) T.tile ops produce NaN �?tilelang codegen bug
-    max_fp8 = 448.0
 
     use_clamp = swiglu_clamp_value is not None
     clamp_value = 0.0 if swiglu_clamp_value is None else swiglu_clamp_value
@@ -285,7 +284,7 @@ if __name__ == "__main__":
     dtype = torch.bfloat16
     torch.manual_seed(42)
 
-    for idx, (nt, h, npt, wt, rsf, clamp) in enumerate(test_cases):
+    for _idx, (nt, h, npt, wt, rsf, clamp) in enumerate(test_cases):
         x = torch.randn((nt, h * 2), dtype=dtype, device=NPU_DEVICE)
 
         # Pre-compile kernel
@@ -330,4 +329,6 @@ if __name__ == "__main__":
         assert out.shape == expected_shape, f"shape {out.shape} != {expected_shape}"
         assert not torch.isnan(out).any(), "out has NaN"
 
+
     print("All test PASSED! Kernel output Match!")
+
