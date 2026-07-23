@@ -199,5 +199,49 @@ def test_parallel_mixed_serial_nest(setup_random_seed):
     torch.testing.assert_close(out, a * b + a, rtol=1e-2, atol=1e-2)
 
 
+# ---------------------------------------------------------------------------
+# A serial loop gives the first T.Parallel axis an affine output index. The
+# vector fallback must replace the loop variable inside ``base + g`` rather
+# than leaving ``g`` free in the generated TIR.
+# ---------------------------------------------------------------------------
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+def parallel_affine_outer_index_kernel(dtype="float"):
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((2, 64), dtype),
+        W: T.Tensor((4, 8), dtype),
+        C: T.Tensor((8, 64), dtype),
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((2, 64), dtype)
+            w_ub = T.alloc_ub((4, 8), dtype)
+            c_ub = T.alloc_ub((8, 64), dtype)
+            with T.Scope("V"):
+                T.copy(A, a_ub)
+                T.copy(W, w_ub)
+                T.tile.fill(c_ub, 0.0)
+                for k in T.serial(2):
+                    base = k % 2 * 4
+                    for g, n in T.Parallel(4, 64):
+                        c_ub[base + g, n] = c_ub[base + g, n] + a_ub[k, n] * w_ub[g, k]
+                T.copy(c_ub, C)
+
+    return main
+
+
+def test_parallel_affine_outer_index(setup_random_seed):
+    func = parallel_affine_outer_index_kernel()
+    a = torch.randn(2, 64).npu()
+    w = torch.randn(4, 8).npu()
+    torch.npu.synchronize()
+
+    out = func(a, w)
+    ref = torch.empty_like(out)
+    ref[:4] = w[:, 0, None] * a[0]
+    ref[4:] = w[:, 1, None] * a[1]
+    torch.testing.assert_close(out, ref, rtol=1e-5, atol=1e-5)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-n", "8"])
