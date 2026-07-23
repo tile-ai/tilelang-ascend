@@ -2,52 +2,62 @@
 # Licensed under the MIT License.
 """The profiler and convert to torch utils"""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any, List, Callable, Optional, Union
+from collections.abc import Callable
+from typing import Any
+
 from tilelang.engine.param import KernelParam
 
 
 class BaseKernelAdapter(ABC):
+    func: Callable | None = None
 
-    func: Optional[Callable] = None
-
-    def __init__(self, mod, params: List[KernelParam], 
-                 result_idx: List[int], workspace_idx: List[int]) -> None:
+    def __init__(
+        self,
+        mod,
+        params: list[KernelParam],
+        result_idx: list[int],
+        workspace_idx: list[int],
+    ) -> None:
         self.mod = mod
         self.params = params
         self.result_idx = self._legalize_auto_memory_idx(result_idx, "result_idx")
         self.workspace_idx = self._legalize_auto_memory_idx(workspace_idx, "workspace_idx")
         self._post_init()
 
-    def _legalize_auto_memory_idx(self, memory_idx: Union[List[int], int, None] = None, memory_name = "auto_memory_idx") -> List[int]:
-        params = self.params
+    @staticmethod
+    def _legalize_memory_idx(
+        memory_idx: list[int] | int | None,
+        num_params: int,
+        memory_name: str = "auto_memory_idx",
+    ) -> list[int]:
         if memory_idx is None:
-            memory_idx = []
-
+            indices = []
         elif isinstance(memory_idx, int):
-            if memory_idx >= len(params) or memory_idx < -len(params):
-                raise ValueError(
-                    f"{memory_name} should be an integer between {-len(params)} and {len(params) - 1}") 
-            if memory_idx < 0:
-                memory_idx = len(params) + memory_idx
-            memory_idx = [memory_idx]
-
+            indices = [memory_idx]
         elif isinstance(memory_idx, list):
-            for i, idx in enumerate(memory_idx):
-                if idx >= len(params) or idx < -len(params):
-                    raise ValueError(
-                        f"{memory_name} should be an integer between {-len(params)} and {len(params) - 1}")
-                if idx < 0:
-                    memory_idx[i] = len(params) + idx
-
+            indices = list(memory_idx)
         else:
             raise ValueError(f"{memory_name} should be a list of integers")
 
-        return memory_idx
-    
+        for i, idx in enumerate(indices):
+            if idx >= num_params or idx < -num_params:
+                raise ValueError(f"{memory_name} should be an integer between {-num_params} and {num_params - 1}")
+            if idx < 0:
+                indices[i] = num_params + idx
+        return indices
+
+    def _legalize_auto_memory_idx(
+        self,
+        memory_idx: list[int] | int | None = None,
+        memory_name: str = "auto_memory_idx",
+    ) -> list[int]:
+        return self._legalize_memory_idx(memory_idx, len(self.params), memory_name)
 
     @abstractmethod
-    def _convert_torch_func(self) -> callable:
+    def _convert_torch_func(self) -> Callable:
         pass
 
     def __call__(self, *args: Any, **kwds: Any) -> Any:

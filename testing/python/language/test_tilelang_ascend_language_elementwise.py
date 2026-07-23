@@ -9,6 +9,7 @@ import torch.nn as nn
 import tilelang
 import tilelang.language as T
 import tilelang.language.reduce_ascend as reduce_ascend_lang
+from tilelang.utils.target import determine_platform
 
 tir = tilelang.tvm.tir
 
@@ -23,6 +24,50 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
+
+
+def _negative_out_idx_auto_workspace_kernel(M=128, N=128, K=128):
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), "float16"),  # type: ignore
+        B: T.Tensor((K, N), "float16"),  # type: ignore
+        C: T.Tensor((M, N), "float16"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((M // 2, K), "float16")
+            a_ub_nz = T.alloc_ub((M // 2, K), "float16")
+            a_l1 = T.alloc_L1((M, K), "float16")
+            b_l1 = T.alloc_L1((K, N), "float16")
+            c_l0 = T.alloc_L0C((M, N), "float32")
+
+            T.copy(A[vid * M // 2 : (vid + 1) * M // 2, :], a_ub)
+            T.copy(a_ub, a_l1, tmp=a_ub_nz)
+            T.copy(B, b_l1)
+            T.gemm_v0(a_l1, b_l1, c_l0, init=True)
+            T.copy(c_l0, C)
+
+    return main
+
+
+@pytest.mark.skipif(determine_platform() == "A5", reason="AscendC test requires A2/A3")
+def test_negative_out_idx_with_auto_workspace():
+    """Negative output indices refer to the original user-facing signature."""
+    M = N = K = 128
+    kernel = tilelang.compile(
+        _negative_out_idx_auto_workspace_kernel(M=M, N=N, K=K),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target="ascendc",
+    )
+
+    # CombineCV appends a GM workspace after the original output parameter.
+    assert kernel.out_idx == [2]
+    assert kernel.auto_gm_idx == [3]
+
+    a = torch.randn((M, K), dtype=torch.float16, device="npu")
+    b = torch.randn((K, N), dtype=torch.float16, device="npu")
+    out = kernel(a, b)
+    torch.testing.assert_close(out, a @ b, rtol=1e-3, atol=1e-3)
 
 
 @pytest.fixture(scope="session", autouse=True)
