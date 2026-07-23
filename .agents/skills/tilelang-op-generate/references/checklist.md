@@ -18,6 +18,7 @@
 | # | 检查项 | 说明 |
 |---|--------|------|
 | 0 | **算子主要操作全部在 kernel 内实现** | 算子的所有核心计算逻辑（数据搬运、数学运算、归约、归一化等）必须在 `@tilelang.jit` 装饰的 kernel 函数内部完成。kernel 外部只允许做数据准备（输入 tensor 创建）、kernel 调用和结果验证。**不满足时必须立即修改后再继续后续检查** |
+| 0a | **chunk/split + contiguous 反模式检查** | 若算子从输入沿某维等分多子张量（如 `silu(x0)*x1`），检查 host 端是否有 `chunk()/split() + .contiguous()` 分别传给多输入 kernel 的写法（N 次 host 内存拷贝）。应改为：传完整 tensor 给单输入 kernel，kernel 内用列偏移 `X[row, half_k+col]` 读取各子张量，host 端消除 chunk+contiguous。反模式/正模式代码详见 [tilelang-perf-optimization optimization-guide.md §2.12 子模式](../../tilelang-perf-optimization/references/optimization-guide.md) |
 
 ## 1. 功能验证
 
