@@ -901,8 +901,9 @@ private:
     if (auto load = expr.as<BufferLoadNode>()) {
       Buffer input_buffer = load->buffer;
 
-      // Rank-changing copies require projection-aware regions, which the
-      // vector copy helper cannot represent. Use the scalar serial fallback.
+      // GenerateAscendCopy indexes source and destination shapes symmetrically.
+      // Rank-changing copies require projection-aware regions, which the vector
+      // copy helper cannot represent. Use the scalar serial fallback.
       if (input_buffer->shape.size() != output_buffer->shape.size()) {
         return false;
       }
