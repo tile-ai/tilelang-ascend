@@ -211,10 +211,28 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     return rows;
   };
 
+  auto has_dynamic_row_extent = [](const Buffer &buf,
+                                   const Array<PrimExpr> &extents) {
+    if (buf->shape.size() <= 2) {
+      return false;
+    }
+    for (size_t i = 0; i + 1 < extents.size(); ++i) {
+      if (!extents[i].as<IntImmNode>()) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   auto compute_ub_template_rows =
       [&compute_blocklen](const Buffer &ub, const Array<PrimExpr> &extents,
                           const PrimExpr &region_rows) -> PrimExpr {
-    return ub->shape.size() == 2 ? compute_blocklen(ub, extents) : region_rows;
+    if (ub->shape.size() == 2) {
+      return compute_blocklen(ub, extents);
+    }
+    ICHECK(region_rows.defined())
+        << "High-rank Ascend GM<->UB copies require static UB row extents";
+    return region_rows;
   };
 
   auto compute_buffer_rows = [](const Buffer &buf) -> PrimExpr {
@@ -310,11 +328,20 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       config.gm2ub = true;
       strideN = compute_strideN(src, src_extents);
       config.needs_strideN = true;
-      PrimExpr src_rows = compute_copy_rows(src, src_range, src_extents);
-      PrimExpr dst_rows = compute_copy_rows(dst, dst_range, dst_extents);
+      bool high_rank_copy = src->shape.size() > 2 || dst->shape.size() > 2;
+      bool dynamic_high_rank_rows =
+          (src->shape.size() > 2 && has_dynamic_row_extent(src, src_extents)) ||
+          (dst->shape.size() > 2 && has_dynamic_row_extent(dst, dst_extents));
+      bool use_high_rank_rows = high_rank_copy && !dynamic_high_rank_rows;
+      PrimExpr src_rows = use_high_rank_rows
+                              ? compute_copy_rows(src, src_range, src_extents)
+                              : Integer(1);
+      PrimExpr dst_rows = use_high_rank_rows
+                              ? compute_copy_rows(dst, dst_range, dst_extents)
+                              : Integer(1);
       PrimExpr dst_template_rows =
           compute_ub_template_rows(dst, dst_extents, dst_rows);
-      if (src->shape.size() > 2 || dst->shape.size() > 2) {
+      if (use_high_rank_rows) {
         ICHECK(analyzer->CanProveEqual(src_rows, dst_rows))
             << "High-rank copy_gm_to_ub requires matching source and "
                "destination row counts, but got "
@@ -324,6 +351,11 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
                "destination column counts, but got "
             << src_extents.back() << " and " << dst_extents.back();
         validate_high_rank_ub(dst, dst_range, dst_extents, dst_rows);
+      } else if (dynamic_high_rank_rows && src->shape.size() > 2 &&
+                 dst->shape.size() > 2) {
+        ICHECK(false)
+            << "High-rank Ascend GM<->UB copies with dynamic row extents "
+               "require a rank-2 UB operand";
       }
 
       ss << "copy_gm_to_ub<";
@@ -338,11 +370,20 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       config.ub2gm = true;
       strideN = compute_strideN(dst, dst_extents);
       config.needs_strideN = true;
-      PrimExpr src_rows = compute_copy_rows(src, src_range, src_extents);
-      PrimExpr dst_rows = compute_copy_rows(dst, dst_range, dst_extents);
+      bool high_rank_copy = src->shape.size() > 2 || dst->shape.size() > 2;
+      bool dynamic_high_rank_rows =
+          (src->shape.size() > 2 && has_dynamic_row_extent(src, src_extents)) ||
+          (dst->shape.size() > 2 && has_dynamic_row_extent(dst, dst_extents));
+      bool use_high_rank_rows = high_rank_copy && !dynamic_high_rank_rows;
+      PrimExpr src_rows = use_high_rank_rows
+                              ? compute_copy_rows(src, src_range, src_extents)
+                              : Integer(1);
+      PrimExpr dst_rows = use_high_rank_rows
+                              ? compute_copy_rows(dst, dst_range, dst_extents)
+                              : Integer(1);
       PrimExpr src_template_rows =
           compute_ub_template_rows(src, src_extents, src_rows);
-      if (src->shape.size() > 2 || dst->shape.size() > 2) {
+      if (use_high_rank_rows) {
         ICHECK(analyzer->CanProveEqual(src_rows, dst_rows))
             << "High-rank copy_ub_to_gm requires matching source and "
                "destination row counts, but got "
@@ -352,6 +393,11 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
                "destination column counts, but got "
             << src_extents.back() << " and " << dst_extents.back();
         validate_high_rank_ub(src, src_range, src_extents, src_rows);
+      } else if (dynamic_high_rank_rows && src->shape.size() > 2 &&
+                 dst->shape.size() > 2) {
+        ICHECK(false)
+            << "High-rank Ascend GM<->UB copies with dynamic row extents "
+               "require a rank-2 UB operand";
       }
 
       ss << "copy_ub_to_gm<";
