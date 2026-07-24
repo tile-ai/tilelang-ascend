@@ -24,6 +24,7 @@ _NPU_PASS_CONFIGS = {
 
 _QuantTensor = tuple[torch.Tensor, torch.Tensor]
 
+
 def _ceil_div(x: int, y: int) -> int:
     return (x + y - 1) // y
 
@@ -33,9 +34,9 @@ def _align(x, a):
 
 
 _IN_DTYPE_STR = {
-    torch.bfloat16: 'bfloat16',
-    torch.float16: 'float16',
-    torch.float32: 'float32',
+    torch.bfloat16: "bfloat16",
+    torch.float16: "float16",
+    torch.float32: "float32",
 }
 
 
@@ -67,10 +68,13 @@ def _round_sf_cpu(sf):
 _KERNEL_CACHE = {}
 
 
-@tilelang.jit(out_idx=[2, 3], pass_configs={
-    **_NPU_PASS_CONFIGS,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
-})
+@tilelang.jit(
+    out_idx=[2, 3],
+    pass_configs={
+        **_NPU_PASS_CONFIGS,
+        tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
+    },
+)
 def _swiglu_fwd_per_channel_fused_kernel(
     num_tokens: int,
     hidden: int,
@@ -178,6 +182,7 @@ def _swiglu_fwd_per_channel_fused_kernel(
 # Public API
 # ============================================================================
 
+
 def swiglu_forward_and_per_channel_cast_and_transpose(
     x: torch.Tensor,
     fmt: str,
@@ -191,7 +196,7 @@ def swiglu_forward_and_per_channel_cast_and_transpose(
     V5: Fused kernel does SwiGLU + amax + sf + scale in one launch.
     Python handles: round_sf (CPU bitwise), transpose, padding.
     """
-    assert fmt == 'e4m3'
+    assert fmt == "e4m3"
     assert x.dim() == 2 and x.is_contiguous()
     assert x.dtype in (torch.bfloat16, torch.float16, torch.float32)
     assert num_per_tokens in (32, 128)
@@ -202,8 +207,10 @@ def swiglu_forward_and_per_channel_cast_and_transpose(
     if num_tokens == 0:
         sf_rows = _ceil_div(num_tokens, num_per_tokens)
         out_shape = (0, hidden) if without_transpose else (hidden, 0)
-        return (torch.empty(out_shape, dtype=torch.float32, device=x.device),
-                torch.empty((sf_rows, hidden), dtype=torch.float32, device=x.device))
+        return (
+            torch.empty(out_shape, dtype=torch.float32, device=x.device),
+            torch.empty((sf_rows, hidden), dtype=torch.float32, device=x.device),
+        )
 
     npt = num_per_tokens
     block_M = npt * 2  # VEC_NUM=2, each vid handles npt rows
@@ -233,10 +240,11 @@ def swiglu_forward_and_per_channel_cast_and_transpose(
         num_tokens = x.shape[0]
 
     # --- Fused kernel: SwiGLU + amax + sf + scale ---
-    kernel_key = ('fwd_per_ch_v5', num_tokens, hidden_padded, block_M, block_N, npt, use_clamp, in_dtype_str)
+    kernel_key = ("fwd_per_ch_v5", num_tokens, hidden_padded, block_M, block_N, npt, use_clamp, in_dtype_str)
     if kernel_key not in _KERNEL_CACHE:
         _KERNEL_CACHE[kernel_key] = _swiglu_fwd_per_channel_fused_kernel(
-            num_tokens, hidden_padded, block_M, block_N, npt, use_clamp, in_dtype_str)
+            num_tokens, hidden_padded, block_M, block_N, npt, use_clamp, in_dtype_str
+        )
     swiglu_kernel = _KERNEL_CACHE[kernel_key]
 
     act_scaled, sf = swiglu_kernel(x, clamp_value)
@@ -269,16 +277,16 @@ if __name__ == "__main__":
     torch.npu.set_device(NPU_DEVICE_ID)
 
     test_cases = [
-        (4096, 576,   32, True,  False, None),
-        (4096, 2048,  128, False, True,  10.0),
-        (4096, 3072,  32, True,  True,  0.5),
-        (4096, 4096,  128, False, False, None),
-        (4096, 7168,  128, True,  True,  None),
-        (8064, 576,   128, True,  False, 10.0),
-        (8064, 2560,  32, False, True,  0.5),
-        (8064, 4096,  128, True,  False, None),
-        (8064, 6144,  32, False, True,  None),
-        (8064, 7168,  128, False, False, 0.5),
+        (4096, 576, 32, True, False, None),
+        (4096, 2048, 128, False, True, 10.0),
+        (4096, 3072, 32, True, True, 0.5),
+        (4096, 4096, 128, False, False, None),
+        (4096, 7168, 128, True, True, None),
+        (8064, 576, 128, True, False, 10.0),
+        (8064, 2560, 32, False, True, 0.5),
+        (8064, 4096, 128, True, False, None),
+        (8064, 6144, 32, False, True, None),
+        (8064, 7168, 128, False, False, 0.5),
     ]
 
     dtype = torch.bfloat16
@@ -292,19 +300,17 @@ if __name__ == "__main__":
         block_N = 64 if npt >= 128 else 128
         hidden_padded = _ceil_div(h, block_N) * block_N
         use_clamp_k = clamp is not None
-        in_dtype_str_k = 'float32'
+        in_dtype_str_k = "float32"
         nt_k = _align(nt, block_M)
         hp_k = _ceil_div(h, block_N) * block_N
-        kkey = ('fwd_per_ch_v5', nt_k, hp_k, block_M, block_N,
-                npt, use_clamp_k, in_dtype_str_k)
+        kkey = ("fwd_per_ch_v5", nt_k, hp_k, block_M, block_N, npt, use_clamp_k, in_dtype_str_k)
         if kkey not in _KERNEL_CACHE:
-            _KERNEL_CACHE[kkey] = _swiglu_fwd_per_channel_fused_kernel(
-                nt_k, hp_k, block_M, block_N, npt, use_clamp_k, in_dtype_str_k)
+            _KERNEL_CACHE[kkey] = _swiglu_fwd_per_channel_fused_kernel(nt_k, hp_k, block_M, block_N, npt, use_clamp_k, in_dtype_str_k)
 
         torch.npu.synchronize(NPU_DEVICE)
         out, sf = swiglu_forward_and_per_channel_cast_and_transpose(
-            x, 'e4m3', num_per_tokens=npt, round_sf=rsf,
-            without_transpose=wt, swiglu_clamp_value=clamp)
+            x, "e4m3", num_per_tokens=npt, round_sf=rsf, without_transpose=wt, swiglu_clamp_value=clamp
+        )
         torch.npu.synchronize(NPU_DEVICE)
 
         torch.npu.synchronize(NPU_DEVICE)
@@ -316,8 +322,7 @@ if __name__ == "__main__":
         if nt_k2 != nt:
             x_k = torch.nn.functional.pad(x_k, (0, 0, 0, nt_k2 - nt))
         clamp_val_k = 0.0 if clamp is None else clamp
-        kkey2 = ('fwd_per_ch_v5', nt_k2, hp, block_M, block_N,
-                 npt, use_clamp_k, in_dtype_str_k)
+        kkey2 = ("fwd_per_ch_v5", nt_k2, hp, block_M, block_N, npt, use_clamp_k, in_dtype_str_k)
         if kkey2 in _KERNEL_CACHE:
             kern = _KERNEL_CACHE[kkey2]
             _a, _s = kern(x_k, clamp_val_k)
@@ -329,6 +334,4 @@ if __name__ == "__main__":
         assert out.shape == expected_shape, f"shape {out.shape} != {expected_shape}"
         assert not torch.isnan(out).any(), "out has NaN"
 
-
     print("All test PASSED! Kernel output Match!")
-
