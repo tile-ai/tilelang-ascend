@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import tilelang
 from tilelang import language as T
@@ -305,14 +303,14 @@ def chunk_gated_delta_rule_fwd_h(
     k: torch.Tensor,
     w: torch.Tensor,
     u: torch.Tensor,
-    g: torch.Tensor | None = None,
-    initial_state: torch.Tensor | None = None,
+    g=None,
+    initial_state=None,
     output_final_state: bool = False,
     chunk_size: int = 64,
     save_new_value: bool = True,
-    cu_seqlens: torch.LongTensor | None = None,
-    chunk_offsets: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    cu_seqlens=None,
+    chunk_offsets=None,
+):
     BT = chunk_size
     USE_G = g is not None
 
@@ -388,12 +386,12 @@ def ref_chunk_gated_delta_rule(
     k: torch.Tensor,
     w: torch.Tensor,
     u: torch.Tensor,
-    g: torch.Tensor | None = None,
-    initial_state: torch.Tensor | None = None,
+    g=None,
+    initial_state=None,
     output_final_state: bool = False,
     chunk_size: int = 64,
-    cu_seqlens: torch.LongTensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    cu_seqlens=None,
+):
     BT = chunk_size
 
     k = k.float().squeeze(0)  # [T_total, Hg, K]
