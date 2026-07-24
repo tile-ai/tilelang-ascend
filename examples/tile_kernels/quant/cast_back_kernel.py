@@ -221,7 +221,8 @@ def dequant_kernel_factory(
 
                 T.wait_flag("V", "MTE3", idx_2)
                 T.copy(
-                    out_ub[idx_2, 0:block_M, 0:block_N], out[x_row_start : x_row_start + block_M, (n_blocks - 2) * block_N : (n_blocks - 1) * block_N]
+                    out_ub[idx_2, 0:block_M, 0:block_N],
+                    out[x_row_start : x_row_start + block_M, (n_blocks - 2) * block_N : (n_blocks - 1) * block_N],
                 )
 
             idx_1 = (n_blocks - 1) % 2
@@ -248,7 +249,7 @@ def dequant_kernel_factory(
             T.wait_flag("V", "MTE3", idx_1)
             T.copy(
                 out_ub[idx_1, 0:block_M, 0:block_N],
-                out[x_row_start : x_row_start + block_M, (n_blocks - 1) * block_N : n_blocks * block_N]
+                out[x_row_start : x_row_start + block_M, (n_blocks - 1) * block_N : n_blocks * block_N],
             )
 
     return main
