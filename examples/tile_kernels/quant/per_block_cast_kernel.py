@@ -23,6 +23,7 @@ def _align_up(x: int, y: int) -> int:
 # Helper: round SF to power-of-2
 # ---------------------------------------------------------------------------
 
+
 def _round_sf_cpu(sf: torch.Tensor):
     """Round scaling factors to nearest power-of-2 on CPU (bitwise, fallback)."""
     target_device = sf.device
@@ -56,6 +57,7 @@ def _round_sf_npu(sf: torch.Tensor):
 # Helper: pack float32 SF to UE8M0 int32 (4 exponent bytes per int32)
 # ---------------------------------------------------------------------------
 
+
 def _pack_sf_to_ue8m0(sf_f32: torch.Tensor) -> torch.Tensor:
     """Pack float32 SF to UE8M0 format (4 uint8 exponents packed into 1 int32).
 
@@ -82,9 +84,7 @@ def _pack_sf_to_ue8m0(sf_f32: torch.Tensor) -> torch.Tensor:
     return packed.to(sf_f32.device)
 
 
-def _apply_sf_transforms(sf: torch.Tensor,
-                         use_tma_aligned_col_major_sf: bool,
-                         use_packed_ue8m0: bool) -> torch.Tensor:
+def _apply_sf_transforms(sf: torch.Tensor, use_tma_aligned_col_major_sf: bool, use_packed_ue8m0: bool) -> torch.Tensor:
     """Apply optional SF layout/dtype transforms to match GPU reference format.
 
     GPU reference format (tile_kernels/torch/cast.py):
@@ -105,8 +105,8 @@ def _apply_sf_transforms(sf: torch.Tensor,
     # TMA alignment: 16 bytes / 4 bytes per element = 4 elements
     tma_alignment = 4
     packing_alignment = 4 if use_packed_ue8m0 else 1
-    pad_h = (_align_up(sf_rows, tma_alignment) - sf_rows)
-    pad_w = (_align_up(sf_cols, packing_alignment) - sf_cols)
+    pad_h = _align_up(sf_rows, tma_alignment) - sf_rows
+    pad_w = _align_up(sf_cols, packing_alignment) - sf_cols
     if pad_h > 0 or pad_w > 0:
         sf = torch.nn.functional.pad(sf, (0, pad_w, 0, pad_h))
 
@@ -126,10 +126,13 @@ def _apply_sf_transforms(sf: torch.Tensor,
 _SCALE_KERNEL_CACHE: Dict[Tuple, Any] = {}
 
 
-@tilelang.jit(out_idx=[-1], pass_configs={
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
-    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-})
+@tilelang.jit(
+    out_idx=[-1],
+    pass_configs={
+        tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+        tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    },
+)
 def _per_block_scale_kernel_npu(
     num_tokens: int,
     hidden: int,
@@ -153,9 +156,9 @@ def _per_block_scale_kernel_npu(
 
     @T.prim_func
     def main(
-        x_in:     T.Tensor((num_tokens, hidden), in_dtype),
+        x_in: T.Tensor((num_tokens, hidden), in_dtype),
         sf_inv_g: T.Tensor((m_blocks, n_blocks), "float32"),
-        out:      T.Tensor((num_tokens, hidden), "float32"),
+        out: T.Tensor((num_tokens, hidden), "float32"),
     ):
         with T.Kernel(total_blocks, is_npu=True) as (cid, vid):
             bx = cid // n_blocks
@@ -164,7 +167,7 @@ def _per_block_scale_kernel_npu(
             row_start = bx * block_M + vid * rows_per_vec
             col_start = by * block_N
 
-            x_ub   = T.alloc_ub((rows_per_vec, block_N), in_dtype)
+            x_ub = T.alloc_ub((rows_per_vec, block_N), in_dtype)
             out_ub = T.alloc_ub((rows_per_vec, block_N), "float32")
 
             with T.Scope("V"):
@@ -182,10 +185,8 @@ def _per_block_scale_kernel_npu(
 # Vectorized PyTorch fallback (no Python for-loop over blocks)
 # ---------------------------------------------------------------------------
 
-def _per_block_cast_pytorch(x_f32: torch.Tensor,
-                             block_size: tuple,
-                             round_sf: bool = False,
-                             max_fp: float = 448.0) -> _QuantTensor:
+
+def _per_block_cast_pytorch(x_f32: torch.Tensor, block_size: tuple, round_sf: bool = False, max_fp: float = 448.0) -> _QuantTensor:
     """Vectorized PyTorch fallback  O(1) Python overhead regardless of shape."""
     num_tokens, hidden = x_f32.shape
     npt, npc = block_size
@@ -198,8 +199,7 @@ def _per_block_cast_pytorch(x_f32: torch.Tensor,
     pad_n = sf_cols * npc - hidden
 
     if pad_m > 0 or pad_n > 0:
-        x_pad = torch.zeros((num_tokens + pad_m, hidden + pad_n),
-                            dtype=x_f32.dtype, device=x_f32.device)
+        x_pad = torch.zeros((num_tokens + pad_m, hidden + pad_n), dtype=x_f32.dtype, device=x_f32.device)
         x_pad[:num_tokens, :hidden] = x_f32
     else:
         x_pad = x_f32
@@ -226,6 +226,7 @@ def _per_block_cast_pytorch(x_f32: torch.Tensor,
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def _quantize_to_fp8_precision(out_f32: torch.Tensor) -> torch.Tensor:
     """Convert float32 to FP8 e4m3 format.
 
@@ -239,10 +240,9 @@ def _quantize_to_fp8_precision(out_f32: torch.Tensor) -> torch.Tensor:
     return out_fp8
 
 
-def _quantize_to_fp4_precision(out_f32: torch.Tensor, sf: torch.Tensor,
-                                block_size: tuple, round_sf: bool,
-                                use_tma_aligned_col_major_sf: bool,
-                                use_packed_ue8m0: bool) -> torch.Tensor:
+def _quantize_to_fp4_precision(
+    out_f32: torch.Tensor, sf: torch.Tensor, block_size: tuple, round_sf: bool, use_tma_aligned_col_major_sf: bool, use_packed_ue8m0: bool
+) -> torch.Tensor:
     """Convert float32 (pre-scaled to [-6, 6]) to FP4 e2m1 packed format.
 
     Uses the torch reference in cast-only mode with sf=1.0 (identity scale).
@@ -251,10 +251,13 @@ def _quantize_to_fp4_precision(out_f32: torch.Tensor, sf: torch.Tensor,
     """
     try:
         from tile_kernels.torch.cast import cast as torch_cast
+
         out_cpu = out_f32.cpu()
         identity_sf = torch.ones_like(sf).cpu()
         result = torch_cast(
-            out_cpu, "e2m1", block_size,
+            out_cpu,
+            "e2m1",
+            block_size,
             sf=identity_sf,
             round_sf=False,
             use_tma_aligned_col_major_sf=False,
@@ -306,11 +309,11 @@ def per_block_cast(
     max_fp = 6.0 if fmt == "e2m1" else 448.0
 
     npt, npc = block_size
-    assert npt in (32, 128) and npc in (32, 128), \
-        f"block_size must be (32,32) or (128,128), got {block_size}"
+    assert npt in (32, 128) and npc in (32, 128), f"block_size must be (32,32) or (128,128), got {block_size}"
     if sf is not None:
-        assert not sf_only and not use_tma_aligned_col_major_sf and not use_packed_ue8m0, \
+        assert not sf_only and not use_tma_aligned_col_major_sf and not use_packed_ue8m0, (
             "sf (cast-only mode) is incompatible with sf_only/use_tma_aligned_col_major_sf/use_packed_ue8m0"
+        )
 
     num_tokens, hidden = x.shape
 
@@ -319,13 +322,13 @@ def per_block_cast(
         out = torch.empty((0, hidden), dtype=torch.float8_e4m3fn, device=x.device)
         if sf_only:
             return _apply_sf_transforms(
-                torch.empty((sf_rows, sf_cols), dtype=torch.float32, device=x.device),
-                use_tma_aligned_col_major_sf, use_packed_ue8m0)
+                torch.empty((sf_rows, sf_cols), dtype=torch.float32, device=x.device), use_tma_aligned_col_major_sf, use_packed_ue8m0
+            )
         if sf is not None:
             return out
         sf_out = _apply_sf_transforms(
-            torch.empty((sf_rows, sf_cols), dtype=torch.float32, device=x.device),
-            use_tma_aligned_col_major_sf, use_packed_ue8m0)
+            torch.empty((sf_rows, sf_cols), dtype=torch.float32, device=x.device), use_tma_aligned_col_major_sf, use_packed_ue8m0
+        )
         return out, sf_out
 
     # f32 input (T.cast in T.Parallel with bf16 UB has NPU codegen bug)
@@ -342,8 +345,7 @@ def per_block_cast(
         pad_m = sf_rows * npt - num_tokens
         pad_n = sf_cols * npc - hidden
         if pad_m > 0 or pad_n > 0:
-            x_pad = torch.zeros((num_tokens + pad_m, hidden + pad_n),
-                                dtype=x_f32.dtype, device=x_f32.device)
+            x_pad = torch.zeros((num_tokens + pad_m, hidden + pad_n), dtype=x_f32.dtype, device=x_f32.device)
             x_pad[:num_tokens, :hidden] = x_f32
         else:
             x_pad = x_f32
@@ -372,7 +374,7 @@ def per_block_cast(
         x_padded = torch.zeros((padded_m, padded_n), dtype=x_kernel.dtype, device=x_kernel.device)
         x_padded[:num_tokens, :hidden] = x_kernel
         sf_inv_padded = torch.ones((m_blocks, n_blocks), dtype=torch.float32, device=x_f32.device)
-        sf_inv_padded[:sf_inv.shape[0], :sf_inv.shape[1]] = sf_inv
+        sf_inv_padded[: sf_inv.shape[0], : sf_inv.shape[1]] = sf_inv
     else:
         x_padded = x_kernel
         sf_inv_padded = sf_inv
@@ -382,8 +384,7 @@ def per_block_cast(
     if is_npu:
         cache_key = (padded_m, padded_n, npt, npc, in_dtype_str)
         if cache_key not in _SCALE_KERNEL_CACHE:
-            _SCALE_KERNEL_CACHE[cache_key] = _per_block_scale_kernel_npu(
-                padded_m, padded_n, npt, npc, in_dtype=in_dtype_str)
+            _SCALE_KERNEL_CACHE[cache_key] = _per_block_scale_kernel_npu(padded_m, padded_n, npt, npc, in_dtype=in_dtype_str)
         scale_kernel = _SCALE_KERNEL_CACHE[cache_key]
         out_f32 = scale_kernel(x_padded, sf_inv_padded)
     else:
@@ -398,9 +399,7 @@ def per_block_cast(
     if skip_cast:
         out = out_f32
     elif fmt == "e2m1":
-        out = _quantize_to_fp4_precision(
-            out_f32, out_sf_raw, block_size, round_sf,
-            use_tma_aligned_col_major_sf, use_packed_ue8m0)
+        out = _quantize_to_fp4_precision(out_f32, out_sf_raw, block_size, round_sf, use_tma_aligned_col_major_sf, use_packed_ue8m0)
     else:
         out = _quantize_to_fp8_precision(out_f32)
 
@@ -421,11 +420,15 @@ def per_block_cast_with_sf_only(
     use_packed_ue8m0: bool = False,
 ) -> torch.Tensor:
     """Cast a matrix to FP8, only output the scaling factors."""
-    return per_block_cast(x, fmt, block_size,
-                          use_tma_aligned_col_major_sf=use_tma_aligned_col_major_sf,
-                          round_sf=round_sf,
-                          use_packed_ue8m0=use_packed_ue8m0,
-                          sf_only=True)
+    return per_block_cast(
+        x,
+        fmt,
+        block_size,
+        use_tma_aligned_col_major_sf=use_tma_aligned_col_major_sf,
+        round_sf=round_sf,
+        use_packed_ue8m0=use_packed_ue8m0,
+        sf_only=True,
+    )
 
 
 def per_block_cast_with_precomputed_sf(
@@ -445,8 +448,8 @@ def per_block_cast_with_precomputed_sf(
 # Standalone runner: matches GPU test_per_block_cast.py parameter order
 # ---------------------------------------------------------------------------
 
-def _ref_cast(x, fmt, block_size, round_sf=False, max_fp=448.0,
-              use_tma_aligned_col_major_sf=False, use_packed_ue8m0=False):
+
+def _ref_cast(x, fmt, block_size, round_sf=False, max_fp=448.0, use_tma_aligned_col_major_sf=False, use_packed_ue8m0=False):
     """Pure-PyTorch reference for per-block cast. Output matches target format."""
     x_f32 = x.to(torch.float32).cpu()
     nt, h = x_f32.shape
@@ -488,8 +491,7 @@ def _ref_cast(x, fmt, block_size, round_sf=False, max_fp=448.0,
 def _calc_diff(a, b):
     a_f32 = a.cpu().to(torch.float32)
     b_f32 = b.cpu().to(torch.float32)
-    return ((a_f32 - b_f32).abs().mean() / torch.max(
-        a_f32.abs().mean(), torch.tensor(1e-6))).item()
+    return ((a_f32 - b_f32).abs().mean() / torch.max(a_f32.abs().mean(), torch.tensor(1e-6))).item()
 
 
 def _count_bytes(*ts):
@@ -518,9 +520,14 @@ def _generate_params(is_benchmark=False):
 
     return [
         {
-            "num_tokens": nt, "hidden": h, "in_dtype": dt, "fmt": fmt,
-            "use_tma_aligned_col_major_sf": tma, "round_sf": rsf,
-            "use_packed_ue8m0": packed, "block_size": bs,
+            "num_tokens": nt,
+            "hidden": h,
+            "in_dtype": dt,
+            "fmt": fmt,
+            "use_tma_aligned_col_major_sf": tma,
+            "round_sf": rsf,
+            "use_packed_ue8m0": packed,
+            "block_size": bs,
         }
         for nt in num_tokens_list
         for h in hidden_sizes
@@ -538,31 +545,25 @@ if __name__ == "__main__":
     torch.manual_seed(42)
 
     test_cases = [
-        (4096, 576,  torch.bfloat16, "e4m3", (128, 128), False, False, False),
-        (4096, 2048, torch.float32,   "e4m3", (128, 128), True,  True,  True),
-        (4096, 2560, torch.bfloat16, "e2m1", (32, 32),   False, True,  False),
-        (4096, 3072, torch.float32,   "e4m3", (32, 32),   False, False, False),
-        (4096, 4096, torch.bfloat16, "e4m3", (128, 128), False, True,  False),
-        (4096, 6144, torch.float32,   "e2m1", (128, 128), False, False, False),
-        (4096, 7168, torch.bfloat16, "e4m3", (128, 128), True,  True,  True),
-        (4096, 7168, torch.bfloat16, "e2m1", (32, 32),   False, True,  False),
-        (4096, 576,  torch.float32,   "e4m3", (32, 32),   False, False, False),
-        (4096, 2048, torch.bfloat16, "e4m3", (128, 128), False, True,  False),
+        (4096, 576, torch.bfloat16, "e4m3", (128, 128), False, False, False),
+        (4096, 2048, torch.float32, "e4m3", (128, 128), True, True, True),
+        (4096, 2560, torch.bfloat16, "e2m1", (32, 32), False, True, False),
+        (4096, 3072, torch.float32, "e4m3", (32, 32), False, False, False),
+        (4096, 4096, torch.bfloat16, "e4m3", (128, 128), False, True, False),
+        (4096, 6144, torch.float32, "e2m1", (128, 128), False, False, False),
+        (4096, 7168, torch.bfloat16, "e4m3", (128, 128), True, True, True),
+        (4096, 7168, torch.bfloat16, "e2m1", (32, 32), False, True, False),
+        (4096, 576, torch.float32, "e4m3", (32, 32), False, False, False),
+        (4096, 2048, torch.bfloat16, "e4m3", (128, 128), False, True, False),
     ]
 
     for nt, h, dt, fmt, bs, tma, rsf, packed in test_cases:
         max_fp = 6.0 if fmt == "e2m1" else 448.0
         x = torch.randn((nt, h), dtype=dt, device=NPU_DEVICE)
 
-        skip = (fmt == "e2m1")
-        out, sf = per_block_cast(x, fmt, bs,
-                                 use_tma_aligned_col_major_sf=tma,
-                                 round_sf=rsf,
-                                 use_packed_ue8m0=packed,
-                                 skip_cast=skip)
-        ref_out, ref_sf = _ref_cast(x, fmt, bs, round_sf=rsf, max_fp=max_fp,
-                                    use_tma_aligned_col_major_sf=tma,
-                                    use_packed_ue8m0=packed)
+        skip = fmt == "e2m1"
+        out, sf = per_block_cast(x, fmt, bs, use_tma_aligned_col_major_sf=tma, round_sf=rsf, use_packed_ue8m0=packed, skip_cast=skip)
+        ref_out, ref_sf = _ref_cast(x, fmt, bs, round_sf=rsf, max_fp=max_fp, use_tma_aligned_col_major_sf=tma, use_packed_ue8m0=packed)
 
         out_diff = _calc_diff(out, ref_out)
         sf_diff = _calc_diff(sf, ref_sf)
@@ -572,10 +573,7 @@ if __name__ == "__main__":
             out2 = per_block_cast_with_precomputed_sf(x, fmt, bs, sf=sf)
             cast_only_ok = _calc_diff(out2, out) < 1e-3
 
-        sf2 = per_block_cast_with_sf_only(x, fmt, bs,
-                                          use_tma_aligned_col_major_sf=tma,
-                                          round_sf=rsf,
-                                          use_packed_ue8m0=packed)
+        sf2 = per_block_cast_with_sf_only(x, fmt, bs, use_tma_aligned_col_major_sf=tma, round_sf=rsf, use_packed_ue8m0=packed)
         sf_only_ok = _calc_diff(sf2, ref_sf) < 1e-5
 
         assert out_diff < 1e-5, f"out_diff={out_diff}, case=({nt},{h},{dt},{fmt},{bs})"
