@@ -181,14 +181,13 @@ def dequant_kernel_factory(
                 # MTE3 鐎殿喖鍊归鐐哄礃濞嗗繑绀€
                 T.wait_flag("V", "MTE3", i % 2)
                 T.copy(out_ub[i % 2, 0:block_M, 0:block_N], out[x_row_start : x_row_start + block_M, i * block_N : (i + 1) * block_N])
-                T.set_flag("MTE3", "V", i % 2) 
+                T.set_flag("MTE3", "V", i % 2)
 
-                # MTE2 鐎殿喖鍊归鐐达紣閸曨偄绲?(濞戞挸绉瑰〒鍓佹啺娴ｈ櫣鎼肩€垫澘鎳忛弸渚€姊圭捄銊︾暠 MTE3 缂備焦鎸诲顐︽晬鐏炶棄娑ч悷?Vector 閻犲洩顕ч悾顒佺?x_ub 闁煎灚鍎抽崵顓犵矚濞差亝锛熼柨娑樼灱閻濇稒銇欓鈧幆搴ㄥ礉?
                 step_mte2 = i + 2
                 x_col_mte2 = step_mte2 * block_N
                 sf_col_mte2 = (step_mte2 * block_N) // num_per_channels
 
-                T.wait_flag("V", "MTE2", i % 2) 
+                T.wait_flag("V", "MTE2", i % 2)
                 T.copy(x[x_row_start : x_row_start + block_M, x_col_mte2 : x_col_mte2 + block_N], x_ub[i % 2, 0:block_M, 0:block_N])
                 T.copy(
                     x_sf[sf_row_start : sf_row_start + sf_dim_M, sf_col_mte2 : sf_col_mte2 + sf_dim_N], sf_ub[i % 2, 0:sf_dim_M, 0:sf_dim_N]
@@ -248,7 +247,7 @@ def dequant_kernel_factory(
 
             T.wait_flag("V", "MTE3", idx_1)
             T.copy(
-                out_ub[idx_1, 0:block_M, 0:block_N], 
+                out_ub[idx_1, 0:block_M, 0:block_N],
                 out[x_row_start : x_row_start + block_M, (n_blocks - 1) * block_N : n_blocks * block_N]
             )
 
@@ -478,7 +477,7 @@ if __name__ == "__main__":
                             results.append(
                                 {
                                     "num_tokens": nt,
-                                    "hidden": h, 
+                                    "hidden": h,
                                     "round_sf": rsf,
                                     "fmt": "e4m3",
                                     "out_dtype": out_dtype,
@@ -552,9 +551,7 @@ if __name__ == "__main__":
             ref = _ref_cast_back(x_casted, x_sf, npt, npc).to(out_dtype)
             diff = _calc_diff(result, ref)
 
-            if fmt == "e4m3" and out_dtype == torch.bfloat16:
-                threshold = 1e-1
-            elif fmt == "e4m3" and npc <= 8:
+            if fmt == "e4m3" and (out_dtype == torch.bfloat16 or npc <= 8):
                 threshold = 1e-1
             elif fmt == "e4m3":
                 threshold = 5e-4
