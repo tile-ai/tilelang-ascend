@@ -11,17 +11,21 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
+
 def ceil_div(x: int, y: int) -> int:
     return (x + y - 1) // y
 
+
 def align_up(x: int, y: int) -> int:
     return ceil_div(x, y) * y
+
 
 _COMPILED_KERNELS_CACHE: Dict[Tuple[int, ...], any] = {}
 
 # 妫ｅ啯瀵?濞村吋锚鐎垫煡寮弶娆炬澔闁挎稒鑹鹃崣蹇曚沪閳ь剙顕ｉ悩璇叉缂傚倹鎸搁悺銊╂晬鐏炲墽啸闂傚嫨鍊濋。鍓佹崲娴ｇ鐏＄€点倖妞介弨銏犘掓担瑙勨枖閻庢稒锚閻㈩偊寮堕妷褎鐣遍弶鈺傚姌椤㈡垿寮?Overhead
 _GLOBAL_TENSOR_CACHE: Dict[Tuple[Tuple[int, ...], torch.dtype, torch.device, str], torch.Tensor] = {}
 _UE8M0_LUT_CACHE: Dict[torch.device, torch.Tensor] = {}
+
 
 def _get_ue8m0_lut(device: torch.device) -> torch.Tensor:
     key = torch.device(device)
@@ -32,13 +36,16 @@ def _get_ue8m0_lut(device: torch.device) -> torch.Tensor:
         _UE8M0_LUT_CACHE[key] = lut
     return lut
 
+
 def _get_cached_tensor(shape: Tuple[int, ...], dtype: torch.dtype, device: torch.device, name: str) -> torch.Tensor:
     key = (shape, dtype, device, name)
     if key not in _GLOBAL_TENSOR_CACHE:
         _GLOBAL_TENSOR_CACHE[key] = torch.empty(shape, dtype=dtype, device=device)
     return _GLOBAL_TENSOR_CACHE[key]
 
+
 _PROFILE = _os.environ.get("TK_CAST_BACK_PROFILE", "0") in ("1", "true", "True")
+
 
 def _sync_for_profile(tensor: Optional[torch.Tensor] = None) -> None:
     if not _PROFILE:
@@ -49,11 +56,13 @@ def _sync_for_profile(tensor: Optional[torch.Tensor] = None) -> None:
     except Exception:
         pass
 
+
 def _profile_start(tensor: Optional[torch.Tensor] = None) -> float:
     if not _PROFILE:
         return 0.0
     _sync_for_profile(tensor)
     return _time.perf_counter()
+
 
 def _profile_mark(stages: list, name: str, start: float, tensor: Optional[torch.Tensor] = None) -> float:
     if not _PROFILE:
@@ -62,6 +71,7 @@ def _profile_mark(stages: list, name: str, start: float, tensor: Optional[torch.
     end = _time.perf_counter()
     stages.append((name, (end - start) * 1e6))
     return end
+
 
 def _profile_print(stages: list, num_tokens: int, hidden: int, num_per_tokens: int, num_per_channels: int, out_dtype: str) -> None:
     if not _PROFILE:
@@ -78,6 +88,8 @@ def _profile_print(stages: list, num_tokens: int, hidden: int, num_per_tokens: i
         f"[cast_back PROFILE] shape=({num_tokens},{hidden}) npt={num_per_tokens} "
         f"npc={num_per_channels} out={out_dtype} {total_info} | {parts}"
     )
+
+
 def _decode_sf(x_sf: torch.Tensor, sf_rows: int, sf_cols: int) -> torch.Tensor:
     if x_sf.dtype == torch.int32:
         packed_cols = ceil_div(sf_cols, 4)
@@ -93,6 +105,7 @@ def _decode_sf(x_sf: torch.Tensor, sf_rows: int, sf_cols: int) -> torch.Tensor:
             return x_sf.t()[:sf_rows, :sf_cols].to(torch.float16)
         else:
             return x_sf[:sf_rows, :sf_cols].to(torch.float16)
+
 
 # ==============================================================================
 # 闁冲簱妲勭粭?缂佹绠戦幃?TileLang-Ascend 闁哄秴娲ら崳顖滄喆閸曨喖鐦遍柣銊ュ閸炴挳寮界粙澶哥矗闁?(闂侇偅妲掔欢?100% 濞ｅ洦绻冪€垫棃宕洪搹鐟版疇闁告鍠愰悧?
@@ -254,6 +267,7 @@ def dequant_kernel_factory(
 
     return main
 
+
 # ==============================================================================
 # 妫ｅ啯鐣?濞戞挸锕ら惇?PyTorch 缂佺姵顨呴悺娆撳礂閵夈儱缍?(鐎殿喗娲栭崣鍡橆殗濡儵鍋撹閸忔绱撻幘宕囨憼濞村吋锚鐎?
 # ==============================================================================
@@ -322,11 +336,12 @@ def cast_back(
     kernel(x_padded, sf_decoded_padded, out_padded)
     profile_t = _profile_mark(profile_stages, "dequant_kernel", profile_t, out_padded)
 
-
     result = out_padded[:num_tokens, :hidden].to(out_dtype_map[out_dtype])
     _profile_mark(profile_stages, "slice_out_cast", profile_t, result)
     _profile_print(profile_stages, num_tokens, hidden, num_per_tokens, num_per_channels, out_dtype)
     return result
+
+
 def per_token_cast_back(
     x: tuple[torch.Tensor, torch.Tensor],
     fmt: str,
@@ -335,6 +350,7 @@ def per_token_cast_back(
     **kwargs,
 ) -> torch.Tensor:
     return cast_back(x, fmt, (1, num_per_channels), out_dtype=out_dtype, **kwargs)
+
 
 if __name__ == "__main__":
     import sys
