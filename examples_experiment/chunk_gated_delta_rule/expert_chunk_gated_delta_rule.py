@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import tilelang
 from tilelang import language as T
@@ -222,9 +224,7 @@ def chunk_gated_delta_rule_fwd_kernel(
                         T.wait_flag("mte2", "v", 2)
                         T.tile.sub(g_exp_ub, g_exp_ub, g_chunk_ub[pid, :])
                         T.copy(g_exp_ub, g_exp_ub_pad[0 : BT // 2])
-                        T.tile.compare(
-                            g_mask_ub_pad, g_exp_ub_pad, T.float32(0), "LE"
-                        )
+                        T.tile.compare(g_mask_ub_pad, g_exp_ub_pad, T.float32(0), "LE")
                         T.tile.select(
                             g_exp_ub_pad,
                             g_mask_ub_pad,

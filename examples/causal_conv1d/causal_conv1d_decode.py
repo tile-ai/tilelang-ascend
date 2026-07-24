@@ -268,9 +268,7 @@ def causal_conv1d_decode(
 
     initial_state_mode = torch.ones(batch, dtype=torch.int32, device=conv_state.device)
 
-    kernel = get_decode_kernel(
-        width, dim, "bfloat16", has_silu
-    )
+    kernel = get_decode_kernel(width, dim, "bfloat16", has_silu)
     output = kernel(
         x_kernel,
         weight_t,
@@ -281,9 +279,7 @@ def causal_conv1d_decode(
         bias_work,
     )
 
-    conv_state.copy_(
-        conv_state_t.transpose(1, 2).contiguous().to(original_dtype)
-    )
+    conv_state.copy_(conv_state_t.transpose(1, 2).contiguous().to(original_dtype))
 
     if query_start_loc is None and x.dim() == 2:
         output = output.squeeze(-1) if output.dim() == 3 and output.shape[-1] == 1 else output
@@ -300,8 +296,8 @@ WIDTH = 4
 STATE_LEN = WIDTH - 1
 
 REF_CHECK_CONFIGS = [
-    {"name": "decode_bs1_sl1",               "dim": 2048, "batch_size": 1, "has_silu": True, "num_cache_lines": 4, "seed": 42},
-    {"name": "qwen35_2b_tp2_decode_bs1_sl1",  "dim": 3072, "batch_size": 1, "has_silu": True, "num_cache_lines": 4, "seed": 43},
+    {"name": "decode_bs1_sl1", "dim": 2048, "batch_size": 1, "has_silu": True, "num_cache_lines": 4, "seed": 42},
+    {"name": "qwen35_2b_tp2_decode_bs1_sl1", "dim": 3072, "batch_size": 1, "has_silu": True, "num_cache_lines": 4, "seed": 43},
 ]
 
 
@@ -333,10 +329,7 @@ def _torch_causal_conv1d_decode_ref(
         read_line = init_l[b].item()
         write_line = current_l[b].item()
 
-        history = [
-            conv_state_f[read_line][:, h].clone()
-            for h in range(hist_len)
-        ]
+        history = [conv_state_f[read_line][:, h].clone() for h in range(hist_len)]
 
         acc = torch.zeros(dim, dtype=torch.float32)
         for w in range(hist_len):
@@ -385,9 +378,7 @@ def _run_ref_check(config: dict) -> None:
     ci_cpu = conv_state_indices.cpu()
 
     cs_ref = conv_state.cpu().clone()
-    golden = _torch_causal_conv1d_decode_ref(
-        x_cpu, cs_ref, w_cpu, b_cpu, ci_cpu, ci_cpu.clone(), has_silu
-    )
+    golden = _torch_causal_conv1d_decode_ref(x_cpu, cs_ref, w_cpu, b_cpu, ci_cpu, ci_cpu.clone(), has_silu)
 
     cs_npu = conv_state.clone()
     activation = "silu" if has_silu else None
