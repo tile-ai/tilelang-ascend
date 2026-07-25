@@ -142,6 +142,14 @@ private:
 
   void BroadcastOpCodegen(const CallNode *op);
 
+  void TailUnaryOpCodegen(const CallNode *op);
+
+  void TailBinaryOpCodegen(const CallNode *op);
+
+  void TailScalarOpCodegen(const CallNode *op);
+
+  void TailReduceOpCodegen(const CallNode *op);
+
   void RowExpandMulCodegen(const CallNode *op);
 
   void RowExpandMulExperimentCodegen(const CallNode *op);
@@ -152,6 +160,8 @@ private:
 
   void RowExpandBinOpExperimentCodegen(const CallNode *op,
                                        const std::string &mask_op_name);
+
+  void ExpExperimentCodegen(const CallNode *op);
 
   void SetCrossFlagCodegen(const CallNode *op);
 
@@ -164,6 +174,8 @@ private:
   void PrintfOpCodegen(const CallNode *op, const std::string &op_name);
 
   void DumpTensorCodegen(const CallNode *op);
+
+  void SrcCodeCodegen(const CallNode *op);
 
   void BilinearInterpolationCodegen(const CallNode *op);
 

@@ -5142,6 +5142,54 @@ def test_row_expand_div_experiment(dtype, target, shape):
     torch.testing.assert_close(c.cpu(), ref_c.cpu(), rtol=1e-2, atol=1e-2)
 
 
+def exp_experiment_kernel(M, N, col, dtype="float"):
+    # exp_experiment exps a 64-col (fp32) / 128-col (fp16) chunk of every row per
+    # call, striding the buffer's physical column count between rows; callers loop
+    # chunks over the valid window. `col` picks how many chunks fire (1 / 2 / 4).
+    chunk = 64 if dtype == "float" else 128
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((M, N), dtype)
+            T.copy(A, a_ub)
+            # Strided masked exp over [0:col] in place; the [col:N] tail is untouched.
+            for k in range(col // chunk):
+                sc = k * chunk
+                T.tile.exp_experiment(a_ub[:, sc : sc + chunk], a_ub[:, sc : sc + chunk])
+            T.copy(a_ub, C)
+
+    return main
+
+
+@pytest.mark.parametrize(
+    "dtype,col",
+    [("float", 64), ("float", 128), ("float", 256), ("float16", 128), ("float16", 256)],
+)
+def test_exp_experiment(dtype, col):
+    # exp_experiment is ascendc-only (no PTO counterpart). It exps only the first
+    # `col` columns of a 512-wide N-strided buffer, in place, leaving [col:N] as-is
+    # -- what an online-softmax narrow window needs without compacting to a tile.
+    M, N = 16, 512
+    func = exp_experiment_kernel(M, N, col, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target="ascendc")
+
+    torch_dtype = torch.float16 if dtype == "float16" else torch.float32
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+    torch.npu.synchronize()
+
+    c = func(a)
+    torch.npu.synchronize()
+
+    ref = a.clone()
+    ref[:, :col] = torch.exp(a[:, :col])  # only the window is exp'd; tail unchanged
+
+    torch.testing.assert_close(c.cpu(), ref.cpu(), rtol=1e-2, atol=1e-2)
+
+
 if __name__ == "__main__":
     current_dir = os.path.dirname(os.path.abspath(__file__))
     elementwise_test_path = os.path.join(current_dir, "test_tilelang_ascend_language_elementwise.py")

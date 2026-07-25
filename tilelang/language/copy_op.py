@@ -3,8 +3,9 @@
 """The language interface for tl programs."""
 
 from __future__ import annotations
+from enum import IntEnum
 from tilelang import language as T
-from tvm import ir, tir
+from tvm import arith, ir, tir
 
 
 def region(buffer: tir.BufferLoad, access_type: str, *args: tir.PrimExpr):
@@ -193,23 +194,112 @@ def c2d_im2col(
     )
 
 
+def _is_cross_cv_copy(src: tir.Buffer, dst: tir.Buffer) -> bool:
+    """Check if this is a cross-CV copy (UB→L1 or L0C→UB only)."""
+    src_scope: str = src.scope()
+    dst_scope: str = dst.scope()
+    return (
+        (src_scope == "shared.ub" and dst_scope == "shared.l1")  # UB → L1
+        or (src_scope == "wmma.accumulator" and dst_scope == "shared.ub")  # L0C → UB
+    )
+
+
+def _is_almost_zero(expr: tir.PrimExpr) -> bool:
+    """Check if simplified expression represents a value in [0, 1].
+
+    True if IntImm(0) (exact 2x) or FloorMod(X, 2) (~2x for symbolic M vs M//2).
+    """
+    if isinstance(expr, tir.IntImm):
+        return int(expr.value) == 0
+    if isinstance(expr, tir.FloorMod):
+        return isinstance(expr.b, tir.IntImm) and int(expr.b.value) == 2
+    return False
+
+
+def _has_2x_ratio(s: tir.PrimExpr, d: tir.PrimExpr) -> bool:
+    """Check if s and d have approximately 2x ratio.
+
+    Instead of proving s == d*2 (requires divisibility info TVM can't track),
+    computes the difference and checks if it simplifies to something bounded
+    to [0, 1]. Works for both IntImm and symbolic PrimExpr.
+    """
+    analyzer: arith.Analyzer = arith.Analyzer()
+    two: tir.IntImm = tir.IntImm("int32", 2)
+    return _is_almost_zero(analyzer.simplify(s - d * two)) or _is_almost_zero(analyzer.simplify(d - s * two))
+
+
+def _is_equal_dim(s: tir.PrimExpr, d: tir.PrimExpr) -> bool:
+    """Check if two shape dims are equal, handling both int and PrimExpr."""
+    if isinstance(s, (int, tir.IntImm)) and isinstance(d, (int, tir.IntImm)):
+        return int(s) == int(d)
+    analyzer: arith.Analyzer = arith.Analyzer()
+    diff: tir.PrimExpr = analyzer.simplify(s - d)
+    return isinstance(diff, tir.IntImm) and int(diff.value) == 0
+
+
+def _check_cross_cv_shapes(src_shape: list[tir.PrimExpr], dst_shape: list[tir.PrimExpr]) -> None:
+    """Check shapes for cross-CV copy, allowing one dim to differ by 2x."""
+    if len(src_shape) != len(dst_shape):
+        raise ValueError(f"Shape dimension mismatch: {src_shape} vs {dst_shape}")
+
+    diff_count: int = 0
+    for s, d in zip(src_shape, dst_shape):
+        if _is_equal_dim(s, d):
+            continue
+        if not _has_2x_ratio(s, d):
+            raise ValueError(f"Shape mismatch: {src_shape} vs {dst_shape} (dimension differs, not 2x ratio)")
+        diff_count += 1
+
+    if diff_count > 1:
+        raise ValueError(f"More than one dimension differs: {src_shape} vs {dst_shape}")
+
+
 def npu_copy_v2(
     src: tir.Buffer | tir.BufferLoad | tir.BufferRegion,
     dst: tir.Buffer | tir.BufferLoad,
     enable_relu: bool = False,
-    transpose: bool | None = False,  # for copy_l1_to_l0 param: tranpose l1
+    transpose: bool | None = False,  # for copy_l1_to_l0 param: transpose l1
     pad_value: float | int | tir.PrimExpr | None = None,
+    tmp: tir.Buffer | tir.BufferLoad | None = None,
+    unit_flag: int | None = None,
+    real_k: int | tir.PrimExpr | None = None,
+    real_n: int | tir.PrimExpr | None = None,
 ):
     """Copy data between memory regions.
 
     Args:
-        src (Union[tir.Buffer, tir.BufferLoad, tir.BufferRegion]): Source memory region
-        dst (Union[tir.Buffer, tir.BufferLoad]): Destination memory region
+        src (tir.Buffer | tir.BufferLoad | tir.BufferRegion): Source memory region
+        dst (tir.Buffer | tir.BufferLoad): Destination memory region
         enable_relu (bool): Whether to enable ReLU. Defaults to False.
-        transpose (Optional[bool]): Whether to transpose for copy_l1_to_l0. Defaults to False.
-        pad_value (Optional[Union[float, int, tir.PrimExpr]]): Value to fill in UB unused area.
+        transpose (bool | None): Whether to transpose for copy_l1_to_l0. Defaults to False.
+        pad_value (float | int | tir.PrimExpr | None): Value to fill in UB unused area.
             Supports float, int, tir.FloatImm, tir.IntImm, tir.PrimExpr (e.g., -T.infinity(dtype)).
-            Defaults to 0.
+            Defaults to 0. The gap fill ensures downstream reduce / broadcast / compare / select
+            ops (which read the full tile) observe a defined value; AscendTailMaskPropagation
+            additionally rewrites unary / binary / scalar ops to compute only over the valid
+            region so the pad value is preserved in the gap.
+        tmp (tir.Buffer | tir.BufferLoad | None): Temporary buffer for UB->L1 copy
+            on A5 platform. Used for ND->Nz format conversion. Defaults to None.
+            Only required when copying from UB to L1 on A5.
+        unit_flag (int | None): L0C->GM fixpipe unitFlag (0b10 accumulate / 0b11
+            flush). Defaults to None -> the C++ default 0, a standalone fixpipe,
+            leaving every existing copy byte-for-byte unchanged. Set 0b11 to fuse
+            this fixpipe with a preceding ``T.mma(unit_flag=0b11)`` through the
+            hardware mma->fixpipe pipeline; the row stride already comes from the
+            destination buffer's last dim.
+        real_k (int | tir.PrimExpr | None): L1->L0 runtime contraction length.
+            Defaults to None -> the L0 fractal's K extent comes from the
+            destination L0 buffer's dim (byte-identical for every existing copy).
+            Set it so a full-width L0 buffer is loaded as an ``[M, real_k]``
+            (matrix_a) / ``[real_k, N]`` (matrix_b) fractal matching a following
+            ``T.mma(k_actual=real_k)``; a full-width load feeding a shorter mma
+            otherwise reads mismatched fractals and addresses the wrong M-blocks.
+        real_n (int | tir.PrimExpr | None): L1->L0B runtime output width. Defaults
+            to None -> N comes from the destination L0 buffer's dim. The other
+            axis of what ``real_k`` covers: L0B's fractal derives its K-block
+            stride from the column count, so a full-width load followed by a
+            shorter ``T.mma(n_actual=...)`` addresses the wrong K-blocks. Applies
+            to matrix_b only, since matrix_a is ``[M, K]`` and has no N.
 
     Raises:
         TypeError: If copy extents cannot be deduced from arguments
@@ -218,7 +308,10 @@ def npu_copy_v2(
         tir.Call: A handle to the copy operation
     """
     if isinstance(src, tir.Buffer) and isinstance(dst, tir.Buffer) and not transpose:
-        ir.assert_structural_equal(src.shape, dst.shape)
+        if _is_cross_cv_copy(src, dst):
+            _check_cross_cv_shapes(src.shape, dst.shape)
+        else:
+            ir.assert_structural_equal(src.shape, dst.shape)
 
     # src_shape = src.shape if isinstance(src, tir.Buffer) else src.buffer.shape
 
@@ -282,4 +375,121 @@ def npu_copy_v2(
     else:
         pad_value_expr = tir.IntImm("int32", int(pad_value))
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), src, dst, enable_relu, transpose, pad_value_expr)
+    # Handle tmp parameter (for UB->L1 copy on A5)
+    if tmp is None:
+        tmp_region = tir.IntImm("int32", 0)
+    else:
+        tmp_region = _to_region(tmp, "rw")
+
+    copy_args = [src, dst, enable_relu, transpose, pad_value_expr, tmp_region]
+
+    # Optional trailing runtime args, appended only when used so every existing
+    # caller emits the exact same 6-argument call. They are positional, so an
+    # inner one has to be materialised (as its no-op default) when an outer one
+    # is set.
+    def _as_expr(value):
+        return value if isinstance(value, tir.PrimExpr) else tir.IntImm("int32", int(value))
+
+    if unit_flag is not None or real_k is not None or real_n is not None:
+        copy_args.append(tir.IntImm("int32", int(unit_flag) if unit_flag is not None else 0))
+        if real_k is not None or real_n is not None:
+            copy_args.append(_as_expr(real_k) if real_k is not None else tir.IntImm("int32", 0))
+            if real_n is not None:
+                copy_args.append(_as_expr(real_n))
+
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), *copy_args)
+
+
+class CopyCVMode(IntEnum):
+    SingleVec0 = 0
+    SingleVec1 = 1
+    DualSplitM = 2
+    DualSplitN = 3
+
+
+def copy_cv_experiment(src: tir.Buffer, dst: tir.Buffer, mode: int | CopyCVMode = CopyCVMode.DualSplitM):
+    """L0C to UB direct copy using TMOV (PTO A5 only).
+
+    Args:
+        dst: Destination buffer (UB, 'shared.ub' scope)
+        src: Source buffer (L0C, 'wmma.accumulator' scope)
+        mode: CopyCVMode (TMOV AccToVecMode)  (default CopyCVMode.DualSplitM)
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_copy_cv_experiment"),
+        src.access_ptr("r"),
+        dst.access_ptr("w"),
+        int(mode),
+    )
+
+
+def copy_vc_experiment(
+    src: tir.Buffer,
+    dst: tir.Buffer | tir.BufferLoad,
+    tmp: tir.Buffer,
+    index_row: tir.PrimExpr = 0,
+    index_col: tir.PrimExpr = 0,
+    mode: int = 0,
+):
+    """UB to L1 direct copy using TINSERT with ND→NZ conversion (PTO A5 only).
+
+    Args:
+        dst: Destination buffer (L1). Accepts tir.Buffer, tir.BufferLoad.
+             Slice syntax is forwarded to index_row/index_col:
+             - dst_l1          → uses explicit index_row/index_col params
+             - dst_l1[x, y]    → index_row=x, index_col=y (BufferLoad)
+             - dst_l1[:, :]    → index_row=0, index_col=0 (full slice)
+             Partial slices (e.g. dst_l1[16:32, :]) raise ValueError.
+        src: Source buffer (UB, 'shared.ub' scope) — ND format
+        tmp: Temporary buffer (UB, 'shared.ub' scope) — scratch for NZ conversion
+        index_row: Row insert offset (default 0). Overridden by dst slice syntax.
+        index_col: Column insert offset (default 0). Overridden by dst slice syntax.
+        mode: TINSERT TInsertMode (0=default, 2=SPLIT2, 3=SPLIT4)
+    """
+    if isinstance(dst, tir.BufferLoad):
+        buf = dst.buffer
+        indices = dst.indices
+        if len(indices) != 2:
+            raise ValueError(
+                f"copy_vc_experiment: dst has {len(indices)} index(es), "
+                f"need exactly 2 (row, col). "
+                f"Use dst_l1[x, y] or explicit index_row/index_col."
+            )
+        index_row, index_col = indices[-2], indices[-1]
+        dst = buf
+
+    elif isinstance(dst, tir.BufferRegion):
+        buf = dst.buffer
+        ranges = dst.region
+        for dim_idx, r in enumerate(ranges):
+            if not isinstance(r, tir.Range):
+                continue
+            dim = buf.shape[dim_idx]
+            if isinstance(r.extent, tir.IntImm) and isinstance(dim, tir.IntImm) and r.extent.value != dim.value:
+                raise ValueError(
+                    f"copy_vc_experiment: dst has a partial slice "
+                    f"(dim {dim_idx}: {r.min}..{r.min + r.extent}), "
+                    f"but only full slices (:) or scalar indices are "
+                    f"supported. Use explicit index_row/index_col instead."
+                )
+        mins = [r.min if isinstance(r, tir.Range) else r for r in ranges]
+        if len(mins) != 2:
+            raise ValueError(
+                f"copy_vc_experiment: dst slice has {len(mins)} dimension(s), "
+                f"need exactly 2 (row, col). "
+                f"Use dst_l1[x, y] or explicit index_row/index_col."
+            )
+        index_row, index_col = mins[-2], mins[-1]
+        dst = buf
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_copy_vc_experiment"),
+        src.access_ptr("r"),
+        dst.access_ptr("w"),
+        tmp.access_ptr("rw"),
+        index_row,
+        index_col,
+        int(mode),
+    )

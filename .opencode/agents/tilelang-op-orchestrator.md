@@ -135,7 +135,9 @@ op_requirements:
 ```text
 examples/{op}/
 ├── DESIGN.md                     # Stage 1 产物
-├── example_{op}.py               # Stage 2 产物（kernel + 内嵌 golden + 分层测试套件 L0/L1/L2/Boundary + main 块）
+├── proto.yaml                    # Stage 1 产物（算子接口规格 dtype/attr，供覆盖门禁派生应覆盖维度）
+├── {op}.py                       # Stage 2 产物（纯 kernel：@tilelang.jit，可 import，无 golden/测试/__main__）
+├── test_{op}.py                  # Stage 2 产物（from {op} import kernel + golden + 分层测试套件 L0/L1/L2/Boundary + main 块）
 ├── README.md                     # Stage 2 产物（可选）
 ├── perf_tuning/                  # Stage 3 产物目录
 ├── history_version/              # Stage 2 精度调试备份 + Stage 1 设计回退备份
@@ -147,20 +149,22 @@ examples/{op}/
 | 工件 | Owner | 主要消费者 | 消费者需要的信息 |
 |------|-------|------------|-----------------|
 | `DESIGN.md` | Stage 1 | Stage 2（含精度调试） | 算子名、计算语义、I/O 规格、编程模式、API 映射、tiling 策略、loop 结构、内存层级、技术约束检测结论、精度容忍度、**L0 门槛测试计划** |
-| `example_{op}.py` | Stage 2/3 | Stage 2/3 | `@tilelang.jit` kernel + 内嵌 PyTorch golden + **分层测试套件**（L0 按 DESIGN.md 的 L0 计划落地；L1/L2/Boundary 在 L0 通过后由 `tilelang-op-test-design` 场景 B 扩展）+ main 入口（含分层标记输出） |
+| `proto.yaml` | Stage 1 | 覆盖门禁（`coverage_check.py --proto`）/ `tilelang-op-test-design` | 算子接口规格：`operator.inputs[].dtype`（派生 D-DTYPE-*）、`operator.attrs[].name`（派生 D-PARAM-*）。由 DESIGN.md §9.3 精度表（dtype 全集）+ §4 派生，每个算子都产出 |
+| `{op}.py` | Stage 2/3 | Stage 2/3 | 纯 `@tilelang.jit` kernel（可 import；`precision_fix` 与 perf 调优只改此文件） |
+| `test_{op}.py` | Stage 2 | Stage 2/3 | `from {op} import kernel` + PyTorch golden + **分层测试套件**（L0 按 DESIGN.md 的 L0 计划落地；L1/L2/Boundary 在 L0 通过后由 `tilelang-op-test-design` 场景 B 扩展）+ main 入口（含分层标记输出，`--level` 分发） |
 | `README.md` | Stage 2 | 用户 | 实现说明 |
 | `perf_tuning/` | Stage 3 | 用户 | 性能优化日志、对比数据、最终版本 |
-| `history_version/` | Stage 1/2 | Orchestrator | 设计回退前 design 备份、精度调试前 impl 备份 |
+| `history_version/` | Stage 1/2 | Orchestrator | 设计回退前 design 备份、精度调试前 kernel 备份 |
 | `.orchestrator_state.json` | Orchestrator | Orchestrator | 全局状态 |
 
-Golden 函数直接写在 `example_{op}.py` 内（PyTorch 参考实现），与 `@tilelang.jit` kernel 并存，main 块中完成精度对比。不强制独立 `golden_{op}.py`。
+Golden 函数写在 `test_{op}.py` 内（PyTorch 参考实现），与 kernel **分文件**；测试文件通过 `from {op} import {op}` 导入 kernel，main 块中完成精度对比。不强制独立 `golden_{op}.py`。
 
 ### 覆盖策略
 
 | 分类 | 工件 | 策略 |
 |------|------|------|
-| 用户工件 | `DESIGN.md` | 优先版本化；设计回退前必须备份到 `history_version/design_rev{N}.md` |
-| 自动工件 | `example_{op}.py`、`README.md` | 可按阶段结果覆盖；Stage 2 精度调试每次 attempt 前必须备份到 `history_version/{op}_impl_s2_attempt{N}.py` |
+| 用户工件 | `DESIGN.md`、`proto.yaml` | 优先版本化；设计回退前 `DESIGN.md` 必须备份到 `history_version/design_rev{N}.md`；`proto.yaml` 随 design 重生成同步覆盖 |
+| 自动工件 | `{op}.py`、`test_{op}.py`、`README.md` | 可按阶段结果覆盖；Stage 2 精度调试每次 attempt 前必须把 kernel `{op}.py` 备份到 `history_version/{op}_impl_s2_attempt{N}.py` |
 
 ---
 
@@ -176,9 +180,9 @@ Golden 函数直接写在 `example_{op}.py` 内（PyTorch 参考实现），与 
 
 ### Stage 1 职责
 
-由 `@tilelang-op-analyst` 调度 `tilelang-op-design` skill 完成需求理解 + 设计方案：skill 内部执行技术约束检测（三维 Kernel、threads、动态边界、L0C 容量、GEMM 非整除等）+ 搜索 `examples/` 同类实现。最终产物：完整的 `DESIGN.md`（10+ 章节，参考 `tilelang-op-design` 模板）。
+由 `@tilelang-op-analyst` 调度 `tilelang-op-design` skill 完成需求理解 + 设计方案：skill 内部执行技术约束检测（三维 Kernel、threads、动态边界、L0C 容量、GEMM 非整除等）+ 搜索 `examples/` 同类实现。最终产物：完整的 `DESIGN.md`（10+ 章节，参考 `tilelang-op-design` 模板）+ `proto.yaml`（dtype 全集取自 §9.3 精度表、attr 取自 §4/§1 派生的算子接口规格，供覆盖门禁用）。
 
-此外 analyst 调用 `tilelang-op-test-design`（场景 A）为算子生成 **L0 门槛测试计划**（具体规则 shape / dtype / golden 草案 / 按算子类别的精度标准），写入 DESIGN.md 验证方案章节。**Stage 1 只生成 L0**；L1（功能，含不规则 shape）/ L2（异常）/ Boundary（特殊值）留待 Stage 2 在 L0 通过后调 `tilelang-op-test-design`（场景 B）扩展。
+此外 analyst 调用 `tilelang-op-test-design`（场景 A）为算子生成 **L0 门槛测试计划**（具体规则 shape / dtype / golden 草案 / 按 dtype 的精度标准（混合容差）），写入 DESIGN.md 验证方案章节。**Stage 1 只生成 L0**；L1（功能，含不规则 shape）/ L2（异常）/ Boundary（特殊值）留待 Stage 2 在 L0 通过后调 `tilelang-op-test-design`（场景 B）扩展。
 
 ### Stage 2 调度模型与三态路由
 
@@ -186,13 +190,15 @@ Golden 函数直接写在 `example_{op}.py` 内（PyTorch 参考实现），与 
 
 | Developer 返回 | mode（下次调度时） | 路由 |
 |---------------|------------------|------|
-| `[PRECISION_PASS]` | — | `complete_stage(2)` → **二次校验精度**（重新跑全量 `--level all` 确认真实性）→ 询问用户是否需要性能调优（见「Stage 3 用户确认」）。此时 Developer 已在 L0 通过后扩展并跑过 L1/L2/Boundary 全量；L2/Boundary 告警仅记录不阻塞 |
+| `[PRECISION_PASS]` | — | `complete_stage(2)` → **二次校验精度**（重新跑全量 `--level all` 确认真实性）→ 询问用户是否需要性能调优（见「Stage 3 用户确认」）。此时 Developer 已在 L0 通过后扩展并跑过 L1/L2/Boundary 全量、**且覆盖门禁 `coverage_check.py` 已全 PASS/N/A**；L2/Boundary 告警仅记录不阻塞 |
 | `[PRECISION_FAIL]` | `precision_fix` | Stage 2 内重试（L0 或 L1 未达标）。把失败信息（max_diff、失败用例 shape、层级）作为 `last_failure_summary` 传入。**强制要求 Developer 先备份当前 impl 到 `history_version/{op}_impl_s2_attempt{N}.py` 再做修改** |
 | `[DESIGN_ERROR]` | — | 触发设计回退流程（不计入 retry_count） |
 | 无标记且 exit code ≠ 0 | `retry_impl` | Stage 2 内重试，将 stderr 摘要作为 `last_failure_summary` 传入 |
 | 首次进入 Stage 2 | `first_impl` | 调 `tilelang-op-generate` 从零生成 kernel + L0 用例，先跑 L0 |
 
-> **分层测试**：Stage 2 每次 attempt 先只跑 L0 做精度收敛；L0 通过后 Developer 调用 `tilelang-op-test-design`（场景 B）扩展 L1/L2/Boundary 并跑全量。**L0/L1 失败**才算精度未达标（走 `precision_fix`）；**L2（异常）/ Boundary（特殊值）失败仅记录到 `debug_log.md` 与覆盖率报告，不阻塞 `[PRECISION_PASS]`**（可能是该算子本就不支持的输入）。
+> **分层测试**：Stage 2 每次 attempt 先只跑 L0 做精度收敛；L0 通过后 Developer 调用 `tilelang-op-test-design`（场景 B）扩展 L1/L2/Boundary，**跑覆盖门禁 `coverage_check.py` 补齐缺失维度**，再跑全量。**L0/L1 失败**才算精度未达标（走 `precision_fix`）；**L2（异常）/ Boundary（特殊值）失败仅记录到 `debug_log.md` 与覆盖率报告，不阻塞 `[PRECISION_PASS]`**（可能是该算子本就不支持的输入）。
+>
+> **覆盖门禁**：扩展后覆盖矩阵存在**未豁免的强制维度 MISS**（如缺非对齐/质数 shape、缺某 dtype、缺特殊值）时，Developer 必须补齐用例后才返回 `[PRECISION_PASS]`——覆盖门禁与 L0/L1 精度并列为 `[PRECISION_PASS]` 的前置条件。详见 developer agent「分层测试与扩展流程」步骤 3.5 与 `tilelang-op-test-design` §10.1 / references/coverage-matrix.md。
 
 调度规则：
 - 累计 attempt 上限 **5 次**：因运行失败超限 → `BLOCKED_IMPL`；因精度失败超限 → `BLOCKED_ACCURACY`。
@@ -261,8 +267,8 @@ Subagent 在 Stage 2 输出中明确返回 `[DESIGN_ERROR]` 标记，并附原�
 | Stage | 必需工件 | 门禁校验标准 | 执行失败类型 | 失败路由 |
 |-------|---------|-------------|---------|---------|
 | 1 | 用户需求 | `DESIGN.md` 含算子名、I/O 规格、编程模式、API 映射、tiling 策略、内存层级、同步策略、验证方案（含 **L0 门槛测试计划**）、技术约束检测结论 | 必须字段缺失 / 用户中途取消 | 重试 Stage 1 |
-| 2 | `DESIGN.md`（含 L0 计划）| 真实跑测完成三态判定，且 **L0/L1 全过**（PRECISION_PASS）才视为门禁通过；L2/Boundary 告警不影响门禁 | 编译/运行/精度失败 / 设计错误 | 分类路由（见上「Stage 2 运行失败子类型路由」） |
-| 3 | `example_{op}.py`（精度通过） + 用户调优信息 | 单轮性能迭代完成 | 精度退化 / 性能下降 | 回滚 |
+| 2 | `DESIGN.md`（含 L0 计划）| 真实跑测完成三态判定，且 **L0/L1 全过**（PRECISION_PASS）**且覆盖门禁 `coverage_check.py` 全 PASS/N/A**（无未豁免强制维度 MISS）才视为门禁通过；L2/Boundary 告警不影响门禁 | 编译/运行/精度失败 / 覆盖 MISS / 设计错误 | 分类路由（见上「Stage 2 运行失败子类型路由」） |
+| 3 | `{op}.py` kernel（精度通过） + `test_{op}.py` + 用户调优信息 | 单轮性能迭代完成 | 精度退化 / 性能下降 | 回滚 |
 
 ### 门禁失败处理流程（适用于所有 Stage）
 
@@ -457,7 +463,8 @@ Stage 2 返回 `[PRECISION_PASS]` 后，你**必须**先向用户说明当前状
 ## 开发结果
 - 算子: {op}    state: SUCCESS / BLOCKED_*    design_revisions: N
 - design: examples/{op}/DESIGN.md
-- kernel: examples/{op}/example_{op}.py（含 kernel + golden + 分层测试套件 L0/L1/L2/Boundary）
+- kernel: examples/{op}/{op}.py（纯 kernel）
+- test:   examples/{op}/test_{op}.py（golden + 分层测试套件 L0/L1/L2/Boundary + main）
 
 ## 精度结果
 - status: PASS / FAIL / UNKNOWN    accuracy_fix_count: N

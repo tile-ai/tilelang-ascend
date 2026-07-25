@@ -364,12 +364,17 @@ def golden_{算子名}({参数}):
 
 ### 9.3 精度标准
 
-> L0 用 baseline 标准即可；L1/L2/Boundary 扩展时由 `tilelang-op-test-design` 按算子类别（GEMM / Softmax / Normalization / Activation / Reduction / Fusion）套用更细的精度标准。
+> 采用**混合容差**：逐元素 `|actual-golden| ≤ atol + rtol·|golden|`，整体判定 `matched_ratio ≥ required_matched_ratio` **且** `max_abs_error ≤ max_abs_error_limit`。
+> 阈值**仅按 dtype**（与算子类别无关），L0/L1/Boundary 套用精度比对（L2 为非法输入负向测试，不比精度）；整型按 0 误差精确匹配。完整定义见 `tilelang-op-test-design/references/precision-standard.md`。
 
-| dtype | atol | rtol |
-|-------|------|------|
-| float16 | 1e-2 | 1e-2 |
-| float32 | 1e-4 | 1e-4 |
+| dtype | atol | rtol | max_abs_error_limit | required_matched_ratio |
+|-------|------|------|---------------------|------------------------|
+| float16 | 2⁻¹⁴ (6.10e-5) | 2⁻⁹ (1.95e-3) | 1e-1 | 0.99 |
+| bfloat16 | 2⁻¹⁰ (9.77e-4) | 2⁻⁶ (1.56e-2) | 1e0 | 0.99 |
+| float32 | 2⁻¹⁶ (1.53e-5) | 2⁻¹⁰ (9.77e-4) | 1e-2 | 0.99 |
+| int8/16/32, uint8 | 0 | 0 | 0 | 1.0（精确匹配） |
+
+> 上表按本算子 **§4 数据规格实际支持的 dtype** 填写，未支持的行删除；有额外 dtype（hifloat32 / float8_e4m3 / float8_e5m2 等）按 `precision-standard.md §二` 补齐。§4 声明的每个 dtype 都应在表中有对应行（浮点给 atol/rtol/max_abs_error_limit/required_matched_ratio，整型为 0/0/0/1.0）。
 
 ---
 
@@ -398,9 +403,11 @@ def golden_{算子名}({参数}):
 
 ```
 examples/{算子名}/
-├── example_{算子名}.py     # 算子实现 + 简单测试
-├── design.md               # 本设计文档
-└── README.md               # 使用说明（可选）
+├── {算子名}.py            # 纯 kernel（@tilelang.jit，可 import，无 golden/测试/__main__）
+├── test_{算子名}.py       # from {算子名} import kernel + golden + 分层测试 + main
+├── proto.yaml             # 算子接口规格（dtype/attr），供覆盖门禁派生应覆盖维度
+├── design.md              # 本设计文档
+└── README.md              # 使用说明（可选）
 ```
 
 ### 11.2 文件清单
@@ -408,20 +415,47 @@ examples/{算子名}/
 | 文件 | 状态 | 说明 |
 |------|------|------|
 | `design.md` | {已完成} | 设计文档 |
-| `example_{算子名}.py` | {待实现} | 算子实现 |
-| `test_{算子名}.py` | {待实现} | 测试文件（可选，放入 testing/） |
+| `proto.yaml` | {已完成} | 算子接口规格（dtype 全集取自 §9.3 精度表、attr 取自 §4/§1，机械派生），覆盖门禁 `coverage_check.py --proto` 用 |
+| `{算子名}.py` | {待实现} | 纯 kernel（@tilelang.jit） |
+| `test_{算子名}.py` | {待实现} | golden + 分层测试 + main（`from {算子名} import {算子名}`） |
 
 ### 11.3 命名规范
 
 - 目录名: `{算子名}`（snake_case）
-- 实现文件: `example_{算子名}.py`
-- 测试文件: `test_{算子名}.py`
+- kernel 文件: `{算子名}.py`
+- 测试文件: `test_{算子名}.py`（顶部 `from {算子名} import {算子名}`）
 
 ### 11.4 实现顺序
 
-1. ✅ 设计文档（design.md）+ L0 门槛测试计划（本文件 §9.2）
-2. ⬜ Golden 函数（验证基准）
-3. ⬜ 算子实现（example_{算子名}.py）+ 内嵌 L0 用例
+1. ✅ 设计文档（design.md）+ **proto.yaml（算子接口规格）** + L0 门槛测试计划（本文件 §9.2）
+2. ⬜ kernel 实现（`{算子名}.py`，纯 @tilelang.jit）
+3. ⬜ 测试文件（`test_{算子名}.py`）：import kernel + Golden 函数 + L0 用例 + main
 4. ⬜ L0 门槛测试通过（精度收敛）
 5. ⬜ 扩展分层套件（L1 功能 / L2 异常 / Boundary 特殊值，由 `tilelang-op-test-design` 场景 B 生成）
 6. ⬜ 全量套件运行（L0/L1 须通过；L2/Boundary 失败仅记录不阻塞）
+
+### 11.5 算子 proto.yaml（覆盖门禁用，Stage 1 产出）
+
+> **dtype 全集取自本文档 §9.3 精度表**（每个支持的 dtype 一行；§4.1 输入张量只填代表性 dtype，不作 dtype 全集来源）+ **§4/§1** 的 attr/shape 机械派生，是覆盖门禁 `coverage_check.py --proto` 的**权威 dtype/attr 来源**——**每个算子都产出**，保证覆盖门禁始终能强制"每个支持的 dtype / 每个关键 attr 都测到"。checker 只读 `operator.inputs[].dtype` 与 `operator.attrs[].name`。
+
+```yaml
+operator:
+  name: {算子名}                       # 如 Softmax
+  category: {算子类别}                 # GEMM / Softmax / Normalization / Activation / Reduction / Fusion
+  formula: |
+    {数学公式}
+  attrs:                              # 影响计算路径的属性；无则写 []
+    - name: {attr名}                  # 如 dim
+      type: {Int/Float/Bool/Enum}
+      default: {默认值}
+      required: {true/false}
+  inputs:
+    - name: {输入名}                   # 如 x
+      dtype: [{支持的 dtype 列表}]      # 如 [float16, float32, bfloat16]
+  outputs:
+    - name: {输出名}
+      dtype: [{支持的 dtype 列表}]
+  schema: {函数签名}                   # 如 softmax(Tensor x, int dim=-1) -> Tensor y
+```
+
+> **一致性约束**：`inputs[].dtype` 必须与 **§9.3 精度表**的 dtype 行一致（全集；不要只取 §4.1 的代表性 dtype，否则覆盖门禁只会要求测那一个）；`attrs[].name` 必须覆盖所有影响计算路径的属性（供 `D-PARAM-*` 覆盖维度派生）。
