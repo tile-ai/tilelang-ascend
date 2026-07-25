@@ -6,8 +6,8 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from collections.abc import Iterable, Sequence
 from pathlib import Path, PurePosixPath
-from typing import Iterable, Sequence
 
 
 DEFAULT_MANIFEST = Path("ci/operator_test_manifest.yaml")
@@ -45,9 +45,7 @@ def _parse_manifest(manifest_path: Path) -> list[tuple[str, str]]:
             continue
 
         if not in_mappings or not raw_line.startswith("  ") or ":" not in stripped:
-            raise ManifestError(
-                f"{manifest_path}:{line_number}: expected an indented source: test mapping"
-            )
+            raise ManifestError(f"{manifest_path}:{line_number}: expected an indented source: test mapping")
 
         source, test = (part.strip() for part in stripped.split(":", maxsplit=1))
         if not source or not test:
