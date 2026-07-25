@@ -568,9 +568,7 @@ if __name__ == "__main__":
             ref = _ref_cast_back(x_casted, x_sf, npt, npc).to(out_dtype)
             diff = _calc_diff(result, ref)
 
-            if fmt == "e4m3" and out_dtype == torch.bfloat16:
-                threshold = 1e-1
-            elif fmt == "e4m3" and npc <= 8:
+            if fmt == "e4m3" and (out_dtype == torch.bfloat16 or npc <= 8):
                 threshold = 1e-1
             elif fmt == "e4m3":
                 threshold = 5e-4
