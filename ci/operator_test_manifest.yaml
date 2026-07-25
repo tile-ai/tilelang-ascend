@@ -1,0 +1,3 @@
+version: 1
+mappings:
+  examples/batch_gemm/batch_gemm.py: examples/batch_gemm/test_batch_gemm.py

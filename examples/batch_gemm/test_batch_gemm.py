@@ -51,10 +51,3 @@ def test_batch_gemm_accuracy() -> None:
     expected = torch.matmul(lhs, rhs)
 
     torch.testing.assert_close(actual, expected, rtol=1e-2, atol=1e-2)
-
-
-if __name__ == "__main__":
-    # Compatibility bridge for the current bench_test.sh, which executes every
-    # Python file directly. Remove this after the CI path becomes Pytest-only.
-    test_batch_gemm_accuracy()
-    print("Test Passed!")
