@@ -15,6 +15,8 @@
 namespace tvm {
 namespace tl {
 
+int TVMDataTypeToACL(const DataType &dtype);
+
 bool TargetIsCuda(Target target);
 bool TargetIsRocm(Target target);
 

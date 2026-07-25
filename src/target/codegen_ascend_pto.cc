@@ -24,6 +24,7 @@
 #include "../transform/common/attr.h"
 #include "arith/pattern_match.h"
 #include "codegen_ascend_pto.h"
+#include "utils.h"
 
 namespace tvm {
 namespace codegen {
@@ -475,6 +476,7 @@ std::string CodeGenTileLangAscendPto::Finish() {
   decl_stream << "#include <pto/pto-inst.hpp>\n";
   decl_stream << "#include \"acl/acl.h\"\n";
   decl_stream << "#include <runtime/rt_ffts.h>\n";
+  decl_stream << "#include \"tl_templates/ascend/exception_dump.h\"\n";
 
   if (has_dump_tensor_) {
     decl_stream << "#include \"tl_templates/pto/printf.h\"\n";
@@ -3886,6 +3888,41 @@ void CodeGenTileLangAscendPto::PrintHostFunc(
   os << "  uint32_t fftsLen{0};\n  ";
   os << "  uint64_t fftsAddr{0};\n  ";
   os << "  rtGetC2cCtrlAddr(&fftsAddr, &fftsLen);\n";
+
+  os << "tilelang_register_exception_dump_callback();\n";
+  os << "ParamSizeInfo paramSizeInfo;\n";
+  os << "paramSizeInfo.magic = TILE_LANG_PARAM_INFO_MAGIC;\n";
+  {
+    size_t tensor_idx = 0;
+    for (size_t i = 0; i < f->params.size(); ++i) {
+      auto v = f->params[i];
+      if (v.dtype() == DataType::Handle() &&
+          f->buffer_map.find(v) != f->buffer_map.end()) {
+        tir::Buffer buffer = f->buffer_map[v];
+        os << "paramSizeInfo.sizes[" << tensor_idx << "] = (size_t)(";
+        if (buffer->shape.size() == 0) {
+          os << "1";
+        }
+        for (size_t j = 0; j < buffer->shape.size(); j++) {
+          if (j > 0) {
+            os << " * ";
+          }
+          os << "(";
+          this->PrintExpr(buffer->shape[j], os);
+          os << ")";
+        }
+        size_t elem_bytes = (buffer->dtype.bits() + 7) / 8;
+        os << ") * " << elem_bytes << ";\n";
+        os << "paramSizeInfo.addr[" << tensor_idx << "] = (uint64_t)"
+           << v->name_hint << ";\n";
+        os << "paramSizeInfo.dataTypes[" << tensor_idx
+           << "] = " << tvm::tl::TVMDataTypeToACL(buffer->dtype) << ";\n";
+        tensor_idx++;
+      }
+    }
+    os << "paramSizeInfo.count = " << tensor_idx << ";\n";
+  }
+
   this->PrintIndent();
   os << "  " << name << "<<<" << core << ", nullptr, stream>>>(";
 
@@ -3904,7 +3941,7 @@ void CodeGenTileLangAscendPto::PrintHostFunc(
       os << ", ";
     }
   }
-  os << ", fftsAddr);\n}\n";
+  os << ", fftsAddr, paramSizeInfo);\n}\n";
   this->EndScope(func_scope);
 }
 
@@ -4007,7 +4044,8 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
     index++;
   }
 
-  stream << ", uint64_t ffts_Addr) {\n";
+  stream << ", uint64_t ffts_Addr, ParamSizeInfo paramSizeInfo) {\n";
+  stream << "  (void)paramSizeInfo;\n";
   for (size_t i = 0; i < f->params.size(); ++i) {
     tir::Var v = f->params[i];
     if (v.dtype() == DataType::Handle()) {

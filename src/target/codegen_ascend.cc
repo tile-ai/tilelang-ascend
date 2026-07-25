@@ -19,6 +19,8 @@
 #include <utility>
 #include <vector>
 
+#include "utils.h"
+
 #include "../op/ascend.h"
 #include "../op/builtin.h"
 #include "../transform/common/attr.h"
@@ -102,6 +104,7 @@ std::string CodeGenTileLangAscend::Finish() {
   decl_stream << "#include \"tl_templates/ascend/common.h\"\n";
   decl_stream << "#include \"acl/acl.h\"\n";
   decl_stream << "#include <runtime/rt_ffts.h>\n";
+  decl_stream << "#include \"tl_templates/ascend/exception_dump.h\"\n";
   decl_stream << "using namespace Catlass;\n";
   decl_stream << "using uint = unsigned int;\n";
   decl_stream << "using uchar = unsigned char;\n";
@@ -1157,6 +1160,41 @@ void CodeGenTileLangAscend::PrintHostFunc(
   os << "rtGetC2cCtrlAddr(&fftsAddr, &fftsLen);\n";
   int func_scope = this->BeginScope();
   CallTilingInput(os, tiling_func_name, tiling_args, shape_vars);
+
+  os << "tilelang_register_exception_dump_callback();\n";
+  os << "ParamSizeInfo paramSizeInfo;\n";
+  os << "paramSizeInfo.magic = TILE_LANG_PARAM_INFO_MAGIC;\n";
+  {
+    size_t tensor_idx = 0;
+    for (size_t i = 0; i < f->params.size(); ++i) {
+      auto v = f->params[i];
+      if (v.dtype().is_handle() &&
+          f->buffer_map.find(v) != f->buffer_map.end()) {
+        tir::Buffer buffer = f->buffer_map[v];
+        os << "paramSizeInfo.sizes[" << tensor_idx << "] = (size_t)(";
+        if (buffer->shape.size() == 0) {
+          os << "1";
+        }
+        for (size_t j = 0; j < buffer->shape.size(); j++) {
+          if (j > 0) {
+            os << " * ";
+          }
+          os << "(";
+          this->PrintExpr(buffer->shape[j], os);
+          os << ")";
+        }
+        size_t elem_bytes = (buffer->dtype.bits() + 7) / 8;
+        os << ") * " << elem_bytes << ";\n";
+        os << "paramSizeInfo.addr[" << tensor_idx << "] = (uint64_t)"
+           << v->name_hint << ";\n";
+        os << "paramSizeInfo.dataTypes[" << tensor_idx
+           << "] = " << tvm::tl::TVMDataTypeToACL(buffer->dtype) << ";\n";
+        tensor_idx++;
+      }
+    }
+    os << "paramSizeInfo.count = " << tensor_idx << ";\n";
+  }
+
   this->PrintIndent();
 
   os << name << "<<<" << core << ", nullptr, stream>>>(";
@@ -1175,7 +1213,7 @@ void CodeGenTileLangAscend::PrintHostFunc(
       os << ", ";
     }
   }
-  os << ", fftsAddr);\n";
+  os << ", fftsAddr, paramSizeInfo);\n";
   os << "}\n";
   this->EndScope(func_scope);
   std::string content = os.str();
@@ -1286,7 +1324,9 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
     index++;
   }
   stream << ", uint64_t fftsAddr";
+  stream << ", ParamSizeInfo paramSizeInfo";
   stream << ") {\n";
+  stream << "  (void)paramSizeInfo;\n";
   this->PreFunctionBody(f);
   int func_scope = this->BeginScope();
   this->PrintStmt(f->body);
