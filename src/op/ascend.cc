@@ -249,14 +249,10 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
                                           const PrimExpr &rows) {
     ICHECK_EQ(ub.scope(), "shared.ub");
     for (size_t i = 0; i < range.size(); ++i) {
-      ICHECK(analyzer->CanProveEqual(range[i]->min, 0))
-          << "High-rank Ascend GM<->UB copies require a zero-based UB "
-             "region, but dimension "
-          << i << " of buffer " << ub->name << " starts at " << range[i]->min;
-      ICHECK(analyzer->CanProve(extents[i] <= ub->shape[i]))
+      ICHECK(analyzer->CanProve(range[i]->min + extents[i] <= ub->shape[i]))
           << "High-rank Ascend GM<->UB copy region exceeds buffer " << ub->name
-          << " at dimension " << i << ": extent " << extents[i]
-          << " is larger than " << ub->shape[i];
+          << " at dimension " << i << ": region [" << range[i]->min << ", "
+          << range[i]->min + extents[i] << ") is larger than " << ub->shape[i];
     }
     ICHECK(analyzer->CanProveEqual(extents.back(), ub->shape.back()))
         << "High-rank Ascend GM<->UB copies require the full UB row width, "
