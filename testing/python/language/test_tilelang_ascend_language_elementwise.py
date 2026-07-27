@@ -50,15 +50,16 @@ def unaligned_multirow_copy():
     return main
 
 
-def test_unaligned_multirow_copy_fails_at_compile_time(capfd):
-    with pytest.raises(RuntimeError, match="Compilation Failed"):
-        tilelang.compile(
-            unaligned_multirow_copy(),
-            out_idx=[-1],
-            pass_configs=pass_configs,
-            target="ascendc",
-        )
-    assert "requires a 32-byte-aligned UB row" in capfd.readouterr().err
+def test_unaligned_multirow_full_rows_supported():
+    kernel = tilelang.compile(
+        unaligned_multirow_copy(),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target="ascendc",
+    )
+    a = torch.arange(18, dtype=torch.float16).reshape(2, 9).npu()
+    torch.npu.synchronize()
+    torch.testing.assert_close(kernel(a), a + 1, rtol=0, atol=0)
 
 
 @pytest.fixture
