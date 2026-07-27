@@ -2,7 +2,7 @@ from __future__ import annotations
 import tilelang.language as T
 from tvm.ir import Range
 from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call, IntImm, Ramp
-from tvm import tir
+from tvm import DataType, tir
 from tilelang.language.ascend import _dtype
 import functools
 import warnings
@@ -1442,9 +1442,36 @@ def transpose(dst: Buffer, src: Buffer):
     buffer into the destination buffer.
 
     Args:
-        dst: The destination buffer.
-        src: The source buffer to be transposed.
+        dst: The destination buffer, shape [W, H].
+        src: The source buffer to be transposed, shape [H, W].
+
+    Note:
+        H and W must satisfy 32-byte alignment (i.e., H * sizeof(dtype) and
+        W * sizeof(dtype) must be multiples of 32). For B16 (half/int16/uint16)
+        and B32 (float/int32/uint32), this means H and W must be multiples of
+        16; for int8, multiples of 32. Supports B16 and B32 via hardware
+        instruction; int8 and bfloat16 fall back to scalar implementation.
     """
+    src_shape = list(src.shape)
+    if len(src_shape) < 2:
+        raise ValueError(f"transpose requires a 2D source buffer. Got shape: {src_shape}")
+
+    elem_bytes = DataType(src.dtype).bits // 8
+    for axis_name, dim in [("H", src_shape[-2]), ("W", src_shape[-1])]:
+        if isinstance(dim, tir.IntImm):
+            val = dim.value
+        elif isinstance(dim, int):
+            val = dim
+        else:
+            raise ValueError(f"transpose requires src buffer with static shape (32-byte aligned). Found dynamic dimension: {dim}.")
+        if val * elem_bytes % 32 != 0:
+            raise ValueError(
+                f"transpose requires both H and W to satisfy 32-byte alignment "
+                f"(i.e., {axis_name} * sizeof({src.dtype}) must be a multiple of 32). "
+                f"Got src shape {src_shape}, {axis_name} = {val}, sizeof({src.dtype}) = {elem_bytes}, "
+                f"{val} * {elem_bytes} = {val * elem_bytes} is not a multiple of 32."
+            )
+
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_transpose"),
@@ -2413,6 +2440,57 @@ def row_expand_div_experiment(
         "RowExpandDivExperiment",
         "tl.ascend_row_expand_div_experiment",
         "divide",
+    )
+
+
+def exp_experiment(dst, src):
+    """Strided masked exp over a 64-column (fp32) chunk of a wider N-strided buffer.
+
+    Exps ``dst[i, 0:64] = exp(src[i, 0:64])`` for every row in one call, striding by
+    the buffer's physical column count (read from the declaration by
+    ExpExperimentCodegen) so it touches just the valid window of an [M, N]-strided
+    score buffer without compaction. Callers loop 64-column chunks over the valid
+    window (same shape row_expand_sub_experiment expects). Unary mirror of the
+    experiment row-ops: emits ``tl::ascend::exp_mask<dtype>(dst, src, ...)``.
+
+    Args:
+        dst: Destination [rows, chunk_cols] buffer region (chunk_cols = 64 for fp32).
+        src: Source buffer region of matching shape (may equal dst for in-place exp).
+    """
+    dst = _normalize_buffer_arg(dst)
+    src = _normalize_buffer_arg(src)
+
+    if isinstance(dst, BufferRegion):
+        dst_ptr, dst_shape = _handle_buffer_region_2d(dst, "w")
+    else:
+        dst_ptr = dst.access_ptr("w")
+        dst_shape = list(dst.shape[-2:])
+
+    if isinstance(src, BufferRegion):
+        src_ptr, src_shape = _handle_buffer_region_2d(src, "r")
+    else:
+        src_ptr = src.access_ptr("r")
+        src_shape = list(src.shape[-2:])
+
+    if len(dst_shape) != 2 or len(src_shape) != 2:
+        raise ValueError("exp_experiment requires 2D buffers for dst and src.")
+    if not _shapes_equal(dst_shape, src_shape):
+        raise ValueError(f"dst and src shapes must match: dst={dst_shape}, src={src_shape}")
+
+    dtype = _dtype(src)
+    if dtype not in ("float16", "half", "float32", "float"):
+        raise ValueError(f"exp_experiment only supports float16 or float32, got {dtype}")
+    expected_chunk = 128 if dtype in ("float16", "half") else 64
+    if not _const_equal(dst_shape[1], expected_chunk):
+        raise ValueError(
+            f"exp_experiment requires the chunk size (last dimension) to be exactly {expected_chunk} for {dtype}, but got {dst_shape[1]}."
+        )
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_exp_experiment"),
+        f"exp_mask<{dtype}>",
+        dst_ptr,
+        src_ptr,
     )
 
 

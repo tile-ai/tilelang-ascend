@@ -57,6 +57,34 @@ AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
   } else {
     padValue = Integer(0);
   }
+  // Handle tmp parameter: check if it's a valid region (not IntImm(0) marker)
+  if (args.size() >= 6) {
+    auto tmp_expr = args[5];
+    // Check if tmp is a Call (valid region) or IntImm (none marker)
+    if (auto *tmp_call = tmp_expr.as<CallNode>()) {
+      auto tmp_region = RegionOp(tmp_call->args, vmap);
+      this->tmp = tmp_region.GetBuffer();
+      this->tmp_range = tmp_region.GetRanges();
+      this->tmp_extents = tmp_region.GetExtents();
+    }
+    // If tmp_expr is IntImm(0), leave tmp as undefined (default)
+  }
+  // Optional trailing runtime arguments for the kernel-driven cube path. All
+  // default to 0, which reproduces the previous behaviour exactly: unitFlag 0
+  // is a standalone fixpipe, and realK/realN 0 mean "take the extent from the
+  // destination L0 buffer".
+  unitFlag = Integer(0);
+  realK = Integer(0);
+  realN = Integer(0);
+  if (args.size() >= 7) {
+    unitFlag = args[6];
+  }
+  if (args.size() >= 8) {
+    realK = args[7];
+  }
+  if (args.size() >= 9) {
+    realN = args[8];
+  }
   std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);
   std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
   std::tie(this->src_extents, this->dst_extents) = std::tie(ets[0], ets[1]);
@@ -299,15 +327,15 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   ss << "tl::ascend::";
   PrimExpr strideN;
 
-  if (src.scope() == "global" && dst.scope() == "shared.dyn") {
+  if (src.scope() == "global" && dst.scope() == "shared.l1") {
     ss << "copy_gm_to_l1";
     config.gm2l1 = true;
-  } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_a") {
+  } else if (src.scope() == "shared.l1" && dst.scope() == "wmma.matrix_a") {
     ss << "copy_l1_to_l0a";
     // config.print_src_layout = true;
     config.l12l0 = true;
     config.l0_dst_split = true;
-  } else if (src.scope() == "shared.dyn" && dst.scope() == "wmma.matrix_b") {
+  } else if (src.scope() == "shared.l1" && dst.scope() == "wmma.matrix_b") {
     ss << "copy_l1_to_l0b";
     // config.print_src_layout = true;
     config.l12l0 = true;
@@ -316,7 +344,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     ss << "copy_l0c_to_gm";
     config.l0c2gm = true;
     config.print_gm_layout = true;
-  } else if (src.scope() == "shared" || dst.scope() == "shared") {
+  } else if (src.scope() == "shared.ub" || dst.scope() == "shared.ub") {
     config.print_ub = true;
 
     if (src.scope() == "global") {
@@ -342,9 +370,27 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
       ss << "copy_gm_to_ub<";
       ss << get_dtype(src) << ", ";
-      ss << (dst->shape.size() > 2 ? dst->shape.back()
-                                   : dst_extents[dst->shape.size() - 1]);
-      // ss << dst->shape[dst->shape.size() - 1];
+      // The column dim is a COMPILE-TIME template arg. A runtime inner-extent
+      // slice (dynamic width, e.g. a softmax's actual window tw_a < buffer
+      // width) would put a non-const expr in the template -> invalid C++ ("use
+      // of undeclared identifier"). High-rank copies always describe the
+      // physical UB row width; rank-2 copies keep a constant slice width when
+      // available and otherwise fall back to the buffer shape. The runtime
+      // valid width is carried by maskShapeN in either case.
+      PrimExpr gm2ub_tmpl_n = dst->shape.size() > 2
+                                  ? dst->shape.back()
+                                  : dst_extents[dst->shape.size() - 1];
+      if (!gm2ub_tmpl_n->IsInstance<IntImmNode>()) {
+        gm2ub_tmpl_n = dst->shape[dst->shape.size() - 1];
+        // The shape fallback must itself be a compile-time constant; a buffer
+        // declared with a dynamic inner dim would still emit a non-const
+        // template arg (the invalid-C++ case above), so fail early and clearly.
+        ICHECK(gm2ub_tmpl_n->IsInstance<IntImmNode>())
+            << "copy_gm_to_ub: the inner (column) dimension of the destination "
+               "buffer shape must be a compile-time constant, but got "
+            << gm2ub_tmpl_n;
+      }
+      ss << gm2ub_tmpl_n;
       if (dst->shape.size() > 1) {
         ss << ", " << dst_template_rows;
       }
@@ -372,27 +418,39 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
       ss << "copy_ub_to_gm<";
       ss << get_dtype(dst) << ", ";
-      ss << (src->shape.size() > 2 ? src->shape.back()
-                                   : src_extents[src->shape.size() - 1]);
-      // ss << src->shape[src->shape.size() - 1];
+      // See copy_gm_to_ub above: a runtime inner-extent must use the buffer's
+      // compile-time shape for the template col dim (runtime width is carried
+      // by the maskShapeN function arg); const extents are byte-identical.
+      PrimExpr ub2gm_tmpl_n = src->shape.size() > 2
+                                  ? src->shape.back()
+                                  : src_extents[src->shape.size() - 1];
+      if (!ub2gm_tmpl_n->IsInstance<IntImmNode>()) {
+        ub2gm_tmpl_n = src->shape[src->shape.size() - 1];
+        // See copy_gm_to_ub: the shape fallback must itself be compile-time.
+        ICHECK(ub2gm_tmpl_n->IsInstance<IntImmNode>())
+            << "copy_ub_to_gm: the inner (column) dimension of the source "
+               "buffer shape must be a compile-time constant, but got "
+            << ub2gm_tmpl_n;
+      }
+      ss << ub2gm_tmpl_n;
       if (src->shape.size() > 1) {
         ss << ", " << src_template_rows;
       }
       ss << ">";
-    } else if (dst.scope() == "shared.dyn") {
+    } else if (dst.scope() == "shared.l1") {
       config.virtual_channel = true;
-      ss << "copy_ub_to_l1<"; // real channel is "ub -> gm -> l1"
+      ss << "copy_ub_to_l1<";
       ss << get_dtype(dst) << ", ";
-      ss << src->shape[src->shape.size() - 1];
+      ss << src_extents[src->shape.size() - 1];
       if (src->shape.size() > 1) {
-        ss << ", " << src->shape[src->shape.size() - 2];
+        ss << ", " << compute_blocklen(src, src_extents);
       }
       ss << ">";
     } else if (src.scope() == "wmma.accumulator") {
       config.virtual_channel = true;
       ss << "copy_l0c_to_ub<";
       ss << get_dtype(src) << ", " << get_dtype(dst) << ", ";
-      ss << "layout::RowMajor, "; // real channel is "ub -> gm -> l1", so gm is
+      ss << "layout::RowMajor, "; // In "ub -> gm -> l1" path, gm is
                                   // always row major
       ss << src->shape[src->shape.size() - 2] << ", "
          << src->shape[src->shape.size() - 1];
@@ -485,6 +543,22 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   auto dst_ptr = dst_new_buffer.access_ptr(
       2, dst_new_buffer->dtype, 1,
       dst_new_buffer.OffsetOf(dst_new_indices).back(), dst_len);
+
+  PrimExpr tmp_ptr;
+  if (tmp.defined()) {
+    auto tmp_new_indices =
+        T.layout_map.count(tmp)
+            ? T.layout_map[tmp]->Forward(build_indices(tmp_range))
+            : build_indices(tmp_range);
+    auto tmp_new_buffer = T.buffer_remap.count(tmp) ? T.buffer_remap[tmp] : tmp;
+    PrimExpr tmp_len = 1;
+    for (auto &shape : tmp_extents) {
+      tmp_len *= shape;
+    }
+    tmp_ptr = tmp_new_buffer.access_ptr(
+        3, tmp_new_buffer->dtype, 1,
+        tmp_new_buffer.OffsetOf(tmp_new_indices).back(), tmp_len);
+  }
 
   auto compute_valid_extent = [](PrimExpr min_val, PrimExpr extent,
                                  PrimExpr shape) -> PrimExpr {
@@ -595,8 +669,27 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
   if (config.l0_dst_split) {
     int dst_dim = dst->shape.size();
-    new_args.push_back(dst->shape[dst_dim - 2]);
-    new_args.push_back(dst->shape[dst_dim - 1]);
+    PrimExpr dm = dst->shape[dst_dim - 2];
+    PrimExpr dn = dst->shape[dst_dim - 1];
+    // realK overrides the L0 fractal's K extent so it matches the following
+    // mma's runtime K. K is the trailing dim for matrix_a ([M, K]) and the
+    // leading one for matrix_b ([K, N]). realK == 0 keeps dst->shape, which is
+    // byte-identical for every existing L1->L0 copy.
+    const auto *rk_imm = realK.as<IntImmNode>();
+    if (!(rk_imm && rk_imm->value == 0)) {
+      if (dst.scope() == "wmma.matrix_a") {
+        dn = realK;
+      } else if (dst.scope() == "wmma.matrix_b") {
+        dm = realK;
+      }
+    }
+    // realN overrides matrix_b's N extent, the axis realK does not cover.
+    const auto *rn_imm = realN.as<IntImmNode>();
+    if (!(rn_imm && rn_imm->value == 0) && dst.scope() == "wmma.matrix_b") {
+      dn = realN;
+    }
+    new_args.push_back(dm);
+    new_args.push_back(dn);
   }
 
   if (config.l0c2gm) {
@@ -606,6 +699,11 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     new_args.push_back(src->shape[src->shape.size() - 2]);
     new_args.push_back(src->shape[src->shape.size() - 1]);
     new_args.push_back(Bool(enRelu)); // Add enable_relu parameter
+    // unitFlag goes last, not in call order: this list is shared with the PTO
+    // codegen, which reads several of these by position (the pad enum and the
+    // relu flag among them). The ascendc codegen picks it up off the end and
+    // emits it in the position the C++ helper expects.
+    new_args.push_back(unitFlag);
   }
 
   if (config.gm2l1) {
@@ -624,6 +722,9 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       pad_val = Cast(dst->dtype, pad_val);
     }
     new_args.push_back(pad_val);
+    // Physical UB tile dims (row pitch). These trail pad_val and are consumed
+    // by AscendTailMaskPropagation to model the tail rect; CopyCodegen prints
+    // only the first 4 extra args (strideN, validRow, validCol, pad_val).
     if (dst->shape.size() > 1) {
       new_args.push_back(dst->shape.size() > 2
                              ? compute_buffer_rows(dst)
@@ -644,10 +745,20 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   }
 
   if (config.virtual_channel) {
-    new_args.push_back(
-        src->shape[src->shape.size() -
-                   1]); // ub/l0c -> gm need realdstN which is equal to srcN in
-                        // virtural channel scenario
+    new_args.push_back(src_extents[src_extents.size() - 1]); // src_N
+    if (src_extents.size() >= 2) {
+      new_args.push_back(src_extents[src_extents.size() - 2]); // src_M
+    } else {
+      new_args.push_back(IntImm(DataType::Int(32), 0)); // 1D: no M dim
+    }
+    new_args.push_back(dst_extents[dst_extents.size() - 2]); // dst_M
+    new_args.push_back(dst_extents[dst_extents.size() - 1]); // dst_N
+    // Add tmp buffer for UB->L1 copy on A5 (for ND->Nz conversion)
+    if (tmp.defined()) {
+      new_args.push_back(tmp_ptr);
+      new_args.push_back(tmp_extents[tmp_extents.size() - 2]); // tmp_M
+      new_args.push_back(tmp_extents[tmp_extents.size() - 1]); // tmp_N
+    }
   }
 
   if (config.ub2ub) {
@@ -803,7 +914,7 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
 
   ICHECK(dst.scope() == "global")
       << "tl.ascend_atomic_add V1 requires global dst, got " << dst.scope();
-  ICHECK(src.scope() == "shared" || src.scope() == "wmma.accumulator")
+  ICHECK(src.scope() == "shared.ub" || src.scope() == "wmma.accumulator")
       << "tl.ascend_atomic_add V1 requires UB/shared or L0C/wmma.accumulator "
          "src, got "
       << src.scope();
@@ -818,9 +929,25 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
          "destination buffer rank";
 
   std::stringstream ss;
-  if (src.scope() == "shared") {
+  // Same compile-time-template-arg fix as the GM<->UB copy above (see
+  // AscendCopy::Lower): the inner (column) dim is a template arg, so a runtime
+  // inner-extent -- e.g. atomic_add(A[rows, 0:n], src_ub[:, 0:n]) with a
+  // dynamic n -- would put a non-const expr in the template and emit invalid
+  // C++. Use the source buffer's compile-time shape for the template; the
+  // runtime column count is carried by validCol_dst below, so the DMA still
+  // adds exactly the runtime number of columns. A const extent stays
+  // byte-identical, so every existing caller is unchanged.
+  PrimExpr atomic_tmpl_n = src_extents[src->shape.size() - 1];
+  if (!atomic_tmpl_n->IsInstance<IntImmNode>()) {
+    atomic_tmpl_n = src->shape[src->shape.size() - 1];
+    ICHECK(atomic_tmpl_n->IsInstance<IntImmNode>())
+        << "tl.ascend_atomic_add: the inner (column) dimension of the source "
+           "buffer shape must be a compile-time constant, but got "
+        << atomic_tmpl_n;
+  }
+  if (src.scope() == "shared.ub") {
     ss << "tl::ascend::atomic_add_ub_to_gm<";
-    ss << get_dtype(dst) << ", " << src_extents[src->shape.size() - 1];
+    ss << get_dtype(dst) << ", " << atomic_tmpl_n;
     if (src->shape.size() > 1) {
       ss << ", " << compute_blocklen(src, src_extents);
     }
@@ -831,10 +958,9 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
        << (T.layout_map.count(src) ? T.layout_map[src]->AscendLayoutStr()
                                    : "layout::RowMajor");
     if (src->shape.size() > 1) {
-      ss << ", " << compute_blocklen(src, src_extents) << ", "
-         << src_extents[src->shape.size() - 1];
+      ss << ", " << compute_blocklen(src, src_extents) << ", " << atomic_tmpl_n;
     } else {
-      ss << ", 1, " << src_extents[src->shape.size() - 1];
+      ss << ", 1, " << atomic_tmpl_n;
     }
     ss << ">";
   }
@@ -1327,13 +1453,18 @@ TIR_DEFINE_TL_BUILTIN(ascend_pipe_barrier)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
+TIR_DEFINE_TL_BUILTIN(ascend_free_pipe)
+    .set_num_inputs(2)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
 TIR_DEFINE_TL_BUILTIN(ascend_sync_all)
     .set_num_inputs(0)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_gemm_v0)
-    .set_num_inputs(5)
+    .set_num_inputs(6)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
@@ -1348,6 +1479,11 @@ TIR_DEFINE_TL_BUILTIN(ascend_printf)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_dump_tensor)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_src_code)
     .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
@@ -1402,8 +1538,10 @@ TIR_DEFINE_TL_BUILTIN(ascend_use_swizzle)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
+// -1 = variadic: the 6 required args (name, A, B, C, init, K) plus the optional
+// trailing n_actual / unitFlag pair.
 TIR_DEFINE_TL_BUILTIN(ascend_mma)
-    .set_num_inputs(6)
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
@@ -1503,6 +1641,43 @@ TIR_DEFINE_TL_BUILTIN(ascend_row_expand_sub_experiment)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_row_expand_div_experiment)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_exp_experiment)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_copy_cv_experiment)
+    .set_num_inputs(3)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_copy_vc_experiment)
+    .set_num_inputs(6)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+// Internal tail-aware ops (see ascend.h). Variadic: they carry an AscendC op
+// tag string, buffer pointers, and the runtime tail rect.
+TIR_DEFINE_TL_BUILTIN(ascend_tail_unary)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_tail_binary)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_tail_scalar)
+    .set_num_inputs(-1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_tail_reduce)
     .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));

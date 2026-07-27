@@ -62,7 +62,7 @@ Orchestrator 会自动驱动 3 阶段状态机：
 
 ```
 /tilelang-op-design          # 只生成 DESIGN.md
-/tilelang-op-generate        # 只生成 kernel 代码
+/tilelang-op-develop        # 只生成 kernel 代码
 /tilelang-perf-optimization  # 只做性能优化分析
 /tilelang-env-check          # 单独跑环境检查
 ```
@@ -118,7 +118,7 @@ claude --agent tilelang-op-orchestrator
 | 场景 | 推荐方式 |
 |:---|:---|
 | 完整算子开发（含精度+性能） | Orchestrator Agent |
-| 仅需 design.md / kernel 代码 | 直接调用 `tilelang-op-design` / `tilelang-op-generate` |
+| 仅需 design.md / kernel 代码 | 直接调用 `tilelang-op-design` / `tilelang-op-develop` |
 | Pass 分析与开发 | 直接调用 `tilelang-pass-*` 系列（不走 Orchestrator） |
 | 环境配置 / 调试 | 直接调用 `tilelang-env-check` / `tilelang-error-fixer` |
 | 续跑中断的算子 | Orchestrator Agent，提算子名即可 |
@@ -200,7 +200,7 @@ Stage 2: 代码实现 + 测试 + 精度调试（一站式）→ @tilelang-op-dev
 
 - **自动匹配** — 描述目标，OpenCode 根据 AGENTS.md 的 Skills 表自动选择
 - **斜杠命令** — 明确指定：`/tilelang-op-design`
-- **自然语言点名** — `请使用 tilelang-op-generate 技能`
+- **自然语言点名** — `请使用 tilelang-op-develop 技能`
 
 > 进一步了解：[OpenCode Skills 文档](https://opencode.ai/docs/zh-cn/skills/)
 
@@ -222,7 +222,7 @@ Stage 2: 代码实现 + 测试 + 精度调试（一站式）→ @tilelang-op-dev
 
 **强制前置**：必须先查 `examples/` 同类实现，执行技术约束检测（三维 Kernel / threads / 动态边界 / L0C 容量 / GEMM 非整除）
 
-#### `tilelang-op-generate` — 算子代码生成
+#### `tilelang-op-develop` — 算子代码生成
 
 **适用场景**：根据 design.md 生成完整的 kernel 实现 + 测试入口
 
@@ -261,7 +261,7 @@ Stage 2: 代码实现 + 测试 + 精度调试（一站式）→ @tilelang-op-dev
 - 计算原语：GEMM、归约、Tile 扩展操作
 - 调度、同步与调试 API
 
-#### `tilelang-custom-skill/tilelang-expert-to-developer` — 模式选择与转换
+#### `tilelang-custom-skill/tilelang-programming-model-guide` — 模式选择与转换
 
 **适用场景**：判断使用 Developer / Expert / 混合模式，或在两种模式间转换实现
 
@@ -342,7 +342,7 @@ Stage 2: 代码实现 + 测试 + 精度调试（一站式）→ @tilelang-op-dev
 
 **适用场景**：审计某个 skill 是否遵循规范、发布前评估
 
-#### `tilelang-custom-skill/tilelang-review-skill` — 代码评审
+#### `tilelang-custom-skill/tilelang-review` — 代码评审
 
 **适用场景**：对算子实现或 Pass 代码做评审
 

@@ -196,8 +196,8 @@ std::unordered_map<std::string, std::string> callnodeMapPos_ = {
     {"wmma.matrix_a", "cube"},
     {"wmma.matrix_b", "cube"},
     {"wmma.accumulator", "cube"},
-    {"shared.dyn", "cube"},
-    {"shared", "vec"}};
+    {"shared.l1", "cube"},
+    {"shared.ub", "vec"}};
 ```
 
 ### 3.2 核心逻辑

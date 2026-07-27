@@ -3,17 +3,6 @@ name: TileLang-Ascend CI
 
 # 触发条件
 on:
-  push:
-    branches:
-      - ascendc_pto*                           # ascendc_pto 分支
-    paths-ignore:                              # 以下路径的修改不触发 CI
-      - '**.md'                                # Markdown 文件
-      - '**.png'
-      - '.gitignore'
-      - 'docs/**'                              # 文档目录
-      - 'images/**'                            # 图片目录
-      - '.agents/**'                           # Agent skill 目录
-
   pull_request:
     branches:
       - ascendc_pto*
@@ -55,7 +44,7 @@ permissions:
 
 concurrency:
   # PR 场景（含 pull_request 和 /re-test）：统一按 PR 号分组，新运行自动取消旧运行
-  # 定时任务按分支分组避免积压；手动/push 场景退化为 github.run_id（每次唯一），互不干扰
+  # 定时任务按分支分组避免积压；手动场景退化为 github.run_id（每次唯一），互不干扰
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number || (github.event_name == 'schedule' && github.ref_name) || github.run_id }}
   # 同一组中有新运行时，自动取消旧的正在运行的 workflow 
   cancel-in-progress: true
@@ -64,12 +53,10 @@ jobs:
   check_changes:
     name: Check PR Status and Changes
     runs-on: ubuntu-latest
-    if: |
-      github.event_name != 'push' ||
-      !contains(github.event.head_commit.message, 'Merge pull request')
     outputs:
       merged: ${{ steps.pr_info.outputs.merged || steps.pr_status.outputs.merged || steps.default_changes.outputs.merged }}
       test_dirs: ${{ steps.detect_changes.outputs.test_dirs || steps.default_changes.outputs.test_dirs }}
+      experiment_dirs: ${{ steps.detect_changes.outputs.experiment_dirs || steps.default_changes.outputs.experiment_dirs }}
       pytest_files: ${{ steps.detect_changes.outputs.pytest_files || steps.default_changes.outputs.pytest_files }}
       run_examples: ${{ steps.detect_changes.outputs.run_examples || steps.default_changes.outputs.run_examples }}
       run_pytest_only: ${{ steps.detect_changes.outputs.run_pytest_only || steps.default_changes.outputs.run_pytest_only }}
@@ -81,6 +68,7 @@ jobs:
         run: |
           echo "merged=false" >> $GITHUB_OUTPUT
           echo "test_dirs=" >> $GITHUB_OUTPUT
+          echo "experiment_dirs=" >> $GITHUB_OUTPUT
           echo "pytest_files=" >> $GITHUB_OUTPUT
           echo "run_examples=true" >> $GITHUB_OUTPUT
           echo "run_pytest_only=false" >> $GITHUB_OUTPUT
@@ -210,9 +198,10 @@ jobs:
           run_pytest_only=false
           should_skip=true
           test_dirs_array=()
+          experiment_dirs_array=()
           pytest_files_array=()
           pytest_dirs_array=()
-          
+
           for file in $changed_files; do
             # 排除 .agents 目录（skill 配置，无需测试）
             if [[ "$file" =~ ^\.agents/ ]]; then
@@ -259,6 +248,7 @@ jobs:
               run_pytest_only=false
               should_skip=false
               test_dirs_array=()
+              experiment_dirs_array=()
               pytest_files_array=()
               pytest_dirs_array=()
               break
@@ -279,7 +269,38 @@ jobs:
               fi
               continue
             fi
-            
+
+            # examples_experiment 文件 → 增量 experiment（examples_experiment 根下）
+            if [[ "$file" =~ ^examples_experiment/([^/]+)/ ]]; then
+              exp_dir="${BASH_REMATCH[1]}"
+              if [[ ! " ${experiment_dirs_array[*]} " =~ " $exp_dir " ]]; then
+                experiment_dirs_array+=("$exp_dir")
+                echo "Mapped $file → experiment dir: $exp_dir"
+              fi
+              run_examples=true
+              run_pytest_only=false
+              should_skip=false
+              continue
+            fi
+
+            # examples_experiment 根目录文件 → 文档跳过，其它触发全量
+            if [[ "$file" =~ ^examples_experiment/[^/]+$ ]]; then
+              if [[ "$file" =~ \.md$ ]] || [[ "$file" =~ \.png$ ]] || \
+                 [[ "$file" =~ \.gitignore ]] || [[ "$file" =~ LICENSE ]]; then
+                echo "Experiment root doc file: $file - will skip"
+                continue
+              fi
+              echo "Experiment root file modified: $file - will run full examples + pytest"
+              run_examples=true
+              run_pytest_only=false
+              should_skip=false
+              test_dirs_array=()
+              experiment_dirs_array=()
+              pytest_files_array=()
+              pytest_dirs_array=()
+              break
+            fi
+
             # examples 根目录文件（如 bench_test.sh）→ 判断是否需要测试
             if [[ "$file" =~ ^examples/[^/]+$ ]]; then
               # 排除文档文件
@@ -294,6 +315,7 @@ jobs:
               run_pytest_only=false
               should_skip=false
               test_dirs_array=()
+              experiment_dirs_array=()
               pytest_files_array=()
               pytest_dirs_array=()
               break
@@ -303,12 +325,14 @@ jobs:
             if [[ ! "$file" =~ \.md$ ]] && [[ ! "$file" =~ \.png$ ]] && \
                [[ ! "$file" =~ ^docs/ ]] && [[ ! "$file" =~ ^images/ ]] && \
                [[ ! "$file" =~ ^testing/ ]] && [[ ! "$file" =~ ^tilelang/ ]] && \
-               [[ ! "$file" =~ ^src/ ]] && [[ ! "$file" =~ ^examples/ ]]; then
+               [[ ! "$file" =~ ^src/ ]] && [[ ! "$file" =~ ^examples/ ]] && \
+               [[ ! "$file" =~ ^examples_experiment/ ]]; then
               echo "Other file modified: $file - will run full tests"
               run_examples=true
               run_pytest_only=false
               should_skip=false
               test_dirs_array=()
+              experiment_dirs_array=()
               pytest_files_array=()
               pytest_dirs_array=()
               break
@@ -334,9 +358,11 @@ jobs:
           fi
           
           test_dirs="${test_dirs_array[*]}"
+          experiment_dirs="${experiment_dirs_array[*]}"
           echo "run_examples=${run_examples}" >> $GITHUB_OUTPUT
           echo "run_pytest_only=${run_pytest_only}" >> $GITHUB_OUTPUT
           echo "test_dirs=${test_dirs}" >> $GITHUB_OUTPUT
+          echo "experiment_dirs=${experiment_dirs}" >> $GITHUB_OUTPUT
           echo "pytest_files=${pytest_files}" >> $GITHUB_OUTPUT
           echo "should_skip=${should_skip}" >> $GITHUB_OUTPUT
           
@@ -347,8 +373,8 @@ jobs:
               echo "Will run full pytest (testing/ modified)"
             fi
           elif [[ "$run_examples" == "true" ]]; then
-            if [[ -n "$test_dirs" ]]; then
-              echo "Will run incremental examples + pytest for: $test_dirs"
+            if [[ -n "$test_dirs" || -n "$experiment_dirs" ]]; then
+              echo "Will run incremental examples + pytest for: examples=[$test_dirs] experiment=[$experiment_dirs]"
             else
               echo "Will run full examples + pytest (core files modified)"
             fi
@@ -367,11 +393,11 @@ jobs:
     if: |
       (
         (github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true') &&
-        (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') &&
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') &&
         needs.check_changes.outputs.merged != 'true' &&
         needs.check_changes.outputs.should_skip != 'true'
       )
-    timeout-minutes: 60
+    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 360 || 60 }}
     env:
       FULL_BUILD: ${{ github.event_name == 'schedule' || github.event.inputs.full_build == 'true' }}
     steps:
@@ -400,8 +426,8 @@ jobs:
               echo "Doc/image file: $file - ignored for pytest skip check"
               continue
             fi
-            if [[ ! "$file" =~ ^examples/ ]]; then
-              echo "File outside examples/: $file"
+            if [[ ! "$file" =~ ^examples/ ]] && [[ ! "$file" =~ ^examples_experiment/ ]]; then
+              echo "File outside examples/ and examples_experiment/: $file"
               skip_pytest=false
               break
             fi
@@ -414,7 +440,7 @@ jobs:
           
           echo "skip_pytest=${skip_pytest}" >> $GITHUB_OUTPUT
           if [ "$skip_pytest" = true ]; then
-            echo "Will skip pytest: only .py/.md/.png files in examples/ modified"
+            echo "Will skip pytest: only .py/.md/.png files in examples/ or examples_experiment/ modified"
           else
             echo "Will run full tests"
           fi
@@ -454,22 +480,25 @@ jobs:
           SKIP_PYTEST_VALUE="${{ steps.check_skip_pytest.outputs.skip_pytest }}"
           
           # 确定 TEST_DIRS 参数和测试策略
-          # push/schedule/workflow_dispatch 事件：全量测试
+          # schedule/workflow_dispatch 事件：全量测试
           # PR 事件：根据 check_changes outputs
-          if [[ "$GITHUB_EVENT_NAME" == "push" ]] || [[ "$GITHUB_EVENT_NAME" == "schedule" ]] || [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]] || [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             TEST_DIRS_ARG=""
+            EXPERIMENT_DIRS_ARG=""
             PYTEST_FILES_ARG=""
             RUN_EXAMPLES="true"
             RUN_PYTEST_ONLY="false"
-            echo "Event: $GITHUB_EVENT_NAME - running full tests"
+            echo "Event: $GITHUB_EVENT_NAME - running full tests (examples + experiment)"
           elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
             TEST_DIRS_VALUE="${{ needs.check_changes.outputs.test_dirs }}"
+            EXPERIMENT_DIRS_VALUE="${{ needs.check_changes.outputs.experiment_dirs }}"
             PYTEST_FILES_VALUE="${{ needs.check_changes.outputs.pytest_files }}"
             RUN_EXAMPLES="${{ needs.check_changes.outputs.run_examples }}"
             RUN_PYTEST_ONLY="${{ needs.check_changes.outputs.run_pytest_only }}"
-            
+
             if [[ "$RUN_PYTEST_ONLY" == "true" ]]; then
               TEST_DIRS_ARG=""
+              EXPERIMENT_DIRS_ARG=""
               if [[ -n "$PYTEST_FILES_VALUE" ]]; then
                 PYTEST_FILES_ARG="$PYTEST_FILES_VALUE"
                 echo "Running incremental pytest for: $PYTEST_FILES_VALUE"
@@ -479,14 +508,34 @@ jobs:
               fi
             elif [[ "$RUN_EXAMPLES" == "true" ]]; then
               PYTEST_FILES_ARG=""
-              if [[ -z "$TEST_DIRS_VALUE" ]]; then
+              # 只有 examples 和 experiment 目录都为空才是全量；任一非空则走增量
+              if [[ -z "$TEST_DIRS_VALUE" && -z "$EXPERIMENT_DIRS_VALUE" ]]; then
                 TEST_DIRS_ARG=""
+                EXPERIMENT_DIRS_ARG=""
                 echo "Running full examples + pytest (core files modified)"
               else
-                TEST_DIRS_ARG="--dirs ${TEST_DIRS_VALUE}"
-                echo "Running incremental examples + pytest for: $TEST_DIRS_VALUE"
+                if [[ -n "$TEST_DIRS_VALUE" ]]; then
+                  TEST_DIRS_ARG="--dirs ${TEST_DIRS_VALUE}"
+                else
+                  TEST_DIRS_ARG=""
+                fi
+                if [[ -n "$EXPERIMENT_DIRS_VALUE" ]]; then
+                  EXPERIMENT_DIRS_ARG="--experiment-dirs ${EXPERIMENT_DIRS_VALUE}"
+                else
+                  EXPERIMENT_DIRS_ARG=""
+                fi
+                echo "Running incremental examples + pytest for: examples=[$TEST_DIRS_VALUE] experiment=[$EXPERIMENT_DIRS_VALUE]"
               fi
             fi
+          fi
+
+          # 确定 pytest marker 过滤策略
+          # schedule/workflow_dispatch 事件：跳过 ci_skip，保留 low_priority
+          # PR 事件：跳过 low_priority 和 ci_skip
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]] || [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            PYTEST_MARKERS="not ci_skip"
+          elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            PYTEST_MARKERS="not (low_priority or ci_skip)"
           fi
 
           docker exec \
@@ -497,9 +546,11 @@ jobs:
             -e INCREMENTAL_FLAG="$INCREMENTAL_FLAG" \
             -e SKIP_PYTEST=$SKIP_PYTEST_VALUE \
             -e TEST_DIRS_ARG="$TEST_DIRS_ARG" \
+            -e EXPERIMENT_DIRS_ARG="$EXPERIMENT_DIRS_ARG" \
             -e PYTEST_FILES_ARG="$PYTEST_FILES_ARG" \
             -e RUN_EXAMPLES="$RUN_EXAMPLES" \
             -e RUN_PYTEST_ONLY="$RUN_PYTEST_ONLY" \
+            -e PYTEST_MARKERS="$PYTEST_MARKERS" \
             tilelang_x1 \
             bash -c "
               set -e
@@ -529,27 +580,38 @@ jobs:
               cd examples
               chmod +x bench_test.sh
               
+              # 构建 pytest marker 过滤参数
+              PYTEST_MARKER_ARGS=()
+              if [ -n \"\$PYTEST_MARKERS\" ]; then
+                PYTEST_MARKER_ARGS+=(-m \"\$PYTEST_MARKERS\")
+                echo 'Applying pytest marker filter: -m '\$PYTEST_MARKERS
+              fi
+
               if [ \"\$RUN_PYTEST_ONLY\" = true ]; then
                 # 只跑 pytest（testing/ 修改）
                 if [ -n \"\$PYTEST_FILES_ARG\" ]; then
                   echo 'Running incremental pytest for: '\$PYTEST_FILES_ARG
                   set +e
-                  pytest --forked ../\$PYTEST_FILES_ARG -v -n 4 2>&1 | tee test_output.log
+                  pytest --forked ../\$PYTEST_FILES_ARG -v -n 4 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee test_output.log
                 else
                   echo 'Running full pytest (testing/ modified)'
                   set +e
-                  pytest --forked ../testing/python/ -v -n 8 2>&1 | tee test_output.log
+                  pytest --forked ../testing/python/ -v -n 8 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee test_output.log
                 fi
                 TEST_EXIT_CODE=\${PIPESTATUS[0]}
                 set -e
               elif [ \"\$RUN_EXAMPLES\" = true ]; then
-                # 跑 examples + pytest
-                echo 'Running benchmark tests with args: '\$TEST_DIRS_ARG
+                # 跑 examples + experiment + pytest
+                echo 'Running benchmark tests with args: '\$TEST_DIRS_ARG' '\$EXPERIMENT_DIRS_ARG
                 set +e
                 if [ \"\$SKIP_PYTEST\" = true ]; then
-                  ./bench_test.sh --skip-pytest \$TEST_DIRS_ARG 2>&1 | tee test_output.log
+                  ./bench_test.sh --skip-pytest \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG 2>&1 | tee test_output.log
                 else
-                  ./bench_test.sh \$TEST_DIRS_ARG 2>&1 | tee test_output.log
+                  if [ -n \"\$PYTEST_MARKERS\" ]; then
+                    ./bench_test.sh --pytest-markers \"\$PYTEST_MARKERS\" \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG 2>&1 | tee test_output.log
+                  else
+                    ./bench_test.sh \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG 2>&1 | tee test_output.log
+                  fi
                 fi
                 TEST_EXIT_CODE=\${PIPESTATUS[0]}
                 set -e
