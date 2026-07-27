@@ -1,315 +1,184 @@
 ---
-name: tilelang-pass-generate
-description: "根据 pass-design.md 与 workflow 分析结果生成 TileLang-Ascend Pass 的最终实现代码（不含 UT/ST）。先输出实现骨架文档（pass-impl-skeleton.md）确认框架设计，再生成 C++ 实现、Python 封装、Pipeline 接入，并完成最小冒烟验证。测试生成由后续独立 skill 负责。触发关键词：实现 Pass、生成 Pass 代码、Pass 编码、根据设计文档实现 Pass、写 Pass 代码、落地 Pass、新增 Pass 实现。"
+name: tilelang-op-generate
+description: "基于设计文档生成 TileLang-Ascend 算子实现代码与测试。从 design.md 中提取关键信息，结合 examples/ 中的参考实现生成可运行代码。触发：实现算子、写 kernel、生成代码、算子编码、根据设计文档实现。"
 ---
 
-# TileLang-Ascend Pass 代码生成 Skill
+# TileLang-Ascend 算子代码生成
 
----
-
-## 1. 目标与边界
-
-### 1.1 本 skill 负责（In Scope）
-
-把已经定型的 Pass 设计文档（`pass-design.md`）落到代码上，覆盖：
-
-- **C++ 实现**：`src/transform/<pass_name>.cc`
-- **Python 封装**：`tilelang/transform/__init__.py`
-- **配置键（可选）**：`tilelang/transform/pass_config.py`
-- **Pipeline 接入**：`tilelang/engine/phase.py`
-- **最小冒烟验证**：导入是否成功、Pipeline 是否仍然能跑通最小 example、跨文件命名是否一致
-
-### 1.2 本 skill 不做（Out of Scope）
-
-- ❌ **不生成 UT / ST 测试代码** —— 由后续单独的测试生成 skill 负责
-- ❌ 不重做 Pass 定位与方案决策（属于 `tilelang-pass-design`）
-- ❌ 不修改 TVM 原生 Pass
-
-> 所有重大决策必须沿用 `pass-design.md` 已经写定的内容；如果设计文档里某项是「待确认」或缺失，则停下来回到 `tilelang-pass-design` 补齐，不在本 skill 里临时拍板。
-
-> 完成代码生成后，提示用户调用「Pass 测试生成 skill（待创建）」补 UT/ST，不在本 skill 里偷跑。
+基于设计文档（`design.md`）和已有示例，生成可运行的算子实现与测试。
 
 ---
 
-## 2. 必需输入
+## 1. 从 design.md 中提取的信息（只取这些）
 
-| 字段 | 说明 | 缺失处理 |
-|------|------|----------|
-| `pass-design.md` | 已通过 `tilelang-pass-design` 自检的 Pass 设计文档 | 询问用户位置；若没有则建议先跑 `tilelang-pass-design` |
-| Pass 名称 | C++ 类名、Python 函数名、注册名 | 从 `pass-design.md` §1.1 读取 |
-| 阶段归属与位置 | `Phase 1 / Phase 2`，以及插入位点 | 从 `pass-design.md` §2 读取 |
-| 父类与核心方法 | `IRMutatorWithAnalyzer` / `StmtExprVisitor` / `StmtExprMutator` 等 | 从 `pass-design.md` §4.1 读取 |
-| 输入/输出 attrs | 上下游数据传递 | 从 `pass-design.md` §2.4、§3 读取 |
+design.md 可能很长，**只提取以下字段，忽略其余内容**：
 
-> 设计文档 §5「测试方案」本 skill 不消费，仅作为下游测试 skill 的输入保留。
+| 提取字段 | 所在章节 | 用途 |
+|---------|---------|------|
+| 数学公式 | §1 概述 | 理解计算逻辑 |
+| 算法步骤分解 | §1 算法描述 | 确定计算顺序 |
+| API 映射表 | §3 API 映射设计 | **核心**：每步用哪个 TileLang API |
+| 伪代码 | §3 计算伪代码 | **核心**：代码骨架 |
+| 输入输出 shape 和 dtype | §4 数据规格 | 函数签名和测试数据 |
+| block 大小 | §5 Tiling 策略 | 分块参数 |
+| pass_configs | §7 同步策略 | JIT 配置 |
+| Golden 函数 | §9.1 Golden 函数 | 测试对比基准 |
+| 测试用例表 | §9.2 L0 门槛测试计划 | 测试配置 |
+| 精度标准 | §9.3 精度标准 | 混合容差：atol / rtol / max_abs_error_limit / required_matched_ratio（按 dtype） |
 
-**输入校验规则**：
-
-1. 若 `pass-design.md` 不存在 → 立即停止，引导用户使用 `tilelang-pass-design`
-2. 若设计文档中 §2 / §3 / §4 任一关键章节出现「待确认」「待补充」「TODO」 → 立即停止，列出缺口并要求补齐
-3. 若 Pass 名称、阶段归属、Pipeline 位置任何一项不明确 → 立即停止，要求用户先回到 design skill
-
----
-
-## 3. 工作流程
-
-「**先骨架、再代码、最后冒烟**」三段式流程，骨架阶段不可跳过。
-
-```
-[输入校验]
-   ↓
-[Phase A: 信息收集]
-   ↓
-[Phase B: 生成实现骨架文档 pass-impl-skeleton.md]   ← 框架设计文档
-   ↓
-[用户确认骨架]
-   ↓
-[Phase C: 落代码（C++ / Python / pass_config / phase.py）]
-   ↓
-[Phase D: 最小冒烟验证（不跑 UT/ST）]
-   ↓
-[Phase E: 收尾报告 + 引导补测试]
-```
-
-### Phase A：信息收集
-
-按以下顺序读取，禁止一上来就 grep 整个 `src/transform/`：
-
-1. **设计文档**：用户指定路径，或默认在当前目录 `pass-design.md`
-2. **总体约束**：`.agents/skills/tilelang-pass-agents-guide.md`
-3. **实现模式**：`.agents/skills/tilelang-pass-design/references/pass-impl-patterns.md`
-4. **Pipeline 现状**：`tilelang/engine/phase.py`（确认插入位点的上下文与函数签名）
-5. **Python 封装现状**：`tilelang/transform/__init__.py`（确认现有命名风格、`_ffi_api` 调用方式）
-6. **相似 Pass 源码**：`pass-design.md` §4.1 指定的参考 Pass，仅读 1–2 个最接近的实现，不得扫整目录
-
-> 信息源冲突时，优先级：`pass-design.md` > `pass-impl-patterns.md` > 相似 Pass 源码 > 自身经验。
-
-### Phase B：生成实现骨架文档（pass-impl-skeleton.md）
-
-骨架文档是「**代码层面的最后一次结构化对齐**」。它比 `pass-design.md` 更落地，但又比真实代码更轻量，目的是在写代码前一次性把以下决策列清楚：
-
-1. **改动文件清单**（含状态：新建 / 修改），**仅限实现侧 4 个文件**：`.cc` / `__init__.py` / `pass_config.py` / `phase.py`
-2. **C++ 类骨架**：类名、父类、成员变量、构造函数签名、所有要重写的 `VisitStmt_` / `VisitExpr_` 方法签名（不写实现体）
-3. **Substitute 入口流程**：步骤化伪代码（读取 attrs → 构造 mutator → MutateFunc → 设置 attrs）
-4. **辅助类/辅助函数清单**（如 `Detector`、`Analyzer`、`Rewriter` 模式拆分）
-5. **Attr 读写表**：键名 / 类型 / 来源 Pass / 缺失策略
-6. **注册与配置键**：`TVM_REGISTER_GLOBAL` 完整字符串、可选的 `TVM_REGISTER_PASS_CONFIG_OPTION`
-7. **Python 封装函数签名**：参数、docstring 要点
-8. **Pipeline 接入点**：在 `phase.py` 哪一行（具体到上下游 Pass 名称）
-9. **最小冒烟验证步骤**：先跑哪一条命令（导入冒烟 / 编译冒烟 / 最小 example 能跑）
-
-> ⚠️ 骨架文档不写测试用例。测试相关内容由后续独立 skill 负责，本骨架里仅在末尾留一行「测试待补由 Pass 测试生成 skill 处理」作为交棒标记。
-
-骨架文档基于 `templates/pass-impl-skeleton-template.md` 填写，输出到 `pass-impl-skeleton.md`。完成后**必须停下来等用户确认**，再进入 Phase C。
-
-> 骨架阶段禁止做的事：写完整 `VisitStmt_` 函数体、动除骨架文档外的任何文件。
-
-### Phase C：落代码
-
-在用户确认骨架后，按以下顺序逐文件落地。**每完成一个文件，立即做最小检查再走下一个**（参见 §6 增量验证策略）。
-
-| 顺序 | 文件 | 主要内容 | 完成后立即检查 |
-|------|------|----------|----------------|
-| 1 | `src/transform/<pass_name>.cc` | C++ 实现，按骨架填充 Visit 方法体、辅助函数、注册宏 | 语法/include 完整性、注册宏字符串、namespace 闭合 |
-| 2 | `tilelang/transform/__init__.py` | Python 封装函数 + 必要的 import | `python -c "from tilelang.transform import <Pass>"` |
-| 3 | `tilelang/transform/pass_config.py` | 仅当骨架声明需要新增配置键时改动 | 读一次该文件确认没有重名 |
-| 4 | `tilelang/engine/phase.py` | 在指定 Pass 前/后插入一行调用 | 视觉对齐上下文，避免插错阶段 |
-
-> 本 skill 不写、不改 `testing/python/` 下任何文件。
-
-#### 落代码硬约束
-
-- **禁止脱离 `pass-impl-patterns.md` 模板**：父类继承、`Substitute` 静态入口、`CreatePrimFuncPass` 调用方式必须与模板一致
-- **禁止改动 `tir.transform.*` 等 TVM 原生 Pass**（来自 `tilelang-pass-agents-guide.md` 约束 3）
-- **禁止只改 `.cc` 不改 Python 封装**（约束 4）
-- **禁止把多种职责塞进一个 Pass**（约束 4：功能正交）
-- **配置键缺省值默认 `False`**：新增 Pass 默认不开启，需要走 `pass_configs` 显式启用，除非 `pass-design.md` §4.5 明确写了「默认开启」并给出理由
-- **Attr 读取必须做 defined() 检查**：缺失时按设计文档的策略处理（报错 / 跳过 / 默认值），不得静默崩溃
-- **C++ 注释保持最小**：仅在 WHY 不直观时写一行（来自仓库总规约）
-
-### Phase D：最小冒烟验证
-
-本 skill 只做不依赖 UT/ST 的冒烟验证，按优先级顺序执行（完成第一项即可继续，但必须至少做一项）：
-
-1. **导入冒烟**：
-   ```bash
-   python -c "import tilelang; from tilelang.transform import <Pass>; print(<Pass>())"
-   ```
-   验证 Python 封装、`_ffi_api` 注册、C++ 端 `TVM_REGISTER_GLOBAL` 字符串四方一致。
-2. **构建冒烟**（如本地能跑构建）：项目根目录的最小重新构建，验证 C++ 文件能编过。
-3. **Pipeline 冒烟**：跑一条**已存在**的最小 example（如 `examples/elementwise/...`）确认 pipeline 没有因为本 Pass 的接入而崩。
-4. **跨文件一致性 grep**：
-   ```bash
-   grep -n "<PassName>" src/transform/<pass>.cc tilelang/transform/__init__.py tilelang/engine/phase.py
-   grep -n "tl.<pass_lower>" src/transform/<pass>.cc tilelang/transform/pass_config.py
-   ```
-
-> ⚠️ **本阶段不写、不跑 UT/ST 单测**。如果配套的 `testing/python/` 下已有更早的相关测试，可以顺便跑一下作为额外冒烟，但**禁止为本 Pass 新建任何测试文件**。
-
-若验证失败，按以下顺序定位：
-
-- 编译错误 → 头文件缺失、TVM API 签名变化、命名空间问题
-- 注册错误 → `TVM_REGISTER_GLOBAL` 字符串与 Python 调用名不一致
-- Attr 读取错误 → 类型签名（`Map<Var, ...>` vs `Map<Buffer, ...>`）不匹配
-- Pipeline 顺序错误 → 上游 attrs 未产生时本 Pass 已被调用
-
-**禁止失败后无脑加 try/except 把异常吞掉**（仓库总规约：不要遮住问题）。
-
-### Phase E：收尾报告 + 引导补测试
-
-参考 §7 模板输出报告，必须包含：
-- 已生成 / 修改的实现侧文件
-- 已跑过的冒烟项 与 未即时验证项
-- **明确提示「UT/ST 待补，建议下一步使用 Pass 测试生成 skill」**
+**明确忽略的内容**（这些容易误导）：
+- 模式选型的分析推理过程
+- 内存预算的计算过程和多轮优化迭代
+- 风险点与注意事项（过于笼统）
+- 交付清单（仅是文件列表）
+- 任何标注为"待确认"的内容
 
 ---
 
-## 4. 落地阶段决策速查
+## 2. 参考来源（优先级高于 design.md 伪代码）
 
-| 场景 | 默认做法 |
-|------|----------|
-| 父类是 `IRMutatorWithAnalyzer` | 在 `Substitute` 中执行 `mutator.MutateFunc(f)`，构造函数传 `f->body` |
-| 父类是 `StmtExprVisitor` | 在 `Substitute` 中执行 `collector.VisitStmt(f->body)`，最后 `f.WithAttrs({...})` |
-| 父类是 `StmtExprMutator` | 不需要 analyzer，直接重写 `VisitStmt_/VisitExpr_` |
-| Pass 有输入 attrs | `f->GetAttr<...>(key)` + `defined()` 检查；缺失策略走设计文档 |
-| Pass 有输出 attrs | 在 `Substitute` 末尾 `f.WithAttrs({{key, value}})` |
-| Pass 是 Ascend 特定 | 加 `is_npu` 判断或仅在 `OptimizeForTarget` 中调用 |
-| Pass 与现有 Pass 功能重合 | **回退**：在现有 Pass 内做增量改动，不新增 Pass |
-| 设计文档与相似 Pass 实现冲突 | 以设计文档为准；如设计文档不合理，停下来回到 design skill |
+**当 design.md 伪代码与 examples/ 中同类实现有冲突时，以 examples/ 为准。**
 
----
+### 2.1 API 用法和模式选择
 
-## 5. 修改 / 重构 Pass 的差异化流程
+- **API 用法**：查阅 [tilelang-api-best-practices SKILL.md](../tilelang-custom-skill/tilelang-api-best-practices/SKILL.md) 及其 references 目录
+- **编程模式和 pass_configs**：查阅 [tilelang-expert-to-developer SKILL.md](../tilelang-custom-skill/tilelang-expert-to-developer/SKILL.md) 及其 references 目录
 
-本 skill 也处理「修改已有 Pass」「重构已有 Pass」，差异如下：
+### 2.2 同类算子示例
 
-### 5.1 修改已有 Pass
+生成代码前，必须查阅 `examples/` 中的同类算子：
 
-- 跳过 Phase B 中的「类骨架」「注册键」部分，仅写出**「目标行为差异点 + 关键修改方法清单」**
-- 必须先在骨架文档里列出：
-  - 当前行为 vs 目标行为
-  - 真正控制该行为的函数（精确到方法名 / 关键 if 分支）
-  - 最小修改范围（行数 / 受影响 Visit 方法）
-- Phase C 强制做最小修改，不允许顺手重排其他无关代码
-- Phase D 冒烟之外，**不在本 skill 内补回归测试**；在收尾报告里明确写「需补 X 类回归 case」，交棒给测试 skill
+| 算子类型 | 参考示例 |
+|---------|---------|
+| 逐元素运算（add/mul/sigmoid/relu） | `examples/elementwise/`、`examples/activation/` |
+| 归约运算（reduce_sum/max/min） | `examples/reduce/` |
+| 归一化（softmax/layernorm/rmsnorm） | `examples/softmax/`、`examples/normalization/` |
+| GEMM | `examples/gemm/`、`examples/developer_mode/gemm_developer.py` |
+| 融合算子 | `examples/flash_attention/`、`examples/pipeline/`、`examples/developer_mode/matmul_add_developer.py` |
+| Developer 模式 | `examples/developer_mode/` |
 
-### 5.2 重构已有 Pass
-
-- 默认语义保持不变，注册名、Python 封装签名、phase.py 调用位置都不动
-- 骨架文档里要写出：
-  - 重构前后的类划分对照（旧类 → 新类）
-  - 哪些是「纯结构整理」，哪些是「为了整理而不得不动的语义点」
-- 禁止在同一个重构 PR 里混入功能性改动
-- Phase D 冒烟跑一条 example 确认 pipeline 不退化即可；广覆盖回归留给测试 skill
+查阅示例时关注：
+1. **Kernel 结构**：`T.Kernel` 参数、`cid`/`vid` 用法
+2. **Buffer 分配方式**：shape 和 dtype
+3. **pass_configs 配置**：该类算子实际使用哪些开关
+4. **数据搬运**：`T.copy` 的索引写法
+5. **CV 交互**（融合算子，按模式）：Developer 默认 `threads=2` + 片上直连（无 workspace_idx）；Expert/混合或回退才看 workspace_idx、数量、shape
 
 ---
 
-## 6. 增量验证策略
+## 3. 代码生成流程
 
-每完成一个**有实质行为的修改**就停一次，禁止连续大改后再一次性验证。
+> **⚠️ 核心原则：算子的主要操作必须全部在 kernel 内实现**
+>
+> 算子的所有核心计算逻辑（包括数据搬运、数学运算、归约、归一化等）必须在 `@tilelang.jit` 装饰的 kernel 函数内部完成。**禁止**将算子的主要操作放在 kernel 外部（如 host 端 Python 代码）来实现。kernel 外部只允许做数据准备（输入 tensor 创建）、kernel 调用和结果验证。
+>
+> **⚠️ 特别禁止：chunk + contiguous 多次拷贝**
+>
+> 若算子从输入 tensor 沿某一维等分出多个子张量（如 `silu(x0)*x1`、`x0+x1` 等拆分后分别操作的场景），**禁止**对每个子张量分别调用 `.contiguous()` 后传给多输入 kernel，这会触发 N 次完整的 host 内存拷贝（`torch.chunk` 产生 view，`.contiguous()` 才真正拷贝）。
+>
+> **正确做法**：直接传完整 tensor 给单输入 kernel，kernel 内部通过列/行偏移读取各子张量：
+> - host 端：`kernel(input)` — 0 次 chunk，0 次 contiguous
+> - kernel 端：`T.copy(X[row, col], x0_ub)` 和 `T.copy(X[row, half_k + col], x1_ub)` — `half_k` 为符号表达（`K // 2`），TileLang 编译器支持
+> - host 适配层：dim=-1 时仅 reshape（无拷贝）；dim≠-1 时 permute+contiguous（1 次拷贝）
+>
+> 反模式示例（禁止）、正模式代码、检查清单详见 [tilelang-perf-optimization optimization-guide.md §2.12 子模式](../tilelang-perf-optimization/references/optimization-guide.md)。
 
-| 修改点 | 立即验证手段 |
-|--------|--------------|
-| 改了 C++ 文件 | 至少 `clang-format` / 本地 build；如时间不允许，至少 grep 注册宏字符串 |
-| 改了 Python `__init__.py` | `python -c "from tilelang.transform import <Pass>"` |
-| 改了 `phase.py` | 跑一条最小 example 编译（如 `examples/elementwise/...`）确认 pipeline 不炸 |
-| 改了 `pass_config.py` | grep 一次配置键名，确认与 C++ 字符串完全一致 |
+### 步骤 1：读取设计文档
 
-如果某一步无法立即验证（环境问题、build 缓慢），**必须明确告诉用户**「这一步未即时验证，待用户在本机确认」，不得伪装成已验证。
+读取 `design.md`，按 §1 的表格提取字段。
 
----
+### 步骤 2：查找参考示例
 
-## 7. 完成报告模板
+在 `examples/` 中找到最相似的算子实现，**完整阅读其代码并记录技术决策**：
 
-```
-## Pass 代码生成报告
+**必须记录的技术决策**（从参考实现中提取）：
 
-- Pass 名称: {Pass 名称}
-- 任务类型: 新增 / 修改 / 重构
-- 阶段归属: {Phase 1 / Phase 2}
-- Pipeline 位置: {具体位置}
+| 决策项 | 示例值 | 说明 |
+|--------|--------|------|
+| 内存层级 API | `alloc_L1/L0C/ub`（显式）或 `alloc_shared/fragment`（自动） | 决定内存分配方式 |
+| 同步策略 | 手动 `barrier_all/set_flag` 或自动同步 | 决定同步代码 |
+| pass_configs | `AUTO_SYNC: True`，融合算子需 `AUTO_CV_COMBINE: True + AUTO_CV_SYNC: True` | 决定 JIT 配置 |
+| 核分离方式 | `T.Scope("C"/"V")` 或无显式分离 | 决定核间协作方式 |
+| CV 交互（融合算子，按模式） | Developer：`threads=2` + 单 `cid` 轴 + 片上直连（无 workspace_idx）；Expert/混合/回退：`{数量: 3, shape: [block_num, block_M, block_N], idx: [4,5,6]}` | Developer 默认消除 workspace/vid，见 mode-examples.md §6 |
 
-### 骨架文档
-- 路径: {pass-impl-skeleton.md 路径}
-- 用户确认状态: ✅ 已确认 / ⚠️ 未确认即落代码（不应出现）
+**对比差异分析**（如有 design.md）：
 
-### 已生成 / 修改文件（仅实现侧，不含测试）
-| 文件 | 状态 | 行数变化 |
-| `src/transform/<pass_name>.cc` | 新建 | +XXX |
-| `tilelang/transform/__init__.py` | 修改 | +X |
-| `tilelang/transform/pass_config.py` | 修改 / 未改 | +X |
-| `tilelang/engine/phase.py` | 修改 | +1 |
+| 项目 | design.md 方案 | 参考实现方案 | 选择理由 |
+|------|---------------|-------------|---------|
+| 内存层级 API | | | |
+| 同步策略 | | | |
+| pass_configs | | | |
+| CV 交互 ⭐（Developer 默认 threads=2 片上直连 / 回退 workspace+vid） | | | |
 
-### 已执行的冒烟验证
-1. 导入冒烟: ✅ / ❌（失败原因）
-2. 跨文件命名 grep 一致: ✅ / ❌
-3. 最小 example 跑通: ✅ / ❌ / 未即时验证
-4. 构建冒烟: ✅ / ❌ / 未即时验证
+**冲突处理**：当 design.md 与参考实现冲突时：
+- **优先参考实现**：参考实现已验证通过，可信度高
+- **记录差异**：在代码注释中说明为何偏离 design.md
+- **询问用户**：重大差异需确认
 
-### 未即时验证项（需用户在本机确认）
-- {项目}
+### 步骤 3：生成实现代码
 
-### 剩余风险
-- {风险 1}
-- {风险 2}
+基于 design.md 的 API 映射 + 参考示例的代码风格，生成**两个文件**：`{op}.py`（纯 kernel）与 `test_{op}.py`（golden + L0 + main，L1/L2/Boundary 留桩，从 `{op}.py` import kernel）。完整文件结构骨架与融合算子注意事项见 [examples/code-skeleton.md](examples/code-skeleton.md)。
 
-### ⚠️ 测试待补（交棒）
-- 本 skill 仅做实现侧代码生成，不生成 UT/ST。
-- 建议下一步使用「Pass 测试生成 skill」（待创建）补充以下测试：
-  - 功能测试：{设计文档 §5.1 已列}
-  - 依赖测试：{设计文档 §5.2 已列}
-  - 边界测试：{设计文档 §5.3 已列}
-  - （修改任务）回归测试：{在本次修改中需要覆盖的目标行为差异}
+> **写代码时遇到**具体编码规范问题（Buffer 分配 / 索引一致性 / 同步 / 广播 / 测试模板）查 [references/coding-conventions.md](references/coding-conventions.md)。
+>
+> **V 核并行化**（按行切分、中间 buffer 索引一致性、CV 融合 V 核切分）查 [references/vector-parallelism.md](references/vector-parallelism.md)。
+>
+> **含 GEMM 或 CV 融合**时查 [references/gemm-cv-fusion.md](references/gemm-cv-fusion.md)（gemm_v0 初始化、NPU 分形限制、CV 融合必开的 4 个 pass_configs）。
+
+### 步骤 4：运行验证
+
+本 skill 只负责 L0（精度收敛）。先只跑 L0：
+
+```bash
+python examples/{op}/test_{op}.py --level l0
 ```
 
----
+> L0 通过后，由 `tilelang-op-test-design`（场景 B）填充 L1/L2/Boundary 桩体，再 `--level all` 跑全量。
+> main 分发器与 `--level` 接口由本 skill 生成并保持稳定（模板见 code-skeleton.md），扩展时不改动。
 
-## 8. 与其他 Skill 的关系
+如果报错，查阅 [references/troubleshooting.md](references/troubleshooting.md) 进行排查：
 
-| Skill | 关系 | 衔接点 |
-|-------|------|--------|
-| `tilelang-pass-agents-guide` | 上层指导 | 总体执行流程、约束、文件清单 |
-| `tilelang-pass-analyzer` | 依赖 | 相似 Pass 实现、IR 示例 |
-| `tilelang-pass-workflow-analyzer` | 依赖 | Pipeline 位置、依赖图 |
-| `tilelang-pass-design` | **强依赖（输入）** | 提供 `pass-design.md` |
-| `tilelang-pass-generate`（本 skill） | 实现代码生成终点 | 输出 `pass-impl-skeleton.md` + 落实现侧代码 + 冒烟验证 |
-| Pass 测试生成 skill（**待创建**） | **下游交棒** | 接收本 skill 输出 + 设计文档 §5，生成 UT/ST |
+| 错误类型 | 排查方向 | 详细参考 |
+|---------|---------|---------|
+| 编译错误 | buffer 大小、API 参数、对齐 | troubleshooting.md §编译时错误 |
+| 运行错误 | 索引越界、同步缺失 | troubleshooting.md §运行时错误 |
+| 精度错误 | Golden 实现、输出形状 | troubleshooting.md §精度问题 |
 
----
+> **遇到具体错误信息时**，先查 [references/troubleshooting.md](references/troubleshooting.md) ——本 skill 配套的疑难解答手册，覆盖编译错误（UB 内存不足 / threads / 动态循环边界）、运行错误（index OOB / valid_shape）、精度错误（dtype / atol 阈值）等常见场景的具体解决方案。
 
-## 9. 错误处理
+### 步骤 5：上库前检查清单
 
-| 场景 | 处理方式 |
-|------|----------|
-| `pass-design.md` 缺失 | 停止，引导用户先跑 `tilelang-pass-design` |
-| 设计文档中阶段归属、Pipeline 位置不明确 | 停止，列出缺口，要求补齐 |
-| 设计文档与现有 Pass 注册名冲突 | 停止，询问是否复用现有 Pass 而不是新增 |
-| 用户跳过骨架直接要求落代码 | 仍然先输出骨架（可压缩），不允许跳过 |
-| 用户要求顺手把 UT/ST 也写了 | 拒绝，引用本 skill §1.2 边界，引导去用测试生成 skill |
-| 落代码阶段编译失败 | 不要加规避分支；定位真实原因后告诉用户 |
-| 用户要求把 Pass 放到 TVM 原生 Pass 里 | 拒绝，引用 `tilelang-pass-agents-guide` 约束 3 |
+运行通过后，必须按 [references/checklist.md](references/checklist.md) 全部 22 项检查。
 
----
+**⚠️ 首先检查：算子主要操作是否全部在 kernel 内实现**
 
-## 10. 参考资料
+逐项检查前，先回顾生成的代码，确认算子的所有核心计算逻辑（数据搬运、数学运算、归约、归一化等）都在 `@tilelang.jit` 装饰的 kernel 函数内部完成。若发现有任何主要操作被放在 kernel 外部（host 端 Python 代码）实现，**必须立即修改**，将这些操作移入 kernel 内部，直到满足要求后才能继续后续检查。kernel 外部只允许做数据准备（输入 tensor 创建）、kernel 调用和结果验证。
 
-| 文件 | 路径 | 用途 |
-|------|------|------|
-| Pass 总体约束 | `.agents/skills/tilelang-pass-agents-guide.md` | 工作流、约束、文件清单 |
-| Pass 设计文档模板 | `.agents/skills/tilelang-pass-design/templates/pass-design-template.md` | 反查设计文档结构 |
-| Pass 实现模式 | `.agents/skills/tilelang-pass-design/references/pass-impl-patterns.md` | C++ 类模板、Visit 模式、注册方式 |
-| 骨架文档模板 | `templates/pass-impl-skeleton-template.md`（本 skill） | 实现骨架格式 |
-| 落地清单 | `references/code-generation-checklist.md`（本 skill） | 实现侧文件检查项 |
-| 接入位点参考 | `references/integration-points.md`（本 skill） | `__init__.py` / `phase.py` / `pass_config.py` 接入示例 |
+**最容易踩坑的 4 项重点提醒**：
+
+| 关键项 | 说明 | checklist 编号 |
+|--------|------|---------|
+| **Golden 实现一致** | 迁移算子必须使用原算子的 golden 实现 | #9 |
+| **tilelang.disable_cache()** | 放在 `__main__` 下方或 `main()` 内部 | #11 |
+| **分层标记 + --level** | L0/L1 打 `[PRECISION_PASS/FAIL]`、L2/Boundary 打 `[BOUNDARY_PASS/WARN]`；main 支持 `--level`；L0/L1 全过才 `"Test Passed!"`+exit 0 | #14-17 |
+| **代码格式** | `ruff check` + `ruff format --check` 通过 | #18 |
 
 ---
 
-## 11. 注意事项
+## 4. Skill 反馈采集
 
-1. **骨架阶段不可跳过**：哪怕用户着急，也要先输出 `pass-impl-skeleton.md`。骨架可以压缩，但不能省。
-2. **设计文档是源真相**：所有重大决策都按设计文档来；设计文档不合理就回到 design skill，不要在生成阶段拍板。
-3. **每改一处立刻冒烟**：禁止连续多文件改动后再一次性测试。
-4. **不修 TVM 原生 Pass**：除非设计文档明确写了无法绕开的理由。
-5. **Python 封装、phase.py、pass_config.py 三处一致**：Pass 名称、配置键名称、参数顺序必须三边对齐，grep 一次确认。
-6. **不写测试**：本 skill 只生成实现侧代码，UT/ST 由独立 skill 处理；收尾报告里要把测试缺口列清楚以便交棒。
-7. **报告要诚实**：未跑过的冒烟就标「未即时验证」，不要冒充已验证。
+**算子开发流程跑完后**触发，把"哪些 skill 没讲清楚 / 被现实打脸 / 凭经验补的内容"写到 `.agents/skill-journal/`。
+
+⚠️ **触发权归属取决于调用模式**（orchestrator 编排时不主动触发，单独调用时手动触发）。完整触发规则、枚举 skill、反思四问、写 journal schema、自检、完成报告见 [references/skill-feedback.md](references/skill-feedback.md)。
+
+---
+
+## 子目录索引
+
+- [references/coding-conventions.md](references/coding-conventions.md) — Buffer 分配 / 索引 / 同步 / 广播 / 测试模板（写代码遇到具体规范时查）
+- [references/vector-parallelism.md](references/vector-parallelism.md) — V 核并行化（用到 vid 切分时查）
+- [references/gemm-cv-fusion.md](references/gemm-cv-fusion.md) — GEMM 与 CV 融合 pass_configs（含 GEMM 或融合算子时查）
+- [references/checklist.md](references/checklist.md) — 22 项上库前检查清单（生成代码后逐项过）
+- [references/troubleshooting.md](references/troubleshooting.md) — 编译 / 运行 / 精度错误排查手册（遇到具体错误时查）
+- [references/skill-feedback.md](references/skill-feedback.md) — Skill 反馈采集流程（流程结束时查，orchestrator 模式跳过）
+- [examples/code-skeleton.md](examples/code-skeleton.md) — `{op}.py`（kernel）+ `test_{op}.py`（测试）文件结构骨架
