@@ -59,8 +59,8 @@ def swiglu(block_M, block_N, stages, split_dim, dtype="float16"):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),  # type: ignore
-            B: T.Tensor((M // m_div, N // n_div), dtype),  # type: ignore
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M // m_div, N // n_div), dtype),  # type: ignore
     ):
         # Offset via ternary (see note above on if-block limitation).
         m_offset = M // 2 if row_split else 0
@@ -222,9 +222,7 @@ def swi_glu(input, dim=-1):
 
     # Validate dtype (only fp16/fp32/bf16 supported)
     if torch_dtype_str not in _TORCH_TO_TL_DTYPE:
-        raise ValueError(
-            f"SwiGLU unsupported dtype: {torch_dtype_str}. Supported: {list(_TORCH_TO_TL_DTYPE.keys())}"
-        )
+        raise ValueError(f"SwiGLU unsupported dtype: {torch_dtype_str}. Supported: {list(_TORCH_TO_TL_DTYPE.keys())}")
     tl_dtype = _TORCH_TO_TL_DTYPE[torch_dtype_str]
 
     # Validate split dim is even (required for equal x0/x1 split)
