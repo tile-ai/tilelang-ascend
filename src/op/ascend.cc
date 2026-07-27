@@ -230,9 +230,11 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     if (ub->shape.size() == 2) {
       return compute_blocklen(ub, extents);
     }
-    ICHECK(region_rows.defined())
-        << "High-rank Ascend GM<->UB copies require static UB row extents";
-    return region_rows;
+    PrimExpr rows = Integer(1);
+    for (size_t i = 0; i + 1 < ub->shape.size(); ++i) {
+      rows = rows * ub->shape[i];
+    }
+    return rows;
   };
 
   auto compute_buffer_rows = [](const Buffer &buf) -> PrimExpr {
@@ -254,12 +256,6 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
           << " at dimension " << i << ": region [" << range[i]->min << ", "
           << range[i]->min + extents[i] << ") is larger than " << ub->shape[i];
     }
-    ICHECK(analyzer->CanProveEqual(extents.back(), ub->shape.back()))
-        << "High-rank Ascend GM<->UB copies require the full UB row width, "
-           "but buffer "
-        << ub->name << " has region extent " << extents.back()
-        << " and row width " << ub->shape.back();
-
     const auto *row_count = rows.as<IntImmNode>();
     const auto *row_width = ub->shape.back().as<IntImmNode>();
     ICHECK(row_count && row_width)
@@ -338,25 +334,13 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       PrimExpr dst_template_rows =
           compute_ub_template_rows(dst, dst_extents, dst_rows);
       if (use_high_rank_rows) {
-        ICHECK(analyzer->CanProveEqual(src_rows, dst_rows))
-            << "High-rank copy_gm_to_ub requires matching source and "
-               "destination row counts, but got "
-            << src_rows << " and " << dst_rows;
-        ICHECK(analyzer->CanProveEqual(src_extents.back(), dst_extents.back()))
-            << "High-rank copy_gm_to_ub requires matching source and "
-               "destination column counts, but got "
-            << src_extents.back() << " and " << dst_extents.back();
         validate_high_rank_ub(dst, dst_range, dst_extents, dst_rows);
-      } else if (dynamic_high_rank_rows && src->shape.size() > 2 &&
-                 dst->shape.size() > 2) {
-        ICHECK(false)
-            << "High-rank Ascend GM<->UB copies with dynamic row extents "
-               "require a rank-2 UB operand";
       }
 
       ss << "copy_gm_to_ub<";
       ss << get_dtype(src) << ", ";
-      ss << dst_extents[dst->shape.size() - 1];
+      ss << (dst->shape.size() > 2 ? dst->shape.back()
+                                   : dst_extents[dst->shape.size() - 1]);
       // ss << dst->shape[dst->shape.size() - 1];
       if (dst->shape.size() > 1) {
         ss << ", " << dst_template_rows;
@@ -380,25 +364,13 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       PrimExpr src_template_rows =
           compute_ub_template_rows(src, src_extents, src_rows);
       if (use_high_rank_rows) {
-        ICHECK(analyzer->CanProveEqual(src_rows, dst_rows))
-            << "High-rank copy_ub_to_gm requires matching source and "
-               "destination row counts, but got "
-            << src_rows << " and " << dst_rows;
-        ICHECK(analyzer->CanProveEqual(src_extents.back(), dst_extents.back()))
-            << "High-rank copy_ub_to_gm requires matching source and "
-               "destination column counts, but got "
-            << src_extents.back() << " and " << dst_extents.back();
         validate_high_rank_ub(src, src_range, src_extents, src_rows);
-      } else if (dynamic_high_rank_rows && src->shape.size() > 2 &&
-                 dst->shape.size() > 2) {
-        ICHECK(false)
-            << "High-rank Ascend GM<->UB copies with dynamic row extents "
-               "require a rank-2 UB operand";
       }
 
       ss << "copy_ub_to_gm<";
       ss << get_dtype(dst) << ", ";
-      ss << src_extents[src->shape.size() - 1];
+      ss << (src->shape.size() > 2 ? src->shape.back()
+                                   : src_extents[src->shape.size() - 1]);
       // ss << src->shape[src->shape.size() - 1];
       if (src->shape.size() > 1) {
         ss << ", " << src_template_rows;
