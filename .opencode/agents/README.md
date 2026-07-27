@@ -26,7 +26,7 @@ disable: true
 └─────────┘ └────────────┘ └─────────────┘
    │             │              │
    ▼             ▼              ▼
-[op-design] [op-generate]  [perf-optimization]
+[op-design] [op-develop]   [perf-optimization]
                               ← Skill 层
 ```
 
@@ -45,7 +45,7 @@ disable: true
 [Stage 1] 算子设计       analyst + tilelang-op-design
     ↓                    产物：DESIGN.md
 [Stage 2] 代码实现+测试+精度调试（一站式）
-    │                    developer + tilelang-op-generate（含精度调试方法学）
+    │                    developer + tilelang-op-develop（含精度调试方法学）
     │                    每次 attempt 由 mode 区分：
     │                    - first_impl: 生成 + 首跑
     │                    - retry_impl: 修运行错误 + 重跑
@@ -75,7 +75,7 @@ disable: true
 |-------|------|--------|-----------|---------|
 | 0 | 环境预检 | ✅ 一次性 | `tilelang-env-check` | `env_check_passed=true` |
 | 1 | 算子设计 | ✅ | `tilelang-op-design` | `DESIGN.md` + `proto.yaml` |
-| 2 | 代码实现+测试+精度调试 | ✅ | `tilelang-op-generate` + 内置精度调试方法学 | `{op}.py` + `test_{op}.py` + 精度调试备份 |
+| 2 | 代码实现+测试+精度调试 | ✅ | `tilelang-op-develop` + 内置精度调试方法学 | `{op}.py` + `test_{op}.py` + 精度调试备份 |
 | 3 | 性能调优 | ⭕ 用户确认 | `tilelang-perf-optimization` | `perf_tuning/` |
 
 ## 关键机制
@@ -155,7 +155,7 @@ Orchestrator 唯一会反向询问的关键信息：
 | 命令 | 作用 |
 |------|------|
 | `/tilelang-op-design` | 只生成 DESIGN.md |
-| `/tilelang-op-generate` | 只生成 kernel 代码 |
+| `/tilelang-op-develop` | 只生成 kernel 代码 |
 | `/tilelang-perf-optimization` | 只做性能优化分析 |
 | `/tilelang-env-check` | 单独跑环境检查 |
 

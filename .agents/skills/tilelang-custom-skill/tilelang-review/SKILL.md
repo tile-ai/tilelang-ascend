@@ -1,5 +1,5 @@
 ---
-name: tilelang-review-skill
+name: tilelang-review
 description: 检查代码格式是否符合 CI 规则。自动检测并安装缺失工具（ruff、clang-format），先运行检查生成报告，使用醒目方式询问用户后，仅在用户同意时执行修复。工作流程：检测环境→自动安装缺失工具→运行检查→生成报告→醒目询问→用户确认→执行修复。使用此技能当：用户要求"格式检查"、"格式化代码"、"代码格式化"、"检查代码格式"、"代码 review"、"代码审查"、"修复格式"、"fix format"、"lint code"、"检查代码规范"、提交 PR 前验证、或需要检查 Python/C++ 代码风格时。
 ---
 
@@ -139,10 +139,10 @@ fi
 ### Python 检查
 ```bash
 # 仅修改文件
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/check-python.sh
+bash .agents/skills/tilelang-custom-skill/tilelang-review/scripts/check-python.sh
 
 # 全部文件
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/check-python.sh --all
+bash .agents/skills/tilelang-custom-skill/tilelang-review/scripts/check-python.sh --all
 ```
 
 **输出**: JSON 格式
@@ -157,10 +157,10 @@ bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/check-py
 ### C++ 检查
 ```bash
 # 仅修改文件
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/check-cpp.sh
+bash .agents/skills/tilelang-custom-skill/tilelang-review/scripts/check-cpp.sh
 
 # 全部文件
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/check-cpp.sh --all
+bash .agents/skills/tilelang-custom-skill/tilelang-review/scripts/check-cpp.sh --all
 ```
 
 **输出**: JSON 格式
@@ -306,10 +306,10 @@ bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/check-cp
 用户可以在选择 "否" 后，手动执行修复命令：
 ```bash
 # 仅修复 Python
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/fix-python.sh --all
+bash .agents/skills/tilelang-custom-skill/tilelang-review/scripts/fix-python.sh --all
 
 # 仅修复 C++
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/fix-cpp.sh --all
+bash .agents/skills/tilelang-custom-skill/tilelang-review/scripts/fix-cpp.sh --all
 ```
 
 ## 步骤 5: 执行修复
@@ -323,10 +323,10 @@ bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/fix-cpp.
 ### Python 修复
 ```bash
 # 仅修改文件
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/fix-python.sh
+bash .agents/skills/tilelang-custom-skill/tilelang-review/scripts/fix-python.sh
 
 # 全部文件
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/fix-python.sh --all
+bash .agents/skills/tilelang-custom-skill/tilelang-review/scripts/fix-python.sh --all
 ```
 
 **执行命令**:
@@ -336,10 +336,10 @@ bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/fix-pyth
 ### C++ 修复
 ```bash
 # 仅修改文件
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/fix-cpp.sh
+bash .agents/skills/tilelang-custom-skill/tilelang-review/scripts/fix-cpp.sh
 
 # 全部文件
-bash .agents/skills/tilelang-custom-skill/tilelang-review-skill/scripts/fix-cpp.sh --all
+bash .agents/skills/tilelang-custom-skill/tilelang-review/scripts/fix-cpp.sh --all
 ```
 
 **执行命令**:

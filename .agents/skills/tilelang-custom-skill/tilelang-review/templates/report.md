@@ -1,6 +1,6 @@
 # 代码格式检查报告
 
-> 由 `tilelang-review-skill` 步骤 3 生成。占位符 `{...}` 在生成时用实际值替换；无问题的章节可整段删除。
+> 由 `tilelang-review` 步骤 3 生成。占位符 `{...}` 在生成时用实际值替换；无问题的章节可整段删除。
 > 保存路径：`.agents/reports/format-report-{YYYYMMDD_HHMMSS}.md`（每次检查生成新文件，不覆盖历史）。
 
 - **生成时间**：{YYYYMMDD_HHMMSS}
