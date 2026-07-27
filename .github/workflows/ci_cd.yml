@@ -397,7 +397,7 @@ jobs:
         needs.check_changes.outputs.merged != 'true' &&
         needs.check_changes.outputs.should_skip != 'true'
       )
-    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 360 || 60 }}
+    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 360 || 120 }}
     env:
       FULL_BUILD: ${{ github.event_name == 'schedule' || github.event.inputs.full_build == 'true' }}
     steps:
