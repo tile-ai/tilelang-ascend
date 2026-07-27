@@ -12,6 +12,11 @@ from pathlib import Path, PurePosixPath
 
 DEFAULT_MANIFEST = Path("ci/operator_test_manifest.yaml")
 VERSION_PATTERN = re.compile(r"^version:\s*(\d+)\s*$")
+# Roots scanned for operator tests that no runner would execute.
+EXAMPLE_ROOTS = ("examples", "examples_experiment")
+# A shell script line that starts a Python process, and the .py files named on it.
+RUNNER_PATTERN = re.compile(r"\b(?:python[0-9.]*|pytest)\b")
+PY_FILE_PATTERN = re.compile(r"[\w./-]+\.py\b")
 
 
 class ManifestError(ValueError):
@@ -103,6 +108,56 @@ def load_mappings(repo_root: Path, manifest_path: Path) -> list[tuple[str, str]]
     return mappings
 
 
+def _shell_invoked_tests(repo_root: Path) -> set[str]:
+    """Collect example tests that a shell script under the example roots runs.
+
+    The legacy runner auto-discovers example entry points, but a test_*.py that
+    a sibling .sh script calls explicitly still executes and is therefore not
+    orphaned. Paths are resolved against the script directory because these
+    scripts cd into their own directory before invoking Python.
+    """
+    invoked: set[str] = set()
+    for root in EXAMPLE_ROOTS:
+        root_path = repo_root / root
+        if not root_path.is_dir():
+            continue
+        for script in root_path.rglob("*.sh"):
+            try:
+                text = script.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            for line in text.splitlines():
+                if line.lstrip().startswith("#") or not RUNNER_PATTERN.search(line):
+                    continue
+                for token in PY_FILE_PATTERN.findall(line):
+                    target = (script.parent / token).resolve()
+                    if target.is_file():
+                        invoked.add(target.as_posix())
+    return invoked
+
+
+def find_orphan_tests(repo_root: Path, mappings: list[tuple[str, str]]) -> list[str]:
+    """List test_*.py files under the example roots that no runner would execute.
+
+    The legacy runner excludes test_*.py by name and Pytest only collects the
+    manifest targets, so an unregistered file that no shell script invokes never
+    runs at all while CI still reports success.
+    """
+    registered = {test for _, test in mappings}
+    invoked = _shell_invoked_tests(repo_root)
+    orphans: list[str] = []
+    for root in EXAMPLE_ROOTS:
+        root_path = repo_root / root
+        if not root_path.is_dir():
+            continue
+        for path in sorted(root_path.rglob("test_*.py")):
+            relative = path.relative_to(repo_root).as_posix()
+            if relative in registered or path.resolve().as_posix() in invoked:
+                continue
+            orphans.append(relative)
+    return orphans
+
+
 def _print_lines(values: Iterable[str]) -> None:
     for value in values:
         print(value)
@@ -131,6 +186,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("list-tests", help="list all migrated Pytest files")
     subparsers.add_parser("list-sources", help="list all sources excluded from the legacy runner")
+    subparsers.add_parser(
+        "check-orphans",
+        help="fail if an example test_*.py is run by neither the manifest nor a shell script",
+    )
     return parser
 
 
@@ -150,6 +209,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_lines(test for _, test in mappings)
     elif args.command == "list-sources":
         _print_lines(source for source, _ in mappings)
+    elif args.command == "check-orphans":
+        orphans = find_orphan_tests(args.repo_root.resolve(), mappings)
+        if orphans:
+            print("unreachable operator tests found:", file=sys.stderr)
+            for orphan in orphans:
+                print(f"  {orphan}", file=sys.stderr)
+            print(
+                "each one is skipped by the legacy runner and not collected by "
+                "Pytest; add it to ci/operator_test_manifest.yaml, invoke it from "
+                "the example shell script, or rename it so test_*.py no longer matches",
+                file=sys.stderr,
+            )
+            return 1
+        print("No unreachable operator tests found")
     return 0
 
 
