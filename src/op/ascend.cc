@@ -230,6 +230,9 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     if (ub->shape.size() == 2) {
       return compute_blocklen(ub, extents);
     }
+    // Keep the helper's template shape tied to the physical UB allocation.
+    // A high-rank region may cover fewer rows, but its runtime valid-row
+    // argument must not shrink the UB row pitch or the following slice moves.
     PrimExpr rows = Integer(1);
     for (size_t i = 0; i + 1 < ub->shape.size(); ++i) {
       rows = rows * ub->shape[i];
