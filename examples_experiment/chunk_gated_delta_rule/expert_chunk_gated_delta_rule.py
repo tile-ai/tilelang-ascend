@@ -220,6 +220,7 @@ def chunk_gated_delta_rule_fwd_kernel(
                         T.tile.fill(g_exp_ub, g_last)
                         T.set_flag("mte2", "v", 2)
                         T.wait_flag("mte2", "v", 2)
+                        T.pipe_barrier("v")
                         T.tile.sub(g_exp_ub, g_exp_ub, g_chunk_ub[pid, :])
                         T.copy(g_exp_ub, g_exp_ub_pad[0 : BT // 2])
                         T.tile.compare(g_mask_ub_pad, g_exp_ub_pad, T.float32(0), "LE")
@@ -231,10 +232,13 @@ def chunk_gated_delta_rule_fwd_kernel(
                             "VSEL_TENSOR_SCALAR_MODE",
                         )
                         T.copy(g_exp_ub_pad[0 : BT // 2], g_exp_ub)
+                        T.pipe_barrier("v")
                         T.tile.exp(g_exp_ub, g_exp_ub)
+                        T.pipe_barrier("v")
                         T.tile.broadcast(g_exp_ub_broc, g_exp_ub, axis=1)
 
                         T.tile.fill(g_last_scalar, g_last)
+                        T.pipe_barrier("v")
                         T.tile.exp(g_last_scalar, g_last_scalar)
 
                     for j in T.serial(2):
