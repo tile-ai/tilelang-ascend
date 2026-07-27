@@ -61,6 +61,16 @@ done
 # ================= 全局环境变量设置 =================
 PROJECT_ROOT="$(cd .. && pwd)"
 
+declare -A MIGRATED_SOURCES=()
+OPERATOR_TEST_RESOLVER="${PROJECT_ROOT}/scripts/ci/resolve_operator_tests.py"
+if [ -f "$OPERATOR_TEST_RESOLVER" ]; then
+    python "$OPERATOR_TEST_RESOLVER" validate
+    while IFS=$'\t' read -r source test; do
+        [ -n "$source" ] || continue
+        MIGRATED_SOURCES["$source"]=1
+    done < <(python "$OPERATOR_TEST_RESOLVER" list --format tsv)
+fi
+
 # experiment 算子根目录（相对 examples 工作目录）
 EXPERIMENT_ROOT="../examples_experiment"
 
@@ -148,6 +158,26 @@ total_scripts=0
 passed_scripts=0
 all_scripts=()
 
+should_skip_python_script() {
+    local candidate="$1"
+    local filename
+    local repo_relative
+
+    filename=$(basename "$candidate")
+    if [[ "$filename" == test_*.py ]]; then
+        echo "Skip Pytest file in legacy runner: $candidate" >&2
+        return 0
+    fi
+
+    repo_relative=$(realpath --relative-to="$PROJECT_ROOT" "$candidate")
+    if [[ -n "${MIGRATED_SOURCES[$repo_relative]:-}" ]]; then
+        echo "Skip migrated source in legacy runner: $candidate" >&2
+        return 0
+    fi
+
+    return 1
+}
+
 # 函数：收集单个目录下的测试脚本
 collect_test_scripts() {
     local dir="$1"
@@ -169,9 +199,12 @@ collect_test_scripts() {
             # 收集主目录的 py 文件（排除 fa_opt）
             local py_files=$(find "$dir" -maxdepth 1 -name "*.py" \
                 -not -name "__init__.py" \
+                -not -name "test_*.py" \
                 -not -name "*_golden.py" \
                 | sort)
-            for f in $py_files; do scripts+=("$f"); done
+            for f in $py_files; do
+                should_skip_python_script "$f" || scripts+=("$f")
+            done
             
             echo "${scripts[@]}"
             return
@@ -181,6 +214,7 @@ collect_test_scripts() {
     # 搜索 maxdepth 2 的 py 文件（排除特殊文件和 bench_sfa 子目录）
     local py_files=$(find "$dir" -maxdepth 2 -name "*.py" \
         -not -name "__init__.py" \
+        -not -name "test_*.py" \
         -not -name "*_golden.py" \
         -not -name "sfa_golden.py" \
         -not -name "utils.py" \
@@ -188,7 +222,9 @@ collect_test_scripts() {
         -not -path "*/generative_recommendation/golden.py" \
         -not -path "*/generative_recommendation/testcase.py" \
         | sort)
-    for f in $py_files; do scripts+=("$f"); done
+    for f in $py_files; do
+        should_skip_python_script "$f" || scripts+=("$f")
+    done
     
     # 搜索 bash 脚本（特定命名模式）
     local sh_files=$(find "$dir" -maxdepth 2 \( -name "run_*.sh" -o -name "test_*.sh" \) | sort)
@@ -248,9 +284,12 @@ if [ -n "$TEST_DIRS" ] || [ -n "$EXPERIMENT_DIRS" ]; then
     if [[ " ${DIR_ARRAY[*]} " =~ " flash_attention " ]]; then
         fa_dir="./flash_attention/fa_opt"
         if [ -d "$fa_dir" ]; then
-            fa_python_files=$(find "$fa_dir" -maxdepth 1 -name "flash_*.py" | sort)
+            fa_python_files=$(find "$fa_dir" -maxdepth 1 -name "flash_*.py" \
+                -not -name "test_*.py" | sort)
             if [ -n "$fa_python_files" ]; then
-                for file in $fa_python_files; do all_scripts+=("$file"); done
+                for file in $fa_python_files; do
+                    should_skip_python_script "$file" || all_scripts+=("$file")
+                done
             fi
         fi
     fi
@@ -278,9 +317,12 @@ else
     # flash_attention/fa_opt 单独处理
     fa_dir="./flash_attention/fa_opt"
     if [ -d "$fa_dir" ]; then
-        fa_python_files=$(find "$fa_dir" -maxdepth 1 -name "flash_*.py" | sort)
+        fa_python_files=$(find "$fa_dir" -maxdepth 1 -name "flash_*.py" \
+            -not -name "test_*.py" | sort)
         if [ -n "$fa_python_files" ]; then
-            for file in $fa_python_files; do all_scripts+=("$file"); done
+            for file in $fa_python_files; do
+                should_skip_python_script "$file" || all_scripts+=("$file")
+            done
         fi
     fi
 
@@ -393,8 +435,11 @@ echo "====================================="
 # 4. 最后执行 pytest 自动发现并运行所有测试
 if [ "$SKIP_PYTEST" = true ]; then
     echo -e "\n====================================="
-    echo "Skipping pytest (only examples/ .py/.md/.png files modified)"
+    echo "Skipping pytest (pytest is maintained by the CI workflow)"
     echo "====================================="
+    if [ "$failed_scripts" -ne 0 ]; then
+        exit 1
+    fi
     exit 0
 fi
 
