@@ -204,6 +204,7 @@ jobs:
           pytest_dirs_array=()
 
           python scripts/ci/resolve_operator_tests.py validate
+          python scripts/ci/resolve_operator_tests.py check-orphans
 
           declare -A source_to_test=()
           declare -A test_to_test=()
@@ -618,7 +619,7 @@ jobs:
 
                 echo 'Running Pytest targets: '\${NORMALIZED_TARGETS[*]}
                 set +e
-                pytest --forked \"\${NORMALIZED_TARGETS[@]}\" -v -n 1 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee pytest_output.log
+                pytest --forked \"\${NORMALIZED_TARGETS[@]}\" -v -n 8 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee pytest_output.log
                 PYTEST_EXIT_CODE=\${PIPESTATUS[0]}
                 set -e
               fi
