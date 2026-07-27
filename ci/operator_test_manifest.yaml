@@ -1,0 +1,5 @@
+version: 1
+mappings:
+  examples/batch_gemm/batch_gemm.py: examples/batch_gemm/test_batch_gemm.py
+  examples/flash_attention/flash_attn_bhsd.py: examples/flash_attention/test_flash_attn_bhsd.py
+  examples/gqa_fwd_varlen/gqa_fwd_varlen.py: examples/gqa_fwd_varlen/test_gqa_fwd_varlen.py
