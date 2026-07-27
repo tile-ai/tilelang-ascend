@@ -7,6 +7,7 @@ Dynamic tiling (block_M/block_N by output cols) + per-case stages selection.
 
 import tilelang
 import tilelang.language as T
+import torch
 
 tilelang.cache.clear_cache()
 
@@ -58,8 +59,8 @@ def swiglu(block_M, block_N, stages, split_dim, dtype="float16"):
 
     @T.prim_func
     def main(
-        A: T.Tensor((M, N), dtype),  # type: ignore
-        B: T.Tensor((M // m_div, N // n_div), dtype),  # type: ignore
+            A: T.Tensor((M, N), dtype),  # type: ignore
+            B: T.Tensor((M // m_div, N // n_div), dtype),  # type: ignore
     ):
         # Offset via ternary (see note above on if-block limitation).
         m_offset = M // 2 if row_split else 0
@@ -221,7 +222,9 @@ def swi_glu(input, dim=-1):
 
     # Validate dtype (only fp16/fp32/bf16 supported)
     if torch_dtype_str not in _TORCH_TO_TL_DTYPE:
-        raise ValueError(f"SwiGLU unsupported dtype: {torch_dtype_str}. Supported: {list(_TORCH_TO_TL_DTYPE.keys())}")
+        raise ValueError(
+            f"SwiGLU unsupported dtype: {torch_dtype_str}. Supported: {list(_TORCH_TO_TL_DTYPE.keys())}"
+        )
     tl_dtype = _TORCH_TO_TL_DTYPE[torch_dtype_str]
 
     # Validate split dim is even (required for equal x0/x1 split)
@@ -272,3 +275,43 @@ def swi_glu(input, dim=-1):
         output = output.permute(inv_perm).contiguous()
 
     return output
+
+
+# ========== Tests ==========
+
+import torch.nn.functional as F  # noqa: E402
+
+
+def _golden(input, dim=-1):
+    """Torch golden: output = silu(x0) * x1, upcast fp16/bf16 to fp32."""
+    out_dtype = input.dtype
+    x = input.to(torch.float)
+    x0, x1 = x.chunk(2, dim=dim)
+    output = F.silu(x0) * x1
+    return output.to(out_dtype)
+
+
+torch.manual_seed(0)
+
+# Tests: (shape, dim, dtype)
+test_configs = [
+    ((1024, 2048), -1, torch.float16),
+    ((2048, 4096), -1, torch.float32),
+    ((4096, 8192), -1, torch.bfloat16),
+    ((1024, 2048), 0, torch.float16),
+    ((1009, 2016), -1, torch.float16),
+    ((256, 256), -1, torch.float16),
+    ((256, 258), -1, torch.bfloat16),
+    ((4, 8, 256), -1, torch.float16),
+    ((320, 256), 0, torch.float32),
+]
+
+for shape, dim, dtype in test_configs:
+    print(f"Testing SwiGLU shape={shape}, dim={dim}, dtype={dtype}")
+    a = torch.randn(shape, dtype=dtype, device="cpu").npu()
+    b = swi_glu(a, dim=dim)
+    ref = _golden(a, dim=dim)
+    torch.testing.assert_close(b.cpu(), ref.cpu(), rtol=1e-2, atol=1e-2)
+    print("  Test passed!")
+
+print("Kernel Output Match!")
