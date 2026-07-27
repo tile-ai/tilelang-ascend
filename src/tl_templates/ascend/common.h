@@ -224,14 +224,13 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
     // contiguous burst so the DMA engine never has to form an unaligned
     // address for a subsequent row.
     if (realSrcN == dstN && maskShapeN == dstN) {
-      dataCopyParams =
-          AscendC::DataCopyExtParams(1, maskShapeM * maskShapeN * sizeof(T), 0,
-                                     0, 0);
-    } else {
       dataCopyParams = AscendC::DataCopyExtParams(
-          maskShapeM, maskShapeN * sizeof(T),
-          (realSrcN - maskShapeN) * sizeof(T),
-          (dstN - maskShapeN) * sizeof(T) / 32, 0);
+          1, maskShapeM * maskShapeN * sizeof(T), 0, 0, 0);
+    } else {
+      dataCopyParams =
+          AscendC::DataCopyExtParams(maskShapeM, maskShapeN * sizeof(T),
+                                     (realSrcN - maskShapeN) * sizeof(T),
+                                     (dstN - maskShapeN) * sizeof(T) / 32, 0);
     }
   } else {
     dataCopyParams = AscendC::DataCopyExtParams(
@@ -249,20 +248,19 @@ copy_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
   AscendC::DataCopyExtParams dataCopyParams;
   if constexpr (srcM > 1 && (srcN * sizeof(T)) % 32 != 0) {
     if (realdstN == srcN && maskShapeN == srcN) {
-      dataCopyParams =
-          AscendC::DataCopyExtParams(1, maskShapeM * maskShapeN * sizeof(T), 0,
-                                     0, 0);
-    } else {
       dataCopyParams = AscendC::DataCopyExtParams(
-          maskShapeM, maskShapeN * sizeof(T),
-          (srcN - maskShapeN) * sizeof(T) / 32,
-          (realdstN - maskShapeN) * sizeof(T), 0);
+          1, maskShapeM * maskShapeN * sizeof(T), 0, 0, 0);
+    } else {
+      dataCopyParams =
+          AscendC::DataCopyExtParams(maskShapeM, maskShapeN * sizeof(T),
+                                     (srcN - maskShapeN) * sizeof(T) / 32,
+                                     (realdstN - maskShapeN) * sizeof(T), 0);
     }
   } else {
-    dataCopyParams = AscendC::DataCopyExtParams(
-        maskShapeM, maskShapeN * sizeof(T),
-        (srcN - maskShapeN) * sizeof(T) / 32,
-        (realdstN - maskShapeN) * sizeof(T), 0);
+    dataCopyParams =
+        AscendC::DataCopyExtParams(maskShapeM, maskShapeN * sizeof(T),
+                                   (srcN - maskShapeN) * sizeof(T) / 32,
+                                   (realdstN - maskShapeN) * sizeof(T), 0);
   }
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams);
 }
