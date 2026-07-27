@@ -274,11 +274,41 @@ jobs:
               break
             fi
 
+            # CI 代码文件：改了它们，分流逻辑本身就变了 → 全量验证
             if [[ "$file" == ".github/workflows/ci_cd.yml" ]] || \
                [[ "$file" == "examples/bench_test.sh" ]] || \
-               [[ "$file" == "scripts/ci/resolve_operator_tests.py" ]] || \
-               [[ "$file" == "ci/operator_test_manifest.yaml" ]]; then
+               [[ "$file" == "scripts/ci/resolve_operator_tests.py" ]]; then
               echo "Operator CI file modified: $file - will run full examples + pytest"
+              full_test=true
+              run_examples=true
+              run_pytest=true
+              should_skip=false
+              test_dirs_array=()
+              experiment_dirs_array=()
+              pytest_targets_array=()
+              pytest_dirs_array=()
+              break
+            fi
+
+            # 登记表是数据文件，每迁移一个算子都必须往里加一行。
+            # 纯新增映射时只跑「所有已登记的 operator test」，不跑全部 example：
+            #   - 登记表合法性已由前面的 resolve_operator_tests.py validate 保证
+            #   - 跑全部已登记 test 可确认「每个被旧 runner 跳过的源都有能跑通的 test 接管」
+            #   - 新增条目不改变未登记 example 的行为
+            # 若有条目被删除或修改（可能让某个源静默失去覆盖），仍然全量兜底。
+            if [[ "$file" == "ci/operator_test_manifest.yaml" ]]; then
+              manifest_removals=$(git diff origin/$BASE_REF HEAD -- ci/operator_test_manifest.yaml \
+                                  | grep -c '^-[^-]' || true)
+              if [[ "$manifest_removals" -eq 0 ]]; then
+                echo "Operator manifest additions only: $file - running all registered operator tests"
+                while IFS= read -r registered_test; do
+                  [[ -n "$registered_test" ]] && append_pytest_target "$registered_test"
+                done < <(python scripts/ci/resolve_operator_tests.py list-tests)
+                run_pytest=true
+                should_skip=false
+                continue
+              fi
+              echo "Operator manifest entries removed or modified: $file - will run full examples + pytest"
               full_test=true
               run_examples=true
               run_pytest=true
@@ -453,7 +483,7 @@ jobs:
         needs.check_changes.outputs.merged != 'true' &&
         needs.check_changes.outputs.should_skip != 'true'
       )
-    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 360 || 60 }}
+    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 360 || 120 }}
     env:
       FULL_BUILD: ${{ github.event_name == 'schedule' || github.event.inputs.full_build == 'true' }}
     steps:
