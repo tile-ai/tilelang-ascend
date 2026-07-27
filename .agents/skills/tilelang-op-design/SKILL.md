@@ -33,7 +33,7 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 | **迁移算子路径** ⭐ | 原算子文件路径（迁移时必需），用于获取 golden 实现 |
 | **输出形状** ⭐ | 原算子输出 shape（迁移时必需），如 `(N, M)` 或 `(M, N)` |
 
-**迁移算子时必须提供原算子路径和输出形状**，否则无法证明迁移正确性。Golden 实现一致性要求详见 [tilelang-op-develop checklist.md #9 Golden 实现一致 / #10 输出形状匹配](../tilelang-op-develop/references/checklist.md)。
+**迁移算子时必须提供原算子路径和输出形状**，否则无法证明迁移正确性。Golden 实现一致性要求详见 [tilelang-op-generate checklist.md #9 Golden 实现一致 / #10 输出形状匹配](../tilelang-op-generate/references/checklist.md)。
 
 **提问规则（必须严格遵守）**：
 1. **优先使用调用方传入的字段**：若调用方（如 `@tilelang-op-orchestrator` 通过 analyst 传入 `op_requirements` 结构）已经提供了字段值，**全部跳过提问**，直接进入技术约束检测和 design 生成
@@ -84,7 +84,8 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
      - 纯 Vector（element-wise / reduction）→ 仅需 UB
      - 纯 Cube（仅 matmul）→ 需要 L1 + L0A/L0B/L0C
      - 混合（matmul + element-wise 后处理）→ 核间流水线，需要 CV 融合
-     - **Host 预处理**：如 im2col 等 Python 侧预处理步骤，标明在 design 的 §1 和 §4 中
+      - **Host 预处理**：如 im2col 等 Python 侧预处理步骤，标明在 design 的 §1 和 §4 中
+   - **chunk/split + contiguous 预警**：若算子将输入沿某一维等分为多个子张量（如 SwiGLU `silu(x0)*x1`、GLU 类），检查是否需要 host 端 `chunk()/split() + contiguous()` 后再传给多输入 kernel。这会产生不必要的 host 内存拷贝。**优先考虑单输入 kernel**：传入完整 tensor，kernel 内部通过列/行偏移（如 `X[row, half_k + col]`）读取子张量，消除 host 端 chunk + contiguous 开销。详细模式与代码见 [tilelang-perf-optimization optimization-guide.md §2.12 子模式](../tilelang-perf-optimization/references/optimization-guide.md)。若必须 host 端 permute（dim≠-1），应在 design 中标注"permute 拷贝不可避免"并说明原因
    - **复杂度级别**：
      - 单步（如 element-wise add）→ 无循环、单次搬运
      - 多步（如 softmax = max + sub + exp + sum + div）→ 多次计算、可能需要中间缓冲
