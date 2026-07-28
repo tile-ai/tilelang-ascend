@@ -188,8 +188,15 @@ def main():
     # ============================================================
     # 3. TileLang Backward (pipeline)
     #    Reuse bwd_mod and workspace from correctness check above.
+    #    IMPORTANT: dK/dV use atomic_add to GM, so they accumulate across
+    #    calls. Must zero dQ/dK/dV before each call to prevent (a) numerical
+    #    overflow after 250 iters and (b) sustained atomic_add contention
+    #    on the same GM addresses causing aicore timeout.
     # ============================================================
     def _run_bwd():
+        dQ_raw.zero_()
+        dK_raw.zero_()
+        dV_raw.zero_()
         bwd_mod(Q_padded, K_padded, V, dO, lse_npu, Delta_npu, dQ_raw, dK_raw, dV_raw, ws1_bwd, ws2_bwd, ws3_bwd)
 
     lat_bwd = _bench(_run_bwd)
