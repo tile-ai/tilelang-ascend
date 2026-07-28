@@ -71,9 +71,7 @@ def _validate_relative_path(value: str, field: str) -> PurePosixPath:
     return path
 
 
-def load_mappings(
-    repo_root: Path, manifest_path: Path
-) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+def load_mappings(repo_root: Path, manifest_path: Path) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """Return the mappings that are live, and those still waiting on their test.
 
     Registering a source excludes it from the legacy runner, so a mapping whose
@@ -146,9 +144,7 @@ def _shell_invoked_tests(repo_root: Path) -> set[str]:
     return invoked
 
 
-def find_unregistered_tests(
-    repo_root: Path, active: list[tuple[str, str]], pending: list[tuple[str, str]]
-) -> list[str]:
+def find_unregistered_tests(repo_root: Path, active: list[tuple[str, str]], pending: list[tuple[str, str]]) -> list[str]:
     """List example tests that match no manifest entry, live or reserved.
 
     With every operator reserved up front, a test file that matches nothing is
