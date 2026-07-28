@@ -15,7 +15,6 @@ Usage:
 
 import sys
 import os
-import time
 import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -23,8 +22,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tilelang
 import torch
 import torch.nn.functional as F
+from tilelang.profiler import do_bench  # noqa: E402
 
-from example_gqa_bwd import (
+from example_gqa_bwd import (  # noqa: E402
     flashattn_fwd,
     flashattn_fwd_v4,
     flashattn_bwd_preprocess,
@@ -33,19 +33,6 @@ from example_gqa_bwd import (
     ref_bwd,
     NUM_CORES,
 )
-
-
-def _bench(fn, warmup=50, iters=200):
-    """Manual bench with explicit sync."""
-    for _ in range(warmup):
-        fn()
-    torch.npu.synchronize()
-    t0 = time.perf_counter()
-    for _ in range(iters):
-        fn()
-    torch.npu.synchronize()
-    t1 = time.perf_counter()
-    return (t1 - t0) / iters * 1000  # ms
 
 
 def main():
@@ -164,46 +151,42 @@ def main():
     print(f"  correctness: PASS (fwd={fwd_max_diff:.6e}, bwd={bwd_max_diff:.6e})")
 
     # ============================================================
-    # 1. TileLang Forward v1
-    #    Note: v1 has a known limitation — causal + D_qk_padded>128
-    #    causes L0C overflow (see 算子bug总结.md §3.1). Skip v1 in
-    #    that case and rely on v4.
+    # Benchmark using tilelang.profiler.do_bench (standard NPU profiler).
+    # Uses _n_warmup=5, _n_repeat=5 (same as perf_gqa_fwd_varlen.py).
+    # do_bench handles NPU synchronization properly between iterations,
+    # avoiding aicore timeout from tight 250-iter loops.
     # ============================================================
+
+    # 1. TileLang Forward v1
     D_qk_padded_check = ((D_qk + 127) // 128) * 128
     skip_v1 = causal and D_qk_padded_check > 128
     if skip_v1:
         lat_fwd_v1 = float("nan")
-        print(f"  [INFO] Skipping Forward v1 (causal + D_qk_padded={D_qk_padded_check} > 128, known limitation §3.1)")
+        print(f"  [INFO] Skipping Forward v1 (causal + D_qk_padded={D_qk_padded_check} > 128, known limitation)")
     else:
         bM_v1, bN_v1 = 64, 64
         fwd_v1_mod = flashattn_fwd(B, H, N, D_qk, D_v, causal, bM_v1, bN_v1, groups)
-        lat_fwd_v1 = _bench(lambda: fwd_v1_mod(Q, K, V))
+        lat_fwd_v1 = do_bench(lambda: fwd_v1_mod(Q, K, V), _n_warmup=5, _n_repeat=5, return_mode="mean")
 
-    # ============================================================
-    # 2. TileLang Forward v4 (L0 double buffer + batched softmax)
-    #    Reuse fwd_v4_mod and workspace from correctness check above.
-    # ============================================================
-    lat_fwd_v4 = _bench(lambda: fwd_v4_mod(Q, K, V, ws1_fwd, ws2_fwd, ws3_fwd))
+    # 2. TileLang Forward v4
+    lat_fwd_v4 = do_bench(
+        lambda: fwd_v4_mod(Q, K, V, ws1_fwd, ws2_fwd, ws3_fwd),
+        _n_warmup=5,
+        _n_repeat=5,
+        return_mode="mean",
+    )
 
-    # ============================================================
     # 3. TileLang Backward (pipeline)
-    #    Reuse bwd_mod and workspace from correctness check above.
-    #    IMPORTANT: dK/dV use atomic_add to GM, so they accumulate across
-    #    calls. Must zero dQ/dK/dV before each call to prevent (a) numerical
-    #    overflow after 250 iters and (b) sustained atomic_add contention
-    #    on the same GM addresses causing aicore timeout.
-    # ============================================================
+    #    dK/dV use atomic_add to GM — must zero before each call to prevent
+    #    accumulation across bench iterations.
     def _run_bwd():
-        dQ_raw.zero_()
         dK_raw.zero_()
         dV_raw.zero_()
         bwd_mod(Q_padded, K_padded, V, dO, lse_npu, Delta_npu, dQ_raw, dK_raw, dV_raw, ws1_bwd, ws2_bwd, ws3_bwd)
 
-    lat_bwd = _bench(_run_bwd)
+    lat_bwd = do_bench(_run_bwd, _n_warmup=5, _n_repeat=5, return_mode="mean")
 
-    # ============================================================
     # 4. PyTorch baseline
-    # ============================================================
     q_r = Q.float()
     k_r = K.float().repeat_interleave(groups, dim=1)
     v_r = V.float().repeat_interleave(groups, dim=1)
@@ -216,7 +199,7 @@ def main():
         P = F.softmax(scores, dim=-1)
         torch.matmul(P, v_r)
 
-    lat_ref_fwd = _bench(_run_ref_fwd)
+    lat_ref_fwd = do_bench(_run_ref_fwd, _n_warmup=5, _n_repeat=5, return_mode="mean")
 
     def _run_ref_fwd_bwd():
         q2 = Q.float().requires_grad_(True)
@@ -230,7 +213,7 @@ def main():
         O2 = torch.matmul(P, v2)
         O2.backward(dO.float())
 
-    lat_ref_e2e = _bench(_run_ref_fwd_bwd, warmup=20, iters=50)
+    lat_ref_e2e = do_bench(_run_ref_fwd_bwd, _n_warmup=3, _n_repeat=3, return_mode="mean")
 
     # ============================================================
     # Print results
