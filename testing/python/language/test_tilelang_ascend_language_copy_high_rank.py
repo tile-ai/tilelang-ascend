@@ -125,9 +125,14 @@ def unaligned_high_rank_copy(
             T.copy(a_ub, C)
 
 
-def test_unaligned_high_rank_copy_fails_loudly():
-    with pytest.raises(
-        tilelang.tvm.error.InternalError,
-        match="require a 32-byte aligned UB row pitch",
-    ):
-        tilelang.lower(unaligned_high_rank_copy, target="ascendc")
+def test_unaligned_high_rank_copy_supported():
+    kernel = tilelang.compile(
+        unaligned_high_rank_copy,
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target="ascendc",
+    )
+    a = torch.arange(36, dtype=torch.float16).reshape(2, 2, 9).npu()
+    torch.npu.synchronize()
+    out = kernel(a)
+    torch.testing.assert_close(out, a, rtol=0, atol=0)

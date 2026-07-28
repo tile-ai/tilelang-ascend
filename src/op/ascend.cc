@@ -258,14 +258,13 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     if (ub->shape.size() == 2) {
       return compute_blocklen(ub, extents);
     }
-    // Keep the helper's template shape tied to the physical UB allocation.
-    // A high-rank region may cover fewer rows, but its runtime valid-row
-    // argument must not shrink the UB row pitch or the following slice moves.
-    PrimExpr rows = Integer(1);
-    for (size_t i = 0; i + 1 < ub->shape.size(); ++i) {
-      rows = rows * ub->shape[i];
-    }
-    return rows;
+    // The helper starts at the region pointer, so its template row count must
+    // describe that region rather than the entire physical allocation.  Using
+    // all rows of a leading ping-pong dimension would clear/copy past the
+    // selected slot (for example [2, 16, 128] sliced as [slot, :, :]).
+    ICHECK(region_rows.defined())
+        << "High-rank Ascend GM<->UB copies require static UB row extents";
+    return region_rows;
   };
 
   auto compute_buffer_rows = [](const Buffer &buf) -> PrimExpr {
@@ -279,7 +278,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   auto validate_high_rank_ub = [analyzer](const Buffer &ub,
                                           const Array<Range> &range,
                                           const Array<PrimExpr> &extents,
-                                          const PrimExpr &rows) {
+                                          const PrimExpr &rows,
+                                          bool compact_unaligned) {
     ICHECK_EQ(ub.scope(), "shared.ub");
     for (size_t i = 0; i < range.size(); ++i) {
       ICHECK(analyzer->CanProve(range[i]->min + extents[i] <= ub->shape[i]))
@@ -287,16 +287,20 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
           << " at dimension " << i << ": region [" << range[i]->min << ", "
           << range[i]->min + extents[i] << ") is larger than " << ub->shape[i];
     }
+    // The AscendC helper handles compact unaligned rows by emitting one
+    // contiguous burst. Keep the static shape/range checks above, but do not
+    // reject a valid compact tile merely because its physical row pitch is
+    // smaller than 32 bytes.
     const auto *row_count = rows.as<IntImmNode>();
     const auto *row_width = ub->shape.back().as<IntImmNode>();
     ICHECK(row_count && row_width)
         << "High-rank Ascend GM<->UB copies require static UB dimensions";
     ICHECK(row_count->value <= 1 ||
-           (row_width->value * ub->dtype.bytes()) % 32 == 0)
-        << "High-rank multi-row Ascend GM<->UB copies require a 32-byte "
-           "aligned UB row pitch, but buffer "
-        << ub->name << " has " << row_width->value * ub->dtype.bytes()
-        << " bytes per row";
+           (row_width->value * ub->dtype.bytes()) % 32 == 0 ||
+           compact_unaligned)
+        << "High-rank unaligned GM<->UB copies require a compact full-row "
+           "region for buffer "
+        << ub->name;
   };
 
   auto build_indices = [](const Array<Range> &range) -> Array<PrimExpr> {
@@ -322,6 +326,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     bool ub2gm = false;
     bool ub2ub = false;
   } config;
+  bool flatten_gm2ub = false;
+  bool flatten_ub2gm = false;
 
   std::stringstream ss;
   ss << "tl::ascend::";
@@ -364,8 +370,25 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
                               : Integer(1);
       PrimExpr dst_template_rows =
           compute_ub_template_rows(dst, dst_extents, dst_rows);
+      flatten_gm2ub = dst->shape.size() > 2 && src->shape.size() < 2;
+      bool compact_unaligned = flatten_gm2ub;
+      if (!compact_unaligned && dst->shape.size() > 2 &&
+          dst->shape.back().as<IntImmNode>() &&
+          analyzer->CanProveEqual(src_extents.back(), dst->shape.back()) &&
+          analyzer->CanProveEqual(compute_strideN(src, src_extents),
+                                  dst->shape.back())) {
+        compact_unaligned = true;
+      }
       if (use_high_rank_rows) {
-        validate_high_rank_ub(dst, dst_range, dst_extents, dst_rows);
+        validate_high_rank_ub(dst, dst_range, dst_extents, dst_rows,
+                              compact_unaligned);
+      }
+      // A rank-1 GM slice can feed a higher-rank UB tile (for example the
+      // [rows] merge workspace into [2, rows, 1]).  The copy is a flattened
+      // contiguous stream: its logical row count and column width come from
+      // the UB region, not from the rank-1 GM view.
+      if (flatten_gm2ub) {
+        strideN = dst->shape.back();
       }
 
       ss << "copy_gm_to_ub<";
@@ -412,8 +435,24 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
                               : Integer(1);
       PrimExpr src_template_rows =
           compute_ub_template_rows(src, src_extents, src_rows);
+      flatten_ub2gm = src->shape.size() > 2 && dst->shape.size() < 2;
+      bool compact_unaligned = flatten_ub2gm;
+      if (!compact_unaligned && src->shape.size() > 2 &&
+          src->shape.back().as<IntImmNode>() &&
+          analyzer->CanProveEqual(dst_extents.back(), src->shape.back()) &&
+          analyzer->CanProveEqual(compute_strideN(dst, dst_extents),
+                                  src->shape.back())) {
+        compact_unaligned = true;
+      }
       if (use_high_rank_rows) {
-        validate_high_rank_ub(src, src_range, src_extents, src_rows);
+        validate_high_rank_ub(src, src_range, src_extents, src_rows,
+                              compact_unaligned);
+      }
+      // Symmetric rank-changing path: a higher-rank UB tile can be flattened
+      // into a rank-1 GM slice.  Use the UB row width as the GM row stride so
+      // the helper can select its contiguous-burst path.
+      if (flatten_ub2gm) {
+        strideN = src->shape.back();
       }
 
       ss << "copy_ub_to_gm<";
@@ -715,8 +754,14 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   }
 
   if (config.gm2ub) {
-    new_args.push_back(compute_copy_valid_rows(src, src_range, src_extents));
-    new_args.push_back(validCol_src);
+    if (flatten_gm2ub) {
+      new_args.push_back(compute_copy_valid_rows(dst, dst_range, dst_extents));
+      new_args.push_back(compute_valid_extent(
+          dst_range.back()->min, dst_range.back()->extent, dst->shape.back()));
+    } else {
+      new_args.push_back(compute_copy_valid_rows(src, src_range, src_extents));
+      new_args.push_back(validCol_src);
+    }
     PrimExpr pad_val = padValue;
     if (pad_val->dtype != dst->dtype) {
       pad_val = Cast(dst->dtype, pad_val);
@@ -734,8 +779,14 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   }
 
   if (config.ub2gm) {
-    new_args.push_back(compute_copy_valid_rows(dst, dst_range, dst_extents));
-    new_args.push_back(validCol_dst);
+    if (flatten_ub2gm) {
+      new_args.push_back(compute_copy_valid_rows(src, src_range, src_extents));
+      new_args.push_back(compute_valid_extent(
+          src_range.back()->min, src_range.back()->extent, src->shape.back()));
+    } else {
+      new_args.push_back(compute_copy_valid_rows(dst, dst_range, dst_extents));
+      new_args.push_back(validCol_dst);
+    }
     if (src->shape.size() > 1) {
       new_args.push_back(src->shape.size() > 2
                              ? compute_buffer_rows(src)

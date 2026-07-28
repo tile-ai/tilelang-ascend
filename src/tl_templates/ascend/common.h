@@ -241,10 +241,26 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
       WaitFlag<HardEvent::V_MTE2>(0);
     }
   }
-  AscendC::DataCopyExtParams dataCopyParams(
-      maskShapeM, maskShapeN * sizeof(T), (realSrcN - maskShapeN) * sizeof(T),
-      (dstN - maskShapeN) * sizeof(T) / 32, 0);
   AscendC::DataCopyPadExtParams<T> padParams(isPad, 0, rightPadding, padValue);
+  AscendC::DataCopyExtParams dataCopyParams;
+  if constexpr (dstM > 1 && (dstN * sizeof(T)) % 32 != 0) {
+    // A compact tile has no row gap on either side. Treat it as one
+    // contiguous burst so the DMA engine never has to form an unaligned
+    // address for a subsequent row.
+    if (realSrcN == dstN && maskShapeN == dstN) {
+      dataCopyParams = AscendC::DataCopyExtParams(
+          1, maskShapeM * maskShapeN * sizeof(T), 0, 0, 0);
+    } else {
+      dataCopyParams =
+          AscendC::DataCopyExtParams(maskShapeM, maskShapeN * sizeof(T),
+                                     (realSrcN - maskShapeN) * sizeof(T),
+                                     (dstN - maskShapeN) * sizeof(T) / 32, 0);
+    }
+  } else {
+    dataCopyParams = AscendC::DataCopyExtParams(
+        maskShapeM, maskShapeN * sizeof(T), (realSrcN - maskShapeN) * sizeof(T),
+        (dstN - maskShapeN) * sizeof(T) / 32, 0);
+  }
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams, padParams);
 }
 
@@ -253,9 +269,23 @@ CATLASS_DEVICE void
 copy_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
               uint32_t realdstN = 1, uint32_t maskShapeM = srcM,
               uint32_t maskShapeN = srcN) {
-  AscendC::DataCopyExtParams dataCopyParams(
-      maskShapeM, maskShapeN * sizeof(T), (srcN - maskShapeN) * sizeof(T) / 32,
-      (realdstN - maskShapeN) * sizeof(T), 0);
+  AscendC::DataCopyExtParams dataCopyParams;
+  if constexpr (srcM > 1 && (srcN * sizeof(T)) % 32 != 0) {
+    if (realdstN == srcN && maskShapeN == srcN) {
+      dataCopyParams = AscendC::DataCopyExtParams(
+          1, maskShapeM * maskShapeN * sizeof(T), 0, 0, 0);
+    } else {
+      dataCopyParams =
+          AscendC::DataCopyExtParams(maskShapeM, maskShapeN * sizeof(T),
+                                     (srcN - maskShapeN) * sizeof(T) / 32,
+                                     (realdstN - maskShapeN) * sizeof(T), 0);
+    }
+  } else {
+    dataCopyParams =
+        AscendC::DataCopyExtParams(maskShapeM, maskShapeN * sizeof(T),
+                                   (srcN - maskShapeN) * sizeof(T) / 32,
+                                   (realdstN - maskShapeN) * sizeof(T), 0);
+  }
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams);
 }
 
