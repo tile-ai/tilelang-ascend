@@ -1,0 +1,60 @@
+# 算子源文件 -> 它的 Pytest 测试。
+# 一条登记只有在测试文件真实存在时才生效；否则算子照常由
+# examples/bench_test.sh 执行。
+version: 1
+mappings:
+
+  # examples/batch_gemm
+    examples/batch_gemm/batch_gemm.py: examples/batch_gemm/test_batch_gemm.py
+
+  # examples/flash_attention
+    examples/flash_attention/flash_attn_bhsd.py: examples/flash_attention/test_flash_attn_bhsd.py
+    examples/flash_attention/flash_attn_bhsd_cc_sync.py: examples/flash_attention/test_flash_attn_bhsd_cc_sync.py
+    examples/flash_attention/paged_flash_attn_bhsd.py: examples/flash_attention/test_paged_flash_attn_bhsd.py
+
+  # examples/gqa_fwd_varlen
+    examples/gqa_fwd_varlen/gqa_fwd_varlen.py: examples/gqa_fwd_varlen/test_gqa_fwd_varlen.py
+
+  # examples/HISA
+    examples/HISA/paged_block_sparse_mqa_attn_expert.py: examples/HISA/test_paged_block_sparse_mqa_attn_expert.py
+
+  # examples/xattention
+    examples/xattention/xattention.py: examples/xattention/test_xattention.py
+    examples/xattention/xattention_paged.py: examples/xattention/test_xattention_paged.py
+
+  # examples/sparse_flash_attention
+    examples/sparse_flash_attention/example_sparse_flash_attn.py: examples/sparse_flash_attention/test_example_sparse_flash_attn.py
+    examples/sparse_flash_attention/example_sparse_flash_attn_dynamic_shape.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_dynamic_shape.py
+    examples/sparse_flash_attention/example_sparse_flash_attn_gqa.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_gqa.py
+    examples/sparse_flash_attention/example_sparse_flash_attn_gqa_pto.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_gqa_pto.py
+    examples/sparse_flash_attention/example_sparse_flash_attn_gqa_pto_developer.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_gqa_pto_developer.py
+    examples/sparse_flash_attention/example_sparse_flash_attn_mask.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_mask.py
+    examples/sparse_flash_attention/example_sparse_flash_attn_mask_pa.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_mask_pa.py
+
+  # examples/linear_attention_and_rnn
+    examples/linear_attention_and_rnn/gdn_full.py: examples/linear_attention_and_rnn/test_gdn_full.py
+    examples/linear_attention_and_rnn/linear_attention_causal.py: examples/linear_attention_and_rnn/test_linear_attention_causal.py
+    examples/linear_attention_and_rnn/linear_attention_normalize.py: examples/linear_attention_and_rnn/test_linear_attention_normalize.py
+    examples/linear_attention_and_rnn/opt_gdn_full.py: examples/linear_attention_and_rnn/test_opt_gdn_full.py
+
+  # examples/moe_token_permute
+    examples/moe_token_permute/moe_token_permute.py: examples/moe_token_permute/test_moe_token_permute.py
+    examples/moe_token_permute/moe_token_permute_grad.py: examples/moe_token_permute/test_moe_token_permute_grad.py
+    examples/moe_token_permute/moe_token_unpermute.py: examples/moe_token_permute/test_moe_token_unpermute.py
+    examples/moe_token_permute/moe_token_unpermute_grad.py: examples/moe_token_permute/test_moe_token_unpermute_grad.py
+
+  # examples/tile_kernels/moe
+    examples/tile_kernels/moe/moe_topk_gate.py: examples/tile_kernels/moe/test_moe_topk_gate.py
+
+  # examples/fused_sigmoid_gating_delta_rule
+    examples/fused_sigmoid_gating_delta_rule/fused_sigmoid_gating_delta_rule_varlen.py: examples/fused_sigmoid_gating_delta_rule/test_fused_sigmoid_gating_delta_rule_varlen.py
+
+  # examples_experiment/seer_attention
+    examples_experiment/seer_attention/block_sparse_attn.py: examples_experiment/seer_attention/test_block_sparse_attn.py
+
+  # examples_experiment/chunk_gated_delta_rule
+    examples_experiment/chunk_gated_delta_rule/chunk_gated_delta_rule.py: examples_experiment/chunk_gated_delta_rule/test_chunk_gated_delta_rule.py
+    examples_experiment/chunk_gated_delta_rule/expert_chunk_gated_delta_rule.py: examples_experiment/chunk_gated_delta_rule/test_expert_chunk_gated_delta_rule.py
+
+  # examples_experiment/cumsum_gdn
+    examples_experiment/cumsum_gdn/example_cumsum.py: examples_experiment/cumsum_gdn/test_example_cumsum.py
