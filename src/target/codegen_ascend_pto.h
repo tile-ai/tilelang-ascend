@@ -152,14 +152,16 @@ private:
   void BinaryVecOpsCodegen(const CallNode *op, const std::string &op_name);
 
   // Tail-aware vector ops produced by AscendTailMaskPropagation. The pass
-  // rewrites unary / binary / scalar ops on tail UB tiles to these internal
-  // ops carrying the runtime valid rectangle; reduce / broadcast / compare /
-  // select are NOT rewritten (hybrid scheme) so only these three are needed.
+  // rewrites supported ops on tail UB tiles to these internal ops carrying the
+  // runtime valid rectangle. Broadcast / compare / select stay on the hybrid
+  // full-tile path.
   void TailUnaryOpCodegen(const CallNode *op);
 
   void TailBinaryOpCodegen(const CallNode *op);
 
   void TailScalarOpCodegen(const CallNode *op);
+
+  void TailReduceOpCodegen(const CallNode *op);
 
   void CallExternCodegen(const CallNode *op);
 
@@ -303,6 +305,9 @@ private:
 
   ReduceOpInfo ParseReduceOpInfo(const std::string &op_name);
   std::string GetReduceOpName(ReduceKind kind, ReduceDirection direction);
+  std::string ResolveColReduceTmpName(const ShapeInfo &dst,
+                                      const ShapeInfo &src,
+                                      const ShapeInfo &tmp);
   void CodegenRowReduce(const ReduceOpInfo &op_info, const ShapeInfo &dst,
                         const ShapeInfo &src, const ShapeInfo &tmp);
   void CodegenColReduce(const ReduceOpInfo &op_info, const ShapeInfo &dst,

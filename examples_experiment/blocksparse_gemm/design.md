@@ -674,4 +674,4 @@ examples/blocksparse_gemm/
 - init=(k == 0) + BlockMask[:,:,0]=1 ✓
 - 累加器初始化正确 ✓
 
-如需生成算子实现代码，请调用 `tilelang-op-generate` skill。
+如需生成算子实现代码，请调用 `tilelang-op-develop` skill。

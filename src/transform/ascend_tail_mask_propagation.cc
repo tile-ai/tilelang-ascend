@@ -18,10 +18,10 @@
  * valid_row/valid_col/physical_col) so the codegen emits a tl::ascend::tail_*
  * helper that computes only over the valid region.
  *
- * Batch 1 rewrites: unary / binary / scalar(immediate) / reduce.
- * Batch 1 propagates-but-does-not-rewrite: cast / broadcast / copy_ub_to_ub
- * (they are per-lane or shape-only, so the full-tile path stays numerically
- * correct; the mask still flows through to a downstream reduce).
+ * Rewrites: unary / binary / scalar(immediate), plus a conservative allow-list
+ * of 2D reduce contracts. Propagates-but-does-not-rewrite: cast / broadcast /
+ * copy_ub_to_ub (they are per-lane or shape-only, so the full-tile path stays
+ * numerically correct; the mask still flows through to a downstream reduce).
  */
 
 #include "arith/ir_mutator_with_analyzer.h"
@@ -135,8 +135,8 @@ public:
 private:
   // Per UB data Var -> current valid region. Absent => full (untracked).
   std::unordered_map<const VarNode *, TailMaskInfo> state_;
-  // Whether reduce ops may be rewritten to tail_reduce. Disabled for the PTO
-  // backend, whose reduce codegen handles valid shapes natively.
+  // Whether reduce ops may be rewritten to tail_reduce. The caller enables
+  // this only for backends with a dedicated tail-reduce lowering.
   bool rewrite_reduce_ = true;
 
   // --- loop-variable scope tracking ---------------------------------------
@@ -151,6 +151,8 @@ private:
   std::unordered_set<const VarNode *> active_loop_vars_;
 
   bool HasOutOfScopeLoopVar(const PrimExpr &e) const {
+    if (!e.defined())
+      return false;
     bool found = false;
     PostOrderVisit(e, [&](const ObjectRef &n) {
       if (const auto *v = n.as<VarNode>()) {
@@ -393,20 +395,38 @@ private:
     std::string reduce_tag = name->value; // e.g. reduce_sum<...>
     std::string kind = reduce_tag.substr(0, reduce_tag.find('<')); // reduce_sum
     int raw_dim = ParseReduceDim(reduce_tag);
-    // Normalize to 0 (reduce rows) or -1 (reduce last axis). For 2D tiles
-    // axis 0/-2 reduce rows and axis 1/-1 reduce columns.
-    int dim = (raw_dim == 0 || raw_dim == -2) ? 0 : -1;
-
     const VarNode *out_v = GetPtrVar(call->args[1]);
     TailMaskInfo in = GetMask(GetPtrVar(call->args[2]));
 
     // Reduce is rewritten to a valid-region tail_reduce (which needs no pad)
-    // only on the AscendC backend, for a clean 2D float tile. On PTO, or for
-    // 3D / int tiles, it stays the native reduce over the pad-filled tile.
+    // only for a clean 2D float tile on a backend that supports the internal
+    // op. Unsupported contracts stay on the native reduce over the pad-filled
+    // tile.
     // The valid_row/valid_col must also not reference loop vars that have
     // already gone out of scope (e.g. a copy seeded inside `for by` whose
     // valid_col = f(by), but the reduce runs outside the loop).
-    bool ok = rewrite_reduce_ && CleanTail(PtrExtent(call->args[2]), in) &&
+    // Enable the contracts whose output layout is explicit and validated:
+    // float32 sum/max/min, clear=true, reducing rows (axis 0/-2) of a 2D tile.
+    // The scalar last-axis fallback is not device-reliable for a full 32-row
+    // tile, so keep that contract on the established native path.
+    // Accumulating reductions and lower-precision accumulation keep using the
+    // established full-tile + pad path until their backend semantics are
+    // validated independently.
+    DataType src_dtype = PtrDtype(call->args[2]);
+    PrimExpr out_extent = PtrExtent(call->args[1]);
+    bool supported_kind =
+        kind == "reduce_sum" || kind == "reduce_max" || kind == "reduce_min";
+    bool supported_dim = raw_dim == 0 || raw_dim == -2;
+    PrimExpr expected_out_extent = in.physical_col;
+    bool supported_contract =
+        call->args.size() == 5 && supported_kind && supported_dim &&
+        is_one(call->args[4]) && src_dtype == DataType::Float(32) &&
+        PtrDtype(call->args[1]) == src_dtype && out_extent.defined() &&
+        expected_out_extent.defined() &&
+        analyzer_->CanProveEqual(out_extent, expected_out_extent) &&
+        ReduceShapeMatchesPhysical(reduce_tag, in);
+    bool ok = rewrite_reduce_ && supported_contract &&
+              CleanTail(PtrExtent(call->args[2]), in) &&
               SupportedTailDtype(PtrDtype(call->args[2])) &&
               !HasOutOfScopeLoopVar(in.valid_row) &&
               !HasOutOfScopeLoopVar(in.valid_col) && !IsBroadcastScalarMask(in);
@@ -414,19 +434,8 @@ private:
     // Output rectangle for downstream propagation (only when rewriting).
     TailMaskInfo out;
     if (ok) {
-      out.kind = TailMaskKind::kTail;
-      if (dim == 0) {
-        out.valid_row = IntImm(DataType::Int(32), 1);
-        out.valid_col = in.valid_col;
-        out.physical_row = IntImm(DataType::Int(32), 1);
-        out.physical_col = in.physical_col;
-      } else { // dim == -1 (reduce last axis) -> column vector
-        out.valid_row = in.valid_row;
-        out.valid_col = IntImm(DataType::Int(32), 1);
-        out.physical_row = in.physical_row;
-        out.physical_col = IntImm(DataType::Int(32), 1);
-      }
-      out.storage_col = out.physical_col;
+      PrimExpr one = IntImm(DataType::Int(32), 1);
+      out = MakeCopyMask(one, in.valid_col, one, in.physical_col, analyzer_);
     }
     if (out_v != nullptr)
       state_[out_v] = out;
@@ -440,7 +449,7 @@ private:
                          call->args[1],
                          call->args[2],
                          call->args[3],
-                         IntImm(DataType::Int(32), dim),
+                         IntImm(DataType::Int(32), 0),
                          in.valid_row,
                          in.valid_col,
                          in.physical_col,
@@ -490,19 +499,72 @@ private:
   }
 
   static int ParseReduceDim(const std::string &tag) {
-    // tag like "reduce_sum<float, 16, 32, -1>"; dim is the last template field.
+    // tag like "reduce_sum<float, 16, 32, -1>"; dim is the fourth template
+    // field. Parse it from the known row/column fields instead of assuming it
+    // remains the final field if the tag gains more metadata later.
     size_t lt = tag.find('<');
     size_t gt = tag.rfind('>');
     if (lt == std::string::npos || gt == std::string::npos || gt <= lt)
-      return -1;
+      return 2;
     std::string inner = tag.substr(lt + 1, gt - lt - 1);
-    size_t comma = inner.rfind(',');
-    std::string dim_str =
-        comma == std::string::npos ? inner : inner.substr(comma + 1);
+    size_t dtype_end = inner.find(',');
+    if (dtype_end == std::string::npos)
+      return 2;
+    size_t row_end = inner.find(',', dtype_end + 1);
+    if (row_end == std::string::npos)
+      return 2;
+    size_t col_end = inner.find(',', row_end + 1);
+    if (col_end == std::string::npos)
+      return 2;
+    size_t dim_end = inner.find(',', col_end + 1);
+    std::string dim_str = inner.substr(col_end + 1, dim_end - (col_end + 1));
     try {
-      return std::stoi(dim_str);
+      size_t parsed = 0;
+      int dim = std::stoi(dim_str, &parsed);
+      return dim_str.find_first_not_of(" \t", parsed) == std::string::npos ? dim
+                                                                           : 2;
     } catch (...) {
-      return -1;
+      return 2;
+    }
+  }
+
+  bool ReduceShapeMatchesPhysical(const std::string &tag,
+                                  const TailMaskInfo &in) {
+    if (!in.physical_row.defined() || !in.physical_col.defined())
+      return false;
+    size_t lt = tag.find('<');
+    size_t gt = tag.rfind('>');
+    if (lt == std::string::npos || gt == std::string::npos || gt <= lt)
+      return false;
+    std::string inner = tag.substr(lt + 1, gt - lt - 1);
+    size_t dtype_end = inner.find(',');
+    if (dtype_end == std::string::npos)
+      return false;
+    size_t row_end = inner.find(',', dtype_end + 1);
+    if (row_end == std::string::npos)
+      return false;
+    size_t col_end = inner.find(',', row_end + 1);
+    if (col_end == std::string::npos)
+      return false;
+    try {
+      auto parse_int = [](const std::string &token, int *value) {
+        size_t parsed = 0;
+        *value = std::stoi(token, &parsed);
+        return token.find_first_not_of(" \t", parsed) == std::string::npos;
+      };
+      int row = 0;
+      int col = 0;
+      if (!parse_int(inner.substr(dtype_end + 1, row_end - dtype_end - 1),
+                     &row) ||
+          !parse_int(inner.substr(row_end + 1, col_end - row_end - 1), &col))
+        return false;
+      return row > 0 && col > 0 &&
+             analyzer_->CanProveEqual(in.physical_row, row) &&
+             analyzer_->CanProveEqual(in.physical_col, col);
+    } catch (...) {
+      // Dynamic or otherwise unparseable explicit real_shape stays on the
+      // established native reduce path.
+      return false;
     }
   }
 };

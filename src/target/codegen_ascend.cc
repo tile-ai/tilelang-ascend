@@ -2440,7 +2440,7 @@ void CodeGenTileLangAscend::TailReduceOpCodegen(const CallNode *op) {
   std::string dtype = getType(GetAccessPtrDtype(op->args[1].as<CallNode>()));
   std::string out = PrintBufferOffset(op->args[1].as<CallNode>());
   std::string src = PrintBufferOffset(op->args[2].as<CallNode>());
-  std::string tmp = PrintBufferOffset(op->args[3].as<CallNode>(), false);
+  std::string tmp = PrintBufferOffset(op->args[3].as<CallNode>());
   // Bind valid-region expressions first (see TailUnaryOpCodegen).
   std::string dim_str = PrintExpr(op->args[4]);
   std::string vrow = PrintExpr(op->args[5]);

@@ -289,7 +289,7 @@ pass_configs = {
 - `T.Kernel(block_num, threads=2, is_npu=True) as (cid)`（单轴 + `threads=2`）
 - 装饰器无 `workspace_idx`，签名无 `workspace_*` 参数
 - Cube↔Vector 改片上 `alloc_shared/alloc_fragment` 直连，中转/同步交给四个 pass
-- 模板见 [tilelang-expert-to-developer mode-examples.md §6](../../tilelang-custom-skill/tilelang-expert-to-developer/references/mode-examples.md#6-cv-融合--推荐写法消除-workspace--vidthreads2)
+- 模板见 [tilelang-programming-model-guide mode-examples.md §6](../../tilelang-custom-skill/tilelang-programming-model-guide/references/mode-examples.md#6-cv-融合--推荐写法消除-workspace--vidthreads2)
 
 **Expert / 混合 / Developer 复杂场景回退**：填写 workspace 表——
 

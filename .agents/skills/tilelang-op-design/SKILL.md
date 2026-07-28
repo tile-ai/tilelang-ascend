@@ -33,7 +33,7 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 | **迁移算子路径** ⭐ | 原算子文件路径（迁移时必需），用于获取 golden 实现 |
 | **输出形状** ⭐ | 原算子输出 shape（迁移时必需），如 `(N, M)` 或 `(M, N)` |
 
-**迁移算子时必须提供原算子路径和输出形状**，否则无法证明迁移正确性。Golden 实现一致性要求详见 [tilelang-op-generate checklist.md #9 Golden 实现一致 / #10 输出形状匹配](../tilelang-op-generate/references/checklist.md)。
+**迁移算子时必须提供原算子路径和输出形状**，否则无法证明迁移正确性。Golden 实现一致性要求详见 [tilelang-op-develop checklist.md #9 Golden 实现一致 / #10 输出形状匹配](../tilelang-op-develop/references/checklist.md)。
 
 **提问规则（必须严格遵守）**：
 1. **优先使用调用方传入的字段**：若调用方（如 `@tilelang-op-orchestrator` 通过 analyst 传入 `op_requirements` 结构）已经提供了字段值，**全部跳过提问**，直接进入技术约束检测和 design 生成

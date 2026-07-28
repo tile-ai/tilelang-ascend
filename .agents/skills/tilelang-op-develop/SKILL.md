@@ -1,5 +1,5 @@
 ---
-name: tilelang-op-generate
+name: tilelang-op-develop
 description: "基于设计文档生成 TileLang-Ascend 算子实现代码与测试。从 design.md 中提取关键信息，结合 examples/ 中的参考实现生成可运行代码。触发：实现算子、写 kernel、生成代码、算子编码、根据设计文档实现。"
 ---
 
@@ -42,7 +42,7 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 ### 2.1 API 用法和模式选择
 
 - **API 用法**：查阅 [tilelang-api-best-practices SKILL.md](../tilelang-custom-skill/tilelang-api-best-practices/SKILL.md) 及其 references 目录
-- **编程模式和 pass_configs**：查阅 [tilelang-expert-to-developer SKILL.md](../tilelang-custom-skill/tilelang-expert-to-developer/SKILL.md) 及其 references 目录
+- **编程模式和 pass_configs**：查阅 [tilelang-programming-model-guide SKILL.md](../tilelang-custom-skill/tilelang-programming-model-guide/SKILL.md) 及其 references 目录
 
 ### 2.2 同类算子示例
 

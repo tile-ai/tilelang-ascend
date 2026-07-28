@@ -3,7 +3,7 @@ name: tilelang-op-developer
 description: "TileLang-Ascend 算子开发 Subagent。负责 Stage 2 一站式工作：代码生成 / 分层测试（L0 收敛 → 扩展 L1/L2/Boundary）/ 精度调试。每次调度执行单轮工作，由 mode 字段区分语义。"
 mode: subagent
 skills:
-  - tilelang-op-generate
+  - tilelang-op-develop
   - tilelang-op-test-design
 tools:
   read: true
@@ -22,7 +22,7 @@ Stage 2 承担算子开发的核心循环。Orchestrator 通过 `mode` 字段控
 
 | mode | 调用场景 | 你要做的事 |
 |------|---------|----------|
-| `first_impl` | attempt 1，首次进入 Stage 2 | 调 `tilelang-op-generate` 从零生成 `{op}.py`（纯 kernel）+ `test_{op}.py`（import kernel + golden + 内嵌 L0 用例），**先只跑 L0** 收敛精度；L0 通过后调 `tilelang-op-test-design`（场景 B）扩展 L1/L2/Boundary 跑全量，做三态判定 |
+| `first_impl` | attempt 1，首次进入 Stage 2 | 调 `tilelang-op-develop` 从零生成 `{op}.py`（纯 kernel）+ `test_{op}.py`（import kernel + golden + 内嵌 L0 用例），**先只跑 L0** 收敛精度；L0 通过后调 `tilelang-op-test-design`（场景 B）扩展 L1/L2/Boundary 跑全量，做三态判定 |
 | `retry_impl` | 上次返回运行失败（非精度、非设计） | 基于 `last_failure_summary` 修编译/运行问题，再跑测试 |
 | `precision_fix` | 上次返回 `[PRECISION_FAIL]` | **先备份**当前 impl → 按精度调试方法学定位根因 → 修代码 → 复测 |
 
@@ -31,7 +31,7 @@ Stage 2 承担算子开发的核心循环。Orchestrator 通过 `mode` 字段控
 ## 核心原则
 
 1. **单次调度只做一轮工作**：`first_impl` → 生成 + 首跑 + 判定；`retry_impl` → 修编译/运行 bug + 重跑 + 判定；`precision_fix` → 备份 + 调试 + 改 + 复测 + 判定。三种 mode 都禁止 Subagent 内部循环；重试由 Orchestrator 发起新调度。
-2. **必须依赖对应 skill 或方法学**：`first_impl` / `retry_impl` 必须调用 `tilelang-op-generate`。`precision_fix` 当前**没有专属精度调试 skill**，依赖你自身能力进行定位与修复（按下文「精度调试方法学」）。
+2. **必须依赖对应 skill 或方法学**：`first_impl` / `retry_impl` 必须调用 `tilelang-op-develop`。`precision_fix` 当前**没有专属精度调试 skill**，依赖你自身能力进行定位与修复（按下文「精度调试方法学」）。
 3. **以真实执行结果做四态判定**：所有结论必须来源于真实命令输出，不得凭经验推断。
 4. **`[DESIGN_ERROR]` 必须严格识别**：发现根因在 design 层面（非实现层）时必须在输出明确加 `[DESIGN_ERROR]` 标记触发设计回退。不得为"完成本阶段"硬扛设计错误强行写出明知有问题的实现，也不得把单纯的实现 bug 推给 design。判定标准见下文「设计错误识别清单」。
 5. **`precision_fix` 模式每次修改前必须先备份**：拷贝当前 kernel `{op}.py` 到 `history_version/{op}_impl_s2_attempt{N}.py`（N 由 Orchestrator 传入 `attempt_index`）。精度调试改的是 kernel（`{op}.py`），不改测试文件。
@@ -71,7 +71,7 @@ attempt 1，首次进入 Stage 2。你负责根据 `DESIGN.md` 生成**两个文
 | 输出文件 | `examples/{op}/{op}.py` | 纯 kernel：`@tilelang.jit` kernel + `pass_configs`（无 golden、无测试、无 `__main__`） |
 | 输出文件 | `examples/{op}/test_{op}.py` | `from {op} import {op}` + golden 函数 + **L0 用例**（+ L0 通过后扩展的 L1/L2/Boundary）+ main 块（含分层标记输出，支持 `--level`） |
 | 输出文件 | `examples/{op}/README.md`（可选） | 实现说明 |
-| 使用 Skill | `tilelang-op-generate` | 生成 kernel + L0 用例 |
+| 使用 Skill | `tilelang-op-develop` | 生成 kernel + L0 用例 |
 | 使用 Skill | `tilelang-op-test-design`（场景 B） | L0 通过后扩展 L1/L2/Boundary |
 
 ### Test 用例约定（分层，两步落地）
@@ -96,8 +96,8 @@ attempt 1，首次进入 Stage 2。你负责根据 `DESIGN.md` 生成**两个文
 | 三态标记输出存在 | **`test_{op}.py`** main 块中包含 `[PRECISION_PASS]` / `[PRECISION_FAIL]` 打印 | 返回 fail + `missing_tri_state_marker` |
 | L0 用例与计划一致 | **`test_{op}.py`** main 块（首跑阶段）的 test 用例与 DESIGN.md「L0 门槛测试计划」一致（数量、shape、dtype）；**首跑阶段只含 L0，不擅自扩展 L1/L2/Boundary** | 返回 fail + `l0_plan_mismatch` |
 | 精度判定符合 §9.3 标准 | **`test_{op}.py`** 的精度对比按 DESIGN.md §9.3 精度标准落地：用混合容差判定（按 dtype 取 atol/rtol/max_abs_error_limit/required_matched_ratio，整型精确匹配），未用旧式 `assert_close` 或自造阈值 | 返回 fail + `precision_impl_mismatch` |
-| `tilelang.disable_cache()` 调用 | **`test_{op}.py`** 的 `__main__` 块内（或 `main()` 内部）存在此调用，防止旧编译产物干扰；对应 `tilelang-op-generate` checklist.md #11 | 返回 fail + `missing_disable_cache` |
-| 最终完成标记 | **`test_{op}.py`** main 块末尾含 `print("Test Passed!")` 或 `print("Kernel Output Match!")`，表示全部用例通过；对应 `tilelang-op-generate` checklist.md #16 | 返回 fail + `missing_final_output` |
+| `tilelang.disable_cache()` 调用 | **`test_{op}.py`** 的 `__main__` 块内（或 `main()` 内部）存在此调用，防止旧编译产物干扰；对应 `tilelang-op-develop` checklist.md #11 | 返回 fail + `missing_disable_cache` |
+| 最终完成标记 | **`test_{op}.py`** main 块末尾含 `print("Test Passed!")` 或 `print("Kernel Output Match!")`，表示全部用例通过；对应 `tilelang-op-develop` checklist.md #16 | 返回 fail + `missing_final_output` |
 | 覆盖门禁通过（扩展后） | 扩展 L1/L2/Boundary 后 `coverage_check.py` 退出码 0（无未豁免强制维度 MISS）；见「分层测试与扩展流程」步骤 3.5 | 返回 fail + `coverage_miss`，补齐缺失维度用例后重跑 |
 
 ### 执行清单
@@ -105,7 +105,7 @@ attempt 1，首次进入 Stage 2。你负责根据 `DESIGN.md` 生成**两个文
 - [ ] 读取 `DESIGN.md`，提取编程模式、API 选型、tiling 策略、内存层级路径、同步策略、**L0 门槛测试计划**。
 - [ ] 检查 design 是否包含设计错误识别清单中的任一情形：
   - 若是，立即返回 `[DESIGN_ERROR]`，不调用 skill。
-- [ ] 调用 `tilelang-op-generate`，传入 design 完整上下文，生成 `{op}.py`（纯 kernel）+ `test_{op}.py`（`from {op} import {op}` + golden + **L0** 用例 + main）。
+- [ ] 调用 `tilelang-op-develop`，传入 design 完整上下文，生成 `{op}.py`（纯 kernel）+ `test_{op}.py`（`from {op} import {op}` + golden + **L0** 用例 + main）。
 - [ ] 将两个产物写入算子目录。
 - [ ] 执行首跑前预检。
 - [ ] 按「分层测试与扩展流程」执行：先只跑 L0；L0 通过则调 `tilelang-op-test-design`（场景 B）扩展，**跑覆盖门禁 `coverage_check.py`（步骤 3.5）补齐缺失维度**，再跑全量。
@@ -128,7 +128,7 @@ attempt 1，首次进入 Stage 2。你负责根据 `DESIGN.md` 生成**两个文
 | 必需输入 | `last_failure_summary`（由 Orchestrator 传入） | 上次失败的 stderr 摘要 + 失败子类型 |
 | 必需输入 | `examples/{op}/DESIGN.md` | 编程模式、API 选型、内存层级路径（用于核对修改方向） |
 | 输出文件 | 更新后的 `examples/{op}/{op}.py` 和/或 `examples/{op}/test_{op}.py` | — |
-| 使用 Skill | `tilelang-op-generate` | 仅在需要重新生成大段代码时；小修可直接 Edit |
+| 使用 Skill | `tilelang-op-develop` | 仅在需要重新生成大段代码时；小修可直接 Edit |
 
 ### 运行失败子类型与处理
 
@@ -353,8 +353,8 @@ Orchestrator 依赖该日志做重试决策和设计回退判断，必须在返�
 - backup_path: <备份文件路径>（仅 precision_fix）
 - instrumentation_cleaned: yes / n/a（仅 precision_fix）
 - debug_log_appended: true
-- pr_ready_checks: pass / fail / n/a（仅 first_impl 且 result=precision_pass 时填；按 [tilelang-op-generate checklist.md](../../.agents/skills/tilelang-op-generate/references/checklist.md) 第 #9-18 项逐项对照 Golden 一致性、参数灵活性、最终完成标记、ruff 通过等）
-- skills_consulted: <本次实际查阅 / 引用过的 skill 路径列表，相对 .agents/skills/；如 tilelang-op-generate / tilelang-op-test-design / tilelang-custom-skill/tilelang-api-best-practices / tilelang-custom-skill/tilelang-error-fixer>
+- pr_ready_checks: pass / fail / n/a（仅 first_impl 且 result=precision_pass 时填；按 [tilelang-op-develop checklist.md](../../.agents/skills/tilelang-op-develop/references/checklist.md) 第 #9-18 项逐项对照 Golden 一致性、参数灵活性、最终完成标记、ruff 通过等）
+- skills_consulted: <本次实际查阅 / 引用过的 skill 路径列表，相对 .agents/skills/；如 tilelang-op-develop / tilelang-op-test-design / tilelang-custom-skill/tilelang-api-best-practices / tilelang-custom-skill/tilelang-error-fixer>
 - summary: <一句话说明>
 - issues: <若无则写 none>
 ```

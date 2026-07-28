@@ -5,7 +5,7 @@
 整体流程：
 
 ```
-op-generate 完成后 ──► 写 journal/{op}-{timestamp}.md (status=pending 的 entries)
+op-develop 完成后 ──► 写 journal/{op}-{timestamp}.md (status=pending 的 entries)
         │
         ▼
 开发者运行 /tilelang-skill-review
@@ -40,9 +40,9 @@ op: softmax
 created: 2026-05-09T14:30:00
 skills_consulted:
   - tilelang-op-design
-  - tilelang-op-generate
+  - tilelang-op-develop
   - tilelang-custom-skill/tilelang-api-best-practices
-  - tilelang-custom-skill/tilelang-expert-to-developer
+  - tilelang-custom-skill/tilelang-programming-model-guide
 ---
 
 # Skill Feedback - softmax
@@ -178,7 +178,7 @@ journal 文件按来源区分命名模式：
 
 | 模式 | 来源 | 说明 |
 |------|------|------|
-| `{op}-{YYYYMMDD-HHMMSS}.md` | agent（op-generate §6 自动反思） | 每次算子开发一个文件，时间戳精确到秒避免冲突，frontmatter 含 `op` 和 `skills_consulted` |
+| `{op}-{YYYYMMDD-HHMMSS}.md` | agent（op-develop §6 自动反思） | 每次算子开发一个文件，时间戳精确到秒避免冲突，frontmatter 含 `op` 和 `skills_consulted` |
 | `manual-{YYYYMMDD}.md` | developer（`/tilelang-skill-review add`） | **同一天追加**到同一个文件，frontmatter 含 `source: developer`，无 `op` / `skills_consulted` 字段 |
 
 时间戳用本地时间，与 frontmatter 的 ISO8601 时间一致即可。

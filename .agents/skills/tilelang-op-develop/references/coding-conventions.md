@@ -46,7 +46,7 @@ for bi_i in range(BI):                       # 整程，无 vid 偏移
 ...
 T.copy(acc_s_l0c, acc_s_ub_)                 # L0C → shared 直连，无 GM 往返
 ```
-前提链：`threads=2` → 消 vid → 消 workspace；完整映射表见 [mode-examples.md §6](../../tilelang-custom-skill/tilelang-expert-to-developer/references/mode-examples.md#6-cv-融合--推荐写法消除-workspace--vidthreads2)。
+前提链：`threads=2` → 消 vid → 消 workspace；完整映射表见 [mode-examples.md §6](../../tilelang-custom-skill/tilelang-programming-model-guide/references/mode-examples.md#6-cv-融合--推荐写法消除-workspace--vidthreads2)。
 
 **⚠️ 回退写法 — workspace 索引一致性（Expert/混合或复杂场景）**：
 ```python
