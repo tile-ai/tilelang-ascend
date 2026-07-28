@@ -61,6 +61,28 @@ done
 # ================= 全局环境变量设置 =================
 PROJECT_ROOT="$(cd .. && pwd)"
 
+# An operator listed here is already covered by its Pytest test, so running it
+# again as a plain script would compile and execute the same kernel twice.
+declare -A MIGRATED_SOURCES=()
+OPERATOR_TEST_RESOLVER="${PROJECT_ROOT}/scripts/ci/resolve_operator_tests.py"
+if [ -f "$OPERATOR_TEST_RESOLVER" ]; then
+    # A broken manifest, or a test whose name matches no entry, must stop the run:
+    # otherwise the skip list comes out empty and every migrated operator quietly
+    # runs twice, or a misspelt test leaves its reservation pending forever.
+    if ! python "$OPERATOR_TEST_RESOLVER" validate; then
+        echo "Operator test manifest is invalid" >&2
+        exit 1
+    fi
+    if ! python "$OPERATOR_TEST_RESOLVER" check-orphans; then
+        echo "Operator test names do not match the manifest" >&2
+        exit 1
+    fi
+    while IFS=$'\t' read -r source test; do
+        [ -n "$source" ] || continue
+        MIGRATED_SOURCES["$source"]=1
+    done < <(python "$OPERATOR_TEST_RESOLVER" list --format tsv)
+fi
+
 # experiment 算子根目录（相对 examples 工作目录）
 EXPERIMENT_ROOT="../examples_experiment"
 
@@ -148,6 +170,19 @@ total_scripts=0
 passed_scripts=0
 all_scripts=()
 
+should_skip_python_script() {
+    local candidate="$1"
+    local repo_relative
+
+    repo_relative=$(realpath --relative-to="$PROJECT_ROOT" "$candidate")
+    if [[ -n "${MIGRATED_SOURCES[$repo_relative]:-}" ]]; then
+        echo "Skip migrated operator in legacy runner: $candidate" >&2
+        return 0
+    fi
+
+    return 1
+}
+
 # 函数：收集单个目录下的测试脚本
 collect_test_scripts() {
     local dir="$1"
@@ -171,7 +206,9 @@ collect_test_scripts() {
                 -not -name "__init__.py" \
                 -not -name "*_golden.py" \
                 | sort)
-            for f in $py_files; do scripts+=("$f"); done
+            for f in $py_files; do
+                should_skip_python_script "$f" || scripts+=("$f")
+            done
             
             echo "${scripts[@]}"
             return
@@ -188,7 +225,9 @@ collect_test_scripts() {
         -not -path "*/generative_recommendation/golden.py" \
         -not -path "*/generative_recommendation/testcase.py" \
         | sort)
-    for f in $py_files; do scripts+=("$f"); done
+    for f in $py_files; do
+        should_skip_python_script "$f" || scripts+=("$f")
+    done
     
     # 搜索 bash 脚本（特定命名模式）
     local sh_files=$(find "$dir" -maxdepth 2 \( -name "run_*.sh" -o -name "test_*.sh" \) | sort)
@@ -334,7 +373,12 @@ for script in "${all_scripts[@]}"; do
             current_script_ref="$script"
 
             # 执行脚本并捕获输出到变量，不在磁盘生成日志文件
-            if [[ "$script" == *.py ]]; then
+            if [[ "$script_name" == test_*.py ]]; then
+                # Migrated operator test: run it through Pytest so the assertions
+                # decide the result instead of a string in stdout.
+                output=$(cd "$script_dir" && python -m pytest "$script_name" -q 2>&1)
+                exit_code=$?
+            elif [[ "$script" == *.py ]]; then
                 if [ "$ENABLE_COVERAGE" = true ]; then
                     # 使用 coverage run 统计 examples 执行的 Python 代码覆盖率
                     # 每个脚本使用独立的 coverage 文件名，避免并行冲突
@@ -358,7 +402,8 @@ for script in "${all_scripts[@]}"; do
         last_line=$(echo "$output" | tail -n 1)
         if [[ "$output" =~ [Kk][Ee][Rr][Nn][Ee][Ll][[:space:]][Oo][Uu][Tt][Pp][Uu][Tt][[:space:]][Mm][Aa][Tt][Cc][Hh] ]] || \
            [[ "$output" =~ [Tt][Ee][Ss][Tt][[:space:]][Pp][Aa][Ss][Ss][Ee][Dd][!] ]] || \
-           [[ "$script" == CUSTOM_TASK::* && $exit_code -eq 0 ]]; then
+           [[ "$script" == CUSTOM_TASK::* && $exit_code -eq 0 ]] || \
+           [[ "$current_script_ref" == *test_*.py && $exit_code -eq 0 ]]; then
             echo "[PASSED] $current_script_ref"
             touch "$temp_dir/pass_$total_scripts"
         else
