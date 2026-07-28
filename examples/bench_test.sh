@@ -61,6 +61,28 @@ done
 # ================= 全局环境变量设置 =================
 PROJECT_ROOT="$(cd .. && pwd)"
 
+# An operator listed here is covered by its Pytest test, which the workflow
+# runs separately; executing it here as well would compile and run the same
+# kernel twice.
+declare -A MIGRATED_SOURCES=()
+OPERATOR_TEST_RESOLVER="${PROJECT_ROOT}/scripts/ci/resolve_operator_tests.py"
+if [ -f "$OPERATOR_TEST_RESOLVER" ]; then
+    # This script has no `set -e`, so a failure here would otherwise leave the
+    # skip list empty and let every migrated operator run twice unnoticed.
+    if ! python "$OPERATOR_TEST_RESOLVER" validate; then
+        echo "Operator test manifest is invalid" >&2
+        exit 1
+    fi
+    if ! python "$OPERATOR_TEST_RESOLVER" check-orphans; then
+        echo "Operator test names do not match the manifest" >&2
+        exit 1
+    fi
+    while IFS=$'\t' read -r source test; do
+        [ -n "$source" ] || continue
+        MIGRATED_SOURCES["$source"]=1
+    done < <(python "$OPERATOR_TEST_RESOLVER" list --format tsv)
+fi
+
 # experiment 算子根目录（相对 examples 工作目录）
 EXPERIMENT_ROOT="../examples_experiment"
 
@@ -148,6 +170,19 @@ total_scripts=0
 passed_scripts=0
 all_scripts=()
 
+should_skip_python_script() {
+    local candidate="$1"
+    local repo_relative
+
+    repo_relative=$(realpath --relative-to="$PROJECT_ROOT" "$candidate")
+    if [[ -n "${MIGRATED_SOURCES[$repo_relative]:-}" ]]; then
+        echo "Skip migrated operator in legacy runner: $candidate" >&2
+        return 0
+    fi
+
+    return 1
+}
+
 # 函数：收集单个目录下的测试脚本
 collect_test_scripts() {
     local dir="$1"
@@ -169,9 +204,12 @@ collect_test_scripts() {
             # 收集主目录的 py 文件（排除 fa_opt）
             local py_files=$(find "$dir" -maxdepth 1 -name "*.py" \
                 -not -name "__init__.py" \
+                -not -name "test_*.py" \
                 -not -name "*_golden.py" \
                 | sort)
-            for f in $py_files; do scripts+=("$f"); done
+            for f in $py_files; do
+                should_skip_python_script "$f" || scripts+=("$f")
+            done
             
             echo "${scripts[@]}"
             return
@@ -181,6 +219,7 @@ collect_test_scripts() {
     # 搜索 maxdepth 2 的 py 文件（排除特殊文件和 bench_sfa 子目录）
     local py_files=$(find "$dir" -maxdepth 2 -name "*.py" \
         -not -name "__init__.py" \
+        -not -name "test_*.py" \
         -not -name "*_golden.py" \
         -not -name "sfa_golden.py" \
         -not -name "utils.py" \
@@ -188,7 +227,9 @@ collect_test_scripts() {
         -not -path "*/generative_recommendation/golden.py" \
         -not -path "*/generative_recommendation/testcase.py" \
         | sort)
-    for f in $py_files; do scripts+=("$f"); done
+    for f in $py_files; do
+        should_skip_python_script "$f" || scripts+=("$f")
+    done
     
     # 搜索 bash 脚本（特定命名模式）
     local sh_files=$(find "$dir" -maxdepth 2 \( -name "run_*.sh" -o -name "test_*.sh" \) | sort)
@@ -250,7 +291,9 @@ if [ -n "$TEST_DIRS" ] || [ -n "$EXPERIMENT_DIRS" ]; then
         if [ -d "$fa_dir" ]; then
             fa_python_files=$(find "$fa_dir" -maxdepth 1 -name "flash_*.py" | sort)
             if [ -n "$fa_python_files" ]; then
-                for file in $fa_python_files; do all_scripts+=("$file"); done
+                for file in $fa_python_files; do
+                    should_skip_python_script "$file" || all_scripts+=("$file")
+                done
             fi
         fi
     fi
@@ -280,7 +323,9 @@ else
     if [ -d "$fa_dir" ]; then
         fa_python_files=$(find "$fa_dir" -maxdepth 1 -name "flash_*.py" | sort)
         if [ -n "$fa_python_files" ]; then
-            for file in $fa_python_files; do all_scripts+=("$file"); done
+            for file in $fa_python_files; do
+                should_skip_python_script "$file" || all_scripts+=("$file")
+            done
         fi
     fi
 

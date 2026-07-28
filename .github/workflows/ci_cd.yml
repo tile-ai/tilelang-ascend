@@ -202,6 +202,18 @@ jobs:
           pytest_files_array=()
           pytest_dirs_array=()
 
+          # A migrated operator is covered by its Pytest test, so a change to either
+          # one only needs that test; there is no reason to run the whole directory.
+          declare -A source_to_test=()
+          declare -A test_to_test=()
+          if [ -f scripts/ci/resolve_operator_tests.py ]; then
+            while IFS=$'\t' read -r source test; do
+              [[ -n "$source" && -n "$test" ]] || continue
+              source_to_test["$source"]="$test"
+              test_to_test["$test"]="$test"
+            done < <(python scripts/ci/resolve_operator_tests.py list --format tsv)
+          fi
+
           for file in $changed_files; do
             # 排除 .agents 目录（skill 配置，无需测试）
             if [[ "$file" =~ ^\.agents/ ]]; then
@@ -254,6 +266,25 @@ jobs:
               break
             fi
             
+            if [[ -n "${source_to_test[$file]:-}" ]]; then
+              mapped_test="${source_to_test[$file]}"
+              pytest_files_array+=("$mapped_test")
+              run_examples=false
+              run_pytest_only=true
+              should_skip=false
+              echo "Mapped migrated operator $file -> $mapped_test"
+              continue
+            fi
+
+            if [[ -n "${test_to_test[$file]:-}" ]]; then
+              pytest_files_array+=("$file")
+              run_examples=false
+              run_pytest_only=true
+              should_skip=false
+              echo "Mapped migrated test: $file"
+              continue
+            fi
+
             # examples 文件 → 增量 examples + pytest
             if [[ "$file" =~ ^examples/([^/]+)/ ]]; then
               test_dir="${BASH_REMATCH[1]}"
@@ -614,6 +645,23 @@ jobs:
                   fi
                 fi
                 TEST_EXIT_CODE=\${PIPESTATUS[0]}
+
+                # Operator tests were moved out of the legacy runner, so run them here:
+                # one Pytest invocation gets xdist scheduling, the marker filter and the
+                # full failure output. Entries reserved but not migrated yet are absent
+                # from list-tests, so nothing points at a file that does not exist.
+                OPERATOR_TESTS=()
+                while IFS= read -r operator_test; do
+                  [ -n \"\$operator_test\" ] && OPERATOR_TESTS+=(\"../\$operator_test\")
+                done < <(python ../scripts/ci/resolve_operator_tests.py list-tests)
+                if [ \${#OPERATOR_TESTS[@]} -gt 0 ]; then
+                  echo 'Running operator tests: '\${OPERATOR_TESTS[*]}
+                  pytest --forked \"\${OPERATOR_TESTS[@]}\" -v -n 8 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee -a test_output.log
+                  OPERATOR_EXIT_CODE=\${PIPESTATUS[0]}
+                  if [ \"\$TEST_EXIT_CODE\" -eq 0 ]; then
+                    TEST_EXIT_CODE=\$OPERATOR_EXIT_CODE
+                  fi
+                fi
                 set -e
               fi
 
