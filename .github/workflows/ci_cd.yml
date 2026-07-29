@@ -382,36 +382,6 @@ jobs:
             fi
           done
           
-          # A single routed test and nothing else is the only shape that fits
-          # `pytest --forked ../$PYTEST_FILES_ARG`: that command prefixes ../ onto
-          # the first path only, so every extra path would resolve against examples/
-          # and fail to open. Anything wider goes through the examples branch, where
-          # the fallback prefixes each entry on its own.
-          if [[ ${#routed_tests[@]} -eq 1 ]] \
-             && [[ ${#pytest_files_array[@]} -eq 0 ]] \
-             && [[ ${#pytest_dirs_array[@]} -eq 0 ]] \
-             && [[ ${#test_dirs_array[@]} -eq 0 ]] \
-             && [[ ${#experiment_dirs_array[@]} -eq 0 ]] \
-             && [[ "$run_examples" == false ]]; then
-            pytest_files_array=("${!routed_tests[@]}")
-            run_pytest_only=true
-            echo "Only migrated tests changed: ${pytest_files_array[*]}"
-          elif [[ ${#routed_tests[@]} -gt 0 ]]; then
-            run_examples=true
-            run_pytest_only=false
-            for routed_dir in "${routed_example_dirs[@]}"; do
-              if [[ ! " ${test_dirs_array[*]} " =~ " $routed_dir " ]]; then
-                test_dirs_array+=("$routed_dir")
-              fi
-            done
-            for routed_dir in "${routed_experiment_dirs[@]}"; do
-              if [[ ! " ${experiment_dirs_array[*]} " =~ " $routed_dir " ]]; then
-                experiment_dirs_array+=("$routed_dir")
-              fi
-            done
-            echo "Migrated tests alongside other changes: running examples plus every registered test"
-          fi
-
           # 决定 pytest 测试范围
           pytest_files=""
           if [[ ${#pytest_files_array[@]} -gt 0 ]]; then
@@ -432,6 +402,39 @@ jobs:
           
           test_dirs="${test_dirs_array[*]}"
           experiment_dirs="${experiment_dirs_array[*]}"
+          # Decided after the collapsing above, and overriding it: those two rules
+          # (one subdirectory replaces the list, more than three empties it) exist
+          # for testing/python/ and would drop these entries. Nothing else queued
+          # means the whole change is migrated tests, so run exactly those.
+          if [[ ${#routed_tests[@]} -gt 0 ]]; then
+            if [[ ${#pytest_files_array[@]} -eq 0 ]] \
+               && [[ ${#pytest_dirs_array[@]} -eq 0 ]] \
+               && [[ ${#test_dirs_array[@]} -eq 0 ]] \
+               && [[ ${#experiment_dirs_array[@]} -eq 0 ]] \
+               && [[ "$run_examples" == false ]]; then
+              pytest_files="${!routed_tests[*]}"
+              run_pytest_only=true
+              echo "Only migrated tests changed: ${pytest_files}"
+            else
+              run_examples=true
+              run_pytest_only=false
+              pytest_files=""
+              for routed_dir in "${routed_example_dirs[@]}"; do
+                if [[ ! " ${test_dirs_array[*]} " =~ " $routed_dir " ]]; then
+                  test_dirs_array+=("$routed_dir")
+                fi
+              done
+              for routed_dir in "${routed_experiment_dirs[@]}"; do
+                if [[ ! " ${experiment_dirs_array[*]} " =~ " $routed_dir " ]]; then
+                  experiment_dirs_array+=("$routed_dir")
+                fi
+              done
+              test_dirs="${test_dirs_array[*]}"
+              experiment_dirs="${experiment_dirs_array[*]}"
+              echo "Migrated tests alongside other changes: running examples plus every registered test"
+            fi
+          fi
+
           echo "run_examples=${run_examples}" >> $GITHUB_OUTPUT
           echo "run_pytest_only=${run_pytest_only}" >> $GITHUB_OUTPUT
           echo "test_dirs=${test_dirs}" >> $GITHUB_OUTPUT
@@ -664,8 +667,14 @@ jobs:
                 # 只跑 pytest（testing/ 修改）
                 if [ -n \"\$PYTEST_FILES_ARG\" ]; then
                   echo 'Running incremental pytest for: '\$PYTEST_FILES_ARG
+                  # Prefix every path, not just the first: the value can hold several
+                  # files and the rest would otherwise resolve against examples/.
+                  PYTEST_TARGETS=()
+                  for pytest_target in \$PYTEST_FILES_ARG; do
+                    PYTEST_TARGETS+=(\"../\$pytest_target\")
+                  done
                   set +e
-                  pytest --forked ../\$PYTEST_FILES_ARG -v -n 4 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee test_output.log
+                  pytest --forked \"\${PYTEST_TARGETS[@]}\" -v -n 4 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee test_output.log
                 else
                   echo 'Running full pytest (testing/ modified)'
                   set +e
