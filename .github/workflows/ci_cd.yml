@@ -6,6 +6,7 @@ on:
   pull_request:
     branches:
       - ascendc_pto*
+      - example_test*
     paths-ignore:
       - '**.md'
       - '**.png'
