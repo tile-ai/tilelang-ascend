@@ -943,15 +943,13 @@ CATLASS_DEVICE void tail_scalar(TailVecScalarOp op, LocalTensor<T> dst,
 
 // ---- reduce ----
 // The propagation pass emits this helper only for axis 0/-2: reduce down the
-// valid rows into out[0..validCol). `tmp`, `dim`, and `clear` stay in the ABI
-// shared with the native reduce call; this validated contract does not consume
-// tmp and always arrives normalized as dim == 0, clear == true.
+// valid rows into out[0..validCol). The validated contract consumes no tmp and
+// always arrives normalized as dim == 0, clear == true.
 template <typename T>
 CATLASS_DEVICE void tail_reduce_sum(LocalTensor<T> out, LocalTensor<T> src,
-                                    LocalTensor<uint8_t> tmp, int dim,
-                                    uint32_t validRow, uint32_t validCol,
-                                    uint32_t physCol, bool clear) {
-  (void)tmp;
+                                    int dim, uint32_t validRow,
+                                    uint32_t validCol, uint32_t physCol,
+                                    bool clear) {
   (void)dim;
   (void)clear;
   if (validRow == 0 || validCol == 0)
@@ -966,10 +964,9 @@ CATLASS_DEVICE void tail_reduce_sum(LocalTensor<T> out, LocalTensor<T> src,
 
 template <typename T>
 CATLASS_DEVICE void tail_reduce_max(LocalTensor<T> out, LocalTensor<T> src,
-                                    LocalTensor<uint8_t> tmp, int dim,
-                                    uint32_t validRow, uint32_t validCol,
-                                    uint32_t physCol, bool clear) {
-  (void)tmp;
+                                    int dim, uint32_t validRow,
+                                    uint32_t validCol, uint32_t physCol,
+                                    bool clear) {
   (void)dim;
   (void)clear;
   if (validRow == 0 || validCol == 0)
@@ -982,10 +979,9 @@ CATLASS_DEVICE void tail_reduce_max(LocalTensor<T> out, LocalTensor<T> src,
 
 template <typename T>
 CATLASS_DEVICE void tail_reduce_min(LocalTensor<T> out, LocalTensor<T> src,
-                                    LocalTensor<uint8_t> tmp, int dim,
-                                    uint32_t validRow, uint32_t validCol,
-                                    uint32_t physCol, bool clear) {
-  (void)tmp;
+                                    int dim, uint32_t validRow,
+                                    uint32_t validCol, uint32_t physCol,
+                                    bool clear) {
   (void)dim;
   (void)clear;
   if (validRow == 0 || validCol == 0)
@@ -1156,12 +1152,8 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
 // 2-way merge sort
 template <typename T>
 CATLASS_DEVICE void
-MergeSort(const LocalTensor<T> &dst, const LocalTensor<uint8_t> &tmp,
-          const LocalTensor<T> &src0, const LocalTensor<T> &src1,
-          uint32_t blockLen0, uint32_t blockLen1) {
-  // Note: tmp parameter is kept for API consistency with PTO backend but not
-  // used in AscendC
-
+MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &src0,
+          const LocalTensor<T> &src1, uint32_t blockLen0, uint32_t blockLen1) {
   AscendC::MrgSort4Info params;
   params.elementLengths[0] = blockLen0;
   params.elementLengths[1] = blockLen1;
@@ -1183,13 +1175,9 @@ MergeSort(const LocalTensor<T> &dst, const LocalTensor<uint8_t> &tmp,
 // 3-way merge sort
 template <typename T>
 CATLASS_DEVICE void
-MergeSort(const LocalTensor<T> &dst, const LocalTensor<uint8_t> &tmp,
-          const LocalTensor<T> &src0, const LocalTensor<T> &src1,
-          const LocalTensor<T> &src2, uint32_t blockLen0, uint32_t blockLen1,
-          uint32_t blockLen2) {
-  // Note: tmp parameter is kept for API consistency with PTO backend but not
-  // used in AscendC
-
+MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &src0,
+          const LocalTensor<T> &src1, const LocalTensor<T> &src2,
+          uint32_t blockLen0, uint32_t blockLen1, uint32_t blockLen2) {
   AscendC::MrgSort4Info params;
   params.elementLengths[0] = blockLen0;
   params.elementLengths[1] = blockLen1;
@@ -1211,14 +1199,10 @@ MergeSort(const LocalTensor<T> &dst, const LocalTensor<uint8_t> &tmp,
 // 4-way merge sort
 template <typename T>
 CATLASS_DEVICE void
-MergeSort(const LocalTensor<T> &dst, const LocalTensor<uint8_t> &tmp,
-          const LocalTensor<T> &src0, const LocalTensor<T> &src1,
-          const LocalTensor<T> &src2, const LocalTensor<T> &src3,
-          uint32_t blockLen0, uint32_t blockLen1, uint32_t blockLen2,
-          uint32_t blockLen3) {
-  // Note: tmp parameter is kept for API consistency with PTO backend but not
-  // used in AscendC
-
+MergeSort(const LocalTensor<T> &dst, const LocalTensor<T> &src0,
+          const LocalTensor<T> &src1, const LocalTensor<T> &src2,
+          const LocalTensor<T> &src3, uint32_t blockLen0, uint32_t blockLen1,
+          uint32_t blockLen2, uint32_t blockLen3) {
   AscendC::MrgSort4Info params;
   params.elementLengths[0] = blockLen0;
   params.elementLengths[1] = blockLen1;
@@ -1436,10 +1420,31 @@ CATLASS_DEVICE void gemmL1(LocalTensor<T1> A, LocalTensor<T1> B,
 template <typename T, int32_t dim, int32_t axis, bool isReuseSource = false>
 CATLASS_DEVICE void
 Broadcast(const LocalTensor<T> &dst, const LocalTensor<T> &src,
-          LocalTensor<uint8_t> &sharedTmpBuffer, const uint32_t dstShape[dim],
+          LocalTensor<uint8_t> sharedTmpBuffer, const uint32_t dstShape[dim],
           const uint32_t srcShape[dim]) {
   AscendC::Broadcast<T, dim, axis, isReuseSource>(dst, src, dstShape, srcShape,
                                                   sharedTmpBuffer);
+}
+
+template <typename T, int32_t dim, int32_t axis, bool isReuseSource = false>
+CATLASS_DEVICE void
+Broadcast(const LocalTensor<T> &dst, const LocalTensor<T> &src,
+          const uint32_t dstShape[dim], const uint32_t srcShape[dim]) {
+  uint32_t dstSize = 1;
+  uint32_t srcSize = 1;
+  for (int32_t i = 0; i < dim; ++i) {
+    dstSize *= dstShape[i];
+    srcSize *= srcShape[i];
+  }
+  if (srcSize == dstSize) {
+    AscendC::Muls(dst, src, static_cast<T>(1), dstSize);
+    return;
+  }
+  ASCENDC_ASSERT((srcSize == 1), {
+    KERNEL_LOG(KERNEL_ERROR,
+               "Workspace-free Broadcast only supports equal or scalar shapes");
+  });
+  AscendC::Duplicate(dst, src.GetValue(0), dstSize);
 }
 
 template <typename T>

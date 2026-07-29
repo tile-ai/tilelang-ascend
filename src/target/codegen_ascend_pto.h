@@ -305,13 +305,15 @@ private:
 
   ReduceOpInfo ParseReduceOpInfo(const std::string &op_name);
   std::string GetReduceOpName(ReduceKind kind, ReduceDirection direction);
+  ShapeInfo ReinterpretShapeInfo(const ShapeInfo &info,
+                                 const std::string &type);
   std::string ResolveColReduceTmpName(const ShapeInfo &dst,
                                       const ShapeInfo &src,
                                       const ShapeInfo &tmp);
   void CodegenRowReduce(const ReduceOpInfo &op_info, const ShapeInfo &dst,
                         const ShapeInfo &src, const ShapeInfo &tmp);
   void CodegenColReduce(const ReduceOpInfo &op_info, const ShapeInfo &dst,
-                        const ShapeInfo &src, const ShapeInfo &tmp);
+                        const ShapeInfo &src);
 
   void CodegenRowBroadcast(const ShapeInfo &dst, const ShapeInfo &src);
   void CodegenColBroadcast(const ShapeInfo &dst, const ShapeInfo &src);
@@ -350,6 +352,7 @@ private:
   Map<Var, PrimExpr> address_map_;
   Map<Var, Array<PrimExpr>> buffer_shapess_;
   Map<Var, PrimExpr> buffer_versions_;
+  std::unordered_map<const VarNode *, DataType> buffer_dtypes_;
 
   Map<Var, PrimExpr> tiling_map_;
   Array<Var> var_sequence_;

@@ -3,11 +3,24 @@ import tilelang.language as T
 from tvm.ir import Range
 from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call, IntImm, Ramp
 from tvm import DataType, tir
-from tilelang.language.ascend import _dtype
+from tilelang.language.ascend import _dtype, _get_tmp_arena_access_ptr
 import functools
 import warnings
+from typing import Any
 
 import math
+
+
+def _call_intrin_with_optional_tmp(
+    intrin_name: str,
+    args: list[Any],
+    tmp_position: int,
+    tmp: Buffer | BufferRegion | None,
+) -> PrimExpr:
+    """Build an Ascend intrinsic call with an optional public tmp arena."""
+    if tmp is not None:
+        args.insert(tmp_position, _get_tmp_arena_access_ptr(intrin_name, tmp))
+    return tir.call_intrin("handle", tir.op.Op.get(f"tl.ascend_{intrin_name}"), *args)
 
 
 def deprecated(message=None):
@@ -287,7 +300,13 @@ def arith_progression(buffer: Buffer, first_value: PrimExpr, diff_value: PrimExp
     )
 
 
-def sort(dst: Buffer, src: Buffer, actual_num: PrimExpr):
+def sort(
+    dst: Buffer,
+    src: Buffer,
+    actual_num: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):
     """
     Performs a full sort on arbitrarily-lengthed input data with automatic internal
     alignment. Sorts each 32-element block via sort32, then merges all sorted
@@ -301,19 +320,23 @@ def sort(dst: Buffer, src: Buffer, actual_num: PrimExpr):
     dst: Destination buffer for interleaved (value, index) pairs. Must have
          at least 2 * aligned_size elements.
     src: Source buffer containing the data to be sorted.
-    tmp: Temporary buffer for intermediate sort/merge results (2x the size of src).
     actual_num: The number of valid elements in src. When actual_num is less than
                 the buffer size, unused positions are padded with -inf before sorting.
+    tmp: Optional complete UB scratch storage. Its scalar dtype is reinterpreted
+         by lowering and has no semantic meaning.
     """
     repeatTimes = (actual_num + 31) // 32  # ceiling to 32-aligned
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_sort"),
-        f"Sort<{_dtype(dst)}>",
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
-        repeatTimes,
-        actual_num,
+    return _call_intrin_with_optional_tmp(
+        "sort",
+        [
+            f"Sort<{_dtype(dst)}>",
+            dst.access_ptr("w"),
+            src.access_ptr("r"),
+            repeatTimes,
+            actual_num,
+        ],
+        3,
+        tmp,
     )
 
 
@@ -323,6 +346,8 @@ def merge_sort(
     src1: Buffer | BufferRegion,
     src2: Buffer | BufferRegion | None = None,
     src3: Buffer | BufferRegion | None = None,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
 ):
     """Performs a 2/3/4-way merge sort operation.
 
@@ -342,6 +367,8 @@ def merge_sort(
         src1: Second source buffer or buffer region.
         src2: Third source buffer or buffer region (optional, for 3-way or 4-way merge).
         src3: Fourth source buffer or buffer region (optional, for 4-way merge).
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the merge sort operation.
@@ -408,15 +435,17 @@ def merge_sort(
         + [retrieve_ptr(buf, "r") for buf in src_buffers]
         + blockLens
     )
-
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_merge_sort"),
-        *args,
-    )
+    return _call_intrin_with_optional_tmp("merge_sort", args, 3, tmp)
 
 
-def topk(dst: Buffer, src: Buffer, K: PrimExpr, actual_num: PrimExpr):
+def topk(
+    dst: Buffer,
+    src: Buffer,
+    K: PrimExpr,
+    actual_num: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):
     """Performs a TopK operation by sorting the source data and extracting the top K elements.
 
     Internally calls Sort on the source data, then copies the top K interleaved
@@ -429,6 +458,8 @@ def topk(dst: Buffer, src: Buffer, K: PrimExpr, actual_num: PrimExpr):
              Assumes src has static shape for buffer sizing.
         K: Number of top elements to extract.
         actual_num: The number of valid elements in src (can be symbolic for dynamic shapes).
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the TopK operation.
@@ -449,20 +480,29 @@ def topk(dst: Buffer, src: Buffer, K: PrimExpr, actual_num: PrimExpr):
             )
 
     repeatTimes = (max_actual_num + 31) // 32
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_topk"),
-        f"TopK<{_dtype(dst)}>",
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
-        K,
-        repeatTimes,
-        actual_num,
-        max_actual_num,
+    return _call_intrin_with_optional_tmp(
+        "topk",
+        [
+            f"TopK<{_dtype(dst)}>",
+            dst.access_ptr("w"),
+            src.access_ptr("r"),
+            K,
+            repeatTimes,
+            actual_num,
+            max_actual_num,
+        ],
+        3,
+        tmp,
     )
 
 
-def gather_mask(dst: Buffer, src: Buffer, src1Pattern: str | Buffer):
+def gather_mask(
+    dst: Buffer,
+    src: Buffer,
+    src1Pattern: str | Buffer,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):
     """Performs a gather mask operation.
 
     This intrinsic invokes the underlying implementation to perform a gather mask
@@ -482,6 +522,8 @@ def gather_mask(dst: Buffer, src: Buffer, src1Pattern: str | Buffer):
             - "P1000": Extract the fourth element from every four elements.
             - "P1111": Extract all elements.
         When the custom mode is enabled, the data type of src1Pattern is Buffer.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the gather mask operation.
@@ -490,22 +532,28 @@ def gather_mask(dst: Buffer, src: Buffer, src1Pattern: str | Buffer):
     if isinstance(src1Pattern, Buffer):
         assert src1Pattern.dtype == "uint32", f"src1Pattern dtype must be uint32, got {src1Pattern.dtype}"
 
-        return tir.call_intrin(
-            "handle",
-            tir.op.Op.get("tl.ascend_gather_mask"),
-            f"GatherMask<{_dtype(dst)}>",
-            dst.access_ptr("w"),
-            src.access_ptr("r"),
-            src1Pattern.access_ptr("r"),
+        return _call_intrin_with_optional_tmp(
+            "gather_mask",
+            [
+                f"GatherMask<{_dtype(dst)}>",
+                dst.access_ptr("w"),
+                src.access_ptr("r"),
+                src1Pattern.access_ptr("r"),
+            ],
+            4,
+            tmp,
         )
     else:
-        return tir.call_intrin(
-            "handle",
-            tir.op.Op.get("tl.ascend_gather_mask"),
-            f"GatherMask<{_dtype(dst)}>",
-            dst.access_ptr("w"),
-            src.access_ptr("r"),
-            src1Pattern,
+        return _call_intrin_with_optional_tmp(
+            "gather_mask",
+            [
+                f"GatherMask<{_dtype(dst)}>",
+                dst.access_ptr("w"),
+                src.access_ptr("r"),
+                src1Pattern,
+            ],
+            4,
+            tmp,
         )
 
 
@@ -553,6 +601,8 @@ def select(
     src0: Buffer | BufferRegion,
     src1: Buffer | BufferLoad | PrimExpr,
     selMode: str,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
 ):
     """Performs an element-wise Select operation based on a mask.
 
@@ -570,6 +620,8 @@ def select(
             - 'VSEL_CMPMASK_SPR': Select based on compare mask.
             - 'VSEL_TENSOR_SCALAR_MODE': Select between a tensor and a scalar.
             - 'VSEL_TENSOR_TENSOR_MODE': Select between two tensors.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the Select operation.
@@ -617,7 +669,7 @@ def select(
         else:
             raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
 
-    dst_ptr = retrieve_ptr(dst, "r")
+    dst_ptr = retrieve_ptr(dst, "w")
     src0_ptr = retrieve_ptr(src0, "r")
 
     sel_mask_ptr = selMask.access_ptr("r")
@@ -637,50 +689,59 @@ def select(
         src1_type = 0
         buffer_1 = src1.buffer
         indices_1 = src1.indices
-        return tir.call_intrin(
-            "handle",
-            tir.op.Op.get("tl.ascend_select"),
-            dst_ptr,
-            sel_mask_ptr,
-            src0_ptr,
-            src1_type,
-            buffer_1.access_ptr("r"),
-            indices_1[0],
-            selMode,
-            size_0,
+        return _call_intrin_with_optional_tmp(
+            "select",
+            [
+                dst_ptr,
+                sel_mask_ptr,
+                src0_ptr,
+                src1_type,
+                buffer_1.access_ptr("r"),
+                indices_1[0],
+                selMode,
+                size_0,
+            ],
+            3,
+            tmp,
         )
     elif isinstance(src1, (PrimExpr, float)):
         assert selMode == "VSEL_TENSOR_SCALAR_MODE", "selMode must be VSEL_TENSOR_SCALAR_MODE"
 
         src1_type = 1
-        return tir.call_intrin(
-            "handle",
-            tir.op.Op.get("tl.ascend_select"),
-            dst_ptr,
-            sel_mask_ptr,
-            src0_ptr,
-            src1_type,
-            src1,
-            selMode,
-            size_0,
-            _dtype(src0),
-            _dtype(selMask),
+        return _call_intrin_with_optional_tmp(
+            "select",
+            [
+                dst_ptr,
+                sel_mask_ptr,
+                src0_ptr,
+                src1_type,
+                src1,
+                selMode,
+                size_0,
+                _dtype(src0),
+                _dtype(selMask),
+            ],
+            3,
+            tmp,
         )
     else:
         assert selMode in ["VSEL_CMPMASK_SPR", "VSEL_TENSOR_TENSOR_MODE"], "selMode must be VSEL_CMPMASK_SPR or VSEL_TENSOR_TENSOR_MODE"
 
         src1_type = 2
         src1_ptr = src1.access_ptr("r")
-        return tir.call_intrin(
-            "handle",
-            tir.op.Op.get("tl.ascend_select"),
-            dst_ptr,
-            sel_mask_ptr,
-            src0_ptr,
-            src1_type,
-            src1_ptr,
-            selMode,
-            size_0,
+        return _call_intrin_with_optional_tmp(
+            "select",
+            [
+                dst_ptr,
+                sel_mask_ptr,
+                src0_ptr,
+                src1_type,
+                src1_ptr,
+                selMode,
+                size_0,
+            ],
+            3,
+            tmp,
         )
 
 
@@ -977,12 +1038,20 @@ def exp(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
     return unary_op(dst, src0, "exp")
 
 
-def sigmoid(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):
+def sigmoid(
+    dst: Buffer | BufferRegion,
+    src: Buffer | BufferRegion,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):
+    """Compute sigmoid, optionally using explicit UB scratch storage.
+
+    ``tmp`` may use any fixed-width scalar dtype; lowering reinterprets its
+    storage for the selected backend.
+    """
     if isinstance(dst, BufferRegion):
-        print("test1")
         dst_ptr, buffer_extent = _handle_buffer_region(dst, "w")
         size = math.prod(buffer_extent)
-        print("test2")
     else:
         dst_ptr = dst.access_ptr("w")
         size = math.prod(dst.shape)
@@ -991,13 +1060,7 @@ def sigmoid(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):
         src_ptr, _ = _handle_buffer_region(src, "r")
     else:
         src_ptr = src.access_ptr("r")
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_sigmoid"),
-        dst_ptr,
-        src_ptr,
-        size,
-    )
+    return _call_intrin_with_optional_tmp("sigmoid", [dst_ptr, src_ptr, size], 2, tmp)
 
 
 def silu(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):
@@ -1303,20 +1366,26 @@ def bilinear_interpolation(
     dst_blk_stride: PrimExpr,
     v_r_offset: PrimExpr,
     v_repeat: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
 ):
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_bilinear_interpolation"),
-        dst.access_ptr("w"),
-        src0.access_ptr("r"),
-        src0_offset.access_ptr("r"),
-        src1.access_ptr("r"),
-        mask,
-        h_repeat,
-        repeat_mode,
-        dst_blk_stride,
-        v_r_offset,
-        v_repeat,
+    """Run the deprecated bilinear API with an optional explicit tmp arena."""
+    return _call_intrin_with_optional_tmp(
+        "bilinear_interpolation",
+        [
+            dst.access_ptr("w"),
+            src0.access_ptr("r"),
+            src0_offset.access_ptr("r"),
+            src1.access_ptr("r"),
+            mask,
+            h_repeat,
+            repeat_mode,
+            dst_blk_stride,
+            v_r_offset,
+            v_repeat,
+        ],
+        10,
+        tmp,
     )
 
 
@@ -1480,7 +1549,14 @@ def transpose(dst: Buffer, src: Buffer):
     )
 
 
-def gather(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, src_offset: Buffer | BufferRegion, src_base_addr: PrimExpr):  # noqa: F821
+def gather(
+    dst: Buffer | BufferRegion,
+    src: Buffer | BufferRegion,
+    src_offset: Buffer | BufferRegion,
+    src_base_addr: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):  # noqa: F821
     """Performs a gather operation.
 
     This intrinsic gathers elements from the source buffer based on the provided
@@ -1491,6 +1567,8 @@ def gather(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, src_offset: B
         src: The source buffer containing the data table.
         src_offset: The buffer containing offsets/indices for gathering.
         src_base_addr: The base address offset to be added to the gather indices.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
     """
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
@@ -1513,14 +1591,11 @@ def gather(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, src_offset: B
 
     size = tir.min(dst_size, offset_size)
 
-    return T.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_gather"),
-        dst_ptr,
-        src_ptr,
-        src_offset_ptr,
-        src_base_addr,
-        size,
+    return _call_intrin_with_optional_tmp(
+        "gather",
+        [dst_ptr, src_ptr, src_offset_ptr, src_base_addr, size],
+        5,
+        tmp,
     )
 
 
@@ -1789,12 +1864,19 @@ def cast(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, mode: str, coun
     )
 
 
-def sin(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):  # noqa: F821
+def sin(
+    dst: Buffer | BufferRegion,
+    src: Buffer | BufferRegion,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):  # noqa: F821
     """Performs element-wise sine calculation: dst = sin(src).
 
     Args:
         dst: The destination buffer where the result will be stored.
         src: The source buffer containing the input data.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the sine operation.
@@ -1815,21 +1897,22 @@ def sin(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):  # noqa: F821
 
     assert size_0 == size_2, "size must be same"
 
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_sin"),
-        dst_ptr,
-        src_ptr,
-        size_0,
-    )
+    return _call_intrin_with_optional_tmp("sin", [dst_ptr, src_ptr, size_0], 2, tmp)
 
 
-def cos(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):  # noqa: F821
+def cos(
+    dst: Buffer | BufferRegion,
+    src: Buffer | BufferRegion,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):  # noqa: F821
     """Performs element-wise cosine calculation: dst = cos(src).
 
     Args:
         dst: The destination buffer where the result will be stored.
         src: The source buffer containing the input data.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the cosine operation.
@@ -1850,13 +1933,7 @@ def cos(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):  # noqa: F821
 
     assert size_0 == size_2, "size must be same"
 
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_cos"),
-        dst_ptr,
-        src_ptr,
-        size_0,
-    )
+    return _call_intrin_with_optional_tmp("cos", [dst_ptr, src_ptr, size_0], 2, tmp)
 
 
 # def clampMax(dst: Buffer, src: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
@@ -1871,13 +1948,21 @@ def cos(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):  # noqa: F821
 #
 #     return cast(dst, src, "CAST_ROUND", count)
 #
-def pow(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion):  # noqa: F821
+def pow(
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):  # noqa: F821
     """Performs element-wise power calculation: dst = src0 ^ src1.
 
     Args:
         dst: The destination buffer where the result will be stored.
         src0: The base buffer.
         src1: The exponent buffer.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the power operation.
@@ -1897,22 +1982,24 @@ def pow(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | 
     else:
         src1_ptr = src1.access_ptr("r")
 
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_pow"),
-        dst_ptr,
-        src0_ptr,
-        src1_ptr,
-    )
+    return _call_intrin_with_optional_tmp("pow", [dst_ptr, src0_ptr, src1_ptr], 3, tmp)
 
 
-def bitwise_xor(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion):  # noqa: F821
+def bitwise_xor(
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):  # noqa: F821
     """Performs element-wise bitwise XOR operation: dst = src0 ^ src1.
 
     Args:
         dst: The destination buffer where the result will be stored.
         src0: The first source operand buffer.
         src1: The second source operand buffer.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the bitwise XOR operation.
@@ -1932,10 +2019,17 @@ def bitwise_xor(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: B
     else:
         src1_ptr = src1.access_ptr("r")
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_bitwise_xor"), dst_ptr, src0_ptr, src1_ptr)
+    return _call_intrin_with_optional_tmp("bitwise_xor", [dst_ptr, src0_ptr, src1_ptr], 3, tmp)
 
 
-def clamp_max(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, scalar_value: PrimExpr, count: PrimExpr):  # noqa: F821
+def clamp_max(
+    out: Buffer | BufferRegion,
+    buffer: Buffer | BufferRegion,
+    scalar_value: PrimExpr,
+    count: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):  # noqa: F821
     """_summary_
     Clip tensor elements to no more than scalar_value, replace elements larger than scalar_value with scalar_value,
     keep original values for elements less than or equal to scalar_value
@@ -1945,6 +2039,8 @@ def clamp_max(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, scalar_
         buffer: The first source operand buffer.
         scalar_value: The max scalar value
         count: The size of tensor out
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the clamp_max operation.
@@ -1959,18 +2055,28 @@ def clamp_max(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, scalar_
     else:
         buffer_ptr = buffer.access_ptr("r")
 
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_clamp_max"),
-        f"ClampMax<{_dtype(buffer)}>",
-        out_ptr,
-        buffer_ptr,
-        scalar_value,
-        count,
+    return _call_intrin_with_optional_tmp(
+        "clamp_max",
+        [
+            f"ClampMax<{_dtype(buffer)}>",
+            out_ptr,
+            buffer_ptr,
+            scalar_value,
+            count,
+        ],
+        3,
+        tmp,
     )
 
 
-def clamp_min(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, scalar_value: PrimExpr, count: PrimExpr):  # noqa: F821
+def clamp_min(
+    out: Buffer | BufferRegion,
+    buffer: Buffer | BufferRegion,
+    scalar_value: PrimExpr,
+    count: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):  # noqa: F821
     """
     Clip tensor elements to no less than v, replace elements smaller than scalar_value with scalar_value,
     keep original values for elements greater than or equal to scalar_value
@@ -1980,6 +2086,8 @@ def clamp_min(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, scalar_
         buffer: The first source operand buffer.
         scalar_value: The min scalar value
         count: The size of tensor out
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the clamp_min operation.
@@ -1994,18 +2102,29 @@ def clamp_min(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, scalar_
     else:
         buffer_ptr = buffer.access_ptr("r")
 
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_clamp_min"),
-        f"ClampMin<{_dtype(buffer)}>",
-        out_ptr,
-        buffer_ptr,
-        scalar_value,
-        count,
+    return _call_intrin_with_optional_tmp(
+        "clamp_min",
+        [
+            f"ClampMin<{_dtype(buffer)}>",
+            out_ptr,
+            buffer_ptr,
+            scalar_value,
+            count,
+        ],
+        3,
+        tmp,
     )
 
 
-def clamp(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, min_scalar: PrimExpr, max_scalar: PrimExpr, count: PrimExpr):  # noqa: F821
+def clamp(
+    out: Buffer | BufferRegion,
+    buffer: Buffer | BufferRegion,
+    min_scalar: PrimExpr,
+    max_scalar: PrimExpr,
+    count: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):  # noqa: F821
     """
     Clip tensor elements to [min_scalar, max_scalar] range, replace out-of-bounds values with boundary values
 
@@ -2015,6 +2134,8 @@ def clamp(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, min_scalar:
         min_scalar: The min scalar value
         max_scalar: The max scalar value
         count: The size of tensor out
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the clamp operation.
@@ -2029,19 +2150,33 @@ def clamp(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, min_scalar:
     else:
         buffer_ptr = buffer.access_ptr("r")
 
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_clamp"),
-        f"Clamp<{_dtype(buffer)}>",
-        out_ptr,
-        buffer_ptr,
-        min_scalar,
-        max_scalar,
-        count,
+    return _call_intrin_with_optional_tmp(
+        "clamp",
+        [
+            f"Clamp<{_dtype(buffer)}>",
+            out_ptr,
+            buffer_ptr,
+            min_scalar,
+            max_scalar,
+            count,
+        ],
+        3,
+        tmp,
     )
 
 
-def round(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, count: PrimExpr):  # noqa: F821
+def round(
+    out: Buffer | BufferRegion,
+    buffer: Buffer | BufferRegion,
+    count: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):  # noqa: F821
+    """Round elements, optionally using explicit UB scratch storage.
+
+    ``tmp`` may use any fixed-width scalar dtype; lowering reinterprets its
+    storage for the selected backend.
+    """
     if isinstance(out, BufferRegion):
         out_ptr, _ = _handle_buffer_region(out, "w")
     else:
@@ -2052,13 +2187,15 @@ def round(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, count: Prim
     else:
         buffer_ptr = buffer.access_ptr("r")
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_round"), out_ptr, buffer_ptr, count)
+    return _call_intrin_with_optional_tmp("round", [out_ptr, buffer_ptr, count], 2, tmp)
 
 
 def broadcast(
     dst: Buffer | BufferRegion,
     src: Buffer | BufferRegion,
     axis: int | None = None,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
 ):
     """Generates a TIR intrinsic call for the Ascend `Broadcast` operation.
 
@@ -2070,6 +2207,12 @@ def broadcast(
         dst: Destination buffer (must be in UB).
         src: Source buffer (must be in UB).
         axis: Broadcasting axis (0 or 1). If None, auto-inferred.
+        tmp: Optional complete target-specific scratch storage. It must be a
+            one-dimensional, static, contiguous fixed-width scalar buffer in
+            ``shared.ub``, or an equivalent 32-byte-aligned buffer region. Its
+            dtype is ignored and lowering reinterprets the storage by byte address.
+            Zero extent is allowed when the selected backend needs no
+            workspace. PTO broadcast is such a path and omits the operand.
 
     Returns:
         tvm.tir.Call: Intrinsic call for AscendC Broadcast API.
@@ -2139,15 +2282,19 @@ def broadcast(
             raise ValueError(f"1D broadcast requires src[0]=1 or shapes must match: src={src_extent}, dst={dst_extent}")
 
     # --- 5. Generate TIR intrinsic call ---
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_broadcast"),
+    args = [
         f"Broadcast<{dtype}, {dst_dim}, {axis}, false>",
         dst_ptr,
         src_ptr,
-        dst_dim,
-        *dst_extent,
-        *src_extent,
+    ]
+    if tmp is not None:
+        args.append(_get_tmp_arena_access_ptr("broadcast", tmp))
+    args.extend([dst_dim, *dst_extent, *src_extent])
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_broadcast"),
+        *args,
     )
 
 
@@ -2564,25 +2711,40 @@ def mins_experiment(dst: Buffer, src: Buffer, scalarValue: PrimExpr, count: Prim
     )
 
 
-def reduce_sum_experiment(dst: Buffer, src: Buffer, count: PrimExpr):
+def reduce_sum_experiment(
+    dst: Buffer,
+    src: Buffer,
+    count: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):
     """Performs summation of all input data.
 
     Args:
         dst: The destination buffer where the result will be stored.
         src: The base buffer.
         count: The number of elements to process.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
     """
 
-    return T.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_reducesum_experiment"),
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
-        count,
+    return _call_intrin_with_optional_tmp(
+        "reducesum_experiment",
+        [dst.access_ptr("w"), src.access_ptr("r"), count],
+        2,
+        tmp,
     )
 
 
-def reduce_sum_mask_experiment(dst: Buffer, src: Buffer, mask: PrimExpr, repeatTime: PrimExpr, srcRepStride: PrimExpr):
+def reduce_sum_mask_experiment(
+    dst: Buffer,
+    src: Buffer,
+    mask: PrimExpr,
+    repeatTime: PrimExpr,
+    srcRepStride: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):
     """Performs summation of all input data(High-dimensional tensor slicing and computation).
 
     Args:
@@ -2591,16 +2753,15 @@ def reduce_sum_mask_experiment(dst: Buffer, src: Buffer, mask: PrimExpr, repeatT
         mask: Used to control the elements participating in the computation within each iteration.
         repeatTime: Number of iterations.
         srcRepStride: The address step size of the source operand between adjacent iterations.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
     """
 
-    return T.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_reducesum_mask_experiment"),
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
-        mask,
-        repeatTime,
-        srcRepStride,
+    return _call_intrin_with_optional_tmp(
+        "reducesum_mask_experiment",
+        [dst.access_ptr("w"), src.access_ptr("r"), mask, repeatTime, srcRepStride],
+        2,
+        tmp,
     )
 
 

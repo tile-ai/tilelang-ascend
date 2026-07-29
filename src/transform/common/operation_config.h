@@ -5,6 +5,7 @@
  * \file operation_config.h
  * \brief Operation configuration
  */
+#include <tvm/tir/builtin.h>
 #include <tvm/tir/op.h>
 
 #include <sstream>
@@ -292,8 +293,7 @@ GetOperationConfig() {
       {"tl.ascend_tail_binary",
        {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
       {"tl.ascend_tail_scalar", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
-      {"tl.ascend_tail_reduce",
-       {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+      {"tl.ascend_tail_reduce", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_copy_cv_experiment",
        {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
       {"tl.ascend_copy_vc_experiment",
@@ -352,40 +352,78 @@ const std::unordered_set<std::string> kScopesToFlatten = {
 const std::unordered_map<std::string, int> kScopeForAlignment = {
     {"shared.ub", 32 * 8}};
 
-const std::unordered_map<const tvm::OpNode *, int64_t> ascendc_tmp_arg_ops = {
-    {tl::ascend_clamp().get(), 3},
-    {tl::ascend_clamp_max().get(), 3},
-    {tl::ascend_clamp_min().get(), 3},
-    {tl::ascend_reduce().get(), 3},
-    {tl::ascend_sort().get(), 3},
-    {tl::ascend_topk().get(), 3},
-    {tl::ascend_sigmoid().get(), 2},
-    {tl::ascend_bilinear_interpolation().get(), 10},
-    {tl::ascend_sin().get(), 2},
-    {tl::ascend_cos().get(), 2},
-    {tl::ascend_pow().get(), 3},
-    {tl::ascend_bitwise_xor().get(), 3},
-    {tl::ascend_round().get(), 2},
-    {tl::ascend_broadcast().get(), 3},
-    {tl::ascend_reducesum_experiment().get(), 2},
-    {tl::ascend_reducesum_mask_experiment().get(), 2},
-    {tl::ascend_merge_sort().get(), 3},
+struct WorkspaceOpConfig {
+  int64_t tmp_arg_index;
+  bool ascendc_supported;
+  bool pto_supported;
 };
 
-// The PTO currently supports the following vector APIs with tmp parameters.
-// However, among these, only the reduce and bitwise_xor operators actually
-// require tmp. For other APIs, tmp is retained to keep the codegen logic for
-// obtaining API arguments unchanged.
-const std::unordered_map<const tvm::OpNode *, int64_t> pto_tmp_arg_ops = {
-    {tl::ascend_clamp().get(), 3},       {tl::ascend_clamp_max().get(), 3},
-    {tl::ascend_clamp_min().get(), 3},   {tl::ascend_reduce().get(), 3},
-    {tl::ascend_sigmoid().get(), 2},     {tl::ascend_pow().get(), 3},
-    {tl::ascend_bitwise_xor().get(), 3}, {tl::ascend_round().get(), 2},
-    {tl::ascend_broadcast().get(), 3},   {tl::ascend_merge_sort().get(), 3},
-    {tl::ascend_select().get(), 3},      {tl::ascend_gather_mask().get(), 4},
-    {tl::ascend_sort().get(), 3},        {tl::ascend_topk().get(), 3},
-    {tl::ascend_gather().get(), 5},
-};
+inline const std::unordered_map<const tvm::OpNode *, WorkspaceOpConfig> &
+GetWorkspaceOpConfigs() {
+  // Public calls use one optional workspace slot regardless of whether a
+  // target consumes it. InjectTmpBuffer owns target-specific insertion and
+  // removal; downstream analyses must inspect the resulting call layout.
+  static const std::unordered_map<const tvm::OpNode *, WorkspaceOpConfig> ops =
+      {
+          {tl::ascend_clamp().get(), {3, true, true}},
+          {tl::ascend_clamp_max().get(), {3, true, true}},
+          {tl::ascend_clamp_min().get(), {3, true, true}},
+          {tl::ascend_reduce().get(), {3, true, true}},
+          {tl::ascend_sort().get(), {3, true, true}},
+          {tl::ascend_topk().get(), {3, true, true}},
+          {tl::ascend_sigmoid().get(), {2, true, true}},
+          {tl::ascend_bilinear_interpolation().get(), {10, true, false}},
+          {tl::ascend_sin().get(), {2, true, false}},
+          {tl::ascend_cos().get(), {2, true, false}},
+          {tl::ascend_pow().get(), {3, true, true}},
+          {tl::ascend_bitwise_xor().get(), {3, true, true}},
+          {tl::ascend_round().get(), {2, true, true}},
+          {tl::ascend_broadcast().get(), {3, true, true}},
+          {tl::ascend_reducesum_experiment().get(), {2, true, false}},
+          {tl::ascend_reducesum_mask_experiment().get(), {2, true, false}},
+          {tl::ascend_merge_sort().get(), {3, true, true}},
+          {tl::ascend_select().get(), {3, true, true}},
+          {tl::ascend_gather_mask().get(), {4, true, true}},
+          {tl::ascend_gather().get(), {5, true, true}},
+      };
+  return ops;
+}
+
+inline OperationConfig ResolveOperationConfig(const tvm::tir::CallNode *call) {
+  const auto *op_node = call->op.as<tvm::OpNode>();
+  ICHECK(op_node);
+  const auto config_it = GetOperationConfig().find(op_node->name);
+  ICHECK(config_it != GetOperationConfig().end())
+      << "Missing operation configuration for " << op_node->name;
+
+  OperationConfig config = config_it->second;
+  if (!GetWorkspaceOpConfigs().count(op_node)) {
+    return config;
+  }
+
+  // Optional workspace operands shift later arguments. Derive the declared
+  // buffer accesses from the transformed call instead of maintaining a second
+  // positional ABI for these public intrinsics.
+  config.buffer_accesses.clear();
+  for (size_t i = 0; i < call->args.size(); ++i) {
+    const auto *arg = call->args[i].as<tvm::tir::CallNode>();
+    if (!arg || !arg->op.same_as(tvm::tir::builtin::tvm_access_ptr())) {
+      continue;
+    }
+    ICHECK_GE(arg->args.size(), 5U)
+        << "Malformed tvm_access_ptr in " << op_node->name;
+    const auto *mask = arg->args[4].as<tvm::IntImmNode>();
+    ICHECK(mask && mask->value > 0 && (mask->value & ~3) == 0)
+        << "Invalid access mask in " << op_node->name;
+    if (mask->value & 1) {
+      config.buffer_accesses.emplace_back(i, "read");
+    }
+    if (mask->value & 2) {
+      config.buffer_accesses.emplace_back(i, "write");
+    }
+  }
+  return config;
+}
 
 } // namespace tl
 } // namespace tvm

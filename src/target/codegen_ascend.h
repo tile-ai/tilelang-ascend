@@ -278,6 +278,8 @@ private:
   std::string platform_;
 
   Map<Var, Array<PrimExpr>> buffer_shapes_;
+
+  std::unordered_map<const VarNode *, DataType> buffer_dtypes_;
 };
 
 } // namespace codegen
