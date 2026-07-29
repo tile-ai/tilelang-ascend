@@ -30,32 +30,6 @@
 
 **网页上:**分支下拉框 → **先切到 `example_test`** → 再输入新分支名 → **Create branch**。
 
-**命令行:**
-
-```bash
-git fetch upstream example_test
-git checkout -b test/xattention upstream/example_test
-```
-
-### 3. 切错了会怎样
-
-`example_test` 和 `ascendc_pto` 已经分叉了。从 `ascendc_pto` 切分支再提到 `example_test`,你的 PR 会长这样:
-
-```
-19 files changed, 11752 insertions(+), 777 deletions(-)
-
-ci/operator_test_manifest.yaml                    263 --     ← 删掉登记表
-scripts/ci/resolve_operator_tests.py              245 --     ← 删掉检查脚本
-examples/batch_gemm/test_batch_gemm.py             53 --     ← 删掉样板
-examples/flash_attention/test_flash_attn_bhsd.py   67 --
-.github/workflows/ci_cd.yml                       101 +-
-examples/bench_test.sh                             53 +-
-```
-
-**整套迁移被你的 PR 回退了**,而且命中全量触发条件,CI 要跑 50 分钟。
-
-**自查:**PR 的 **Files changed** 页面应该**只有你新建的那一个 test 文件**。多出任何别的东西,立刻停下来重新切分支。
-
 ---
 
 ## 大致流程
@@ -243,7 +217,7 @@ head repository:  <你的用户名>/tilelang-ascend    compare:  <你自己的�
 
 **① 报错提到 `operator tests matching no manifest entry`**
 
-文件名或位置不对。回第一步查表,照冒号右边那个路径改。
+文件名或位置不对。回「一、你可以提交什么」查表,照冒号右边那个路径改。
 
 **② 跟你的代码没关系的**
 
@@ -255,10 +229,13 @@ head repository:  <你的用户名>/tilelang-ascend    compare:  <你自己的�
 /re-test
 ```
 
+---
+
 ## 总结
 
 ```
-查登记表拿文件名 → 照 test_batch_gemm.py 写 → 本地跑通 → PR 提到 example_test
+从 example_test 切分支 → 查登记表拿文件名 → 照 test_batch_gemm.py 写
+→ 本地跑通 + ruff 检查 → PR 提到 example_test
 ```
 
-**只交测试文件,不改 manifest,base 分支别选错。**
+**只交测试文件,不改 manifest,分支和 base 都别选错。**
