@@ -435,12 +435,56 @@ if [ $total_scripts -gt 0 ]; then
 fi
 echo "====================================="
 
-# 4. 最后执行 pytest 自动发现并运行所有测试
+# 4. 覆盖率模式下补跑已迁移算子的测试
+# 平时这些测试由 .github/workflows/ci_cd.yml 在 bench 之后单独执行，所以这里
+# 不重复跑。但覆盖率是手动跑本脚本采集的，那条路径没有 workflow 兜底：上面的
+# 收集已按名字跳过了这些算子的源文件，测试又没人执行，它们对 tilelang 的覆盖
+# 就整个丢掉了。这里补上，并写出自己的 coverage 文件供下面的 combine 收走。
+operator_exit_code=0
+operator_passed=0
+operator_failed=0
+operator_xfailed=0
+if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
+    OPERATOR_TESTS=()
+    if [ -f "$OPERATOR_TEST_RESOLVER" ]; then
+        while IFS= read -r operator_test; do
+            [ -n "$operator_test" ] && OPERATOR_TESTS+=("${PROJECT_ROOT}/$operator_test")
+        done < <(python "$OPERATOR_TEST_RESOLVER" list-tests)
+    fi
+    if [ ${#OPERATOR_TESTS[@]} -gt 0 ]; then
+        echo -e "\n====================================="
+        echo "Running migrated operator tests for coverage (${#OPERATOR_TESTS[@]} file(s))"
+        echo "====================================="
+        OPERATOR_MARKER_ARGS=()
+        if [ -n "$PYTEST_MARKERS" ]; then
+            OPERATOR_MARKER_ARGS+=(-m "$PYTEST_MARKERS")
+        fi
+        mkdir -p "${PROJECT_ROOT}/coverage_data"
+        # --forked unconditionally: these load an example module and allocate on
+        # the device, so they must not share a process the way the C++ coverage
+        # branch below makes testing/python share one.
+        export COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage_operator_tests"
+        pytest --forked "${OPERATOR_TESTS[@]}" -v -n $MAX_JOBS \
+            --cov=tilelang --cov-config="${PROJECT_ROOT}/.coveragerc" --cov-report= \
+            "${OPERATOR_MARKER_ARGS[@]}" 2>&1 | tee operator_output.log
+        operator_exit_code=${PIPESTATUS[0]}
+        unset COVERAGE_FILE
+        operator_summary=$(grep -E "[0-9]+ (passed|failed|xfailed)" operator_output.log | tail -1)
+        if [ -n "$operator_summary" ]; then
+            echo "$operator_summary" | grep -q "passed" && operator_passed=$(echo "$operator_summary" | grep -Eo "[0-9]+ passed" | grep -Eo "[0-9]+")
+            echo "$operator_summary" | grep -q " failed" && operator_failed=$(echo "$operator_summary" | grep -Eo "[0-9]+ failed" | grep -Eo "[0-9]+")
+            echo "$operator_summary" | grep -q "xfailed" && operator_xfailed=$(echo "$operator_summary" | grep -Eo "[0-9]+ xfailed" | grep -Eo "[0-9]+")
+        fi
+        rm -f operator_output.log
+    fi
+fi
+
+# 5. 最后执行 pytest 自动发现并运行所有测试
 if [ "$SKIP_PYTEST" = true ]; then
     echo -e "\n====================================="
     echo "Skipping pytest (only examples/ .py/.md/.png files modified)"
     echo "====================================="
-    exit 0
+    exit $operator_exit_code
 fi
 
 echo -e "\n====================================="
@@ -553,6 +597,10 @@ fi
 # 输出合并后的结果（用于 CI workflow 解析）
 # xfailed 是预期失败的测试，在 pytest 视角下属于"成功"状态（符合预期）
 # 应计入 passed_all，而不应计入 failed_all
+pytest_passed=$((pytest_passed + operator_passed))
+pytest_failed=$((pytest_failed + operator_failed))
+pytest_xfailed=$((pytest_xfailed + operator_xfailed))
+
 total_all=$((total_scripts + pytest_passed + pytest_failed + pytest_xfailed))
 passed_all=$((passed_scripts + pytest_passed + pytest_xfailed))
 failed_all=$((failed_scripts + pytest_failed))
@@ -570,4 +618,7 @@ echo "====================================="
 # 清理临时文件
 rm -f pytest_output.log
 
+if [ "$pytest_exit_code" -eq 0 ]; then
+    exit $operator_exit_code
+fi
 exit $pytest_exit_code
