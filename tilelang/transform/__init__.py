@@ -457,8 +457,7 @@ def AscendTailMaskPropagation(rewrite_reduce: bool = True):
     Parameters
     ----------
     rewrite_reduce : bool
-        Whether reduce ops may be rewritten to tail_reduce. Disabled for the PTO
-        backend, whose reduce codegen handles valid shapes natively.
+        Whether allow-listed reduce ops may be rewritten to tail_reduce.
 
     Returns
     -------

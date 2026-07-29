@@ -11,6 +11,8 @@ with the Ascend codegen. They verify that:
     for unsupported full-tile readers.
 """
 
+import re
+
 import pytest
 
 import tilelang
@@ -248,6 +250,133 @@ def _tail_scalar(M, N, block_M, block_N, dtype="float"):
     return main
 
 
+def _tail_compare_select(
+    M,
+    N,
+    block_M,
+    block_N,
+    dtype="float",
+    scalar_compare=False,
+    scalar_select=False,
+):
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+    mask_cols = T.ceildiv(N, 8)
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
+        C: T.Tensor((M, N), dtype),
+        MaskOut: T.Tensor((M, mask_cols), "uint8"),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+            b_ub = T.alloc_ub((block_M, block_N), dtype)
+            mask_ub = T.alloc_ub((block_M, block_N // 8), "uint8")
+            out_ub = T.alloc_ub((block_M, block_N), dtype)
+            T.copy(A[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N], a_ub)
+            T.copy(B[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N], b_ub)
+            if scalar_compare:
+                T.tile.compare(mask_ub, a_ub, 0.0, "LT")
+            else:
+                T.tile.compare(mask_ub, a_ub, b_ub, "LT")
+            if scalar_select:
+                T.tile.select(out_ub, mask_ub, a_ub, 1.0, "VSEL_TENSOR_SCALAR_MODE")
+            else:
+                T.tile.select(out_ub, mask_ub, a_ub, b_ub, "VSEL_TENSOR_TENSOR_MODE")
+            T.copy(
+                out_ub,
+                C[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N],
+            )
+            T.copy(
+                mask_ub,
+                MaskOut[
+                    bx * block_M : (bx + 1) * block_M,
+                    by * (block_N // 8) : (by + 1) * (block_N // 8),
+                ],
+            )
+
+    return main
+
+
+def _tail_broadcast_axis1(M, N, block_M, block_N, dtype="float"):
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+
+    @T.prim_func
+    def main(A: T.Tensor((M, n_num), dtype), C: T.Tensor((M, N), dtype)):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            src_ub = T.alloc_ub((block_M, 1), dtype)
+            dst_ub = T.alloc_ub((block_M, block_N), dtype)
+            T.copy(A[bx * block_M : (bx + 1) * block_M, by : by + 1], src_ub)
+            T.tile.broadcast(dst_ub, src_ub, axis=1)
+            T.copy(
+                dst_ub,
+                C[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N],
+            )
+
+    return main
+
+
+def _tail_broadcast_axis0(M, N, block_M, block_N, dtype="float"):
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+
+    @T.prim_func
+    def main(A: T.Tensor((m_num, N), dtype), C: T.Tensor((M, N), dtype)):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            src_ub = T.alloc_ub((1, block_N), dtype)
+            dst_ub = T.alloc_ub((block_M, block_N), dtype)
+            T.copy(A[bx : bx + 1, by * block_N : (by + 1) * block_N], src_ub)
+            T.tile.broadcast(dst_ub, src_ub, axis=0)
+            T.copy(
+                dst_ub,
+                C[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N],
+            )
+
+    return main
+
+
+def _tail_select_external_mask(M, N, block_M, block_N):
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), "float"),
+        Mask: T.Tensor((M, N // 8), "uint8"),
+        C: T.Tensor((M, N), "float"),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M, block_N), "float")
+            mask_ub = T.alloc_ub((block_M, block_N // 8), "uint8")
+            out_ub = T.alloc_ub((block_M, block_N), "float")
+            T.copy(A[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N], a_ub)
+            T.copy(
+                Mask[
+                    bx * block_M : (bx + 1) * block_M,
+                    by * (block_N // 8) : (by + 1) * (block_N // 8),
+                ],
+                mask_ub,
+            )
+            T.tile.select(out_ub, mask_ub, a_ub, 1.0, "VSEL_TENSOR_SCALAR_MODE")
+            T.copy(
+                out_ub,
+                C[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N],
+            )
+
+    return main
+
+
 def _source(func, target="ascendc", tail_mask=True):
     """Lower a PrimFunc and return generated device source.
 
@@ -340,6 +469,111 @@ def test_tail_unary_emits_tail_helper(target):
 def test_tail_scalar_emits_tail_helper(target):
     src = _source(_tail_scalar(34, 130, 32, 32, "float"), target=target)
     assert _emit_marker(target, "scalar") in src, src
+
+
+@pytest.mark.parametrize("target", TAIL_TARGETS)
+@pytest.mark.parametrize("dtype", ["float16", "float"])
+@pytest.mark.parametrize("scalar_compare", [False, True], ids=["tensor", "scalar"])
+@pytest.mark.parametrize("scalar_select", [False, True], ids=["select_tensor", "select_scalar"])
+def test_tail_compare_select_emits_backend_path(target, dtype, scalar_compare, scalar_select):
+    # valid_col is 5 in the final block, which also exercises packed-byte
+    # cleanup for comparison masks.
+    func = _tail_compare_select(
+        5,
+        69,
+        4,
+        64,
+        dtype=dtype,
+        scalar_compare=scalar_compare,
+        scalar_select=scalar_select,
+    )
+    src = _source(func, target=target)
+    if target == "ascendc":
+        compare = "tail_compare_scalar" if scalar_compare else "tail_compare"
+        select = "tail_select_scalar" if scalar_select else "tail_select"
+        assert f"tl::ascend::{compare}" in src, src
+        assert f"tl::ascend::{select}" in src, src
+        assert src.count(", 4, 64, 8);") >= 2, src
+        if not scalar_select:
+            mask_offset = re.search(r"mask_ub = .*?, (\d+)\);", src)
+            out_offset = re.search(r"out_ub = .*?, (\d+)\);", src)
+            assert mask_offset and out_offset, src
+            # Four predicate rows require four 32-byte UB data blocks even
+            # though their public packed Buffer shape is only [4, 8].
+            assert int(out_offset.group(1)) - int(mask_offset.group(1)) >= 4 * 32, src
+        if dtype == "float16" and scalar_compare and scalar_select:
+            # Storage rewrite can reuse a half/float LocalTensor for the
+            # uint8 predicate. Both compare/select and the final UB->GM copy
+            # must reinterpret it before indexing.
+            assert src.count(".ReinterpretCast<uint8_t>()") >= 3, src
+    else:
+        compare = "compare_scalar(" if scalar_compare else "compare("
+        select = "TSELS(" if scalar_select else "TSEL("
+        assert "pto::DYNAMIC" in src, src
+        assert f"tl::ascend_pto::{compare}" in src, src
+        assert select in src, src
+        assert "clear_compare_tail_bits" in src, src
+
+
+@pytest.mark.parametrize("target", TAIL_TARGETS)
+@pytest.mark.parametrize("dtype", ["float16", "float"])
+@pytest.mark.parametrize("axis", [0, 1])
+def test_tail_broadcast_emits_backend_path(target, dtype, axis):
+    func = _tail_broadcast_axis0(5, 69, 4, 64, dtype) if axis == 0 else _tail_broadcast_axis1(5, 69, 4, 64, dtype)
+    src = _source(func, target=target)
+    if target == "ascendc":
+        expected_op = "tl::ascend::tail_broadcast" if axis == 0 else "tl::ascend::Broadcast"
+        assert expected_op in src, src
+    else:
+        expected_op = "TCOLEXPAND(" if axis == 0 else "TROWEXPAND("
+        assert expected_op in src, src
+        if axis == 1:
+            assert "tail_row_expand(" not in src, src
+
+
+@pytest.mark.parametrize("target", TAIL_TARGETS)
+def test_full_tile_compare_select_keeps_native_path(target):
+    src = _source(_tail_compare_select(4, 64, 4, 64), target=target)
+    if target == "ascendc":
+        assert "tl::ascend::tail_compare" not in src, src
+        assert "tl::ascend::tail_select" not in src, src
+        assert "AscendC::Compare(" in src, src
+        assert "AscendC::Select(" in src, src
+    else:
+        assert "pto::DYNAMIC" not in src, src
+        assert "tl::ascend_pto::compare(" in src, src
+        assert "TSEL(" in src, src
+
+
+@pytest.mark.parametrize("target", TAIL_TARGETS)
+def test_tail_compare_select_flag_off_keeps_native_path(target):
+    src = _source(
+        _tail_compare_select(5, 69, 4, 64),
+        target=target,
+        tail_mask=False,
+    )
+    assert _no_tail_marker(target) not in src, src
+    assert "tl::ascend::tail_compare" not in src, src
+    assert "tl::ascend::tail_select" not in src, src
+
+
+@pytest.mark.parametrize("target", TAIL_TARGETS)
+def test_wide_tail_compare_select_falls_back_and_clears_state(target):
+    # fp32 block_N=128 exceeds the single-vector AscendC contract. Both
+    # backends deliberately keep the established native compare/select path.
+    src = _source(_tail_compare_select(5, 129, 4, 128), target=target)
+    assert "tl::ascend::tail_compare" not in src, src
+    assert "tl::ascend::tail_select" not in src, src
+    assert _no_tail_marker(target) not in src, src
+
+
+@pytest.mark.parametrize("target", TAIL_TARGETS)
+def test_tail_select_requires_tracked_compare_mask(target):
+    # A uint8 mask copied from GM is a regular byte tile, not a compare-packed
+    # predicate carrying logical element extents.
+    src = _source(_tail_select_external_mask(5, 72, 4, 64), target=target)
+    assert "tl::ascend::tail_select" not in src, src
+    assert _no_tail_marker(target) not in src, src
 
 
 @pytest.mark.parametrize("target", TAIL_TARGETS)

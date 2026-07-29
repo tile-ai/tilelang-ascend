@@ -150,6 +150,12 @@ private:
 
   void TailReduceOpCodegen(const CallNode *op);
 
+  void TailCompareOpCodegen(const CallNode *op, bool scalar);
+
+  void TailSelectOpCodegen(const CallNode *op);
+
+  void TailBroadcastOpCodegen(const CallNode *op);
+
   void RowExpandMulCodegen(const CallNode *op);
 
   void RowExpandMulExperimentCodegen(const CallNode *op);
@@ -272,6 +278,11 @@ private:
   Array<Var> var_sequence_;
 
   Map<String, PrimExpr> address_offset_;
+
+  // Element type used by each emitted AscendC LocalTensor.  Storage rewrite
+  // may reuse that allocation through an access_ptr of another dtype; codegen
+  // must then emit ReinterpretCast before applying the element offset.
+  std::unordered_map<const VarNode *, DataType> local_tensor_dtypes_;
 
   bool use_swizzle_{false};
 

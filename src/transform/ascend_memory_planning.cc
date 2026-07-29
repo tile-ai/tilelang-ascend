@@ -27,6 +27,7 @@
 #include <tvm/tir/transform.h>
 #include <tvm/tir/utils.h>
 
+#include "../op/ascend.h"
 #include "../op/builtin.h"
 #include "./common/attr.h"
 #include "./common/collector.h"
@@ -937,6 +938,33 @@ private:
 
       size_t size_bytes =
           size_elements * alloc->dtype.bytes() * alloc->dtype.lanes();
+      // A packed compare Buffer is logically [rows, ceil(cols/8)], but the
+      // AscendC vector/MTE contracts consume one 32-byte UB data block per
+      // predicate row.  Preserve the logical shape used by access_ptr and GM
+      // copies while reserving the larger physical backing store.
+      if (alloc->dtype == DataType::UInt(8)) {
+        size_t aligned_cmp_bytes = 0;
+        PostOrderVisit(alloc->body, [&](const ObjectRef &node) {
+          const auto *call = node.as<CallNode>();
+          if (call == nullptr ||
+              (!call->op.same_as(ascend_tail_compare()) &&
+               !call->op.same_as(ascend_tail_compare_scalar())) ||
+              call->args.size() != 9) {
+            return;
+          }
+          const auto *ptr = call->args[0].as<CallNode>();
+          if (ptr == nullptr || !ptr->op.same_as(builtin::tvm_access_ptr()) ||
+              ptr->args.size() < 2 ||
+              ptr->args[1].as<VarNode>() != alloc->buffer_var.get()) {
+            return;
+          }
+          const auto *rows = call->args[6].as<IntImmNode>();
+          ICHECK(rows) << "tail compare physical rows must be static";
+          aligned_cmp_bytes = std::max(aligned_cmp_bytes,
+                                       static_cast<size_t>(rows->value) * 32);
+        });
+        size_bytes = std::max(size_bytes, aligned_cmp_bytes);
+      }
       return AlignUp(size_bytes, 32);
     }
 

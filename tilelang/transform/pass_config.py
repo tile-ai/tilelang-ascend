@@ -51,10 +51,10 @@ class PassConfigKey(str, Enum):
     """Enable/disable TileLang Auto CV Synchronization. Default: False"""
 
     TL_ASCEND_TAIL_MASK = "tl.ascend_tail_mask"
-    """Enable/disable the AscendC tail-block valid-region scheme
-    (AscendTailMaskPropagation): rewrites unary/binary/scalar ops on a UB tail
-    tile to compute only the valid region. Opt-in so non-tail kernels are
-    unaffected. Default: False"""
+    """Enable/disable the Ascend tail-block valid-region scheme
+    (AscendTailMaskPropagation): rewrites supported vector, compare/select,
+    broadcast, and reduce ops on a UB tail tile to compute only the valid
+    region. Opt-in so non-tail kernels are unaffected. Default: False"""
 
     TL_ASCEND_PTO_USE_PIPE_IN_CV_COPY = "tl.ascend_pto_use_pipe_in_cv_copy"
     """Enable PTO copy-through-pipe path in cross CV copy. When False, PTO falls back to copy-through-GM path. Default: True"""
