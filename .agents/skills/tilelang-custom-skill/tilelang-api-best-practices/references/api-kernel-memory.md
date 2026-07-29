@@ -145,7 +145,7 @@ print(kernel.get_kernel_source())
 
 ### Developer 模式
 
-TileLang 对存储层级进行了抽象，分为 global、shared 和 fragment 三个级别。在 Ascend 平台中，shared 层级对应 L1 Buffer 和 Unified Buffer (UB)，fragment 层级对应 L0A/L0B/L0C Buffer。用户无需指定具体硬件存储，TileLang 编译器会根据程序上下文自动识别。
+TileLang 对存储层级进行了抽象，分为 global、shared 和 fragment 三个级别。在 Ascend 平台中，shared 层级对应 L1 Buffer（TIR scope `shared.l1`）和 Unified Buffer/UB（TIR scope `shared.ub`），fragment 层级对应 L0A/L0B/L0C Buffer。Developer 模式下 `T.alloc_shared` 默认使用动态 scope `shared`，由编译器推断为 `shared.l1` 或 `shared.ub`。用户无需指定具体硬件存储，TileLang 编译器会根据程序上下文自动识别。
 
 #### T.alloc_shared(shape, dtype)
 
@@ -177,13 +177,13 @@ b = T.alloc_var("int32", init=a)  # 用另一个变量的值初始化
 
 显式指定存储位置，适用于需要精确控制内存分配的场景。
 
-| API | 存储层级 | 抽象层级 | 说明 |
+| API | 存储层级 | TIR scope | 说明 |
 |-----|---------|---------|-----|
-| `T.alloc_ub(shape, dtype)` | Unified Buffer | shared | Vector 存储单元 |
-| `T.alloc_L1(shape, dtype)` | L1 Buffer | shared | Cube 存储单元 |
-| `T.alloc_L0A(shape, dtype)` | L0A Buffer | fragment | Cube 左矩阵 |
-| `T.alloc_L0B(shape, dtype)` | L0B Buffer | fragment | Cube 右矩阵 |
-| `T.alloc_L0C(shape, dtype)` | L0C Buffer | fragment | Cube 输出/累加 |
+| `T.alloc_ub(shape, dtype)` | Unified Buffer | `shared.ub` | Vector 存储单元 |
+| `T.alloc_L1(shape, dtype)` | L1 Buffer | `shared.l1` | Cube 存储单元 |
+| `T.alloc_L0A(shape, dtype)` | L0A Buffer | `wmma.matrix_a` | Cube 左矩阵 |
+| `T.alloc_L0B(shape, dtype)` | L0B Buffer | `wmma.matrix_b` | Cube 右矩阵 |
+| `T.alloc_L0C(shape, dtype)` | L0C Buffer | `wmma.accumulator` | Cube 输出/累加 |
 
 **实际使用示例**（来自 `examples/gemm/example_gemm.py`）：
 

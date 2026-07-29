@@ -4385,6 +4385,8 @@ def run_test_transpose(M, N, block_M, block_N, dtype, target):
     dtype_map = {
         "float": torch.float32,
         "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "int8": torch.int8,
         "int16": torch.int16,
         "int32": torch.int32,
         "uint16": torch.uint16,
@@ -4392,10 +4394,10 @@ def run_test_transpose(M, N, block_M, block_N, dtype, target):
     }
     torch_dtype = dtype_map.get(dtype, torch.float32)
 
-    if dtype in ["int16", "int32", "uint16", "uint32"]:
-        a = torch.randint(
-            -100 if dtype in ["int16", "int32"] else 0, 100 if dtype in ["int16", "int32"] else 200, (M, N), dtype=torch_dtype
-        ).npu()
+    if dtype in ["int8", "int16", "int32", "uint16", "uint32"]:
+        lo = -100 if dtype in ["int8", "int16", "int32"] else 0
+        hi = 100 if dtype in ["int8", "int16", "int32"] else 200
+        a = torch.randint(lo, hi, (M, N), dtype=torch_dtype).npu()
     else:
         a = torch.randn(M, N, dtype=torch_dtype).npu()
 
@@ -4437,6 +4439,57 @@ def test_transpose(dtype, target, shape):
 def test_transpose_tiled(dtype, target, shape):
     M, N = shape
     run_test_transpose(M, N, M, N, dtype, target)
+
+
+@pytest.mark.parametrize("dtype", ["float16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("shape", [(48, 48), (16, 48), (48, 16), (128, 128)])
+def test_transpose_block_b16(dtype, target, shape):
+    M, N = shape
+    run_test_transpose(M, N, M, N, dtype, target)
+
+
+@pytest.mark.parametrize("dtype", ["float", "uint32", "uint16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("shape", [(16, 16), (32, 32)])
+def test_transpose_block_b32(dtype, target, shape):
+    M, N = shape
+    run_test_transpose(M, N, M, N, dtype, target)
+
+
+@pytest.mark.parametrize("dtype,target", [("int8", "ascendc"), ("bfloat16", "ascendc")])
+@pytest.mark.parametrize("shape", [(32, 32)])
+def test_transpose_fallback_dtype(dtype, target, shape):
+    M, N = shape
+    run_test_transpose(M, N, M, N, dtype, target)
+
+
+@pytest.mark.parametrize("dtype", ["bfloat16"])
+@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("shape", [(16, 16)])
+def test_transpose_fallback_dtype_16x16(dtype, target, shape):
+    M, N = shape
+    run_test_transpose(M, N, M, N, dtype, target)
+
+
+@pytest.mark.parametrize(
+    "shape,dtype",
+    [
+        ((20, 36), "float16"),
+        ((17, 33), "float16"),
+        ((24, 40), "float16"),
+        ((16, 33), "float16"),
+        ((33, 16), "float16"),
+        ((16, 16), "int8"),
+    ],
+    ids=["20x36-f16", "17x33-f16", "24x40-f16", "16x33-f16", "33x16-f16", "16x16-i8"],
+)
+def test_transpose_non_aligned_shape_raises(shape, dtype):
+    M, N = shape
+    src = tir.decl_buffer((M, N), dtype)
+    dst = tir.decl_buffer((N, M), dtype)
+    with pytest.raises(ValueError, match="32-byte alignment"):
+        T.tile.transpose(dst, src)
 
 
 def wholereducemax(M, N, block_M, block_N, mask, repeatTimes, dstRepStride, srcBlkStride, srcRepStride, dtype="float16"):
@@ -5140,6 +5193,54 @@ def test_row_expand_div_experiment(dtype, target, shape):
     ref_c = a / s.unsqueeze(1).expand(M, N)
 
     torch.testing.assert_close(c.cpu(), ref_c.cpu(), rtol=1e-2, atol=1e-2)
+
+
+def exp_experiment_kernel(M, N, col, dtype="float"):
+    # exp_experiment exps a 64-col (fp32) / 128-col (fp16) chunk of every row per
+    # call, striding the buffer's physical column count between rows; callers loop
+    # chunks over the valid window. `col` picks how many chunks fire (1 / 2 / 4).
+    chunk = 64 if dtype == "float" else 128
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((M, N), dtype)
+            T.copy(A, a_ub)
+            # Strided masked exp over [0:col] in place; the [col:N] tail is untouched.
+            for k in range(col // chunk):
+                sc = k * chunk
+                T.tile.exp_experiment(a_ub[:, sc : sc + chunk], a_ub[:, sc : sc + chunk])
+            T.copy(a_ub, C)
+
+    return main
+
+
+@pytest.mark.parametrize(
+    "dtype,col",
+    [("float", 64), ("float", 128), ("float", 256), ("float16", 128), ("float16", 256)],
+)
+def test_exp_experiment(dtype, col):
+    # exp_experiment is ascendc-only (no PTO counterpart). It exps only the first
+    # `col` columns of a 512-wide N-strided buffer, in place, leaving [col:N] as-is
+    # -- what an online-softmax narrow window needs without compacting to a tile.
+    M, N = 16, 512
+    func = exp_experiment_kernel(M, N, col, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target="ascendc")
+
+    torch_dtype = torch.float16 if dtype == "float16" else torch.float32
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+    torch.npu.synchronize()
+
+    c = func(a)
+    torch.npu.synchronize()
+
+    ref = a.clone()
+    ref[:, :col] = torch.exp(a[:, :col])  # only the window is exp'd; tail unchanged
+
+    torch.testing.assert_close(c.cpu(), ref.cpu(), rtol=1e-2, atol=1e-2)
 
 
 if __name__ == "__main__":

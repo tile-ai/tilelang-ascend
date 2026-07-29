@@ -1,6 +1,6 @@
 ---
 name: tilelang-skill-review
-description: "聚合 .agents/skill-journal/ 中算子开发反馈，生成 skill 改进建议表，开发者命令行勾选后应用到对应 SKILL.md。覆盖所有 .agents/skills/ 下的 skill，不限于 op-design / op-generate。触发：skill review、skill 评审、检查 skill 反馈、应用 skill 改动、tilelang skill 改进、skill 反馈。"
+description: "聚合 .agents/skill-journal/ 中算子开发反馈，生成 skill 改进建议表，开发者命令行勾选后应用到对应 SKILL.md。覆盖所有 .agents/skills/ 下的 skill，不限于 op-design / op-develop。触发：skill review、skill 评审、检查 skill 反馈、应用 skill 改动、tilelang skill 改进、skill 反馈。"
 ---
 
 # Skill Review — TileLang-Ascend Skill 改进评审
@@ -123,7 +123,7 @@ severity_weight: high=3, medium=2, low=1
 
 ## 7. 添加模式工作流（`add` / `add <text>`）
 
-供**开发者主动**写反馈，区别于 op-generate §6 中 agent 自动反思的批量采集。
+供**开发者主动**写反馈，区别于 op-develop §6 中 agent 自动反思的批量采集。
 
 - `add`：交互式，逐个问 7 个字段
 - `add <text>`：快速式，吃自由文本，自动补全后确认
@@ -162,7 +162,7 @@ glob .agents/skill-journal/*.md
 
 | 场景 | 处理 |
 |------|------|
-| skill-journal/ 不存在 | 评审/apply/reject/status 模式下提示 "尚无反馈，先跑一次 op-generate 流程"；add 模式下自动创建目录后继续 |
+| skill-journal/ 不存在 | 评审/apply/reject/status 模式下提示 "尚无反馈，先跑一次 op-develop 流程"；add 模式下自动创建目录后继续 |
 | 无 pending entry | 输出空表格 + "全部已处理"，提示运行 `status` 查看历史 |
 | reviews/ 子目录不存在 | 自动创建后写入 |
 | journal 文件 frontmatter 缺字段 | 跳过该文件，提示 |

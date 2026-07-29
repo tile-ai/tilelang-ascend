@@ -28,6 +28,7 @@ import torch
 
 import tilelang
 import tilelang.language as T
+from tilelang import tvm
 
 VEC_NUM = 2
 
@@ -849,6 +850,58 @@ def test_npu_if_else_in_loop_correctness():
     ref_neg = a - a[0, :].unsqueeze(0)
     torch.testing.assert_close(b_pos, ref_pos, rtol=1e-3, atol=1e-3)
     torch.testing.assert_close(b_neg, ref_neg, rtol=1e-3, atol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# 13. LetStmt with BufferLoad(shared) regression (issue #1333)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_letstmt_buffer_load_shared_no_crash(target):
+    """Regression: a scalar read from a shared-scope UB buffer produces a
+    LetStmt whose value is a BufferLoad on a ``shared`` buffer.
+
+    Before the fix, AscendMemoryPlanning did not override
+    VisitStmt_(LetStmtNode) and fell back to the base visitor, which
+    visited the BufferLoad child without pushing a scope_ entry, causing
+    TrackBufferTouch to dereference an empty std::vector -> SIGSEGV.
+
+    Note: the crash only triggers when the LetStmt appears at the top level
+    of the function body (no T.Kernel wrapper).  With T.Kernel the body is
+    nested inside AttrStmt/Block scopes that keep scope_ non-empty, masking
+    the bug.  Therefore this test deliberately uses a bare @T.prim_func and
+    tilelang.lower() instead of tilelang.compile().
+    """
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((64, 128), "float32"),  # type: ignore
+        B: T.Tensor((64, 128), "float32"),  # type: ignore
+    ):
+        a_ub = T.alloc_ub((64, 128), "float32")
+        b_ub = T.alloc_ub((64, 128), "float32")
+        T.copy(A[:, :], a_ub)
+        # scalar read from shared buffer -> LetStmt + BufferLoad(shared)
+        s_tmp = a_ub[0, 0]
+        b_ub[0, 0] = s_tmp
+        T.copy(b_ub[:, :], B[:, :])
+
+    with tvm.transform.PassContext(opt_level=3, config=PASS_AUTO):
+        artifact = tilelang.lower(main, target=target)
+    src = artifact.kernel_source
+    offsets = _get_buffer_offsets(src)
+    assert "a_ub" in offsets, f"a_ub missing in {target} source"
+    assert "b_ub" in offsets, f"b_ub missing in {target} source"
+    buf_size = 64 * 128 * 4
+    _assert_no_overlap(
+        "a_ub",
+        offsets["a_ub"],
+        buf_size,
+        "b_ub",
+        offsets["b_ub"],
+        buf_size,
+    )
 
 
 if __name__ == "__main__":

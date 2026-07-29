@@ -15,7 +15,7 @@ Skill 改进建议评审 (生成时间: 2026-05-11 16:30)
 | 1  | skill     | §2.5.1       | missing_constraint | high | 3    | 🤖    | 加 UB 容量限制 192KB                  | softmax/e1, gemm/e2 |
 | 2  | skill     | §4.1         | mode_misjudgment   | med  | 2    | 🤖    | 修正"混合算子可用 Developer 单模式"    | flash/e1, conv/e3   |
 
-── tilelang-op-generate ──────────────────────────────────────
+── tilelang-op-develop ──────────────────────────────────────
 | #  | 📄artifact     | 章节                       | 类型                  | 严重 | 频次 | 来源 | 提案摘要                              | 证据 entry          |
 |----|---------------|----------------------------|----------------------|------|------|------|---------------------------------------|---------------------|
 | 3  | skill         | §3 步骤 3                  | outdated_example     | med  | 1    | 🤖    | 修正 broadcast 索引示例 shape         | softmax/e3          |
@@ -58,7 +58,7 @@ Skill 改进建议评审 (生成时间: 2026-05-11 16:30)
 | Skill                                                 | pending | applied | rejected |
 |-------------------------------------------------------|---------|---------|----------|
 | tilelang-op-design                                    | 5       | 12      | 3        |
-| tilelang-op-generate                                  | 3       | 8       | 2        |
+| tilelang-op-develop                                  | 3       | 8       | 2        |
 | tilelang-custom-skill/tilelang-api-best-practices     | 2       | 4       | 0        |
 | ...                                                   |         |         |          |
 
