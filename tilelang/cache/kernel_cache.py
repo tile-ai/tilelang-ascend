@@ -80,6 +80,7 @@ class KernelCache:
         target_host: str | Target = None,
         platform: str = "auto",
         pass_configs: dict = None,
+        compile_flags: list[str] | str | None = None,
     ) -> str:
         """
         Generates a unique hash key for caching compiled kernels.
@@ -112,6 +113,7 @@ class KernelCache:
             "platform": str(platform),
             "execution_backend": execution_backend,
             "pass_configs": pass_configs,
+            "compile_flags": compile_flags,
         }
         key_string = json.dumps(key_data, sort_keys=True)  # Sort keys to ensure consistency
         return sha256(key_string.encode()).hexdigest()  # Use SHA256 to generate hash key
@@ -129,6 +131,7 @@ class KernelCache:
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         verbose: bool = False,
         pass_configs: dict = None,
+        compile_flags: list[str] | str | None = None,
     ) -> JITKernel:
         """
         Caches and reuses compiled kernels to avoid redundant compilation.
@@ -159,6 +162,7 @@ class KernelCache:
                 platform=platform,
                 verbose=verbose,
                 pass_configs=pass_configs,
+                compile_flags=compile_flags,
             )
 
         key = self._generate_key(
@@ -172,6 +176,7 @@ class KernelCache:
             target_host=target_host,
             platform=platform,
             pass_configs=pass_configs,
+            compile_flags=compile_flags,
         )
         with self._lock:
             # First check in-memory cache
@@ -183,7 +188,17 @@ class KernelCache:
 
             # Then check disk cache
             kernel = self._load_kernel_from_disk(
-                key, target, target_host, platform, out_idx, workspace_idx, auto_gm_idx, execution_backend, pass_configs, func
+                key,
+                target,
+                target_host,
+                platform,
+                out_idx,
+                workspace_idx,
+                auto_gm_idx,
+                execution_backend,
+                pass_configs,
+                func,
+                compile_flags,
             )
             if kernel is not None:
                 # Populate memory cache with disk result
@@ -201,6 +216,7 @@ class KernelCache:
             platform=platform,
             verbose=verbose,
             pass_configs=pass_configs,
+            compile_flags=compile_flags,
         )
         if execution_backend == "dlpack":
             self.logger.warning("DLPack backend does not support cache saving to disk.")
@@ -316,6 +332,7 @@ class KernelCache:
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         pass_configs: dict = None,
         func: Callable = None,
+        compile_flags: list[str] | str | None = None,
     ) -> JITKernel:
         """
         Loads a previously compiled kernel from disk cache.
@@ -387,6 +404,7 @@ class KernelCache:
                 auto_gm_idx=auto_gm_idx,
                 execution_backend=execution_backend,
                 pass_configs=pass_configs,
+                compile_flags=compile_flags,
             )
         else:
             return None

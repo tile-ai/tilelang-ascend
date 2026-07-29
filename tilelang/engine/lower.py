@@ -217,6 +217,10 @@ def lower(
         params = extrac_params(func) if not runtime_only else None
         mod = tvm.IRModule({func.attrs["global_symbol"]: func})
 
+    # Inject platform into PrimFunc attrs for TIR pass access
+    for gvar, f in mod.functions_items():
+        mod[gvar] = f.with_attr("npu_platform", platform)
+
     target = tvm.target.Target({"kind": "llvm", "model": target})
 
     # Phase 1: Lower and legalize the IR
