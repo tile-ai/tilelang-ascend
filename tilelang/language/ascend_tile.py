@@ -2,7 +2,7 @@ from __future__ import annotations
 import tilelang.language as T
 from tvm.ir import Range
 from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call, IntImm, Ramp
-from tvm import DataType, tir
+from tvm import DataType, arith, tir
 from tilelang.language.ascend import _dtype
 import functools
 import warnings
@@ -68,7 +68,117 @@ def _handle_buffer_region(br: BufferRegion, mask):
     return bf.access_ptr(mask, offset=offset, extent=size_extent), extent
 
 
-def _handle_buffer_region_2d(br: BufferRegion, mask):
+def _is_const_one(val) -> bool:
+    """Check if a value is constant 1 (int or IntImm)."""
+    if isinstance(val, (int, float)):
+        return val == 1
+    if isinstance(val, IntImm):
+        return val.value == 1
+    return False
+
+
+def _const_int(val) -> int | None:
+    """Return a Python int for a static integer expression."""
+    if isinstance(val, int):
+        return val
+    if isinstance(val, IntImm):
+        return int(val)
+    return None
+
+
+def _resolve_let_expr(val):
+    """Substitute scalar let bindings that are visible while building TIR."""
+    if not isinstance(val, PrimExpr):
+        return val
+
+    bindings = {}
+
+    def collect(node):
+        if isinstance(node, tir.Var) and T.has_let_value(node):
+            bound = T.get_let_value(node)
+            if isinstance(bound, PrimExpr):
+                bindings[node] = bound
+
+    while True:
+        bindings.clear()
+        tir.stmt_functor.post_order_visit(val, collect)
+        if not bindings:
+            return val
+        val = tir.stmt_functor.substitute(val, bindings)
+
+
+def _is_provably_divisible(val, divisor: int) -> bool:
+    """Check whether a static or symbolic integer is divisible by a constant."""
+    val = _resolve_let_expr(val)
+    static_val = _const_int(val)
+    if static_val is not None:
+        return static_val % divisor == 0
+    return arith.Analyzer().can_prove(val % divisor == 0)
+
+
+def _const_equal(a, b) -> bool:
+    """Compare two values that may be int, IntImm, or symbolic PrimExpr."""
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return a == b
+    if isinstance(a, IntImm) and isinstance(b, IntImm):
+        return a.value == b.value
+    if isinstance(a, (int, float)) and isinstance(b, IntImm):
+        return a == b.value
+    if isinstance(a, IntImm) and isinstance(b, (int, float)):
+        return a.value == b
+    import tvm
+
+    return tvm.ir.structural_equal(a, b)
+
+
+def _shapes_equal(shape1, shape2) -> bool:
+    """Compare two shape lists that may contain symbolic PrimExpr."""
+    if len(shape1) != len(shape2):
+        return False
+    return all(_const_equal(x, y) for x, y in zip(shape1, shape2))
+
+
+def _fold_nd_shape_to_2d(shape):
+    """Fold all leading dimensions of a shape into a single row dimension."""
+    shape = list(shape)
+    if len(shape) <= 1:
+        return shape
+    return [math.prod(shape[:-1]), shape[-1]]
+
+
+def _validate_buffer_region_contiguity(
+    br: BufferRegion,
+    *,
+    require_flat_contiguous: bool,
+) -> None:
+    """Reject rectangular regions that cross gaps in a dense row-major buffer.
+
+    A 2D row operation may use a narrower final-axis window because codegen
+    retains the physical row stride. A flat stream must include the final axis
+    in the same check.
+    """
+    regions = br.region if require_flat_contiguous else br.region[:-1]
+    spans_multiple_entries = False
+    for axis, region in enumerate(regions):
+        if spans_multiple_entries:
+            starts_at_zero = _const_equal(region.min, 0)
+            has_full_extent = _const_equal(region.extent, br.buffer.shape[axis])
+            if not (starts_at_zero and has_full_extent):
+                if require_flat_contiguous:
+                    requirement = "BufferRegion must be contiguous when flattened"
+                else:
+                    requirement = "BufferRegion outer dimensions must be contiguous"
+                raise ValueError(f"{requirement}; axis {axis} is not selected in full.")
+        elif not _is_const_one(region.extent):
+            spans_multiple_entries = True
+
+
+def _handle_buffer_region_2d(
+    br: BufferRegion,
+    mask,
+    *,
+    require_flat_contiguous: bool = False,
+):
     """Like _handle_buffer_region but flattens ND extents to 2D [rows, cols].
 
     For a 3D buffer s_ub[T, 32, 512] sliced as s_ub[tile, :, :]:
@@ -76,15 +186,16 @@ def _handle_buffer_region_2d(br: BufferRegion, mask):
 
     Leading dimensions are folded into rows; the innermost dimension is kept as cols.
     """
+    _validate_buffer_region_contiguity(
+        br,
+        require_flat_contiguous=require_flat_contiguous,
+    )
     bf = br.buffer
     indices = [x.min for x in br.region]
     offset = bf.offset_of(indices)[0]
     extent_nd = [x.extent for x in br.region]
     size_extent = math.prod(extent_nd)
-    if len(extent_nd) >= 2:
-        extent_2d = [math.prod(extent_nd[:-1]), extent_nd[-1]]
-    else:
-        extent_2d = [1, extent_nd[0]]
+    extent_2d = _fold_nd_shape_to_2d(extent_nd)
     return bf.access_ptr(mask, offset=offset, extent=size_extent), extent_2d
 
 
@@ -2269,35 +2380,101 @@ def _normalize_buffer_arg(obj: Buffer | BufferRegion | BufferLoad) -> Buffer | B
     return obj
 
 
-def _is_const_one(val) -> bool:
-    """Check if a value is constant 1 (int or IntImm)."""
-    if isinstance(val, (int, float)):
-        return val == 1
-    if isinstance(val, IntImm):
-        return val.value == 1
-    return False
+def _underlying_buffer(obj: Buffer | BufferRegion) -> Buffer:
+    """Return the Buffer referenced by a Buffer or BufferRegion."""
+    return obj.buffer if isinstance(obj, BufferRegion) else obj
 
 
-def _const_equal(a, b) -> bool:
-    """Compare two values that may be int, IntImm, or symbolic PrimExpr."""
-    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-        return a == b
-    if isinstance(a, IntImm) and isinstance(b, IntImm):
-        return a.value == b.value
-    if isinstance(a, (int, float)) and isinstance(b, IntImm):
-        return a == b.value
-    if isinstance(a, IntImm) and isinstance(b, (int, float)):
-        return a.value == b
-    import tvm
+def _get_folded_2d_access(
+    obj: Buffer | BufferRegion,
+    mask: str,
+    *,
+    require_flat_contiguous: bool = False,
+):
+    """Return an access pointer and a shape with all leading dimensions folded."""
+    if isinstance(obj, BufferRegion):
+        return _handle_buffer_region_2d(
+            obj,
+            mask,
+            require_flat_contiguous=require_flat_contiguous,
+        )
+    return obj.access_ptr(mask), _fold_nd_shape_to_2d(obj.shape)
 
-    return tvm.ir.structural_equal(a, b)
+
+_ROW_EXPAND_BLOCK_BYTES = 32
+_ROW_EXPAND_ROW_BYTES = 256
+_ROW_EXPAND_MAX_ROWS = 248
+_ROW_EXPAND_SUPPORTED_DTYPES = (DataType("float16"), DataType("float32"))
 
 
-def _shapes_equal(shape1, shape2) -> bool:
-    """Compare two shape lists that may contain symbolic PrimExpr."""
-    if len(shape1) != len(shape2):
-        return False
-    return all(_const_equal(x, y) for x, y in zip(shape1, shape2))
+def _validate_row_expand_access_alignment(
+    obj: Buffer | BufferRegion,
+    *,
+    elems_per_block: int,
+    op_name: str,
+    arg_name: str,
+) -> None:
+    """Require an access pointer aligned to one 32-byte vector block."""
+    buffer = _underlying_buffer(obj)
+    indices = [region.min for region in obj.region] if isinstance(obj, BufferRegion) else [0] * len(buffer.shape)
+    element_offset = buffer.offset_of(indices)[0]
+    if not _is_provably_divisible(element_offset, elems_per_block):
+        requirement = f"a {_ROW_EXPAND_BLOCK_BYTES}-byte-aligned access offset"
+        raise ValueError(f"{op_name} requires {requirement} for {arg_name}.")
+
+
+def _row_expand_physical_stride_blocks(
+    obj: Buffer | BufferRegion,
+    *,
+    elems_per_block: int,
+    op_name: str,
+    arg_name: str,
+) -> int:
+    """Validate one data operand's physical row layout."""
+    buffer = _underlying_buffer(obj)
+    physical_cols = _const_int(buffer.shape[-1]) if len(buffer.shape) > 0 else None
+    if physical_cols is None:
+        raise ValueError(f"{op_name} requires a static physical last dimension for {arg_name}.")
+    if physical_cols % elems_per_block != 0:
+        requirement = f"a physical row stride aligned to {_ROW_EXPAND_BLOCK_BYTES} bytes"
+        raise ValueError(f"{op_name} requires {requirement} for {arg_name}; got {physical_cols} elements.")
+
+    stride_blocks = physical_cols // elems_per_block
+    if not 1 <= stride_blocks <= 255:
+        raise ValueError(f"{op_name} requires {arg_name} physical row stride to fit 1..255 blocks; got {stride_blocks}.")
+
+    _validate_row_expand_access_alignment(
+        obj,
+        elems_per_block=elems_per_block,
+        op_name=op_name,
+        arg_name=arg_name,
+    )
+    return stride_blocks
+
+
+def _row_expand_src1_rows(
+    shape,
+    *,
+    has_tmp: bool,
+    elems_per_block: int,
+    op_name: str,
+):
+    """Validate src1's physical layout and return its logical row count."""
+    if not has_tmp:
+        if len(shape) == 2 and _const_equal(shape[1], elems_per_block):
+            return shape[0]
+        requirement = f"packed src1 shape [R, {elems_per_block}] when tmp is omitted"
+        raise ValueError(f"{op_name} requires {requirement}; got {shape}.")
+
+    if len(shape) == 1:
+        return shape[0]
+    if len(shape) == 2:
+        if _is_const_one(shape[0]):
+            return shape[1]
+        if _is_const_one(shape[1]):
+            return shape[0]
+    requirement = "scalar src1 shape [R], [1, R], or [R, 1] when tmp is provided"
+    raise ValueError(f"{op_name} requires {requirement}; got {shape}.")
 
 
 def _row_expand_binop_experiment(
@@ -2307,7 +2484,6 @@ def _row_expand_binop_experiment(
     tmp,
     op_name: str,
     ir_op_name: str,
-    desc: str,
 ):
     dst = _normalize_buffer_arg(dst)
     src0 = _normalize_buffer_arg(src0)
@@ -2315,46 +2491,98 @@ def _row_expand_binop_experiment(
     if tmp is not None:
         tmp = _normalize_buffer_arg(tmp)
 
-    if isinstance(dst, BufferRegion):
-        dst_ptr, dst_shape = _handle_buffer_region_2d(dst, "w")
-    else:
-        dst_ptr = dst.access_ptr("w")
-        dst_shape = list(dst.shape[-2:])
+    dst_ptr, dst_shape = _get_folded_2d_access(dst, "w")
+    src0_ptr, src0_shape = _get_folded_2d_access(src0, "r")
 
-    if isinstance(src0, BufferRegion):
-        src0_ptr, src0_shape = _handle_buffer_region_2d(src0, "r")
-    else:
-        src0_ptr = src0.access_ptr("r")
-        src0_shape = list(src0.shape[-2:])
-
-    if isinstance(src1, BufferRegion):
-        src1_ptr, src1_nd_extent = _handle_buffer_region(src1, "r")
-        src1_full_shape = [src1_nd_extent[-1]] if len(src1_nd_extent) >= 2 else src1_nd_extent
-    else:
-        src1_ptr = src1.access_ptr("r")
-        src1_full_shape = list(src1.shape)
-
-    if len(src1_full_shape) == 1:
-        src1_len = src1_full_shape[0]
-    elif len(src1_full_shape) == 2:
-        s0, s1 = src1_full_shape[-2], src1_full_shape[-1]
-        if _is_const_one(s0):
-            src1_len = s1
-        elif _is_const_one(s1) or _const_equal(s0, dst_shape[0]):
-            src1_len = s0
-        else:
-            raise ValueError(f"src1 must be 1D [R], [1, R], or [R, 1]; got {src1_full_shape}")
-    else:
-        raise ValueError(f"src1 must be 1D or 2D, got shape {src1_full_shape}")
+    dst_buffer = _underlying_buffer(dst)
+    src0_buffer = _underlying_buffer(src0)
+    src1_buffer = _underlying_buffer(src1)
+    dst_dtype = DataType(dst_buffer.dtype)
+    src0_dtype = DataType(src0_buffer.dtype)
+    src1_dtype = DataType(src1_buffer.dtype)
+    if not (dst_dtype == src0_dtype == src1_dtype):
+        mismatch = f"dst={dst_buffer.dtype}, src0={src0_buffer.dtype}, src1={src1_buffer.dtype}"
+        raise ValueError(f"{op_name} requires matching operand dtypes: {mismatch}")
+    if dst_dtype not in _ROW_EXPAND_SUPPORTED_DTYPES:
+        raise ValueError(f"{op_name} supports only float16 and float32 operands; got {dst_buffer.dtype}.")
 
     if len(dst_shape) != 2 or len(src0_shape) != 2:
         raise ValueError(f"{op_name} requires 2D buffers for dst and src0.")
-
     if not _shapes_equal(dst_shape, src0_shape):
         raise ValueError(f"dst and src0 shapes must match: dst={dst_shape}, src0={src0_shape}")
 
-    if not _const_equal(src1_len, dst_shape[0]):
-        raise ValueError(f"src1 scalar count must match dst rows: src1={src1_len}, dst[0]={dst_shape[0]}")
+    dtype_bits = dst_dtype.bits
+    elems_per_block = _ROW_EXPAND_BLOCK_BYTES * 8 // dtype_bits
+
+    expected_cols = _ROW_EXPAND_ROW_BYTES * 8 // dtype_bits
+    if not _const_equal(dst_shape[1], expected_cols):
+        requirement = f"a {_ROW_EXPAND_ROW_BYTES}-byte last dimension ({expected_cols} {dst_buffer.dtype} elements)"
+        raise ValueError(f"{op_name} requires {requirement}, got {dst_shape[1]}.")
+
+    rows = _const_int(dst_shape[0])
+    if rows is None or rows < 8 or rows > _ROW_EXPAND_MAX_ROWS or rows % 8 != 0:
+        requirement = f"a static row count in 8..{_ROW_EXPAND_MAX_ROWS}, divisible by 8"
+        raise ValueError(f"{op_name} requires {requirement}; got {dst_shape[0]}.")
+
+    dst_stride = _row_expand_physical_stride_blocks(
+        dst,
+        elems_per_block=elems_per_block,
+        op_name=op_name,
+        arg_name="dst",
+    )
+    src0_stride = _row_expand_physical_stride_blocks(
+        src0,
+        elems_per_block=elems_per_block,
+        op_name=op_name,
+        arg_name="src0",
+    )
+    if dst_stride != src0_stride:
+        mismatch = f"dst={dst_stride}, src0={src0_stride} blocks"
+        raise ValueError(f"{op_name} requires matching dst/src0 physical row strides: {mismatch}")
+
+    src1_ptr, src1_shape = _get_folded_2d_access(
+        src1,
+        "r",
+        require_flat_contiguous=True,
+    )
+    src1_rows = _row_expand_src1_rows(
+        src1_shape,
+        has_tmp=tmp is not None,
+        elems_per_block=elems_per_block,
+        op_name=op_name,
+    )
+    _validate_row_expand_access_alignment(
+        src1,
+        elems_per_block=elems_per_block,
+        op_name=op_name,
+        arg_name="src1",
+    )
+    if not _const_equal(src1_rows, dst_shape[0]):
+        mismatch = f"src1={src1_rows}, dst[0]={dst_shape[0]}"
+        raise ValueError(f"src1 scalar count must match dst rows: {mismatch}")
+
+    tmp_ptr = None
+    if tmp is not None:
+        tmp_buffer = _underlying_buffer(tmp)
+        if DataType(tmp_buffer.dtype) != dst_dtype:
+            mismatch = f"tmp={tmp_buffer.dtype}, operands={dst_buffer.dtype}"
+            raise ValueError(f"{op_name} requires matching tmp and operand dtypes: {mismatch}")
+        tmp_ptr, tmp_shape = _get_folded_2d_access(
+            tmp,
+            "rw",
+            require_flat_contiguous=True,
+        )
+        _validate_row_expand_access_alignment(
+            tmp,
+            elems_per_block=elems_per_block,
+            op_name=op_name,
+            arg_name="tmp",
+        )
+        tmp_size = math.prod(tmp_shape)
+        expected_tmp_size = dst_shape[0] * elems_per_block
+        if not _const_equal(tmp_size, expected_tmp_size):
+            requirement = f"tmp must contain {expected_tmp_size} elements"
+            raise ValueError(f"{op_name} {requirement}; got {tmp_size}.")
 
     dtype = _dtype(src0)
     args = [
@@ -2364,10 +2592,6 @@ def _row_expand_binop_experiment(
         src1_ptr,
     ]
     if tmp is not None:
-        if isinstance(tmp, BufferRegion):
-            tmp_ptr, _ = _handle_buffer_region(tmp, "rw")
-        else:
-            tmp_ptr = tmp.access_ptr("rw")
         args.append(tmp_ptr)
 
     return tir.call_intrin(
@@ -2387,6 +2611,12 @@ def row_expand_mul_experiment(
 
     AscendC: brcb(src1→tmp) + mul_mask(dst, src0, tmp).
     PTO: TROWEXPANDMUL_row_vec(dst, src0, src1).
+
+    Contiguous leading dimensions of dst/src0 are folded into 8..248 rows in
+    multiples of 8; each row is 256 bytes. Their physical row strides must
+    match, and row windows are 32-byte aligned. Without tmp, src1 contains one
+    packed 32-byte block per row with the scalar replicated across its lanes.
+    With tmp, src1 is scalar-linear and tmp supplies those packed blocks.
     """
     return _row_expand_binop_experiment(
         dst,
@@ -2395,7 +2625,6 @@ def row_expand_mul_experiment(
         tmp,
         "RowExpandMulExperiment",
         "tl.ascend_row_expand_mul_experiment",
-        "multiply",
     )
 
 
@@ -2409,6 +2638,12 @@ def row_expand_sub_experiment(
 
     AscendC: brcb(src1→tmp) + sub_mask(dst, src0, tmp).
     PTO: TROWEXPANDSUB_row_vec(dst, src0, src1).
+
+    Contiguous leading dimensions of dst/src0 are folded into 8..248 rows in
+    multiples of 8; each row is 256 bytes. Their physical row strides must
+    match, and row windows are 32-byte aligned. Without tmp, src1 contains one
+    packed 32-byte block per row with the scalar replicated across its lanes.
+    With tmp, src1 is scalar-linear and tmp supplies those packed blocks.
     """
     return _row_expand_binop_experiment(
         dst,
@@ -2417,7 +2652,6 @@ def row_expand_sub_experiment(
         tmp,
         "RowExpandSubExperiment",
         "tl.ascend_row_expand_sub_experiment",
-        "subtract",
     )
 
 
@@ -2431,6 +2665,12 @@ def row_expand_div_experiment(
 
     AscendC: brcb(src1→tmp) + div_mask(dst, src0, tmp).
     PTO: TROWEXPANDDIV_row_vec(dst, src0, src1).
+
+    Contiguous leading dimensions of dst/src0 are folded into 8..248 rows in
+    multiples of 8; each row is 256 bytes. Their physical row strides must
+    match, and row windows are 32-byte aligned. Without tmp, src1 contains one
+    packed 32-byte block per row with the scalar replicated across its lanes.
+    With tmp, src1 is scalar-linear and tmp supplies those packed blocks.
     """
     return _row_expand_binop_experiment(
         dst,
@@ -2439,7 +2679,6 @@ def row_expand_div_experiment(
         tmp,
         "RowExpandDivExperiment",
         "tl.ascend_row_expand_div_experiment",
-        "divide",
     )
 
 
