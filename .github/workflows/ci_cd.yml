@@ -269,8 +269,11 @@ jobs:
             if [[ -n "${source_to_test[$file]:-}" ]]; then
               mapped_test="${source_to_test[$file]}"
               pytest_files_array+=("$mapped_test")
-              run_examples=false
-              run_pytest_only=true
+              # Only claim the pytest-only path while nothing else has asked for
+              # examples: otherwise this would drop the directories they collected.
+              if [[ "$run_examples" == false ]]; then
+                run_pytest_only=true
+              fi
               should_skip=false
               echo "Mapped migrated operator $file -> $mapped_test"
               continue
@@ -278,8 +281,9 @@ jobs:
 
             if [[ -n "${test_to_test[$file]:-}" ]]; then
               pytest_files_array+=("$file")
-              run_examples=false
-              run_pytest_only=true
+              if [[ "$run_examples" == false ]]; then
+                run_pytest_only=true
+              fi
               should_skip=false
               echo "Mapped migrated test: $file"
               continue
