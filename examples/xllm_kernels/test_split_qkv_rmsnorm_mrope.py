@@ -32,7 +32,9 @@ SPLIT_QKV_RMSNORM_MROPE_CASES += [
     for num_q_heads, num_kv_heads in [(32, 2), (24, 4), (16, 2)]
 ]
 SPLIT_QKV_RMSNORM_MROPE_CASES += [
-    pytest.param(num_tokens, 16, 4, is_interleaved, id=f"tokens{num_tokens}_q16_kv4_{'interleaved' if is_interleaved else 'noninterleaved'}")
+    pytest.param(
+        num_tokens, 16, 4, is_interleaved, id=f"tokens{num_tokens}_q16_kv4_{'interleaved' if is_interleaved else 'noninterleaved'}"
+    )
     for num_tokens in [4097, 8192]
     for is_interleaved in [True, False]
 ]
