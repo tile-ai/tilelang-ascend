@@ -639,6 +639,66 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
 
 #### 4.1.3 计算原语
 
+**编译器管理与显式临时 arena**
+
+下列公开计算原语统一暴露仅限关键字的 `tmp=None`：
+
+- `T.reduce_sum`、`T.reduce_max`、`T.reduce_min`；
+- `T.tile.broadcast`、`sort`、`merge_sort`、`topk`；
+- `T.tile.gather_mask`、`select`、`gather`；
+- `T.tile.sigmoid`、`sin`、`cos`、`pow`、`bitwise_xor`；
+- `T.tile.clamp`、`clamp_max`、`clamp_min`、`round`；
+- deprecated `T.tile.bilinear_interpolation`，以及
+  `T.tile.reduce_sum_experiment`、`reduce_sum_mask_experiment`。
+
+PTO 不支持 `bilinear_interpolation`、`sin`、`cos`，以及这两个 experimental
+ReduceSum API。
+
+省略 `tmp` 时，`InjectTmpBuffer` 根据 target 自动分配 workspace。同一 kernel 内不同
+dtype 的隐式调用复用一个按最大字节需求分配的 `uint8` 主 arena；lowering 在同一 data
+Var 上生成后端所需 dtype 的 view，不会仅因 dtype 不同再创建 `tmp_ub_<n>`。PTO
+`clear=False` reduce 的独立 reduce-output allocation 保持原有语义。
+
+显式 `tmp` 的 backing Buffer 必须是一维、静态、连续、具有定宽标量 dtype 的 `shared.ub`
+Buffer；BufferRegion 本身也必须一维、静态、位于该 Buffer 内，且起始字节地址 32B 对齐。它
+表示该次调用完整的 target-specific 临时字节空间；dtype 只决定 arena 的字节几何
+（`extent * sizeof(dtype)`），不表示 workspace 数据类型。lowering 会在同一字节存储上建立目标
+所需的 typed view，不进行数值转换，并保留 region 的实际字节起点。前端只检查几何和对齐；
+AscendC 与 PTO 的 target-specific 保守启发值只用于编译器管理的 allocation 和内部 view 布局，
+不是非零显式 arena 的下限检查。非零显式 arena 的容量由调用者负责。若所选 target 路径真实
+不消费 workspace，lowering 会移除 operand，允许使用零 extent arena。当前不提供公开的
+size-query API，非零需求建议保守地过量分配。
+
+当前固定的 `dav-2201` AscendC target 使用如下隐式分配策略。记 `S` 为源 tensor 字节数，
+`N = repeat_times * 32`，`d` 为源元素字节宽度。这些值是来自 CANN source 和定向 sampling 的
+保守启发式，只用于隐式 allocation；不是公开的理论最小容量，也不会用于拒绝非空显式 arena。
+
+| API | view dtype | 隐式字节数 | 依据 |
+| --- | --- | --- | --- |
+| reduce | `uint8` | 过渡期 reduce 公式且至少 32B；`physical_row > 0` 及 half sum、`clear=True` 为 0 | CANN-source/sampling 保守启发式 |
+| sort | 源 dtype | half：`8*N*d`；float：`2*N*d` | CANN-source/sampling 保守启发式 |
+| topk | 源 dtype | half：`10*N*d`；float：`4*N*d` | CANN-source/sampling 保守启发式 |
+| bilinear interpolation | `uint8` | `(src0_elements + src1_elements) * 32` | CANN-source/sampling 保守启发式 |
+| sin/cos | `uint8` | half：`max(2*S, 512)`；float：`max(2*S, 384)` | CANN-source/sampling 保守启发式 |
+| tensor-tensor pow | `uint8` | half：`max(2*S, 1152)`；float/int32：`max(2*S, 768)` | CANN-source/sampling 保守启发式 |
+| bitwise xor | `uint8` | `max(S, 64)` | CANN-source/sampling 保守启发式 |
+| round half | `uint8` | `max(S, 256)` | CANN-source/sampling 保守启发式 |
+| sigmoid | `uint8` | `S` | CANN-source/sampling 保守启发式 |
+| experimental ReduceSum | 源 dtype | `S` | CANN-source/sampling 保守启发式 |
+
+AscendC 的 clamp 系列、float round、merge sort、select、gather、gather mask 不消费 workspace。
+b16/b32 broadcast 的 equal/scalar 路径为 0B，axis 0 为 32B；axis 1 为 `q*q*d`，且当
+`dst_shape[1]*d` 未按 32B 对齐时再增加 `q*align(dst_shape[1],q)*d`，其中 `q=32/d`。
+b8 broadcast 始终使用 workspace，字节数为
+`2*(align(src_elements,16)+align(dst_elements,16)+inner_half_elements)`；其中
+`inner_half_elements` 按上述 axis 规则以 half 元素计。这些 broadcast 值来自 CANN 2201
+staging 布局。
+
+当前 AscendC codegen 会保留 BufferRegion 的起始字节地址和 workspace dtype，但尚未按 region
+extent 调用 `LocalTensor::SetSize`；因此 region extent 尚不构成 AscendC `LocalTensor` 的严格
+上界，调用者仍需保证后端实际访问所需的完整存储。PTO typed view 会同时保留字节 offset 与
+换算后的 extent。
+
 ##### 4.1.3.1 矩阵计算
 
 - `T.gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False, kL0Size=128):`
@@ -698,8 +758,13 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
 - 对 2D slice buffer 且设置了 `real_shape` 的兼容路径，`out` 还允许保持部分 physical-layout 形式，例如 `[physical_cols]` 或 `[1, physical_cols]`；这是为了兼容当前后端对 slice buffer 的 lowering 方式。
 - 非法 `dim`、非法 `real_shape`、非法 `out` shape 会在前端直接报错，而不是静默进入后端。
 - `clear` 和 `real_shape` 同时支持关键字传参和兼容的 positional 传参形式，建议优先使用关键字形式以获得更清晰的可读性。
+- `tmp` 是可选且仅允许关键字传入的完整 target-specific UB scratch arena；这里的 arena 指由一次调用自行划分和使用的一整段临时字节空间。它必须是一维、静态、连续、具有定宽标量 dtype 的 `shared.ub` Buffer，或同类 Buffer 上一维、静态、连续且起始字节地址 32B 对齐的 BufferRegion。其 dtype 不表示 workspace 数据类型；lowering 按字节地址将存储 reinterpret 为目标所需类型。容量按元素个数乘以 dtype 字节宽度计算。后端路径不需要 workspace 时允许 extent 为 0。
+- 未传 `tmp` 时由编译器自动分配；传入 `tmp` 只影响当前调用，该调用不再参与隐藏主 workspace 的分配。
+- 前端只检查 arena 的结构和起始地址对齐。target-specific 保守启发值用于隐式 allocation 和 PTO `clear=False` 的内部 view 布局，但不用于拒绝非零显式 arena；显式容量由调用者负责。当前不提供公开的 size-query API，建议在需要非零 workspace 时保守地过量分配。
+- PTO 行归约的 `clear=False` lowering 会把同一个 arena 划分为两个互不重叠的 view：主 reduce scratch view，以及从 `align_up(primary_tmp_bytes, 32)` 开始的 reduce-output view。PTO 列归约不需要主 scratch；`clear=False` 时只在 offset 0 创建 reduce-output view。
+- 已知需求为 0 时，lowering 会省略 tmp 参数及其内存访问；例如 PTO broadcast、PTO `dim=0` reduce，以及 AscendC `clear=True` 的 narrow reduce 和 `half` sum 路径。`T.alloc_ub((0,), "uint8")` 和零 extent BufferRegion 可直接用于这些调用，无需用户增加条件分支。
 
-- `T.reduce_sum(buffer: Buffer, out: Buffer, dim: int = -1, clear: bool = True, real_shape: list[int] | None = None)`
+- `T.reduce_sum(buffer: Buffer, out: Buffer, dim: int = -1, *args, clear: bool = True, real_shape: list[int] | None = None, tmp: Buffer | BufferRegion | None = None)`
 
   **参数**：
 
@@ -708,6 +773,7 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
   - dim：reduce轴
   - clear：是否在计算前清空输出buffer
   - real_shape：2D slice buffer 的逻辑有效范围
+  - tmp：可选的完整 target-specific UB scratch arena，仅允许关键字传入
 
   **功能说明**：
 
@@ -737,7 +803,14 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
   T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1, clear=False)
   ```
 
-- `T.reduce_max(buffer: Buffer, out: Buffer, dim: int = -1, clear: bool = True, real_shape: list[int] | None = None)`
+  保守分配显式 arena 的示例（允许大于 target 的实际需求）：
+
+  ```
+  reduce_tmp_ub = T.alloc_ub((64 * 1024,), "uint8")
+  T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1, tmp=reduce_tmp_ub)
+  ```
+
+- `T.reduce_max(buffer: Buffer, out: Buffer, dim: int = -1, *args, clear: bool = True, real_shape: list[int] | None = None, tmp: Buffer | BufferRegion | None = None)`
 
   **参数**：
 
@@ -746,6 +819,7 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
   - dim：reduce轴
   - clear：是否在计算前清空输出buffer
   - real_shape：2D slice buffer 的逻辑有效范围
+  - tmp：可选的完整 target-specific UB scratch arena，仅允许关键字传入
 
   **功能说明**：
 
@@ -773,7 +847,7 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
   T.reduce_max(in_shared, out_shared, dim=-1, real_shape=[4, 4])
   ```
 
-- `T.reduce_min(buffer: Buffer, out: Buffer, dim: int = -1, clear: bool = True, real_shape: list[int] | None = None)`
+- `T.reduce_min(buffer: Buffer, out: Buffer, dim: int = -1, *args, clear: bool = True, real_shape: list[int] | None = None, tmp: Buffer | BufferRegion | None = None)`
 
   **参数**：
 
@@ -782,6 +856,7 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
   - dim：reduce轴
   - clear：是否在计算前清空输出buffer
   - real_shape：2D slice buffer 的逻辑有效范围
+  - tmp：可选的完整 target-specific UB scratch arena，仅允许关键字传入
 
   **功能说明**：
 
@@ -855,7 +930,20 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
 
   从这三张图可以看出，`clear=False` 并不会改变 reduce 轴本身的定义，也不会改变输出 shape 的约束；它只是在 reduce 结果生成之后，再根据操作类型执行一次额外的 merge。
 
-##### 4.1.3.3 Element-wise math类
+##### 4.1.3.3 Broadcast类
+
+- `T.tile.broadcast(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, axis: int | None = None, *, tmp: Buffer | BufferRegion | None = None)`
+
+  `T.tile.broadcast` 在 UB 中把 `src` 广播到 `dst`。`axis` 可以显式指定为 `0` 或 `1`，也可以留空由静态 shape 推断。
+
+  `tmp` 与 reduce 的显式 arena 使用同一结构约束：一维、静态、连续、具有任意定宽标量 dtype 的 `shared.ub` Buffer，或起始字节地址 32B 对齐的同类 BufferRegion。dtype 仅决定元素数到字节容量和地址的换算，lowering 会将存储 reinterpret 为目标所需类型。`tmp` 仅允许关键字传入。PTO broadcast 不需要 workspace，因此可以省略 `tmp`，也可以传入零长度 arena；lowering 不会生成零尺寸 Tensor 或内存访问。AscendC broadcast 的显式容量当前由调用者负责，建议保守地过量分配。
+
+  ```
+  broadcast_tmp_ub = T.alloc_ub((64 * 1024,), "uint8")
+  T.tile.broadcast(dst_ub, src_ub, axis=1, tmp=broadcast_tmp_ub)
+  ```
+
+##### 4.1.3.4 Element-wise math类
 
 TileLang提供了多种元素级操作算符，并结合调度原语**T.Parallel**实现Element-wise类的操作。目前支持的元素级别操作如下：
 

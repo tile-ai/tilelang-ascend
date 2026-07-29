@@ -146,6 +146,27 @@ T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1, clear=False)
 T.reduce_max(in_shared, out_shared, dim=-1, real_shape=[4, 4])
 ```
 
+### 临时 workspace arena（`tmp`）
+
+下列公开计算 API 的 `tmp` 都是仅限关键字的可选参数：三个 reduce，以及
+`broadcast`、`sort`、`merge_sort`、`topk`、`gather_mask`、`select`、`gather`、
+`sigmoid`、`sin`、`cos`、`pow`、`bitwise_xor`、`clamp` 系列、`round`、已弃用的
+`bilinear_interpolation` 和两个 experimental ReduceSum API。PTO 不支持
+`bilinear_interpolation`、`sin`、`cos` 或两个 experimental ReduceSum API。
+
+显式 `tmp` 是一次调用完整的 target-specific arena。其 backing Buffer 必须是一维、静态、
+连续、定宽标量 dtype 的 `shared.ub` Buffer；BufferRegion 本身也必须一维、静态、位于该
+Buffer 内，且起始字节地址 32B 对齐。dtype 只决定 arena 的字节几何
+（`extent * sizeof(dtype)`）；lowering 在同一字节存储上建立目标所需的 typed view，不做数值
+转换，并保留 region 的字节起点。前端只验证该几何和对齐，非零显式 arena 的容量始终由调用者
+负责。
+
+省略 `tmp` 时由编译器管理。`dav-2201` AscendC 的隐式 workspace 字节数是来自 CANN source
+和定向 sampling 的保守启发式，不是显式 arena 的下限或公开 size-query。目标路径真实不需要
+workspace 时，lowering 会移除 operand，故可传零 extent arena。AscendC 目前不会由 region
+extent 调用 `LocalTensor::SetSize`，所以 region extent 不是严格的 `LocalTensor` 上界；仍须
+提供后端所有访问所需的存储。
+
 ---
 
 ## 3. Element-wise 运算（Developer 模式 T.Parallel）
