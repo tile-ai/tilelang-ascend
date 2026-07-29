@@ -147,9 +147,9 @@ def _shell_invoked_tests(repo_root: Path) -> set[str]:
 def find_unregistered_tests(repo_root: Path, active: list[tuple[str, str]], pending: list[tuple[str, str]]) -> list[str]:
     """List example tests that match no manifest entry, live or reserved.
 
-    With every operator reserved up front, a test file that matches nothing is
-    almost always a misspelt name: its reservation stays pending, the operator
-    keeps running in the legacy runner, and CI passes without anyone noticing.
+    The legacy runner skips every test_*.py by name, so a test that matches no
+    entry is run by nothing at all while CI stays green. Tests a sibling shell
+    script invokes are exempt: those never went through the manifest.
     """
     expected = {test for _, test in active} | {test for _, test in pending}
     invoked = _shell_invoked_tests(repo_root)
