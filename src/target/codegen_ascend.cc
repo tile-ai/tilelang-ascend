@@ -770,20 +770,6 @@ void CodeGenTileLangAscend::VisitStmt_(const AttrStmtNode *op) {
     }
     this->VisitStmt(op->body);
     return;
-  } else if (op->attr_key == "init_flag" || op->attr_key == "clear_flag") {
-    const StringImmNode *instn = op->value.as<StringImmNode>();
-
-    std::string inst = std::string(instn->value);
-    size_t st = 0;
-    for (size_t i = 0; i < inst.size(); ++i) {
-      if (inst[i] == '\n') {
-        this->PrintIndent();
-        stream << inst.substr(st, i - st) << "\n";
-        st = i + 1;
-      }
-    }
-    this->VisitStmt(op->body);
-    return;
   } else if (op->attr_key == "resource_scope") {
     auto resource_id = Downcast<IntImm>(op->value)->value;
     auto resource_name = resource_id == 0 ? "AIC" : "AIV";
