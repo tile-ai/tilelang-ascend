@@ -326,13 +326,36 @@ def reduce(
         raise ValueError(f"Unsupported buffer rank {len(buffer_extent)} for Ascend fast-path reduce: {buffer_extent}")
     shape = f"{M}, {N}"
 
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_reduce"),
+    # The logical width can be narrower than the row the data actually sits in --
+    # a sliced region (``ub[:, a:b]``) or a ``real_shape`` narrower than the
+    # buffer. The reduce then has to step by the PHYSICAL row width to move
+    # between rows, which the {M, N} shape alone cannot express, so pass that
+    # width along when it differs. Emitted only when it differs, so every
+    # existing call is byte-identical.
+    physical_row = None
+    src_buffer = buffer.buffer if isinstance(buffer, BufferRegion) else buffer
+    if isinstance(src_buffer, Buffer) and len(src_buffer.shape) >= 1:
+        physical_row = src_buffer.shape[-1]
+
+    args = [
         f"{reduce_type}<{dtype}, {shape}, {dim}>",
         out_ptr,
         buffer_ptr,
         tir.const(clear, "bool"),
+    ]
+    # Attached only once every extent involved is a constant: the codegen has to
+    # read them back out of the template parameters to size the stride, and a
+    # symbolic one there has nothing it can do.
+    m_const = _try_get_const_int(M)
+    n_const = _try_get_const_int(N)
+    row_const = _try_get_const_int(physical_row)
+    if None not in (m_const, n_const, row_const) and row_const != n_const:
+        args.append(tir.IntImm("int32", row_const))
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_reduce"),
+        *args,
     )
 
 

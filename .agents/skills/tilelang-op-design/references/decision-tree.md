@@ -38,7 +38,7 @@
 │       │   pass_configs: AUTO_SYNC + AUTO_CV_COMBINE + AUTO_CV_SYNC
 │       │   同步: AUTO_SYNC + AUTO_CV_SYNC 自动处理
 │       │   V 核: threads=2 自动并行（消 vid）；复杂场景才回退 workspace+vid
-│       │   写法: 见 tilelang-expert-to-developer mode-examples.md §6
+│       │   写法: 见 tilelang-programming-model-guide mode-examples.md §6
 │       │
 │       ├─ Expert 模式（极致性能）
 │       │   模式: Expert + T.Scope("C"/"V") + T.set_cross_flag

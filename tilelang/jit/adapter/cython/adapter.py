@@ -205,6 +205,8 @@ class CythonKernelAdapter(BaseKernelAdapter):
     buffer_device_map: dict[tir.Var, tuple[int, torch.device]] | None = None
     # Pass configs for the compiler
     pass_configs: dict[str, Any] | None = None
+    # Resolved Bisheng compile flags for this kernel
+    compile_flags: list[str] | str | None = None
 
     def __init__(
         self,
@@ -220,6 +222,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
         kernel_global_source: str | None = None,
         verbose: bool = False,
         pass_configs: dict[str, Any] | None = None,
+        compile_flags: list[str] | str | None = None,
     ):
         """Initialize the adapter with the given TIR function or module.
 
@@ -253,8 +256,9 @@ class CythonKernelAdapter(BaseKernelAdapter):
         self.buffer_device_map = self._process_buffer_device()
 
         self.verbose = verbose
+        self.compile_flags = compile_flags
         self.wrapper = TLWrapper("npu")
-        self.lib_generator = LibraryGenerator(target, platform)
+        self.lib_generator = LibraryGenerator(target, platform, compile_flags)
 
         self.wrapper.assign_optimized_module(self.ir_module)
         self.wrapper.assign_pass_configs(pass_configs)
@@ -296,6 +300,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
         kernel_lib_path: str,
         verbose: bool = False,
         pass_configs: dict[str, Any] | None = None,
+        compile_flags: list[str] | str | None = None,
     ):
         adapter = cls.__new__(cls)
         adapter.params = params
@@ -305,6 +310,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
         adapter.kernel_global_source = kernel_global_source
         adapter.wrapped_source = kernel_global_source
         adapter.pass_configs = pass_configs
+        adapter.compile_flags = compile_flags
 
         if isinstance(func_or_mod, tir.PrimFunc):
             adapter.ir_module = tvm.IRModule({func_or_mod.attrs["global_symbol"]: func_or_mod})
@@ -321,7 +327,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
         adapter.buffer_device_map = adapter._process_buffer_device()
 
         adapter.verbose = verbose
-        adapter.lib_generator = LibraryGenerator(target, platform)
+        adapter.lib_generator = LibraryGenerator(target, platform, compile_flags)
         adapter.lib = adapter.lib_generator.load_lib(lib_path=kernel_lib_path)
 
         # adapter.lib.get_last_error.restype = ctypes.c_char_p

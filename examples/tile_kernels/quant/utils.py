@@ -1,5 +1,6 @@
 from dataclasses import dataclass, replace
 from typing import Optional
+
 import torch
 
 __all__ = [
@@ -86,21 +87,41 @@ def get_sf_shape(shape: tuple[int, int], config: BaseCastConfig) -> tuple[int, i
     return (num_block_m, num_block_k)
 
 
-def alloc_scaling_factors(shape: tuple[int, int], out_config: BaseCastConfig, device: torch.device) -> torch.Tensor:
+def alloc_scaling_factors(
+    shape: tuple[int, int],
+    out_config: BaseCastConfig,
+    device: torch.device,
+) -> torch.Tensor:
     if out_config.use_packed_ue8m0:
         assert out_config.use_tma_aligned_col_major_sf, "packed UE8M0 scaling factors require TMA-aligned col-major layout"
     sf_shape = get_sf_shape(shape, out_config)
-    return torch.empty(size=sf_shape, dtype=out_config.sf_torch_dtype, device=device)
+    return torch.empty(
+        size=sf_shape,
+        dtype=out_config.sf_torch_dtype,
+        device=device,
+    )
 
 
-def cast_epilogue(out_sf: torch.Tensor, num_tokens: int, hidden: int, config: BaseCastConfig) -> torch.Tensor:
+def cast_epilogue(
+    out_sf: torch.Tensor,
+    num_tokens: int,
+    hidden: int,
+    config: BaseCastConfig,
+) -> torch.Tensor:
     if config.use_packed_ue8m0:
         if num_tokens == 0:
-            out_sf = torch.empty((out_sf.shape[0], out_sf.shape[1] // 4), dtype=torch.int32, device=out_sf.device)
+            out_sf = torch.empty(
+                (out_sf.shape[0], out_sf.shape[1] // 4),
+                dtype=torch.int32,
+                device=out_sf.device,
+            )
         else:
             out_sf = out_sf.view(dtype=torch.int32)
     out_sf = out_sf.T if config.use_tma_aligned_col_major_sf else out_sf
-    return out_sf[: ceil_div(num_tokens, config.sf_block[0]), : ceil_div(hidden, config.sf_block[1])]
+    return out_sf[
+        : ceil_div(num_tokens, config.sf_block[0]),
+        : ceil_div(hidden, config.sf_block[1]),
+    ]
 
 
 def get_cast_input_and_config(
@@ -120,7 +141,11 @@ def get_cast_input_and_config(
             use_tma_aligned_col_major_sf = x_sf.stride(0) == 1
         if use_packed_ue8m0 is None:
             use_packed_ue8m0 = x_sf.dtype == torch.int32
-        config = replace(config, use_tma_aligned_col_major_sf=use_tma_aligned_col_major_sf, use_packed_ue8m0=use_packed_ue8m0)
+        config = replace(
+            config,
+            use_tma_aligned_col_major_sf=use_tma_aligned_col_major_sf,
+            use_packed_ue8m0=use_packed_ue8m0,
+        )
         if config.use_tma_aligned_col_major_sf:
             x_sf = x_sf.T
             if config.use_packed_ue8m0:
@@ -132,6 +157,7 @@ def get_cast_input_and_config(
             assert x_sf.stride(1) == 1
             assert x_sf.dtype == torch.float32
         return x_data, x_sf, config
+
     assert x.dtype in (torch.bfloat16, torch.float32)
     sf_block = (1, 1) if sf_block is None else sf_block
     return (
@@ -156,7 +182,13 @@ def get_cast_output_config(
     custom_clamp_min_value: Optional[float] = None,
 ) -> CastOutputConfig:
     assert fmt in ("fp32", "float32", "e5m6", "fp8", "fp4")
-    mapping = {"fp32": torch.float32, "float32": torch.float32, "e5m6": torch.uint32, "fp8": torch.int8, "fp4": torch.int8}
+    mapping = {
+        "fp32": torch.float32,
+        "float32": torch.float32,
+        "e5m6": torch.uint32,
+        "fp8": torch.int8,
+        "fp4": torch.int8,
+    }
     if custom_clamp_min_value is None and fmt == "fp8":
         custom_clamp_min_value = 1e-4
     if custom_clamp_min_value is None and fmt == "fp4":

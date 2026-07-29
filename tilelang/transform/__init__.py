@@ -380,6 +380,18 @@ def AscendSyncInsert(target: Target, platform: str):
     return _ffi_api.AscendSyncInsert(target, platform)  # type: ignore
 
 
+def AscendSyncInsertVS(target: Target, platform: str):
+    """As a supplement to AscendSyncInsert, auto insert sync for Ascend (V→V, S↔Others).
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    ----
+    """
+    return _ffi_api.AscendSyncInsertVS(target, platform)  # type: ignore
+
+
 def CombineCV():
     """CombineCV
 
@@ -436,6 +448,25 @@ def AscendWorkspaceReduction():
     ----
     """
     return _ffi_api.AscendWorkspaceReduction()  # type: ignore
+
+
+def AscendTailMaskPropagation(rewrite_reduce: bool = True):
+    """Propagate UB tail valid-regions and rewrite vector ops to tail-aware
+    variants for the Ascend backend.
+
+    Parameters
+    ----------
+    rewrite_reduce : bool
+        Whether reduce ops may be rewritten to tail_reduce. Disabled for the PTO
+        backend, whose reduce codegen handles valid shapes natively.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    ----
+    """
+    return _ffi_api.AscendTailMaskPropagation(rewrite_reduce)  # type: ignore
 
 
 def AscendInferBufferScope():

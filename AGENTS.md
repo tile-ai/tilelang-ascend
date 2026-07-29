@@ -16,9 +16,9 @@
 
 #### 算子开发与编排
 - `tilelang-op-design`：生成算子设计方案（design.md），含三维 Kernel / threads / 动态边界 / L0C 容量 / GEMM 非整除等技术约束检测
-- `tilelang-op-generate`：基于 design.md 生成算子实现代码、内嵌 golden 与测试用例
+- `tilelang-op-develop`：基于 design.md 生成算子实现代码、内嵌 golden 与测试用例
 - `tilelang-ascend-tile-api`：新增或封装 `T.tile.xxx` 小 API 时端到端打通前端、lowering / codegen、helper、测试与文档
-- `tilelang-expert-to-developer`：Developer / Expert / 混合模式选择、pass_configs 配置与转换指南
+- `tilelang-programming-model-guide`：Developer / Expert / 混合模式选择、pass_configs 配置与转换指南
 - `tilelang-api-best-practices`：TileLang API 速查与最佳实践（Kernel 定义、内存分配、计算原语、调度同步）
 
 #### Pass 分析与设计
@@ -42,17 +42,17 @@
 - `skill-creator`：创建新 skill
 - `skill-journal`：算子开发反馈记录 schema
 - `tilelang-skill-review`：聚合 skill-journal 反馈，按命令式 apply / reject 落到对应 SKILL.md
-- `tilelang-review-skill`：通用 skill 质量评审
+- `tilelang-review`：通用 skill 质量评审
 
 ### 算子开发编排体系（OpenCode 多代理）
 
 由 [`@tilelang-op-orchestrator`](.opencode/agents/tilelang-op-orchestrator.md) 作为 Primary 驱动 3 阶段状态机，调度 3 个 Subagent：
 
 - [`@tilelang-op-analyst`](.opencode/agents/tilelang-op-analyst.md) (Stage 1)：调用 `tilelang-op-design` 完成需求理解与设计
-- [`@tilelang-op-developer`](.opencode/agents/tilelang-op-developer.md) (Stage 2)：调用 `tilelang-op-generate` 完成代码实现、测试、精度调试（一站式，attempt 上限 5 次）
+- [`@tilelang-op-developer`](.opencode/agents/tilelang-op-developer.md) (Stage 2)：调用 `tilelang-op-develop` 完成代码实现、测试、精度调试（一站式，attempt 上限 5 次）
 - [`@tilelang-op-perf-tuner`](.opencode/agents/tilelang-op-perf-tuner.md) (Stage 3，**可选**)：调用 `tilelang-perf-optimization` 完成性能调优
 
-`DESIGN.md` 非硬性约束——Subagent 在实施中发现设计错误时返回 `[DESIGN_ERROR]`，Orchestrator 回退到 Stage 1 重做（不设次数上限）。新建算子直接对 `@tilelang-op-orchestrator` 描述需求；单独使用某个 skill 可走 `/tilelang-op-design`、`/tilelang-op-generate`、`/tilelang-perf-optimization`、`/tilelang-env-check` 跳过编排层。
+`DESIGN.md` 非硬性约束——Subagent 在实施中发现设计错误时返回 `[DESIGN_ERROR]`，Orchestrator 回退到 Stage 1 重做（不设次数上限）。新建算子直接对 `@tilelang-op-orchestrator` 描述需求；单独使用某个 skill 可走 `/tilelang-op-design`、`/tilelang-op-develop`、`/tilelang-perf-optimization`、`/tilelang-env-check` 跳过编排层。
 
 ---
 
@@ -101,7 +101,7 @@
    - 设计算子时必须先询问 Developer / Expert / 混合，**禁止用默认值绕过**
    - Developer：`alloc_shared/fragment` + 自动同步 + 全部 pass_configs 开启
    - Expert：显式 `alloc_L1/ub/L0A/L0B/L0C` + 手动 `T.Scope("C"/"V")` + 手动 `T.barrier_all/set_flag/wait_flag`
-   - 详细对照见 `tilelang-expert-to-developer`
+   - 详细对照见 `tilelang-programming-model-guide`
 7. **遇到错误先分析原因，不绕过门禁**
    - 编译错误：定位行号 → 对比 API 文档 → 参考 examples/ 同类实现
    - 运行时错误：`T.dump_tensor` + `T.printf` 渐进式定位

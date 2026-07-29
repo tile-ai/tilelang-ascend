@@ -56,7 +56,7 @@ journal 文件 entry 块的标准结构（与 `skill-journal/README.md` 一致�
 
 ## 5. target_artifact 分流（权威定义）
 
-> 任何写 entry 的地方（orchestrator 反思采集 / op-generate skill 反馈 / skill-review apply 落盘）都必须按本节执行分流。**本文件是 target_artifact 规则的唯一权威源**，其它文档只能引用本节，不得复述。
+> 任何写 entry 的地方（orchestrator 反思采集 / op-develop skill 反馈 / skill-review apply 落盘）都必须按本节执行分流。**本文件是 target_artifact 规则的唯一权威源**，其它文档只能引用本节，不得复述。
 
 ### 取值与改动目标
 
@@ -78,7 +78,7 @@ journal 文件 entry 块的标准结构（与 `skill-journal/README.md` 一致�
 
 ### 写入与应用时的禁止清单
 
-- ❌ 把所有 `target_skill` 全填成 `tilelang-op-generate`（懒得分类的常见错误）
+- ❌ 把所有 `target_skill` 全填成 `tilelang-op-develop`（懒得分类的常见错误）
 - ❌ 把所有 entry 都填成 `target_artifact: skill`（懒得分流）——编译/运行错误带具体错误码的 entry 几乎都应该是 `troubleshooting`
 - ❌ 漏写 evidence（无证据的提案会被 `/tilelang-skill-review` 直接拒）
 - ❌ 在 journal 里直接写完整修订后的 SKILL.md 段落（review skill 在 apply 阶段才生成具体修改文本）
