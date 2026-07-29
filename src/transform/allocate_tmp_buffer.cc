@@ -354,7 +354,7 @@ private:
 
     if (shape.size() > 0) {
       Var tmp_buf(buffer_name_,
-                  PointerType(PrimType(DataType::UInt(8)), "shared"));
+                  PointerType(PrimType(DataType::UInt(8)), "shared.ub"));
       Buffer buffer = Buffer(tmp_buf, DataType::UInt(8), shape, {}, PrimExpr(),
                              buffer_name_, -1, 0, BufferType::kDefault);
 
@@ -409,7 +409,7 @@ private:
 
     const std::string buffer_name = buffer_name_ + "_reduce_out";
     Var tmp_buf(buffer_name,
-                PointerType(PrimType(DataType::UInt(8)), "shared"));
+                PointerType(PrimType(DataType::UInt(8)), "shared.ub"));
     return Buffer(tmp_buf, DataType::UInt(8),
                   {IntImm(DataType::Int(32), shape_size)}, {}, PrimExpr(),
                   buffer_name, -1, 0, BufferType::kDefault);
@@ -492,7 +492,7 @@ private:
       const DataType &key = kv.first;
       const Array<PrimExpr> &value = kv.second;
       std::string buffer_name = buffer_name_ + "_" + std::to_string(i);
-      Var tmp_buf(buffer_name, PointerType(PrimType(key), "shared"));
+      Var tmp_buf(buffer_name, PointerType(PrimType(key), "shared.ub"));
       Buffer buffer = Buffer(tmp_buf, key, value, {}, PrimExpr(), buffer_name,
                              -1, 0, BufferType::kDefault);
       buffers.push_back(buffer);
@@ -705,7 +705,7 @@ private:
       const DataType &key = kv.first;
       const Array<PrimExpr> &value = kv.second;
       std::string buffer_name = buffer_name_ + "_" + std::to_string(i);
-      Var tmp_buf(buffer_name, PointerType(PrimType(key), "shared"));
+      Var tmp_buf(buffer_name, PointerType(PrimType(key), "shared.ub"));
       Buffer buffer = Buffer(tmp_buf, key, value, {}, PrimExpr(), buffer_name,
                              -1, 0, BufferType::kDefault);
       buffers.push_back(buffer);

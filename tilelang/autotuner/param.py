@@ -1,5 +1,5 @@
-"""The auto-tune parameters.
-"""
+"""The auto-tune parameters."""
+
 from __future__ import annotations
 
 import tilelang
@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tilelang.jit import JITKernel
+from tilelang.utils.target import determine_platform
 import cloudpickle
 import os
 import shutil
@@ -26,6 +27,7 @@ KERNEL_PATH = "kernel.cu"
 WRAPPED_KERNEL_PATH = "wrapped_kernel.cu"
 KERNEL_LIB_PATH = "kernel_lib.so"
 PARAMS_PATH = "params.pkl"
+AUTO_GM_IDX_PATH = "auto_gm_idx.pkl"
 
 
 @dataclass(frozen=True)
@@ -36,17 +38,23 @@ class CompileArgs:
         execution_backend: Execution backend to use for kernel execution (default: "cython").
         target: Compilation target, either as a string or a TVM Target object (default: "auto").
         target_host: Target host for cross-compilation (default: None).
+        platform: Target hardware platform generation, e.g. "A2"/"A3"/"A5" (default:
+        "auto", resolved via ``TL_PLATFORM`` / device detection). See `tilelang.jit.compile`.
         verbose: Whether to enable verbose output (default: False).
         pass_configs: Additional keyword arguments to pass to the Compiler PassContext.
         Refer to `tilelang.PassConfigKey` for supported options.
+        compile_flags: Extra Bisheng compiler flags (e.g.
+        ``["--cce-auto-sync=off", "-O3"]``). See `tilelang.jit.compile`.
     """
 
     out_idx: list[int] | int | None = None
     execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython"
-    target: Literal['auto', 'cuda', 'hip'] = 'auto'
+    target: Literal["auto", "cuda", "hip"] = "auto"
     target_host: str | Target = None
+    platform: str = "auto"
     verbose: bool = False
     pass_configs: dict[str, Any] | None = None
+    compile_flags: list[str] | str | None = None
 
     def compile_program(self, program: PrimFunc):
         return tilelang.compile(
@@ -54,25 +62,27 @@ class CompileArgs:
             out_idx=self.out_idx,
             target=self.target,
             target_host=self.target_host,
+            platform=self.platform,
             verbose=self.verbose,
-            pass_configs=self.pass_configs)
+            pass_configs=self.pass_configs,
+            compile_flags=self.compile_flags,
+        )
 
     def __hash__(self):
         data = {
-            "execution_backend":
-                self.execution_backend,
-            "target":
-                str(self.target),
-            "target_host":
-                str(self.target_host) if self.target_host else None,
-            "verbose":
-                self.verbose,
-            "pass_configs":
-                json.dumps(self.pass_configs, sort_keys=True) if self.pass_configs else None,
+            "execution_backend": self.execution_backend,
+            "target": str(self.target),
+            "target_host": str(self.target_host) if self.target_host else None,
+            # Resolve "auto" so the key is partitioned by concrete platform
+            # (A2/A3/A5), matching KernelCache and respecting TL_PLATFORM.
+            "platform": determine_platform(self.platform),
+            "verbose": self.verbose,
+            "pass_configs": json.dumps(self.pass_configs, sort_keys=True) if self.pass_configs else None,
+            "compile_flags": json.dumps(self.compile_flags, sort_keys=True) if self.compile_flags else None,
         }
 
-        hash_obj = hashlib.sha256(json.dumps(data, sort_keys=True).encode('utf-8'))
-        return int.from_bytes(hash_obj.digest(), byteorder='big')
+        hash_obj = hashlib.sha256(json.dumps(data, sort_keys=True).encode("utf-8"))
+        return int.from_bytes(hash_obj.digest(), byteorder="big")
 
 
 @dataclass(frozen=True)
@@ -97,6 +107,7 @@ class ProfileArgs:
         manual_check_prog: Callable = None
         cache_input_tensors: bool = True
     """
+
     warmup: int = 25
     rep: int = 100
     timeout: int = 30
@@ -120,8 +131,8 @@ class ProfileArgs:
             "atol": self.atol,
             "max_mismatched_ratio": self.max_mismatched_ratio,
         }
-        hash_obj = hashlib.sha256(json.dumps(data, sort_keys=True).encode('utf-8'))
-        return int.from_bytes(hash_obj.digest(), byteorder='big')
+        hash_obj = hashlib.sha256(json.dumps(data, sort_keys=True).encode("utf-8"))
+        return int.from_bytes(hash_obj.digest(), byteorder="big")
 
 
 @dataclass(frozen=True)
@@ -136,6 +147,7 @@ class AutotuneResult:
         func: Optimized function.
         kernel: Compiled kernel function.
     """
+
     latency: float | None = None
     config: dict | None = None
     ref_latency: float | None = None
@@ -202,6 +214,16 @@ class AutotuneResult:
         except Exception as e:
             logger.error(f"Error saving kernel parameters to disk: {e}")
 
+        # Save auto_gm_idx (workspace reduction indices needed for runtime allocation)
+        try:
+            auto_gm_idx_path = os.path.join(cache_path, AUTO_GM_IDX_PATH)
+            if verbose:
+                logger.debug(f"Saving auto_gm_idx to file: {auto_gm_idx_path}")
+            with open(auto_gm_idx_path, "w") as f:
+                json.dump(kernel.auto_gm_idx, f)
+        except Exception as e:
+            logger.error(f"Error saving auto_gm_idx to disk: {e}")
+
     def _load_kernel_from_disk(
         self,
         cache_path: Path,
@@ -211,6 +233,8 @@ class AutotuneResult:
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         pass_configs: dict = None,
         func: Callable = None,
+        compile_flags: list[str] | str | None = None,
+        platform: str = "auto",
         verbose: bool = False,
     ) -> JITKernel:
         """
@@ -257,6 +281,17 @@ class AutotuneResult:
         except Exception as e:
             logger.error(f"Error loading kernel parameters from disk: {e}")
 
+        # Load auto_gm_idx (workspace reduction indices for runtime allocation).
+        # Missing for cache entries written before this file was persisted.
+        auto_gm_idx = []
+        auto_gm_idx_path = os.path.join(cache_path, AUTO_GM_IDX_PATH)
+        if os.path.exists(auto_gm_idx_path):
+            try:
+                with open(auto_gm_idx_path) as f:
+                    auto_gm_idx = json.load(f) or []
+            except Exception as e:
+                logger.error(f"Error loading auto_gm_idx from disk: {e}")
+
         if kernel_global_source and kernel_params:
             return JITKernel.from_database(
                 func=func,
@@ -265,9 +300,16 @@ class AutotuneResult:
                 params=kernel_params,
                 target=target,
                 target_host=target_host,
+                # Resolve "auto" to the concrete platform (respects TL_PLATFORM,
+                # so sim-mode restores load the right simulator lib). workspace_idx
+                # is not tracked by the auto-tuner (it compiles with the default).
+                platform=determine_platform(platform),
                 out_idx=out_idx,
+                workspace_idx=None,
+                auto_gm_idx=auto_gm_idx,
                 execution_backend=execution_backend,
                 pass_configs=pass_configs,
+                compile_flags=compile_flags,
             )
         else:
             return None
@@ -292,10 +334,13 @@ class AutotuneResult:
         if verbose:
             logger.debug(f"Saving latency to file: {path / LATENCY_PATH}")
         with open(path / LATENCY_PATH, "w") as f:
-            json.dump({
-                "latency": self.latency,
-                "ref_latency": self.ref_latency,
-            }, f)
+            json.dump(
+                {
+                    "latency": self.latency,
+                    "ref_latency": self.ref_latency,
+                },
+                f,
+            )
 
         # save kernel
         self._save_kernel_to_disk(path, self.kernel)
@@ -325,10 +370,18 @@ class AutotuneResult:
             latency = json.load(f)
             latency, ref_latency = latency["latency"], latency["ref_latency"]
 
-        kernel = cls._load_kernel_from_disk(cls, path, compile_args.target,
-                                            compile_args.target_host, compile_args.out_idx,
-                                            compile_args.execution_backend,
-                                            compile_args.pass_configs, func)
+        kernel = cls._load_kernel_from_disk(
+            cls,
+            path,
+            compile_args.target,
+            compile_args.target_host,
+            compile_args.out_idx,
+            compile_args.execution_backend,
+            compile_args.pass_configs,
+            func,
+            compile_flags=compile_args.compile_flags,
+            platform=compile_args.platform,
+        )
         if kernel is None:
             return None
         kernel.update_tuner_result(

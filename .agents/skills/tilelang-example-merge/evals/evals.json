@@ -1,0 +1,23 @@
+{
+  "skill_name": "tilelang-example-merge",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我把 softmax 算子合并成上库文件，准备提 PR",
+      "expected_output": "在 examples/softmax/ 下生成 example_softmax.py，包含 softmax kernel + 1个L0用例(128,4096) + 1个L1用例(512,512)，用 torch.testing.assert_close，无 import softmax 语句，可直接 python 运行打印 Kernel Output Match!",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "layer_norm 算子要提 PR，需要生成单文件 example 方便上库",
+      "expected_output": "在 examples/normalization/ 下生成 example_layer_norm.py。注意 layer_norm 当前已是单文件(layer_norm.py 含kernel+test)，skill 应识别这种情况并从现有 test_configs 中选取2个代表性配置生成精简版 example，或直接基于现有结构生成。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "gelu_mul 算子合并成 example 文件上库",
+      "expected_output": "在 examples/developer_mode/ 下生成 example_gelu_mul.py，包含 gelu_mul kernel + 2个代表性测试配置(从 test_configs 选取)，用 torch.testing.assert_close，无 import 语句，可直接运行。",
+      "files": []
+    }
+  ]
+}

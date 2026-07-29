@@ -88,15 +88,15 @@
 
 应用项: 1, 3, 4
 - [1] tilelang-op-design §2.5.1 (skill): ✅ 已添加 UB 容量限制行 (3 个 entry 标记 applied)
-- [3] tilelang-op-generate §3 (skill): ✅ 已修正 broadcast 示例 (1 个 entry 标记 applied)
-- [4] tilelang-op-generate / 编译时错误.内存分配失败 (troubleshooting): ✅ 已追加 case "block_M 过大 → 砍到 64" (2 个 entry 标记 applied)
+- [3] tilelang-op-develop §3 (skill): ✅ 已修正 broadcast 示例 (1 个 entry 标记 applied)
+- [4] tilelang-op-develop / 编译时错误.内存分配失败 (troubleshooting): ✅ 已追加 case "block_M 过大 → 砍到 64" (2 个 entry 标记 applied)
 
 跳过项: 0
 
 涉及文件:
 - .agents/skills/tilelang-op-design/SKILL.md
-- .agents/skills/tilelang-op-generate/SKILL.md
-- .agents/skills/tilelang-op-generate/references/troubleshooting.md
+- .agents/skills/tilelang-op-develop/SKILL.md
+- .agents/skills/tilelang-op-develop/references/troubleshooting.md
 
 建议: git diff .agents/skills/ 确认改动是否符合预期
 ```

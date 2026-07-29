@@ -1,0 +1,18 @@
+diff --git a/python/tvm/tir/buffer.py b/python/tvm/tir/buffer.py
+index ec57ad780..916478939 100644
+--- a/python/tvm/tir/buffer.py
++++ b/python/tvm/tir/buffer.py
+@@ -185,7 +185,12 @@ class Buffer(Object, Scriptable):
+         if not isinstance(indices, (tuple, list)):
+             indices = [indices]
+         has_slice = any(isinstance(i, slice) for i in indices)
+-        has_step = any(isinstance(i, slice) and i.step is not None for i in indices)
++        # tilelang-ascend: treat an explicit unit step (a:b:1) as no step so
++        # runtime-dynamic slices (e.g. buf[0, 0:idx]) take the BufferRegion path
++        # instead of Ramp's int(lanes), which needs a compile-time-constant length.
++        has_step = any(
++            isinstance(i, slice) and i.step is not None and i.step != 1 for i in indices
++        )
+         analyzer = Analyzer()
+         if has_slice and not has_step:
+             region = []

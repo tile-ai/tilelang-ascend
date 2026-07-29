@@ -50,7 +50,7 @@ from .allocate import (
     alloc_L1,  # noqa: F401
     alloc_ub,  # noqa: F401
 )
-from .copy import copy, c2d_im2col, npu_copy_v2 as copy  # noqa: F401, F811
+from .copy_op import copy, c2d_im2col, npu_copy_v2 as copy  # noqa: F401, F811
 from .gemm import GemmWarpPolicy, gemm  # noqa: F401
 
 # from .fill import fill, clear  # noqa: F401
@@ -80,7 +80,8 @@ from .builtin import *  # noqa: F401
 
 from .memscope import *  # noqa: F401
 
-from .ascend import *
+from .ascend import *  # noqa: F401, F403
+from .ascend import _src_code  # explicit export: underscore names not in *  # noqa: F401
 from .reduce_ascend import *  # noqa: F401, F403
 from . import ascend_tile as tile  # noqa: F401
 
