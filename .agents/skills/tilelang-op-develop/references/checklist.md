@@ -17,7 +17,12 @@
 
 | # | 检查项 | 说明 |
 |---|--------|------|
-| 0 | **算子主要操作全部在 kernel 内实现** | 算子的所有核心计算逻辑（数据搬运、数学运算、归约、归一化等）必须在 `@tilelang.jit` 装饰的 kernel 函数内部完成。kernel 外部只允许做数据准备（输入 tensor 创建）、kernel 调用和结果验证。**不满足时必须立即修改后再继续后续检查** |
+| 0 | **算子主要操作全部在 kernel 内实现** | 算子的所有核心计算逻辑（数据搬运、数学运算、归约、归一化等）必须在 `@tilelang.jit` 装饰的 kernel 函数内部完成。host 侧对 NPU 张量严禁：①改数据指针（把输入/输出 tensor 重新绑定到别的 tensor）；②`.contiguous()` 等会触发真实数据拷贝/重排的操作（只改 stride 的 `reshape`/`view`/`transpose`/`permute`/`expand` 允许）；③直接改写 buffer 内容（`x[:]=`、in-place `_()`、`out=`）；④用新 buffer 作弊（host 侧处理完用新 tensor 顶替原输入）。**不满足时必须立即修改后再继续后续检查** |
+| 0a | **host 侧无隐式 aclnn 调用** | host 侧代码（含 kernel 调用前的输入预处理和 kernel 调用后的输出后处理）不得出现会触发 aclnn 的操作：`torch.nn.functional.pad`/`cat`/`interpolate`、`torch.cat`/`stack`、`.to(dtype)` dtype 转换、`.clone()`/`.copy_()`、对非 contiguous 张量的 `reshape`。**重点检查输出侧**：若 kernel 输出为 padded shape，host 侧不得用切片（如 `y[:,:,:,:S]`）+ `reshape` 裁剪——切片后 tensor 非 contiguous，reshape 会隐式 `.contiguous()` → `aclnnCopy`。应改为让 kernel 直接输出到与原始 shape 一致的 buffer（`T.copy` + `pad_value` 处理尾块），host 侧仅做纯 view 的 `reshape` |
+| 0b | **T.copy 4D+ 切片列方向 strided 检查** | 检查 kernel 内所有 `T.copy` 调用的切片表达式：如果切片的列维不是 buffer 最内有效维，且其后还有 shape>1 的维度，会产生静默错位。必须改成 JIT stride + 合法二维/逐连续段搬运，或在输入本来 contiguous 且 reshape 确认为零拷贝时做轴组归一化；**禁止对 permute 后的非 contiguous NPU tensor 做 host reshape**。详见 coding-conventions.md §2.1/§6 |
+| 0c | **测试路径无 aclnn** | 测试输入、随机数、特殊值注入、dtype 转换和 golden 物理重排均在 CPU 完成；仅 H2D→kernel→D2H。`aclnnInplaceRandom` 属测试准备错误，不得归因于 kernel |
+| 0d | **数据搬运成本通过** | 每条结构/dtype 路径已核算 GM pass、DMA transaction、GM 标量访问和地址 div/mod；大张量无逐元素 strided GM，连续 suffix record 已聚合搬运 |
+| 0e | **性能哨兵通过** | 用户关键/最大 case 和每条最坏路径均实际执行且未超时；不得因标记 large/L1 而 skip 后宣称完成 |
 
 ## 1. 功能验证
 
@@ -38,6 +43,7 @@
 |---|--------|------|
 | 9 | **Golden 实现一致** | 迁移算子必须使用原算子的 golden 实现 |
 | 10 | **输出形状匹配** | 检查是否需要 transpose 来匹配原算子输出 shape |
+| 10a | **特殊值位置敏感验证** | 支持 NaN/Inf 时，至少一个阻塞用例使用“有限值 + 稀疏特殊值”的确定性混合输入；先严格比较 NaN/正 Inf/负 Inf mask，再比较有限值。全 NaN/全 Inf 及 `allclose(equal_nan=True)` 不得作为唯一门禁 |
 
 ## 3. 上库前收尾检查
 

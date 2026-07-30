@@ -458,6 +458,30 @@ for j in range(1, L):
 
 ---
 
+## 纯 Vector 算子误开 AUTO_CV_COMBINE
+
+**识别特征**：纯 Vector 算子（`get_kernel_source()` 只有 `IS_ASCEND_AIV`），pass_configs 中开了 `TL_ASCEND_AUTO_CV_COMBINE: True`，且 kernel 内使用了 `T.alloc_var`。
+
+**性能/正确性原因**：`AUTO_CV_COMBINE` 会把 `alloc_var` 的赋值分配到 Cube 核、读取分配到 Vector 核。纯 Vector 算子没有 Cube 计算路径，赋值和读取分离到不同核后值不传递，导致地址计算错误（静默数据错位，不报错但结果错误）。**不限于使用 stride buffer 的算子**——任何纯 Vector 算子中使用 `alloc_var` 的情况均受影响。
+
+**替代写法**：纯 Vector 算子**不开** `AUTO_CV_COMBINE`：
+
+```python
+PASS_CONFIGS = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    # 不开 AUTO_CV_COMBINE：纯 Vector 算子不需要，且会导致 alloc_var 跨核
+}
+```
+
+**检查点**：
+- `get_kernel_source()` 是否只有 `IS_ASCEND_AIV`（纯 Vector）？
+- pass_configs 是否开了 `AUTO_CV_COMBINE`？
+- kernel 内是否使用了 `T.alloc_var`？
+- 三者同时满足 → 立即关闭 `AUTO_CV_COMBINE`
+
+---
+
 ## 评审记录模板
 
 发现性能关注项但暂不修改时，在优化记录中写清楚：
