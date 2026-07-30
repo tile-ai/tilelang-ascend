@@ -119,4 +119,9 @@ def test_chunk_global_cumsum_vector(batch, heads, seq_len, s_dim, reverse, head_
     actual = example.chunk_global_cumsum_vector(s, reverse=reverse, head_first=head_first)
     expected = example.ref_chunk_global_cumsum_vector(s, reverse=reverse, head_first=head_first)
 
-    torch.testing.assert_close(actual.cpu(), expected.cpu(), rtol=1e-5, atol=1e-5)
+    # 1e-4 rather than the 1e-5 the other three hold, which is what the example
+    # itself allows here: this variant accumulates across the whole sequence
+    # instead of within a chunk, and the kernel and the reference reach the same
+    # sum in a different order. At 256 elements that showed up as five values in
+    # 262144 landing 1.4e-5 apart.
+    torch.testing.assert_close(actual.cpu(), expected.cpu(), rtol=1e-4, atol=1e-4)
