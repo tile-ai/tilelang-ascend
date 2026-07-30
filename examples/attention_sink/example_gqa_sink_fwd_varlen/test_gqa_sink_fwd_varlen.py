@@ -55,83 +55,54 @@ def _setup():
 # ===========================================================================
 
 
+def _prepare(batch, heads, groups, q_seqlen, k_seqlen, dim, is_causal):
+    """Build data, mask, kernel, and workspaces. Returns (kernel, inputs, ref_out, out_3d)."""
+    torch.manual_seed(42)
+    head_kv = heads // groups
+    dtype = torch.float16
+
+    Q_3d, K_3d, V_3d, cu_q, cu_k, sinks = make_varlen_data(batch, q_seqlen, k_seqlen, heads, head_kv, dim, dtype)
+    Q_4d = varlen_to_padded(Q_3d, cu_q, q_seqlen, heads, dim)
+    K_4d = varlen_to_padded(K_3d, cu_k, k_seqlen, head_kv, dim)
+    V_4d = varlen_to_padded(V_3d, cu_k, k_seqlen, head_kv, dim)
+
+    q_seqlens = torch.full([batch], q_seqlen, dtype=torch.int32, device="npu")
+    kv_seqlens = torch.full([batch], k_seqlen, dtype=torch.int32, device="npu")
+
+    mask_tiled, total_tiles = make_attention_mask(batch, q_seqlen, k_seqlen, q_seqlens, kv_seqlens, is_causal, BLOCK_M, BLOCK_N, "npu")
+
+    kernel = gqa_sink_fwd(
+        batch,
+        groups,
+        heads,
+        dim,
+        q_seqlen,
+        k_seqlen,
+        is_causal,
+        mask_tiles=total_tiles,
+        block_M=BLOCK_M,
+        block_N=BLOCK_N,
+        num_stages=NUM_STAGES,
+        core_num=CORE_NUM,
+    )
+
+    ws1 = torch.zeros(CORE_NUM, NUM_STAGES, BLOCK_M, BLOCK_N, dtype=torch.float32, device="npu")
+    ws2 = torch.zeros(CORE_NUM, NUM_STAGES, BLOCK_M, BLOCK_N, dtype=torch.float16, device="npu")
+    ws3 = torch.zeros(CORE_NUM, NUM_STAGES, BLOCK_M, dim, dtype=torch.float32, device="npu")
+
+    out_4d = kernel(Q_4d, K_4d, V_4d, sinks, q_seqlens, kv_seqlens, k_seqlen, mask_tiled, None, ws1, ws2, ws3)
+    out_3d = padded_to_varlen(out_4d, cu_q, heads, dim)
+    ref_out = ref_program(Q_3d, K_3d, V_3d, cu_q, cu_k, q_seqlen, k_seqlen, sinks, batch, is_causal, groups=groups)
+
+    inputs = (Q_4d, K_4d, V_4d, sinks, q_seqlens, kv_seqlens, k_seqlen, mask_tiled, None, ws1, ws2, ws3)
+    return kernel, inputs, ref_out, out_3d
+
+
 def _run_one(batch, heads, groups, q_seqlen, k_seqlen, dim, is_causal, name, level):
     """Run one test case, print [PRECISION_PASS/FAIL] or [BOUNDARY_PASS/WARN]."""
     tag = "PRECISION" if level in ("l0", "l1") else "BOUNDARY"
     try:
-        torch.manual_seed(42)
-        head_kv = heads // groups
-        dtype = torch.float16
-
-        Q_3d, K_3d, V_3d, cu_q, cu_k, sinks = make_varlen_data(batch, q_seqlen, k_seqlen, heads, head_kv, dim, dtype)
-        Q_4d = varlen_to_padded(Q_3d, cu_q, q_seqlen, heads, dim)
-        K_4d = varlen_to_padded(K_3d, cu_k, k_seqlen, head_kv, dim)
-        V_4d = varlen_to_padded(V_3d, cu_k, k_seqlen, head_kv, dim)
-
-        q_seqlens = torch.full([batch], q_seqlen, dtype=torch.int32, device="npu")
-        kv_seqlens = torch.full([batch], k_seqlen, dtype=torch.int32, device="npu")
-
-        mask_tiled, total_tiles = make_attention_mask(
-            batch,
-            q_seqlen,
-            k_seqlen,
-            q_seqlens,
-            kv_seqlens,
-            is_causal,
-            BLOCK_M,
-            BLOCK_N,
-            "npu",
-        )
-
-        kernel = gqa_sink_fwd(
-            batch,
-            groups,
-            heads,
-            dim,
-            q_seqlen,
-            k_seqlen,
-            is_causal,
-            mask_tiles=total_tiles,
-            block_M=BLOCK_M,
-            block_N=BLOCK_N,
-            num_stages=NUM_STAGES,
-            core_num=CORE_NUM,
-        )
-
-        ws1 = torch.zeros(CORE_NUM, NUM_STAGES, BLOCK_M, BLOCK_N, dtype=torch.float32, device="npu")
-        ws2 = torch.zeros(CORE_NUM, NUM_STAGES, BLOCK_M, BLOCK_N, dtype=torch.float16, device="npu")
-        ws3 = torch.zeros(CORE_NUM, NUM_STAGES, BLOCK_M, dim, dtype=torch.float32, device="npu")
-
-        out_4d = kernel(
-            Q_4d,
-            K_4d,
-            V_4d,
-            sinks,
-            q_seqlens,
-            kv_seqlens,
-            k_seqlen,
-            mask_tiled,
-            None,
-            ws1,
-            ws2,
-            ws3,
-        )
-        out_3d = padded_to_varlen(out_4d, cu_q, heads, dim)
-
-        ref_out = ref_program(
-            Q_3d,
-            K_3d,
-            V_3d,
-            cu_q,
-            cu_k,
-            q_seqlen,
-            k_seqlen,
-            sinks,
-            batch,
-            is_causal,
-            groups=groups,
-        )
-
+        _, _, ref_out, out_3d = _prepare(batch, heads, groups, q_seqlen, k_seqlen, dim, is_causal)
         max_diff = (out_3d.cpu().float() - ref_out.cpu().float()).abs().max().item()
         torch.testing.assert_close(out_3d.cpu().float(), ref_out.cpu().float(), rtol=RTOL, atol=ATOL)
 
@@ -229,7 +200,7 @@ def test_gqa_sink_fwd_boundary():
 # ===========================================================================
 
 
-def test_gqa_sink_fwd_bench():
+def run_bench():
     """Performance benchmark using tilelang.profiler.do_bench."""
     bench_configs = [
         (8, 64, 16, 2048, 2048, 128, True, "large_causal"),
@@ -250,53 +221,13 @@ def test_gqa_sink_fwd_bench():
     ok = True
     for batch, heads, groups, q_seqlen, k_seqlen, dim, is_causal, label in bench_configs:
         try:
-            head_kv = heads // groups
-            dtype = torch.float16
-            torch.manual_seed(42)
-
-            Q_3d, K_3d, V_3d, cu_q, cu_k, sinks = make_varlen_data(batch, q_seqlen, k_seqlen, heads, head_kv, dim, dtype)
-            Q_4d = varlen_to_padded(Q_3d, cu_q, q_seqlen, heads, dim)
-            K_4d = varlen_to_padded(K_3d, cu_k, k_seqlen, head_kv, dim)
-            V_4d = varlen_to_padded(V_3d, cu_k, k_seqlen, head_kv, dim)
-
-            q_seqlens = torch.full([batch], q_seqlen, dtype=torch.int32, device="npu")
-            kv_seqlens = torch.full([batch], k_seqlen, dtype=torch.int32, device="npu")
-
-            mask_tiled, total_tiles = make_attention_mask(
-                batch, q_seqlen, k_seqlen, q_seqlens, kv_seqlens, is_causal, BLOCK_M, BLOCK_N, "npu"
-            )
-
-            kernel = gqa_sink_fwd(
-                batch,
-                groups,
-                heads,
-                dim,
-                q_seqlen,
-                k_seqlen,
-                is_causal,
-                mask_tiles=total_tiles,
-                block_M=BLOCK_M,
-                block_N=BLOCK_N,
-                num_stages=NUM_STAGES,
-                core_num=CORE_NUM,
-            )
-
-            ws1 = torch.zeros(CORE_NUM, NUM_STAGES, BLOCK_M, BLOCK_N, dtype=torch.float32, device="npu")
-            ws2 = torch.zeros(CORE_NUM, NUM_STAGES, BLOCK_M, BLOCK_N, dtype=torch.float16, device="npu")
-            ws3 = torch.zeros(CORE_NUM, NUM_STAGES, BLOCK_M, dim, dtype=torch.float32, device="npu")
-
-            # Precision check
-            out_4d = kernel(Q_4d, K_4d, V_4d, sinks, q_seqlens, kv_seqlens, k_seqlen, mask_tiled, None, ws1, ws2, ws3)
-            out_3d = padded_to_varlen(out_4d, cu_q, heads, dim)
-            ref_out = ref_program(Q_3d, K_3d, V_3d, cu_q, cu_k, q_seqlen, k_seqlen, sinks, batch, is_causal, groups=groups)
+            kernel, inputs, ref_out, out_3d = _prepare(batch, heads, groups, q_seqlen, k_seqlen, dim, is_causal)
             max_diff = (out_3d.cpu().float() - ref_out.cpu().float()).abs().max().item()
-            torch.testing.assert_close(out_3d.cpu().float(), ref_out.cpu().float(), rtol=ATOL, atol=ATOL)
+            torch.testing.assert_close(out_3d.cpu().float(), ref_out.cpu().float(), rtol=RTOL, atol=ATOL)
 
             # Benchmark with do_bench (CI-stable)
             latency_ms = do_bench(
-                lambda _k=kernel, _q=Q_4d, _k2=K_4d, _v=V_4d, _s=sinks, _qs=q_seqlens, _ks=kv_seqlens, _kl=k_seqlen, _m=mask_tiled, _w1=ws1, _w2=ws2, _w3=ws3: (
-                    _k(_q, _k2, _v, _s, _qs, _ks, _kl, _m, None, _w1, _w2, _w3)
-                ),
+                lambda _k=kernel, _i=inputs: _k(*_i),
                 _n_warmup=5,
                 _n_repeat=5,
                 return_mode="mean",
@@ -312,6 +243,7 @@ def test_gqa_sink_fwd_bench():
             )
         except Exception as e:
             print(f"| {label} | BENCH FAIL: {e} |")
+            traceback.print_exc()
             ok = False
 
     print()
@@ -336,7 +268,7 @@ def main():
     _setup()
 
     if args.level == "bench":
-        ok = test_gqa_sink_fwd_bench()
+        ok = run_bench()
         if ok:
             print("Test Passed!")
             sys.exit(0)
