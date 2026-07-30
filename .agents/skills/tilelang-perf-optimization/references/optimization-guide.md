@@ -818,7 +818,8 @@ x_perm = x.permute(perm)                          # 非 contiguous
 x_3d = x_perm.reshape(-1).reshape(batch, M, N)    # reshape(-1) 触发物理拷贝！
 ```
 
-**识别方法**：搜索代码中所有 `reshape` 调用，检查其操作的张量是否 contiguous（`x.is_contiguous() == False` 时 `reshape` 触发拷贝）。常见前置非 contiguous 场景：`permute`/`transpose`/`movedim` 后的张量，**但不限于这些**。
+**识别方法**：搜索所有 `reshape`，检查目标 shape 与当前 stride 是否兼容，并验证结果
+是否共享原 storage。`is_contiguous() == True` 是常见充分条件；False 不等于必然复制。
 
 **优化方法**：用 stride buffer 归一化替代（host 侧只算 stride 参数传入 kernel，kernel 内逐行搬运），消除 host 侧物理拷贝。详见下方「Stride Buffer 归一化」模式。
 
@@ -908,7 +909,7 @@ out = out_LR.reshape(moved_shape).movedim(0, d).contiguous()
 **约束**：
 - host 侧只算 stride 参数（纯 Python 整数运算），不触发任何物理拷贝
 - stride 作为 `@tilelang.jit` 函数的 Python 参数传入（JIT 编译期常量），**不打包成 GM tensor**（避免额外 GM→UB 搬运）
-- 纯 Vector 算子不开 `AUTO_CV_COMBINE`（`alloc_var` 赋值/读取需在同一核）
+- 启用 `AUTO_CV_COMBINE` 时检查生成代码中 `alloc_var` 的定义/使用核归属；确认误分核后再关闭
 - `T.copy` 不暴露 stride 参数：每次只搬一段物理连续的数据
 
 **思路**：把"数据在哪里"的计算从 host 侧 `reshape`（物理拷贝）转移到 kernel 内 `alloc_var` 累加（零拷贝）。host 侧只传地址偏移参数（JIT 编译期常量），kernel 内逐行搬运。
@@ -1411,13 +1412,17 @@ else:
 
 ### 2.16 特定 dtype 的硬件指令适配（Dtype-Specific Hardware Path Adaptation）
 
-**适用场景**：算子使用 `T.tile.transpose` 等 tile 指令，且目标 dtype 是 **bfloat16、int8、int64** 之一。这三种 dtype 不在 `T.tile.transpose` 硬件指令支持集合内（详见 `src/tl_templates/ascend/common.h` L1805-L1823 的模板分支），底层会静默回退到标量路径（逐元素 SetValue），性能下降数十倍。遇到 `T.tile.transpose` + 这三种 dtype 时即应实施本优化点。
+**适用场景**：算子声明支持的 dtype 命中目标 tile 指令的非硬件路径，并且基线或生成
+代码证明该路径是实际瓶颈。以 `T.tile.transpose` 为例，检查
+`src/tl_templates/ascend/common.h` 中对应 `Transpose` 模板分支，不依赖容易漂移的固定行号。
 
 > 也适用于其他 `T.tile.xxx` 指令 + 不支持 dtype 的组合，判断准则一致：先到 `common.h` 确认该指令的模板分支条件，再按本节候选路线选择处理方案。
 
 **识别方法（两步，缺一不可）**：
 
-**第一步：分支条件分析法**。读 `src/tl_templates/ascend/common.h` 中目标 tile 指令的 C++ 模板分支条件，列出每个 dtype 的路径归属。以 `T.tile.transpose` 为例，其模板（`common.h` L1805-L1823）有三个分支：
+**第一步：分支条件分析法**。按 `Transpose` 符号定位
+`src/tl_templates/ascend/common.h` 中目标 tile 指令的 C++ 模板分支，列出当前算子所
+支持 dtype 的路径归属，不依赖固定源码行号。
 
 | 分支 | 条件 | 命中 dtype | 路径 |
 |------|------|-----------|------|
@@ -1427,7 +1432,8 @@ else:
 
 从表中可直接看出：**标量回退的 dtype 有 3 个**（bfloat16、int8、int64）。bfloat16 虽然 `sizeof==2`，但被 `!std::is_same_v<T, bfloat16_t>` 显式排除；int8（`sizeof==1`）和 int64（`sizeof==8`）因不满足 `sizeof==2 || sizeof==4` 而回退。
 
-> **必须逐个 dtype 检查，不能只看性能最差的 case 就跳过其他 dtype**。三种标量回退 dtype 都有对应的处理方案（见下方候选路线），需要逐一确认当前代码是否已实施。
+> 只检查算子规格实际支持且受当前修改影响的 dtype；不得要求只支持一种 dtype 的算子
+> 顺带实现其他 dtype。每条候选路线仍需单独验证正确性和收益。
 
 > **UB 内 M/N 一定是 block 对齐**：使用 block 端点 + `T.tile.fill` 清零方案时，copy 到 UB 的始终是完整的 `[block_M, block_N]`（编译期常量，如 128×128），一定是 16 的倍数。因此分支条件中的 `M%16==0 && N%16==0` 自动满足，前端无感，不需要考虑"M/N 非 16 倍数导致标量回退"的情况。
 
@@ -1453,7 +1459,7 @@ else:
 
 #### 检查清单
 
-- [ ] 已用分支条件分析法逐个 dtype 列出路径归属（读 `common.h` 模板分支条件）？bfloat16、int8、int64 三种标量回退 dtype 是否**全部**识别到？
+- [ ] 已对算子规格实际支持且受本次修改影响的 dtype 分析 `common.h` 模板分支？
 - [ ] 已用 `get_kernel_source()` 验证每个标量回退 dtype 的生成代码中确实出现 `SetValue`？
 - [ ] bfloat16 是否已用 host 侧 `view(int16)` 零拷贝 reinterpret？
 - [ ] int8 是否已用 kernel 内 `T.tile.cast` 到 float16？（禁止 host 侧 `.to()` 转换）
@@ -1479,7 +1485,9 @@ full reversal 只是可能命中的一种 permutation，不是启用条件。
 不得先写 rotation planner 并直接复用现有 path1 kernel。单 stage case 通过不能证明
 该 kernel 能安全处理多 stage 产生的多 batch、双尾块和 `M/N < tile`。
 
-在修改 dispatch 前，必须输出：
+识别本优化点时，先在 Part A 输出 `[KERNEL-REUSE-PRECHECK]`；不能从当前代码证明
+stage kernel 满足下列维度时，候选方案应写成“先修复/新建 stage kernel，再实施
+planner”，不能写“直接复用 path1”。进入 Step 4 后，在修改 dispatch 前再次输出：
 
 ```text
 [KERNEL-REUSE-AUDIT]

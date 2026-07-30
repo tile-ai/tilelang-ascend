@@ -20,7 +20,9 @@ $$
 
 {对于多步算子，描述计算步骤的分解逻辑。单步算子可省略。}
 
-> **⚠️ Host 侧 Buffer 操作约束**（详见 SKILL.md §3.1）：host 侧禁止改动 NPU 张量 buffer 内的真实内容。本节描述计算步骤时，host 侧只能做视图操作（`reshape`/`view`/`transpose`/`permute`/`expand`，只改 stride/shape 元数据）+ kernel 调用 + 结果 reshape。**禁止**：`.contiguous()`、host padding（新建 buffer + 切片赋值 + 顶替）、`x[:] =`、`x = 新tensor` 顶替等。所有数据搬运/padding/维度重排必须落入 `@tilelang.jit` kernel 内部。
+> **⚠️ Host 侧 Buffer 操作约束**（详见 SKILL.md §3.2）：host 侧只允许经证明共享
+> 原 storage、只改 metadata 的 view 操作，以及 kernel 调用和验证；禁止真实数据搬运
+> 和 aclnn 计算。`reshape` 需按目标 shape/stride 证明零拷贝。
 
 ### 1.5 数据流图
 
@@ -220,7 +222,9 @@ block_num = (M // block_M) * (N // block_N)
 
 {非整除情况的处理策略、边界块的特殊逻辑等}
 
-> **⚠️ 非整除由前端自动处理**（详见 SKILL.md §3.1）：前端框架已支持自动尾块搬运（`T.copy` 动态 shape 切片），非整除时尾块无需特殊处理。**host 侧不允许 padding + crop**（`x_padded = torch.zeros(...); x_padded[:, :M] = x; x = x_padded` 属于违规：新建 buffer + 切片赋值 + 顶替原输入）。
+> **⚠️ 非整除必须显式设计**（详见 SKILL.md §3.2）：输入、输出 GM 两侧使用
+> `valid_*` extent 的 BufferRegion，前端按动态切片裁剪搬运。不得使用标量 GM 起点配
+> 完整 UB tile；host 侧不允许 padding + crop。
 
 ### 5.5 数据搬运性能可行性（数据重排算子必填）
 
@@ -259,7 +263,9 @@ with T.Kernel(block_num, is_npu=True) as (cid, vid):
 
 {当输入 shape 不能被 block size 整除时的处理策略}
 
-> **⚠️ 尾块由前端自动处理**（详见 SKILL.md §3.1）：前端框架已支持 `T.copy` 动态 shape 切片自动尾块搬运，非整除时尾块无需特殊处理。**host 侧不允许 padding + crop**。
+> **⚠️ 尾块必须显式设计**（详见 SKILL.md §3.2）：输入、输出 GM 两侧都使用
+> `valid_*` extent 的 BufferRegion；前端按这些动态切片裁剪搬运。不得用标量 GM
+> 起点配完整 UB tile，也不得在 host 侧 padding + crop。
 
 ---
 

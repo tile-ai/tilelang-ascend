@@ -6,7 +6,7 @@
 
 | # | 检查项 | 是否必须通过 |
 |---|--------|-------------|
-| 0 | **Host 侧 Buffer 操作合规性**（对应 SKILL.md §3.1）| ✅ 必须 |
+| 0 | **Host 侧 Buffer 操作合规性**（对应 SKILL.md §3.2）| ✅ 必须 |
 
 **第 0 项核对**：design.md 的 host 侧（kernel 外的 Python 代码）步骤是否仅限视图操作（`reshape`/`view`/`transpose`/`permute`/`expand`，只改 stride/shape 元数据）+ kernel 调用 + 结果 reshape？是否出现以下改动 buffer 真实内容的描述（命中即违规，必须修订后再继续后续检查）：
 
@@ -15,7 +15,10 @@
 - 直接改写 buffer 内容：`x[:] = ...`、`x.add_(1)`、`out=`
 - 改数据指针顶替：`x = y`（y 是另一个 tensor）后传入 kernel
 
-**允许**：`reshape`/`view`/`transpose`/`permute`/`expand` 等只改元数据的视图操作；数据准备（输入 tensor 创建）、kernel 调用、结果验证。**非整除处理**：前端框架已支持自动尾块搬运（`T.copy` 动态 shape 切片），不需要 host padding。所有数据搬运/padding/维度重排必须落入 `@tilelang.jit` kernel 内部。下游 `tilelang-op-generate` skill 会按相同规则再次校验。
+**允许**：经证明共享原 storage、只改 metadata 的 view 操作；数据准备、kernel 调用和
+结果验证。`reshape` 是否物理化取决于目标 shape 与当前 stride 的兼容性。非整除尾块
+必须在 kernel 输入、输出两侧写出显式 valid extent/BufferRegion，不需要 host padding。
+下游 `tilelang-op-develop` 会再次校验。
 
 ## 1. 设计质量检查
 

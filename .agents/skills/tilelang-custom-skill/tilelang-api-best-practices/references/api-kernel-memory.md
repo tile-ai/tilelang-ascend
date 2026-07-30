@@ -327,12 +327,18 @@ T.copy(
 | `x[b, 1, m:m+M, n:n+N]`（4D，buffer `[B,H,M,N]`，H=1）| `[1, 1, M, N]` | N (dim 3) | 是 | ✅ | 列数据连续 |
 | `x[b, m:m+M, n:n+N, k:k+1]`（4D 单取 K，buffer `[B,M,N,K]`，K>1）| `[1, M, N, 1]` | N (dim 2) | **否**（dim 3 的 K>1） | ❌ | 列方向每个元素间隔 K 个位置，DataCopyPad 无法搬运 |
 
-**根因**：`src/op/ascend.cc` 的 `find_active_dim_indices` 和 `compute_strideN` 对 4D+ 切片的维度识别有缺陷，且即使修复后，`DataCopyPad` 硬件指令本身也不支持列方向 strided access。
+**边界**：先用最小复现和生成代码确认当前切片是否可表示为“行内连续、行间有 gap”的
+`DataCopyPad`。若实际需要行内 stride，则硬件搬运模型不支持；不要把所有 4D+ 切片
+统一归因为 codegen 缺陷。
 
 **规避方案**：
-1. **3D 切片 + 循环遍历额外维度**：将 4D+ 切片改为 3D 切片，用 `T.serial` 循环遍历额外维度。例如 `x[b, m:m+M, n:n+N, k:k+1]` 改为 `for k in T.serial(K): T.copy(x[b, m:m+M, n:n+N, k], a_ub)`——但这仍然受限于列不连续，**不可行**。
-2. **host 侧 reshape 降维到 3D**：host 侧用 `permute` + `reshape` 把 4D+ 降维到 3D `(batch, M, N)`，使列维成为最内维。**⚠️ `reshape(-1)` 对非 contiguous 张量会触发物理拷贝（等价于 `.contiguous()`），属禁止行为。** 仅当输入已 contiguous 时可用；非 contiguous 时需用 stride 作为 JIT 编译期常量传入 kernel（详见 [api-compute.md §4.10](api-compute.md#stride-参数作为-jit-编译期常量传入-kernel避免创建-gm-tensor)）。
-3. **调整 buffer 布局**：将 GM buffer 的维度排列调整为让列维（需要切片的维度）成为最内维。
+1. **按真实连续段循环**：只在每次 `T.copy` 的片段本身物理连续时，循环额外维度。
+   若片段仍有行内 stride，此方案不适用。
+2. **零拷贝维度归一化**：仅在目标 reshape 与当前 stride 兼容并共享原 storage 时，
+   降维到可合法搬运的形态；否则使用 stride-aware kernel（详见
+   [api-compute.md §4.10](api-compute.md#stride-参数作为-jit-编译期常量传入-kernel避免创建-gm-tensor)）。
+3. **调整 kernel 的逻辑布局或分阶段**：让每次 GM 搬运的列维成为物理最内连续维，
+   必要时块 DMA 到 UB 后再做局部重排。
 
 > **设计阶段预警**：设计 4D+ 算子时，如果 `T.copy` 需要在非最内维上做切片搬运，必须在 design.md 中明确说明规避方案。不要假设 `T.copy` 支持任意维度的 strided 切片。
 

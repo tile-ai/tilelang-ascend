@@ -8,7 +8,8 @@
 - [3. 同步](#3-同步)
 - [4. 广播](#4-广播)
 - [5. 测试模板](#5-测试模板)
-- [6. Stride Buffer 非连续数据归一化](#6-stride-buffer-非连续数据归一化)
+- [6. 非连续数据维度归一化](#6-非连续数据维度归一化消除-host-侧-reshape-物理拷贝)
+- [7. Dtype 性能特化](#7-dtype-性能特化)
 
 ---
 
@@ -180,7 +181,8 @@ def check_special_masks(actual, golden):
 1. stride/shape 参数作为 `@tilelang.jit` 函数的 Python 参数传入（JIT 编译期常量），**不打包成 GM tensor**
 2. kernel 内用 `T.alloc_var` 累加偏移，stride 直接用于地址计算（静态展开，最多约 6 个 batch 轴）
 3. `T.copy` 不暴露 stride 参数：每次只搬一段物理连续的数据，非连续方向用逐行循环搬运
-4. 纯 Vector 算子不开 `AUTO_CV_COMBINE`（`alloc_var` 赋值/读取需在同一核）
+4. 若启用 `AUTO_CV_COMBINE`，检查生成代码中 `alloc_var` 的定义和使用是否在正确核；
+   只有确认发生误分核时才关闭该配置
 
 **使用方法**：
 
@@ -188,7 +190,8 @@ def check_special_masks(actual, golden):
 host 侧：
   1. 计算 row-major strides（纯 Python 整数运算）
   2. 把 stride 值作为 Python int 传入 @tilelang.jit 函数参数
-  3. x.reshape(total_numel) 作为 1D flat 输入（contiguous 张量的 reshape 是零拷贝 view）
+  3. 仅当输入 storage 本来连续且目标 flatten 与 stride 兼容时，传入共享 storage 的
+     1D view；否则保留原 rank，让 kernel 按原 shape/stride 计算合法连续 BufferRegion
 
 kernel 内：
   1. T.alloc_var 声明累加变量（boff_s, bidx_s 等）
@@ -206,7 +209,8 @@ kernel 内：
 
 **使用方法**：当 perm 可以分解为"连续轴组交换"（`prefix + A + B → prefix + B + A`）时，host 侧直接 `reshape(batch, M, N)`（零拷贝），调用 3D kernel 完成 `(batch, M, N) → (batch, N, M)`。
 
-> **判定**：`x.is_contiguous() == True` 时 `reshape` 安全；`False` 则必须用方案 A。
+> **判定**：`x.is_contiguous() == True` 是常见充分条件；为 False 时仍需检查目标
+> shape 与 stride 的兼容性及是否共享 storage，不能直接断言一定复制。
 
 > **适用条件**：不限于 transpose——任何算子需要对非 contiguous 张量做维度归一化时均可使用方案 A；输入本身 contiguous 且可分解为连续轴组交换时可用方案 B。
 

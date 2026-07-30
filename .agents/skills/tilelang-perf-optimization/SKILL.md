@@ -77,12 +77,19 @@ print(func.get_kernel_source())
 [#1] [名称]（参考: optimization-guide.md L445-L650 §2.13）：[适用/不适用] — [原因]
 ```
 
-若候选方案包含“复用现有 kernel，但扩大它的调用域”（新增 shape、batch、dtype、
-尾块或多 stage），Part A 就必须先写 `[KERNEL-REUSE-PRECHECK]`，按该候选优化点
-在 `optimization-guide.md` 中定义的兼容性维度检查当前 kernel。任何维度不能从当前
-代码直接证明时，候选描述必须写成“需先修复/新建 kernel，再实施调用方改造”，不得在
-ORDER-PLAN 中写“直接复用现有 kernel”。Step 4-B 的 `[KERNEL-REUSE-AUDIT]`
-是 Edit 前的最终复核，不是第一次发现兼容性问题。
+若候选会扩大现有 kernel 的调用域（新增 shape、batch、dtype、尾块或多 stage），
+Part A 必须先写：
+
+```text
+[KERNEL-REUSE-PRECHECK]
+candidate: <优化点及 reference 章节>
+expanded_domain: <新增调用域>
+compatibility_dimensions: <从该章节读取，不自行猜测>
+unknown_or_false: <none/列表>
+plan: direct-reuse / repair-kernel-first / new-kernel-first
+```
+
+存在 `unknown/false` 时，ORDER-PLAN 不得写 direct reuse。
 
 > **重点**：每节都需读取其"适用场景"和"约束"描述确认是否适用。仅当章节标题明确标注了特定算子类型专属（如"Cube 核"）且当前算子不属于该类型时，才可初步排除；其余所有章节必须读约束确认，不得仅凭标题或算子类型跳过。
 
@@ -109,22 +116,15 @@ ORDER-PLAN 中写“直接复用现有 kernel”。Step 4-B 的 `[KERNEL-REUSE-A
 
 **门禁**：`[ORDER-CHECK]` 未写禁止 Read；`[IMPL-#N]` 未写禁止 Edit；`[RESULT-#N]` 未写禁止下一个。
 
-**Step 4-B 复用 kernel 的兼容性门禁**：若优化会扩大现有 kernel 的调用域，Edit
-调用方、dispatch 或 planner 前必须先读取该优化点在 `optimization-guide.md` 中的
-兼容性清单，并在日志写 `[KERNEL-REUSE-AUDIT]`。任一维度为 `unknown/false`，
-禁止直接复用；必须先修复或新建 kernel，并单独验证后才能扩大调用域。原路径的 case
-通过不能证明扩展后的调用域安全。
-
-例如“离散重排 fallback 的多阶段连续化”使用
-[optimization-guide.md §2.17](references/optimization-guide.md#217-离散重排-fallback-的多阶段连续化)
-定义的 stage table、tile、core、tail、multibatch、specialization 审计；其他优化点
-使用各自章节定义的约束，不机械套用这些 layout 专属字段。
+Edit 调用方、dispatch 或 planner 前，再写 `[KERNEL-REUSE-AUDIT]` 复核候选章节规定的
+兼容性维度。任一项仍为 unknown/false，先修复或新建 kernel，并单独验证后再扩大调用域。
+不同优化点使用各自 reference 章节的维度，不套用其他优化的专属字段。
 
 **日志格式**：
 ```
 [ORDER-CHECK] 准备实施: [#N] [名称] | 前置依赖: [#1 ✅ / #2 ❌] | 结论: [✅/❌]
 [IMPL-#N] 已阅读 <文件> L行号（§X.X），关键约束: ...
-[KERNEL-REUSE-AUDIT] 依据: <optimization-guide 章节> | 兼容性维度及结论: ...
+[KERNEL-REUSE-AUDIT] 依据: <章节> | 维度及结论: <...> | 结论: <reuse/repair/new>
 [SELF-CHECK] 本次 Edit 只涉及 [#N]
 [RESULT-#N] 优化点: [名称] | 精度: [pass/fail] | 性能: [X us] | 对比: [+/-X%]
 ```

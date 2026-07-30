@@ -75,61 +75,26 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 
 ### 3.1 算子 kernel 划分原则（强制规则，生成代码前必须遵守）⭐
 
-> **⚠️ 核心原则：禁止按"不可穷举的条件"划分 kernel**
->
-> 一个算子可以有多个 kernel，但划分 kernel 的条件必须是**封闭可穷举**的。如果划分条件的取值集合无法列全或可无限扩展，则禁止按此条件划分——否则没覆盖到的取值就不支持了，违背算子通用性。
+多 kernel 或 host 多路径方案必须保证支持域完整：保留覆盖全部声明输入域的通用
+fallback，再按可判定的 dtype、shape、对齐性或输入拓扑增加有限快路径。具体 shape 或
+perm 特化本身不是违规；没有 fallback、未命中即不支持才是设计错误。
 
-#### 判断方法（写多个 kernel 前必须执行，不能跳过）
+生成前记录每条路径的适用谓词、fallback、语义等价依据和验证用例。若 design.md 没有
+完整覆盖支持域，返回 `[DESIGN_ERROR]`；不要擅自缩小支持范围。
 
-按以下 3 步逐一判断，任何一步不通过则禁止按该条件划分：
+Edit 前必须从 design.md 读取 `[DISPATCH-COVERAGE]` 并在实现日志复核：
 
-1. **列出划分条件的所有可能取值**：把条件写成集合，如 `dtype ∈ {float16, float32, bfloat16, int8, int16, int32, int64}` 或 `ndim ∈ {2, 3, 4, 5, 6, 7, 8, ...}`
-2. **判断集合是否封闭可穷举**：
-   - 集合元素有限且固定 → 可穷举 → ✅ 允许划分
-   - 集合元素可扩展 / 连续值 / 阶乘或指数增长 → 不可穷举 → ❌ 禁止划分
-3. **新增取值测试**：假设集合新增一个取值（如 ndim 从 8 扩展到 9），是否需要写新 kernel？
-   - 需要 → ❌ 禁止划分，改为通用实现
-   - 不需要（通用 kernel 自动覆盖） → ✅ 允许划分
+```text
+[DISPATCH-COVERAGE-AUDIT]
+supported_domain: <...>
+generic_fallback: <...>
+uncovered_input: none/<反例>
+specialization_cases: <每条路径至少一个>
+result: pass/fail
+```
 
-#### 写多个 kernel 前必答的自检 checklist
-
-- [ ] 划分条件是什么？（dtype / 维度数 / shape / 对齐性 / ...）
-- [ ] 取值集合是否封闭可穷举？（执行上面 3 步判断方法）
-- [ ] 新增一个取值时是否需要写新 kernel？是→禁止；否→允许
-- [ ] 如果不确定是否可穷举，是否已改为通用 kernel + host 归一化？
-
-#### 反例（多种"不可穷举"实例化，禁止照搬其中任何一个当成规则全集）
-
-> ⚠️ 以下每个反例都是"不可穷举"的**不同实例化**，规则是针对**所有不可穷举的情况**，不只是下列具体例子。判断时必须用上面的 3 步判断方法，不能只记反例。
-
-| ❌ 反例 | 为什么不可穷举 |
-|---------|---------------|
-| 按维度数划分（2D/3D/4D... 各写一个 kernel） | 维度数可无限增长，永远写不完，没写的维度就不支持 |
-| 按 (i,j) 轴组合划分（3D 有 3 种、4D 有 6 种...） | 组合数随维度数爆炸，C(n,2) 增长 |
-| 按 shape 大小档位划分（小/中/大/超大 tensor 各一个 kernel） | shape 是连续值，档位无法穷举 |
-| 按 perm 具体值划分（[1,0]、[0,2,1,3]、[4,3,2,1,0]... 各一个 kernel） | 排列数阶乘增长 n! |
-| 按输出 numel 划分（< 1M / 1M~16M / > 16M 各一个 kernel） | numel 是连续值 |
-
-#### 正例（封闭可穷举的划分，允许）
-
-| ✅ 正例 | 为什么可穷举 |
-|---------|-------------|
-| 按 dtype 划分（7 种，集合封闭） | dtype 是有限集合，硬件支持也是有限的 |
-| 按对齐性划分（对齐 / 非对齐，二分） | 二值集合，封闭 |
-| 按硬件计算路径划分（Cube / Vector） | 硬件路径有限，封闭 |
-| 按 GEMM 的 K 是否整除 block_K 划分（整除 / 有尾块，二分） | 二值集合，封闭 |
-
-#### 默认通用 + 有限特化原则
-
-当不确定划分条件是否可穷举时，**默认写一个通用 kernel 处理所有情况**，通过 host 侧 `reshape`/`permute`/`view` 等 view 操作把输入归一化到统一形态（如把任意 ndim 的转置降维到 3D `(batch, M, N)`），让一个 kernel 覆盖所有情况。性能优化阶段再按**封闭可穷举**的条件（如 dtype、对齐性）做有限特化。
-
-**反例参考**：transpose 算子曾因按维度数特化（2D/3D/4D 各写一个 kernel）被否决，后改为一个通用 3D kernel + host reshape 降维处理 2D~8D。
-
-#### 代码生成时的强制自检
-
-生成 `{op}.py` 时如果出现多个 `@tilelang.jit` 装饰的 kernel 函数，必须执行上面 3 步判断方法验证每个划分条件是否可穷举。命中不可穷举条件 → 立即重构为通用 kernel + host 归一化方案，不得继续。
-
-**⚠️ host 侧分派逻辑同样适用**：host 侧的多路径分派逻辑（如 `if perm == [0,2,1,3]: ...`）也不得硬编码不可穷举的取值（perm 具体值、shape 具体值等）。如果新增一个取值需要加新的 `if` 分支 → **违规**，必须改为通用算法（如基于 perm 拓扑特征的分类器、基于 shape 连续性的判断等）。
+找出任何未覆盖输入时立即返回 `[DESIGN_ERROR]`，不得靠删除 case、缩小输入域或新增
+无 fallback 的枚举分支继续。
 
 ---
 
@@ -147,9 +112,16 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 > | 4 | 用新 buffer 作弊 | 禁止「创建新 buffer → host 侧处理 → 替换原 tensor」绕过限制 | `x = x.add(1)`（host 算完用新 tensor 顶替原输入） |
 > | 5 | **隐式触发 aclnn 调用** | cann-bench 评测环境可能裁剪 aclnn 编译产物，以下操作在 NPU tensor 上会触发 aclnn 调用导致运行时失败：`torch.nn.functional.pad`/`cat`/`interpolate`、`torch.cat`/`stack`、`.to(dtype)` dtype 转换、`.clone()`、对非 contiguous 张量的 `reshape`（含**输出侧切片+reshape**） | `y = y[:, :, :, :S]; y.reshape(shape)`（切片后非 contiguous，reshape 隐式 `.contiguous()` → `aclnnCopy`）；`x = torch.nn.functional.pad(x, (0, pad_size))`（→ `aclnnPad`） |
 >
-> **允许**的 host 侧操作：`reshape`/`view`/`transpose`/`permute`/`expand` 等**只改 stride/shape 元数据、不触碰真实数据**的视图操作；以及数据准备（输入 tensor 创建）、kernel 调用、结果验证。**⚠️ `reshape` 的零拷贝性质以 `x.is_contiguous()` 为前提**——非 contiguous 张量（如 `permute`/`transpose`/`movedim` 后，**但不限于这些**——切片如 `y[:,:,:,:S]` 也会产生非 contiguous 张量）的 `reshape` 会触发物理拷贝，属禁止行为 #2/#5。
+> **允许**的 host 侧操作：经证明只改 metadata、共享原 storage 的 view 操作，以及
+> 数据准备、kernel 调用和结果验证。
 >
-> **判定准则**：host 侧任何会改变 NPU 张量「数据指针」或「物理存储内容/排布」或「隐式触发 aclnn 调用」的操作均禁止；只改 metadata（stride/shape）的允许。拿不准时，一律放入 kernel。**`reshape` 安全判定**：检查 `x.is_contiguous()`——`True` 则 `reshape` 零拷贝（允许）；`False` 则触发拷贝（禁止），改用 stride buffer 方案（host 侧只算 stride 参数传入 kernel，kernel 内逐行搬运）。**输出侧判定**：kernel 调用后对输出 tensor 的任何操作（切片、reshape、dtype 转换等）同样需遵守上述规则——若需要从 padded 输出中裁剪有效部分，应改为让 kernel 直接输出到与原始 shape 一致的 buffer（通过 `T.copy` + `pad_value` 处理尾块），host 侧无需切片。
+> **判定准则**：`is_contiguous()` 为 True 是 reshape 常见的零拷贝充分条件，不是必要
+> 条件。非 contiguous 输入需证明目标 shape 与 stride 兼容且操作前后共享 storage；
+> 不能证明时改用 stride-aware kernel。`permute`/`transpose` 本身通常只是 metadata view。
+
+生成代码后逐项记录 `[HOST-METADATA-AUDIT]`。对每个 host tensor 操作写明输入/输出
+stride、是否共享 storage/data pointer、是否触发 aclnn/物理拷贝；任一结论为 unknown
+都不得交付。具体检查项见 [references/checklist.md §0](references/checklist.md#0-前置检查必须最先确认)。
 
 ### 步骤 1：读取设计文档
 
@@ -201,6 +173,11 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 > [coding-conventions.md §6.1](references/coding-conventions.md#61-数据重排的正向实现配方)
 > 的六步配方生成候选实现：识别连续 record → 按成本选路径 → 聚合搬运 →
 > UB-local reorder → 必要时分阶段 → 数字验收。
+
+完成候选后必须写 `[REORDER-COST-AUDIT]`，包含 GM pass、DMA transaction/平均字节、
+GM 标量访问、逐元素 div/mod、active cores、每核串行任务和最大 case timeout。任一
+指标无法估算时先读取 §6.1 补齐；大张量路径出现 numel 级 GM 标量访问或海量短 DMA
+时不得进入精度验收。
 
 基于 design.md 的 API 映射 + 参考示例的代码风格，生成**两个文件**：`{op}.py`（纯 kernel）与 `test_{op}.py`（golden + L0 + main，L1/L2/Boundary 留桩，从 `{op}.py` import kernel）。完整文件结构骨架与融合算子注意事项见 [examples/code-skeleton.md](examples/code-skeleton.md)。
 
@@ -254,14 +231,15 @@ python examples/{op}/test_{op}.py --level l0
 
 ### 步骤 5：上库前检查清单
 
-运行通过后，必须按 [references/checklist.md](references/checklist.md) 全部 22 项检查。
+运行通过后，必须按 [references/checklist.md](references/checklist.md) 逐项检查。
 
 **⚠️ 首要检查：算子主要操作是否全部在 kernel 内实现（违反则立即修改，不得继续）**
 
 逐项检查前，先回顾生成的代码，按 §3 开头「核心原则」的五条禁令逐条核对 host 侧代码（**含 kernel 调用后的输出后处理路径**）：
 
 1. 是否把输入/输出 tensor 重新绑定到别的 tensor（改了 `data_ptr`）后传入 kernel？
-2. 是否对张量做了 `.contiguous()` 或其他会触发真实数据拷贝/重排的操作？（`reshape`/`view`/`transpose`/`permute`/`expand` **仅在张量 contiguous 时允许**；对非 contiguous 张量的 `reshape`（尤其是 `reshape(-1)`）会触发物理拷贝，同样禁止。判定方法：`x.is_contiguous() == False` 时 `reshape` 触发拷贝）
+2. 是否存在真实数据拷贝/重排？对 reshape 应验证 storage/stride 兼容性，不能把
+   `is_contiguous() == False` 直接等同于一定复制；`permute`/`transpose` 通常只改 metadata。
 3. 是否在 host 侧直接改写了 tensor 数据（`x[:] =`、in-place `_()`、`out=` 等）？
 4. 是否用「新建 buffer → host 侧处理 → 替换原 tensor」的方式作弊？
 5. 是否在 host 侧隐式触发了 aclnn 调用？重点检查：`torch.nn.functional.pad`/`cat`/`interpolate`、`torch.cat`/`stack`、`.to(dtype)` dtype 转换、`.clone()`、以及**输出侧切片+reshape**（如 `y = y[:,:,:,:S]; y.reshape(shape)`——切片后非 contiguous，reshape 隐式 `.contiguous()` → `aclnnCopy`）。若需要从 padded 输出裁剪有效部分，应改为让 kernel 直接输出到与原始 shape 一致的 buffer（通过 `T.copy` + `pad_value` 处理尾块），host 侧无需切片。
@@ -293,7 +271,7 @@ python examples/{op}/test_{op}.py --level l0
 - [references/coding-conventions.md](references/coding-conventions.md) — Buffer 分配 / 索引 / 同步 / 广播 / 测试模板（写代码遇到具体规范时查）
 - [references/vector-parallelism.md](references/vector-parallelism.md) — V 核并行化（用到 vid 切分时查）
 - [references/gemm-cv-fusion.md](references/gemm-cv-fusion.md) — GEMM 与 CV 融合 pass_configs（含 GEMM 或融合算子时查）
-- [references/checklist.md](references/checklist.md) — 22 项上库前检查清单（生成代码后逐项过）
+- [references/checklist.md](references/checklist.md) — 上库前检查清单（生成代码后逐项过）
 - [references/troubleshooting.md](references/troubleshooting.md) — 编译 / 运行 / 精度错误排查手册（遇到具体错误时查）
 - [references/skill-feedback.md](references/skill-feedback.md) — Skill 反馈采集流程（流程结束时查，orchestrator 模式跳过）
 - [examples/code-skeleton.md](examples/code-skeleton.md) — `{op}.py`（kernel）+ `test_{op}.py`（测试）文件结构骨架

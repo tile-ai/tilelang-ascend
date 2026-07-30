@@ -87,7 +87,8 @@ host 侧只算 stride 参数（纯 Python 整数运算），作为 `@tilelang.ji
 - kernel 接受 1D flat GM tensor + stride 参数（Python int）
 - `T.alloc_var` 声明累加变量，用 stride 常量累加计算 batch_offset
 - 逐行 `T.copy` 搬运（每次只搬一段物理连续的数据）
-- 纯 Vector 算子**不开** `AUTO_CV_COMBINE`（会导致 `alloc_var` 赋值/读取分离到不同核）
+- 纯 Vector 算子启用 `AUTO_CV_COMBINE` 时检查生成代码中 `alloc_var` 的定义/使用核归属；
+  只有确认发生误分核时才关闭该配置
 
 ### 设计自检
 

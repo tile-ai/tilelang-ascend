@@ -476,9 +476,9 @@ a_cal = T.alloc_ub((block_M, block_N), cal_dtype)
 b_cal = T.alloc_ub((block_N, block_M), cal_dtype)
 
 if use_b16_cast:
-    T.tile.cast(a_cal, a_ub, CAST_LOW2HIGH, tile_elem)   # int8 → float16
+    T.tile.cast(a_cal, a_ub, "CAST_NONE", tile_elem)     # int8 → float16
     T.tile.transpose(b_cal, a_cal)                        # float16 硬件 transpose
-    T.tile.cast(b_ub, b_cal, CAST_HIGH2LOW, tile_elem)    # float16 → int8
+    T.tile.cast(b_ub, b_cal, "CAST_RINT", tile_elem)      # float16 → int8
 else:
     T.tile.transpose(b_ub, a_ub)
 ```
@@ -552,7 +552,8 @@ else:
 > - `x.to(torch.int16)` / `x.to(torch.int8)` —— host 侧 dtype 转换触发 `aclnnCast`
 > - `x32[..., 0].contiguous()` —— 跨步切片后 `.contiguous()` 触发 `aclnnCopy`
 > - `torch.stack([lo_t, hi_t], dim=-1)` —— 创建新 buffer + 数据拷贝，触发 `aclnnCat`
-> - `x.view(torch.int32).reshape(*shape, 2)` 后拆分 —— 虽然view 本身不搬数据，但后续拆分操作会搬
+> - `x.view(torch.int32).reshape(*shape, 2)` 后再 `.contiguous()`/`stack`/`copy`
+>   物理化 lane；view、切片或 unbind 本身不一定搬运，需审计完整链路
 
 > **约束**：
 > - 同宽 reinterpret：两 dtype 字节数必须相同；算子计算逻辑不能改变 bit pattern（transpose 只搬运安全；cast/exp 等改变 bit pattern 的不适用）
@@ -639,7 +640,7 @@ T.tile.atomic_add(C[..., ...], src_l0c)
 **底层实现**：
 
 底层会生成 Ascend C 的 DMA atomic add 语义：开启 `SetAtomicAdd<T>()`，执行 local -> GM 的 `DataCopyPad`，再通过兼容 helper 关闭 atomic 状态。
-### 4.11 排序操作
+### 4.12 排序操作
 
 #### T.tile.sort(dst, src, actual_num)
 
@@ -696,7 +697,7 @@ T.tile.topk(topk_global, sort_result, K, actual_num)
 **注意事项**：
   - `src` 的大小需要满足32或32的整数倍
 
-### 4.12 两种编程范式对比
+### 4.13 两种编程范式对比
 
 ```python
 # 方式一：T.Parallel + 符号 API（Developer 模式，跨平台兼容）
