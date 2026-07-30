@@ -398,3 +398,5 @@ if __name__ == "__main__":
 
     print("=" * 70)
     print(f"测试完成: {passed} passed, {failed} failed")
+    if failed == 0:
+        print("Test Passed!")
