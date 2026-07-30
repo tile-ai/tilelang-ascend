@@ -331,7 +331,7 @@ def swiglu_backward_and_per_token_cast(
 if __name__ == "__main__":
     import importlib.util as _ilu
 
-    NPU_DEVICE_ID = int(os.environ.get("ASCEND_DEVICE_ID", "7"))
+    NPU_DEVICE_ID = int(os.environ.get("ASCEND_DEVICE_ID", "0"))
     NPU_DEVICE = f"npu:{NPU_DEVICE_ID}"
     torch.npu.set_device(NPU_DEVICE_ID)
 
