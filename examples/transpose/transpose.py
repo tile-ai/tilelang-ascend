@@ -436,3 +436,18 @@ def transpose(x: torch.Tensor, perm: list) -> torch.Tensor:
 
         y_flat = kernel(x_flat)
         return y_flat.reshape(out_shape)
+
+
+# ---------------------------------------------------------------------------
+# Standalone run entry (smoke test, picked from test_transpose.py L0 case)
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    torch.manual_seed(0)
+
+    shape = (1024, 1024)
+    perm = [1, 0]
+    x = (torch.rand(shape, dtype=torch.float32) * 2.0 - 1.0).to(torch.float16).npu()
+    y = transpose(x, perm)
+    ref = torch.permute(x.cpu(), perm)
+    torch.testing.assert_close(y.cpu().float(), ref.float(), rtol=1e-3, atol=1e-3)
+    print("Kernel Output Match!")
