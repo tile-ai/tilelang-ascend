@@ -381,19 +381,20 @@ if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
         # that compiles a kernel: jit/kernel.py 45 against 110,
         # cache/kernel_cache.py 48 against 125, engine/phase.py 12 against 58.
         #
-        # Without the fork the caching allocator holds on to everything these
-        # tests reserve. Measured over three of the sparse attention kernels the
-        # reserve climbs 6.34, 18.19 and 49.21 GiB against a 61 GiB device while
-        # the allocation returns to zero each time, so it is the process ending
-        # that gives the memory back rather than the tensors going out of scope.
-        # Hence the batches, small enough that a run of the heavy ones fits.
-        # Each writes its own file: pytest-cov merges its workers into
-        # COVERAGE_FILE at the end, so a shared name would leave only the last.
-        operator_batch=3
+        # One file per call, and no xdist. Without the fork the memory a test
+        # reserves is only returned when the process holding it ends, and these
+        # reserve a lot: of the sparse attention kernels one takes 31 GiB of a
+        # 61 GiB device on its own. Anything that puts two of those in flight,
+        # whether in sequence within a worker or across workers at once, runs
+        # the device out. One at a time is the only arrangement that cannot.
+        #
+        # Each call writes its own coverage file, since pytest-cov merges into
+        # COVERAGE_FILE as it exits and a shared name would leave only the last.
+        # The combine step downstream already globs for them.
         : > operator_output.log
-        for ((operator_i = 0; operator_i < ${#OPERATOR_TESTS[@]}; operator_i += operator_batch)); do
-            export COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage_operator_tests_${operator_i}"
-            pytest "${OPERATOR_TESTS[@]:operator_i:operator_batch}" -v -n $MAX_JOBS \
+        for operator_test_path in "${OPERATOR_TESTS[@]}"; do
+            export COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage_operator_$(echo "$operator_test_path" | sed 's/[\/\.]/_/g')"
+            pytest "$operator_test_path" -v \
                 --cov=tilelang --cov-config="${PROJECT_ROOT}/.coveragerc" --cov-report= \
                 "${OPERATOR_MARKER_ARGS[@]}" 2>&1 | tee -a operator_output.log
             operator_batch_code=${PIPESTATUS[0]}
@@ -412,7 +413,7 @@ if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
             operator_failed=$((operator_failed + ${batch_failed:-0}))
             operator_xfailed=$((operator_xfailed + ${batch_xfailed:-0}))
         done < <(grep -E "^=+ .*[0-9]+ (passed|failed|error).* =+$" operator_output.log)
-        echo "Operator tests: ${operator_passed} passed, ${operator_failed} failed across $(( (${#OPERATOR_TESTS[@]} + operator_batch - 1) / operator_batch )) batch(es)"
+        echo "Operator tests: ${operator_passed} passed, ${operator_failed} failed over ${#OPERATOR_TESTS[@]} file(s)"
         rm -f operator_output.log
     fi
 fi
