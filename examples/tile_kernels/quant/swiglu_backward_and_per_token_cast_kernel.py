@@ -179,8 +179,7 @@ def _gather_weights(weight, pos_to_token_topk, num_topk, num_expand_tokens, devi
     return w
 
 
-def _compute_weight_grad(grad_out_f32, act_out, pos_to_token_topk,
-                          token_topk_to_pos, num_tokens, num_topk, device):
+def _compute_weight_grad(grad_out_f32, act_out, pos_to_token_topk, token_topk_to_pos, num_tokens, num_topk, device):
     dot = (grad_out_f32 * act_out).sum(dim=1)
     weight_grad = torch.zeros((num_tokens, num_topk), dtype=torch.float32, device=device)
     mask = pos_to_token_topk >= 0
@@ -259,12 +258,10 @@ def swiglu_backward_and_per_token_cast(
     # Fused kernel: dequant + clamp + sigmoid + forward + backward + amax + scale
     kernel_key = ("bwd_fused_v5", num_expand_tokens, hidden, block_M, block_N, npc, use_clamp)
     if kernel_key not in _KERNEL_CACHE:
-        _KERNEL_CACHE[kernel_key] = _swiglu_bwd_fused_kernel(
-            num_expand_tokens, hidden, block_M, block_N, npc, use_clamp)
+        _KERNEL_CACHE[kernel_key] = _swiglu_bwd_fused_kernel(num_expand_tokens, hidden, block_M, block_N, npc, use_clamp)
     kernel = _KERNEL_CACHE[kernel_key]
 
-    xgl_raw, xgr_raw, out_weighted, xl_deq, xr_deq = kernel(
-        x_data_f32, x_sf_f32, grad_w, w.unsqueeze(1), clamp_value)
+    xgl_raw, xgr_raw, out_weighted, xl_deq, xr_deq = kernel(x_data_f32, x_sf_f32, grad_w, w.unsqueeze(1), clamp_value)
 
     # Weighted output (kernel already applied w)
     out_bf16 = out_weighted.to(grad_out.dtype)
@@ -303,10 +300,13 @@ def swiglu_backward_and_per_token_cast(
         sf_r_rounded, sf_inv_r_rounded = _round_sf(sf_r_raw)
         rescale_l = (sf_inv_l_rounded * sf_l_raw).repeat_interleave(npc, dim=1)
         rescale_r = (sf_inv_r_rounded * sf_r_raw).repeat_interleave(npc, dim=1)
-        x_grad_fp8_scaled = torch.cat([
-            xgl_scaled * rescale_l,
-            xgr_scaled * rescale_r,
-        ], dim=1)
+        x_grad_fp8_scaled = torch.cat(
+            [
+                xgl_scaled * rescale_l,
+                xgr_scaled * rescale_r,
+            ],
+            dim=1,
+        )
         x_grad_fp8_sf = torch.cat([sf_l_rounded, sf_r_rounded], dim=1)
     else:
         x_grad_fp8_scaled = torch.cat([xgl_scaled, xgr_scaled], dim=1)
@@ -323,9 +323,7 @@ def swiglu_backward_and_per_token_cast(
     sig_hp = torch.sigmoid(xl_deq_c)
     act_hp = xl_deq_c * sig_hp * xr_deq_c
 
-    weight_grad = _compute_weight_grad(
-        grad_out_f32, act_hp, pos_to_token_topk,
-        token_topk_to_pos, num_tokens, num_topk, device)
+    weight_grad = _compute_weight_grad(grad_out_f32, act_hp, pos_to_token_topk, token_topk_to_pos, num_tokens, num_topk, device)
 
     return out_bf16, (x_grad_fp8, x_grad_fp8_sf), x_grad, weight_grad
 
@@ -338,8 +336,7 @@ if __name__ == "__main__":
     torch.npu.set_device(NPU_DEVICE_ID)
 
     _ascend_dir = os.path.dirname(os.path.abspath(__file__))
-    _spec = _ilu.spec_from_file_location(
-        "per_token_cast", os.path.join(_ascend_dir, "per_token_cast_kernel.py"))
+    _spec = _ilu.spec_from_file_location("per_token_cast", os.path.join(_ascend_dir, "per_token_cast_kernel.py"))
     _ptc_mod = _ilu.module_from_spec(_spec)
     _spec.loader.exec_module(_ptc_mod)
     per_token_cast = _ptc_mod.per_token_cast
@@ -362,8 +359,8 @@ if __name__ == "__main__":
 
         xl = x_f32[:, :hidden]
         xr = x_f32[:, hidden:]
-        sf_l = sf_f32[:, :hidden // npc]
-        sf_r = sf_f32[:, hidden // npc:]
+        sf_l = sf_f32[:, : hidden // npc]
+        sf_r = sf_f32[:, hidden // npc :]
 
         sf_l_exp = sf_l.repeat_interleave(npc, dim=1)
         sf_r_exp = sf_r.repeat_interleave(npc, dim=1)
@@ -421,8 +418,8 @@ if __name__ == "__main__":
         tt2p = torch.arange(ne, dtype=torch.int32, device=NPU_DEVICE).reshape(nt, ntk)
 
         out, (xg_fp8, xg_sf), xg, wg = swiglu_backward_and_per_token_cast(
-            (x_data, x_sf), grad_out, weight, p2tt, tt2p,
-            num_per_channels=npc, round_sf=rsf, swiglu_clamp_value=clamp)
+            (x_data, x_sf), grad_out, weight, p2tt, tt2p, num_per_channels=npc, round_sf=rsf, swiglu_clamp_value=clamp
+        )
 
         assert out.dtype == torch.bfloat16
         assert xg_fp8.dtype == torch.float8_e4m3fn
@@ -438,8 +435,7 @@ if __name__ == "__main__":
         assert not torch.isnan(xg).any(), "xg has NaN"
         assert not torch.isnan(xg_sf).any(), "xg_sf has NaN"
 
-        ref_out, ref_xgl, ref_xgr = _ref_backward(
-            x_data, x_sf, grad_out, weight, p2tt, npc, clamp, NPU_DEVICE)
+        ref_out, ref_xgl, ref_xgr = _ref_backward(x_data, x_sf, grad_out, weight, p2tt, npc, clamp, NPU_DEVICE)
 
         out_diff = _calc_diff(out, ref_out.to(torch.bfloat16))
         assert out_diff < 5e-2, f"out diff={out_diff}, clamp={clamp}"
@@ -449,5 +445,3 @@ if __name__ == "__main__":
         assert xg_diff < 5e-2, f"xg diff={xg_diff}, clamp={clamp}"
 
     print("All test PASSED! Kernel Output Match!")
-
-

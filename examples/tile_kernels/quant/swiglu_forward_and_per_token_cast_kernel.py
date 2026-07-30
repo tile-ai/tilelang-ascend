@@ -45,7 +45,7 @@ _FMT_MAX_VALUE = {
 _FMT_CLAMP_MIN = {
     "e4m3": 1e-4,
     "e5m6": 1e-4,
-    "e2m1": 6.0 * (2.0 ** -126),
+    "e2m1": 6.0 * (2.0**-126),
 }
 
 _IN_DTYPE_STR = {
@@ -59,7 +59,7 @@ def _round_sf(sf):
     """Round scaling factors to power-of-2 on NPU via float arithmetic (no CPU roundtrip)."""
     safe_sf = torch.where(sf == 0, 1e-8, sf)
     exp_sf = torch.ceil(torch.log2(safe_sf))
-    sf_out = 2.0 ** exp_sf
+    sf_out = 2.0**exp_sf
     sf_inv = 2.0 ** (-exp_sf)
     sf_out = torch.where(sf == 0, 0.0, sf_out)
     sf_inv = torch.where(sf == 0, 0.0, sf_inv)
@@ -78,12 +78,7 @@ def _pack_ue8m0_sf(sf_f32, num_tokens, groups, device):
         ue8m0 = torch.cat([ue8m0, pad], dim=1)
 
     packed = ue8m0.reshape(num_tokens, padded_groups // 4, 4).to(torch.int64)
-    packed_int64 = (
-        packed[:, :, 0]
-        + packed[:, :, 1] * 256
-        + packed[:, :, 2] * 65536
-        + packed[:, :, 3] * 16777216
-    )
+    packed_int64 = packed[:, :, 0] + packed[:, :, 1] * 256 + packed[:, :, 2] * 65536 + packed[:, :, 3] * 16777216
     packed_int32 = torch.where(packed_int64 >= 2147483648, packed_int64 - 4294967296, packed_int64).to(torch.int32)
     return packed_int32.contiguous()
 
@@ -122,8 +117,7 @@ def _float_to_e5m6_pack(data):
     vals = u12.reshape(num_tokens, groups, 8)
 
     w0 = (vals[:, :, 0] << 20) | (vals[:, :, 1] << 8) | (vals[:, :, 2] >> 4)
-    w1 = ((vals[:, :, 2] << 28) | (vals[:, :, 3] << 16)
-          | (vals[:, :, 4] << 4) | (vals[:, :, 5] >> 8))
+    w1 = (vals[:, :, 2] << 28) | (vals[:, :, 3] << 16) | (vals[:, :, 4] << 4) | (vals[:, :, 5] >> 8)
     w2 = (vals[:, :, 5] << 24) | (vals[:, :, 6] << 12) | vals[:, :, 7]
 
     packed = torch.stack([w0, w1, w2], dim=2)
@@ -176,7 +170,7 @@ def _float_to_e4m3_pack_npu(data):
     safe_a = torch.where(a == 0, 1e-8, a)
     log2_a = torch.log2(safe_a)
     exp = torch.floor(log2_a).to(torch.int32) + 7
-    is_subnormal = (exp < 1)
+    is_subnormal = exp < 1
     exp_normal = exp.clamp(1, 15)
     scale_normal = 2.0 ** (exp_normal - 7)
     mant_raw_normal = (safe_a / scale_normal - 1.0) * 8.0
@@ -213,8 +207,7 @@ def _cast_output(out_f32, fmt, device):
         raise ValueError(f"Unsupported fmt: {fmt}")
 
 
-def _format_sf(sf_f32, num_tokens, groups, use_packed_ue8m0,
-               use_tma_aligned_col_major_sf, device):
+def _format_sf(sf_f32, num_tokens, groups, use_packed_ue8m0, use_tma_aligned_col_major_sf, device):
     """Format SF tensor: pack to UE8M0 if needed, transpose for col-major if needed.
 
     After GPU epilogue, the final SF is always (num_tokens, groups) or
@@ -344,7 +337,7 @@ def _swiglu_amax_scale_kernel(
                 sf_ub[i, 0] = clamped / 448.0
                 sf_inv_ub[i, 0] = 448.0 / clamped
 
-            T.copy(sf_ub, sf_out[bx * block_M, by:by + 1])
+            T.copy(sf_ub, sf_out[bx * block_M, by : by + 1])
 
             for i, j in T.Parallel(block_M, block_N):
                 act_ub[i, j] = act_ub[i, j] * sf_inv_ub[i, 0]
@@ -399,11 +392,9 @@ def swiglu_forward_and_per_token_cast(
 
     if num_tokens == 0:
         sf_cols = _ceil_div(hidden, num_per_channels)
-        out_dtype = torch.float8_e4m3fn if fmt == "e4m3" else (
-            torch.uint8 if fmt == "e5m6" else torch.int8)
+        out_dtype = torch.float8_e4m3fn if fmt == "e4m3" else (torch.uint8 if fmt == "e5m6" else torch.int8)
         sf_dtype = torch.int32 if use_packed_ue8m0 else torch.float32
-        return (torch.empty((0, hidden), dtype=out_dtype, device=x.device),
-                torch.empty((0, sf_cols), dtype=sf_dtype, device=x.device))
+        return (torch.empty((0, hidden), dtype=out_dtype, device=x.device), torch.empty((0, sf_cols), dtype=sf_dtype, device=x.device))
 
     npc = num_per_channels
     block_M = 64
@@ -417,8 +408,7 @@ def swiglu_forward_and_per_token_cast(
 
     kernel_key = ("basic", num_tokens, hidden, block_M, block_N, in_dtype_str)
     if kernel_key not in _KERNEL_CACHE:
-        _KERNEL_CACHE[kernel_key] = _swiglu_fwd_kernel(
-            num_tokens, hidden, block_M, block_N, in_dtype_str)
+        _KERNEL_CACHE[kernel_key] = _swiglu_fwd_kernel(num_tokens, hidden, block_M, block_N, in_dtype_str)
     swiglu_kernel = _KERNEL_CACHE[kernel_key]
     act = swiglu_kernel(x, clamp_val, neg_clamp_val)
 
@@ -450,8 +440,7 @@ def swiglu_forward_and_per_token_cast(
         out_f32 = (act_grouped / sf.unsqueeze(2)).reshape(num_tokens, hidden)
 
     out = _cast_output(out_f32, fmt, x.device)
-    out_sf = _format_sf(sf, num_tokens, groups, use_packed_ue8m0,
-                        use_tma_aligned_col_major_sf, x.device)
+    out_sf = _format_sf(sf, num_tokens, groups, use_packed_ue8m0, use_tma_aligned_col_major_sf, x.device)
 
     return out, out_sf
 
@@ -499,16 +488,16 @@ if __name__ == "__main__":
         return ((a_f32 - b_f32).abs().mean() / denom).item()
 
     test_cases = [
-        (1024, 128,  False, True,  False, None),
-        (1024, 128,  True,  True,  True,  10.0),
-        (2048, 128,  False, False, False, 0.5),
-        (2048, 2048, False, True,  True,  None),
-        (3072, 128,  False, True,  False, 10.0),
+        (1024, 128, False, True, False, None),
+        (1024, 128, True, True, True, 10.0),
+        (2048, 128, False, False, False, 0.5),
+        (2048, 2048, False, True, True, None),
+        (3072, 128, False, True, False, 10.0),
         (3072, 3072, False, False, False, 0.5),
-        (3584, 128,  True,  True,  True,  None),
+        (3584, 128, True, True, True, None),
         (3584, 3584, False, False, False, 10.0),
-        (3584, 128,  True,  True,  False, 0.5),
-        (3584, 3584, False, True,  True,  None),
+        (3584, 128, True, True, False, 0.5),
+        (3584, 3584, False, True, True, None),
     ]
 
     for hidden, npc, tma, rsf, ue8m0, clamp in test_cases:
@@ -517,12 +506,13 @@ if __name__ == "__main__":
         in_dtype_str = "bfloat16"
         kkey = ("basic", num_tokens, hidden, block_M, block_N, in_dtype_str)
         if kkey not in _KERNEL_CACHE:
-            _KERNEL_CACHE[kkey] = _swiglu_fwd_kernel(
-                num_tokens, hidden, block_M, block_N, in_dtype_str)
+            _KERNEL_CACHE[kkey] = _swiglu_fwd_kernel(num_tokens, hidden, block_M, block_N, in_dtype_str)
 
         x = torch.randn((num_tokens, hidden * 2), dtype=dtype, device=NPU_DEVICE)
         out, sf = swiglu_forward_and_per_token_cast(
-            x, "e4m3", npc,
+            x,
+            "e4m3",
+            npc,
             use_tma_aligned_col_major_sf=tma,
             round_sf=rsf,
             use_packed_ue8m0=ue8m0,
@@ -544,4 +534,3 @@ if __name__ == "__main__":
             assert sf_diff < 1e-5, f"sf diff={sf_diff}, hidden={hidden}, npc={npc}, rsf={rsf}"
 
     print("All test PASSED! Kernel Output Match!")
-
