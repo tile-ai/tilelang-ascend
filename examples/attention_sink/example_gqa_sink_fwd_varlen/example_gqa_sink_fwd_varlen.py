@@ -197,127 +197,66 @@ def gqa_sink_fwd(
             T.annotate_address(
                 {
                     # L1 addresses (fp16: 2 bytes per element) — all independent
+                    # q_l1: 0, k_l1: _BM*dim*2, v_l1: +_BN*dim*2, acc_s_l1: +_BN*dim*2
+                    # Step 3: acc_s_l1 independent (NOT shared with k_l1) to avoid
+                    # pipeline data race. L1 capacity 512KB >> 98KB used.
                     q_l1: 0,
                     k_l1: _BM * dim * 2,
                     v_l1: _BM * dim * 2 + _BN * dim * 2,
                     acc_s_l1: _BM * dim * 2 + _BN * dim * 2 + _BN * dim * 2,
-                    # L0A addresses (fp16: 2 bytes; independent physical store from 0)
-                    # double-buffer 2*_BM*dim*2 = 32KB < 64KB L0A capacity
+                    # L0A/L0B/L0C: independent physical stores, each starts at 0.
+                    # L0A: 2*_BM*dim*2 = 32KB < 64KB
+                    # L0B: 2*dim*_BN*2 = 64KB = 64KB (full)
+                    # L0C: 2*_BM*_BN*4 = 64KB < 128KB (shared GEMM1/GEMM2)
                     l0a: 0,
-                    # L0B addresses (fp16: 2 bytes; independent physical store from 0)
-                    # double-buffer 2*dim*_BN*2 = 64KB = 64KB L0B capacity (full, OK)
                     l0b: 0,
-                    # L0C addresses (fp32: 4 bytes; independent physical store from 0)
-                    # double-buffer 2*_BM*_BN*4 = 64KB < 128KB L0C capacity
-                    # shared by GEMM1 (S) and GEMM2 (O) — different times
                     l0c: 0,
-                    # UB addresses — parametric with _half_M
+                    # UB addresses (fp32: 4 bytes; dim == _BN == 128)
+                    # Layout: acc_o | logsum | scores_max | scores_max_prev | scores_sum
+                    #       | acc_s_ub | acc_s_ub_ | acc_s_half | mask_half
+                    #       | acc_o_ub | acc_o_half | brd_bn(=brd_dim) | r_factors | sumexp_is
+                    # All independent (Step 4: removed barrier_all, each buffer needs
+                    # its own address to avoid cross-batch/cross-tile MTE2/MTE3 races).
+                    # UB total ~108KB < 196KB.
+                    # h = _half_M, d = dim = _BN = 128
+                    # acc_o:      0
+                    # logsum:     h*d*4           = 16384
+                    # scores_max: h*(d+1)*4       = 16512
                     acc_o: 0,
                     logsum: _half_M * dim * 4,
-                    scores_max: _half_M * dim * 4 + _half_M * 1 * 4,
-                    scores_max_prev: _half_M * dim * 4 + _half_M * 1 * 4 + _half_M * 1 * 4,
-                    scores_sum: _half_M * dim * 4 + _half_M * 1 * 4 + _half_M * 1 * 4 + _half_M * 1 * 4,
-                    acc_s_ub: _half_M * dim * 4 + _half_M * 1 * 4 + _half_M * 1 * 4 + _half_M * 1 * 4 + _half_M * 1 * 4,
-                    acc_s_ub_: _half_M * dim * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * _BN * 4,
-                    # Step 4: acc_s_half / mask_half / acc_o_ub / acc_o_half all get
-                    # INDEPENDENT addresses. Previously acc_s_half+mask_half shared,
-                    # and acc_o_ub+acc_o_half overlaid on acc_s_half; barrier_all made
-                    # that safe (global sync). Once barriers are replaced by flags,
-                    # cross-batch (softmax->O-accum) and cross-tile (output->next-tile
-                    # softmax) MTE2/MTE3 accesses on the same address would race with
-                    # no barrier to order them. mask_half also needs its own address:
-                    # its SIG_MASK_UB release (after V cast) would otherwise let
-                    # next-iter MTE2 overwrite acc_s_half before MTE3 reads it.
-                    # Splitting addresses removes all hazards. UB total ~108KB < 196KB.
-                    acc_s_half: _half_M * dim * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * _BN * 4
-                    + _half_M * _BN * 4,
-                    mask_half: _half_M * dim * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * _BN * 4
-                    + _half_M * _BN * 4
-                    + _half_M * _BN * 2,
-                    acc_o_ub: _half_M * dim * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * _BN * 4
-                    + _half_M * _BN * 4
-                    + _half_M * _BN * 2
-                    + _half_M * _BN * 2,
-                    acc_o_half: _half_M * dim * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * _BN * 4
-                    + _half_M * _BN * 4
-                    + _half_M * _BN * 2
-                    + _half_M * _BN * 2
+                    scores_max: _half_M * (dim + 1) * 4,
+                    scores_max_prev: _half_M * (dim + 2) * 4,
+                    scores_sum: _half_M * (dim + 3) * 4,
+                    # acc_s_ub:   h*(d+4)*4       = 16896
+                    # acc_s_ub_:  h*(d+4)*4 + h*d*4 = h*(2d+4)*4 = 33280
+                    acc_s_ub: _half_M * (dim + 4) * 4,
+                    acc_s_ub_: _half_M * (2 * dim + 4) * 4,
+                    # acc_s_half: h*(2d+4)*4 + h*d*4 = h*(3d+4)*4 = 49664
+                    acc_s_half: _half_M * (3 * dim + 4) * 4,
+                    # mask_half:  h*(3d+4)*4 + h*d*2 = 57856  (fp16: 2 bytes)
+                    mask_half: _half_M * (3 * dim + 4) * 4 + _half_M * dim * 2,
+                    # acc_o_ub:   + h*d*2 = 66048  (fp16: 2 bytes)
+                    acc_o_ub: _half_M * (3 * dim + 4) * 4 + _half_M * dim * 2 * 2,
+                    # acc_o_half: + h*d*4 = 82432  (fp32: 4 bytes)
+                    acc_o_half: _half_M * (3 * dim + 4) * 4 + _half_M * dim * 2 * 2 + _half_M * dim * 4,
+                    # brd_bn / brd_dim share address (different phases)
+                    # brd:       + h*d*2 = 90624  (fp16: 2 bytes)
+                    brd_bn: _half_M * (3 * dim + 4) * 4 + _half_M * dim * 2 * 2 + _half_M * dim * 4 + _half_M * dim * 2,
+                    brd_dim: _half_M * (3 * dim + 4) * 4 + _half_M * dim * 2 * 2 + _half_M * dim * 4 + _half_M * dim * 2,
+                    # Step 2 scratch: r_factors / sumexp_is
+                    # r_factors:  + h*d*4 = 107008  (fp32: 4 bytes, [num_stages, h, 1])
+                    r_factors: _half_M * (3 * dim + 4) * 4
+                    + _half_M * dim * 2 * 2
+                    + _half_M * dim * 4
+                    + _half_M * dim * 2
                     + _half_M * dim * 4,
-                    # brd_bn and brd_dim share address (different phases)
-                    brd_bn: _half_M * dim * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * _BN * 4
-                    + _half_M * _BN * 4
-                    + _half_M * _BN * 2
-                    + _half_M * _BN * 2
+                    # sumexp_is:  + num_stages*h*4 = 108800  (fp32: 4 bytes, [num_stages, h, 1])
+                    sumexp_is: _half_M * (3 * dim + 4) * 4
+                    + _half_M * dim * 2 * 2
                     + _half_M * dim * 4
-                    + _half_M * _BN * 2,
-                    brd_dim: _half_M * dim * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * _BN * 4
-                    + _half_M * _BN * 4
-                    + _half_M * _BN * 2
-                    + _half_M * _BN * 2
+                    + _half_M * dim * 2
                     + _half_M * dim * 4
-                    + _half_M * _BN * 2,
-                    # Step 2 scratch: r_factors / sumexp_is (after brd_dim region).
-                    # brd_dim size = _half_M * dim * 4 (fp32); dim == _BN == 128.
-                    r_factors: _half_M * dim * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * _BN * 4
-                    + _half_M * _BN * 4
-                    + _half_M * _BN * 2
-                    + _half_M * _BN * 2
-                    + _half_M * dim * 4
-                    + _half_M * _BN * 2
-                    + _half_M * dim * 4,
-                    sumexp_is: _half_M * dim * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * 1 * 4
-                    + _half_M * _BN * 4
-                    + _half_M * _BN * 4
-                    + _half_M * _BN * 2
-                    + _half_M * _BN * 2
-                    + _half_M * dim * 4
-                    + _half_M * _BN * 2
-                    + _half_M * dim * 4
-                    + num_stages * _half_M * 1 * 4,
+                    + num_stages * _half_M * 4,
                 }
             )
 
