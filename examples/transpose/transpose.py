@@ -83,23 +83,24 @@ def _kernel_2d_transpose(batch, M, N, block_M, block_N, dtype, use_int8_cast):
                 bm = rem // n_num
                 bn = rem % n_num
 
-                a_ub = T.alloc_ub((block_M, block_N), dtype)
+                with T.Scope("V"):
+                    a_ub = T.alloc_ub((block_M, block_N), dtype)
 
-                if use_int8_cast:
-                    a_cal = T.alloc_ub((block_M, block_N), "float16")
-                    b_cal = T.alloc_ub((block_N, block_M), "float16")
-                    b_ub = T.alloc_ub((block_N, block_M), dtype)
+                    if use_int8_cast:
+                        a_cal = T.alloc_ub((block_M, block_N), "float16")
+                        b_cal = T.alloc_ub((block_N, block_M), "float16")
+                        b_ub = T.alloc_ub((block_N, block_M), dtype)
 
-                    T.copy(x[b, bm * block_M, bn * block_N], a_ub)
-                    T.tile.cast(a_cal, a_ub, "CAST_NONE", block_M * block_N)
-                    T.tile.transpose(b_cal, a_cal)
-                    T.tile.cast(b_ub, b_cal, "CAST_RINT", block_N * block_M)
-                    T.copy(b_ub, y[b, bn * block_N, bm * block_M])
-                else:
-                    b_ub = T.alloc_ub((block_N, block_M), dtype)
-                    T.copy(x[b, bm * block_M, bn * block_N], a_ub)
-                    T.tile.transpose(b_ub, a_ub)
-                    T.copy(b_ub, y[b, bn * block_N, bm * block_M])
+                        T.copy(x[b, bm * block_M, bn * block_N], a_ub)
+                        T.tile.cast(a_cal, a_ub, "CAST_NONE", block_M * block_N)
+                        T.tile.transpose(b_cal, a_cal)
+                        T.tile.cast(b_ub, b_cal, "CAST_RINT", block_N * block_M)
+                        T.copy(b_ub, y[b, bn * block_N, bm * block_M])
+                    else:
+                        b_ub = T.alloc_ub((block_N, block_M), dtype)
+                        T.copy(x[b, bm * block_M, bn * block_N], a_ub)
+                        T.tile.transpose(b_ub, a_ub)
+                        T.copy(b_ub, y[b, bn * block_N, bm * block_M])
 
     return kernel
 
