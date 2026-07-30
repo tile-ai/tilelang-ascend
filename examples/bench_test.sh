@@ -380,19 +380,39 @@ if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
         # against 3285 without, and the difference is concentrated in the path
         # that compiles a kernel: jit/kernel.py 45 against 110,
         # cache/kernel_cache.py 48 against 125, engine/phase.py 12 against 58.
-        # The xdist workers still give each test file its own process.
-        export COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage_operator_tests"
-        pytest "${OPERATOR_TESTS[@]}" -v -n $MAX_JOBS \
-            --cov=tilelang --cov-config="${PROJECT_ROOT}/.coveragerc" --cov-report= \
-            "${OPERATOR_MARKER_ARGS[@]}" 2>&1 | tee operator_output.log
-        operator_exit_code=${PIPESTATUS[0]}
-        unset COVERAGE_FILE
-        operator_summary=$(grep -E "[0-9]+ (passed|failed|xfailed)" operator_output.log | tail -1)
-        if [ -n "$operator_summary" ]; then
-            echo "$operator_summary" | grep -q "passed" && operator_passed=$(echo "$operator_summary" | grep -Eo "[0-9]+ passed" | grep -Eo "[0-9]+")
-            echo "$operator_summary" | grep -q " failed" && operator_failed=$(echo "$operator_summary" | grep -Eo "[0-9]+ failed" | grep -Eo "[0-9]+")
-            echo "$operator_summary" | grep -q "xfailed" && operator_xfailed=$(echo "$operator_summary" | grep -Eo "[0-9]+ xfailed" | grep -Eo "[0-9]+")
-        fi
+        #
+        # Without the fork the caching allocator holds on to everything these
+        # tests reserve. Measured over three of the sparse attention kernels the
+        # reserve climbs 6.34, 18.19 and 49.21 GiB against a 61 GiB device while
+        # the allocation returns to zero each time, so it is the process ending
+        # that gives the memory back rather than the tensors going out of scope.
+        # Hence the batches, small enough that a run of the heavy ones fits.
+        # Each writes its own file: pytest-cov merges its workers into
+        # COVERAGE_FILE at the end, so a shared name would leave only the last.
+        operator_batch=3
+        : > operator_output.log
+        for ((operator_i = 0; operator_i < ${#OPERATOR_TESTS[@]}; operator_i += operator_batch)); do
+            export COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage_operator_tests_${operator_i}"
+            pytest "${OPERATOR_TESTS[@]:operator_i:operator_batch}" -v -n $MAX_JOBS \
+                --cov=tilelang --cov-config="${PROJECT_ROOT}/.coveragerc" --cov-report= \
+                "${OPERATOR_MARKER_ARGS[@]}" 2>&1 | tee -a operator_output.log
+            operator_batch_code=${PIPESTATUS[0]}
+            if [ "$operator_exit_code" -eq 0 ]; then
+                operator_exit_code=$operator_batch_code
+            fi
+            unset COVERAGE_FILE
+        done
+        # One summary per batch, so these accumulate rather than reading the last.
+        while IFS= read -r operator_summary; do
+            [ -n "$operator_summary" ] || continue
+            batch_passed=$(echo "$operator_summary" | grep -Eo "[0-9]+ passed" | grep -Eo "[0-9]+")
+            batch_failed=$(echo "$operator_summary" | grep -Eo "[0-9]+ failed" | grep -Eo "[0-9]+")
+            batch_xfailed=$(echo "$operator_summary" | grep -Eo "[0-9]+ xfailed" | grep -Eo "[0-9]+")
+            operator_passed=$((operator_passed + ${batch_passed:-0}))
+            operator_failed=$((operator_failed + ${batch_failed:-0}))
+            operator_xfailed=$((operator_xfailed + ${batch_xfailed:-0}))
+        done < <(grep -E "^=+ .*[0-9]+ (passed|failed|error).* =+$" operator_output.log)
+        echo "Operator tests: ${operator_passed} passed, ${operator_failed} failed across $(( (${#OPERATOR_TESTS[@]} + operator_batch - 1) / operator_batch )) batch(es)"
         rm -f operator_output.log
     fi
 fi
