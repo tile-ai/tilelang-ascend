@@ -908,14 +908,16 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     BinaryVecOpsCodegen(op, "TMINS");
 
     // --- tail-aware vector ops (AscendTailMaskPropagation) ---
-    // Only unary / binary / scalar are rewritten; reduce / broadcast / compare
-    // / select stay on the full-tile path (gap filled with pad_value).
+    // Broadcast / compare / select stay on the full-tile path (gap filled with
+    // pad_value).
   } else if (op->op.same_as(tl::ascend_tail_unary())) {
     TailUnaryOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_tail_binary())) {
     TailBinaryOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_tail_scalar())) {
     TailScalarOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_tail_reduce())) {
+    TailReduceOpCodegen(op);
 
     // --- sync / barrier ---
   } else if (op->op.same_as(tl::ascend_sync_all())) {
@@ -3105,6 +3107,67 @@ void CodeGenTileLangAscendPto::TailScalarOpCodegen(const CallNode *op) {
                << ");\n";
 }
 
+void CodeGenTileLangAscendPto::TailReduceOpCodegen(const CallNode *op) {
+  // args: kind(0) out(1) src(2) tmp(3) dim(4) validRow(5) validCol(6)
+  //       physCol(7) clear(8)
+  ICHECK_EQ(op->args.size(), 9U) << "tail_reduce expects 9 arguments";
+  const auto *kind_imm = op->args[0].as<StringImmNode>();
+  ICHECK(kind_imm) << "tail_reduce: kind must be a string";
+  ICHECK(is_zero(op->args[4]))
+      << "PTO tail_reduce supports only column-wise (axis 0) reduction";
+  ICHECK(!is_zero(op->args[8])) << "PTO tail_reduce supports only clear=true";
+
+  ReduceKind kind = ReduceKind::SUM;
+  if (kind_imm->value == "reduce_sum") {
+    kind = ReduceKind::SUM;
+  } else if (kind_imm->value == "reduce_max") {
+    kind = ReduceKind::MAX;
+  } else if (kind_imm->value == "reduce_min") {
+    kind = ReduceKind::MIN;
+  } else {
+    LOG(FATAL) << "Unsupported PTO tail_reduce kind: " << kind_imm->value;
+  }
+
+  // Bind runtime valid-region expressions before emitting any tile views.
+  std::string valid_row = PrintExpr(op->args[5]);
+  std::string valid_col = PrintExpr(op->args[6]);
+  ShapeInfo dst_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo src_info = GetSliceInfo(op->args[2].as<CallNode>());
+  ShapeInfo tmp_info = GetSliceInfo(op->args[3].as<CallNode>());
+  ICHECK_EQ(dst_info.type, src_info.type)
+      << "PTO tail_reduce input and output dtypes must match";
+  ICHECK_GT(src_info.row, 0);
+  ICHECK_GT(src_info.col, 0);
+
+  // The destination access may be a [1, N] slice of a larger allocation.
+  // Normalize its tile view to the axis-0 reduce result shape while preserving
+  // the slice address and offset computed by GetSliceInfo.
+  ShapeInfo reduce_dst_info = dst_info;
+  reduce_dst_info.row = 1;
+  reduce_dst_info.col = src_info.col;
+  reduce_dst_info.slice_row = 1;
+  reduce_dst_info.slice_col = src_info.col;
+  reduce_dst_info.slice_valid_row = 1;
+  reduce_dst_info.slice_valid_col = src_info.col;
+  reduce_dst_info.extent = src_info.col;
+  reduce_dst_info.is_slice = true;
+
+  std::string dst = CreateUbVariableDynamic(reduce_dst_info, "1", valid_col);
+  std::string src = CreateUbVariableDynamic(src_info, valid_row, valid_col);
+  std::string op_name = GetReduceOpName(kind, ReduceDirection::COL);
+
+  std::string tmp;
+  if (kind == ReduceKind::SUM) {
+    tmp = ResolveColReduceTmpName(reduce_dst_info, src_info, tmp_info);
+  }
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << dst << ", " << src;
+  if (kind == ReduceKind::SUM)
+    this->stream << ", " << tmp << ", false";
+  this->stream << ");\n";
+}
+
 void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode *op,
                                                const std::string &op_name) {
   ShapeInfo src_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
@@ -3463,24 +3526,9 @@ void CodeGenTileLangAscendPto::CodegenColReduce(const ReduceOpInfo &op_info,
     CreateUbVariableND(src_name, src);
   }
 
-  // TCOLSUM: src.dtyp == dst.dtyp == tmp.dtype
   std::string temp_name = tmp.ub_name;
   if (op_info.kind == ReduceKind::SUM) {
-    ICHECK(dst.type == src.type)
-        << "Reduce_sum input dtype must be consistent with the output "
-           "dtype.";
-    if (dst.type != tmp.type) {
-      temp_name = GetTempVarName(temp_name);
-
-      int tmp_col =
-          tmp.row * tmp.col * GetTypeLen(tmp.type) / GetTypeLen(dst.type);
-      tmp_col = GetValidShape(tmp_col, dst.type);
-      ShapeInfo tmp_cast =
-          ShapeInfo{1,          tmp_col,  1,           tmp_col,
-                    1,          tmp_col,  tmp.extent,  tmp.first_addr,
-                    tmp.offset, dst.type, tmp.ub_name, false};
-      CreateUbVariableND(temp_name, tmp_cast);
-    }
+    temp_name = ResolveColReduceTmpName(dst, src, tmp);
   }
 
   this->PrintIndent();
@@ -3491,6 +3539,26 @@ void CodeGenTileLangAscendPto::CodegenColReduce(const ReduceOpInfo &op_info,
   }
 
   this->stream << ");\n";
+}
+
+std::string CodeGenTileLangAscendPto::ResolveColReduceTmpName(
+    const ShapeInfo &dst, const ShapeInfo &src, const ShapeInfo &tmp) {
+  // TCOLSUM requires src, dst and tmp to expose the same element type. The
+  // injected scratch buffer is commonly byte-typed, so bind an aligned typed
+  // view over the same storage when needed.
+  ICHECK_EQ(dst.type, src.type)
+      << "Reduce_sum input dtype must be consistent with the output dtype.";
+  if (dst.type == tmp.type)
+    return tmp.ub_name;
+
+  std::string temp_name = GetTempVarName(tmp.ub_name);
+  int tmp_col = tmp.row * tmp.col * GetTypeLen(tmp.type) / GetTypeLen(dst.type);
+  tmp_col = GetValidShape(tmp_col, dst.type);
+  ShapeInfo tmp_cast = ShapeInfo{
+      1,          tmp_col,        1,          tmp_col,  1,           tmp_col,
+      tmp.extent, tmp.first_addr, tmp.offset, dst.type, tmp.ub_name, false};
+  CreateUbVariableND(temp_name, tmp_cast);
+  return temp_name;
 }
 
 void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {

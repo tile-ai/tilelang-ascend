@@ -1,6 +1,6 @@
 # 添加模式工作流（`add` / `add <text>`）
 
-供**开发者主动**写反馈，区别于 op-generate §6 中 agent 自动反思的批量采集。
+供**开发者主动**写反馈，区别于 op-develop §6 中 agent 自动反思的批量采集。
 
 ## 目录
 
@@ -53,9 +53,9 @@
 | 信号 | 推断 |
 |------|------|
 | 文本含 `T.gemm` / `T.copy` / `T.tile.*` / `T.alloc_*` 等 API 名 | `target_skill = tilelang-custom-skill/tilelang-api-best-practices` |
-| 文本含 "模式" / "Developer" / "Expert" / "pass_config" | `target_skill = tilelang-custom-skill/tilelang-expert-to-developer` |
+| 文本含 "模式" / "Developer" / "Expert" / "pass_config" | `target_skill = tilelang-custom-skill/tilelang-programming-model-guide` |
 | 文本含 "设计" / "design" / "选型" | `target_skill = tilelang-op-design` |
-| 文本含 "生成代码" / "实现" / "kernel" | `target_skill = tilelang-op-generate` |
+| 文本含 "生成代码" / "实现" / "kernel" | `target_skill = tilelang-op-develop` |
 | 文本含 "调试" / "报错" / "error" | `target_skill = tilelang-custom-skill/tilelang-debug-helper` |
 | 文本含 "参数顺序" / "签名" / "参数错" | `type = wrong_api_signature` |
 | 文本含具体错误码（`error code 0x...` / `ErrCode F...` / `Errcode: F...`） | `target_artifact = troubleshooting`，`type = error_code_workaround` |

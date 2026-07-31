@@ -16,7 +16,7 @@ description: TileLang-Ascend 新增 Ascend 专属 T.tile.xxx 小 API 的端到�
 1. 阅读 `AGENTS.md`。
 2. 阅读 `.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/SKILL.md`。
 3. 阅读 `.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-compute.md`。
-4. 如果涉及编程模式或 `pass_configs`，阅读 `.agents/skills/tilelang-custom-skill/tilelang-expert-to-developer/SKILL.md`。
+4. 如果涉及编程模式或 `pass_configs`，阅读 `.agents/skills/tilelang-custom-skill/tilelang-programming-model-guide/SKILL.md`。
 5. 查看 `tilelang/language/ascend_tile.py` 中最相近的现有 API。
 6. 查看 `testing/python/language/` 中最相近的测试。
 7. 查看 `src/op/ascend.{h,cc}`、`src/target/codegen_ascend.cc`、`src/tl_templates/ascend/common.h` 中相近的 lowering、codegen 和 helper 实现。
@@ -136,7 +136,7 @@ PASS_CONFIGS = {
 - `docs/language_ref/tilelibrary.md`：简短语言参考。
 - `docs/TileLang-Ascend Programming Guide.md`：详细使用指南。
 - `.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-compute.md`：agent 面向的 API 用法说明。
-- `.agents/skills/tilelang-custom-skill/tilelang-expert-to-developer/SKILL.md`：仅当编程模式建议发生变化时更新。
+- `.agents/skills/tilelang-custom-skill/tilelang-programming-model-guide/SKILL.md`：仅当编程模式建议发生变化时更新。
 - 不要为了内部 helper 去更新宽泛文档。
 
 如果旧文档里有相似但语义不同的全局 API，增加简短提醒，而不是静默改写可能属于 GPU / 主仓教程的示例。

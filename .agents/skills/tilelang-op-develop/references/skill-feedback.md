@@ -19,7 +19,7 @@
 > | 调用模式 | 由谁负责 skill 反馈采集 |
 > |---------|----------------------|
 > | 通过 `tilelang-op-orchestrator` 编排（推荐） | **由 orchestrator 在流程结束（SUCCESS / BLOCKED_*）时统一执行**，本 skill 不主动触发。详见 [.opencode/agents/tilelang-op-orchestrator.md §流程结束反思采集](../../../../.opencode/agents/tilelang-op-orchestrator.md) |
-> | 单独调用本 skill（`/tilelang-op-generate`，跳过编排） | **由调用者在算子调试通过后手动触发**，按下文流程执行 |
+> | 单独调用本 skill（`/tilelang-op-develop`，跳过编排） | **由调用者在算子调试通过后手动触发**，按下文流程执行 |
 >
 > 为什么分开：orchestrator 模式下本 skill 在 Subagent 隔离上下文中被多次调度，单次调度结束 ≠ "全流程结束"。让本 skill 自己触发反思会导致 ① 每次调用都做一次 → 浪费；② 看不到其他 Subagent 用过什么 skill → 反思不全。因此 orchestrator 模式下交给 orchestrator 在全流程视野下统一采集。
 >
@@ -27,7 +27,7 @@
 
 本节是 **skill 自适应更新机制**的采集端，**仅在单独调用模式下适用**。每次算子开发流程跑完后，必须把"哪些 skill 没讲清楚 / 被现实打脸 / 凭经验补的内容"写到 `.agents/skill-journal/`，由 `/tilelang-skill-review` 后续聚合评审。
 
-**注意**：本节覆盖**整个开发链路**用到的所有 skill，不只是 op-design / op-generate。
+**注意**：本节覆盖**整个开发链路**用到的所有 skill，不只是 op-design / op-develop。
 
 ## 2. 触发时机
 
@@ -38,14 +38,14 @@
 
 ## 3. 步骤 1：枚举本次查阅过的所有 skill
 
-回顾整个开发会话，列出**实际打开 / 引用 / 跳转过**的所有 skill 路径（相对 `.agents/skills/`），不只是 op-design 和 op-generate。常见包含：
+回顾整个开发会话，列出**实际打开 / 引用 / 跳转过**的所有 skill 路径（相对 `.agents/skills/`），不只是 op-design 和 op-develop。常见包含：
 
 | skill | 何时会被查阅 |
 |-------|-------------|
 | `tilelang-op-design` | 设计阶段全程 |
-| `tilelang-op-generate` | 生成阶段全程（即本 skill 自身）|
+| `tilelang-op-develop` | 生成阶段全程（即本 skill 自身）|
 | `tilelang-custom-skill/tilelang-api-best-practices` | 查 API 用法 / 参数 |
-| `tilelang-custom-skill/tilelang-expert-to-developer` | 决定模式 / pass_configs |
+| `tilelang-custom-skill/tilelang-programming-model-guide` | 决定模式 / pass_configs |
 | `tilelang-custom-skill/tilelang-debug-helper` | 调试报错 |
 | `tilelang-custom-skill/tilelang-error-fixer` | 修编译/运行错误 |
 | `tilelang-ascend-tile-api` | 查 T.tile.* 系列 |
@@ -85,7 +85,7 @@ frontmatter 的 `skills_consulted` 字段必须包含步骤 1 的完整列表。
 | # | 检查项 | 必须通过 |
 |---|--------|---------|
 | 1 | `skills_consulted` 包含本次查阅的所有 skill | ✅ |
-| 2 | 至少 50% 的 `skills_consulted` 在 entries 中至少出现一次（避免只反思 op-generate 自己）| ✅ |
+| 2 | 至少 50% 的 `skills_consulted` 在 entries 中至少出现一次（避免只反思 op-develop 自己）| ✅ |
 | 3 | 每条 entry 的 `evidence` 都有具体报错/代码/文件引用 | ✅ |
 | 4 | 没有重复 entry（同 `target_skill + target_artifact + target_section + type` 只出现一次） | ✅ |
 | 5 | `severity=high` 的 entry 都附带了具体踩坑过程 | ⭕ |

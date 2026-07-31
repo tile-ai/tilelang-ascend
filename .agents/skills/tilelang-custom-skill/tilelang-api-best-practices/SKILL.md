@@ -30,6 +30,7 @@ description: TileLang Ascend API 使用最佳实践。提供内存分配、数�
 | **多核负载均衡** | [api-schedule-sync](references/api-schedule-sync.md) | T.Persistent 缓存友好调度 |
 | **排序** | [api-compute](references/api-compute.md) | T.tile.sort → T.tile.merge_sort → T.tile.topk |
 | **Kernel 调试** | [api-schedule-sync](references/api-schedule-sync.md) | T.printf、T.dump_tensor、get_kernel_source() |
+| **dtype 标量回退适配** | [api-compute](references/api-compute.md) | 先确认硬件支持；同宽 reinterpret / kernel 内 cast / record-aware DMA / 块 DMA + UB-local fallback；宽 dtype lane 拆分仅作已验证实验 |
 
 ---
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 import tilelang.language as T
 from tvm.ir import Range
 from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call, IntImm, Ramp
-from tvm import tir
+from tvm import DataType, tir
 from tilelang.language.ascend import _dtype
 import functools
 import warnings
@@ -1442,9 +1442,36 @@ def transpose(dst: Buffer, src: Buffer):
     buffer into the destination buffer.
 
     Args:
-        dst: The destination buffer.
-        src: The source buffer to be transposed.
+        dst: The destination buffer, shape [W, H].
+        src: The source buffer to be transposed, shape [H, W].
+
+    Note:
+        H and W must satisfy 32-byte alignment (i.e., H * sizeof(dtype) and
+        W * sizeof(dtype) must be multiples of 32). For B16 (half/int16/uint16)
+        and B32 (float/int32/uint32), this means H and W must be multiples of
+        16; for int8, multiples of 32. Supports B16 and B32 via hardware
+        instruction; int8 and bfloat16 fall back to scalar implementation.
     """
+    src_shape = list(src.shape)
+    if len(src_shape) < 2:
+        raise ValueError(f"transpose requires a 2D source buffer. Got shape: {src_shape}")
+
+    elem_bytes = DataType(src.dtype).bits // 8
+    for axis_name, dim in [("H", src_shape[-2]), ("W", src_shape[-1])]:
+        if isinstance(dim, tir.IntImm):
+            val = dim.value
+        elif isinstance(dim, int):
+            val = dim
+        else:
+            raise ValueError(f"transpose requires src buffer with static shape (32-byte aligned). Found dynamic dimension: {dim}.")
+        if val * elem_bytes % 32 != 0:
+            raise ValueError(
+                f"transpose requires both H and W to satisfy 32-byte alignment "
+                f"(i.e., {axis_name} * sizeof({src.dtype}) must be a multiple of 32). "
+                f"Got src shape {src_shape}, {axis_name} = {val}, sizeof({src.dtype}) = {elem_bytes}, "
+                f"{val} * {elem_bytes} = {val * elem_bytes} is not a multiple of 32."
+            )
+
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_transpose"),

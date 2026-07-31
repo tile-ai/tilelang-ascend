@@ -1,5 +1,5 @@
 ---
-name: tilelang-mode-guide
+name: tilelang-programming-model-guide
 description: TileLang Ascend Developer/Expert 模式选择与 pass_configs 配置指南。当需要确定编程模式、配置 pass_configs、或在两种模式之间转换时触发。API 详情请参考 tilelang-api-best-practices skill。
 ---
 
