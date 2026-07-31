@@ -875,10 +875,60 @@ def main():
         help="Test level: L0 (threshold), L1 (functional), L2 (exception), "
         "Boundary (edge cases), cann-bench (20 official cases), all (full suite)",
     )
+    parser.add_argument("--case", type=int, default=0, help="Run only the Nth case in the level (1-indexed)")
     parser.add_argument("--bench", action="store_true", help="Run benchmark")
     args = parser.parse_args()
 
     torch.manual_seed(0)
+
+    if args.case > 0:
+        # Single-case mode: run only the Nth case of the specified level
+        level = args.level.upper() if args.level != "cann-bench" else "L0"
+        case_map = {
+            "l0": [
+                ("l0_fp16_base", 1024, 2048, torch.float16, False, False, False),
+                ("l0_bf16_quant_scale", 1024, 2048, torch.bfloat16, False, True, False),
+                ("l0_int32_w8a8", 512, 1024, torch.int32, True, False, True),
+                ("l0_int32_full_attrs", 1024, 2048, torch.int32, True, True, False),
+            ],
+            "l1": [
+                ("l1_prime_h_bf16", 1023, 2049, torch.bfloat16, False, False, True),
+                ("l1_prime_h_int32", 255, 4097, torch.int32, True, False, False),
+                ("l1_prime_h_int32_qs", 255, 4097, torch.int32, True, True, False),
+                ("l1_large_m", 10007, 64, torch.int32, True, False, False),
+                ("l1_prime_m_qs", 4001, 2048, torch.int32, True, True, True),
+                ("l1_small_m", 127, 1024, torch.bfloat16, False, False, False),
+            ],
+            "cann-bench": [
+                ("cann-bench-1", 512, 2048, torch.float16, False, False, True),
+                ("cann-bench-2", 1024, 4096, torch.float16, False, False, False),
+                ("cann-bench-3", 2048, 8192, torch.float16, False, False, True),
+                ("cann-bench-4", 4096, 4096, torch.bfloat16, False, False, False),
+                ("cann-bench-5", 127, 1024, torch.bfloat16, False, False, False),
+                ("cann-bench-6", 8192, 1024, torch.float16, False, False, False),
+                ("cann-bench-7", 1023, 2049, torch.bfloat16, False, False, True),
+                ("cann-bench-8", 255, 4097, torch.bfloat16, False, False, False),
+                ("cann-bench-9", 512, 2048, torch.int32, True, False, True),
+                ("cann-bench-10", 1024, 4096, torch.int32, True, False, False),
+                ("cann-bench-11", 2048, 8192, torch.int32, True, False, True),
+                ("cann-bench-12", 4096, 4096, torch.int32, True, False, False),
+                ("cann-bench-13", 127, 1024, torch.int32, True, False, False),
+                ("cann-bench-14", 8192, 1024, torch.int32, True, False, False),
+                ("cann-bench-15", 1023, 2049, torch.int32, True, False, True),
+                ("cann-bench-16", 255, 4097, torch.int32, True, True, False),
+                ("cann-bench-17", 10007, 64, torch.int32, True, False, False),
+                ("cann-bench-18", 32768, 256, torch.int32, True, False, False),
+                ("cann-bench-19", 4001, 2048, torch.int32, True, True, True),
+                ("cann-bench-20", 16384, 512, torch.int32, True, False, False),
+            ],
+        }
+        cases = case_map.get(args.level, case_map["l0"])
+        if args.case > len(cases):
+            print(f"Error: --case {args.case} out of range (1-{len(cases)} for {args.level})")
+            import sys; sys.exit(1)
+        name, M, H, dt, ws, qs, al = cases[args.case - 1]
+        ok = _run_case(name, M, H, dt, ws, qs, al, level)
+        import sys; sys.exit(0 if ok else 1)
 
     blocking_ok = True
 
