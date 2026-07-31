@@ -632,9 +632,21 @@ def precision_compare(actual_y, golden_y, actual_scale, golden_scale):
 
 
 # =============================================================================
-# Test Cases (CANN-Bench 20 cases)
+# Test Runner
 # =============================================================================
-def check_case(M, H, x_dtype, has_ws, has_qs, activate_left=False):
+def _run_case(name, M, H, x_dtype, has_ws, has_qs, activate_left, level):
+    """Run a single test case.
+
+    Args:
+        name: case name (e.g. "L0-1")
+        M, H: matrix dimensions
+        x_dtype: torch dtype
+        has_ws, has_qs, activate_left: attribute flags
+        level: "L0"/"L1"/"L2"/"Boundary"
+
+    Returns:
+        True if passed
+    """
     torch.manual_seed(42)
     TwoH = 2 * H
 
@@ -652,65 +664,234 @@ def check_case(M, H, x_dtype, has_ws, has_qs, activate_left=False):
     if has_qs:
         qs = (torch.rand(1, H, device="npu") * 2.0 - 1.0).float()
 
-    y, scale = dequant_swiglu_quant(x, ws, as_, qs, activate_left)
-    torch.npu.synchronize()
-
-    ref_y, ref_scale = golden_dequant_swiglu_quant(x, ws, as_, qs, activate_left)
-    result = precision_compare(y.cpu(), ref_y.cpu(), scale.cpu(), ref_scale.cpu())
-
     dtype_str = str(x_dtype).split(".")[-1]
-    tag = "PASS" if result["passed"] else "FAIL"
-    print(
-        f"[{tag}] M={M} H={H} dtype={dtype_str} ws={has_ws} qs={has_qs} al={activate_left} | "
-        f"y_ratio={result['y_ratio']:.4e} y_maxdiff={result['y_maxdiff']} scale_ok={result['scale_ok']}"
+    try:
+        y, scale = dequant_swiglu_quant(x, ws, as_, qs, activate_left)
+        torch.npu.synchronize()
+
+        ref_y, ref_scale = golden_dequant_swiglu_quant(x, ws, as_, qs, activate_left)
+        result = precision_compare(y.cpu(), ref_y.cpu(), scale.cpu(), ref_scale.cpu())
+
+        if level in ("L0", "L1"):
+            tag = "[PRECISION_PASS]" if result["passed"] else "[PRECISION_FAIL]"
+        else:
+            tag = "[BOUNDARY_PASS]" if result["passed"] else "[BOUNDARY_WARN]"
+
+        print(
+            f"{tag} {level}/{name}: M={M} H={H} dtype={dtype_str} ws={has_ws} qs={has_qs} "
+            f"al={activate_left} | y_ratio={result['y_ratio']:.4e} y_maxdiff={result['y_maxdiff']} "
+            f"scale_ok={result['scale_ok']}"
+        )
+        return result["passed"]
+    except Exception as e:
+        if level in ("L0", "L1"):
+            tag = "[PRECISION_FAIL]"
+        else:
+            tag = "[BOUNDARY_WARN]"
+        print(f"{tag} {level}/{name}: M={M} H={H} dtype={dtype_str} ws={has_ws} qs={has_qs} al={activate_left}: {e}")
+        return False
+
+
+# =============================================================================
+# L0 Threshold Tests
+# =============================================================================
+def test_l0():
+    """L0 threshold tests: aligned shapes, all 3 dtypes, all attribute combos."""
+    print("=== L0 ===")
+    cases = [
+        ("l0_fp16_base", 1024, 2048, torch.float16, False, False, False),
+        ("l0_bf16_quant_scale", 1024, 2048, torch.bfloat16, False, True, False),
+        ("l0_int32_w8a8", 512, 1024, torch.int32, True, False, True),
+        ("l0_int32_full_attrs", 1024, 2048, torch.int32, True, True, False),
+    ]
+    passed = 0
+    for name, M, H, dt, ws, qs, al in cases:
+        if _run_case(name, M, H, dt, ws, qs, al, "L0"):
+            passed += 1
+    print(f"\n[L0] Summary: {passed}/{len(cases)} passed")
+    return passed == len(cases)
+
+
+# =============================================================================
+# L1 Functional Tests
+# =============================================================================
+def test_l1():
+    """L1 functional tests: prime H, odd M, large M, non-aligned shapes."""
+    print("=== L1 ===")
+    cases = [
+        ("l1_prime_h_bf16", 1023, 2049, torch.bfloat16, False, False, True),
+        ("l1_prime_h_int32", 255, 4097, torch.int32, True, False, False),
+        ("l1_prime_h_int32_qs", 255, 4097, torch.int32, True, True, False),
+        ("l1_large_m", 10007, 64, torch.int32, True, False, False),
+        ("l1_prime_m_qs", 4001, 2048, torch.int32, True, True, True),
+        ("l1_small_m", 127, 1024, torch.bfloat16, False, False, False),
+    ]
+    passed = 0
+    for name, M, H, dt, ws, qs, al in cases:
+        if _run_case(name, M, H, dt, ws, qs, al, "L1"):
+            passed += 1
+    print(f"\n[L1] Summary: {passed}/{len(cases)} passed")
+    return passed == len(cases)
+
+
+# =============================================================================
+# L2 Exception Tests (non-blocking)
+# =============================================================================
+def test_l2():
+    """L2 exception tests: unsupported dtype, shape mismatch, None input.
+
+    L2 failures produce [BOUNDARY_WARN] and do not block exit code.
+    """
+    print("=== L2 ===")
+
+    def case_unsupported_dtype():
+        x = torch.randn(64, 256, dtype=torch.float32, device="npu")
+        try:
+            dequant_swiglu_quant(x)
+        except ValueError:
+            return True
+        return False
+
+    def case_none_input():
+        try:
+            dequant_swiglu_quant(None)
+        except (TypeError, AttributeError, ValueError):
+            return True
+        return False
+
+    tests = [
+        ("unsupported_dtype_float32", case_unsupported_dtype),
+        ("none_input", case_none_input),
+    ]
+    passed = 0
+    for name, fn in tests:
+        try:
+            ok = fn()
+            tag = "[BOUNDARY_PASS]" if ok else "[BOUNDARY_WARN]"
+            print(f"{tag} L2/{name}")
+            if ok:
+                passed += 1
+        except Exception as e:
+            print(f"[BOUNDARY_WARN] L2/{name}: {e}")
+    print(f"\n[L2] Summary: {passed}/{len(tests)} passed (warnings do not block)")
+
+
+# =============================================================================
+# Boundary Tests (non-blocking)
+# =============================================================================
+def test_boundary():
+    """Boundary tests: all-zero, extreme values, INF/NAN input.
+
+    Boundary failures produce [BOUNDARY_WARN] and do not block exit code.
+    """
+    print("=== Boundary ===")
+    cases = [
+        ("all_zero", 64, 128, torch.float16, False, False, False),
+        ("extreme_int32", 64, 128, torch.int32, True, False, False),
+        ("inf_input", 64, 128, torch.float16, False, False, False),
+        ("nan_input", 64, 128, torch.float16, False, False, False),
+    ]
+    passed = 0
+    for name, M, H, dt, ws, qs, al in cases:
+        torch.manual_seed(42)
+        TwoH = 2 * H
+        try:
+            if name == "all_zero":
+                x = torch.zeros(M, TwoH, dtype=dt, device="npu")
+            elif name == "extreme_int32":
+                x = torch.randint(-128, 128, (M, TwoH), dtype=torch.int32, device="npu")
+                x[0, :] = 128
+                x[1, :] = -128
+            elif name == "inf_input":
+                x = (torch.rand(M, TwoH, device="npu") * 2.0 - 1.0).to(torch.float16)
+                x[0, 0] = float("inf")
+            elif name == "nan_input":
+                x = (torch.rand(M, TwoH, device="npu") * 2.0 - 1.0).to(torch.float16)
+                x[0, 0] = float("nan")
+
+            w = (torch.rand(1, TwoH, device="npu") * 0.2 - 0.1).float() if ws else None
+            a = (torch.rand(M, device="npu") * 1.0 - 0.5).float() if ws else None
+            q = (torch.rand(1, H, device="npu") * 2.0 - 1.0).float() if qs else None
+
+            y, scale = dequant_swiglu_quant(x, w, a, q, al)
+            torch.npu.synchronize()
+            ref_y, ref_scale = golden_dequant_swiglu_quant(x, w, a, q, al)
+            result = precision_compare(y.cpu(), ref_y.cpu(), scale.cpu(), ref_scale.cpu())
+            tag = "[BOUNDARY_PASS]" if result["passed"] else "[BOUNDARY_WARN]"
+            print(f"{tag} Boundary/{name}: y_ratio={result['y_ratio']:.4e} scale_ok={result['scale_ok']}")
+            if result["passed"]:
+                passed += 1
+        except Exception as e:
+            print(f"[BOUNDARY_WARN] Boundary/{name}: {e}")
+    print(f"\n[Boundary] Summary: {passed}/{len(cases)} passed (warnings do not block)")
+
+
+# =============================================================================
+# CANN-Bench 20 Cases
+# =============================================================================
+def test_cann_bench():
+    """cann-bench level3/dequant_swiglu_quant 20 cases."""
+    print("=== cann-bench ===")
+    cases = [
+        ("cann-bench-1", 512, 2048, torch.float16, False, False, True),
+        ("cann-bench-2", 1024, 4096, torch.float16, False, False, False),
+        ("cann-bench-3", 2048, 8192, torch.float16, False, False, True),
+        ("cann-bench-4", 4096, 4096, torch.bfloat16, False, False, False),
+        ("cann-bench-5", 127, 1024, torch.bfloat16, False, False, False),
+        ("cann-bench-6", 8192, 1024, torch.float16, False, False, False),
+        ("cann-bench-7", 1023, 2049, torch.bfloat16, False, False, True),
+        ("cann-bench-8", 255, 4097, torch.bfloat16, False, False, False),
+        ("cann-bench-9", 512, 2048, torch.int32, True, False, True),
+        ("cann-bench-10", 1024, 4096, torch.int32, True, False, False),
+        ("cann-bench-11", 2048, 8192, torch.int32, True, False, True),
+        ("cann-bench-12", 4096, 4096, torch.int32, True, False, False),
+        ("cann-bench-13", 127, 1024, torch.int32, True, False, False),
+        ("cann-bench-14", 8192, 1024, torch.int32, True, False, False),
+        ("cann-bench-15", 1023, 2049, torch.int32, True, False, True),
+        ("cann-bench-16", 255, 4097, torch.int32, True, True, False),
+        ("cann-bench-17", 10007, 64, torch.int32, True, False, False),
+        ("cann-bench-18", 32768, 256, torch.int32, True, False, False),
+        ("cann-bench-19", 4001, 2048, torch.int32, True, True, True),
+        ("cann-bench-20", 16384, 512, torch.int32, True, False, False),
+    ]
+    passed = 0
+    for name, M, H, dt, ws, qs, al in cases:
+        if _run_case(name, M, H, dt, ws, qs, al, "L0"):
+            passed += 1
+    print(f"\n[cann-bench] Summary: {passed}/{len(cases)} passed")
+    return passed == len(cases)
+
+
+# =============================================================================
+# Main
+# =============================================================================
+def main():
+    parser = argparse.ArgumentParser(description="DequantSwigluQuant operator tests")
+    parser.add_argument(
+        "--level",
+        default="l0",
+        type=str.lower,
+        choices=["l0", "l1", "l2", "boundary", "cann-bench", "all"],
+        help="Test level: L0 (threshold), L1 (functional), L2 (exception), "
+        "Boundary (edge cases), cann-bench (20 official cases), all (full suite)",
     )
-    return result["passed"]
-
-
-def main(custom_args=None):
-    parser = argparse.ArgumentParser(description="DequantSwigluQuant Example")
-    parser.add_argument("--M", type=int, default=0, help="Matrix M dimension")
-    parser.add_argument("--H", type=int, default=0, help="Half of the last dimension")
     parser.add_argument("--bench", action="store_true", help="Run benchmark")
-    args, remains = parser.parse_known_args(custom_args)
-    if remains:
-        print(f"[{parser.description}]", "Unknown args:", remains)
+    args = parser.parse_args()
 
     torch.manual_seed(0)
 
-    if args.M > 0 and args.H > 0:
-        check_case(args.M, args.H, torch.float16, False, False)
-        return
+    blocking_ok = True
 
-    # CANN-Bench 20 test cases
-    test_cases = [
-        # (M, H, dtype, has_ws, has_qs, activate_left)
-        (512, 2048, torch.float16, False, False, True),
-        (1024, 4096, torch.float16, False, False, False),
-        (2048, 8192, torch.float16, False, False, True),
-        (4096, 4096, torch.bfloat16, False, False, False),
-        (127, 1024, torch.bfloat16, False, False, False),
-        (8192, 1024, torch.float16, False, False, False),
-        (1023, 2049, torch.bfloat16, False, False, True),
-        (255, 4097, torch.bfloat16, False, False, False),
-        (512, 2048, torch.int32, True, False, True),
-        (1024, 4096, torch.int32, True, False, False),
-        (2048, 8192, torch.int32, True, False, True),
-        (4096, 4096, torch.int32, True, False, False),
-        (127, 1024, torch.int32, True, False, False),
-        (8192, 1024, torch.int32, True, False, False),
-        (1023, 2049, torch.int32, True, False, True),
-        (255, 4097, torch.int32, True, True, False),
-        (10007, 64, torch.int32, True, False, False),
-        (32768, 256, torch.int32, True, False, False),
-        (4001, 2048, torch.int32, True, True, True),
-        (16384, 512, torch.int32, True, False, False),
-    ]
-
-    all_pass = True
-    for M, H, dtype, has_ws, has_qs, al in test_cases:
-        if not check_case(M, H, dtype, has_ws, has_qs, al):
-            all_pass = False
+    if args.level in ("l0", "all"):
+        blocking_ok &= test_l0()
+    if args.level in ("l1", "all"):
+        blocking_ok &= test_l1()
+    if args.level in ("l2", "all"):
+        test_l2()
+    if args.level in ("boundary", "all"):
+        test_boundary()
+    if args.level in ("cann-bench", "all"):
+        blocking_ok &= test_cann_bench()
 
     if args.bench:
         print("\n=== Benchmark ===")
@@ -730,9 +911,11 @@ def main(custom_args=None):
         print(f"torch baseline: {torch_us:.2f} us")
         print(f"speedup: {torch_us / tile_us:.3f}x")
 
-    if all_pass:
-        print("\nDequantSwigluQuant example passed!")
-        print("Kernel Output Match!")
+    if blocking_ok:
+        print("\nTest Passed!")
+        import sys
+
+        sys.exit(0)
     else:
         print("\nTest Failed!")
         import sys
