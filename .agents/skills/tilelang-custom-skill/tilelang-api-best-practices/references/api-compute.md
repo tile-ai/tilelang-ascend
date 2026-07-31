@@ -435,11 +435,162 @@ T.tile.cast(b_ub, a_ub, "CAST_RINT", 4096)
 |-----|------|
 | `T.tile.fill(buffer, value)` | 用 value 填充 buffer |
 | `T.tile.createvecindex(dst, first_value)` | 创建从 first_value 开始的向量索引序列 |
-| `T.tile.transpose(dst, src)` | 16×16 二维矩阵数据块转置 |
+| `T.tile.transpose(dst, src)` | 二维矩阵数据块转置（详见下方 dtype 支持说明） |
 | `T.tile.gather(dst, src, src_offset, src_base_addr)` | 按偏移收集数据 |
 | `T.tile.arith_progression(buffer, first_value, diff_value, count)` | 生成等差数列 |
 
-### 4.10 原子操作
+#### T.tile.transpose 的 dtype 支持与标量回退
+
+`T.tile.transpose` 的硬件加速路径**支持 2 字节和 4 字节类型**（float16/int16/uint16/float32/int32），其他 dtype 会静默回退到逐元素 `SetValue` 标量路径，性能下降数十倍。
+
+| dtype | 硬件加速 | 说明 |
+|-------|---------|------|
+| float16 / int16 / uint16 | ✅ 硬件 `AscendC::Transpose` | 2 字节，16×16 块走硬件指令 |
+| float32 / int32 | ✅ 硬件 `transpose_block` | 4 字节，同样走硬件指令（`sizeof(T)==4` 满足条件） |
+| bfloat16 | ❌ 回退标量 | 2 字节但被 `!is_same_v<bfloat16_t>` 显式排除 → host 侧 `view(torch.int16)` 零拷贝 reinterpret（详见下方） |
+| int8 / uint8 | ❌ 回退标量 | 1 字节（`sizeof(T)==1` 不满足） → kernel 内 `T.tile.cast` 到 float16 后用硬件指令 |
+| int64 | ❌ 回退标量 | 8 字节（`sizeof(T)==8` 不满足）→ 优先 record-aware DMA；通用路径用块 DMA + UB-local reorder，并做最大 case 验证 |
+
+> **判断方法**：查看 `src/tl_templates/ascend/common.h` 的 `Transpose` 模板特化，确认目标 dtype 是否在硬件支持集合。或用 `get_kernel_source()` 查看是否出现 `SetValue`（标量回退标志）。
+
+**bfloat16 处理方法（host 侧零拷贝 reinterpret）**：
+
+bfloat16 与 int16 均 2 字节，且 transpose 只搬数据不改 bit pattern，可安全 reinterpret。**这是 bfloat16 的首选方法**——零开销，不需要额外 UB buffer：
+
+```python
+# host 侧入口
+if x.dtype == torch.bfloat16:
+    return transpose(x.view(torch.int16), perm).view(torch.bfloat16)
+```
+
+**int8 处理方法（kernel 内 cast）**：
+
+int8 无同宽的硬件加速 dtype 可 reinterpret，需 kernel 内 cast 到 float16 后用硬件指令。**⚠️ 禁止在 host 侧用 `.to(torch.int16)` 转换**——会触发 `aclnnCast` 且产生数据搬移。
+
+```python
+# kernel 内
+use_b16_cast = dtype == "int8"
+cal_dtype = "float16" if use_b16_cast else dtype
+
+a_cal = T.alloc_ub((block_M, block_N), cal_dtype)
+b_cal = T.alloc_ub((block_N, block_M), cal_dtype)
+
+if use_b16_cast:
+    T.tile.cast(a_cal, a_ub, "CAST_NONE", tile_elem)     # int8 → float16
+    T.tile.transpose(b_cal, a_cal)                        # float16 硬件 transpose
+    T.tile.cast(b_ub, b_cal, "CAST_RINT", tile_elem)      # float16 → int8
+else:
+    T.tile.transpose(b_ub, a_ub)
+```
+
+#### int64 正确实现路线：不做类型转换，优先聚合 DMA，否则保留 UB-local fallback
+
+int64 没有已确认的硬件 transpose 指令，但“逐行 `T.copy`”不能完成任意二维转置。
+先寻找输入/输出共同连续的 suffix record，用二维/成组 DMA 聚合搬运；通用场景用
+块 DMA GM→UB、UB 内局部重排、块 DMA UB→GM。`T.tile.transpose` 若 lowering
+为标量，只要 `GetValue/SetValue` 局限在 UB，可以作为经最大 case 超时验证的
+fallback；禁止逐元素 strided GM load/store。
+
+拆成两个 int32 lane 不是默认方案。只有 lane 提取、交织写回及 UB planner 在当前
+后端上经端到端精度验证后才能使用，不得凭 API 名称假定硬件语义。
+
+> **结论先行**：对于要求 bit-exact 的纯数据重排，int64 不应转换成 float32、
+> int32、float16 或其他 dtype。cast 会丢失高位或改变 bit pattern；host 拆成两个
+> int32 又会引入 aclnn 搬运。这里的“dtype 适配”是为 int64 选择不同的数据路径，
+> 不是执行 dtype cast。
+
+**可机械执行的选择流程**：
+
+1. 用 `get_kernel_source()` 确认 int64 的目标 tile 指令确实没有硬件路径。
+2. 计算 `record_bytes = record_len * 8`。只有 record 在输入/输出两侧都连续、
+   其搬运确实完成目标布局，并且单次地址/长度/gap 满足 DataCopy 约束时，才选择
+   record-aware DMA。
+3. `record_bytes < 32` 时（例如 `record_len=1` 的单个 int64 只有 8B），不得每条
+   record 单独 `T.copy`。应聚合至少 32B 的相邻连续数据；如果目标布局无法这样
+   聚合，使用块 DMA + UB-local reorder。
+4. 通用 fallback 保留块状输入输出：
+
+```python
+valid_m = T.min(block_M, M - m_start)
+valid_n = T.min(block_N, N - n_start)
+T.copy(
+    x[b, m_start:m_start + valid_m, n_start:n_start + valid_n],
+    a_ub[0:valid_m, 0:valid_n],
+)
+T.tile.transpose(b_ub, a_ub)  # int64 可在 UB 内标量 lowering
+T.copy(
+    b_ub[0:valid_n, 0:valid_m],
+    y[b, n_start:n_start + valid_n, m_start:m_start + valid_m],
+)
+```
+
+这条路线不声称 int64 获得硬件 transpose；它保证 GM 两侧仍是块 DMA，并把慢路径
+限制在 UB。可参考 `examples/transpose/transpose.py::_kernel_3d` 的动态切片结构。
+若实测没有收益，结论应是“该硬件适配对 int64 不适用”，而不是强制改写。
+
+5. 验证同时覆盖：非整除尾块、`torch.npu.synchronize()` 后无 ACL/AICore 错误、
+   高 32 位非零的 int64 bit-exact 数据，以及所有受影响的官方 case。
+
+**Agent 应直接采用的分派伪代码**：
+
+```python
+if dtype != "int64":
+    # 按该 dtype 已验证的硬件/cast 路径处理
+    ...
+elif shared_contiguous_record and record_bytes >= 32 and datacopy_layout_legal:
+    # int64 路线 A：不 cast；一次聚合多条连续 record
+    return record_dma_kernel(x, metadata)
+else:
+    # int64 路线 B：不 cast；GM 两侧块 DMA，UB 内允许标量 lowering
+    return tiled_ub_reorder_kernel(x, metadata)
+```
+
+若路线 A 不能同时满足 `record_bytes >= 32`、连续性和目标布局语义，就直接选择
+路线 B。不得先尝试“单个 int64 的 8B T.copy”；这不是候选路线。
+
+> **⚠️ 禁止在 host 侧做以下操作**（会触发数据搬移或 aclnn）：
+> - `x.to(torch.int16)` / `x.to(torch.int8)` —— host 侧 dtype 转换触发 `aclnnCast`
+> - `x32[..., 0].contiguous()` —— 跨步切片后 `.contiguous()` 触发 `aclnnCopy`
+> - `torch.stack([lo_t, hi_t], dim=-1)` —— 创建新 buffer + 数据拷贝，触发 `aclnnCat`
+> - `x.view(torch.int32).reshape(*shape, 2)` 后再 `.contiguous()`/`stack`/`copy`
+>   物理化 lane；view、切片或 unbind 本身不一定搬运，需审计完整链路
+
+> **约束**：
+> - 同宽 reinterpret：两 dtype 字节数必须相同；算子计算逻辑不能改变 bit pattern（transpose 只搬运安全；cast/exp 等改变 bit pattern 的不适用）
+> - kernel 内 cast：cast 方向 low→high 用 `CAST_NONE`、high→low 用 `CAST_RINT`；元素数须 16 对齐；需额外 UB 空间存放 cal_dtype buffer；**禁止 host 侧 `.to()` 转换**
+> - 无 tile 指令支持的 dtype（如 int64）：优先 record-aware DMA 或块 DMA +
+>   UB-local reorder，禁止逐元素 strided GM 主路径；**禁止 host 侧拆分/拼回**
+>
+> 性能优化的判断准则见 [tilelang-perf-optimization/references/optimization-guide.md §2.16](../../tilelang-perf-optimization/references/optimization-guide.md#216-特定-dtype-的硬件指令适配dtype-specific-hardware-path-adaptation)。
+
+#### Stride 参数作为 JIT 编译期常量传入 kernel（避免创建 GM tensor）
+
+**约束**：当 kernel 需要stride/shape 等元数据参数时，优先作为 `@tilelang.jit` 函数的 Python 参数传入（JIT 编译期常量），而不是打包成 int32 GM tensor 在运行时传入。JIT 编译期常量在 kernel 内可以直接用于地址计算，无需 GM→UB 搬运。
+
+**使用方法**：把 stride/shape 列表作为 Python tuple 传入 jit 函数，kernel 内用 `T.alloc_var` + 静态展开循环累加偏移：
+
+```python
+@tilelang.jit(out_idx=[1], pass_configs=PASS_CONFIGS)
+def kernel(total_numel, M, N, dtype, block_M, block_N,
+           src_stride_m, src_stride_n,           # JIT 编译期常量
+           dst_stride_n, dst_stride_m,
+           nbatch, batch_num, core_num, single_core_load,
+           src_batch_strides,                     # Python tuple
+           dst_batch_strides,
+           batch_dims_sizes):
+    # kernel 内用 alloc_var 累加 batch 偏移，stride 是编译期常量直接用
+    boff_s = T.alloc_var("int32", init=0)
+    # 静态展开（最多 6 个 batch 轴，不存在的用 stride=0/dim=1 填充）
+    boff_s = boff_s + (bidx_s % batch_ds[0]) * src_bs[0]
+    bidx_s = bidx_s // batch_ds[0]
+    # ...
+```
+
+**对比**：如果打包成 int32 GM tensor 传入，kernel 需要额外 `T.copy(stride_buf, ub_s)` 把 stride 从 GM 搬到 UB，增加一次 GM→UB 搬运。作为 JIT 编译期常量则无此开销。
+
+> **适用条件**：stride/shape 参数数量有限（不超过约 20 个），可以作为 JIT 参数传入。如果参数过多或需要运行时动态计算，则仍需用 GM tensor。
+
+### 4.11 原子操作
 
 #### T.tile.atomic_add(dst, src)
 
@@ -489,7 +640,7 @@ T.tile.atomic_add(C[..., ...], src_l0c)
 **底层实现**：
 
 底层会生成 Ascend C 的 DMA atomic add 语义：开启 `SetAtomicAdd<T>()`，执行 local -> GM 的 `DataCopyPad`，再通过兼容 helper 关闭 atomic 状态。
-### 4.11 排序操作
+### 4.12 排序操作
 
 #### T.tile.sort(dst, src, actual_num)
 
@@ -546,7 +697,7 @@ T.tile.topk(topk_global, sort_result, K, actual_num)
 **注意事项**：
   - `src` 的大小需要满足32或32的整数倍
 
-### 4.12 两种编程范式对比
+### 4.13 两种编程范式对比
 
 ```python
 # 方式一：T.Parallel + 符号 API（Developer 模式，跨平台兼容）

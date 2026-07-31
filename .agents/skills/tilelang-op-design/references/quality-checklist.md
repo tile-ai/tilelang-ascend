@@ -2,6 +2,26 @@
 
 生成 `design.md` 后，逐项检查：
 
+## 0. 前置检查（必须最先确认）
+
+| # | 检查项 | 是否必须通过 |
+|---|--------|-------------|
+| 0 | **Host 侧 Buffer 操作合规性**（对应 SKILL.md §3.2）| ✅ 必须 |
+
+**第 0 项核对**：design.md 的 host 侧（kernel 外的 Python 代码）步骤是否仅限视图操作（`reshape`/`view`/`transpose`/`permute`/`expand`，只改 stride/shape 元数据）+ kernel 调用 + 结果 reshape？是否出现以下改动 buffer 真实内容的描述（命中即违规，必须修订后再继续后续检查）：
+
+- `.contiguous()` / `.reshape(...).contiguous()` / `.permute(...).contiguous()` 等触发真实数据重排
+- host 侧 padding：`x_padded = torch.zeros(...); x_padded[:, :M] = x; x = x_padded`（新建 buffer + 切片赋值 + 顶替原输入）
+- 直接改写 buffer 内容：`x[:] = ...`、`x.add_(1)`、`out=`
+- 改数据指针顶替：`x = y`（y 是另一个 tensor）后传入 kernel
+
+**允许**：经证明共享原 storage、只改 metadata 的 view 操作；数据准备、kernel 调用和
+结果验证。`reshape` 是否物理化取决于目标 shape 与当前 stride 的兼容性。非整除尾块
+必须在 kernel 输入、输出两侧写出显式 valid extent/BufferRegion，不需要 host padding。
+下游 `tilelang-op-develop` 会再次校验。
+
+## 1. 设计质量检查
+
 | # | 检查项 | 是否必须通过 |
 |---|--------|-------------|
 | 1 | **编程模式有明确结论和理由**：不是笼统的「视情况而定」 | ✅ 必须 |
@@ -24,5 +44,7 @@
 | 18 | **函数无全局变量依赖**：维度参数从 tensor shape 或函数参数获取，支持多场景顺序测试 | ⭕ 推荐 |
 | 19 | **精度标准已定义**：§9.3 精度标准表填了具体数值（非占位符），且 §4 声明的每个 dtype 都有对应行（浮点给 atol/rtol/max_abs_error_limit/required_matched_ratio，整型为 0/0/0/1.0） | ✅ 必须 |
 | 20 | **proto.yaml 已产出**：同目录 `proto.yaml` 存在（模板见 design-template.md §11.5），`operator.inputs[].dtype` 与 §9.3 精度表的 dtype 行一致（全集），`attrs[].name` 覆盖所有关键属性——供覆盖门禁派生 D-DTYPE-*/D-PARAM-* | ✅ 必须 |
+| 21 | **数据重排性能可行性已量化**：每条结构路径列出 GM pass、DMA transaction/平均字节、GM 标量访问、地址 div/mod 和有效并行度；大张量无逐元素 strided GM 主路径 | ✅ 必须 |
+| 22 | **最大/关键 case 有超时门禁**：用户给出的最大 shape、最坏 dtype 和最高任务数路径至少各有一个性能哨兵，不能全部放入可跳过的 L1/large | ✅ 必须 |
 
-**通过条件**：必须项（1, 2, 3, 7, 8, 9, 13, 19, 20）全部通过，推荐项至少通过 4/9。
+**通过条件**：前置检查（第 0 项）必须通过 + 必须项（1, 2, 3, 7, 8, 9, 13, 19, 20, 21, 22）全部通过 + 推荐项至少通过 4/9。

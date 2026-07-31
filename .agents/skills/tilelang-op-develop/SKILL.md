@@ -25,11 +25,14 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 | Golden 函数 | §9.1 Golden 函数 | 测试对比基准 |
 | 测试用例表 | §9.2 L0 门槛测试计划 | 测试配置 |
 | 精度标准 | §9.3 精度标准 | 混合容差：atol / rtol / max_abs_error_limit / required_matched_ratio（按 dtype） |
+| 路径性能可行性表 | §5/§6 | GM pass、DMA transaction、GM 标量访问、地址计算和并行度 |
+| 性能可行性哨兵 | §9 | 每条路径最坏 dtype/最大任务数 case 与单 case 超时预算 |
 
 **明确忽略的内容**（这些容易误导）：
 - 模式选型的分析推理过程
 - 内存预算的计算过程和多轮优化迭代
-- 风险点与注意事项（过于笼统）
+- 仅忽略没有量化证据的笼统风险；凡是包含具体 shape、dtype、超时、GM/DMA
+  成本或回退路径的风险必须提取并作为验收约束
 - 交付清单（仅是文件列表）
 - 任何标注为"待确认"的内容
 
@@ -56,6 +59,8 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 | GEMM | `examples/gemm/`、`examples/developer_mode/gemm_developer.py` |
 | 融合算子 | `examples/flash_attention/`、`examples/pipeline/`、`examples/developer_mode/matmul_add_developer.py` |
 | Developer 模式 | `examples/developer_mode/` |
+| transpose / layout transform | `examples/transpose/transpose.py`（提取结构谓词、
+连续 suffix-record 聚合搬运和通用 fallback；不得照抄具体 perm/shape 分支） |
 
 查阅示例时关注：
 1. **Kernel 结构**：`T.Kernel` 参数、`cid`/`vid` 用法
@@ -68,9 +73,55 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 
 ## 3. 代码生成流程
 
-> **⚠️ 核心原则：算子的主要操作必须全部在 kernel 内实现**
+### 3.1 算子 kernel 划分原则（强制规则，生成代码前必须遵守）⭐
+
+多 kernel 或 host 多路径方案必须保证支持域完整：保留覆盖全部声明输入域的通用
+fallback，再按可判定的 dtype、shape、对齐性或输入拓扑增加有限快路径。具体 shape 或
+perm 特化本身不是违规；没有 fallback、未命中即不支持才是设计错误。
+
+生成前记录每条路径的适用谓词、fallback、语义等价依据和验证用例。若 design.md 没有
+完整覆盖支持域，返回 `[DESIGN_ERROR]`；不要擅自缩小支持范围。
+
+Edit 前必须从 design.md 读取 `[DISPATCH-COVERAGE]` 并在实现日志复核：
+
+```text
+[DISPATCH-COVERAGE-AUDIT]
+supported_domain: <...>
+generic_fallback: <...>
+uncovered_input: none/<反例>
+specialization_cases: <每条路径至少一个>
+result: pass/fail
+```
+
+找出任何未覆盖输入时立即返回 `[DESIGN_ERROR]`，不得靠删除 case、缩小输入域或新增
+无 fallback 的枚举分支继续。
+
+---
+
+### 3.2 Host 侧 Buffer 操作约束（生成代码时必须遵守）⭐
+
+> **⚠️ 核心原则：算子的主要操作必须全部在 kernel 内实现，host 侧禁止触发 aclnn 调用**
 >
-> 算子的所有核心计算逻辑（包括数据搬运、数学运算、归约、归一化等）必须在 `@tilelang.jit` 装饰的 kernel 函数内部完成。**禁止**将算子的主要操作放在 kernel 外部（如 host 端 Python 代码）来实现。kernel 外部只允许做数据准备（输入 tensor 创建）、kernel 调用和结果验证。
+> 算子的所有核心计算逻辑（包括数据搬运、数学运算、归约、归一化等）必须在 `@tilelang.jit` 装饰的 kernel 函数内部完成。**kernel 外部（host 侧 Python 代码）对 NPU 侧张量数据严禁以下行为**（约束范围覆盖 kernel 调用前的输入预处理和 kernel 调用后的输出后处理）：
+>
+> | # | 禁止行为 | 说明 | 典型反例 |
+> |---|---------|------|---------|
+> | 1 | 修改张量数据指针 | 禁止把输入/输出 tensor 重新绑定到另一个 tensor（改变 `data_ptr`）后传入 kernel | `x = y`（y 是另一个 tensor）后再传入 kernel |
+> | 2 | 修改张量真实排布 | 禁止任何会触发真实数据拷贝/重排的操作 | `x.reshape(...).contiguous()`、`x.transpose(...).contiguous()`、`x.permute(...).contiguous()`、**`x_perm.reshape(-1)`（x_perm 非 contiguous 时等价于 `.contiguous()`）** |
+> | 3 | 修改 buffer 真实内容 | 禁止在 host 侧直接改写 tensor 数据 | `x[:] = ...`、`x.add_(1)`、`torch.mul(x, 2, out=x)` |
+> | 4 | 用新 buffer 作弊 | 禁止「创建新 buffer → host 侧处理 → 替换原 tensor」绕过限制 | `x = x.add(1)`（host 算完用新 tensor 顶替原输入） |
+> | 5 | **隐式触发 aclnn 调用** | cann-bench 评测环境可能裁剪 aclnn 编译产物，以下操作在 NPU tensor 上会触发 aclnn 调用导致运行时失败：`torch.nn.functional.pad`/`cat`/`interpolate`、`torch.cat`/`stack`、`.to(dtype)` dtype 转换、`.clone()`、对非 contiguous 张量的 `reshape`（含**输出侧切片+reshape**） | `y = y[:, :, :, :S]; y.reshape(shape)`（切片后非 contiguous，reshape 隐式 `.contiguous()` → `aclnnCopy`）；`x = torch.nn.functional.pad(x, (0, pad_size))`（→ `aclnnPad`） |
+>
+> **允许**的 host 侧操作：经证明只改 metadata、共享原 storage 的 view 操作，以及
+> 数据准备、kernel 调用和结果验证。
+>
+> **判定准则**：`is_contiguous()` 为 True 是 reshape 常见的零拷贝充分条件，不是必要
+> 条件。非 contiguous 输入需证明目标 shape 与 stride 兼容且操作前后共享 storage；
+> 不能证明时改用 stride-aware kernel。`permute`/`transpose` 本身通常只是 metadata view。
+
+生成代码后逐项记录 `[HOST-METADATA-AUDIT]`。对每个 host tensor 操作写明输入/输出
+stride、是否共享 storage/data pointer、是否触发 aclnn/物理拷贝；任一结论为 unknown
+都不得交付。具体检查项见 [references/checklist.md §0](references/checklist.md#0-前置检查必须最先确认)。
 
 ### 步骤 1：读取设计文档
 
@@ -106,6 +157,28 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 
 ### 步骤 3：生成实现代码
 
+> **⚠️ 生成代码时必须遵守 §3 开头的「核心原则」**：算子的核心计算逻辑全部在 kernel 内实现。host 侧对 NPU 张量只能做「只改元数据」的视图操作（`reshape`/`view`/`transpose`/`permute`/`expand`）以及数据准备 / kernel 调用 / 结果验证；禁止改数据指针、禁止 `.contiguous()` 等真实重排、禁止改写 buffer 内容、禁止用新 buffer 作弊。拿不准时，一律放入 kernel。
+
+> **⚠️ dtype 特化检查（支持多 dtype 的算子必须执行）**：生成代码时必须检查每个支持的 dtype 是否走硬件加速路径。如果 dtype 回退标量路径，必须比较同宽 reinterpret、kernel 内 cast、record-aware DMA、块 DMA + UB-local 标量重排等候选。**禁止把大张量降级成逐元素 strided GM load/store，也不能把“逐行 T.copy”误当成可完成任意转置。** UB 内局部标量 lowering 可以作为经最大 case 验证的 fallback；不得在 host 侧用 `.to(dtype)` / `.contiguous()` / `torch.stack` 绕过。详见 [references/coding-conventions.md §7](references/coding-conventions.md#7-dtype-性能特化)。
+
+> **⚠️ stride/shape 参数传递（kernel 需要地址偏移时）**：优先作为 `@tilelang.jit` 函数的 Python 参数传入（JIT 编译期常量），kernel 内用 `T.alloc_var` 累加偏移。**不要打包成 int32 GM tensor 在运行时传入**——会增加一次 GM→UB 搬运。详见 [tilelang-api-best-practices/references/api-compute.md §4.10 Stride 参数作为 JIT 编译期常量](../tilelang-custom-skill/tilelang-api-best-practices/references/api-compute.md#stride-参数作为-jit-编译期常量传入-kernel避免创建-gm-tensor)。
+
+> **⚠️ 数据重排实现门禁**：GM↔UB 应使用尽可能大的块/二维 `T.copy`。标量循环只能用于
+> UB-local reorder，不能在大张量主路径中写成 `ub[i] = gm[base + i * stride]`。
+> 对连续 suffix record，必须按通用结构谓词聚合多条 record，而不是每条 record 发两次短 DMA。
+> 生成后用 `get_kernel_source()` 检查每条 dtype/路径；若 `GetValue/SetValue` 对 GM
+> 按 numel 展开，或 DMA transaction 估算达到数十万/百万级，必须重新设计。
+>
+> 不要只执行上述门禁。凡是涉及数据布局变化，必须按
+> [coding-conventions.md §6.1](references/coding-conventions.md#61-数据重排的正向实现配方)
+> 的六步配方生成候选实现：识别连续 record → 按成本选路径 → 聚合搬运 →
+> UB-local reorder → 必要时分阶段 → 数字验收。
+
+完成候选后必须写 `[REORDER-COST-AUDIT]`，包含 GM pass、DMA transaction/平均字节、
+GM 标量访问、逐元素 div/mod、active cores、每核串行任务和最大 case timeout。任一
+指标无法估算时先读取 §6.1 补齐；大张量路径出现 numel 级 GM 标量访问或海量短 DMA
+时不得进入精度验收。
+
 基于 design.md 的 API 映射 + 参考示例的代码风格，生成**两个文件**：`{op}.py`（纯 kernel）与 `test_{op}.py`（golden + L0 + main，L1/L2/Boundary 留桩，从 `{op}.py` import kernel）。完整文件结构骨架与融合算子注意事项见 [examples/code-skeleton.md](examples/code-skeleton.md)。
 
 > **写代码时遇到**具体编码规范问题（Buffer 分配 / 索引一致性 / 同步 / 广播 / 测试模板）查 [references/coding-conventions.md](references/coding-conventions.md)。
@@ -116,11 +189,32 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 
 ### 步骤 4：运行验证
 
-本 skill 只负责 L0（精度收敛）。先只跑 L0：
+本 skill 负责 L0 精度收敛，同时负责实现的最低性能可行性。先跑 L0：
 
 ```bash
 python examples/{op}/test_{op}.py --level l0
 ```
+
+随后必须运行 design.md 中的性能可行性哨兵（即使它被标为 large/L1），为每个 case
+设置明确 timeout。用户明确给出的失败或超时 case 必须全部实际运行。任一哨兵超时，
+不得宣称生成完成：应修复搬运路径；若现有 API 无法满足，则返回 `[DESIGN_ERROR]`
+并附 GM/DMA 成本证据。
+
+测试数据准备同样属于 aclnn 审计范围：随机数、特殊值注入、dtype 转换和 golden
+物理重排全部在 CPU 完成，然后只做一次 H2D；验证时只做 D2H。不得在 NPU 上调用
+`torch.rand/randint`、in-place random、`.contiguous()` 或 golden 计算。报错中若出现
+`aclnnInplaceRandom`，说明失败发生在测试输入准备，不是 kernel 内存不足或精度问题。
+
+若测试规格包含 NaN/Inf，生成的测试必须采用位置敏感验证：
+
+1. 在 CPU 上用固定 seed 生成有限基础值和稀疏特殊值 mask，并保证至少一个特殊值、
+   一个有限值；`[nan, nan]` 不得直接退化为全 NaN。
+2. 数值容差判断前，分别要求 actual/golden 的 NaN、正 Inf、负 Inf mask 完全相等。
+3. mask 一致后，只在双方有限的位置计算 atol/rtol、matched ratio 和 max absolute error。
+4. 全 NaN/全 Inf 只能作为补充用例，不能作为唯一特殊值门禁；
+   `torch.allclose(..., equal_nan=True)` 不能替代显式 mask 比较。
+
+具体生成骨架见 [references/coding-conventions.md §5](references/coding-conventions.md#5-测试模板)。
 
 > L0 通过后，由 `tilelang-op-test-design`（场景 B）填充 L1/L2/Boundary 桩体，再 `--level all` 跑全量。
 > main 分发器与 `--level` 接口由本 skill 生成并保持稳定（模板见 code-skeleton.md），扩展时不改动。
@@ -137,11 +231,21 @@ python examples/{op}/test_{op}.py --level l0
 
 ### 步骤 5：上库前检查清单
 
-运行通过后，必须按 [references/checklist.md](references/checklist.md) 全部 22 项检查。
+运行通过后，必须按 [references/checklist.md](references/checklist.md) 逐项检查。
 
-**⚠️ 首先检查：算子主要操作是否全部在 kernel 内实现**
+**⚠️ 首要检查：算子主要操作是否全部在 kernel 内实现（违反则立即修改，不得继续）**
 
-逐项检查前，先回顾生成的代码，确认算子的所有核心计算逻辑（数据搬运、数学运算、归约、归一化等）都在 `@tilelang.jit` 装饰的 kernel 函数内部完成。若发现有任何主要操作被放在 kernel 外部（host 端 Python 代码）实现，**必须立即修改**，将这些操作移入 kernel 内部，直到满足要求后才能继续后续检查。kernel 外部只允许做数据准备（输入 tensor 创建）、kernel 调用和结果验证。
+逐项检查前，先回顾生成的代码，按 §3 开头「核心原则」的五条禁令逐条核对 host 侧代码（**含 kernel 调用后的输出后处理路径**）：
+
+1. 是否把输入/输出 tensor 重新绑定到别的 tensor（改了 `data_ptr`）后传入 kernel？
+2. 是否存在真实数据拷贝/重排？对 reshape 应验证 storage/stride 兼容性，不能把
+   `is_contiguous() == False` 直接等同于一定复制；`permute`/`transpose` 通常只改 metadata。
+3. 是否在 host 侧直接改写了 tensor 数据（`x[:] =`、in-place `_()`、`out=` 等）？
+4. 是否用「新建 buffer → host 侧处理 → 替换原 tensor」的方式作弊？
+5. 是否在 host 侧隐式触发了 aclnn 调用？重点检查：`torch.nn.functional.pad`/`cat`/`interpolate`、`torch.cat`/`stack`、`.to(dtype)` dtype 转换、`.clone()`、以及**输出侧切片+reshape**（如 `y = y[:,:,:,:S]; y.reshape(shape)`——切片后非 contiguous，reshape 隐式 `.contiguous()` → `aclnnCopy`）。若需要从 padded 输出裁剪有效部分，应改为让 kernel 直接输出到与原始 shape 一致的 buffer（通过 `T.copy` + `pad_value` 处理尾块），host 侧无需切片。
+6. 是否对所有支持的 dtype 做了特化检查？用 `get_kernel_source()` 确认每个 dtype 是否走硬件加速路径。标量回退的 dtype 是否在 kernel 内处理（cast 或逐行搬运），**而不是在 host 侧用 `.to()` / `.contiguous()` / `torch.stack` 绕过**？
+
+任何一条命中，**必须立即修改**——把这些操作移入 kernel 内部，直到满足要求后才能继续后续检查。允许的 host 侧操作仅限：`reshape`/`view`/`transpose`/`permute`/`expand` 等只改元数据的视图操作，以及数据准备、kernel 调用、结果验证。
 
 **最容易踩坑的 4 项重点提醒**：
 
@@ -167,7 +271,7 @@ python examples/{op}/test_{op}.py --level l0
 - [references/coding-conventions.md](references/coding-conventions.md) — Buffer 分配 / 索引 / 同步 / 广播 / 测试模板（写代码遇到具体规范时查）
 - [references/vector-parallelism.md](references/vector-parallelism.md) — V 核并行化（用到 vid 切分时查）
 - [references/gemm-cv-fusion.md](references/gemm-cv-fusion.md) — GEMM 与 CV 融合 pass_configs（含 GEMM 或融合算子时查）
-- [references/checklist.md](references/checklist.md) — 22 项上库前检查清单（生成代码后逐项过）
+- [references/checklist.md](references/checklist.md) — 上库前检查清单（生成代码后逐项过）
 - [references/troubleshooting.md](references/troubleshooting.md) — 编译 / 运行 / 精度错误排查手册（遇到具体错误时查）
 - [references/skill-feedback.md](references/skill-feedback.md) — Skill 反馈采集流程（流程结束时查，orchestrator 模式跳过）
 - [examples/code-skeleton.md](examples/code-skeleton.md) — `{op}.py`（kernel）+ `test_{op}.py`（测试）文件结构骨架
