@@ -1363,6 +1363,23 @@ AICORE PTO_INLINE void compare_scalar(
 template <typename T, int32_t Rows, int32_t Cols, int32_t RowValid,
           int32_t ColValid>
 AICORE PTO_INLINE void
+clear_compare_tail_bits(TileUbDataND<T, Rows, Cols, RowValid, ColValid> &dst,
+                        uint32_t valid_row, uint32_t logical_valid_col) {
+  if ((logical_valid_col & 7U) == 0)
+    return;
+  TL_PIPE_V_BARRIER();
+  uint8_t keep = static_cast<uint8_t>((1U << (logical_valid_col & 7U)) - 1U);
+  uint32_t last = logical_valid_col >> 3;
+  for (uint32_t r = 0; r < valid_row; ++r) {
+    dst.data()[r * Cols + last] = static_cast<T>(
+        static_cast<uint8_t>(dst.data()[r * Cols + last]) & keep);
+  }
+  TL_PIPE_V_BARRIER();
+}
+
+template <typename T, int32_t Rows, int32_t Cols, int32_t RowValid,
+          int32_t ColValid>
+AICORE PTO_INLINE void
 fill_scalar(TileUbDataND<T, Rows, Cols, RowValid, ColValid> &dst, T scalar) {
   for (int i = 0; i < RowValid; i++) {
     for (int j = 0; j < ColValid; j++) {

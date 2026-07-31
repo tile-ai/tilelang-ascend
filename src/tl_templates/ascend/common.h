@@ -941,6 +941,69 @@ CATLASS_DEVICE void tail_scalar(TailVecScalarOp op, LocalTensor<T> dst,
   }
 }
 
+// ---- compare -------------------------------------------------------------
+// Compare produces a packed uint8 predicate. The AscendC Level-0 interface
+// does not carry a predicate row stride, so the tail path executes one
+// physical row at a time. The propagation pass limits validCol to one vector
+// repeat for this first validated contract.
+template <typename T>
+CATLASS_DEVICE void tail_compare(LocalTensor<uint8_t> dst, LocalTensor<T> src0,
+                                 LocalTensor<T> src1, AscendC::CMPMODE mode,
+                                 uint32_t validRow, uint32_t validCol,
+                                 uint32_t physCol, uint32_t storageCol) {
+  if (validRow == 0 || validCol == 0)
+    return;
+  AscendC::BinaryRepeatParams rp;
+  rp.dstBlkStride = 1;
+  rp.src0BlkStride = 1;
+  rp.src1BlkStride = 1;
+  rp.dstRepStride = 0;
+  rp.src0RepStride = 0;
+  rp.src1RepStride = 0;
+  for (uint32_t r = 0; r < validRow; ++r) {
+    AscendC::Compare(dst[r * storageCol], src0[r * physCol], src1[r * physCol],
+                     mode, static_cast<uint64_t>(validCol), 1, rp);
+  }
+  if ((validCol & 7U) != 0) {
+    AscendC::PipeBarrier<PIPE_ALL>();
+    uint8_t keep = static_cast<uint8_t>((1U << (validCol & 7U)) - 1U);
+    uint32_t last = validCol >> 3;
+    for (uint32_t r = 0; r < validRow; ++r) {
+      uint32_t index = r * storageCol + last;
+      dst.SetValue(index, static_cast<uint8_t>(dst.GetValue(index) & keep));
+    }
+    AscendC::PipeBarrier<PIPE_ALL>();
+  }
+}
+
+template <typename T>
+CATLASS_DEVICE void
+tail_compare_scalar(LocalTensor<uint8_t> dst, LocalTensor<T> src, T scalar,
+                    AscendC::CMPMODE mode, uint32_t validRow, uint32_t validCol,
+                    uint32_t physCol, uint32_t storageCol) {
+  if (validRow == 0 || validCol == 0)
+    return;
+  AscendC::UnaryRepeatParams rp;
+  rp.dstBlkStride = 1;
+  rp.srcBlkStride = 1;
+  rp.dstRepStride = 0;
+  rp.srcRepStride = 0;
+  for (uint32_t r = 0; r < validRow; ++r) {
+    AscendC::Compares(dst[r * storageCol], src[r * physCol], scalar, mode,
+                      static_cast<uint64_t>(validCol), 1, rp);
+  }
+  if ((validCol & 7U) != 0) {
+    AscendC::PipeBarrier<PIPE_ALL>();
+    uint8_t keep = static_cast<uint8_t>((1U << (validCol & 7U)) - 1U);
+    uint32_t last = validCol >> 3;
+    for (uint32_t r = 0; r < validRow; ++r) {
+      uint32_t index = r * storageCol + last;
+      dst.SetValue(index, static_cast<uint8_t>(dst.GetValue(index) & keep));
+    }
+    AscendC::PipeBarrier<PIPE_ALL>();
+  }
+}
+
 // ---- reduce ----
 // The propagation pass emits this helper only for axis 0/-2: reduce down the
 // valid rows into out[0..validCol). `tmp`, `dim`, and `clear` stay in the ABI

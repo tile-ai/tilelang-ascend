@@ -77,6 +77,7 @@ TAIL_REDUCE_PASS_CONFIGS = {
     **VEC_PASS_CONFIGS,
     tilelang.PassConfigKey.TL_ASCEND_TAIL_MASK: True,
 }
+TAIL_COMPARE_PASS_CONFIGS = TAIL_REDUCE_PASS_CONFIGS
 
 
 def _vec_configs(tail_mask):
@@ -462,6 +463,70 @@ def test_reduce_axis0_special_values_ascendc(kind):
 
     finite_zero = (ref == 0) & ~torch.isnan(ref)
     torch.testing.assert_close(torch.signbit(out[finite_zero]), torch.signbit(ref[finite_zero]))
+
+
+# =============================================================================
+# Group 2e - AscendC/PTO packed compare tails   [risk: high]
+# Compare writes one predicate bit per logical input element. The final byte is
+# explicitly masked so bits beyond valid_col are deterministic zeros.
+# =============================================================================
+def compare_tail(M, N, block_M, block_N, dtype="float", scalar=False):
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
+        C: T.Tensor((M, T.ceildiv(N, 8)), "uint8"),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+            b_ub = T.alloc_ub((block_M, block_N), dtype)
+            mask_ub = T.alloc_ub((block_M, block_N // 8), "uint8")
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+            T.copy(B[bx * block_M, by * block_N], b_ub)
+            if scalar:
+                T.tile.compare(mask_ub, a_ub, 0.0, "LT")
+            else:
+                T.tile.compare(mask_ub, a_ub, b_ub, "LT")
+            T.copy(mask_ub, C[bx * block_M, by * (block_N // 8)])
+
+    return main
+
+
+def pack_compare_lt(a, b=None):
+    mask = a < (0.0 if b is None else b)
+    rows, cols = mask.shape
+    packed = torch.zeros((rows, (cols + 7) // 8), dtype=torch.uint8)
+    for row in range(rows):
+        for col in range(cols):
+            if mask[row, col]:
+                packed[row, col // 8] |= 1 << (col % 8)
+    return packed
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("scalar", [False, True], ids=["tensor", "scalar"])
+def test_compare_tail(target, dtype, scalar):
+    M, N, block_M, block_N = 5, 69, 4, 64
+    func = tilelang.compile(
+        compare_tail(M, N, block_M, block_N, dtype=dtype, scalar=scalar),
+        out_idx=[-1],
+        pass_configs=TAIL_COMPARE_PASS_CONFIGS,
+        target=target,
+    )
+
+    torch.manual_seed(0)
+    torch_dtype = _torch_dtype(dtype)
+    a_cpu = torch.randn(M, N, dtype=torch_dtype)
+    b_cpu = torch.randn(M, N, dtype=torch_dtype)
+    out = func(a_cpu.npu(), b_cpu.npu()).cpu()
+    ref = pack_compare_lt(a_cpu, None if scalar else b_cpu)
+    torch.testing.assert_close(out, ref, rtol=0, atol=0)
 
 
 # =============================================================================

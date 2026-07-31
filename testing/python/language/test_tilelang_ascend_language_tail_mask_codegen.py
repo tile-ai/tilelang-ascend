@@ -248,6 +248,41 @@ def _tail_scalar(M, N, block_M, block_N, dtype="float"):
     return main
 
 
+def _tail_compare(
+    M,
+    N,
+    block_M,
+    block_N,
+    dtype="float",
+    scalar=False,
+    mode="LT",
+):
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M, N), dtype),
+        C: T.Tensor((M, T.ceildiv(N, 8)), "uint8"),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+            b_ub = T.alloc_ub((block_M, block_N), dtype)
+            mask_ub = T.alloc_ub((block_M, block_N // 8), "uint8")
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+            T.copy(B[bx * block_M, by * block_N], b_ub)
+            if scalar:
+                T.tile.compare(mask_ub, a_ub, 0.0, mode)
+            else:
+                T.tile.compare(mask_ub, a_ub, b_ub, mode)
+            T.copy(mask_ub, C[bx * block_M, by * (block_N // 8)])
+
+    return main
+
+
 def _source(func, target="ascendc", tail_mask=True):
     """Lower a PrimFunc and return generated device source.
 
@@ -340,6 +375,55 @@ def test_tail_unary_emits_tail_helper(target):
 def test_tail_scalar_emits_tail_helper(target):
     src = _source(_tail_scalar(34, 130, 32, 32, "float"), target=target)
     assert _emit_marker(target, "scalar") in src, src
+
+
+@pytest.mark.parametrize("target", TAIL_TARGETS)
+@pytest.mark.parametrize("dtype", ["float16", "float"])
+@pytest.mark.parametrize("scalar", [False, True], ids=["tensor", "scalar"])
+@pytest.mark.parametrize("mode", ["EQ", "NE", "GT", "GE", "LT", "LE"])
+def test_tail_compare_emits_backend_path(target, dtype, scalar, mode):
+    src = _source(
+        _tail_compare(5, 69, 4, 64, dtype=dtype, scalar=scalar, mode=mode),
+        target=target,
+    )
+    if target == "ascendc":
+        helper = "tail_compare_scalar" if scalar else "tail_compare"
+        assert f"tl::ascend::{helper}" in src, src
+        assert f"AscendC::CMPMODE::{mode}" in src, src
+    else:
+        helper = "compare_scalar(" if scalar else "compare("
+        assert "pto::DYNAMIC" in src, src
+        assert f"tl::ascend_pto::{helper}" in src, src
+        assert f"CmpMode::{mode}" in src, src
+        assert "clear_compare_tail_bits" in src, src
+
+
+@pytest.mark.parametrize("target", TAIL_TARGETS)
+def test_full_tile_compare_keeps_native_path(target):
+    src = _source(_tail_compare(4, 64, 4, 64), target=target)
+    assert "tail_compare" not in src, src
+    if target == "ascendc":
+        assert "AscendC::Compare(" in src, src
+    else:
+        assert "pto::DYNAMIC" not in src, src
+        assert "tl::ascend_pto::compare(" in src, src
+
+
+@pytest.mark.parametrize("target", TAIL_TARGETS)
+def test_tail_compare_flag_off_keeps_native_path(target):
+    src = _source(
+        _tail_compare(5, 69, 4, 64),
+        target=target,
+        tail_mask=False,
+    )
+    assert "tail_compare" not in src, src
+
+
+@pytest.mark.parametrize("target", TAIL_TARGETS)
+def test_wide_tail_compare_falls_back(target):
+    # fp32 block_N=128 exceeds the single-vector compare contract.
+    src = _source(_tail_compare(5, 129, 4, 128), target=target)
+    assert "tail_compare" not in src, src
 
 
 @pytest.mark.parametrize("target", TAIL_TARGETS)

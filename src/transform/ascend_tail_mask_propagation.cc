@@ -4,7 +4,7 @@
 /*!
  * \file src/transform/ascend_tail_mask_propagation.cc
  * \brief Propagate UB tail valid-regions and rewrite vector ops to tail-aware
- *        variants for the AscendC backend.
+ *        variants for the AscendC and PTO backends.
  *
  * After LowerTileOp, a GM->UB copy is lowered to
  *   call_extern("tl::ascend::copy_gm_to_ub<...>", src_ptr, dst_ptr,
@@ -18,10 +18,9 @@
  * valid_row/valid_col/physical_col) so the codegen emits a tl::ascend::tail_*
  * helper that computes only over the valid region.
  *
- * Rewrites: unary / binary / scalar(immediate), plus a conservative allow-list
- * of 2D reduce contracts. Propagates-but-does-not-rewrite: cast / broadcast /
- * copy_ub_to_ub (they are per-lane or shape-only, so the full-tile path stays
- * numerically correct; the mask still flows through to a downstream reduce).
+ * Rewrites: unary / binary / scalar(immediate), compare, plus a conservative
+ * allow-list of 2D reduce contracts. Cast / broadcast / UB-to-UB copy only
+ * propagate the rectangle.
  */
 
 #include "arith/ir_mutator_with_analyzer.h"
@@ -169,6 +168,12 @@ private:
   static bool SupportedTailDtype(DataType dt) {
     return dt.is_float() || dt.is_bfloat16();
   }
+  static bool SupportedCompareDtype(DataType dt) {
+    return dt == DataType::Float(16) || dt == DataType::Float(32);
+  }
+  static bool SupportedPackedDtype(DataType dt) {
+    return dt == DataType::UInt(8);
+  }
   // Element dtype behind an access_ptr (mirrors GetAccessPtrDtype in codegen).
   static DataType PtrDtype(const PrimExpr &e) {
     const auto *ap = e.as<CallNode>();
@@ -192,6 +197,29 @@ private:
     return m.is_tail() && m.physical_row.defined() &&
            m.physical_col.defined() && count.defined() &&
            analyzer_->CanProveEqual(count, m.physical_row * m.physical_col);
+  }
+
+  bool SamePhysicalShape(const TailMaskInfo &a, const TailMaskInfo &b) {
+    return a.physical_row.defined() && a.physical_col.defined() &&
+           b.physical_row.defined() && b.physical_col.defined() &&
+           analyzer_->CanProveEqual(a.physical_row, b.physical_row) &&
+           analyzer_->CanProveEqual(a.physical_col, b.physical_col);
+  }
+
+  bool CompareWidthSupported(const TailMaskInfo &m, DataType dtype) {
+    if (!m.physical_col.defined() || !dtype.bytes())
+      return false;
+    PrimExpr eight = IntImm(DataType::Int(32), 8);
+    PrimExpr vector_lanes = IntImm(DataType::Int(32), 256 / dtype.bytes());
+    return analyzer_->CanProve(m.physical_col <= vector_lanes) &&
+           analyzer_->CanProve(indexmod(m.physical_col, eight) == 0);
+  }
+
+  PrimExpr PackedStorageCol(const PrimExpr &ptr, const TailMaskInfo &data) {
+    PrimExpr extent = PtrExtent(ptr);
+    if (!extent.defined() || !data.physical_row.defined())
+      return PrimExpr();
+    return analyzer_->Simplify(indexdiv(extent, data.physical_row));
   }
 
   // Detect a broadcast-scalar tail mask: valid_col is a compile-time constant 1
@@ -302,6 +330,11 @@ private:
     // Reduce: name(0) out(1) src(2) tmp(3) clear(4)
     if (call->op.same_as(ascend_reduce()))
       return RewriteReduce(call);
+    // Compare: tensor/tensor or immediate scalar -> packed uint8 mask.
+    if (call->op.same_as(ascend_compare()))
+      return RewriteCompare(call, false);
+    if (call->op.same_as(ascend_compare_scalar()))
+      return RewriteCompare(call, true);
     // Cast: dst(0) src(1) roundmode(2) count(3) -- propagate only.
     if (call->op.same_as(ascend_cast())) {
       PropagateUnaryShape(call->args[0], call->args[1]);
@@ -383,6 +416,69 @@ private:
                          call->args[2],  in.valid_row,  in.valid_col,
                          in.physical_col};
     return Evaluate(Call(DataType::Handle(), ascend_tail_scalar(), a));
+  }
+
+  Stmt RewriteCompare(const CallNode *call, bool scalar) {
+    const VarNode *dst_v =
+        call->args.empty() ? nullptr : GetPtrVar(call->args[0]);
+    if (call->args.size() != 5) {
+      if (dst_v != nullptr)
+        state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
+    TailMaskInfo lhs = GetMask(GetPtrVar(call->args[1]));
+    TailMaskInfo data = lhs;
+    if (!scalar) {
+      TailMaskInfo rhs = GetMask(GetPtrVar(call->args[2]));
+      data = IntersectMasks(lhs, rhs, analyzer_);
+      if (!SamePhysicalShape(lhs, rhs)) {
+        if (dst_v != nullptr)
+          state_[dst_v] = TailMaskInfo{};
+        return Stmt();
+      }
+    } else if (GetPtrVar(call->args[2]) != nullptr) {
+      if (dst_v != nullptr)
+        state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
+    if (!data.valid_row.defined() || !data.valid_col.defined() ||
+        !data.physical_row.defined() || !data.physical_col.defined()) {
+      if (dst_v != nullptr)
+        state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
+
+    DataType src_dtype = PtrDtype(call->args[1]);
+    PrimExpr storage_col = PackedStorageCol(call->args[0], data);
+    PrimExpr packed_min = indexdiv(data.physical_col + 7, 8);
+    PrimExpr dst_extent = PtrExtent(call->args[0]);
+    bool ok =
+        CleanTail(call->args[4], data) && SupportedCompareDtype(src_dtype) &&
+        PtrDtype(call->args[scalar ? 1 : 2]) == src_dtype &&
+        SupportedPackedDtype(PtrDtype(call->args[0])) &&
+        CompareWidthSupported(data, src_dtype) && storage_col.defined() &&
+        dst_extent.defined() &&
+        analyzer_->CanProveEqual(dst_extent, data.physical_row * storage_col) &&
+        analyzer_->CanProve(storage_col >= packed_min) &&
+        call->args[3].as<StringImmNode>() != nullptr &&
+        !HasOutOfScopeLoopVar(data.valid_row) &&
+        !HasOutOfScopeLoopVar(data.valid_col) && !IsBroadcastScalarMask(data);
+    if (dst_v != nullptr)
+      state_[dst_v] =
+          ok ? MakePackedCmpMask(data, storage_col) : TailMaskInfo{};
+    if (!ok)
+      return Stmt();
+
+    Array<PrimExpr> a = {call->args[0], call->args[1], call->args[2]};
+    a.push_back(call->args[3]);
+    a.push_back(data.valid_row);
+    a.push_back(data.valid_col);
+    a.push_back(data.physical_row);
+    a.push_back(data.physical_col);
+    a.push_back(storage_col);
+    return Evaluate(
+        Call(DataType::Handle(),
+             scalar ? ascend_tail_compare_scalar() : ascend_tail_compare(), a));
   }
 
   Stmt RewriteReduce(const CallNode *call) {
