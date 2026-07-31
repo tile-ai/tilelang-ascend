@@ -54,10 +54,10 @@ def hadamard_block_intra(b, n, block_size, dtype="float"):
                         half = chunk_size // 2
 
                         for k in T.serial(half):
-                            a_val = data_ub[base + k]
-                            b_val = data_ub[base + k + half]
-                            data_ub[base + k] = a_val + b_val
-                            data_ub[base + k + half] = a_val - b_val
+                            a_val = T.cast(data_ub[base + k], "float")
+                            b_val = T.cast(data_ub[base + k + half], "float")
+                            data_ub[base + k] = T.cast(a_val + b_val, dtype)
+                            data_ub[base + k + half] = T.cast(a_val - b_val, dtype)
 
                 T.copy(data_ub, B[batch_id, offset : offset + block_size])
 
@@ -102,16 +102,16 @@ def hadamard_cross_block_pair(b, n, block_size, cross_stage, dtype="float"):
             T.copy(A[batch_id, dst_offset : dst_offset + half], data2_ub)
 
             for k in T.serial(half):
-                a_val = data_ub[k]
-                b_val = data2_ub[k]
-                tmp_ub[k] = a_val + b_val
+                a_val = T.cast(data_ub[k], "float")
+                b_val = T.cast(data2_ub[k], "float")
+                tmp_ub[k] = T.cast(a_val + b_val, dtype)
 
             T.copy(tmp_ub, B[batch_id, src_offset : src_offset + half])
 
             for k in T.serial(half):
-                a_val = data_ub[k]
-                b_val = data2_ub[k]
-                tmp_ub[k] = a_val - b_val
+                a_val = T.cast(data_ub[k], "float")
+                b_val = T.cast(data2_ub[k], "float")
+                tmp_ub[k] = T.cast(a_val - b_val, dtype)
 
             T.copy(tmp_ub, B[batch_id, dst_offset : dst_offset + half])
 
