@@ -33,14 +33,8 @@ def improve_description(
     iteration: int | None = None,
 ) -> str:
     """Call Claude to improve the description based on eval results."""
-    failed_triggers = [
-        r for r in eval_results["results"]
-        if r["should_trigger"] and not r["pass"]
-    ]
-    false_triggers = [
-        r for r in eval_results["results"]
-        if not r["should_trigger"] and not r["pass"]
-    ]
+    failed_triggers = [r for r in eval_results["results"] if r["should_trigger"] and not r["pass"]]
+    false_triggers = [r for r in eval_results["results"] if not r["should_trigger"] and not r["pass"]]
 
     # Build scores summary
     train_score = f"{eval_results['summary']['passed']}/{eval_results['summary']['total']}"
@@ -78,9 +72,9 @@ Current scores ({scores_summary}):
         prompt += "PREVIOUS ATTEMPTS (do NOT repeat these — try something structurally different):\n\n"
         for h in history:
             train_s = f"{h.get('train_passed', h.get('passed', 0))}/{h.get('train_total', h.get('total', 0))}"
-            test_s = f"{h.get('test_passed', '?')}/{h.get('test_total', '?')}" if h.get('test_passed') is not None else None
+            test_s = f"{h.get('test_passed', '?')}/{h.get('test_total', '?')}" if h.get("test_passed") is not None else None
             score_str = f"train={train_s}" + (f", test={test_s}" if test_s else "")
-            prompt += f'<attempt {score_str}>\n'
+            prompt += f"<attempt {score_str}>\n"
             prompt += f'Description: "{h["description"]}"\n'
             if "results" in h:
                 prompt += "Train results:\n"
@@ -88,7 +82,7 @@ Current scores ({scores_summary}):
                     status = "PASS" if r["pass"] else "FAIL"
                     prompt += f'  [{status}] "{r["query"][:80]}" (triggered {r["triggers"]}/{r["runs"]})\n'
             if h.get("note"):
-                prompt += f'Note: {h["note"]}\n'
+                prompt += f"Note: {h['note']}\n"
             prompt += "</attempt>\n\n"
 
     prompt += f"""</scores_summary>
@@ -111,7 +105,7 @@ Here are some tips that we've found to work well in writing these descriptions:
 - The description competes with other skills for Claude's attention — make it distinctive and immediately recognizable.
 - If you're getting lots of failures after repeated attempts, change things up. Try different sentence structures or wordings.
 
-I'd encourage you to be creative and mix up the style in different iterations since you'll have multiple opportunities to try different approaches and we'll just grab the highest-scoring one at the end. 
+I'd encourage you to be creative and mix up the style in different iterations since you'll have multiple opportunities to try different approaches and we'll just grab the highest-scoring one at the end.
 
 Please respond with only the new description text in <new_description> tags, nothing else."""
 
@@ -237,13 +231,16 @@ def main():
     # Output as JSON with both the new description and updated history
     output = {
         "description": new_description,
-        "history": history + [{
-            "description": current_description,
-            "passed": eval_results["summary"]["passed"],
-            "failed": eval_results["summary"]["failed"],
-            "total": eval_results["summary"]["total"],
-            "results": eval_results["results"],
-        }],
+        "history": history
+        + [
+            {
+                "description": current_description,
+                "passed": eval_results["summary"]["passed"],
+                "failed": eval_results["summary"]["failed"],
+                "total": eval_results["summary"]["total"],
+                "results": eval_results["results"],
+            }
+        ],
     }
     print(json.dumps(output, indent=2))
 
