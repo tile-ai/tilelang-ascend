@@ -147,9 +147,11 @@ def _shell_invoked_tests(repo_root: Path) -> set[str]:
 def find_unregistered_tests(repo_root: Path, active: list[tuple[str, str]], pending: list[tuple[str, str]]) -> list[str]:
     """List example tests that match no manifest entry, live or reserved.
 
-    The legacy runner skips every test_*.py by name, so a test that matches no
-    entry is run by nothing at all while CI stays green. Tests a sibling shell
-    script invokes are exempt: those never went through the manifest.
+    Worth knowing rather than worth failing over: an unregistered test runs as
+    a script in the legacy runner, which is where every test lived before this
+    manifest existed. What it does not get is the Pytest treatment, so saying
+    so gives whoever wrote it the choice. Tests a sibling shell script invokes
+    are exempt: those never went through the manifest.
     """
     expected = {test for _, test in active} | {test for _, test in pending}
     invoked = _shell_invoked_tests(repo_root)
@@ -164,6 +166,28 @@ def find_unregistered_tests(repo_root: Path, active: list[tuple[str, str]], pend
                 continue
             unregistered.append(relative)
     return unregistered
+
+
+def _scope_to_dirs(mappings: list[tuple[str, str]], dirs: list[str] | None, experiment_dirs: list[str] | None) -> list[tuple[str, str]]:
+    """Narrow the mappings to the example directories a run was scoped to.
+
+    Neither flag given is a full run, and every mapping belongs to it. One given
+    without the other means that root contributed no directory, not that it is
+    unconstrained, so an absent flag selects nothing rather than everything.
+
+    Matching is on the first directory below the root, since that is the unit
+    the runner takes and an operator may sit a level deeper than it.
+    """
+    if dirs is None and experiment_dirs is None:
+        return mappings
+    wanted = {f"examples/{name}" for name in (dirs or [])}
+    wanted |= {f"examples_experiment/{name}" for name in (experiment_dirs or [])}
+    scoped = []
+    for source, test in mappings:
+        parts = PurePosixPath(source).parts
+        if len(parts) > 2 and "/".join(parts[:2]) in wanted:
+            scoped.append((source, test))
+    return scoped
 
 
 def _print_lines(values: Iterable[str]) -> None:
@@ -192,7 +216,21 @@ def _build_parser() -> argparse.ArgumentParser:
     list_parser = subparsers.add_parser("list", help="list source-to-test mappings")
     list_parser.add_argument("--format", choices=("tsv",), default="tsv")
 
-    subparsers.add_parser("list-tests", help="list all migrated Pytest files")
+    list_tests_parser = subparsers.add_parser("list-tests", help="list migrated Pytest files")
+    # Named after the runner's own flags so a caller that scoped a run to some
+    # directories can hand this the value it handed the runner, unchanged.
+    list_tests_parser.add_argument(
+        "--dirs",
+        nargs="*",
+        default=None,
+        help="limit to tests whose operator lives under one of these examples/ directories",
+    )
+    list_tests_parser.add_argument(
+        "--experiment-dirs",
+        nargs="*",
+        default=None,
+        help="the same, for examples_experiment/",
+    )
     subparsers.add_parser("list-sources", help="list all sources excluded from the legacy runner")
     subparsers.add_parser(
         "check-orphans",
@@ -221,23 +259,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif args.command == "list":
         _print_lines(f"{source}\t{test}" for source, test in mappings)
     elif args.command == "list-tests":
-        _print_lines(test for _, test in mappings)
+        scoped = _scope_to_dirs(mappings, args.dirs, args.experiment_dirs)
+        _print_lines(test for _, test in scoped)
     elif args.command == "list-sources":
         _print_lines(source for source, _ in mappings)
     elif args.command == "check-orphans":
         unregistered = find_unregistered_tests(args.repo_root.resolve(), mappings, pending)
         if unregistered:
-            print("operator tests matching no manifest entry:", file=sys.stderr)
+            print(f"{len(unregistered)} operator test(s) matching no manifest entry:")
             for item in unregistered:
-                print(f"  {item}", file=sys.stderr)
+                print(f"  {item}")
             print(
-                "the legacy runner skips every test_*.py, so a test that matches no "
-                "entry runs nowhere: add it to ci/operator_test_manifest.yaml, or "
-                "check its name against the entry meant to cover it",
-                file=sys.stderr,
+                "each runs as a script in the legacy runner. To have Pytest run one "
+                "instead, add it to ci/operator_test_manifest.yaml; if an entry was "
+                "meant to cover it already, check the name against that entry"
             )
-            return 1
-        print("All operator tests match a manifest entry")
+        else:
+            print("All operator tests match a manifest entry")
     return 0
 
 

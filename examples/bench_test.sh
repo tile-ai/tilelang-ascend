@@ -65,6 +65,10 @@ PROJECT_ROOT="$(cd .. && pwd)"
 # runs separately; executing it here as well would compile and run the same
 # kernel twice.
 declare -A MIGRATED_SOURCES=()
+# Its test is skipped here for the same reason, and this is how: by the entry
+# that claims it, not by its name. A test this repository never registered
+# belongs to whoever wrote it and is collected like any other script.
+declare -A MIGRATED_TESTS=()
 OPERATOR_TEST_RESOLVER="${PROJECT_ROOT}/scripts/ci/resolve_operator_tests.py"
 if [ -f "$OPERATOR_TEST_RESOLVER" ]; then
     # This script has no `set -e`, so a failure here would otherwise leave the
@@ -73,13 +77,11 @@ if [ -f "$OPERATOR_TEST_RESOLVER" ]; then
         echo "Operator test manifest is invalid" >&2
         exit 1
     fi
-    if ! python "$OPERATOR_TEST_RESOLVER" check-orphans; then
-        echo "Operator test names do not match the manifest" >&2
-        exit 1
-    fi
+    python "$OPERATOR_TEST_RESOLVER" check-orphans
     while IFS=$'\t' read -r source test; do
         [ -n "$source" ] || continue
         MIGRATED_SOURCES["$source"]=1
+        MIGRATED_TESTS["$test"]=1
     done < <(python "$OPERATOR_TEST_RESOLVER" list --format tsv)
 fi
 
@@ -179,6 +181,10 @@ should_skip_python_script() {
         echo "Skip migrated operator in legacy runner: $candidate" >&2
         return 0
     fi
+    if [[ -n "${MIGRATED_TESTS[$repo_relative]:-}" ]]; then
+        echo "Skip migrated operator test in legacy runner: $candidate" >&2
+        return 0
+    fi
 
     return 1
 }
@@ -204,7 +210,6 @@ collect_test_scripts() {
             # 收集主目录的 py 文件（排除 fa_opt）
             local py_files=$(find "$dir" -maxdepth 1 -name "*.py" \
                 -not -name "__init__.py" \
-                -not -name "test_*.py" \
                 -not -name "*_golden.py" \
                 | sort)
             for f in $py_files; do
@@ -219,7 +224,6 @@ collect_test_scripts() {
     # 搜索 maxdepth 2 的 py 文件（排除特殊文件和 bench_sfa 子目录）
     local py_files=$(find "$dir" -maxdepth 2 -name "*.py" \
         -not -name "__init__.py" \
-        -not -name "test_*.py" \
         -not -name "*_golden.py" \
         -not -name "sfa_golden.py" \
         -not -name "utils.py" \
@@ -350,20 +354,31 @@ echo "Total scripts to run: ${#all_scripts[@]}"
 # The workflow runs them after this script, so there is nothing to do on the
 # normal path. Coverage is collected by invoking this script by hand, and that
 # path has no workflow behind it: the collection above already skipped these
-# operators by name, their tests are run by nobody, and what they cover of
-# tilelang drops out of the report. They run before the examples so a scoped
-# invocation that collects no script still reaches them, and so they compile
-# against a cold cache.
+# operators, their tests are run by nobody, and what they cover of tilelang
+# drops out of the report. They run before the examples so a scoped invocation
+# that collects no script still reaches them, and so they compile against a
+# cold cache.
+#
+# Narrowed to the directories this invocation was given, as everywhere else
+# those two options appear. A report that mixed the examples of one directory
+# with the operators of all of them would not say what it was measuring.
 operator_exit_code=0
 operator_passed=0
 operator_failed=0
 operator_xfailed=0
 if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
     OPERATOR_TESTS=()
+    OPERATOR_SCOPE_ARGS=()
+    if [ -n "$TEST_DIRS" ]; then
+        OPERATOR_SCOPE_ARGS+=(--dirs $TEST_DIRS)
+    fi
+    if [ -n "$EXPERIMENT_DIRS" ]; then
+        OPERATOR_SCOPE_ARGS+=(--experiment-dirs $EXPERIMENT_DIRS)
+    fi
     if [ -f "$OPERATOR_TEST_RESOLVER" ]; then
         while IFS= read -r operator_test; do
             [ -n "$operator_test" ] && OPERATOR_TESTS+=("${PROJECT_ROOT}/$operator_test")
-        done < <(python "$OPERATOR_TEST_RESOLVER" list-tests)
+        done < <(python "$OPERATOR_TEST_RESOLVER" list-tests "${OPERATOR_SCOPE_ARGS[@]}")
     fi
     if [ ${#OPERATOR_TESTS[@]} -gt 0 ]; then
         echo -e "\n====================================="
