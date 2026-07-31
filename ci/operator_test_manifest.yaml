@@ -161,7 +161,7 @@ mappings:
   examples/pipeline/sparse_flash_attn_gqa_pipeline_pto.py: examples/pipeline/test_sparse_flash_attn_gqa_pipeline_pto.py
 
   # examples/pos_embedding
-  examples/pos_embedding/rms_norm.py: examples/pos_embedding/test_rms_norm.py
+  examples/pos_embedding/rms_norm.py: examples/pos_embedding/test_rms_norm_pos_embedding.py
   examples/pos_embedding/rms_rope_fused.py: examples/pos_embedding/test_rms_rope_fused.py
   examples/pos_embedding/rms_rope_fused_mask.py: examples/pos_embedding/test_rms_rope_fused_mask.py
   examples/pos_embedding/rope.py: examples/pos_embedding/test_rope.py
@@ -221,7 +221,7 @@ mappings:
 
   # examples/xllm_kernels
   examples/xllm_kernels/fused_gdn_gating.py: examples/xllm_kernels/test_fused_gdn_gating.py
-  examples/xllm_kernels/rope.py: examples/xllm_kernels/test_rope.py
+  examples/xllm_kernels/rope.py: examples/xllm_kernels/test_rope_xllm_kernels.py
   examples/xllm_kernels/split_qkv_rmsnorm_mrope.py: examples/xllm_kernels/test_split_qkv_rmsnorm_mrope.py
 
   # examples_experiment/blocksparse_gemm

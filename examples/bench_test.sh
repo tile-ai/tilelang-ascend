@@ -346,9 +346,81 @@ fi
 echo "Total scripts to run: ${#all_scripts[@]}"
 # =================================================
 
+# Run the migrated operator tests when coverage is being collected.
+# The workflow runs them after this script, so there is nothing to do on the
+# normal path. Coverage is collected by invoking this script by hand, and that
+# path has no workflow behind it: the collection above already skipped these
+# operators by name, their tests are run by nobody, and what they cover of
+# tilelang drops out of the report. They run before the examples so a scoped
+# invocation that collects no script still reaches them, and so they compile
+# against a cold cache.
+operator_exit_code=0
+operator_passed=0
+operator_failed=0
+operator_xfailed=0
+if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
+    OPERATOR_TESTS=()
+    if [ -f "$OPERATOR_TEST_RESOLVER" ]; then
+        while IFS= read -r operator_test; do
+            [ -n "$operator_test" ] && OPERATOR_TESTS+=("${PROJECT_ROOT}/$operator_test")
+        done < <(python "$OPERATOR_TEST_RESOLVER" list-tests)
+    fi
+    if [ ${#OPERATOR_TESTS[@]} -gt 0 ]; then
+        echo -e "\n====================================="
+        echo "Running migrated operator tests for coverage (${#OPERATOR_TESTS[@]} file(s))"
+        echo "====================================="
+        OPERATOR_MARKER_ARGS=()
+        if [ -n "$PYTEST_MARKERS" ]; then
+            OPERATOR_MARKER_ARGS+=(-m "$PYTEST_MARKERS")
+        fi
+        mkdir -p "${PROJECT_ROOT}/coverage_data"
+        # No --forked here, unlike the runs elsewhere in this script: coverage
+        # does not follow the fork, so the lines executed inside it are lost.
+        # Measured over these tests, 2237 lines of tilelang are recorded with it
+        # against 3285 without, and the difference is concentrated in the path
+        # that compiles a kernel: jit/kernel.py 45 against 110,
+        # cache/kernel_cache.py 48 against 125, engine/phase.py 12 against 58.
+        #
+        # One file per call, and no xdist. Without the fork the memory a test
+        # reserves is only returned when the process holding it ends, and these
+        # reserve a lot: of the sparse attention kernels one takes 31 GiB of a
+        # 61 GiB device on its own. Anything that puts two of those in flight,
+        # whether in sequence within a worker or across workers at once, runs
+        # the device out. One at a time is the only arrangement that cannot.
+        #
+        # Each call writes its own coverage file, since pytest-cov merges into
+        # COVERAGE_FILE as it exits and a shared name would leave only the last.
+        # The combine step downstream already globs for them.
+        : > operator_output.log
+        for operator_test_path in "${OPERATOR_TESTS[@]}"; do
+            export COVERAGE_FILE="${PROJECT_ROOT}/coverage_data/.coverage_operator_$(echo "$operator_test_path" | sed 's/[\/\.]/_/g')"
+            pytest "$operator_test_path" -v \
+                --cov=tilelang --cov-config="${PROJECT_ROOT}/.coveragerc" --cov-report= \
+                "${OPERATOR_MARKER_ARGS[@]}" 2>&1 | tee -a operator_output.log
+            operator_batch_code=${PIPESTATUS[0]}
+            if [ "$operator_exit_code" -eq 0 ]; then
+                operator_exit_code=$operator_batch_code
+            fi
+            unset COVERAGE_FILE
+        done
+        # One summary per batch, so these accumulate rather than reading the last.
+        while IFS= read -r operator_summary; do
+            [ -n "$operator_summary" ] || continue
+            batch_passed=$(echo "$operator_summary" | grep -Eo "[0-9]+ passed" | grep -Eo "[0-9]+")
+            batch_failed=$(echo "$operator_summary" | grep -Eo "[0-9]+ failed" | grep -Eo "[0-9]+")
+            batch_xfailed=$(echo "$operator_summary" | grep -Eo "[0-9]+ xfailed" | grep -Eo "[0-9]+")
+            operator_passed=$((operator_passed + ${batch_passed:-0}))
+            operator_failed=$((operator_failed + ${batch_failed:-0}))
+            operator_xfailed=$((operator_xfailed + ${batch_xfailed:-0}))
+        done < <(grep -E "^=+ .*[0-9]+ (passed|failed|error).* =+$" operator_output.log)
+        echo "Operator tests: ${operator_passed} passed, ${operator_failed} failed over ${#OPERATOR_TESTS[@]} file(s)"
+        rm -f operator_output.log
+    fi
+fi
+
 if [ ${#all_scripts[@]} -eq 0 ]; then
     echo "No test scripts found."
-    exit 0
+    exit $operator_exit_code
 fi
 
 # 2. 并行执行逻辑
@@ -440,7 +512,7 @@ if [ "$SKIP_PYTEST" = true ]; then
     echo -e "\n====================================="
     echo "Skipping pytest (only examples/ .py/.md/.png files modified)"
     echo "====================================="
-    exit 0
+    exit $operator_exit_code
 fi
 
 echo -e "\n====================================="
@@ -553,6 +625,10 @@ fi
 # 输出合并后的结果（用于 CI workflow 解析）
 # xfailed 是预期失败的测试，在 pytest 视角下属于"成功"状态（符合预期）
 # 应计入 passed_all，而不应计入 failed_all
+pytest_passed=$((pytest_passed + operator_passed))
+pytest_failed=$((pytest_failed + operator_failed))
+pytest_xfailed=$((pytest_xfailed + operator_xfailed))
+
 total_all=$((total_scripts + pytest_passed + pytest_failed + pytest_xfailed))
 passed_all=$((passed_scripts + pytest_passed + pytest_xfailed))
 failed_all=$((failed_scripts + pytest_failed))
@@ -570,4 +646,7 @@ echo "====================================="
 # 清理临时文件
 rm -f pytest_output.log
 
+if [ "$pytest_exit_code" -eq 0 ]; then
+    exit $operator_exit_code
+fi
 exit $pytest_exit_code
