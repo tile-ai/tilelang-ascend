@@ -400,7 +400,10 @@ def run_perf_benchmark(
         return
 
     print(f"\n{'=' * 70}")
-    print(f"Performance Benchmark: batch={batch} heads={heads} seq={seq} dim={dim} window={window}")
+    print(
+        f"Performance Benchmark: batch={batch} heads={heads} seq={seq} "
+        f"dim={dim} window={window}"
+    )
     print(f"{'=' * 70}")
 
     q, k, v, sinks, dO = build_inputs(batch, heads, seq, dim, window, device, dtype)
@@ -418,7 +421,9 @@ def run_perf_benchmark(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Attention Sink MHA Backward (Ascend) layered tests + perf benchmark")
+    parser = argparse.ArgumentParser(
+        description="Attention Sink MHA Backward (Ascend) layered tests + perf benchmark"
+    )
     parser.add_argument(
         "--level",
         default="l0",
