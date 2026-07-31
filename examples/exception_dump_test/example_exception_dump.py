@@ -1,14 +1,5 @@
 import argparse
-import ctypes
-import glob
 import os
-import time
-
-import tilelang
-import tilelang.language as T
-import torch
-
-tilelang.cache.clear_cache()
 
 parser = argparse.ArgumentParser(description="TileLang Exception Dump Example")
 parser.add_argument("--m", type=int, default=128, help="Matrix M dimension")
@@ -16,16 +7,29 @@ parser.add_argument("--n", type=int, default=128, help="Matrix N dimension")
 parser.add_argument(
     "--dump-dir",
     type=str,
-    default="/tmp",
-    help="Directory for exception dump log files",
+    default="/tmp/tilelang_exc_dump",
+    help="Directory for CANN exception dump files (ASCEND_DUMP_PATH)",
 )
 args = parser.parse_args()
 
+# CANN reads ASCEND_DUMP_PATH / ASCEND_DUMP_SCENE during ACL initialization,
+# which happens at the first NPU call (or torch_npu import). These must be
+# set before importing torch / tilelang so they take effect.
+os.environ["ASCEND_DUMP_PATH"] = args.dump_dir
+os.environ["ASCEND_DUMP_SCENE"] = "aic_err_brief_dump"
+os.makedirs(args.dump_dir, exist_ok=True)
+
+import ctypes
+
+import tilelang
+import tilelang.language as T
+import torch
+from tilelang.tools.ascend_exception_dump_bin import parse_exception_dump
+
+tilelang.cache.clear_cache()
+
 M = args.m
 N = args.n
-
-os.environ["TILELANG_EXCEPTION_DUMP_DIR"] = args.dump_dir
-os.makedirs(args.dump_dir, exist_ok=True)
 
 
 @tilelang.jit(
@@ -34,6 +38,7 @@ os.makedirs(args.dump_dir, exist_ok=True)
         tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
         tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
         tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+        tilelang.PassConfigKey.TL_ASCEND_EXCEPTION_DUMP: True,
     },
 )
 def vec_add(M, N, dtype="float16"):
@@ -56,7 +61,7 @@ def vec_add(M, N, dtype="float16"):
     return main
 
 
-def trigger_hw_exception(kernel, x, y):
+def launch_kernel_with_hw_exception_triggered(kernel, x, y):
     """Trigger an AI Core hardware exception by launching the kernel with a
     null output pointer.
 
@@ -64,11 +69,10 @@ def trigger_hw_exception(kernel, x, y):
     address — which reliably triggers an MTE (Memory Transfer Engine) error
     and invokes the exception dump callback.
 
-    Normal Python/torch calls always produce valid device pointers, so
-    out-of-bounds access from a valid base typically stays within device
-    memory and does not trigger a hardware exception.  Passing a null
-    pointer via ctypes is the simplest reliable way to get an unmapped
-    address.
+    Raises
+    ------
+    RuntimeError
+        Propagated from stream.synchronize() when the hardware exception fires.
     """
     so_path = kernel.adapter.libpath
     lib = ctypes.CDLL(so_path)
@@ -90,11 +94,8 @@ def trigger_hw_exception(kernel, x, y):
         z_null,
         ctypes.c_void_p(exc_stream.npu_stream),
     )
-    try:
-        exc_stream.synchronize()
-        print("  Stream sync completed without error (unexpected)")
-    except Exception as e:
-        print(f"  Stream sync raised (expected): {type(e).__name__}")
+    exc_stream.synchronize()
+    print("  Stream sync completed without error (unexpected)")
 
 
 print("Compiling kernel...")
@@ -110,23 +111,15 @@ torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 print("Kernel Output Match!")
 
 print("\n--- Triggering AI Core exception (null output pointer) ---")
-trigger_hw_exception(func, a, b)
-
-time.sleep(1)
-
-dump_files = sorted(
-    glob.glob(os.path.join(args.dump_dir, "tilelang_exception_dump_*.log"))
-)
-# Also check /tmp as fallback
-tmp_files = sorted(glob.glob("/tmp/tilelang_exception_dump_*.log"))
-all_files = sorted(set(dump_files + tmp_files))
-
-if all_files:
-    print(f"\n--- Exception dump file generated: {all_files[-1]} ---")
-    with open(all_files[-1], "r") as f:
-        print(f.read())
-else:
-    print(f"\n--- No exception dump file found ---")
-    print(f"  Checked: {args.dump_dir} and /tmp")
+try:
+    launch_kernel_with_hw_exception_triggered(func, a, b)
+except Exception as e:
+    print(f"  Exception caught: {type(e).__name__}")
+    tensors = parse_exception_dump(args.dump_dir, kernel_name="main_kernel")
+    print(f"  Dump file parsed, {len(tensors)} tensor(s) recovered:")
+    for t in tensors:
+        data = t["data"].reshape(M, N)
+        print(f"    {t['type']}[{t['index']}] dtype={t['dtype']}, "
+              f"shape={data.shape}, min={data.min():.4f}, max={data.max():.4f}")
 
 print("--- Exception test done ---")

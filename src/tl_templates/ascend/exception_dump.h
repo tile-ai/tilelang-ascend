@@ -11,6 +11,7 @@
 
 #include "acl/acl.h"
 #include "acl/acl_rt.h"
+#include "acl/acl_dump.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,40 +19,16 @@ extern "C" {
 
 #define TILE_LANG_PARAM_INFO_MAGIC 0x474e414c454c4954ULL
 #define TILE_LANG_MAX_TENSOR_COUNT 16
+#define TILE_LANG_MAX_KERNEL_NAME_LEN 128
 
 struct ParamSizeInfo {
     uint64_t magic;
     size_t count;
+    char kernel_name[TILE_LANG_MAX_KERNEL_NAME_LEN];
     size_t sizes[TILE_LANG_MAX_TENSOR_COUNT];
     uint64_t addr[TILE_LANG_MAX_TENSOR_COUNT];
     int32_t dataTypes[TILE_LANG_MAX_TENSOR_COUNT];
 };
-
-#ifndef ACLEDUMP_TENSOR_INFO_DEFINED
-#define ACLEDUMP_TENSOR_INFO_DEFINED
-
-typedef enum {
-    ACL_TENSOR_INPUT = 0,
-    ACL_TENSOR_OUTPUT = 1,
-    ACL_TENSOR_WORKSPACE = 2
-} TensorType;
-
-struct acldumpTensorInfo {
-    TensorType type;
-    size_t tensorSize;
-    int32_t format;
-    int32_t dataType;
-    int64_t *tensorAddr;
-    int32_t argsOffSet;
-    uint64_t shape[25];
-    uint64_t originShape[25];
-};
-
-#endif
-
-__attribute__((weak)) aclError acldumpSaveExceptionInfo(
-    const char *fileName, const char *userTag,
-    acldumpTensorInfo *tensors, size_t tensorCount);
 
 extern "C" int tilelang_dump_from_host_args(const void *argsBuf,
                                              uint32_t argsLen) {
@@ -91,19 +68,19 @@ extern "C" int tilelang_dump_from_host_args(const void *argsBuf,
 
     for (size_t t = 0; t < count; t++) {
         uint64_t devAddr = paramInfo->addr[t];
-        tensorInfos[t].type = ACL_TENSOR_INPUT;
+        tensorInfos[t].type = ACL_DUMP_TENSOR_INPUT;
         tensorInfos[t].tensorSize = paramInfo->sizes[t];
         tensorInfos[t].format = 2;
         tensorInfos[t].dataType = paramInfo->dataTypes[t];
         tensorInfos[t].tensorAddr = (int64_t *)devAddr;
-        tensorInfos[t].argsOffSet = 0;
+        tensorInfos[t].argsOffset = 0;
         tensorInfos[t].shape[0] = paramInfo->sizes[t];
         tensorInfos[t].originShape[0] = paramInfo->sizes[t];
     }
 
     if (acldumpSaveExceptionInfo != nullptr) {
-        acldumpSaveExceptionInfo("tensor-input", "tilelang", tensorInfos,
-                                 count);
+        acldumpSaveExceptionInfo(paramInfo->kernel_name, "tilelang",
+                                 tensorInfos, count);
     } else {
         const char *dumpDir = getenv("TILELANG_EXCEPTION_DUMP_DIR");
         if (dumpDir == nullptr || dumpDir[0] == '\0') {

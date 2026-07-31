@@ -1,32 +1,37 @@
 """Tests for AI Core exception dump functionality.
 
-Design doc: dump.md — when AI Core hits a hardware exception, the
-callback searches kernel args for MAGIC, locates ParamSizeInfo, and
-saves input tensor data to a log file (or via acldumpSaveExceptionInfo
-when available).  The dump is silent — no stdout/stderr output.
+When AI Core hits a hardware exception, the callback searches kernel args
+for MAGIC, locates ParamSizeInfo (including kernel name), and saves input
+tensor data via CANN's acldumpSaveExceptionInfo.  The dump file is then
+parsed by msaicerr.py into per-tensor .bin files.
 """
 
 import ctypes
-import glob
 import json
 import os
-import re
 import subprocess
 import sys
 
+import numpy as np
 import pytest
 import torch
 
 import tilelang
 import tilelang.language as T
+from tilelang.tools.ascend_exception_dump_bin import parse_exception_dump
 
 PASS_AUTO = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+    tilelang.PassConfigKey.TL_ASCEND_EXCEPTION_DUMP: True,
 }
 
 NPU_AVAILABLE = hasattr(torch, "npu") and torch.npu.is_available()
+
+_MSAICERR_PATH = os.path.join(
+    os.environ.get("ASCEND_HOME_PATH", ""), "tools", "msaicerr", "msaicerr.py"
+)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -55,15 +60,6 @@ def _make_kernel():
             T.copy(z_ub[:, :], z[:, :])
 
     return main
-
-
-def _parse_tensor_data(output, idx):
-    """Extract hex bytes from 'tensor[idx] data (first N bytes): XX XX ...'"""
-    pattern = rf"tensor\[{idx}\] data \(first \d+ bytes\): ([0-9a-f ]+)"
-    m = re.search(pattern, output)
-    if m is None:
-        return None
-    return [int(b, 16) for b in m.group(1).strip().split()]
 
 
 @pytest.mark.skipif(not NPU_AVAILABLE, reason="NPU not available")
@@ -112,12 +108,10 @@ def test_exception_dump_callback_magic_not_found(target):
 _HW_EXCEPTION_SCRIPT = r"""
 import ctypes, sys, json, torch, os, glob
 
-dump_dir = sys.argv[2]
-os.environ["TILELANG_EXCEPTION_DUMP_DIR"] = dump_dir
-os.makedirs(dump_dir, exist_ok=True)
+dump_path = os.environ["ASCEND_DUMP_PATH"]
 
 # Clear any old dump files
-for f in glob.glob(os.path.join(dump_dir, "tilelang_exception_dump_*.log")):
+for f in glob.glob(os.path.join(dump_path, "extra-info", "data-dump", "*")):
     os.remove(f)
 
 so_path = sys.argv[1]
@@ -139,15 +133,14 @@ torch.npu.synchronize()
 x_exc = torch.arange(128 * 128, dtype=torch.float16).reshape(128, 128).npu()
 y_exc = torch.full((128, 128), 3.14, dtype=torch.float16).npu()
 
-x_hex = list(x_exc.cpu().contiguous().numpy().tobytes()[:128])
-y_hex = list(y_exc.cpu().contiguous().numpy().tobytes()[:128])
+x_np = x_exc.cpu().numpy()
+y_np = y_exc.cpu().numpy()
 
 result = {
-    "x_addr": x_exc.data_ptr(),
-    "y_addr": y_exc.data_ptr(),
-    "expected_size": 128 * 128 * 2,
-    "x_hex": x_hex,
-    "y_hex": y_hex,
+    "x_bytes": x_np.tobytes().hex(),
+    "y_bytes": y_np.tobytes().hex(),
+    "shape": [128, 128],
+    "dtype": "float16",
 }
 print("RESULT_JSON=" + json.dumps(result), flush=True)
 
@@ -162,29 +155,23 @@ try:
 except Exception:
     pass
 
-# Step 4: Wait a moment for callback to finish writing, then read dump file
+# Step 4: Wait for callback to finish writing
 import time
-time.sleep(1)
-dump_files = glob.glob(os.path.join(dump_dir, "tilelang_exception_dump_*.log"))
-if dump_files:
-    with open(sorted(dump_files)[-1], "r") as f:
-        dump_content = f.read()
-    print("DUMP_BEGIN", flush=True)
-    print(dump_content, flush=True)
-    print("DUMP_END", flush=True)
-else:
-    print("DUMP_BEGIN", flush=True)
-    print("DUMP_END", flush=True)
+time.sleep(2)
 """
 
 
 @pytest.mark.skipif(not NPU_AVAILABLE, reason="NPU not available")
+@pytest.mark.skipif(not os.path.isfile(_MSAICERR_PATH),
+                    reason=f"msaicerr.py not found at {_MSAICERR_PATH}")
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_exception_dump_callback_via_hw_exception(target, tmp_path):
     """Trigger a real NPU hardware exception and verify dump file is generated.
 
-    The callback writes tensor info silently to a log file.  No stdout/stderr
-    output is expected from the callback itself.
+    The callback calls CANN's acldumpSaveExceptionInfo with the kernel name,
+    producing a dump file under <ASCEND_DUMP_PATH>/extra-info/data-dump/<dev>/.
+    msaicerr.py then parses it into per-tensor .bin files, which we compare
+    against the known input data.
     """
     prim_func = _make_kernel()
     kernel = tilelang.compile(
@@ -195,13 +182,18 @@ def test_exception_dump_callback_via_hw_exception(target, tmp_path):
     )
 
     so_path = kernel.adapter.libpath
-    dump_dir = str(tmp_path)
+    dump_path = str(tmp_path)
+
+    env = os.environ.copy()
+    env["ASCEND_DUMP_PATH"] = dump_path
+    env["ASCEND_DUMP_SCENE"] = "aic_err_brief_dump"
 
     proc = subprocess.run(
-        [sys.executable, "-c", _HW_EXCEPTION_SCRIPT, so_path, dump_dir],
+        [sys.executable, "-c", _HW_EXCEPTION_SCRIPT, so_path],
         capture_output=True,
         text=True,
         timeout=120,
+        env=env,
     )
 
     stdout = proc.stdout
@@ -213,76 +205,34 @@ def test_exception_dump_callback_via_hw_exception(target, tmp_path):
         f"stdout:\n{stdout}\nstderr:\n{stderr}"
     )
 
-    # Parse the RESULT_JSON line and DUMP_BEGIN..DUMP_END block from subprocess
     json_line = None
-    dump_content = ""
-    in_dump = False
     for line in stdout.splitlines():
         if line.startswith("RESULT_JSON="):
             json_line = json.loads(line[len("RESULT_JSON="):])
-        elif line.strip() == "DUMP_BEGIN":
-            in_dump = True
-        elif line.strip() == "DUMP_END":
-            in_dump = False
-        elif in_dump:
-            dump_content += line + "\n"
+            break
 
     assert json_line is not None, (
         f"RESULT_JSON not found in subprocess output:\n{stdout}\n{stderr}"
     )
 
-    x_addr = json_line["x_addr"]
-    y_addr = json_line["y_addr"]
-    expected_size = json_line["expected_size"]
-    x_expected_hex = json_line["x_hex"]
-    y_expected_hex = json_line["y_hex"]
+    x_expected = np.frombuffer(
+        bytes.fromhex(json_line["x_bytes"]), dtype=np.float16
+    ).reshape(json_line["shape"])
+    y_expected = np.frombuffer(
+        bytes.fromhex(json_line["y_bytes"]), dtype=np.float16
+    ).reshape(json_line["shape"])
 
-    # Verify dump file was generated with correct content
-    assert "TileLang Exception Dump" in dump_content, (
-        f"Dump file not generated or missing header:\n{dump_content}"
-    )
-    assert "Tensor count: 3" in dump_content, (
-        f"Expected tensor count 3:\n{dump_content}"
-    )
+    # Parse the CANN-generated dump file via parse_exception_dump
+    tensors = parse_exception_dump(dump_path, kernel_name="main_kernel",
+                                   wait_seconds=0)
 
-    assert f"tensor[0]: addr=0x{x_addr:x}" in dump_content, (
-        f"x address 0x{x_addr:x} not in dump:\n{dump_content}"
-    )
-    assert f"size={expected_size} bytes" in dump_content, (
-        f"Expected size {expected_size} not found:\n{dump_content}"
-    )
-    assert "dataType=1" in dump_content, (
-        f"Expected float16 dataType=1:\n{dump_content}"
+    assert len(tensors) >= 2, (
+        f"Expected at least 2 tensors, got {len(tensors)}"
     )
 
-    assert f"tensor[1]: addr=0x{y_addr:x}" in dump_content, (
-        f"y address 0x{y_addr:x} not in dump:\n{dump_content}"
-    )
+    # bin files are sorted by name; input.0 < input.1
+    x_dumped = tensors[0]["data"].reshape(tuple(json_line["shape"]))
+    y_dumped = tensors[1]["data"].reshape(tuple(json_line["shape"]))
 
-    assert "tensor[2]: addr=0x0" in dump_content, (
-        f"Expected null z address (0x0):\n{dump_content}"
-    )
-
-    x_dumped = _parse_tensor_data(dump_content, 0)
-    assert x_dumped is not None, (
-        f"tensor[0] data hex dump not found:\n{dump_content}"
-    )
-    assert x_dumped == x_expected_hex, (
-        f"tensor[0] data mismatch:\n"
-        f"  expected: {x_expected_hex[:16]}...\n"
-        f"  dumped:   {x_dumped[:16]}..."
-    )
-
-    y_dumped = _parse_tensor_data(dump_content, 1)
-    assert y_dumped is not None, (
-        f"tensor[1] data hex dump not found:\n{dump_content}"
-    )
-    assert y_dumped == y_expected_hex, (
-        f"tensor[1] data mismatch:\n"
-        f"  expected: {y_expected_hex[:16]}...\n"
-        f"  dumped:   {y_dumped[:16]}..."
-    )
-
-    assert "tensor[2] data" not in dump_content, (
-        f"tensor[2] should have no data dump (null addr):\n{dump_content}"
-    )
+    np.testing.assert_array_equal(x_dumped, x_expected)
+    np.testing.assert_array_equal(y_dumped, y_expected)

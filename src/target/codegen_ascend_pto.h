@@ -392,6 +392,8 @@ private:
 
   bool use_swizzle_{false};
 
+  bool enable_exception_dump_{false};
+
   std::string platform_;
 
   // Whether dump_tensor has been used (controls conditional include of

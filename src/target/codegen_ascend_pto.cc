@@ -6,6 +6,7 @@
  */
 
 #include <tvm/arith/analyzer.h>
+#include <tvm/ir/transform.h>
 #include <tvm/runtime/container/string.h>
 #include <tvm/runtime/registry.h>
 #include <tvm/tir/expr_functor.h>
@@ -476,7 +477,9 @@ std::string CodeGenTileLangAscendPto::Finish() {
   decl_stream << "#include <pto/pto-inst.hpp>\n";
   decl_stream << "#include \"acl/acl.h\"\n";
   decl_stream << "#include <runtime/rt_ffts.h>\n";
-  decl_stream << "#include \"tl_templates/ascend/exception_dump.h\"\n";
+  if (enable_exception_dump_) {
+    decl_stream << "#include \"tl_templates/ascend/exception_dump.h\"\n";
+  }
 
   if (has_dump_tensor_) {
     decl_stream << "#include \"tl_templates/pto/printf.h\"\n";
@@ -3957,38 +3960,43 @@ void CodeGenTileLangAscendPto::PrintHostFunc(
   os << "  uint64_t fftsAddr{0};\n  ";
   os << "  rtGetC2cCtrlAddr(&fftsAddr, &fftsLen);\n";
 
-  os << "tilelang_register_exception_dump_callback();\n";
-  os << "ParamSizeInfo paramSizeInfo;\n";
-  os << "paramSizeInfo.magic = TILE_LANG_PARAM_INFO_MAGIC;\n";
-  {
-    size_t tensor_idx = 0;
-    for (size_t i = 0; i < f->params.size(); ++i) {
-      auto v = f->params[i];
-      if (v.dtype() == DataType::Handle() &&
-          f->buffer_map.find(v) != f->buffer_map.end()) {
-        tir::Buffer buffer = f->buffer_map[v];
-        os << "paramSizeInfo.sizes[" << tensor_idx << "] = (size_t)(";
-        if (buffer->shape.size() == 0) {
-          os << "1";
-        }
-        for (size_t j = 0; j < buffer->shape.size(); j++) {
-          if (j > 0) {
-            os << " * ";
+  if (enable_exception_dump_) {
+    os << "tilelang_register_exception_dump_callback();\n";
+    os << "ParamSizeInfo paramSizeInfo;\n";
+    os << "paramSizeInfo.magic = TILE_LANG_PARAM_INFO_MAGIC;\n";
+    os << "snprintf(paramSizeInfo.kernel_name, "
+          "sizeof(paramSizeInfo.kernel_name), \""
+       << name << "\");\n";
+    {
+      size_t tensor_idx = 0;
+      for (size_t i = 0; i < f->params.size(); ++i) {
+        auto v = f->params[i];
+        if (v.dtype() == DataType::Handle() &&
+            f->buffer_map.find(v) != f->buffer_map.end()) {
+          tir::Buffer buffer = f->buffer_map[v];
+          os << "paramSizeInfo.sizes[" << tensor_idx << "] = (size_t)(";
+          if (buffer->shape.size() == 0) {
+            os << "1";
           }
-          os << "(";
-          this->PrintExpr(buffer->shape[j], os);
-          os << ")";
+          for (size_t j = 0; j < buffer->shape.size(); j++) {
+            if (j > 0) {
+              os << " * ";
+            }
+            os << "(";
+            this->PrintExpr(buffer->shape[j], os);
+            os << ")";
+          }
+          size_t elem_bytes = (buffer->dtype.bits() + 7) / 8;
+          os << ") * " << elem_bytes << ";\n";
+          os << "paramSizeInfo.addr[" << tensor_idx << "] = (uint64_t)"
+             << v->name_hint << ";\n";
+          os << "paramSizeInfo.dataTypes[" << tensor_idx
+             << "] = " << tvm::tl::TVMDataTypeToACL(buffer->dtype) << ";\n";
+          tensor_idx++;
         }
-        size_t elem_bytes = (buffer->dtype.bits() + 7) / 8;
-        os << ") * " << elem_bytes << ";\n";
-        os << "paramSizeInfo.addr[" << tensor_idx << "] = (uint64_t)"
-           << v->name_hint << ";\n";
-        os << "paramSizeInfo.dataTypes[" << tensor_idx
-           << "] = " << tvm::tl::TVMDataTypeToACL(buffer->dtype) << ";\n";
-        tensor_idx++;
       }
+      os << "paramSizeInfo.count = " << tensor_idx << ";\n";
     }
-    os << "paramSizeInfo.count = " << tensor_idx << ";\n";
   }
 
   this->PrintIndent();
@@ -4009,7 +4017,11 @@ void CodeGenTileLangAscendPto::PrintHostFunc(
       os << ", ";
     }
   }
-  os << ", fftsAddr, paramSizeInfo);\n}\n";
+  if (enable_exception_dump_) {
+    os << ", fftsAddr, paramSizeInfo);\n}\n";
+  } else {
+    os << ", fftsAddr);\n}\n";
+  }
   this->EndScope(func_scope);
 }
 
@@ -4024,6 +4036,10 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
   address_map_ = f->GetAttr<Map<Var, PrimExpr>>("address_map")
                      .value_or(Map<Var, PrimExpr>());
   use_swizzle_ = f->GetAttr<Bool>("use_swizzle").value_or(Bool(false));
+  enable_exception_dump_ =
+      tvm::transform::PassContext::Current()
+          ->GetConfig<Bool>(tvm::tl::kAscendExceptionDump, Bool(false))
+          .value();
   // tiling_map_ = f->GetAttr<Map<Var,
   // PrimExpr>>("tiling_map").value_or(Map<Var, PrimExpr>());
   buffer_shapess_ =
@@ -4112,8 +4128,12 @@ void CodeGenTileLangAscendPto::AddFunction(const GlobalVar &gvar,
     index++;
   }
 
-  stream << ", uint64_t ffts_Addr, ParamSizeInfo paramSizeInfo) {\n";
-  stream << "  (void)paramSizeInfo;\n";
+  if (enable_exception_dump_) {
+    stream << ", uint64_t ffts_Addr, ParamSizeInfo paramSizeInfo) {\n";
+    stream << "  (void)paramSizeInfo;\n";
+  } else {
+    stream << ", uint64_t ffts_Addr) {\n";
+  }
   for (size_t i = 0; i < f->params.size(); ++i) {
     tir::Var v = f->params[i];
     if (v.dtype() == DataType::Handle()) {

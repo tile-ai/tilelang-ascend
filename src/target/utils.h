@@ -17,6 +17,8 @@ namespace tl {
 
 int TVMDataTypeToACL(const DataType &dtype);
 
+static constexpr const char *kAscendExceptionDump = "tl.ascend_exception_dump";
+
 bool TargetIsCuda(Target target);
 bool TargetIsRocm(Target target);
 

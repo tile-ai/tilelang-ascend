@@ -8,8 +8,12 @@
 
 #include "utils.h"
 
+#include <tvm/ir/transform.h>
+
 namespace tvm {
 namespace tl {
+
+TVM_REGISTER_PASS_CONFIG_OPTION(kAscendExceptionDump, Bool);
 
 int TVMDataTypeToACL(const DataType &dtype) {
   if (dtype.is_float()) {
