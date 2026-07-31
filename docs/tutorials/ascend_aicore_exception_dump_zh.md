@@ -102,6 +102,8 @@ TileLang 的解决方案是在编译时将一个 `ParamSizeInfo` 结构体附加
 
 ### 3.1 CANN 版本要求
 
+**CANN >= 9.3.0**
+
 需要 CANN 提供以下 API（见 `acl/acl_rt.h` 和 `acl/acl_dump.h`）：
 
 | API | 作用 |

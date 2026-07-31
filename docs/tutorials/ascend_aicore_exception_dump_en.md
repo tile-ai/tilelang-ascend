@@ -102,6 +102,8 @@ The config is propagated through TVM's standard `PassContext` mechanism: Python 
 
 ### 3.1 CANN Version Requirements
 
+**CANN >= 9.3.0**
+
 The following CANN APIs are required (see `acl/acl_rt.h` and `acl/acl_dump.h`):
 
 | API | Purpose |
