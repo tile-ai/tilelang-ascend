@@ -6,18 +6,6 @@ import torch
 
 tilelang.cache.clear_cache()
 
-parser = argparse.ArgumentParser(description="NPU Batch Kernel Compilation")
-parser.add_argument("--b", type=int, default=8, help="Batch size")
-parser.add_argument("--m", type=int, default=1024, help="Matrix M dimension")
-parser.add_argument("--n", type=int, default=1024, help="Matrix N dimension")
-parser.add_argument("--k", type=int, default=1024, help="Matrix K dimension")
-args = parser.parse_args()
-
-B = args.b
-M = args.m
-N = args.n
-K = args.k
-
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
@@ -32,9 +20,9 @@ def batch_matmul(B, M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtyp
 
     @T.prim_func
     def main(
-            A_mat: T.Tensor((B, M, K), dtype),
-            B_mat: T.Tensor((B, K, N), dtype),
-            C_mat: T.Tensor((B, M, N), dtype),
+        A_mat: T.Tensor((B, M, K), dtype),
+        B_mat: T.Tensor((B, K, N), dtype),
+        C_mat: T.Tensor((B, M, N), dtype),
     ):
         total = B * m_num * n_num
         with T.Kernel(total, is_npu=True) as (cid, _):
@@ -61,6 +49,18 @@ def batch_matmul(B, M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtyp
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="NPU Batch Kernel Compilation")
+    parser.add_argument("--b", type=int, default=8, help="Batch size")
+    parser.add_argument("--m", type=int, default=1024, help="Matrix M dimension")
+    parser.add_argument("--n", type=int, default=1024, help="Matrix N dimension")
+    parser.add_argument("--k", type=int, default=1024, help="Matrix K dimension")
+    args = parser.parse_args()
+
+    B = args.b
+    M = args.m
+    N = args.n
+    K = args.k
+
     func = batch_matmul(B, M, N, K, 128, 256, 64)
 
     torch.manual_seed(0)
