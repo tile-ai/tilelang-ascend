@@ -2,7 +2,7 @@ import os
 import sys
 import threading
 from contextlib import contextmanager
-from typing import Optional
+
 
 import torch
 
