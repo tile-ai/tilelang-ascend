@@ -216,6 +216,7 @@ result: allow/reject
      - 纯 Cube（仅 matmul）→ 需要 L1 + L0A/L0B/L0C
      - 混合（matmul + element-wise 后处理）→ 核间流水线，需要 CV 融合
      - **Host 预处理**：如 im2col 等 Python 侧预处理步骤，标明在 design 的 §1 和 §4 中
+   - **chunk/split 单输入 kernel 方案**：若算子将输入沿某一维等分为多个子张量（如 SwiGLU `silu(x0)*x1`、GLU 类），优先考虑单输入 kernel——传入完整 tensor，kernel 内部通过列/行偏移（如 `X[row, half_k + col]`）读取子张量。详细模式与代码见 [tilelang-perf-optimization optimization-guide.md §2.12 子模式](../tilelang-perf-optimization/references/optimization-guide.md)。若必须 host 端 permute（dim≠-1），应在 design 中标注"permute 拷贝不可避免"并说明原因
    - **复杂度级别**：
      - 单步（如 element-wise add）→ 无循环、单次搬运
      - 多步（如 softmax = max + sub + exp + sum + div）→ 多次计算、可能需要中间缓冲
