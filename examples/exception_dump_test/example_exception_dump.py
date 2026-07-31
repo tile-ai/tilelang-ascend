@@ -119,7 +119,6 @@ except Exception as e:
     print(f"  Dump file parsed, {len(tensors)} tensor(s) recovered:")
     for t in tensors:
         data = t["data"].reshape(M, N)
-        print(f"    {t['type']}[{t['index']}] dtype={t['dtype']}, "
-              f"shape={data.shape}, min={data.min():.4f}, max={data.max():.4f}")
+        print(f"    {t['type']}[{t['index']}] dtype={t['dtype']}, shape={data.shape}, min={data.min():.4f}, max={data.max():.4f}")
 
 print("--- Exception test done ---")

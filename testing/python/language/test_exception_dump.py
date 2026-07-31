@@ -29,9 +29,7 @@ PASS_AUTO = {
 
 NPU_AVAILABLE = hasattr(torch, "npu") and torch.npu.is_available()
 
-_MSAICERR_PATH = os.path.join(
-    os.environ.get("ASCEND_HOME_PATH", ""), "tools", "msaicerr", "msaicerr.py"
-)
+_MSAICERR_PATH = os.path.join(os.environ.get("ASCEND_HOME_PATH", ""), "tools", "msaicerr", "msaicerr.py")
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -162,8 +160,7 @@ time.sleep(2)
 
 
 @pytest.mark.skipif(not NPU_AVAILABLE, reason="NPU not available")
-@pytest.mark.skipif(not os.path.isfile(_MSAICERR_PATH),
-                    reason=f"msaicerr.py not found at {_MSAICERR_PATH}")
+@pytest.mark.skipif(not os.path.isfile(_MSAICERR_PATH), reason=f"msaicerr.py not found at {_MSAICERR_PATH}")
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_exception_dump_callback_via_hw_exception(target, tmp_path):
     """Trigger a real NPU hardware exception and verify dump file is generated.
@@ -200,35 +197,24 @@ def test_exception_dump_callback_via_hw_exception(target, tmp_path):
     stderr = proc.stderr
 
     assert "RESULT_JSON=" in stdout, (
-        f"Subprocess did not produce RESULT_JSON.\n"
-        f"exit code: {proc.returncode}\n"
-        f"stdout:\n{stdout}\nstderr:\n{stderr}"
+        f"Subprocess did not produce RESULT_JSON.\nexit code: {proc.returncode}\nstdout:\n{stdout}\nstderr:\n{stderr}"
     )
 
     json_line = None
     for line in stdout.splitlines():
         if line.startswith("RESULT_JSON="):
-            json_line = json.loads(line[len("RESULT_JSON="):])
+            json_line = json.loads(line[len("RESULT_JSON=") :])
             break
 
-    assert json_line is not None, (
-        f"RESULT_JSON not found in subprocess output:\n{stdout}\n{stderr}"
-    )
+    assert json_line is not None, f"RESULT_JSON not found in subprocess output:\n{stdout}\n{stderr}"
 
-    x_expected = np.frombuffer(
-        bytes.fromhex(json_line["x_bytes"]), dtype=np.float16
-    ).reshape(json_line["shape"])
-    y_expected = np.frombuffer(
-        bytes.fromhex(json_line["y_bytes"]), dtype=np.float16
-    ).reshape(json_line["shape"])
+    x_expected = np.frombuffer(bytes.fromhex(json_line["x_bytes"]), dtype=np.float16).reshape(json_line["shape"])
+    y_expected = np.frombuffer(bytes.fromhex(json_line["y_bytes"]), dtype=np.float16).reshape(json_line["shape"])
 
     # Parse the CANN-generated dump file via parse_exception_dump
-    tensors = parse_exception_dump(dump_path, kernel_name="main_kernel",
-                                   wait_seconds=0)
+    tensors = parse_exception_dump(dump_path, kernel_name="main_kernel", wait_seconds=0)
 
-    assert len(tensors) >= 2, (
-        f"Expected at least 2 tensors, got {len(tensors)}"
-    )
+    assert len(tensors) >= 2, f"Expected at least 2 tensors, got {len(tensors)}"
 
     # bin files are sorted by name; input.0 < input.1
     x_dumped = tensors[0]["data"].reshape(tuple(json_line["shape"]))
