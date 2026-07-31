@@ -12,6 +12,7 @@
 #   - UB budget formula for dynamic block_H (guide section 2.11)
 #   - Kernel-side pad_value + remainder block for non-aligned H (guide section 2.12)
 #   - T.tile.clamp instruction fusion (guide section 2.7)
+#   - Output tensors declared with H_orig (no H padding) to ensure contiguous output
 
 import argparse
 from typing import Optional, Tuple
@@ -20,8 +21,6 @@ import tilelang
 import tilelang.language as T
 import torch
 import torch.nn.functional as F
-
-tilelang.cache.clear_cache()
 
 ACC = "float32"
 VEC_NUM = 2
@@ -40,7 +39,7 @@ PASS_CONFIGS = {
 _kernel_cache = {}
 
 
-def bench_us(fn, warmup=10, repeat=10):
+def bench_us(fn, warmup=10, repeat=100):
     for _ in range(warmup):
         fn()
     torch.npu.synchronize()
@@ -95,7 +94,7 @@ def golden_dequant_swiglu_quant(
 # =============================================================================
 # Kernel Construction
 # =============================================================================
-def _make_main(M, H_padded, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_left, rows):
+def _make_main(M, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_left, rows):
     TwoH_orig = 2 * H_orig
     n_full = H_orig // block_H
     partial = H_orig % block_H
@@ -113,11 +112,11 @@ def _make_main(M, H_padded, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, 
         weight_scale: T.Tensor((1, TwoH_orig), ACC),
         activation_scale: T.Tensor((M,), ACC),
         quant_scale: T.Tensor((1, H_orig), ACC),
-        swiglu_ws: T.Tensor((M, H_padded), ACC),
-        y: T.Tensor((M, H_padded), "int8"),
+        swiglu_ws: T.Tensor((M, H_orig), ACC),
+        y: T.Tensor((M, H_orig), "int8"),
         scale: T.Tensor((M,), ACC),
     ):
-        with T.Kernel(m_num, is_npu=True) as (cid, vid):  # noqa: SIM117
+        with T.Kernel(m_num, is_npu=True) as (cid, vid):
             with T.Scope("V"):
                 a_raw = T.alloc_ub((2, ROWS, block_H), in_dtype)
                 b_raw = T.alloc_ub((2, ROWS, block_H), in_dtype)
@@ -129,13 +128,13 @@ def _make_main(M, H_padded, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, 
                 wsa_tile = T.alloc_ub((ROWS, block_H), ACC)
                 wsb_tile = T.alloc_ub((ROWS, block_H), ACC)
                 qs_tile = T.alloc_ub((ROWS, block_H), ACC)
-                as_ub = T.alloc_ub((ROWS,), ACC)
+                as_ub = T.alloc_ub((ROWS), ACC)
                 as_tile = T.alloc_ub((ROWS, block_H), ACC)
                 silu_ub = T.alloc_ub((ROWS, block_H), ACC)
                 swiglu_ub = T.alloc_ub((2, ROWS, block_H), ACC)
                 abs_ub = T.alloc_ub((ROWS, block_H), ACC)
-                running_max = T.alloc_ub((ROWS,), ACC)
-                scale_ub = T.alloc_ub((ROWS,), ACC)
+                running_max = T.alloc_ub((ROWS), ACC)
+                scale_ub = T.alloc_ub((ROWS), ACC)
                 scale_tile = T.alloc_ub((ROWS, block_H), ACC)
                 q_ub = T.alloc_ub((ROWS, block_H), ACC)
                 q_fp16_ub = T.alloc_ub((ROWS, block_H), "float16")
@@ -147,19 +146,17 @@ def _make_main(M, H_padded, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, 
                     row_start = row_base + r * ROWS
                     T.tile.fill(running_max, 0.0)
                     if has_ws:
-                        T.copy(activation_scale[row_start : row_start + ROWS], as_ub)
+                        T.copy(activation_scale[row_start:row_start + ROWS], as_ub)
                         T.set_flag("mte2", "v", 5)
                         T.wait_flag("mte2", "v", 5)
                         T.tile.broadcast(as_tile, as_ub, axis=1)
 
                     if n_full == 1 and not has_partial:
-                        T.set_flag("mte3", "mte2", 0)
-                        T.wait_flag("mte3", "mte2", 0)
-                        T.copy(x[row_start : row_start + ROWS, 0:block_H], a_raw[0, :, :])
-                        T.copy(x[row_start : row_start + ROWS, H_orig : H_orig + block_H], b_raw[0, :, :])
+                        T.copy(x[row_start:row_start + ROWS, 0:block_H], a_raw[0, :, :])
+                        T.copy(x[row_start:row_start + ROWS, H_orig:H_orig + block_H], b_raw[0, :, :])
                         if has_ws:
                             T.copy(weight_scale[0, 0:block_H], wsa_ub[0, 0, :])
-                            T.copy(weight_scale[0, H_orig : H_orig + block_H], wsb_ub[0, 0, :])
+                            T.copy(weight_scale[0, H_orig:H_orig + block_H], wsb_ub[0, 0, :])
                         if has_qs:
                             T.copy(quant_scale[0, 0:block_H], qs_ub[0, 0, :])
                         T.set_flag("mte2", "v", 0)
@@ -184,6 +181,8 @@ def _make_main(M, H_padded, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, 
                             T.tile.mul(swiglu_ub[0, :, :], swiglu_ub[0, :, :], qs_tile)
                         T.set_flag("v", "mte3", 0)
                         T.wait_flag("v", "mte3", 0)
+                        T.copy(swiglu_ub[0, :, :], swiglu_ws[row_start:row_start + ROWS, 0:block_H])
+                        T.set_flag("mte3", "mte2", 7)
                         T.tile.abs(abs_ub, swiglu_ub[0, :, :])
                         T.reduce_max(abs_ub, running_max, dim=-1, clear=False)
 
@@ -192,26 +191,30 @@ def _make_main(M, H_padded, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, 
                         T.tile.max(scale_ub, scale_ub, 1e-12)
                         T.set_flag("v", "mte3", 6)
                         T.wait_flag("v", "mte3", 6)
-                        T.copy(scale_ub, scale[row_start : row_start + ROWS])
+                        T.copy(scale_ub, scale[row_start:row_start + ROWS])
                         T.tile.broadcast(scale_tile, scale_ub, axis=1)
 
+                        T.wait_flag("mte3", "mte2", 7)
+                        T.copy(swiglu_ws[row_start:row_start + ROWS, 0:block_H], swiglu_ub[0, :, :])
+                        T.set_flag("mte2", "v", 0)
+                        T.wait_flag("mte2", "v", 0)
                         T.tile.div(q_ub, swiglu_ub[0, :, :], scale_tile)
                         T.tile.clamp(q_ub, q_ub, -128.0, 127.0, tile_elems)
                         T.tile.cast(q_fp16_ub, q_ub, "CAST_NONE", tile_elems)
                         T.tile.cast(y_ub[0, :, :], q_fp16_ub, "CAST_RINT", tile_elems)
                         T.set_flag("v", "mte3", 0)
                         T.wait_flag("v", "mte3", 0)
-                        T.copy(y_ub[0, :, :], y[row_start : row_start + ROWS, 0:block_H])
+                        T.copy(y_ub[0, :, :], y[row_start:row_start + ROWS, 0:block_H])
                     else:
                         T.set_flag("mte3", "mte2", 0)
                         T.set_flag("mte3", "mte2", 1)
 
                         T.wait_flag("mte3", "mte2", 0)
-                        T.copy(x[row_start : row_start + ROWS, 0:block_H], a_raw[0, :, :])
-                        T.copy(x[row_start : row_start + ROWS, H_orig : H_orig + block_H], b_raw[0, :, :])
+                        T.copy(x[row_start:row_start + ROWS, 0:block_H], a_raw[0, :, :])
+                        T.copy(x[row_start:row_start + ROWS, H_orig:H_orig + block_H], b_raw[0, :, :])
                         if has_ws:
                             T.copy(weight_scale[0, 0:block_H], wsa_ub[0, 0, :])
-                            T.copy(weight_scale[0, H_orig : H_orig + block_H], wsb_ub[0, 0, :])
+                            T.copy(weight_scale[0, H_orig:H_orig + block_H], wsb_ub[0, 0, :])
                         if has_qs:
                             T.copy(quant_scale[0, 0:block_H], qs_ub[0, 0, :])
                         T.set_flag("mte2", "v", 0)
@@ -220,17 +223,18 @@ def _make_main(M, H_padded, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, 
                             cur = j % 2
                             nxt = (j + 1) % 2
                             ca = j * block_H
+                            cb = H_orig + j * block_H
                             ca_n = (j + 1) * block_H
                             cb_n = H_orig + (j + 1) * block_H
 
                             T.wait_flag("mte3", "mte2", nxt)
-                            T.copy(x[row_start : row_start + ROWS, ca_n : ca_n + block_H], a_raw[nxt, :, :])
-                            T.copy(x[row_start : row_start + ROWS, cb_n : cb_n + block_H], b_raw[nxt, :, :])
+                            T.copy(x[row_start:row_start + ROWS, ca_n:ca_n + block_H], a_raw[nxt, :, :])
+                            T.copy(x[row_start:row_start + ROWS, cb_n:cb_n + block_H], b_raw[nxt, :, :])
                             if has_ws:
-                                T.copy(weight_scale[0, ca_n : ca_n + block_H], wsa_ub[nxt, 0, :])
-                                T.copy(weight_scale[0, cb_n : cb_n + block_H], wsb_ub[nxt, 0, :])
+                                T.copy(weight_scale[0, ca_n:ca_n + block_H], wsa_ub[nxt, 0, :])
+                                T.copy(weight_scale[0, cb_n:cb_n + block_H], wsb_ub[nxt, 0, :])
                             if has_qs:
-                                T.copy(quant_scale[0, ca_n : ca_n + block_H], qs_ub[nxt, 0, :])
+                                T.copy(quant_scale[0, ca_n:ca_n + block_H], qs_ub[nxt, 0, :])
                             T.set_flag("mte2", "v", nxt)
 
                             T.wait_flag("mte2", "v", cur)
@@ -254,13 +258,14 @@ def _make_main(M, H_padded, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, 
                                 T.tile.mul(swiglu_ub[cur, :, :], swiglu_ub[cur, :, :], qs_tile)
                             T.set_flag("v", "mte3", cur)
                             T.wait_flag("v", "mte3", cur)
-                            T.copy(swiglu_ub[cur, :, :], swiglu_ws[row_start : row_start + ROWS, ca : ca + block_H])
+                            T.copy(swiglu_ub[cur, :, :], swiglu_ws[row_start:row_start + ROWS, ca:ca + block_H])
                             T.tile.abs(abs_ub, swiglu_ub[cur, :, :])
                             T.reduce_max(abs_ub, running_max, dim=-1, clear=False)
                             T.set_flag("mte3", "mte2", cur)
 
                         last = (n_full - 1) % 2
                         ca_l = (n_full - 1) * block_H
+                        cb_l = H_orig + (n_full - 1) * block_H
                         T.wait_flag("mte2", "v", last)
                         T.tile.cast(a_ub, a_raw[last, :, :], "CAST_NONE", tile_elems)
                         T.tile.cast(b_ub, b_raw[last, :, :], "CAST_NONE", tile_elems)
@@ -282,7 +287,7 @@ def _make_main(M, H_padded, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, 
                             T.tile.mul(swiglu_ub[last, :, :], swiglu_ub[last, :, :], qs_tile)
                         T.set_flag("v", "mte3", last)
                         T.wait_flag("v", "mte3", last)
-                        T.copy(swiglu_ub[last, :, :], swiglu_ws[row_start : row_start + ROWS, ca_l : ca_l + block_H])
+                        T.copy(swiglu_ub[last, :, :], swiglu_ws[row_start:row_start + ROWS, ca_l:ca_l + block_H])
                         T.tile.abs(abs_ub, swiglu_ub[last, :, :])
                         T.reduce_max(abs_ub, running_max, dim=-1, clear=False)
                         T.set_flag("mte3", "mte2", last)
@@ -295,8 +300,8 @@ def _make_main(M, H_padded, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, 
                             pb_off = H_orig + n_full * block_H
                             T.tile.fill(a_raw[0, :, :], 0.0)
                             T.tile.fill(b_raw[0, :, :], 0.0)
-                            T.copy(x[row_start : row_start + ROWS, pa_off:H_orig], a_raw[0, :, :], pad_value=0)
-                            T.copy(x[row_start : row_start + ROWS, pb_off:TwoH_orig], b_raw[0, :, :], pad_value=0)
+                            T.copy(x[row_start:row_start + ROWS, pa_off:H_orig], a_raw[0, :, :], pad_value=0)
+                            T.copy(x[row_start:row_start + ROWS, pb_off:TwoH_orig], b_raw[0, :, :], pad_value=0)
                             if has_ws:
                                 T.copy(weight_scale[0, pa_off:H_orig], wsa_ub[0, 0, :], pad_value=0)
                                 T.copy(weight_scale[0, pb_off:TwoH_orig], wsb_ub[0, 0, :], pad_value=0)
@@ -324,7 +329,7 @@ def _make_main(M, H_padded, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, 
                                 T.tile.mul(swiglu_ub[0, :, :], swiglu_ub[0, :, :], qs_tile)
                             T.set_flag("v", "mte3", 0)
                             T.wait_flag("v", "mte3", 0)
-                            T.copy(swiglu_ub[0, :, :], swiglu_ws[row_start : row_start + ROWS, pa_off : pa_off + block_H])
+                            T.copy(swiglu_ub[0, :, :partial], swiglu_ws[row_start:row_start + ROWS, pa_off:H_orig])
                             T.tile.abs(abs_ub, swiglu_ub[0, :, :])
                             T.reduce_max(abs_ub, running_max, dim=-1, clear=False)
 
@@ -333,14 +338,14 @@ def _make_main(M, H_padded, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, 
                         T.tile.max(scale_ub, scale_ub, 1e-12)
                         T.set_flag("v", "mte3", 6)
                         T.wait_flag("v", "mte3", 6)
-                        T.copy(scale_ub, scale[row_start : row_start + ROWS])
+                        T.copy(scale_ub, scale[row_start:row_start + ROWS])
                         T.tile.broadcast(scale_tile, scale_ub, axis=1)
 
                         T.set_flag("mte3", "mte2", 0)
                         T.set_flag("mte3", "mte2", 1)
 
                         T.wait_flag("mte3", "mte2", 0)
-                        T.copy(swiglu_ws[row_start : row_start + ROWS, 0:block_H], swiglu_ub[0, :, :])
+                        T.copy(swiglu_ws[row_start:row_start + ROWS, 0:block_H], swiglu_ub[0, :, :])
                         T.set_flag("mte2", "v", 0)
 
                         for j in T.serial(0, n_total - 1):
@@ -350,7 +355,10 @@ def _make_main(M, H_padded, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, 
                             ca_n = (j + 1) * block_H
 
                             T.wait_flag("mte3", "mte2", nxt)
-                            T.copy(swiglu_ws[row_start : row_start + ROWS, ca_n : ca_n + block_H], swiglu_ub[nxt, :, :])
+                            if has_partial and (j == n_total - 2):
+                                T.copy(swiglu_ws[row_start:row_start + ROWS, ca_n:H_orig], swiglu_ub[nxt, :, :partial])
+                            else:
+                                T.copy(swiglu_ws[row_start:row_start + ROWS, ca_n:ca_n + block_H], swiglu_ub[nxt, :, :])
                             T.set_flag("mte2", "v", nxt)
 
                             T.wait_flag("mte2", "v", cur)
@@ -360,7 +368,7 @@ def _make_main(M, H_padded, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, 
                             T.tile.cast(y_ub[cur, :, :], q_fp16_ub, "CAST_RINT", tile_elems)
                             T.set_flag("v", "mte3", cur)
                             T.wait_flag("v", "mte3", cur)
-                            T.copy(y_ub[cur, :, :], y[row_start : row_start + ROWS, ca_c : ca_c + block_H])
+                            T.copy(y_ub[cur, :, :], y[row_start:row_start + ROWS, ca_c:ca_c + block_H])
                             T.set_flag("mte3", "mte2", cur)
 
                         last = (n_total - 1) % 2
@@ -372,7 +380,10 @@ def _make_main(M, H_padded, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, 
                         T.tile.cast(y_ub[last, :, :], q_fp16_ub, "CAST_RINT", tile_elems)
                         T.set_flag("v", "mte3", last)
                         T.wait_flag("v", "mte3", last)
-                        T.copy(y_ub[last, :, :], y[row_start : row_start + ROWS, ca_l : ca_l + block_H])
+                        if has_partial:
+                            T.copy(y_ub[last, :, :partial], y[row_start:row_start + ROWS, ca_l:H_orig])
+                        else:
+                            T.copy(y_ub[last, :, :], y[row_start:row_start + ROWS, ca_l:ca_l + block_H])
                         T.set_flag("mte3", "mte2", last)
 
                         T.wait_flag("mte3", "mte2", 0)
@@ -382,29 +393,30 @@ def _make_main(M, H_padded, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, 
 
 
 @tilelang.jit(out_idx=[5, 6], pass_configs=PASS_CONFIGS)
-def _kernel_int32_qs(M, H_padded, H_orig, block_M, block_H, activate_left=False, rows=DEFAULT_ROWS):
-    return _make_main(M, H_padded, H_orig, block_M, block_H, "int32", True, True, activate_left, rows)
+def _kernel_int32_qs(M, H_orig, block_M, block_H, activate_left=False, rows=DEFAULT_ROWS):
+    return _make_main(M, H_orig, block_M, block_H, "int32", True, True, activate_left, rows)
 
 
 @tilelang.jit(out_idx=[5, 6], pass_configs=PASS_CONFIGS)
-def _kernel_int32_noqs(M, H_padded, H_orig, block_M, block_H, activate_left=False, rows=DEFAULT_ROWS):
-    return _make_main(M, H_padded, H_orig, block_M, block_H, "int32", True, False, activate_left, rows)
+def _kernel_int32_noqs(M, H_orig, block_M, block_H, activate_left=False, rows=DEFAULT_ROWS):
+    return _make_main(M, H_orig, block_M, block_H, "int32", True, False, activate_left, rows)
 
 
 @tilelang.jit(out_idx=[5, 6], pass_configs=PASS_CONFIGS)
-def _kernel_fp16_qs(M, H_padded, H_orig, block_M, block_H, in_dtype, activate_left=False, rows=DEFAULT_ROWS):
-    return _make_main(M, H_padded, H_orig, block_M, block_H, in_dtype, False, True, activate_left, rows)
+def _kernel_fp16_qs(M, H_orig, block_M, block_H, in_dtype, activate_left=False, rows=DEFAULT_ROWS):
+    return _make_main(M, H_orig, block_M, block_H, in_dtype, False, True, activate_left, rows)
 
 
 @tilelang.jit(out_idx=[5, 6], pass_configs=PASS_CONFIGS)
-def _kernel_fp16_noqs(M, H_padded, H_orig, block_M, block_H, in_dtype, activate_left=False, rows=DEFAULT_ROWS):
-    return _make_main(M, H_padded, H_orig, block_M, block_H, in_dtype, False, False, activate_left, rows)
+def _kernel_fp16_noqs(M, H_orig, block_M, block_H, in_dtype, activate_left=False, rows=DEFAULT_ROWS):
+    return _make_main(M, H_orig, block_M, block_H, in_dtype, False, False, activate_left, rows)
 
 
 # =============================================================================
 # UB Budget Formula (guide section 2.11)
 # =============================================================================
-def _find_max_tile(total_dim, rows, n_cal_p1, n_input, n_1d_cal, n_cal_p2, n_fp16_p2, n_int8_2d_p2, dtype_str):
+def _find_max_tile(total_dim, rows, n_cal_p1, n_input, n_1d_cal, n_cal_p2,
+                   n_fp16_p2, n_int8_2d_p2, dtype_str):
     cal_bytes = 4
     if dtype_str in ("float16", "bfloat16"):
         input_bytes = 2
@@ -425,6 +437,7 @@ def _find_max_tile(total_dim, rows, n_cal_p1, n_input, n_1d_cal, n_cal_p2, n_fp1
     align = 256 if total_dim >= 256 else 16
     max_tile = (effective_budget // per_unit // align) * align
     max_tile = min(max_tile, ((total_dim + align - 1) // align) * align)
+    max_tile = min(max_tile, total_dim)
 
     for t in range(max_tile, 0, -align):
         if total_dim % t == 0:
@@ -470,7 +483,8 @@ def _pick_block_h_and_rows(H, in_dtype, has_ws, has_qs, block_M):
         if rows > rows_per_vid or rows_per_vid % rows != 0:
             continue
 
-        bh = _find_max_tile(H, rows, n_cal_p1, n_input, n_1d, n_cal_p2, n_fp16_p2, n_int8_p2, in_dtype)
+        bh = _find_max_tile(H, rows, n_cal_p1, n_input, n_1d, n_cal_p2,
+                            n_fp16_p2, n_int8_p2, in_dtype)
         n_full = H // bh
         partial = H % bh
         n_total = n_full + (1 if partial > 0 else 0)
@@ -523,49 +537,33 @@ def dequant_swiglu_quant(
 
     has_qs = quant_scale is not None
 
-    pad_M = M_orig + 1 if M_orig % 2 != 0 else M_orig
-    block_M = _pick_block_m(pad_M)
+    M = M_orig
+    block_M = _pick_block_m(M)
     rows, block_H = _pick_block_h_and_rows(H_orig, in_dtype, has_ws, has_qs, block_M)
-    n_full = H_orig // block_H
-    partial = H_orig % block_H
-    has_partial = partial > 0
-    n_total = n_full + (1 if has_partial else 0)
-    H_padded = n_total * block_H
 
-    need_m_pad = pad_M != M_orig
-    if need_m_pad:
-        x_new = torch.zeros(pad_M, TwoH, dtype=x.dtype, device=x.device)
-        x_new[:M_orig] = x
-        x = x_new
-        if has_ws:
-            as_new = torch.zeros(pad_M, dtype=torch.float32, device=x.device)
-            as_new[:M_orig] = activation_scale
-            activation_scale = as_new
-
-    M = pad_M
-    dummy_ws = torch.zeros(1, TwoH, dtype=torch.float32, device=x.device)
-    dummy_as = torch.zeros(M, dtype=torch.float32, device=x.device)
-    dummy_qs = torch.zeros(1, H_orig, dtype=torch.float32, device=x.device)
+    dummy_ws = torch.empty(1, TwoH, dtype=torch.float32, device=x.device)
+    dummy_as = torch.empty(M, dtype=torch.float32, device=x.device)
+    dummy_qs = torch.empty(1, H_orig, dtype=torch.float32, device=x.device)
     ws_in = weight_scale if has_ws else dummy_ws
     as_in = activation_scale if has_ws else dummy_as
     qs_in = quant_scale if has_qs else dummy_qs
-    swiglu_ws = torch.empty(M, H_padded, dtype=torch.float32, device=x.device)
+    swiglu_ws = torch.empty(M, H_orig, dtype=torch.float32, device=x.device)
 
     rows_per_vid = block_M // VEC_NUM
     rows = min(rows, rows_per_vid)
 
-    key = (M, H_padded, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_left, rows)
+    key = (M, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_left, rows)
     if key not in _kernel_cache:
         if in_dtype == "int32":
             if has_qs:
-                _kernel_cache[key] = _kernel_int32_qs(M, H_padded, H_orig, block_M, block_H, activate_left, rows)
+                _kernel_cache[key] = _kernel_int32_qs(M, H_orig, block_M, block_H, activate_left, rows)
             else:
-                _kernel_cache[key] = _kernel_int32_noqs(M, H_padded, H_orig, block_M, block_H, activate_left, rows)
+                _kernel_cache[key] = _kernel_int32_noqs(M, H_orig, block_M, block_H, activate_left, rows)
         else:
             if has_qs:
-                _kernel_cache[key] = _kernel_fp16_qs(M, H_padded, H_orig, block_M, block_H, in_dtype, activate_left, rows)
+                _kernel_cache[key] = _kernel_fp16_qs(M, H_orig, block_M, block_H, in_dtype, activate_left, rows)
             else:
-                _kernel_cache[key] = _kernel_fp16_noqs(M, H_padded, H_orig, block_M, block_H, in_dtype, activate_left, rows)
+                _kernel_cache[key] = _kernel_fp16_noqs(M, H_orig, block_M, block_H, in_dtype, activate_left, rows)
 
     kernel = _kernel_cache[key]
     y, scale = kernel(x, ws_in, as_in, qs_in, swiglu_ws)
@@ -577,14 +575,53 @@ def dequant_swiglu_quant(
 
 
 # =============================================================================
-# Precision Check
+# Precision Check (mixed tolerance per precision-standard.md)
 # =============================================================================
 def precision_compare(actual_y, golden_y, actual_scale, golden_scale):
+    """Mixed tolerance precision comparison.
+
+    y (int8 quantized output):
+        |diff| > 1 的元素占比 < 1e-3 即通过; 同时记录 max_diff.
+
+    scale (float32, 值域分段混合容差 per precision-standard.md):
+        - 特殊值 INF/NAN (§2.1): 验证 isinf/isnan 状态一致, 不验证数值误差.
+        - 小值域 |expected| < 1e-5 (§2.2): atol=1e-7, rtol=0, 仅验证绝对误差.
+        - 正常值域 |expected| >= 1e-5: atol=1e-5, rtol=1e-3.
+    """
+    # --- y: int8 quantized output, |diff|>1 ratio check ---
     diff = (actual_y.int() - golden_y.int()).abs()
     ratio = (diff > 1).float().mean().item()
     max_diff = diff.max().item()
     y_ok = ratio < 1e-3
-    scale_ok = torch.allclose(actual_scale, golden_scale, rtol=1e-3, atol=1e-5)
+
+    # --- scale: float32 value-domain segmented mixed tolerance ---
+    a = actual_scale.float()
+    e = golden_scale.float()
+    abs_err = (a - e).abs()
+    abs_exp = e.abs()
+
+    # Special values INF/NAN (precision-standard.md §2.1)
+    a_inf = torch.isinf(a)
+    e_inf = torch.isinf(e)
+    a_nan = torch.isnan(a)
+    e_nan = torch.isnan(e)
+    special_mask = a_inf | e_inf | a_nan | e_nan
+    special_ok = ((a_inf == e_inf) & (a_nan == e_nan)) | (~special_mask)
+
+    # Normal value positions (non-special)
+    normal_mask = ~special_mask
+
+    # Small value domain (§2.2): |expected| < 1e-5 -> atol=1e-7, rtol=0
+    small_mask = normal_mask & (abs_exp < 1e-5)
+    small_ok = (abs_err <= 1e-7) | (~small_mask)
+
+    # Normal value domain: |expected| >= 1e-5 -> atol=1e-5, rtol=1e-3
+    normal_value_mask = normal_mask & (abs_exp >= 1e-5)
+    normal_tol = 1e-5 + 1e-3 * abs_exp
+    normal_ok = (abs_err <= normal_tol) | (~normal_value_mask)
+
+    scale_ok = special_ok.all().item() and small_ok.all().item() and normal_ok.all().item()
+
     passed = y_ok and scale_ok
     return {
         "passed": passed,
@@ -595,7 +632,7 @@ def precision_compare(actual_y, golden_y, actual_scale, golden_scale):
 
 
 # =============================================================================
-# Test Cases
+# Test Cases (CANN-Bench 20 cases)
 # =============================================================================
 def check_case(M, H, x_dtype, has_ws, has_qs, activate_left=False):
     torch.manual_seed(42)
@@ -613,7 +650,7 @@ def check_case(M, H, x_dtype, has_ws, has_qs, activate_left=False):
         ws = (torch.rand(1, TwoH, device="npu") * 0.2 - 0.1).float()
         as_ = (torch.rand(M, device="npu") * 1.0 - 0.5).float()
     if has_qs:
-        qs = (torch.rand(1, H, device="npu") * 0.5).float()
+        qs = (torch.rand(1, H, device="npu") * 2.0 - 1.0).float()
 
     y, scale = dequant_swiglu_quant(x, ws, as_, qs, activate_left)
     torch.npu.synchronize()
@@ -645,17 +682,29 @@ def main(custom_args=None):
         check_case(args.M, args.H, torch.float16, False, False)
         return
 
+    # CANN-Bench 20 test cases
     test_cases = [
-        (512, 2048, torch.float16, False, False, False),
+        # (M, H, dtype, has_ws, has_qs, activate_left)
+        (512, 2048, torch.float16, False, False, True),
         (1024, 4096, torch.float16, False, False, False),
-        (2048, 4096, torch.bfloat16, False, True, False),
+        (2048, 8192, torch.float16, False, False, True),
+        (4096, 4096, torch.bfloat16, False, False, False),
+        (127, 1024, torch.bfloat16, False, False, False),
+        (8192, 1024, torch.float16, False, False, False),
         (1023, 2049, torch.bfloat16, False, False, True),
-        (512, 1024, torch.int32, True, False, True),
-        (1024, 2048, torch.int32, True, False, False),
-        (2048, 4096, torch.int32, True, True, True),
-        (255, 4097, torch.bfloat16, False, True, False),
-        (10007, 32, torch.int32, True, False, False),
+        (255, 4097, torch.bfloat16, False, False, False),
+        (512, 2048, torch.int32, True, False, True),
+        (1024, 4096, torch.int32, True, False, False),
+        (2048, 8192, torch.int32, True, False, True),
+        (4096, 4096, torch.int32, True, False, False),
+        (127, 1024, torch.int32, True, False, False),
+        (8192, 1024, torch.int32, True, False, False),
+        (1023, 2049, torch.int32, True, False, True),
+        (255, 4097, torch.int32, True, True, False),
+        (10007, 64, torch.int32, True, False, False),
         (32768, 256, torch.int32, True, False, False),
+        (4001, 2048, torch.int32, True, True, True),
+        (16384, 512, torch.int32, True, False, False),
     ]
 
     all_pass = True
