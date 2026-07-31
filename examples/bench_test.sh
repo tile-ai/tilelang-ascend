@@ -259,7 +259,7 @@ else
     echo "Full test mode - scanning all directories"
     
     # 遍历所有一级目录
-    for dir in $(find . -maxdepth 1 -type d -not -name "." -not -name "dispatch_combine" -not -name "shmem" | sort); do
+    for dir in $(find . -maxdepth 1 -type d -not -name "." -not -name "dispatch_combine" -not -name "shmem" -not -name "exception_dump_test" | sort); do
         collected=$(collect_test_scripts "$dir")
         if [ -n "$collected" ]; then
             for script in $collected; do

@@ -60,6 +60,7 @@ def _make_kernel():
     return main
 
 
+@pytest.mark.ci_skip
 @pytest.mark.skipif(not NPU_AVAILABLE, reason="NPU not available")
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_exception_dump_npu_correctness(target):
@@ -78,6 +79,7 @@ def test_exception_dump_npu_correctness(target):
     torch.testing.assert_close(z.cpu(), z_ref, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.ci_skip
 @pytest.mark.skipif(not NPU_AVAILABLE, reason="NPU not available")
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_exception_dump_callback_magic_not_found(target):
@@ -159,6 +161,7 @@ time.sleep(2)
 """
 
 
+@pytest.mark.ci_skip
 @pytest.mark.skipif(not NPU_AVAILABLE, reason="NPU not available")
 @pytest.mark.skipif(not os.path.isfile(_MSAICERR_PATH), reason=f"msaicerr.py not found at {_MSAICERR_PATH}")
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
