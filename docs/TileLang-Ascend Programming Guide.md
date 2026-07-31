@@ -1965,10 +1965,14 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   **参数**：
 
-  - dst：计算结果存放目的buffer
-  - src：源操作数
+  - dst：计算结果存放目的buffer，shape 为 [W, H]
+  - src：源操作数，shape 为 [H, W]
 
-  **功能**：当前仅支持用于实现16*16的二维矩阵数据块转置。更完毕功能待完善。
+  **功能**：对 UB 中的二维矩阵执行 `dst[j][i] = src[i][j]` 转置。
+
+  **约束**：
+
+  - **H 和 W 必须满足 32B 对齐**（即 `H × sizeof(dtype)` 和 `W × sizeof(dtype)` 均为 32 的倍数）。对 B16（half/int16/uint16）和 B32（float/int32/uint32），H 和 W 需为 16 的倍数；对 int8，需为 32 的倍数。不满足时会在编译期被拒绝并报错。
 
   **举例**：
 

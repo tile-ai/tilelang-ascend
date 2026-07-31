@@ -194,7 +194,7 @@ Golden 函数写在 `test_{op}.py` 内（PyTorch 参考实现），与 kernel **
 | `[PRECISION_FAIL]` | `precision_fix` | Stage 2 内重试（L0 或 L1 未达标）。把失败信息（max_diff、失败用例 shape、层级）作为 `last_failure_summary` 传入。**强制要求 Developer 先备份当前 impl 到 `history_version/{op}_impl_s2_attempt{N}.py` 再做修改** |
 | `[DESIGN_ERROR]` | — | 触发设计回退流程（不计入 retry_count） |
 | 无标记且 exit code ≠ 0 | `retry_impl` | Stage 2 内重试，将 stderr 摘要作为 `last_failure_summary` 传入 |
-| 首次进入 Stage 2 | `first_impl` | 调 `tilelang-op-generate` 从零生成 kernel + L0 用例，先跑 L0 |
+| 首次进入 Stage 2 | `first_impl` | 调 `tilelang-op-develop` 从零生成 kernel + L0 用例，先跑 L0 |
 
 > **分层测试**：Stage 2 每次 attempt 先只跑 L0 做精度收敛；L0 通过后 Developer 调用 `tilelang-op-test-design`（场景 B）扩展 L1/L2/Boundary，**跑覆盖门禁 `coverage_check.py` 补齐缺失维度**，再跑全量。**L0/L1 失败**才算精度未达标（走 `precision_fix`）；**L2（异常）/ Boundary（特殊值）失败仅记录到 `debug_log.md` 与覆盖率报告，不阻塞 `[PRECISION_PASS]`**（可能是该算子本就不支持的输入）。
 >
@@ -427,7 +427,7 @@ Stage 2 返回 `[PRECISION_PASS]` 后，你**必须**先向用户说明当前状
 |-------|----------|
 | `tilelang-env-check` | 本次有跑过环境预检 |
 | `tilelang-op-design` | Stage 1 执行过（含设计回退） |
-| `tilelang-op-generate` | Stage 2 执行过任意 attempt |
+| `tilelang-op-develop` | Stage 2 执行过任意 attempt |
 | `tilelang-perf-optimization` | Stage 3 执行过任意迭代 |
 
 各 Subagent 摘要里的 `skills_consulted` 字段（如查 `tilelang-api-best-practices`、`tilelang-debug-helper` 等）需追加合并。
