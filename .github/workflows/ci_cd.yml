@@ -208,7 +208,10 @@ jobs:
           declare -A source_to_test=()
           declare -A test_to_test=()
           # Collected separately from pytest_files_array: that one is for
-          # testing/python/ and gets collapsed by rules further down.
+          # testing/python/ and gets collapsed by rules further down. Every rule
+          # that decides on a full run clears these along with the rest, or what
+          # was collected before it would be written back afterwards and narrow
+          # the full run to the directory of whichever operator came first.
           declare -A routed_tests=()
           routed_example_dirs=()
           routed_experiment_dirs=()
@@ -269,6 +272,9 @@ jobs:
               experiment_dirs_array=()
               pytest_files_array=()
               pytest_dirs_array=()
+              routed_tests=()
+              routed_example_dirs=()
+              routed_experiment_dirs=()
               break
             fi
             
@@ -341,6 +347,9 @@ jobs:
               experiment_dirs_array=()
               pytest_files_array=()
               pytest_dirs_array=()
+              routed_tests=()
+              routed_example_dirs=()
+              routed_experiment_dirs=()
               break
             fi
 
@@ -361,6 +370,9 @@ jobs:
               experiment_dirs_array=()
               pytest_files_array=()
               pytest_dirs_array=()
+              routed_tests=()
+              routed_example_dirs=()
+              routed_experiment_dirs=()
               break
             fi
             
@@ -378,6 +390,9 @@ jobs:
               experiment_dirs_array=()
               pytest_files_array=()
               pytest_dirs_array=()
+              routed_tests=()
+              routed_example_dirs=()
+              routed_experiment_dirs=()
               break
             fi
           done
@@ -701,10 +716,14 @@ jobs:
                 # one Pytest invocation gets xdist scheduling, the marker filter and the
                 # full failure output. Entries reserved but not migrated yet are absent
                 # from list-tests, so nothing points at a file that does not exist.
+                #
+                # Scoped by the same two arguments the runner just took, so an
+                # incremental run tests the operators in the directories it ran and
+                # no others. Both are empty on a full run, which selects them all.
                 OPERATOR_TESTS=()
                 while IFS= read -r operator_test; do
                   [ -n \"\$operator_test\" ] && OPERATOR_TESTS+=(\"../\$operator_test\")
-                done < <(python ../scripts/ci/resolve_operator_tests.py list-tests)
+                done < <(python ../scripts/ci/resolve_operator_tests.py list-tests \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG)
                 if [ \${#OPERATOR_TESTS[@]} -gt 0 ]; then
                   echo 'Running operator tests: '\${OPERATOR_TESTS[*]}
                   pytest --forked \"\${OPERATOR_TESTS[@]}\" -v -n 8 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee -a test_output.log
