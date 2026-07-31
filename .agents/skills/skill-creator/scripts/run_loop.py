@@ -6,6 +6,8 @@ and returning the best description found. Supports train/test split to prevent
 overfitting.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import random
@@ -15,12 +17,10 @@ import time
 import webbrowser
 from pathlib import Path
 
-import anthropic
-
 from scripts.generate_report import generate_html
 from scripts.improve_description import improve_description
 from scripts.run_eval import find_project_root, run_eval
-from scripts.utils import parse_skill_md
+from scripts.utils import load_anthropic, parse_skill_md
 
 
 def split_eval_set(eval_set: list[dict], holdout: float, seed: int = 42) -> tuple[list[dict], list[dict]]:
@@ -75,7 +75,7 @@ def run_loop(
         train_set = eval_set
         test_set = []
 
-    client = anthropic.Anthropic()
+    client = load_anthropic().Anthropic()
     history = []
     exit_reason = "unknown"
 

@@ -5,15 +5,19 @@ Takes eval results (from run_eval.py) and generates an improved description
 using Claude with extended thinking.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import re
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import anthropic
+from scripts.utils import load_anthropic, parse_skill_md
 
-from scripts.utils import parse_skill_md
+if TYPE_CHECKING:
+    import anthropic
 
 
 def improve_description(
@@ -216,7 +220,7 @@ def main():
         print(f"Current: {current_description}", file=sys.stderr)
         print(f"Score: {eval_results['summary']['passed']}/{eval_results['summary']['total']}", file=sys.stderr)
 
-    client = anthropic.Anthropic()
+    client = load_anthropic().Anthropic()
     new_description = improve_description(
         client=client,
         skill_name=name,
