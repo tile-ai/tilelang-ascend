@@ -15,6 +15,7 @@
 #   - Output tensors declared with H_orig (no H padding) to ensure contiguous output
 
 import argparse
+import sys
 from typing import Optional, Tuple
 
 import tilelang
@@ -116,7 +117,7 @@ def _make_main(M, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_l
         y: T.Tensor((M, H_orig), "int8"),
         scale: T.Tensor((M,), ACC),
     ):
-        with T.Kernel(m_num, is_npu=True) as (cid, vid):
+        with T.Kernel(m_num, is_npu=True) as (cid, vid):  # noqa: SIM117
             with T.Scope("V"):
                 a_raw = T.alloc_ub((2, ROWS, block_H), in_dtype)
                 b_raw = T.alloc_ub((2, ROWS, block_H), in_dtype)
@@ -223,7 +224,7 @@ def _make_main(M, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_l
                             cur = j % 2
                             nxt = (j + 1) % 2
                             ca = j * block_H
-                            cb = H_orig + j * block_H
+                            cb = H_orig + j * block_H  # noqa: F841
                             ca_n = (j + 1) * block_H
                             cb_n = H_orig + (j + 1) * block_H
 
@@ -265,7 +266,7 @@ def _make_main(M, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_l
 
                         last = (n_full - 1) % 2
                         ca_l = (n_full - 1) * block_H
-                        cb_l = H_orig + (n_full - 1) * block_H
+                        cb_l = H_orig + (n_full - 1) * block_H  # noqa: F841
                         T.wait_flag("mte2", "v", last)
                         T.tile.cast(a_ub, a_raw[last, :, :], "CAST_NONE", tile_elems)
                         T.tile.cast(b_ub, b_raw[last, :, :], "CAST_NONE", tile_elems)
@@ -925,10 +926,12 @@ def main():
         cases = case_map.get(args.level, case_map["l0"])
         if args.case > len(cases):
             print(f"Error: --case {args.case} out of range (1-{len(cases)} for {args.level})")
-            import sys; sys.exit(1)
+
+            sys.exit(1)
         name, M, H, dt, ws, qs, al = cases[args.case - 1]
         ok = _run_case(name, M, H, dt, ws, qs, al, level)
-        import sys; sys.exit(0 if ok else 1)
+
+        sys.exit(0 if ok else 1)
 
     blocking_ok = True
 
@@ -963,12 +966,10 @@ def main():
 
     if blocking_ok:
         print("\nTest Passed!")
-        import sys
 
         sys.exit(0)
     else:
         print("\nTest Failed!")
-        import sys
 
         sys.exit(1)
 
