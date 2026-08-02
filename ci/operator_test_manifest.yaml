@@ -1,0 +1,263 @@
+# 算子源文件 -> 它的 Pytest 测试。
+# 一条登记只有在测试文件真实存在时才生效；否则算子照常由
+# examples/bench_test.sh 执行。
+#
+# 覆盖 bench_test.sh 会收集到的全部算子。以下不在此表：
+#   examples/gemm_aot/example_gemm.py —— 拼出的名字与已有的独立脚本
+#     test_example_gemm.py 相同，那个脚本由 run_example_gemm_aot.sh 直接执行。
+#   dispatch_combine/ 与 shmem/ —— bench_test.sh 全量扫描时就排除了。
+#   sparse_flash_attention/bench_sfa/ —— 由 CUSTOM_TASK 按名字驱动，
+#     不按路径收集，跳过逻辑碰不到。
+#   torch_tl_ascend/ 的包内部与 build/ 产物 —— 不是独立算子。
+version: 1
+mappings:
+
+  # examples/HISA
+  examples/HISA/block_sparse_mqa_attn_expert_test.py: examples/HISA/test_block_sparse_mqa_attn_expert_test.py
+  examples/HISA/paged_block_sparse_mqa_attn_expert.py: examples/HISA/test_paged_block_sparse_mqa_attn_expert.py
+
+  # examples/aclgraph
+  examples/aclgraph/rms_rope_aclgraph.py: examples/aclgraph/test_rms_rope_aclgraph.py
+
+  # examples/activation
+  examples/activation/gelu_grad.py: examples/activation/test_gelu_grad.py
+  examples/activation/gelu_mul.py: examples/activation/test_gelu_mul.py
+  examples/activation/sigmoid.py: examples/activation/test_sigmoid.py
+  examples/activation/sigmoidv2.py: examples/activation/test_sigmoidv2.py
+  examples/activation/sigmoidv2_slice.py: examples/activation/test_sigmoidv2_slice.py
+  examples/activation/silu.py: examples/activation/test_silu.py
+  examples/activation/swi_glu.py: examples/activation/test_swi_glu.py
+  examples/activation/swi_glu_grad.py: examples/activation/test_swi_glu_grad.py
+  examples/activation/swi_glu_v2.py: examples/activation/test_swi_glu_v2.py
+  examples/activation/tanh.py: examples/activation/test_tanh.py
+
+  # examples/autotune
+  examples/autotune/example_gemm_autotune.py: examples/autotune/test_example_gemm_autotune.py
+  examples/autotune/example_gemm_carver.py: examples/autotune/test_example_gemm_carver.py
+
+  # examples/batch_gemm
+  examples/batch_gemm/batch_gemm.py: examples/batch_gemm/test_batch_gemm.py
+
+  # examples/causal_conv1d
+  examples/causal_conv1d/causal_conv1d.py: examples/causal_conv1d/test_causal_conv1d.py
+  examples/causal_conv1d/causal_conv1d_pto.py: examples/causal_conv1d/test_causal_conv1d_pto.py
+
+  # examples/compile_flags
+  examples/compile_flags/compile_flags_example.py: examples/compile_flags/test_compile_flags_example.py
+
+  # examples/cross_entropy_loss
+  examples/cross_entropy_loss/example_cross_entro.py: examples/cross_entropy_loss/test_example_cross_entro.py
+
+  # examples/cummin
+  examples/cummin/example_cummin.py: examples/cummin/test_example_cummin.py
+
+  # examples/deepseek_v4
+  examples/deepseek_v4/act_quant.py: examples/deepseek_v4/test_act_quant.py
+  examples/deepseek_v4/hc_split_sinkhorn.py: examples/deepseek_v4/test_hc_split_sinkhorn.py
+  examples/deepseek_v4/int8_gemm.py: examples/deepseek_v4/test_int8_gemm.py
+  examples/deepseek_v4/sparse_attention.py: examples/deepseek_v4/test_sparse_attention.py
+
+  # examples/developer_mode
+  examples/developer_mode/flash_attn_bshd_developer.py: examples/developer_mode/test_flash_attn_bshd_developer.py
+  examples/developer_mode/gelu_mul_developer.py: examples/developer_mode/test_gelu_mul_developer.py
+  examples/developer_mode/gemm_developer.py: examples/developer_mode/test_gemm_developer.py
+  examples/developer_mode/matmul_add_developer.py: examples/developer_mode/test_matmul_add_developer.py
+  examples/developer_mode/matmul_add_developer_vec_cast.py: examples/developer_mode/test_matmul_add_developer_vec_cast.py
+  examples/developer_mode/sparse_flash_attn_developer.py: examples/developer_mode/test_sparse_flash_attn_developer.py
+  examples/developer_mode/sparse_flash_attn_developer_vid_reduce.py: examples/developer_mode/test_sparse_flash_attn_developer_vid_reduce.py
+
+  # examples/elementwise
+  examples/elementwise/elementwise_add.py: examples/elementwise/test_elementwise_add.py
+  examples/elementwise/elementwise_add_pipeline.py: examples/elementwise/test_elementwise_add_pipeline.py
+  examples/elementwise/setvalue_example.py: examples/elementwise/test_setvalue_example.py
+
+  # examples/flash_attention/fa_opt
+  examples/flash_attention/fa_opt/flash_attn_bhsd_ascendc.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_ascendc.py
+  examples/flash_attention/fa_opt/flash_attn_bhsd_auto_pipeline_h16_d128.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_auto_pipeline_h16_d128.py
+  examples/flash_attention/fa_opt/flash_attn_bhsd_auto_pipeline_h32_d512.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_auto_pipeline_h32_d512.py
+  examples/flash_attention/fa_opt/flash_attn_bhsd_expert_h16_d128.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_expert_h16_d128.py
+
+  # examples/flash_attention
+  examples/flash_attention/flash_attn_bhsd.py: examples/flash_attention/test_flash_attn_bhsd.py
+  examples/flash_attention/flash_attn_bhsd_cc_sync.py: examples/flash_attention/test_flash_attn_bhsd_cc_sync.py
+  examples/flash_attention/paged_flash_attn_bhsd.py: examples/flash_attention/test_paged_flash_attn_bhsd.py
+
+  # examples/fused_sigmoid_gating_delta_rule
+  examples/fused_sigmoid_gating_delta_rule/fused_sigmoid_gating_delta_rule_varlen.py: examples/fused_sigmoid_gating_delta_rule/test_fused_sigmoid_gating_delta_rule_varlen.py
+
+  # examples/gemm
+  examples/gemm/example_gemm.py: examples/gemm/test_example_gemm.py
+  examples/gemm/example_gemm_fp8_pto.py: examples/gemm/test_example_gemm_fp8_pto.py
+  examples/gemm/example_gemm_infer_scope.py: examples/gemm/test_example_gemm_infer_scope.py
+  examples/gemm/example_gemm_intrinsic.py: examples/gemm/test_example_gemm_intrinsic.py
+  examples/gemm/example_gemm_intrinsic_persistent.py: examples/gemm/test_example_gemm_intrinsic_persistent.py
+  examples/gemm/example_gemm_persistent.py: examples/gemm/test_example_gemm_persistent.py
+  examples/gemm/example_gemm_pto_developer.py: examples/gemm/test_example_gemm_pto_developer.py
+  examples/gemm/example_gemm_tail_block_developer.py: examples/gemm/test_example_gemm_tail_block_developer.py
+  examples/gemm/example_gemm_transpose_l1.py: examples/gemm/test_example_gemm_transpose_l1.py
+
+  # examples/gemv
+  examples/gemv/example_gemv_c.py: examples/gemv/test_example_gemv_c.py
+  examples/gemv/example_gemv_v.py: examples/gemv/test_example_gemv_v.py
+
+  # examples/generative_recommendation
+  examples/generative_recommendation/mtgr_ragged_segment_attention.py: examples/generative_recommendation/test_mtgr_ragged_segment_attention.py
+
+  # examples/gqa_fwd_varlen
+  examples/gqa_fwd_varlen/gqa_fwd_varlen.py: examples/gqa_fwd_varlen/test_gqa_fwd_varlen.py
+  examples/gqa_fwd_varlen/perf_gqa_fwd_varlen.py: examples/gqa_fwd_varlen/test_perf_gqa_fwd_varlen.py
+
+  # examples/group_norm
+  examples/group_norm/example_group_norm.py: examples/group_norm/test_example_group_norm.py
+
+  # examples/lightning_indexer
+  examples/lightning_indexer/example_lightning_indexer.py: examples/lightning_indexer/test_example_lightning_indexer.py
+  examples/lightning_indexer/example_lightning_indexer_dynamic_shape.py: examples/lightning_indexer/test_example_lightning_indexer_dynamic_shape.py
+
+  # examples/linear_attention_and_rnn/gdn
+  examples/linear_attention_and_rnn/gdn/gdn_chunk_cumsum.py: examples/linear_attention_and_rnn/gdn/test_gdn_chunk_cumsum.py
+  examples/linear_attention_and_rnn/gdn/gdn_chunk_h.py: examples/linear_attention_and_rnn/gdn/test_gdn_chunk_h.py
+  examples/linear_attention_and_rnn/gdn/gdn_chunk_o.py: examples/linear_attention_and_rnn/gdn/test_gdn_chunk_o.py
+  examples/linear_attention_and_rnn/gdn/gdn_chunk_scaled_dot_kkt.py: examples/linear_attention_and_rnn/gdn/test_gdn_chunk_scaled_dot_kkt.py
+  examples/linear_attention_and_rnn/gdn/gdn_solve_tril.py: examples/linear_attention_and_rnn/gdn/test_gdn_solve_tril.py
+  examples/linear_attention_and_rnn/gdn/gdn_wy_fast.py: examples/linear_attention_and_rnn/gdn/test_gdn_wy_fast.py
+
+  # examples/linear_attention_and_rnn
+  examples/linear_attention_and_rnn/gdn_full.py: examples/linear_attention_and_rnn/test_gdn_full.py
+  examples/linear_attention_and_rnn/linear_attention_causal.py: examples/linear_attention_and_rnn/test_linear_attention_causal.py
+  examples/linear_attention_and_rnn/linear_attention_normalize.py: examples/linear_attention_and_rnn/test_linear_attention_normalize.py
+
+  # examples/linear_attention_and_rnn/opt_gdn
+  examples/linear_attention_and_rnn/opt_gdn/opt_gdn_chunk_cumsum.py: examples/linear_attention_and_rnn/opt_gdn/test_opt_gdn_chunk_cumsum.py
+  examples/linear_attention_and_rnn/opt_gdn/opt_gdn_chunk_h.py: examples/linear_attention_and_rnn/opt_gdn/test_opt_gdn_chunk_h.py
+  examples/linear_attention_and_rnn/opt_gdn/opt_gdn_chunk_o.py: examples/linear_attention_and_rnn/opt_gdn/test_opt_gdn_chunk_o.py
+  examples/linear_attention_and_rnn/opt_gdn/opt_gdn_chunk_scaled_dot_kkt.py: examples/linear_attention_and_rnn/opt_gdn/test_opt_gdn_chunk_scaled_dot_kkt.py
+  examples/linear_attention_and_rnn/opt_gdn/opt_gdn_solve_tril.py: examples/linear_attention_and_rnn/opt_gdn/test_opt_gdn_solve_tril.py
+  examples/linear_attention_and_rnn/opt_gdn/opt_gdn_wy_fast.py: examples/linear_attention_and_rnn/opt_gdn/test_opt_gdn_wy_fast.py
+
+  # examples/linear_attention_and_rnn
+  examples/linear_attention_and_rnn/opt_gdn_full.py: examples/linear_attention_and_rnn/test_opt_gdn_full.py
+
+  # examples/moe_token_permute
+  examples/moe_token_permute/moe_token_permute.py: examples/moe_token_permute/test_moe_token_permute.py
+  examples/moe_token_permute/moe_token_permute_grad.py: examples/moe_token_permute/test_moe_token_permute_grad.py
+  examples/moe_token_permute/moe_token_unpermute.py: examples/moe_token_permute/test_moe_token_unpermute.py
+  examples/moe_token_permute/moe_token_unpermute_grad.py: examples/moe_token_permute/test_moe_token_unpermute_grad.py
+  examples/moe_token_permute/moe_token_utils.py: examples/moe_token_permute/test_moe_token_utils.py
+
+  # examples/normalization
+  examples/normalization/layer_norm.py: examples/normalization/test_layer_norm.py
+  examples/normalization/rms_norm.py: examples/normalization/test_rms_norm.py
+
+  # examples/pad
+  examples/pad/example_broadcast.py: examples/pad/test_example_broadcast.py
+  examples/pad/example_broadcast_pipeline.py: examples/pad/test_example_broadcast_pipeline.py
+
+  # examples/pipeline
+  examples/pipeline/flash_attn_bshd_pipeline.py: examples/pipeline/test_flash_attn_bshd_pipeline.py
+  examples/pipeline/gemm_v0_pipeline.py: examples/pipeline/test_gemm_v0_pipeline.py
+  examples/pipeline/matmul_add_pipeline.py: examples/pipeline/test_matmul_add_pipeline.py
+  examples/pipeline/sparse_flash_attn_gqa_pipeline.py: examples/pipeline/test_sparse_flash_attn_gqa_pipeline.py
+  examples/pipeline/sparse_flash_attn_gqa_pipeline_pto.py: examples/pipeline/test_sparse_flash_attn_gqa_pipeline_pto.py
+
+  # examples/pos_embedding
+  examples/pos_embedding/rms_norm.py: examples/pos_embedding/test_rms_norm_pos_embedding.py
+  examples/pos_embedding/rms_rope_fused.py: examples/pos_embedding/test_rms_rope_fused.py
+  examples/pos_embedding/rms_rope_fused_mask.py: examples/pos_embedding/test_rms_rope_fused_mask.py
+  examples/pos_embedding/rope.py: examples/pos_embedding/test_rope.py
+  examples/pos_embedding/rope_mask.py: examples/pos_embedding/test_rope_mask.py
+  examples/pos_embedding/rope_mask_bwd.py: examples/pos_embedding/test_rope_mask_bwd.py
+
+  # examples/print
+  examples/print/elementwise_print.py: examples/print/test_elementwise_print.py
+
+  # examples/quant_batch_matmul
+  examples/quant_batch_matmul/example_quant_batch_matmul.py: examples/quant_batch_matmul/test_example_quant_batch_matmul.py
+  examples/quant_batch_matmul/example_quant_matmul.py: examples/quant_batch_matmul/test_example_quant_matmul.py
+
+  # examples/reduce
+  examples/reduce/example_col_reduce_max_slice_buffer.py: examples/reduce/test_example_col_reduce_max_slice_buffer.py
+  examples/reduce/example_reduce_min.py: examples/reduce/test_example_reduce_min.py
+  examples/reduce/example_reduce_min_pipeline.py: examples/reduce/test_example_reduce_min_pipeline.py
+  examples/reduce/example_row_reduce_max_slice_buffer.py: examples/reduce/test_example_row_reduce_max_slice_buffer.py
+
+  # examples/simple_fusion
+  examples/simple_fusion/matmul_add.py: examples/simple_fusion/test_matmul_add.py
+  examples/simple_fusion/matmul_add_infer_scope.py: examples/simple_fusion/test_matmul_add_infer_scope.py
+
+  # examples/softmax
+  examples/softmax/example_online_softmax.py: examples/softmax/test_example_online_softmax.py
+
+  # examples/sort
+  examples/sort/example_merge_sort.py: examples/sort/test_example_merge_sort.py
+
+  # examples/sparse_flash_attention
+  examples/sparse_flash_attention/example_sparse_flash_attn.py: examples/sparse_flash_attention/test_example_sparse_flash_attn.py
+  examples/sparse_flash_attention/example_sparse_flash_attn_dynamic_shape.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_dynamic_shape.py
+  examples/sparse_flash_attention/example_sparse_flash_attn_gqa.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_gqa.py
+  examples/sparse_flash_attention/example_sparse_flash_attn_gqa_pto.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_gqa_pto.py
+  examples/sparse_flash_attention/example_sparse_flash_attn_gqa_pto_developer.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_gqa_pto_developer.py
+  examples/sparse_flash_attention/example_sparse_flash_attn_mask.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_mask.py
+  examples/sparse_flash_attention/example_sparse_flash_attn_mask_pa.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_mask_pa.py
+
+  # examples/tail_mask
+  examples/tail_mask/example_tail_add.py: examples/tail_mask/test_example_tail_add.py
+
+  # examples/tile_kernels/mhc
+  examples/tile_kernels/mhc/head_compute_mix_kernel.py: examples/tile_kernels/mhc/test_head_compute_mix_kernel.py
+
+  # examples/tile_kernels/moe
+  examples/tile_kernels/moe/moe_topk_gate.py: examples/tile_kernels/moe/test_moe_topk_gate.py
+
+  # examples/topk_selector
+  examples/topk_selector/example_topk_selector.py: examples/topk_selector/test_example_topk_selector.py
+
+  # examples/unsorted_segment_sum
+  examples/unsorted_segment_sum/unsorted_segment_sum.py: examples/unsorted_segment_sum/test_unsorted_segment_sum.py
+
+  # examples/xattention
+  examples/xattention/xattention.py: examples/xattention/test_xattention.py
+  examples/xattention/xattention_paged.py: examples/xattention/test_xattention_paged.py
+
+  # examples/xllm_kernels
+  examples/xllm_kernels/fused_gdn_gating.py: examples/xllm_kernels/test_fused_gdn_gating.py
+  examples/xllm_kernels/rope.py: examples/xllm_kernels/test_rope_xllm_kernels.py
+  examples/xllm_kernels/split_qkv_rmsnorm_mrope.py: examples/xllm_kernels/test_split_qkv_rmsnorm_mrope.py
+
+  # examples_experiment/blocksparse_gemm
+  examples_experiment/blocksparse_gemm/example_blocksparse_gemm.py: examples_experiment/blocksparse_gemm/test_example_blocksparse_gemm.py
+
+  # examples_experiment/chunk_gated_delta_rule
+  examples_experiment/chunk_gated_delta_rule/chunk_gated_delta_rule.py: examples_experiment/chunk_gated_delta_rule/test_chunk_gated_delta_rule.py
+  examples_experiment/chunk_gated_delta_rule/expert_chunk_gated_delta_rule.py: examples_experiment/chunk_gated_delta_rule/test_expert_chunk_gated_delta_rule.py
+
+  # examples_experiment/convolution
+  examples_experiment/convolution/example_convolution.py: examples_experiment/convolution/test_example_convolution.py
+  examples_experiment/convolution/example_convolution_autotune.py: examples_experiment/convolution/test_example_convolution_autotune.py
+
+  # examples_experiment/cumsum_gdn
+  examples_experiment/cumsum_gdn/example_cumsum.py: examples_experiment/cumsum_gdn/test_example_cumsum.py
+
+  # examples_experiment/cumsum_kda
+  examples_experiment/cumsum_kda/example_cumsum_kda.py: examples_experiment/cumsum_kda/test_example_cumsum_kda.py
+
+  # examples_experiment/dequantize_gemm
+  examples_experiment/dequantize_gemm/example_dequant_gemm_fine_grained.py: examples_experiment/dequantize_gemm/test_example_dequant_gemm_fine_grained.py
+  examples_experiment/dequantize_gemm/example_dequant_gemm_w4a8.py: examples_experiment/dequantize_gemm/test_example_dequant_gemm_w4a8.py
+
+  # examples_experiment/gemm_splitk
+  examples_experiment/gemm_splitk/example_tilelang_gemm_splitk.py: examples_experiment/gemm_splitk/test_example_tilelang_gemm_splitk.py
+
+  # examples_experiment/grouped_gemm
+  examples_experiment/grouped_gemm/example_grouped_gemm_bwd.py: examples_experiment/grouped_gemm/test_example_grouped_gemm_bwd.py
+  examples_experiment/grouped_gemm/example_grouped_gemm_fwd.py: examples_experiment/grouped_gemm/test_example_grouped_gemm_fwd.py
+  examples_experiment/grouped_gemm/example_grouped_gemm_fwd_ptr.py: examples_experiment/grouped_gemm/test_example_grouped_gemm_fwd_ptr.py
+
+  # examples_experiment/hadamard_transform
+  examples_experiment/hadamard_transform/example_hadamard_transform.py: examples_experiment/hadamard_transform/test_example_hadamard_transform.py
+
+  # examples_experiment/random_1d
+  examples_experiment/random_1d/random_1d.py: examples_experiment/random_1d/test_random_1d.py
+
+  # examples_experiment/seer_attention
+  examples_experiment/seer_attention/block_sparse_attn.py: examples_experiment/seer_attention/test_block_sparse_attn.py
