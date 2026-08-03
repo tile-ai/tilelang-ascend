@@ -99,6 +99,7 @@ def _run_dtype_precision(dtype, accum_dtype, target, shape_group="A"):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.low_priority
 @pytest.mark.skipif(
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="gemm_v0 correctness requires an Ascend NPU runtime",
@@ -108,6 +109,7 @@ def test_gemm_v0_bfloat16_precision(target):
     _run_dtype_precision("bfloat16", "float", target)
 
 
+@pytest.mark.low_priority
 @pytest.mark.skipif(
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="gemm_v0 correctness requires an Ascend NPU runtime",
@@ -129,6 +131,7 @@ def test_gemm_v0_float32_precision(target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.low_priority
 @pytest.mark.skipif(
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="gemm_v0 correctness requires an Ascend NPU runtime",
@@ -202,6 +205,7 @@ def _gemm_v0_int8_kernel(M, N, K, block_M, block_N, K_L1, transpose_A, transpose
 # ============================================================
 
 
+@pytest.mark.low_priority
 def test_gemm_v0_dtype_mismatch():
     """A/B dtype 不一致应编译失败"""
     M, N, K = 128, 128, 128
@@ -230,6 +234,7 @@ def test_gemm_v0_dtype_mismatch():
         _compile(main, "ascendc")
 
 
+@pytest.mark.low_priority
 @pytest.mark.xfail(reason="框架问题：K 不一致时未报错（ascend.py 的 assert 被注释掉）")
 def test_gemm_v0_k_mismatch():
     """A 的 K 维度与 B 的 K 维度不一致应报错"""
@@ -260,6 +265,7 @@ def test_gemm_v0_k_mismatch():
         _compile(main, "ascendc")
 
 
+@pytest.mark.low_priority
 @pytest.mark.skipif(
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="gemm_v0 correctness requires an Ascend NPU runtime",
