@@ -501,7 +501,26 @@ void CodeGenTileLangAscend::VisitStmt_(const BufferStoreNode *op) {
 }
 
 void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
-  if (op->op.same_as(builtin::call_extern())) {
+  // Parallel sqrt/rsqrt expressions are lowered to AscendC vector intrinsics
+  // before codegen. Serial expressions reach codegen as their original TIR
+  // intrinsics and use Bisheng's float32 scalar sqrt overload instead.
+  if (op->op.same_as(Op::Get("tir.sqrt"))) {
+    ICHECK_EQ(op->args.size(), 1U);
+    ICHECK_EQ(op->dtype.lanes(), 1);
+    ICHECK(op->dtype.is_float() && op->dtype.bits() == 32)
+        << "Scalar tir.sqrt only supports float32, but got " << op->dtype;
+    os << "sqrt(";
+    PrintExpr(op->args[0], os);
+    os << ")";
+  } else if (op->op.same_as(Op::Get("tir.rsqrt"))) {
+    ICHECK_EQ(op->args.size(), 1U);
+    ICHECK_EQ(op->dtype.lanes(), 1);
+    ICHECK(op->dtype.is_float() && op->dtype.bits() == 32)
+        << "Scalar tir.rsqrt only supports float32, but got " << op->dtype;
+    os << "(1.0f / sqrt(";
+    PrintExpr(op->args[0], os);
+    os << "))";
+  } else if (op->op.same_as(builtin::call_extern())) {
     std::string op_name = Downcast<StringImm>(op->args[0])->value;
     if (op_name.find("tl::ascend::copy") != std::string::npos ||
         op_name.find("tl::ascend::atomic_add_ub_to_gm") != std::string::npos ||
