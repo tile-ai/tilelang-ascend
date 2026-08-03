@@ -119,7 +119,6 @@ result: pass/fail
 > 条件。非 contiguous 输入需证明目标 shape 与 stride 兼容且操作前后共享 storage；
 > 不能证明时改用 stride-aware kernel。`permute`/`transpose` 本身通常只是 metadata view。
 
-
 生成代码后逐项记录 `[HOST-METADATA-AUDIT]`。对每个 host tensor 操作写明输入/输出
 stride、是否共享 storage/data pointer、是否触发 aclnn/物理拷贝；任一结论为 unknown
 都不得交付。具体检查项见 [references/checklist.md §0](references/checklist.md#0-前置检查必须最先确认)。
