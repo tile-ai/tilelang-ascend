@@ -945,10 +945,9 @@ torch.testing.assert_close(dV_npu, dV_ref, atol=1e-2, rtol=1e-2)
 
 ```
 example_gqa_bwd/
-├── design.md                # 本设计文档
-├── example_gqa_bwd.py       # 算子实现（Forward v1/v4 + Backward pipeline + Golden Ref + Autograd + __main__ 冒烟测试）
-├── test_gqa_bwd.py          # 分层测试（L0/L1/L2/Boundary + argparse --level）
-└── perf_example_gqa_bwd.py  # 性能测试（正确性检查 + TileLang vs PyTorch 对比）
+├── design.md            # 本设计文档
+├── example_gqa_bwd.py   # 算子实现（Forward v1/v4 + Backward pipeline + Golden Ref + Autograd + __main__ 冒烟测试）
+└── test_gqa_bwd.py      # 分层精度测试 + 性能测试（L0/L1/L2/Boundary + Perf + argparse --level）
 ```
 
 ### 15.2 文件说明
@@ -957,20 +956,21 @@ example_gqa_bwd/
 |------|------|
 | `design.md` | 算子设计文档：I/O 规格、编程模式、API 映射、内存规划、tiling、同步策略、验证方案 |
 | `example_gqa_bwd.py` | 算子实现：全部 kernel + golden reference + autograd wrapper + `__main__` 冒烟测试（输出 "Test Passed!"） |
-| `test_gqa_bwd.py` | 分层测试文件：L0（规则 shape，阻塞）/ L1（不规则 shape，阻塞）/ L2（异常输入，非阻塞）/ Boundary（特殊值，非阻塞）+ `argparse --level` |
-| `perf_example_gqa_bwd.py` | 性能测试：正确性检查 + TileLang Forward v1/v4 + Backward pipeline vs PyTorch baseline + 输出 "Test Passed!" |
+| `test_gqa_bwd.py` | 分层精度测试 + 性能测试：L0（规则 shape，阻塞）/ L1（不规则 shape，阻塞）/ L2（异常输入，非阻塞）/ Boundary（特殊值，非阻塞）/ Perf（do_bench 性能测试）+ `argparse --level` |
 
 ### 15.3 函数清单
 
-| 函数名 | 说明 |
-|--------|------|
-| `flashattn_fwd` | Forward 基础版（gemm_v0 + online softmax） |
-| `flashattn_fwd_v4` | Forward 优化版（L0 双缓冲 + Fixed Core + 批处理 + fine-grained sync, num_stages=8） |
-| `flashattn_bwd_preprocess` | Backward 预处理（Delta = sum(O × dO)） |
-| `flashattn_bwd_postprocess` | Backward 后处理（dQ fp32→fp16） |
-| `flashattn_bwd_pipeline` | Backward 主 kernel（5 GEMM + 批处理 + fine-grained sync, num_stages=8） |
-| `ref_program` / `ref_bwd` | PyTorch golden reference |
-| `attention` | autograd wrapper（BSHD↔BHSD 布局转换） |
+| 函数名 | 所在文件 | 说明 |
+|--------|---------|------|
+| `flashattn_fwd` | `example_gqa_bwd.py` | Forward 基础版（gemm_v0 + online softmax） |
+| `flashattn_fwd_v4` | `example_gqa_bwd.py` | Forward 优化版（L0 双缓冲 + Fixed Core + 批处理 + fine-grained sync, num_stages=8） |
+| `flashattn_bwd_preprocess` | `example_gqa_bwd.py` | Backward 预处理（Delta = sum(O × dO)） |
+| `flashattn_bwd_postprocess` | `example_gqa_bwd.py` | Backward 后处理（dQ fp32→fp16） |
+| `flashattn_bwd_pipeline` | `example_gqa_bwd.py` | Backward 主 kernel（5 GEMM + 批处理 + fine-grained sync, num_stages=8） |
+| `ref_program` / `ref_bwd` | `example_gqa_bwd.py` | PyTorch golden reference |
+| `attention` | `example_gqa_bwd.py` | autograd wrapper（BSHD↔BHSD 布局转换） |
+| `test_gqa_bwd_l0/l1/l2/boundary` | `test_gqa_bwd.py` | 分层精度测试函数 |
+| `run_perf` | `test_gqa_bwd.py` | 性能测试函数（do_bench + 正确性检查 + TileLang vs PyTorch 对比） |
 
 ### 15.4 运行方式
 
@@ -979,14 +979,22 @@ example_gqa_bwd/
 python example_gqa_bwd.py
 # 输出: "Test Passed!"
 
-# 2. 分层精度测试
-python test_gqa_bwd.py --level l0     # L0 门槛测试（阻塞）
-python test_gqa_bwd.py --level all    # 全部层级（L0+L1+L2+Boundary）
+# 2. 默认运行（L0 精度 + 性能测试，CI 直接运行）
+python test_gqa_bwd.py
+# 输出: [PRECISION_PASS] 标记 + 性能表格 + "Test Passed!"
 
-# 3. 性能测试
-python perf_example_gqa_bwd.py
-# 输出: 性能表格 + "Test Passed!"
+# 3. 只跑 L0 精度（快速验证）
+python test_gqa_bwd.py --level l0
 
-# 4. pytest 兼容
+# 4. 全部精度测试（L0+L1+L2+Boundary）
+python test_gqa_bwd.py --level all
+
+# 5. 只跑性能测试
+python test_gqa_bwd.py --level perf
+
+# 6. 全部精度 + 性能测试
+python test_gqa_bwd.py --level full
+
+# 7. pytest 兼容
 python -m pytest test_gqa_bwd.py -v
 ```

@@ -265,7 +265,10 @@ T.copy(K[bz, by, k * block_N:(k + 1) * block_N, :], k_l1)
 
 #### T.copy 动态 shape 切片
 
-`T.copy` 支持用**运行期动态变量**做切片范围，自动处理尾块（非整除 shape），**不需要 host 侧 zero-padding**。
+`T.copy` 支持用 `BufferRegion` 切片表达尾块（非整除 shape），**不需要 host 侧
+zero-padding**。切片端点既可以是运行期计算的 valid extent，也可以是经现有
+lowering 验证能按 tensor 边界裁剪的有界 block 端点。关键是输入和输出 GM
+region 都要显式存在；只传起始标量地址并把完整 UB 作为另一端，不能可靠表达尾块。
 
 **用法**：
 
@@ -280,8 +283,64 @@ T.copy(C_L0, Y[m_start : m_start + valid_m, ...])  # 只写 valid_m 行，不溢
 ```
 
 **适用场景**：
-- 尾块处理（维度非 block 整数倍）：非整除时，最后的尾块无需特殊处理，框架已支持自动尾块搬运。
+- 尾块处理（维度非 block 整数倍）：最后的尾块必须通过 GM `BufferRegion` 切片表达；无需 host zero-padding。
 - 变长序列：每次要搬运的序列长度是动态的，框架支持切片范围为运行期动态变量。
+
+**错误与正确对照**：
+
+```python
+# 错误：尾块仍按完整 block 读写，可能越界或覆盖相邻 tile
+T.copy(x[b, m_start, n_start], a_ub)
+T.copy(b_ub, y[b, n_start, m_start])
+
+# 正确：输入、UB 有效区和输出都显式携带 valid extent
+valid_m = T.min(block_M, M - m_start)
+valid_n = T.min(block_N, N - n_start)
+T.copy(
+    x[b, m_start:m_start + valid_m, n_start:n_start + valid_n],
+    a_ub[0:valid_m, 0:valid_n],
+)
+T.copy(
+    b_ub[0:valid_n, 0:valid_m],
+    y[b, n_start:n_start + valid_n, m_start:m_start + valid_m],
+)
+```
+
+已验证的现有实现也可能写成
+`x[..., m_start:m_start + block_M, n_start:n_start + block_N]`，由 lowering
+按 tensor 边界裁剪；这种写法必须连同对应 kernel 的 tile、任务解码和输出切片
+整体复用，不能据此推断“标量起始地址 + 完整 UB”同样安全。
+
+输出侧尤其必须限制 valid extent，避免不同尾 tile 写入重叠区域。布局变换使用
+多 stage 时，每个 stage 都要单独验证其当前 shape 的尾块，不能只验证最终 shape。
+
+#### T.copy 多维切片的硬件限制（重要）
+
+`T.copy` 的 GM↔UB / GM↔L1 / L0C→GM 搬运底层使用 AscendC 的 `DataCopyPad` 硬件指令，该指令的搬运模型是**每行内数据连续、行间可有 gap**（通过 `srcGap`/`dstGap` 参数控制）。**不支持列方向（行内）strided access**——即每行内相邻元素之间不能有间隔。
+
+**受限场景**：当切片的列维度（最后一个 `extent != 1` 的维度）**不是 buffer 的最内维**，且列维之后还有 `shape > 1` 的维度时，列方向数据不连续，会产生**静默数据错位**（不报错，结果错误）。
+
+| 切片形式 | extents | 列维 | 列维是否最内维 | 是否支持 | 说明 |
+|----------|---------|------|---------------|---------|------|
+| `x[b, m:m+M, n:n+N]`（3D，buffer `[B,M,N]`）| `[1, M, N]` | N (dim 2) | 是 | ✅ | 列数据连续 |
+| `x[b, m:m+M, n:n+N, :]`（4D 全取 K，buffer `[B,M,N,K]`）| `[1, M, N, K]` | K (dim 3) | 是 | ✅ | 列数据连续（K 维全取） |
+| `x[b, 1, m:m+M, n:n+N]`（4D，buffer `[B,H,M,N]`，H=1）| `[1, 1, M, N]` | N (dim 3) | 是 | ✅ | 列数据连续 |
+| `x[b, m:m+M, n:n+N, k:k+1]`（4D 单取 K，buffer `[B,M,N,K]`，K>1）| `[1, M, N, 1]` | N (dim 2) | **否**（dim 3 的 K>1） | ❌ | 列方向每个元素间隔 K 个位置，DataCopyPad 无法搬运 |
+
+**边界**：先用最小复现和生成代码确认当前切片是否可表示为“行内连续、行间有 gap”的
+`DataCopyPad`。若实际需要行内 stride，则硬件搬运模型不支持；不要把所有 4D+ 切片
+统一归因为 codegen 缺陷。
+
+**规避方案**：
+1. **按真实连续段循环**：只在每次 `T.copy` 的片段本身物理连续时，循环额外维度。
+   若片段仍有行内 stride，此方案不适用。
+2. **零拷贝维度归一化**：仅在目标 reshape 与当前 stride 兼容并共享原 storage 时，
+   降维到可合法搬运的形态；否则使用 stride-aware kernel（详见
+   [api-compute.md §4.10](api-compute.md#stride-参数作为-jit-编译期常量传入-kernel避免创建-gm-tensor)）。
+3. **调整 kernel 的逻辑布局或分阶段**：让每次 GM 搬运的列维成为物理最内连续维，
+   必要时块 DMA 到 UB 后再做局部重排。
+
+> **设计阶段预警**：设计 4D+ 算子时，如果 `T.copy` 需要在非最内维上做切片搬运，必须在 design.md 中明确说明规避方案。不要假设 `T.copy` 支持任意维度的 strided 切片。
 
 ---
 

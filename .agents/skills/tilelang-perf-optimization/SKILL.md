@@ -67,13 +67,31 @@ print(func.get_kernel_source())
 
 ### Step 3: 识别优化点（强制，禁止与 Step 4 合并）
 
-根据算子类型阅读 `optimization-guide.md` 对应章节 + `performance-antipatterns.md`，如果是 cube 核额外参考 `best-practices/cube_optimization_path.md`，如果是 vector 核额外参考 `vector-practices/` 目录下的文档，在 `optimization_log.md` 中输出：
+先读取 `optimization-guide.md` 的目录和各章节标题 + `performance-antipatterns.md` 的各条目标题，根据算子类型（Step 2 判定）和算子实现特征初步筛选出可能适用的优化点清单。再针对每个候选优化点，读取其"适用场景"、"约束"、"使用条件"等描述，确认是否真正适用。如果是 cube 核额外参考 `best-practices/cube_optimization_path.md`，如果是 vector 核额外参考 `vector-practices/` 目录下的文档。
+
+在 `optimization_log.md` 中输出：
 
 **Part A 优化点清单**：逐条标注适用/不适用 + 原因 + 参考文件行号。`pass_configs` 不是独立优化点，是伴随修改。
 
 ```
 [#1] [名称]（参考: optimization-guide.md L445-L650 §2.13）：[适用/不适用] — [原因]
 ```
+
+若候选会扩大现有 kernel 的调用域（新增 shape、batch、dtype、尾块或多 stage），
+Part A 必须先写：
+
+```text
+[KERNEL-REUSE-PRECHECK]
+candidate: <优化点及 reference 章节>
+expanded_domain: <新增调用域>
+compatibility_dimensions: <从该章节读取，不自行猜测>
+unknown_or_false: <none/列表>
+plan: direct-reuse / repair-kernel-first / new-kernel-first
+```
+
+存在 `unknown/false` 时，ORDER-PLAN 不得写 direct reuse。
+
+> **重点**：每节都需读取其"适用场景"和"约束"描述确认是否适用。仅当章节标题明确标注了特定算子类型专属（如"Cube 核"）且当前算子不属于该类型时，才可初步排除；其余所有章节必须读约束确认，不得仅凭标题或算子类型跳过。
 
 **Part B `[ORDER-PLAN]`**：分析依赖关系，排出实施顺序链。依赖分析三条规则：
 1. **布局依赖**：改变 layout 的优化排在依赖此 layout 的优化之前
@@ -98,10 +116,15 @@ print(func.get_kernel_source())
 
 **门禁**：`[ORDER-CHECK]` 未写禁止 Read；`[IMPL-#N]` 未写禁止 Edit；`[RESULT-#N]` 未写禁止下一个。
 
+Edit 调用方、dispatch 或 planner 前，再写 `[KERNEL-REUSE-AUDIT]` 复核候选章节规定的
+兼容性维度。任一项仍为 unknown/false，先修复或新建 kernel，并单独验证后再扩大调用域。
+不同优化点使用各自 reference 章节的维度，不套用其他优化的专属字段。
+
 **日志格式**：
 ```
 [ORDER-CHECK] 准备实施: [#N] [名称] | 前置依赖: [#1 ✅ / #2 ❌] | 结论: [✅/❌]
 [IMPL-#N] 已阅读 <文件> L行号（§X.X），关键约束: ...
+[KERNEL-REUSE-AUDIT] 依据: <章节> | 维度及结论: <...> | 结论: <reuse/repair/new>
 [SELF-CHECK] 本次 Edit 只涉及 [#N]
 [RESULT-#N] 优化点: [名称] | 精度: [pass/fail] | 性能: [X us] | 对比: [+/-X%]
 ```

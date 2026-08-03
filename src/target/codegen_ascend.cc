@@ -770,20 +770,6 @@ void CodeGenTileLangAscend::VisitStmt_(const AttrStmtNode *op) {
     }
     this->VisitStmt(op->body);
     return;
-  } else if (op->attr_key == "init_flag" || op->attr_key == "clear_flag") {
-    const StringImmNode *instn = op->value.as<StringImmNode>();
-
-    std::string inst = std::string(instn->value);
-    size_t st = 0;
-    for (size_t i = 0; i < inst.size(); ++i) {
-      if (inst[i] == '\n') {
-        this->PrintIndent();
-        stream << inst.substr(st, i - st) << "\n";
-        st = i + 1;
-      }
-    }
-    this->VisitStmt(op->body);
-    return;
   } else if (op->attr_key == "resource_scope") {
     auto resource_id = Downcast<IntImm>(op->value)->value;
     auto resource_name = resource_id == 0 ? "AIC" : "AIV";
@@ -2234,11 +2220,10 @@ void CodeGenTileLangAscend::RowExpandDivExperimentCodegen(const CallNode *op) {
 void CodeGenTileLangAscend::RowExpandBinOpExperimentCodegen(
     const CallNode *op, const std::string &mask_op_name) {
   // args[0] = op name string, args[1] = dst, args[2] = src0,
-  // args[3] = src1, args[4] = tmp (required for AscendC)
+  // args[3] = src1, args[4] = optional broadcast workspace.
   //
-  // AscendC path: src1 is 1D [R] scalars, but {mul,sub,div}_mask requires
-  // a 2D [R, elems_per_block] broadcast buffer. Use tmp as intermediate:
-  // brcb(src1 → tmp) then {op}_mask(dst, src0, tmp).
+  // With tmp, src1 is a scalar-linear [R] stream that brcb expands into
+  // [R, elems_per_block]. Without tmp, src1 already contains those blocks.
   DataType dtype = GetAccessPtrDtype(op->args[1].as<CallNode>());
   std::string type_str = getType(dtype);
   int elems_per_block = 32 / (dtype.bits() / 8);
@@ -2258,7 +2243,13 @@ void CodeGenTileLangAscend::RowExpandBinOpExperimentCodegen(
       cols = static_cast<int>(shape[shape.size() - 1].as<IntImmNode>()->value);
     }
   }
+  ICHECK_EQ(cols % elems_per_block, 0)
+      << "RowExpandBinOpExperimentCodegen: physical columns=" << cols
+      << " must be divisible by " << elems_per_block;
   int rep_stride = cols / elems_per_block;
+  ICHECK(rep_stride > 0 && rep_stride <= 255)
+      << "RowExpandBinOpExperimentCodegen: repeat stride=" << rep_stride
+      << " must fit uint8_t";
   int repeat_time = 0;
   if (auto *extent_imm = dst_access->args[3].as<IntImmNode>()) {
     int extent = static_cast<int>(extent_imm->value);
@@ -2275,12 +2266,13 @@ void CodeGenTileLangAscend::RowExpandBinOpExperimentCodegen(
   ICHECK(rows % 8 == 0)
       << "RowExpandBinOpExperimentCodegen: rows=" << rows
       << " must be a multiple of 8 (BRCB processes 8 scalars per repeat)";
+  ICHECK_LE(rows, 255) << "RowExpandBinOpExperimentCodegen: rows=" << rows
+                       << " must fit uint8_t";
   int brcb_repeat = rows / 8;
   ICHECK(rows > 0 && cols > 0)
       << "RowExpandBinOpExperimentCodegen: failed to derive rows/cols";
 
-  uint64_t mask0 = 0xFFFFFFFFFFFFFFFF;
-  uint64_t mask1 = (dtype.bits() == 16) ? 0xFFFFFFFFFFFFFFFF : 0;
+  const char *mask1 = (dtype.bits() == 16) ? "0xFFFFFFFFFFFFFFFF" : "0";
 
   std::string dst_name = PrintBufferOffset(op->args[1].as<CallNode>(), true);
   std::string src0_name = PrintBufferOffset(op->args[2].as<CallNode>(), true);

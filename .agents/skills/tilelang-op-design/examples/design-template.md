@@ -20,6 +20,10 @@ $$
 
 {对于多步算子，描述计算步骤的分解逻辑。单步算子可省略。}
 
+> **⚠️ Host 侧 Buffer 操作约束**（详见 SKILL.md §3.2）：host 侧只允许经证明共享
+> 原 storage、只改 metadata 的 view 操作，以及 kernel 调用和验证；禁止真实数据搬运
+> 和 aclnn 计算。`reshape` 需按目标 shape/stride 证明零拷贝。
+
 ### 1.5 数据流图
 
 ```
@@ -218,6 +222,19 @@ block_num = (M // block_M) * (N // block_N)
 
 {非整除情况的处理策略、边界块的特殊逻辑等}
 
+> **⚠️ 非整除必须显式设计**（详见 SKILL.md §3.2）：输入、输出 GM 两侧使用
+> `valid_*` extent 的 BufferRegion，前端按动态切片裁剪搬运。不得使用标量 GM 起点配
+> 完整 UB tile；host 侧不允许 padding + crop。
+
+### 5.5 数据搬运性能可行性（数据重排算子必填）
+
+| 结构/dtype 路径 | 代表性最大 case | GM pass | DMA 数/平均字节 | GM 标量访问 | 地址 div/mod | AIV 并行度 | 结论 |
+|-----------------|-----------------|---------|------------------|-------------|--------------|------------|------|
+| {通用 fallback} | {shape, dtype} | {次数} | {数量/字节} | {数量} | {数量} | {core/串行任务} | {可行/需重设计} |
+
+> 大张量主路径禁止逐元素 strided GM 访问。若输入/输出共享连续 suffix record，
+> 应按结构谓词设计 record-aware 二维/成组搬运，不得按具体 perm/shape 写死分支。
+
 ---
 
 ## 6. 循环与调度结构
@@ -245,6 +262,10 @@ with T.Kernel(block_num, is_npu=True) as (cid, vid):
 ### 6.4 尾块处理
 
 {当输入 shape 不能被 block size 整除时的处理策略}
+
+> **⚠️ 尾块必须显式设计**（详见 SKILL.md §3.2）：输入、输出 GM 两侧都使用
+> `valid_*` extent 的 BufferRegion；前端按这些动态切片裁剪搬运。不得用标量 GM
+> 起点配完整 UB tile，也不得在 host 侧 padding + crop。
 
 ---
 
@@ -366,6 +387,12 @@ def golden_{算子名}({参数}):
 
 > 采用**混合容差**：逐元素 `|actual-golden| ≤ atol + rtol·|golden|`，整体判定 `matched_ratio ≥ required_matched_ratio` **且** `max_abs_error ≤ max_abs_error_limit`。
 > 阈值**仅按 dtype**（与算子类别无关），L0/L1/Boundary 套用精度比对（L2 为非法输入负向测试，不比精度）；整型按 0 误差精确匹配。完整定义见 `tilelang-op-test-design/references/precision-standard.md`。
+>
+> **特殊浮点值的位置契约**：若算子支持 NaN/Inf，测试输入使用有限值与稀疏特殊值
+> 混合的确定性数据，并保证至少存在一个特殊值和一个有限值。比较时先分别严格检查
+> `isnan`、正 Inf、负 Inf mask 完全一致，再仅对双方均为有限值的位置应用上面的
+> 混合容差。全 NaN/全 Inf 输入可作为补充边界用例，但不能作为唯一特殊值测试；
+> `allclose(equal_nan=True)` 不能替代显式 mask 检查。
 
 | dtype | atol | rtol | max_abs_error_limit | required_matched_ratio |
 |-------|------|------|---------------------|------------------------|
@@ -375,6 +402,15 @@ def golden_{算子名}({参数}):
 | int8/16/32, uint8 | 0 | 0 | 0 | 1.0（精确匹配） |
 
 > 上表按本算子 **§4 数据规格实际支持的 dtype** 填写，未支持的行删除；有额外 dtype（hifloat32 / float8_e4m3 / float8_e5m2 等）按 `precision-standard.md §二` 补齐。§4 声明的每个 dtype 都应在表中有对应行（浮点给 atol/rtol/max_abs_error_limit/required_matched_ratio，整型为 0/0/0/1.0）。
+
+### 9.4 性能可行性哨兵（强制执行，不可因 large/L1 跳过）
+
+| 用例名 | Shape | dtype/属性 | 覆盖路径 | 单 case timeout | 选择理由 |
+|--------|-------|------------|----------|-----------------|----------|
+| {perf_worst_path} | {最大/关键 shape} | {最坏 dtype} | {结构路径} | {秒} | {最大 DMA/标量任务数} |
+
+测试数据、随机数、特殊值和 golden 物理重排均在 CPU 完成；运行阶段只做
+H2D → TileLang kernel → D2H，避免测试 harness 引入 aclnn 依赖。
 
 ---
 
