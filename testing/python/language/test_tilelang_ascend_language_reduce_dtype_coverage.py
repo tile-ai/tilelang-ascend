@@ -98,6 +98,7 @@ def _make_clear_false_kernel(op, dtype, N=128):
     return main
 
 
+@pytest.mark.low_priority
 @pytest.mark.skipif(
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="reduce correctness requires an Ascend NPU runtime",
@@ -120,6 +121,7 @@ def test_reduce_1d_all_dtype(op, dtype, target):
     torch.testing.assert_close(b, ref, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.low_priority
 @pytest.mark.skipif(
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="reduce correctness requires an Ascend NPU runtime",
@@ -142,6 +144,7 @@ def test_reduce_2d_dim0(op, dtype, target):
     torch.testing.assert_close(b, ref, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.low_priority
 @pytest.mark.skipif(
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="reduce correctness requires an Ascend NPU runtime",
@@ -166,6 +169,7 @@ def test_reduce_clear_false(op, dtype, target):
     torch.testing.assert_close(b, ref, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.low_priority
 @pytest.mark.parametrize("op", ["max", "min", "sum"])
 @pytest.mark.parametrize("dtype", ["int32", "bfloat16", "int16"])
 def test_reduce_unsupported_dtype(op, dtype):
@@ -176,6 +180,7 @@ def test_reduce_unsupported_dtype(op, dtype):
         tilelang.compile(program, out_idx=[-1], pass_configs=pass_configs, target="ascendc")
 
 
+@pytest.mark.low_priority
 @pytest.mark.xfail(reason="3D dim=2 not raising; _legalize_reduce_dim should reject but doesn't")
 def test_reduce_invalid_dim_3d():
     """3D buffer dim=2 should raise (only 0/1/-1/-2 supported)"""
