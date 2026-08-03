@@ -118,8 +118,7 @@ result: pass/fail
 > **判定准则**：`is_contiguous()` 为 True 是 reshape 常见的零拷贝充分条件，不是必要
 > 条件。非 contiguous 输入需证明目标 shape 与 stride 兼容且操作前后共享 storage；
 > 不能证明时改用 stride-aware kernel。`permute`/`transpose` 本身通常只是 metadata view。
->
-> **chunk/split 场景**：若算子从输入沿某一维等分出多个子张量（如 `silu(x0)*x1`），适用上述 #2 禁令——禁止 `chunk() + .contiguous()` 分别传给多输入 kernel。应改为单输入 kernel + 列偏移读取，代码示例见 [coding-conventions.md §2 数据搬运索引](references/coding-conventions.md)，完整模式见 [tilelang-perf-optimization optimization-guide.md §2.12 子模式](../tilelang-perf-optimization/references/optimization-guide.md)。
+
 
 生成代码后逐项记录 `[HOST-METADATA-AUDIT]`。对每个 host tensor 操作写明输入/输出
 stride、是否共享 storage/data pointer、是否触发 aclnn/物理拷贝；任一结论为 unknown
