@@ -391,11 +391,19 @@ def clear(buffer: Buffer | tir.Var):
 def arith_progression(buffer: Buffer, first_value: PrimExpr, diff_value: PrimExpr, count: PrimExpr):
     """Generates an arithmetic progression sequence in a buffer.
 
+    Writes ``count`` elements to ``buffer`` such that
+    ``buffer[i] = first_value + i * diff_value`` (i = 0, 1, ..., count-1).
+
     Args:
         buffer: The destination buffer where the sequence will be stored.
+            Supports float16, float32, int16, int32. float16 is ascendc-only;
+            uint16, uint32 are pto-only.
         first_value: The starting value of the arithmetic progression.
+            Must have the same dtype as ``buffer``.
         diff_value: The difference (step) between consecutive values.
-        count: The number of elements to generate.
+            Must be >= 0 and have the same dtype as ``buffer``.
+        count: The number of elements to generate. Must be > 0 and
+            not exceed ``buffer`` capacity.
 
     Returns:
         A TVM intrinsic call that performs the arithmetic progression operation.
