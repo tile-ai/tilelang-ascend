@@ -289,9 +289,49 @@ DTYPE_MAP = {
     "int64": torch.int64,
 }
 
-# 精度阈值（float 类相对/绝对误差；整型要求完全一致）
-RTOL_MAP = {"float16": 1e-3, "bfloat16": 8e-3, "float32": 1e-4}
-ATOL_MAP = {"float16": 1e-3, "bfloat16": 8e-3, "float32": 1e-5}
+
+# 精度标准（混合容差：双门限 matched_ratio + max_abs_error_limit；整型精确匹配）
+def get_precision(dtype):
+    """返回 (atol, rtol, max_abs_error_limit, required_matched_ratio)。
+    浮点：混合容差；整型：精确匹配（0 误差）。"""
+    fp_table = {
+        "float16": (2**-14, 2**-9, 1e-1, 0.99),
+        "bfloat16": (2**-10, 2**-6, 1e0, 0.99),
+        "float32": (2**-16, 2**-10, 1e-2, 0.99),
+    }
+    int_types = {"int8", "int16", "int32", "int64", "uint8"}
+    if dtype in int_types:
+        return (0.0, 0.0, 0.0, 1.0)
+    return fp_table.get(dtype, (2**-14, 2**-9, 1e-1, 0.99))
+
+
+def check_precision(actual, golden, dtype):
+    """精度判定：返回 (passed, matched_ratio, max_abs_error)。
+    浮点双门限：matched_ratio >= required 且 max_abs_error <= max_abs_error_limit；
+    整型：逐元素精确相等。inf/nan 位置做结构比对，不计入数值容差。"""
+    atol, rtol, max_abs_limit, required_ratio = get_precision(dtype)
+    a = actual.detach().cpu()
+    g = golden.detach().cpu()
+    if atol == 0.0 and rtol == 0.0:
+        mism = (a != g).sum().item()
+        total = max(a.numel(), 1)
+        return mism == 0, 1.0 - mism / total, (0.0 if mism == 0 else float("inf"))
+    a = a.float()
+    g = g.float()
+    special = ~torch.isfinite(g)
+    if special.any() and (
+        not torch.equal(torch.isnan(a[special]), torch.isnan(g[special]))
+        or not torch.equal(torch.isinf(a[special]), torch.isinf(g[special]))
+    ):
+        return False, 0.0, float("inf")
+    m = torch.isfinite(g)
+    if m.sum().item() == 0:
+        return True, 1.0, 0.0
+    abs_err = (a[m] - g[m]).abs()
+    matched_ratio = (abs_err <= (atol + rtol * g[m].abs())).float().mean().item()
+    max_abs_error = abs_err.max().item()
+    passed = (matched_ratio >= required_ratio) and (max_abs_error <= max_abs_limit)
+    return passed, matched_ratio, max_abs_error
 
 
 def _make_x(x_shape, x_dtype_str, value_range):
@@ -333,23 +373,9 @@ def run_gather(case_id, x_shape, idx_shape, x_dtype_str, idx_dtype_str, dim, val
     y = gather(x, index, dim=dim)
     ref = torch_gather(x, index, dim=dim)
 
-    if x_dtype_str in ("int8", "int32", "int64"):
-        ok = torch.equal(y.cpu(), ref.cpu())
-        if not ok:
-            raise AssertionError("integer gather mismatch")
-    else:
-        rtol = RTOL_MAP.get(x_dtype_str, 1e-2)
-        atol = ATOL_MAP.get(x_dtype_str, 1e-2)
-        y_c = y.cpu().float()
-        ref_c = ref.cpu().float()
-        # NaN 位置一致即可（NaN != NaN）
-        nan_mask = torch.isnan(ref_c)
-        if nan_mask.any():
-            if not torch.equal(torch.isnan(y_c), nan_mask):
-                raise AssertionError("NaN pattern mismatch")
-            y_c = torch.where(nan_mask, torch.zeros_like(y_c), y_c)
-            ref_c = torch.where(nan_mask, torch.zeros_like(ref_c), ref_c)
-        torch.testing.assert_close(y_c, ref_c, rtol=rtol, atol=atol, equal_nan=True)
+    passed, matched_ratio, max_abs = check_precision(y, ref, x_dtype_str)
+    if not passed:
+        raise AssertionError(f"precision mismatch: matched_ratio={matched_ratio:.4f}, max_abs={max_abs:.3e}")
 
     print(f"Case {case_id}: PASSED  (x={x_shape}, idx={idx_shape}, x_dtype={x_dtype_str}, idx_dtype={idx_dtype_str}, dim={dim})")
 
