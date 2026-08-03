@@ -147,17 +147,17 @@ def _make_main(M, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_l
                     row_start = row_base + r * ROWS
                     T.tile.fill(running_max, 0.0)
                     if has_ws:
-                        T.copy(activation_scale[row_start:row_start + ROWS], as_ub)
+                        T.copy(activation_scale[row_start : row_start + ROWS], as_ub)
                         T.set_flag("mte2", "v", 5)
                         T.wait_flag("mte2", "v", 5)
                         T.tile.broadcast(as_tile, as_ub, axis=1)
 
                     if n_full == 1 and not has_partial:
-                        T.copy(x[row_start:row_start + ROWS, 0:block_H], a_raw[0, :, :])
-                        T.copy(x[row_start:row_start + ROWS, H_orig:H_orig + block_H], b_raw[0, :, :])
+                        T.copy(x[row_start : row_start + ROWS, 0:block_H], a_raw[0, :, :])
+                        T.copy(x[row_start : row_start + ROWS, H_orig : H_orig + block_H], b_raw[0, :, :])
                         if has_ws:
                             T.copy(weight_scale[0, 0:block_H], wsa_ub[0, 0, :])
-                            T.copy(weight_scale[0, H_orig:H_orig + block_H], wsb_ub[0, 0, :])
+                            T.copy(weight_scale[0, H_orig : H_orig + block_H], wsb_ub[0, 0, :])
                         if has_qs:
                             T.copy(quant_scale[0, 0:block_H], qs_ub[0, 0, :])
                         T.set_flag("mte2", "v", 0)
@@ -182,7 +182,7 @@ def _make_main(M, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_l
                             T.tile.mul(swiglu_ub[0, :, :], swiglu_ub[0, :, :], qs_tile)
                         T.set_flag("v", "mte3", 0)
                         T.wait_flag("v", "mte3", 0)
-                        T.copy(swiglu_ub[0, :, :], swiglu_ws[row_start:row_start + ROWS, 0:block_H])
+                        T.copy(swiglu_ub[0, :, :], swiglu_ws[row_start : row_start + ROWS, 0:block_H])
                         T.set_flag("mte3", "mte2", 7)
                         T.tile.abs(abs_ub, swiglu_ub[0, :, :])
                         T.reduce_max(abs_ub, running_max, dim=-1, clear=False)
@@ -192,11 +192,11 @@ def _make_main(M, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_l
                         T.tile.max(scale_ub, scale_ub, 1e-12)
                         T.set_flag("v", "mte3", 6)
                         T.wait_flag("v", "mte3", 6)
-                        T.copy(scale_ub, scale[row_start:row_start + ROWS])
+                        T.copy(scale_ub, scale[row_start : row_start + ROWS])
                         T.tile.broadcast(scale_tile, scale_ub, axis=1)
 
                         T.wait_flag("mte3", "mte2", 7)
-                        T.copy(swiglu_ws[row_start:row_start + ROWS, 0:block_H], swiglu_ub[0, :, :])
+                        T.copy(swiglu_ws[row_start : row_start + ROWS, 0:block_H], swiglu_ub[0, :, :])
                         T.set_flag("mte2", "v", 0)
                         T.wait_flag("mte2", "v", 0)
                         T.tile.div(q_ub, swiglu_ub[0, :, :], scale_tile)
@@ -205,17 +205,17 @@ def _make_main(M, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_l
                         T.tile.cast(y_ub[0, :, :], q_fp16_ub, "CAST_RINT", tile_elems)
                         T.set_flag("v", "mte3", 0)
                         T.wait_flag("v", "mte3", 0)
-                        T.copy(y_ub[0, :, :], y[row_start:row_start + ROWS, 0:block_H])
+                        T.copy(y_ub[0, :, :], y[row_start : row_start + ROWS, 0:block_H])
                     else:
                         T.set_flag("mte3", "mte2", 0)
                         T.set_flag("mte3", "mte2", 1)
 
                         T.wait_flag("mte3", "mte2", 0)
-                        T.copy(x[row_start:row_start + ROWS, 0:block_H], a_raw[0, :, :])
-                        T.copy(x[row_start:row_start + ROWS, H_orig:H_orig + block_H], b_raw[0, :, :])
+                        T.copy(x[row_start : row_start + ROWS, 0:block_H], a_raw[0, :, :])
+                        T.copy(x[row_start : row_start + ROWS, H_orig : H_orig + block_H], b_raw[0, :, :])
                         if has_ws:
                             T.copy(weight_scale[0, 0:block_H], wsa_ub[0, 0, :])
-                            T.copy(weight_scale[0, H_orig:H_orig + block_H], wsb_ub[0, 0, :])
+                            T.copy(weight_scale[0, H_orig : H_orig + block_H], wsb_ub[0, 0, :])
                         if has_qs:
                             T.copy(quant_scale[0, 0:block_H], qs_ub[0, 0, :])
                         T.set_flag("mte2", "v", 0)
@@ -229,13 +229,13 @@ def _make_main(M, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_l
                             cb_n = H_orig + (j + 1) * block_H
 
                             T.wait_flag("mte3", "mte2", nxt)
-                            T.copy(x[row_start:row_start + ROWS, ca_n:ca_n + block_H], a_raw[nxt, :, :])
-                            T.copy(x[row_start:row_start + ROWS, cb_n:cb_n + block_H], b_raw[nxt, :, :])
+                            T.copy(x[row_start : row_start + ROWS, ca_n : ca_n + block_H], a_raw[nxt, :, :])
+                            T.copy(x[row_start : row_start + ROWS, cb_n : cb_n + block_H], b_raw[nxt, :, :])
                             if has_ws:
-                                T.copy(weight_scale[0, ca_n:ca_n + block_H], wsa_ub[nxt, 0, :])
-                                T.copy(weight_scale[0, cb_n:cb_n + block_H], wsb_ub[nxt, 0, :])
+                                T.copy(weight_scale[0, ca_n : ca_n + block_H], wsa_ub[nxt, 0, :])
+                                T.copy(weight_scale[0, cb_n : cb_n + block_H], wsb_ub[nxt, 0, :])
                             if has_qs:
-                                T.copy(quant_scale[0, ca_n:ca_n + block_H], qs_ub[nxt, 0, :])
+                                T.copy(quant_scale[0, ca_n : ca_n + block_H], qs_ub[nxt, 0, :])
                             T.set_flag("mte2", "v", nxt)
 
                             T.wait_flag("mte2", "v", cur)
@@ -259,7 +259,7 @@ def _make_main(M, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_l
                                 T.tile.mul(swiglu_ub[cur, :, :], swiglu_ub[cur, :, :], qs_tile)
                             T.set_flag("v", "mte3", cur)
                             T.wait_flag("v", "mte3", cur)
-                            T.copy(swiglu_ub[cur, :, :], swiglu_ws[row_start:row_start + ROWS, ca:ca + block_H])
+                            T.copy(swiglu_ub[cur, :, :], swiglu_ws[row_start : row_start + ROWS, ca : ca + block_H])
                             T.tile.abs(abs_ub, swiglu_ub[cur, :, :])
                             T.reduce_max(abs_ub, running_max, dim=-1, clear=False)
                             T.set_flag("mte3", "mte2", cur)
@@ -288,7 +288,7 @@ def _make_main(M, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_l
                             T.tile.mul(swiglu_ub[last, :, :], swiglu_ub[last, :, :], qs_tile)
                         T.set_flag("v", "mte3", last)
                         T.wait_flag("v", "mte3", last)
-                        T.copy(swiglu_ub[last, :, :], swiglu_ws[row_start:row_start + ROWS, ca_l:ca_l + block_H])
+                        T.copy(swiglu_ub[last, :, :], swiglu_ws[row_start : row_start + ROWS, ca_l : ca_l + block_H])
                         T.tile.abs(abs_ub, swiglu_ub[last, :, :])
                         T.reduce_max(abs_ub, running_max, dim=-1, clear=False)
                         T.set_flag("mte3", "mte2", last)
@@ -301,8 +301,8 @@ def _make_main(M, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_l
                             pb_off = H_orig + n_full * block_H
                             T.tile.fill(a_raw[0, :, :], 0.0)
                             T.tile.fill(b_raw[0, :, :], 0.0)
-                            T.copy(x[row_start:row_start + ROWS, pa_off:H_orig], a_raw[0, :, :], pad_value=0)
-                            T.copy(x[row_start:row_start + ROWS, pb_off:TwoH_orig], b_raw[0, :, :], pad_value=0)
+                            T.copy(x[row_start : row_start + ROWS, pa_off:H_orig], a_raw[0, :, :], pad_value=0)
+                            T.copy(x[row_start : row_start + ROWS, pb_off:TwoH_orig], b_raw[0, :, :], pad_value=0)
                             if has_ws:
                                 T.copy(weight_scale[0, pa_off:H_orig], wsa_ub[0, 0, :], pad_value=0)
                                 T.copy(weight_scale[0, pb_off:TwoH_orig], wsb_ub[0, 0, :], pad_value=0)
@@ -330,7 +330,7 @@ def _make_main(M, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_l
                                 T.tile.mul(swiglu_ub[0, :, :], swiglu_ub[0, :, :], qs_tile)
                             T.set_flag("v", "mte3", 0)
                             T.wait_flag("v", "mte3", 0)
-                            T.copy(swiglu_ub[0, :, :partial], swiglu_ws[row_start:row_start + ROWS, pa_off:H_orig])
+                            T.copy(swiglu_ub[0, :, :partial], swiglu_ws[row_start : row_start + ROWS, pa_off:H_orig])
                             T.tile.abs(abs_ub, swiglu_ub[0, :, :])
                             T.reduce_max(abs_ub, running_max, dim=-1, clear=False)
 
@@ -339,14 +339,14 @@ def _make_main(M, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_l
                         T.tile.max(scale_ub, scale_ub, 1e-12)
                         T.set_flag("v", "mte3", 6)
                         T.wait_flag("v", "mte3", 6)
-                        T.copy(scale_ub, scale[row_start:row_start + ROWS])
+                        T.copy(scale_ub, scale[row_start : row_start + ROWS])
                         T.tile.broadcast(scale_tile, scale_ub, axis=1)
 
                         T.set_flag("mte3", "mte2", 0)
                         T.set_flag("mte3", "mte2", 1)
 
                         T.wait_flag("mte3", "mte2", 0)
-                        T.copy(swiglu_ws[row_start:row_start + ROWS, 0:block_H], swiglu_ub[0, :, :])
+                        T.copy(swiglu_ws[row_start : row_start + ROWS, 0:block_H], swiglu_ub[0, :, :])
                         T.set_flag("mte2", "v", 0)
 
                         for j in T.serial(0, n_total - 1):
@@ -357,9 +357,9 @@ def _make_main(M, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_l
 
                             T.wait_flag("mte3", "mte2", nxt)
                             if has_partial and (j == n_total - 2):
-                                T.copy(swiglu_ws[row_start:row_start + ROWS, ca_n:H_orig], swiglu_ub[nxt, :, :partial])
+                                T.copy(swiglu_ws[row_start : row_start + ROWS, ca_n:H_orig], swiglu_ub[nxt, :, :partial])
                             else:
-                                T.copy(swiglu_ws[row_start:row_start + ROWS, ca_n:ca_n + block_H], swiglu_ub[nxt, :, :])
+                                T.copy(swiglu_ws[row_start : row_start + ROWS, ca_n : ca_n + block_H], swiglu_ub[nxt, :, :])
                             T.set_flag("mte2", "v", nxt)
 
                             T.wait_flag("mte2", "v", cur)
@@ -369,7 +369,7 @@ def _make_main(M, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_l
                             T.tile.cast(y_ub[cur, :, :], q_fp16_ub, "CAST_RINT", tile_elems)
                             T.set_flag("v", "mte3", cur)
                             T.wait_flag("v", "mte3", cur)
-                            T.copy(y_ub[cur, :, :], y[row_start:row_start + ROWS, ca_c:ca_c + block_H])
+                            T.copy(y_ub[cur, :, :], y[row_start : row_start + ROWS, ca_c : ca_c + block_H])
                             T.set_flag("mte3", "mte2", cur)
 
                         last = (n_total - 1) % 2
@@ -382,9 +382,9 @@ def _make_main(M, H_orig, block_M, block_H, in_dtype, has_ws, has_qs, activate_l
                         T.set_flag("v", "mte3", last)
                         T.wait_flag("v", "mte3", last)
                         if has_partial:
-                            T.copy(y_ub[last, :, :partial], y[row_start:row_start + ROWS, ca_l:H_orig])
+                            T.copy(y_ub[last, :, :partial], y[row_start : row_start + ROWS, ca_l:H_orig])
                         else:
-                            T.copy(y_ub[last, :, :], y[row_start:row_start + ROWS, ca_l:ca_l + block_H])
+                            T.copy(y_ub[last, :, :], y[row_start : row_start + ROWS, ca_l : ca_l + block_H])
                         T.set_flag("mte3", "mte2", last)
 
                         T.wait_flag("mte3", "mte2", 0)
@@ -416,8 +416,7 @@ def _kernel_fp16_noqs(M, H_orig, block_M, block_H, in_dtype, activate_left=False
 # =============================================================================
 # UB Budget Formula (guide section 2.11)
 # =============================================================================
-def _find_max_tile(total_dim, rows, n_cal_p1, n_input, n_1d_cal, n_cal_p2,
-                   n_fp16_p2, n_int8_2d_p2, dtype_str):
+def _find_max_tile(total_dim, rows, n_cal_p1, n_input, n_1d_cal, n_cal_p2, n_fp16_p2, n_int8_2d_p2, dtype_str):
     cal_bytes = 4
     if dtype_str in ("float16", "bfloat16"):
         input_bytes = 2
@@ -484,8 +483,7 @@ def _pick_block_h_and_rows(H, in_dtype, has_ws, has_qs, block_M):
         if rows > rows_per_vid or rows_per_vid % rows != 0:
             continue
 
-        bh = _find_max_tile(H, rows, n_cal_p1, n_input, n_1d, n_cal_p2,
-                            n_fp16_p2, n_int8_p2, in_dtype)
+        bh = _find_max_tile(H, rows, n_cal_p1, n_input, n_1d, n_cal_p2, n_fp16_p2, n_int8_p2, in_dtype)
         n_full = H // bh
         partial = H % bh
         n_total = n_full + (1 if partial > 0 else 0)
