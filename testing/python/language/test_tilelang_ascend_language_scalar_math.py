@@ -6,9 +6,9 @@ def scalar_sqrt_rsqrt(length=8):
 
     @T.prim_func
     def main(
-            input_tensor: T.Tensor((length,), "float32"),
-            sqrt_output: T.Tensor((length,), "float32"),
-            rsqrt_output: T.Tensor((length,), "float32"),
+        input_tensor: T.Tensor((length,), "float32"),
+        sqrt_output: T.Tensor((length,), "float32"),
+        rsqrt_output: T.Tensor((length,), "float32"),
     ):
         with T.Kernel(1, is_npu=True) as (_cid, _vid):
             input_ub = T.alloc_ub((length,), "float32")
