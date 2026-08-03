@@ -370,15 +370,18 @@ def reduce_max(
 ):
     """Perform a max reduction on the current Ascend fast-path.
 
+    Supports float16 and float32 on Ascend A2/A3.
+
     Args:
-        buffer: The source buffer or buffer region.
-        out: The destination buffer or buffer region.
+        buffer: The source buffer or buffer region. Must be in UB (``T.alloc_ub``).
+        out: The destination buffer or buffer region. Must be in UB.
         dim: Reduce axis for the supported fast-path ranks. 1D buffers support
             0/-1, 2D buffers support 0/1/-1/-2, and 3D buffers only support
             the trailing tile axes 0/1/-1/-2.
         *args: Optional positional compatibility arguments for ``clear`` and
             ``real_shape``.
-        clear: Whether to initialize ``out`` before reduction.
+        clear: Whether to initialize ``out`` before reduction. True: initialize
+            out before reduction; False: compare/accumulate on existing out values.
         real_shape: Optional logical 2D shape for sliced UB tiles.
         tmp: Optional complete target-specific scratch storage. It must be a
             one-dimensional, static, contiguous fixed-width scalar buffer in
@@ -412,15 +415,18 @@ def reduce_min(
 ):
     """Perform a min reduction on the current Ascend fast-path.
 
+    Supports float16 and float32 on Ascend A2/A3.
+
     Args:
-        buffer: The source buffer or buffer region.
-        out: The destination buffer or buffer region.
+        buffer: The source buffer or buffer region. Must be in UB (``T.alloc_ub``).
+        out: The destination buffer or buffer region. Must be in UB.
         dim: Reduce axis for the supported fast-path ranks. 1D buffers support
             0/-1, 2D buffers support 0/1/-1/-2, and 3D buffers only support
             the trailing tile axes 0/1/-1/-2.
         *args: Optional positional compatibility arguments for ``clear`` and
             ``real_shape``.
-        clear: Whether to initialize ``out`` before reduction.
+        clear: Whether to initialize ``out`` before reduction. True: initialize
+            out before reduction; False: compare/accumulate on existing out values.
         real_shape: Optional logical 2D shape for sliced UB tiles.
         tmp: Optional complete target-specific scratch storage. It must be a
             one-dimensional, static, contiguous fixed-width scalar buffer in
@@ -454,15 +460,19 @@ def reduce_sum(
 ):
     """Perform a sum reduction on the current Ascend fast-path.
 
+    Supports float16 and float32 on Ascend A2/A3. Note: float16 sum may
+    overflow when results exceed 65504.
+
     Args:
-        buffer: The source buffer or buffer region.
-        out: The destination buffer or buffer region.
+        buffer: The source buffer or buffer region. Must be in UB (``T.alloc_ub``).
+        out: The destination buffer or buffer region. Must be in UB.
         dim: Reduce axis for the supported fast-path ranks. 1D buffers support
             0/-1, 2D buffers support 0/1/-1/-2, and 3D buffers only support
             the trailing tile axes 0/1/-1/-2.
         *args: Optional positional compatibility arguments for ``clear`` and
             ``real_shape``.
-        clear: Whether to initialize ``out`` before reduction.
+        clear: Whether to initialize ``out`` before reduction. True: initialize
+            out to zero before reduction; False: accumulate on existing out values.
         real_shape: Optional logical 2D shape for sliced UB tiles.
         tmp: Optional complete target-specific scratch storage. It must be a
             one-dimensional, static, contiguous fixed-width scalar buffer in
