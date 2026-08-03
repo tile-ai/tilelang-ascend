@@ -23,7 +23,6 @@
 | 0c | **测试路径无 aclnn** | 测试输入、随机数、特殊值注入、dtype 转换和 golden 物理重排均在 CPU 完成；仅 H2D→kernel→D2H。`aclnnInplaceRandom` 属测试准备错误，不得归因于 kernel |
 | 0d | **数据搬运成本通过** | 每条结构/dtype 路径已核算 GM pass、DMA transaction、GM 标量访问和地址 div/mod；大张量无逐元素 strided GM，连续 suffix record 已聚合搬运 |
 | 0e | **性能哨兵通过** | 用户关键/最大 case 和每条最坏路径均实际执行且未超时；不得因标记 large/L1 而 skip 后宣称完成 |
-| 0f | **chunk/split 单输入 kernel 方案** | 若算子从输入沿某维等分多子张量（如 `silu(x0)*x1`），优先使用单输入 kernel：传完整 tensor，kernel 内用列偏移 `X[row, half_k+col]` 读取各子张量。示例代码见 [tilelang-perf-optimization optimization-guide.md §2.12 子模式](../../tilelang-perf-optimization/references/optimization-guide.md) |
 
 ## 1. 功能验证
 
