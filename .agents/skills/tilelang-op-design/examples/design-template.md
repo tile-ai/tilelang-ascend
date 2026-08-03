@@ -20,7 +20,7 @@ $$
 
 {对于多步算子，描述计算步骤的分解逻辑。单步算子可省略。}
 
-> **⚠️ Host 侧 Buffer 操作约束**（详见 SKILL.md §3.2）：host 侧只允许经证明共享
+> **⚠️ Host 侧 Buffer 操作约束**（详见 ../references/ascend-constraints.md §5）：host 侧只允许经证明共享
 > 原 storage、只改 metadata 的 view 操作，以及 kernel 调用和验证；禁止真实数据搬运
 > 和 aclnn 计算。`reshape` 需按目标 shape/stride 证明零拷贝。
 
@@ -222,7 +222,7 @@ block_num = (M // block_M) * (N // block_N)
 
 {非整除情况的处理策略、边界块的特殊逻辑等}
 
-> **⚠️ 非整除必须显式设计**（详见 SKILL.md §3.2）：输入、输出 GM 两侧使用
+> **⚠️ 非整除必须显式设计**（详见 ../references/ascend-constraints.md §5）：输入、输出 GM 两侧使用
 > `valid_*` extent 的 BufferRegion，前端按动态切片裁剪搬运。不得使用标量 GM 起点配
 > 完整 UB tile；host 侧不允许 padding + crop。
 
@@ -263,7 +263,7 @@ with T.Kernel(block_num, is_npu=True) as (cid, vid):
 
 {当输入 shape 不能被 block size 整除时的处理策略}
 
-> **⚠️ 尾块必须显式设计**（详见 SKILL.md §3.2）：输入、输出 GM 两侧都使用
+> **⚠️ 尾块必须显式设计**（详见 ../references/ascend-constraints.md §5）：输入、输出 GM 两侧都使用
 > `valid_*` extent 的 BufferRegion；前端按这些动态切片裁剪搬运。不得用标量 GM
 > 起点配完整 UB tile，也不得在 host 侧 padding + crop。
 
@@ -326,8 +326,8 @@ pass_configs = {
 ```python
 # Developer（推荐）：Cube 输出直连片上 buffer，无 workspace
 T.copy({输入}, {buffer})
-T.gemm_v0({a}, {b}, {c}, transpose_B={True/False})
-T.copy({c}, {vector_side_buffer})       # L0C → alloc_shared 直连
+T.gemm_v0({a}, {b}, {c}, transpose_B={True / False})
+T.copy({c}, {vector_side_buffer})  # L0C → alloc_shared 直连
 
 # 回退（Expert/混合）：经 workspace 中转
 # T.copy({c}, workspace_1[cid, :, :])
@@ -348,10 +348,10 @@ T.copy({output}, Output[...])           # 输出
 
 ```python
 pass_configs = {
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: {True/False},  # 自动 CV 分离
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: {True/False},     # 自动核间同步
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: {True/False},        # 自动同步
-    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: {True/False},  # 内存规划
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: {True / False},  # 自动 CV 分离
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: {True / False},  # 自动核间同步
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: {True / False},  # 自动同步
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: {True / False},  # 内存规划
 }
 ```
 

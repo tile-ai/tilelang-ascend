@@ -43,11 +43,11 @@ T.copy(a_ub, B[row_start, by * block_N])
 **✅ CV 融合场景 — Developer 模式（推荐，默认消除 workspace/vid）**：
 ```python
 # T.Kernel(block_num, threads=2, is_npu=True) as (cid)  —— threads=2，无 vid 轴
-for bi_i in range(BI):                       # 整程，无 vid 偏移
+for bi_i in range(BI):  # 整程，无 vid 偏移
     T.copy(KV[..., idx[bi_i], ...], kv_ub)
-    T.copy(kv_ub, kv_l1[bi_i, :])            # gather 直连片上 L1，无 workspace
+    T.copy(kv_ub, kv_l1[bi_i, :])  # gather 直连片上 L1，无 workspace
 ...
-T.copy(acc_s_l0c, acc_s_ub_)                 # L0C → shared 直连，无 GM 往返
+T.copy(acc_s_l0c, acc_s_ub_)  # L0C → shared 直连，无 GM 往返
 ```
 前提链：`threads=2` → 消 vid → 消 workspace；完整映射表见 [mode-examples.md §6](../../tilelang-custom-skill/tilelang-programming-model-guide/references/mode-examples.md#6-cv-融合--推荐写法消除-workspace--vidthreads2)。
 
@@ -87,7 +87,7 @@ T.copy(workspace[bn * block_N, k_offset], B_L1)  # 完整 block_N
 
 **规避方案**：
 
-1. **host 侧 reshape 降维到 3D**：host 侧用 `permute` + `reshape` 把 4D+ 降维到 3D `(batch, M, N)`，使列维成为最内维。**⚠️ `reshape(-1)` 对非 contiguous 张量（如 `permute` 后）会触发物理拷贝，等价于 `.contiguous()`，属 [SKILL.md §3.2](../SKILL.md) 禁止行为 #2，不得使用。** 替代方案：用 stride 作为 JIT 编译期常量传入 kernel（详见 §6 方案 A）。
+1. **host 侧 reshape 降维到 3D**：host 侧用 `permute` + `reshape` 把 4D+ 降维到 3D `(batch, M, N)`，使列维成为最内维。**⚠️ `reshape(-1)` 对非 contiguous 张量（如 `permute` 后）会触发物理拷贝，等价于 `.contiguous()`，属 [ascend-constraints.md §2](ascend-constraints.md) 禁止行为 #2，不得使用。** 替代方案：用 stride 作为 JIT 编译期常量传入 kernel（详见 §6 方案 A）。
 2. **调整 buffer 布局**：将 GM buffer 的维度排列调整为让列维（需要切片的维度）成为最内维。
 
 > **根因**：`src/op/ascend.cc` 的 `find_active_dim_indices` 和 `compute_strideN` 对 4D+ 切片的维度识别有缺陷，且即使修复后，`DataCopyPad` 硬件指令本身也不支持列方向 strided access。这是 AscendC 硬件的固有限制，非 codegen bug。详见 `tilelang-api-best-practices/references/api-kernel-memory.md` §T.copy 多维切片的硬件限制。
@@ -147,11 +147,11 @@ def make_mixed_nan_input(shape, dtype, seed=0):
     nan_mask = torch.rand(shape, dtype=torch.float32, generator=gen) < 0.5
     flat_mask = nan_mask.view(-1)
     if flat_mask.numel() > 0:
-        flat_mask[0] = True   # 至少一个 NaN
+        flat_mask[0] = True  # 至少一个 NaN
     if flat_mask.numel() > 1:
         flat_mask[1] = False  # 至少一个有限值
     x[nan_mask] = float("nan")
-    return x.to(dtype)        # CPU 上完成，随后只做一次 H2D
+    return x.to(dtype)  # CPU 上完成，随后只做一次 H2D
 
 
 def check_special_masks(actual, golden):
@@ -259,12 +259,12 @@ for local_task in T.serial(single_core_load):
     if task < task_count:
         # 由 task 解码外层坐标、row_start 和 valid_rows
         T.copy(
-            x[outer, row_start:row_start + valid_rows, record_group, 0:record_len],
+            x[outer, row_start : row_start + valid_rows, record_group, 0:record_len],
             record_ub[0:valid_rows, 0:record_len],
         )
         T.copy(
             record_ub[0:valid_rows, 0:record_len],
-            y[outer, record_group, row_start:row_start + valid_rows, 0:record_len],
+            y[outer, record_group, row_start : row_start + valid_rows, 0:record_len],
         )
 ```
 
