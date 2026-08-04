@@ -41,7 +41,7 @@ def test_block_sparse_mqa_attn_accuracy() -> None:
             kv_block_size=128,
             topk=64,
             dtype="float16",
-            num_pairs=16,
+            grid_size=example.get_npu_core_num(),
         )
     finally:
         torch.set_default_device(previous)
