@@ -1,0 +1,132 @@
+# Operator Test Migration Manifest
+# 记录 examples/ 和 examples_experiment/ 下算子文件的 test 迁移状态
+# - migrated: 已有 test_*.py, 旧 Runner 应跳过 source，只走 pytest
+# - pending: 还没有 test，旧 Runner 继续执行 source
+# 每完成一个算子的 test 拆分，在下面追加一条记录
+- source: examples/developer_mode/matmul_add_developer.py
+  test: examples/developer_mode/test_matmul_add_developer.py
+  status: migrated
+
+- source: examples/quant_batch_matmul/example_quant_matmul.py
+  test: examples/quant_batch_matmul/test_example_quant_matmul.py
+  status: migrated
+
+- source: examples/gemm/example_gemm.py
+  test: examples/gemm/test_example_gemm.py
+  status: migrated
+
+- source: examples/gemm/example_gemm_transpose_l1.py
+  test: examples/gemm/test_example_gemm_transpose_l1.py
+  status: migrated
+
+- source: examples/gemm/example_gemm_persistent.py
+  test: examples/gemm/test_example_gemm_persistent.py
+  status: migrated
+
+- source: examples/gemm/example_gemm_intrinsic.py
+  test: examples/gemm/test_example_gemm_intrinsic.py
+  status: migrated
+
+- source: examples/gemm/example_gemm_intrinsic_persistent.py
+  test: examples/gemm/test_example_gemm_intrinsic_persistent.py
+  status: migrated
+
+- source: examples/gemm/example_gemm_tail_block_developer.py
+  test: examples/gemm/test_example_gemm_tail_block_developer.py
+  status: migrated
+
+- source: examples/gemm/example_gemm_infer_scope.py
+  test: examples/gemm/test_example_gemm_infer_scope.py
+  status: migrated
+
+- source: examples/gemm/example_gemm_pto_developer.py
+  test: examples/gemm/test_example_gemm_pto_developer.py
+  status: migrated
+
+- source: examples/gemm/example_gemm_fp8_pto.py
+  test: examples/gemm/test_example_gemm_fp8_pto.py
+  status: migrated
+
+- source: examples/developer_mode/matmul_add_developer_vec_cast.py
+  test: examples/developer_mode/test_matmul_add_developer_vec_cast.py
+  status: migrated
+
+- source: examples/developer_mode/gemm_developer.py
+  test: examples/developer_mode/test_gemm_developer.py
+  status: migrated
+
+- source: examples/developer_mode/gelu_mul_developer.py
+  test: examples/developer_mode/test_gelu_mul_developer.py
+  status: migrated
+
+- source: examples/developer_mode/flash_attn_bshd_developer.py
+  test: examples/developer_mode/test_flash_attn_bshd_developer.py
+  status: migrated
+
+- source: examples/developer_mode/sparse_flash_attn_developer.py
+  test: examples/developer_mode/test_sparse_flash_attn_developer.py
+  status: migrated
+
+- source: examples/developer_mode/sparse_flash_attn_developer_vid_reduce.py
+  test: examples/developer_mode/test_sparse_flash_attn_developer_vid_reduce.py
+  status: migrated
+
+- source: examples/pipeline/gemm_v0_pipeline.py
+  test: examples/pipeline/test_gemm_v0_pipeline.py
+  status: migrated
+
+- source: examples/pipeline/matmul_add_pipeline.py
+  test: examples/pipeline/test_matmul_add_pipeline.py
+  status: migrated
+
+- source: examples/pipeline/flash_attn_bshd_pipeline.py
+  test: examples/pipeline/test_flash_attn_bshd_pipeline.py
+  status: migrated
+
+- source: examples/pipeline/sparse_flash_attn_gqa_pipeline.py
+  test: examples/pipeline/test_sparse_flash_attn_gqa_pipeline.py
+  status: migrated
+
+- source: examples/pipeline/sparse_flash_attn_gqa_pipeline_pto.py
+  test: examples/pipeline/test_sparse_flash_attn_gqa_pipeline_pto.py
+  status: migrated
+
+- source: examples/quant_batch_matmul/example_quant_batch_matmul.py
+  test: examples/quant_batch_matmul/test_example_quant_batch_matmul.py
+  status: migrated
+
+- source: examples/activation/gelu_mul.py
+  test: examples/activation/test_gelu_mul.py
+  status: migrated
+
+- source: examples/activation/gelu_grad.py
+  test: examples/activation/test_gelu_grad.py
+  status: migrated
+
+- source: examples/activation/swi_glu.py
+  test: examples/activation/test_swi_glu.py
+  status: migrated
+
+- source: examples/activation/swi_glu_v2.py
+  test: examples/activation/test_swi_glu_v2.py
+  status: migrated
+
+- source: examples/activation/swi_glu_grad.py
+  test: examples/activation/test_swi_glu_grad.py
+  status: migrated
+
+- source: examples_experiment/grouped_gemm/example_grouped_gemm_fwd.py
+  test: examples_experiment/grouped_gemm/test_example_grouped_gemm_fwd.py
+  status: migrated
+
+- source: examples_experiment/grouped_gemm/example_grouped_gemm_fwd_ptr.py
+  test: examples_experiment/grouped_gemm/test_example_grouped_gemm_fwd_ptr.py
+  status: migrated
+
+- source: examples_experiment/grouped_gemm/example_grouped_gemm_bwd.py
+  test: examples_experiment/grouped_gemm/test_example_grouped_gemm_bwd.py
+  status: migrated
+
+- source: examples_experiment/gemm_splitk/example_tilelang_gemm_splitk.py
+  test: examples_experiment/gemm_splitk/test_example_tilelang_gemm_splitk.py
+  status: migrated

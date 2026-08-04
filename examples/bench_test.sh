@@ -170,6 +170,7 @@ collect_test_scripts() {
             local py_files=$(find "$dir" -maxdepth 1 -name "*.py" \
                 -not -name "__init__.py" \
                 -not -name "*_golden.py" \
+                -not -name "test_*.py" \
                 | sort)
             for f in $py_files; do scripts+=("$f"); done
             
@@ -184,6 +185,7 @@ collect_test_scripts() {
         -not -name "*_golden.py" \
         -not -name "sfa_golden.py" \
         -not -name "utils.py" \
+        -not -name "test_*.py" \
         -not -path "*/bench_sfa/*" \
         -not -path "*/generative_recommendation/golden.py" \
         -not -path "*/generative_recommendation/testcase.py" \
