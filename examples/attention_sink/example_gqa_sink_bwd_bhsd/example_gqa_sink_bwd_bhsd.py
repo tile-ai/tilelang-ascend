@@ -211,11 +211,17 @@ def flashattn_fwd(batch, heads, seq_len, dim, groups, window_size, block_M=64, b
             loop_st = T.max(0, (bx * block_M - window_eff) // block_N)
             loop_ed = T.min(T.ceildiv((bx + 1) * block_M, block_N), T.ceildiv(seq_len, block_N))
 
+            # Common slice offsets (V scope processes half the rows via vid)
+            hm = block_M // 2
+            v_row = vid * hm  # V-scope row offset within block_M
+            q_row = bx * block_M  # Q block start row in GM
+
             with T.Scope("C"):
-                T.copy(Q[bz, by, bx * block_M : (bx + 1) * block_M, :], q_l1)
+                T.copy(Q[bz, by, q_row : q_row + block_M, :], q_l1)
                 T.barrier_all()
                 for k in T.serial(loop_st, loop_ed):
-                    T.copy(K[bz, kv_by, k * block_N : (k + 1) * block_N, :], k_l1)
+                    kv = k * block_N
+                    T.copy(K[bz, kv_by, kv : kv + block_N, :], k_l1)
                     T.barrier_all()
                     T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
                     T.barrier_all()
@@ -225,7 +231,7 @@ def flashattn_fwd(batch, heads, seq_len, dim, groups, window_size, block_M=64, b
                     T.wait_cross_flag(1)
                     T.barrier_all()
                     T.copy(workspace_2[cid, :, :], acc_s_l1)
-                    T.copy(V[bz, kv_by, k * block_N : (k + 1) * block_N, :], v_l1)
+                    T.copy(V[bz, kv_by, kv : kv + block_N, :], v_l1)
                     T.barrier_all()
                     T.gemm_v0(acc_s_l1, v_l1, acc_o_l0c, init=True)
                     T.barrier_all()
@@ -251,15 +257,15 @@ def flashattn_fwd(batch, heads, seq_len, dim, groups, window_size, block_M=64, b
                     T.copy(m_i, m_i_prev)
                     T.barrier_all()
                     T.wait_cross_flag(0)
-                    T.copy(workspace_1[cid, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :], acc_s_ub_)
+                    T.copy(workspace_1[cid, v_row : v_row + hm, :], acc_s_ub_)
                     T.barrier_all()
                     T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
                     T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
 
                     # Causal + window mask
                     T.tile.arith_progression(col_pos, _k * block_N, 1, block_N)
-                    for h_i in range(block_M // 2):
-                        row_pos_val = (bx * block_M + vid * block_M // 2 + h_i) * 1.0
+                    for h_i in range(hm):
+                        row_pos_val = (q_row + v_row + h_i) * 1.0
                         T.tile.compare(cmp_mask, col_pos, row_pos_val, "LE")
                         if window_size is not None:
                             T.tile.compare(win_mask, col_pos, row_pos_val - window_size, "GT")
@@ -275,24 +281,24 @@ def flashattn_fwd(batch, heads, seq_len, dim, groups, window_size, block_M=64, b
                     T.tile.max(m_i, m_i, m_i_prev)
                     T.tile.sub(m_i_prev, m_i_prev, m_i)
                     T.tile.exp(m_i_prev, m_i_prev)
-                    for h_i in range(block_M // 2):
+                    for h_i in range(hm):
                         T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])
                     T.tile.exp(acc_s_ub, acc_s_ub)
                     T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
                     T.tile.mul(sumexp, sumexp, m_i_prev)
                     T.tile.add(sumexp, sumexp, sumexp_i_ub)
-                    for h_i in range(block_M // 2):
+                    for h_i in range(hm):
                         T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
 
                     # Write P to workspace for C scope GEMM2
                     T.copy(acc_s_ub, acc_s_half)
                     T.barrier_all()
-                    T.copy(acc_s_half, workspace_2[cid, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :])
+                    T.copy(acc_s_half, workspace_2[cid, v_row : v_row + hm, :])
                     T.barrier_all()
                     T.set_cross_flag("MTE3", 1)
                     T.wait_cross_flag(2)
                     T.barrier_all()
-                    T.copy(workspace_3[cid, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :], acc_o_ub)
+                    T.copy(workspace_3[cid, v_row : v_row + hm, :], acc_o_ub)
                     T.barrier_all()
                     T.tile.add(acc_o, acc_o, acc_o_ub)
                     T.barrier_all()
@@ -305,20 +311,20 @@ def flashattn_fwd(batch, heads, seq_len, dim, groups, window_size, block_M=64, b
                 T.tile.add(sumexp, sumexp, sink_exp_ub)
 
                 # Normalize: O /= sumexp
-                for h_i in range(block_M // 2):
+                for h_i in range(hm):
                     T.tile.div(acc_o[h_i, :], acc_o[h_i, :], sumexp[h_i])
 
                 # Output O (fp16)
                 T.copy(acc_o, acc_o_half)
                 T.barrier_all()
-                T.copy(acc_o_half, Output[bz, by, bx * block_M + vid * block_M // 2 : bx * block_M + vid * block_M // 2 + block_M // 2, :])
+                T.copy(acc_o_half, Output[bz, by, q_row + v_row : q_row + v_row + hm, :])
 
                 # lse = ln(sumexp) + m_i
                 T.barrier_all()
                 T.tile.ln(sumexp, sumexp)
                 T.tile.add(sumexp, sumexp, m_i)
                 T.barrier_all()
-                T.copy(sumexp, lse[bz, by, bx * block_M + vid * block_M // 2 : bx * block_M + vid * block_M // 2 + block_M // 2])
+                T.copy(sumexp, lse[bz, by, q_row + v_row : q_row + v_row + hm])
                 T.barrier_all()
 
     return main
@@ -503,6 +509,13 @@ def flashattn_bwd(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, bl
             loop_st = T.max(0, (bx * block_M - window_eff) // block_N)
             loop_ed = T.min(T.ceildiv((bx + 1) * block_M, block_N), T.ceildiv(seq_len, block_N))
 
+            # Common slice offsets (V scope processes half rows/cols via vid)
+            hm = block_M // 2
+            hn = block_N // 2
+            v_row = vid * hm  # V-scope row offset within block_M
+            v_col = vid * hn  # V-scope col offset within block_N
+            q_row = bx * block_M  # Q block start row in GM
+
             # ---- L1 buffers ----
             q_l1 = T.alloc_L1([block_M, dim_qk_padded], dtype)
             do_l1 = T.alloc_L1([block_M, dim_v], dtype)
@@ -567,13 +580,14 @@ def flashattn_bwd(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, bl
 
             with T.Scope("C"):
                 # Load Q and dO (persistent across KV iterations)
-                T.copy(Q[bz, by, bx * block_M : (bx + 1) * block_M, :], q_l1)
-                T.copy(dO[bz, by, bx * block_M : (bx + 1) * block_M, :], do_l1)
+                T.copy(Q[bz, by, q_row : q_row + block_M, :], q_l1)
+                T.copy(dO[bz, by, q_row : q_row + block_M, :], do_l1)
                 T.barrier_all()
 
                 for k in T.serial(loop_st, loop_ed):
+                    kv = k * block_N
                     # === GEMM1: S = Q @ K^T -> l0c_mn [M, N] ===
-                    T.copy(K[bz, kv_by, k * block_N : (k + 1) * block_N, :], k_l1)
+                    T.copy(K[bz, kv_by, kv : kv + block_N, :], k_l1)
                     T.barrier_all()
                     T.gemm_v0(q_l1, k_l1, l0c_mn, transpose_B=True, init=True)
                     T.barrier_all()
@@ -594,7 +608,7 @@ def flashattn_bwd(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, bl
                     T.barrier_all()
 
                     # === GEMM3: dP = dO @ V^T -> l0c_mn [M, N] ===
-                    T.copy(V[bz, kv_by, k * block_N : (k + 1) * block_N, :], v_l1)
+                    T.copy(V[bz, kv_by, kv : kv + block_N, :], v_l1)
                     T.barrier_all()
                     T.gemm_v0(do_l1, v_l1, l0c_mn, transpose_B=True, init=True)
                     T.barrier_all()
@@ -622,34 +636,34 @@ def flashattn_bwd(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, bl
 
                 # After KV loop: write accumulated dQ to global memory
                 T.barrier_all()
-                T.copy(l0c_dq, dQ[bz, by, bx * block_M : (bx + 1) * block_M, :])
+                T.copy(l0c_dq, dQ[bz, by, q_row : q_row + block_M, :])
                 T.barrier_all()
 
             with T.Scope("V"):
                 for _k in T.serial(loop_st, loop_ed):
+                    kv = _k * block_N
                     # ---- Step 1: Receive S, compute P = exp(S * scale - lse) ----
                     T.wait_cross_flag(0)
                     T.barrier_all()
-                    T.copy(ws_s_dp[cid, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :], work_ub)
+                    T.copy(ws_s_dp[cid, v_row : v_row + hm, :], work_ub)
                     T.barrier_all()
 
                     # Scale: S * sm_scale
                     T.tile.mul(work_ub, work_ub, sm_scale)
 
                     # Subtract LSE and exp: P = exp(S * scale - lse)
-                    T.copy(lse[bz, by, bx * block_M + vid * block_M // 2 : bx * block_M + vid * block_M // 2 + block_M // 2], lse_ub)
+                    T.copy(lse[bz, by, q_row + v_row : q_row + v_row + hm], lse_ub)
                     T.barrier_all()
-                    # P2: broadcast lse to 2D then whole-tile sub (replaces
-                    # per-row for loop). axis=1 broadcast is supported.
+                    # broadcast lse to 2D then whole-tile sub (axis=1 broadcast is supported)
                     T.tile.broadcast(lse_2d, lse_ub, axis=1)
                     T.tile.sub(work_ub, work_ub, lse_2d)
                     T.tile.exp(work_ub, work_ub)
 
                     # Apply causal + window mask: zero out P where invalid
                     # (block_N >= 64 required for T.tile.compare)
-                    T.tile.arith_progression(col_pos, _k * block_N, 1, block_N)
-                    for h_i in range(block_M // 2):
-                        row_pos_val = (bx * block_M + vid * block_M // 2 + h_i) * 1.0
+                    T.tile.arith_progression(col_pos, kv, 1, block_N)
+                    for h_i in range(hm):
+                        row_pos_val = (q_row + v_row + h_i) * 1.0
                         # causal: col_pos <= row_pos
                         T.tile.compare(cmp_mask, col_pos, row_pos_val, "LE")
                         if window_size is not None:
@@ -663,7 +677,7 @@ def flashattn_bwd(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, bl
                     # Cast P to fp16 and write to workspace
                     T.copy(work_ub, p_half)
                     T.barrier_all()
-                    T.copy(p_half, ws_p_ds[cid, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :])
+                    T.copy(p_half, ws_p_ds[cid, v_row : v_row + hm, :])
                     T.barrier_all()
                     T.set_cross_flag("MTE3", 1)  # signal C: P ready
 
@@ -672,26 +686,23 @@ def flashattn_bwd(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, bl
                     T.barrier_all()
 
                     # atomic_add dV to global memory
-                    T.copy(ws_dv_dk[cid, vid * block_N // 2 : vid * block_N // 2 + block_N // 2, :], dv_tmp)
+                    T.copy(ws_dv_dk[cid, v_col : v_col + hn, :], dv_tmp)
                     T.barrier_all()
-                    T.tile.atomic_add(
-                        dV[bz, kv_by, _k * block_N + vid * block_N // 2 : _k * block_N + vid * block_N // 2 + block_N // 2, :], dv_tmp
-                    )
+                    T.tile.atomic_add(dV[bz, kv_by, kv + v_col : kv + v_col + hn, :], dv_tmp)
 
                     # Load dP from workspace (fp32)
-                    T.copy(ws_s_dp[cid, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :], dp_ub)
+                    T.copy(ws_s_dp[cid, v_row : v_row + hm, :], dp_ub)
                     T.barrier_all()
 
                     # P is still in p_half from Step 1
                     T.copy(p_half, work_ub)  # fp16 -> fp32
 
                     # Load Delta
-                    T.copy(Delta[bz, by, bx * block_M + vid * block_M // 2 : bx * block_M + vid * block_M // 2 + block_M // 2], delta_ub)
+                    T.copy(Delta[bz, by, q_row + v_row : q_row + v_row + hm], delta_ub)
                     T.barrier_all()
 
                     # Compute dS = P * (dP - Delta) * sm_scale
-                    # P2: broadcast delta to 2D then whole-tile sub (replaces
-                    # per-row for loop). axis=1 broadcast is supported.
+                    # broadcast delta to 2D then whole-tile sub (axis=1 broadcast)
                     T.tile.broadcast(delta_2d, delta_ub, axis=1)
                     T.tile.sub(dp_ub, dp_ub, delta_2d)
                     T.tile.mul(work_ub, work_ub, dp_ub)
@@ -700,18 +711,16 @@ def flashattn_bwd(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, bl
                     # Cast dS to fp16 and write to workspace (overwrite P)
                     T.copy(work_ub, p_half)
                     T.barrier_all()
-                    T.copy(p_half, ws_p_ds[cid, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :])
+                    T.copy(p_half, ws_p_ds[cid, v_row : v_row + hm, :])
                     T.barrier_all()
                     T.set_cross_flag("V", 3)  # signal C: dS ready
 
                     # ---- Step 3: Receive dK and atomic_add ----
                     T.wait_cross_flag(4)
                     T.barrier_all()
-                    T.copy(ws_dv_dk[cid, vid * block_N // 2 : vid * block_N // 2 + block_N // 2, :], dv_tmp)  # reuse dv_tmp for dK
+                    T.copy(ws_dv_dk[cid, v_col : v_col + hn, :], dv_tmp)  # reuse dv_tmp for dK
                     T.barrier_all()
-                    T.tile.atomic_add(
-                        dK[bz, kv_by, _k * block_N + vid * block_N // 2 : _k * block_N + vid * block_N // 2 + block_N // 2, :], dv_tmp
-                    )
+                    T.tile.atomic_add(dK[bz, kv_by, kv + v_col : kv + v_col + hn, :], dv_tmp)
                     T.barrier_all()
 
     return main
