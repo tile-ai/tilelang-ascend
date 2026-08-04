@@ -14,7 +14,6 @@ import os
 import subprocess
 import sys
 
-import pytest
 
 EXAMPLE_DIR = os.path.dirname(os.path.abspath(__file__))
 EXAMPLE_SCRIPT = os.path.join(EXAMPLE_DIR, "gelu_grad.py")
@@ -33,13 +32,5 @@ def test_gelu_grad_precision():
         timeout=600,
         cwd=EXAMPLE_DIR,
     )
-    assert result.returncode == 0, (
-        f"脚本执行失败 (exit={result.returncode})\n"
-        f"stdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
-    )
-    assert "Kernel Output Match!" in result.stdout, (
-        f"精度校验未通过\n"
-        f"stdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
-    )
+    assert result.returncode == 0, f"脚本执行失败 (exit={result.returncode})\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "Kernel Output Match!" in result.stdout, f"精度校验未通过\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"

@@ -8,7 +8,7 @@
   - block_M=128, block_N=256, K_L1=64
   - dtype=float16, accum_dtype=float
   - seed=0, rtol=1e-2, atol=1e-2
-  - Golden: ref_c = a @ b 
+  - Golden: ref_c = a @ b
 
 测试矩阵说明：
   所有 M/N/K 取值均为 block 大小的整数倍（block_M=128, block_N=256,
@@ -29,6 +29,7 @@ BLOCK_M = 128
 BLOCK_N = 256
 K_L1 = 64
 
+
 def _run_example(m: int, n: int, k: int, timeout: int = 300) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, EXAMPLE_SCRIPT, "--m", str(m), "--n", str(n), "--k", str(k)],
@@ -38,14 +39,15 @@ def _run_example(m: int, n: int, k: int, timeout: int = 300) -> subprocess.Compl
         cwd=EXAMPLE_DIR,
     )
 
+
 @pytest.mark.parametrize(
     ("m", "n", "k"),
     [
         (1024, 1024, 1024),
         (512, 512, 512),
-        (2048,1024, 512),
+        (2048, 1024, 512),
         (1024, 2048, 1024),
-        (1024,1024,2048),
+        (1024, 1024, 2048),
     ],
     ids=[
         "default_1024x1024x1024",
@@ -61,13 +63,5 @@ def test_example_gemm_precision(m: int, n: int, k: int):
     成功判定：退出码 0 且 stdout 包含 "Kernel Output Match!"。
     """
     result = _run_example(m, n, k)
-    assert result.returncode == 0, (
-        f"脚本执行失败 (exit={result.returncode})\n"
-        f"stdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
-    )
-    assert "Kernel Output Match!" in result.stdout, (
-        f"精度校验未通过\n"
-        f"stdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
-    )
+    assert result.returncode == 0, f"脚本执行失败 (exit={result.returncode})\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "Kernel Output Match!" in result.stdout, f"精度校验未通过\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"

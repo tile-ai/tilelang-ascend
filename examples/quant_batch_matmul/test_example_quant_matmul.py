@@ -51,7 +51,9 @@ def test_quant_matmul_precision(m, n, k, scale_size, out_dtype):
     torch.manual_seed(0)
     tl.cache.clear_cache()
     check_case(
-        m, n, k,
+        m,
+        n,
+        k,
         scale_size=scale_size,
         block_M=128,
         block_N=256,

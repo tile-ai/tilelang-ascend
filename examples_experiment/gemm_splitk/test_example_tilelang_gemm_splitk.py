@@ -54,13 +54,5 @@ def test_tilelang_gemm_splitk_precision(m: int, n: int, k: int, split_k: int):
     成功判定：退出码 0 且 stdout 包含 "Kernel Output Match!"。
     """
     result = _run_example(m, n, k, split_k)
-    assert result.returncode == 0, (
-        f"脚本执行失败 (exit={result.returncode})\n"
-        f"stdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
-    )
-    assert "Kernel Output Match!" in result.stdout, (
-        f"精度校验未通过\n"
-        f"stdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
-    )
+    assert result.returncode == 0, f"脚本执行失败 (exit={result.returncode})\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "Kernel Output Match!" in result.stdout, f"精度校验未通过\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"

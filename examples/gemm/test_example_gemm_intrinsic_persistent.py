@@ -67,13 +67,5 @@ def test_example_gemm_intrinsic_persistent_precision(m: int, n: int, k: int):
     注意：原文件含 do_bench 性能测试，执行时间较长。
     """
     result = _run_example(m, n, k)
-    assert result.returncode == 0, (
-        f"脚本执行失败 (exit={result.returncode})\n"
-        f"stdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
-    )
-    assert "Kernel Output Match!" in result.stdout, (
-        f"精度校验未通过\n"
-        f"stdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
-    )
+    assert result.returncode == 0, f"脚本执行失败 (exit={result.returncode})\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "Kernel Output Match!" in result.stdout, f"精度校验未通过\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
