@@ -217,4 +217,4 @@ ci/operator_test_manifest.yaml       ← 名字已经预留好了，不用改，
 3. **别用 `subprocess` 包装原脚本** —— 覆盖率会记成 0
 4. **shape 挑小的** —— CI 是 8 路并行,照抄原文件的大 shape 容易 OOM
 
-**只交测试文件,不改 manifest。**
+**只交测试文件,万不得已不改 manifest。**
