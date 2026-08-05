@@ -913,8 +913,6 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     BinaryVecOpsCodegen(op, "TMINS");
 
     // --- tail-aware vector ops (AscendTailMaskPropagation) ---
-    // Broadcast / compare / select stay on the full-tile path (gap filled with
-    // pad_value).
   } else if (op->op.same_as(tl::ascend_tail_unary())) {
     TailUnaryOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_tail_binary())) {
@@ -923,6 +921,10 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     TailScalarOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_tail_reduce())) {
     TailReduceOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_tail_compare())) {
+    TailCompareOpCodegen(op, false);
+  } else if (op->op.same_as(tl::ascend_tail_compare_scalar())) {
+    TailCompareOpCodegen(op, true);
 
     // --- sync / barrier ---
   } else if (op->op.same_as(tl::ascend_sync_all())) {
@@ -3171,6 +3173,41 @@ void CodeGenTileLangAscendPto::TailReduceOpCodegen(const CallNode *op) {
   if (kind == ReduceKind::SUM)
     this->stream << ", " << tmp << ", false";
   this->stream << ");\n";
+}
+
+void CodeGenTileLangAscendPto::TailCompareOpCodegen(const CallNode *op,
+                                                    bool scalar) {
+  // args: dst(0) src0(1) src1/scalar(2) mode(3) validRow(4) validCol(5)
+  //       physRow(6) physCol(7) storageCol(8)
+  ICHECK_EQ(op->args.size(), 9U);
+  std::string valid_row = PrintExpr(op->args[4]);
+  std::string valid_col = PrintExpr(op->args[5]);
+  std::string packed_col = "((" + valid_col + " + 7) / 8)";
+  ShapeInfo src0_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo mask_info =
+      GetCompareMaskInfo(op->args[0].as<CallNode>(), src0_info);
+  std::string dst = CreateUbVariableDynamic(mask_info, valid_row, packed_col);
+  std::string src0 = CreateUbVariableDynamic(src0_info, valid_row, valid_col);
+  std::string mode = Downcast<StringImm>(op->args[3])->value;
+
+  if (scalar) {
+    DataType src_dtype = GetAccessPtrDtypePto(op->args[1].as<CallNode>());
+    std::string scalar_value = PrintExpr(op->args[2]);
+    if (op->args[2].dtype() != src_dtype)
+      scalar_value = getType(src_dtype) + "(" + scalar_value + ")";
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "compare_scalar(" << dst << ", " << src0
+                 << ", " << scalar_value << ", CmpMode::" << mode << ");\n";
+  } else {
+    ShapeInfo src1_info = GetSliceInfo(op->args[2].as<CallNode>());
+    std::string src1 = CreateUbVariableDynamic(src1_info, valid_row, valid_col);
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "compare(" << dst << ", " << src0 << ", "
+                 << src1 << ", CmpMode::" << mode << ");\n";
+  }
+  this->PrintIndent();
+  this->stream << kAscendPtoScope << "clear_compare_tail_bits(" << dst << ", "
+               << valid_row << ", " << valid_col << ");\n";
 }
 
 void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode *op,

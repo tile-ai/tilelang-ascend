@@ -641,6 +641,10 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     TailScalarOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_tail_reduce())) {
     TailReduceOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_tail_compare())) {
+    TailCompareOpCodegen(op, false);
+  } else if (op->op.same_as(tl::ascend_tail_compare_scalar())) {
+    TailCompareOpCodegen(op, true);
   } else if (op->op.same_as(tl::ascend_row_expand_mul())) {
     RowExpandMulCodegen(op);
   } else if (op->op.same_as(tl::ascend_row_expand_mul_experiment())) {
@@ -2502,6 +2506,28 @@ void CodeGenTileLangAscend::TailReduceOpCodegen(const CallNode *op) {
   this->stream << "tl::ascend::tail_" << kind << "<" << dtype << ">(" << out
                << ", " << src << ", " << tmp << ", " << dim_str << ", " << vrow
                << ", " << vcol << ", " << pcol << ", " << clear_str << ");\n";
+}
+
+void CodeGenTileLangAscend::TailCompareOpCodegen(const CallNode *op,
+                                                 bool scalar) {
+  // args: dst(0) src0(1) src1/scalar(2) mode(3) validRow(4) validCol(5)
+  //       physRow(6) physCol(7) storageCol(8)
+  ICHECK_EQ(op->args.size(), 9U);
+  std::string dtype = getType(GetAccessPtrDtype(op->args[1].as<CallNode>()));
+  std::string dst = PrintBufferOffset(op->args[0].as<CallNode>());
+  std::string src0 = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string src1 = scalar ? dtype + "(" + PrintExpr(op->args[2]) + ")"
+                            : PrintBufferOffset(op->args[2].as<CallNode>());
+  std::string mode = Downcast<StringImm>(op->args[3])->value;
+  std::string vrow = PrintExpr(op->args[4]);
+  std::string vcol = PrintExpr(op->args[5]);
+  std::string pcol = PrintExpr(op->args[7]);
+  std::string scol = PrintExpr(op->args[8]);
+  this->PrintIndent();
+  this->stream << "tl::ascend::tail_compare" << (scalar ? "_scalar" : "") << "<"
+               << dtype << ">(" << dst << ", " << src0 << ", " << src1
+               << ", AscendC::CMPMODE::" << mode << ", " << vrow << ", " << vcol
+               << ", " << pcol << ", " << scol << ");\n";
 }
 
 void CodeGenTileLangAscend::SetCrossFlagCodegen(const CallNode *op) {
