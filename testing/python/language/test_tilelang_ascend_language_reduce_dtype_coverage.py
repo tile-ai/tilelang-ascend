@@ -128,7 +128,7 @@ def test_reduce_1d_all_dtype(op, dtype, target):
 )
 @pytest.mark.parametrize("op", ["max", "min", "sum"])
 @pytest.mark.parametrize("dtype", ["float16", "float32"])
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_2d_dim0(op, dtype, target):
     """2D dim=0 (column reduction)"""
     M, N = 16, 128
@@ -151,7 +151,7 @@ def test_reduce_2d_dim0(op, dtype, target):
 )
 @pytest.mark.parametrize("op", ["max", "min", "sum"])
 @pytest.mark.parametrize("dtype", ["float32"])
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_clear_false(op, dtype, target):
     """clear=False accumulation mode"""
     N = 128
@@ -172,17 +172,21 @@ def test_reduce_clear_false(op, dtype, target):
 @pytest.mark.low_priority
 @pytest.mark.parametrize("op", ["max", "min", "sum"])
 @pytest.mark.parametrize("dtype", ["int32", "bfloat16", "int16"])
-def test_reduce_unsupported_dtype(op, dtype):
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_reduce_unsupported_dtype(op, dtype, target):
     """Unsupported dtype should fail to compile"""
+    if target == "pto" and dtype in ("int32", "int16"):
+        pytest.xfail("pto backend does not reject int32/int16 for reduce ops")
     N = 128
     program = _make_1d_kernel(op, dtype, N)
     with pytest.raises(Exception):  # noqa: B017
-        tilelang.compile(program, out_idx=[-1], pass_configs=pass_configs, target="ascendc")
+        tilelang.compile(program, out_idx=[-1], pass_configs=pass_configs, target=target)
 
 
 @pytest.mark.low_priority
 @pytest.mark.xfail(reason="3D dim=2 not raising; _legalize_reduce_dim should reject but doesn't")
-def test_reduce_invalid_dim_3d():
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_reduce_invalid_dim_3d(target):
     """3D buffer dim=2 should raise (only 0/1/-1/-2 supported)"""
 
     @T.prim_func
@@ -195,4 +199,4 @@ def test_reduce_invalid_dim_3d():
             T.copy(b_ub, B[0, 0, 0])
 
     with pytest.raises(Exception):  # noqa: B017
-        tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target="ascendc")
+        tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
