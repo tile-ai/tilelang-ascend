@@ -1,13 +1,13 @@
 """
-T.gemm_v0 补充测试：全量 dtype 精度 + 异常边界
+T.gemm_v0 supplementary tests: full dtype precision + boundary cases
 
-补充现有测试缺失的组合：
-1. bfloat16 精度测试（现有只测 float16）
-2. float32 精度测试（小 shape，避免 L0A 溢出）
-3. int8 transpose 全覆盖（现有只测 2 种组合）
-4. 异常边界：A/B dtype 不匹配
-5. 异常边界：K 维度不一致
-6. 异常边界：init=True vs init=False 累加验证
+Covers combinations missing from existing tests:
+1. bfloat16 precision (existing only tests float16)
+2. float32 precision (small shape to avoid L0A overflow)
+3. int8 transpose full coverage (existing only tests 2 combinations)
+4. Boundary: A/B dtype mismatch
+5. Boundary: K dimension mismatch
+6. Boundary: init=True vs init=False accumulation
 """
 
 import pytest
@@ -115,7 +115,7 @@ def test_gemm_v0_bfloat16_precision(target):
     reason="gemm_v0 correctness requires an Ascend NPU runtime",
 )
 @pytest.mark.xfail(reason="float32 gemm_v0 codegen bug: Find undefined Variable _")
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_gemm_v0_float32_precision(target):
     M, N, K = 128, 128, 64
     block_M, block_N, K_L1 = 128, 128, 64
@@ -137,7 +137,7 @@ def test_gemm_v0_float32_precision(target):
     reason="gemm_v0 correctness requires an Ascend NPU runtime",
 )
 @pytest.mark.parametrize("transpose_A,transpose_B", [(False, False), (False, True), (True, False), (True, True)])
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_gemm_v0_int8_transpose_full(target, transpose_A, transpose_B):
     M, N, K = 128, 256, 128
     block_M, block_N, K_L1 = 128, 256, 128
@@ -201,12 +201,13 @@ def _gemm_v0_int8_kernel(M, N, K, block_M, block_N, K_L1, transpose_A, transpose
 
 
 # ============================================================
-# 异常边界测试
+# Boundary tests
 # ============================================================
 
 
 @pytest.mark.low_priority
-def test_gemm_v0_dtype_mismatch():
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_gemm_v0_dtype_mismatch(target):
     """A/B dtype 不一致应编译失败"""
     M, N, K = 128, 128, 128
     block_M, block_N, K_L1 = 128, 128, 128
@@ -231,13 +232,14 @@ def test_gemm_v0_dtype_mismatch():
                     C[i, j] = C_L0[i, j]
 
     with pytest.raises(Exception):  # noqa: B017
-        _compile(main, "ascendc")
+        _compile(main, target)
 
 
 @pytest.mark.low_priority
-@pytest.mark.xfail(reason="框架问题：K 不一致时未报错（ascend.py 的 assert 被注释掉）")
-def test_gemm_v0_k_mismatch():
-    """A 的 K 维度与 B 的 K 维度不一致应报错"""
+@pytest.mark.xfail(reason="Framework bug: K mismatch not caught (ascend.py assert commented out)")
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_gemm_v0_k_mismatch(target):
+    """K dimension mismatch between A and B should raise"""
     M, N = 128, 128
     K_A, K_B = 64, 128
     block_M, block_N, K_L1 = 128, 128, 64
@@ -262,7 +264,7 @@ def test_gemm_v0_k_mismatch():
                     C[i, j] = C_L0[i, j]
 
     with pytest.raises(Exception):  # noqa: B017
-        _compile(main, "ascendc")
+        _compile(main, target)
 
 
 @pytest.mark.low_priority
@@ -270,9 +272,9 @@ def test_gemm_v0_k_mismatch():
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="gemm_v0 correctness requires an Ascend NPU runtime",
 )
-@pytest.mark.parametrize("target", ["ascendc"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_gemm_v0_init_false_accumulation(target):
-    """init=False 累加模式：两次 gemm_v0 结果应等于一次性大 K 的结果"""
+    """init=False accumulation: two gemm_v0 calls should equal one large-K call"""
     M, N = 128, 128
     K_total = 128
     K_L1 = 64
