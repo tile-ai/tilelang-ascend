@@ -1,11 +1,46 @@
 from __future__ import annotations
 import tilelang.language as T
-from tvm.tir import PrimExpr, Buffer, BufferRegion, Var
+from tvm.tir import PrimExpr, Buffer, BufferLoad, BufferRegion, Var
 from typing import Union, Literal  # noqa: F401, UP035
-from tvm import tir
+from tvm import ir, tir
 
 
 _pipe = Literal["fix", "mte1", "mte2", "mte3", "m", "v", "s"]
+_npu_copy_v2 = T.copy
+
+
+def _copy_rank_zero_source(src, dst) -> bool:
+    """Copy a rank-zero source through scalar load and store operations."""
+    if isinstance(src, Var) and T.has_let_value(src):
+        src = T.get_let_value(src)
+    if isinstance(dst, Var) and T.has_let_value(dst):
+        dst = T.get_let_value(dst)
+    if not isinstance(src, Buffer) or not isinstance(dst, Buffer):
+        return False
+    if len(src.shape) != 0 or dst.scope() != "shared.ub":
+        return False
+
+    src = src.get_flattened_buffer()
+    dst = dst.get_flattened_buffer() if len(dst.shape) == 0 else dst
+    ir.assert_structural_equal(src.shape, dst.shape)
+    T.buffer_store(dst, tir.BufferLoad(src, [0]), [0])
+    return True
+
+
+def copy(
+    src: Buffer | BufferLoad | BufferRegion,
+    dst: Buffer | BufferLoad,
+    enable_relu: bool = False,
+    transpose: bool | None = False,
+    pad_value: float | int | PrimExpr | None = None,
+    tmp: Buffer | BufferLoad | None = None,
+):
+    """Copy data on Ascend, using scalar operations for rank-zero sources."""
+    if not enable_relu and not transpose and pad_value is None and _copy_rank_zero_source(src, dst):
+        return None
+    if tmp is not None:
+        return _npu_copy_v2(src, dst, enable_relu, transpose, pad_value, tmp)
+    return _npu_copy_v2(src, dst, enable_relu, transpose, pad_value)
 
 
 def _dtype(buf):
