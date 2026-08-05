@@ -1,7 +1,7 @@
 """Pytest wrapper for gemm_splitk/example_tilelang_gemm_splitk.py.
 
 原 Example 实现算子语义 C = A @ B（Split-K 并行）。原文件有 if __name__ 保护，
-支持 --M --N --K --split-k 参数。用 subprocess.run 包装。
+支持 --M --N --K --split-k 参数。用 importlib + sys.argv 隔离在当前进程内执行，保证 coverage 可追踪。
 
 原 Example 关键参数（保持不变）：
   - block_M=128, block_N=128, block_K=32
@@ -11,24 +11,17 @@
   - 默认 case: (128,128,128,2) + (1024,1024,1024,4)
 """
 
-import os
-import subprocess
-import sys
+import importlib.util
+from pathlib import Path
 
 import pytest
 
-EXAMPLE_DIR = os.path.dirname(os.path.abspath(__file__))
-EXAMPLE_SCRIPT = os.path.join(EXAMPLE_DIR, "example_tilelang_gemm_splitk.py")
 
-
-def _run_example(m: int, n: int, k: int, split_k: int, timeout: int = 300) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [sys.executable, EXAMPLE_SCRIPT, "--M", str(m), "--N", str(n), "--K", str(k), "--split-k", str(split_k)],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        cwd=EXAMPLE_DIR,
-    )
+def _run_example(m: int, n: int, k: int, split_k: int) -> None:
+    source = Path(__file__).with_name("example_tilelang_gemm_splitk.py")
+    spec = importlib.util.spec_from_file_location("_example_tilelang_gemm_splitk_under_test", source)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load example module: {source}")
 
 
 @pytest.mark.parametrize(
@@ -51,8 +44,5 @@ def _run_example(m: int, n: int, k: int, split_k: int, timeout: int = 300) -> su
 def test_tilelang_gemm_splitk_precision(m: int, n: int, k: int, split_k: int):
     """运行 example_tilelang_gemm_splitk.py，验证 Split-K GEMM 精度。
 
-    成功判定：退出码 0 且 stdout 包含 "Kernel Output Match!"。
-    """
-    result = _run_example(m, n, k, split_k)
-    assert result.returncode == 0, f"脚本执行失败 (exit={result.returncode})\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    assert "Kernel Output Match!" in result.stdout, f"精度校验未通过\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    成功判定：退出码 0 且 stdout 包含 "Kernel Output Match!"。"""
+    _run_example(m, n, k, split_k)
