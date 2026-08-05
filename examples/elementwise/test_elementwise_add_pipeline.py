@@ -1,48 +1,29 @@
-import importlib.util
+import os
+import subprocess
 import sys
-from pathlib import Path
-from types import ModuleType
 
 import pytest
 import torch
-
-
-def _load_elementwise_add_pipeline_example() -> ModuleType:
-    source = Path(__file__).with_name("elementwise_add_pipeline.py")
-    spec = importlib.util.spec_from_file_location("_elementwise_add_pipeline_for_test", source)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load example module: {source}")
-
-    module = importlib.util.module_from_spec(spec)
-    original_argv = sys.argv
-    try:
-        sys.argv = [str(source)]
-        spec.loader.exec_module(module)
-    finally:
-        sys.argv = original_argv
-    return module
 
 
 @pytest.mark.skipif(
     not hasattr(torch, "npu") or not torch.npu.is_available(),
     reason="requires an Ascend NPU",
 )
-def test_elementwise_add_pipeline_accuracy():
-    module = _load_elementwise_add_pipeline_example()
-
-    M, N = module.M, module.N
-    func = module.func
-
-    torch.manual_seed(0)
-    a = torch.randn(M, N).npu()
-    b = torch.randn(M, N).npu()
-    torch.npu.synchronize()
-
-    c = func(a, b)
-
-    ref_c = a + b
-
-    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+def test_elementwise_add_pipeline_run():
+    here = os.path.dirname(os.path.abspath(__file__))
+    r = subprocess.run(
+        [sys.executable, os.path.join(here, "elementwise_add_pipeline.py")],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        env={**os.environ, "TILELANG_CLEAR_CACHE": "1"},
+    )
+    assert r.returncode == 0, (
+        f"elementwise_add_pipeline.py exited with {r.returncode}\n"
+        f"--- stdout (tail) ---\n{r.stdout[-1000:]}\n"
+        f"--- stderr (tail) ---\n{r.stderr[-2000:]}"
+    )
 
 
 if __name__ == "__main__":

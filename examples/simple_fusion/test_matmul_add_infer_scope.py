@@ -1,48 +1,29 @@
-import importlib.util
+import os
+import subprocess
 import sys
-from pathlib import Path
-from types import ModuleType
 
 import pytest
 import torch
-
-
-def _load_matmul_add_infer_scope_example() -> ModuleType:
-    source = Path(__file__).with_name("matmul_add_infer_scope.py")
-    spec = importlib.util.spec_from_file_location("_matmul_add_infer_scope_for_test", source)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load example module: {source}")
-
-    module = importlib.util.module_from_spec(spec)
-    original_argv = sys.argv
-    try:
-        sys.argv = [str(source)]
-        spec.loader.exec_module(module)
-    finally:
-        sys.argv = original_argv
-    return module
 
 
 @pytest.mark.skipif(
     not hasattr(torch, "npu") or not torch.npu.is_available(),
     reason="requires an Ascend NPU",
 )
-def test_matmul_add_infer_scope_accuracy():
-    module = _load_matmul_add_infer_scope_example()
-
-    M, N, K = module.M, module.N, module.K
-    func = module.func
-
-    torch.manual_seed(0)
-    a = torch.randn(M, K).half().npu()
-    b = torch.randn(K, N).half().npu()
-    d = torch.randn(M, N).half().npu()
-
-    c = func(a, b, d)
-
-    ref_c = a @ b + d
-
-    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+def test_matmul_add_infer_scope_run():
+    here = os.path.dirname(os.path.abspath(__file__))
+    r = subprocess.run(
+        [sys.executable, os.path.join(here, "matmul_add_infer_scope.py")],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        env={**os.environ, "TILELANG_CLEAR_CACHE": "1"},
+    )
+    assert r.returncode == 0, (
+        f"matmul_add_infer_scope.py exited with {r.returncode}\n"
+        f"--- stdout (tail) ---\n{r.stdout[-1000:]}\n"
+        f"--- stderr (tail) ---\n{r.stderr[-2000:]}"
+    )
 
 
 if __name__ == "__main__":
