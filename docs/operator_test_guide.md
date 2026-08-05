@@ -1,10 +1,15 @@
 # 算子测试提交指南
 
-我们在把 `examples/` 下的算子从老的 `bench_test.sh` 迁到 Pytest。
+本文档介绍如何为 `examples/` 下的算子编写 Pytest 测试并提交,用于把算子从 `bench_test.sh` 的脚本执行方式迁移到 Pytest。
 
 老流程判断算子对不对,是去 stdout 里 grep `Kernel Output Match!` 这句话 —— 算子把这句话打出来就算过,哪怕结果是错的。新流程用真的数值断言。
 
 **这件事需要大家按照任务分配,写测试文件。**
+
+相关文档:
+
+- [`pytest_marker_guide.md`](pytest_marker_guide.md) —— `low_priority` / `ci_skip` 标签怎么用
+- [`coverage_guide.md`](coverage_guide.md) —— 覆盖率怎么统计、报告在哪
 
 ---
 
