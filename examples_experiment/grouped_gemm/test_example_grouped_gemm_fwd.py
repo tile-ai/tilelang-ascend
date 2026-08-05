@@ -1,8 +1,7 @@
 """Pytest wrapper for grouped_gemm/example_grouped_gemm_fwd.py.
 
-原 Example 实现 Grouped GEMM forward（metadata 驱动）。原文件有 if __name__
-保护，有 test_grouped_gemm() 内置 5 组 case。用 subprocess 传 --batch_sizes
-等参数运行。
+原 Example 实现 Grouped GEMM forward（metadata 驱动）。通过 importlib +
+sys.argv 隔离在当前进程内执行，保证 coverage 可追踪。
 
 原 Example 关键参数（保持不变）：
   - block_M=64, block_N=128, block_K=64
@@ -13,16 +12,25 @@
 """
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
 
 
-def _run_example() -> None:
+def _run_example(batch_sizes: str, k: int, m: int) -> None:
     source = Path(__file__).with_name("example_grouped_gemm_fwd.py")
     spec = importlib.util.spec_from_file_location("_example_grouped_gemm_fwd_under_test", source)
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot load example module: {source}")
+
+    module = importlib.util.module_from_spec(spec)
+    original_argv = sys.argv
+    try:
+        sys.argv = [str(source), "--batch_sizes", batch_sizes, "--K", str(k), "--M", str(m)]
+        spec.loader.exec_module(module)
+    finally:
+        sys.argv = original_argv
 
 
 @pytest.mark.parametrize(
@@ -42,8 +50,6 @@ def _run_example() -> None:
         "tail_multi_63_77_111_280_small",
     ],
 )
-def test_grouped_gemm_fwd_precision(batch_sizes, k, m):
-    """运行 example_grouped_gemm_fwd.py，验证 Grouped GEMM forward 精度。
-
-    成功判定：退出码 0 且 stdout 包含 "Kernel Output Match!"。"""
+def test_grouped_gemm_fwd_precision(batch_sizes: str, k: int, m: int):
+    """运行 example_grouped_gemm_fwd.py，验证 Grouped GEMM forward 精度。"""
     _run_example(batch_sizes, k, m)
