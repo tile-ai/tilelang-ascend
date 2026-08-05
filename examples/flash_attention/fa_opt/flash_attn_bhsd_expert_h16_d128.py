@@ -1,6 +1,6 @@
 import argparse
 import tilelang
-from tilelang import DataType, language as T
+from tilelang import language as T
 from tilelang.intrinsics import make_zn_layout, make_nz_layout
 
 import torch
@@ -10,19 +10,11 @@ torch.manual_seed(0)
 
 tilelang.disable_cache()
 
-
 L0_MAX_SIZE = 64 * 1024  # 64KB
 NUM_CORES = 24  # 910B has 24 AI Cores
 
-pass_configs = {
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: False,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: False,
-    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: False,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
-}
 
-
-@tilelang.jit(out_idx=[3], workspace_idx=[4, 5, 6], pass_configs=pass_configs)
+@tilelang.jit(out_idx=[3], workspace_idx=[4, 5, 6])
 def flash_attention_fwd(
     batch,
     seq_len,
@@ -75,10 +67,12 @@ def flash_attention_fwd(
     SIG_V_L1 = 2
     SIG_L0AB = 3  # double-buffer base: slot 0 = SIG_L0AB, slot 1 = SIG_L0AB + 1
     SIG_L0C = 5  # double-buffer base: slot 0 = SIG_L0C,  slot 1 = SIG_L0C + 1
+    SIG_Q_L1 = 6
 
     # Intra-core signal IDs (V Scope)
     SIG_IO_UB = 0
     SIG_S_HALF = 1
+    SIG_ACC_OUT = 2
 
     def task_range(cid_val):
         """Return (start, count) for core cid_val."""
@@ -152,7 +146,9 @@ def flash_attention_fwd(
                     kv_by = by // (heads_q // heads_kv)
 
                     T.copy(Q[bz, by, bx * block_M : (bx + 1) * block_M, :], q_l1)
-                    T.barrier_all()
+                    T.set_flag("MTE2", "MTE1", SIG_Q_L1)
+
+                    T.wait_flag("MTE2", "MTE1", SIG_Q_L1)
 
                     for k in T.serial(num_outer):
                         _remaining = num_iters - k * num_stages
@@ -277,6 +273,7 @@ def flash_attention_fwd(
 
                             T.reduce_max(work_ub, neg_sm[cur, :, :], dim=-1)
                             T.tile.mul(neg_sm[cur, :, :], neg_sm[cur, :, :], -sm_scale)
+                            T.pipe_barrier("V")
                             T.tile.min(neg_sm[cur, :, :], neg_sm[cur, :, :], neg_sm[prv, :, :])
                             T.tile.broadcast(buf_2d, neg_sm[cur, :, :])
                             T.tile.axpy(buf_2d, work_ub, sm_scale)
@@ -301,7 +298,9 @@ def flash_attention_fwd(
                         # --- O accumulation batch ---
                         for i in T.serial(batch_iters):
                             T.tile.exp(r_factors[i, :, :], r_factors[i, :, :])
+                            T.pipe_barrier("V")
                             T.tile.mul(sumexp, sumexp, r_factors[i, :, :])
+                            T.pipe_barrier("V")
                             T.tile.add(sumexp, sumexp, sumexp_is[i, :, :])
                             T.tile.broadcast(buf_2d, r_factors[i, :, :])
                             T.tile.mul(acc_o, acc_o, buf_2d)
@@ -324,7 +323,9 @@ def flash_attention_fwd(
                     T.tile.div(acc_o, acc_o, buf_2d)
 
                     T.copy(acc_o, acc_s_half)
-                    T.barrier_all()
+                    T.set_flag("V", "MTE3", SIG_ACC_OUT)
+
+                    T.wait_flag("V", "MTE3", SIG_ACC_OUT)
                     T.copy(
                         acc_s_half, Output[bz, by, bx * block_M + vid * block_M // 2 : bx * block_M + vid * block_M // 2 + block_M // 2, :]
                     )
@@ -359,7 +360,6 @@ if __name__ == "__main__":
         dim=D,
         cross_interval=args.cross_interval,
     )
-    print(func.get_kernel_source())
 
     def ref_flash_attn(q, k, v):
         if k.shape[1] != q.shape[1]:
