@@ -44,10 +44,10 @@ def _torch_dtype_to_str(dtype):
 # ---------------------------------------------------------------------------
 @tilelang.jit(out_idx=[-1], pass_configs=GATHER_PASS_CONFIGS)
 def _gather_kernel_standard(outer_size, M, K, TILE_OUTER, dtype, idx_dtype, elem_size, M_orig):
-    # M 为 x 的 UB buffer 对齐尺寸；M_orig 为 x 的 GM 原始尺寸。
-    # x（数据，占用大）不再 host F.pad，改由 kernel 内 T.copy(pad_value=0) 补齐。
-    # index/output 仍按对齐尺寸 K 传入（K 通常远小于 x，且 int64 index 非对齐
-    # copy 会触发 UB 越界，故保留 host 端对齐）。
+    # M is the UB buffer aligned size for x; M_orig is the original GM size for x.
+    # x (data, large) is no longer host-side F.pad; instead kernel-internal T.copy(pad_value=0) fills the tail.
+    # index/output are still passed with aligned size K (K is typically much smaller than x, and int64 index
+    # non-aligned copy would trigger UB overflow, so host-side alignment is retained).
     block_num = outer_size // TILE_OUTER
     zero = T.cast(0, dtype)
 
@@ -138,8 +138,8 @@ def _get_kernel(kernel_fn, *args):
 # Host entry (torch.gather semantics)
 # ---------------------------------------------------------------------------
 def gather(x: torch.Tensor, index: torch.Tensor, dim: int = 0) -> torch.Tensor:
-    # int8 硬件 gather 不支持 1 字节粒度取数（输出恒为 0），
-    # 提升到 int32（4 字节对齐）gather 后再转回 int8。
+    # int8 hardware gather does not support 1-byte granularity fetch (output is always 0);
+    # promote to int32 (4-byte aligned) gather, then cast back to int8.
     if x.dtype == torch.int8:
         y_i32 = gather(x.to(torch.int32), index, dim=dim)
         return y_i32.to(torch.int8)
@@ -154,10 +154,10 @@ def gather(x: torch.Tensor, index: torch.Tensor, dim: int = 0) -> torch.Tensor:
     M = x_shape[dim]
     row_bytes = M * elem_size
     if row_bytes > UB_SIZE_LIMIT:
-        # gather 轴单行超过 UB 容量：沿 gather 轴分块。
-        # 每块单独 gather（块内 index = 全局 index - 块起点），
-        # 再用 mask 选出 index 真正落入的块的结果合并。
-        # 预算取 UB 的一半，给 idx/offset/out 等其它 buffer 留余量。
+        # Gather-axis single row exceeds UB capacity: tile along the gather axis.
+        # Each chunk performs an independent gather (in-chunk index = global index - chunk start),
+        # then a mask selects results whose index actually falls within the chunk and merges them.
+        # Budget is half of UB, leaving headroom for idx/offset/out and other buffers.
         max_chunk_M = (UB_SIZE_LIMIT // 2) // elem_size
         max_chunk_M = max((max_chunk_M // ALIGN_K) * ALIGN_K, ALIGN_K)
 
@@ -167,7 +167,7 @@ def gather(x: torch.Tensor, index: torch.Tensor, dim: int = 0) -> torch.Tensor:
             size = min(max_chunk_M, M - start)
             local_x = x.narrow(dim, start, size).contiguous()
             local_index = index - start
-            # clamp 到合法范围，越界的块内取值会被 mask 丢弃
+            # Clamp to valid range; out-of-bounds in-chunk values will be discarded by mask
             local_index_clamped = local_index.clamp_(0, size - 1)
             out_chunk = gather(local_x, local_index_clamped, dim=dim)
             mask = (index >= start) & (index < start + size)
@@ -200,10 +200,10 @@ def gather(x: torch.Tensor, index: torch.Tensor, dim: int = 0) -> torch.Tensor:
         if i != dim:
             outer_size *= idx_shape[i]
 
-    # 在 torch.gather 语义下，非 dim 维 index.shape[i] <= x.shape[i]。
-    # permute 后 dim 被移到末尾，前面各维是非 gather 维。
-    # x_t 的非 dim 维可能大于 index_t，需先按 index_t 的外层形状裁剪，
-    # 否则展平成 2D 后行索引会与 index_2d 错位。
+    # Under torch.gather semantics, non-dim dims satisfy index.shape[i] <= x.shape[i].
+    # After permute, dim is moved to the end; the leading dims are non-gather dims.
+    # x_t's non-dim dims may be larger than index_t; crop to index_t's outer shape first,
+    # otherwise flattening to 2D would misalign row indices with index_2d.
     idx_outer_shape = list(index_t.shape[:-1])
     if list(x_t.shape[:-1]) != idx_outer_shape:
         slices = tuple(slice(0, s) for s in idx_outer_shape) + (slice(None),)
@@ -236,15 +236,15 @@ def gather(x: torch.Tensor, index: torch.Tensor, dim: int = 0) -> torch.Tensor:
 
     else:
         M_ALIGNED = ((M + ALIGN_K - 1) // ALIGN_K) * ALIGN_K
-        # K 只需按 ALIGN_K 对齐即可，无需与 M 对齐。
-        # gather 源(M)与目标(K)长度可不同（int64 kernel 亦如此），
-        # 旧代码 max(..., M_ALIGNED) 会在 M 很大时把 K 撑大导致 UB 溢出/段错误。
+        # K only needs ALIGN_K alignment; no need to align with M.
+        # gather source (M) and target (K) can differ in length (int64 kernel too);
+        # the old code max(..., M_ALIGNED) would inflate K when M is large, causing UB overflow/segfault.
         K_PADDED = ((K + ALIGN_K - 1) // ALIGN_K) * ALIGN_K
         K_ORIG = K
         M_ORIG = M
 
-        # x（数据，占用大）不再 host F.pad，改由 kernel 内 T.copy(pad_value=0) 补齐。
-        # index/output 仍按 K_PADDED 对齐（K 远小于 x；int64 index 非对齐 copy 会 UB 越界）。
+        # x (data, large) is no longer host-side F.pad; kernel-internal T.copy(pad_value=0) fills the tail.
+        # index/output remain aligned to K_PADDED (K is much smaller than x; int64 index non-aligned copy causes UB overflow).
         if K_PADDED > K:
             index_2d = torch.nn.functional.pad(index_2d, (0, K_PADDED - K), value=0)
             K = K_PADDED
@@ -289,49 +289,9 @@ DTYPE_MAP = {
     "int64": torch.int64,
 }
 
-
-# 精度标准（混合容差：双门限 matched_ratio + max_abs_error_limit；整型精确匹配）
-def get_precision(dtype):
-    """返回 (atol, rtol, max_abs_error_limit, required_matched_ratio)。
-    浮点：混合容差；整型：精确匹配（0 误差）。"""
-    fp_table = {
-        "float16": (2**-14, 2**-9, 1e-1, 0.99),
-        "bfloat16": (2**-10, 2**-6, 1e0, 0.99),
-        "float32": (2**-16, 2**-10, 1e-2, 0.99),
-    }
-    int_types = {"int8", "int16", "int32", "int64", "uint8"}
-    if dtype in int_types:
-        return (0.0, 0.0, 0.0, 1.0)
-    return fp_table.get(dtype, (2**-14, 2**-9, 1e-1, 0.99))
-
-
-def check_precision(actual, golden, dtype):
-    """精度判定：返回 (passed, matched_ratio, max_abs_error)。
-    浮点双门限：matched_ratio >= required 且 max_abs_error <= max_abs_error_limit；
-    整型：逐元素精确相等。inf/nan 位置做结构比对，不计入数值容差。"""
-    atol, rtol, max_abs_limit, required_ratio = get_precision(dtype)
-    a = actual.detach().cpu()
-    g = golden.detach().cpu()
-    if atol == 0.0 and rtol == 0.0:
-        mism = (a != g).sum().item()
-        total = max(a.numel(), 1)
-        return mism == 0, 1.0 - mism / total, (0.0 if mism == 0 else float("inf"))
-    a = a.float()
-    g = g.float()
-    special = ~torch.isfinite(g)
-    if special.any() and (
-        not torch.equal(torch.isnan(a[special]), torch.isnan(g[special]))
-        or not torch.equal(torch.isinf(a[special]), torch.isinf(g[special]))
-    ):
-        return False, 0.0, float("inf")
-    m = torch.isfinite(g)
-    if m.sum().item() == 0:
-        return True, 1.0, 0.0
-    abs_err = (a[m] - g[m]).abs()
-    matched_ratio = (abs_err <= (atol + rtol * g[m].abs())).float().mean().item()
-    max_abs_error = abs_err.max().item()
-    passed = (matched_ratio >= required_ratio) and (max_abs_error <= max_abs_limit)
-    return passed, matched_ratio, max_abs_error
+# Precision thresholds (float types use relative/absolute error; integers require exact match)
+RTOL_MAP = {"float16": 1e-3, "bfloat16": 8e-3, "float32": 1e-4}
+ATOL_MAP = {"float16": 1e-3, "bfloat16": 8e-3, "float32": 1e-5}
 
 
 def _make_x(x_shape, x_dtype_str, value_range):
@@ -366,16 +326,30 @@ def run_gather(case_id, x_shape, idx_shape, x_dtype_str, idx_dtype_str, dim, val
 
     x = _make_x(x_shape, x_dtype_str, value_range[0])
 
-    # index 元素必须落在 [0, x.shape[dim])
+    # Index elements must fall within [0, x.shape[dim])
     dim_size = x_shape[dim]
     index = torch.randint(0, dim_size, idx_shape, dtype=idx_torch_dtype, device="npu")
 
     y = gather(x, index, dim=dim)
     ref = torch_gather(x, index, dim=dim)
 
-    passed, matched_ratio, max_abs = check_precision(y, ref, x_dtype_str)
-    if not passed:
-        raise AssertionError(f"precision mismatch: matched_ratio={matched_ratio:.4f}, max_abs={max_abs:.3e}")
+    if x_dtype_str in ("int8", "int32", "int64"):
+        ok = torch.equal(y.cpu(), ref.cpu())
+        if not ok:
+            raise AssertionError("integer gather mismatch")
+    else:
+        rtol = RTOL_MAP.get(x_dtype_str, 1e-2)
+        atol = ATOL_MAP.get(x_dtype_str, 1e-2)
+        y_c = y.cpu().float()
+        ref_c = ref.cpu().float()
+        # NaN positions only need to match (NaN != NaN)
+        nan_mask = torch.isnan(ref_c)
+        if nan_mask.any():
+            if not torch.equal(torch.isnan(y_c), nan_mask):
+                raise AssertionError("NaN pattern mismatch")
+            y_c = torch.where(nan_mask, torch.zeros_like(y_c), y_c)
+            ref_c = torch.where(nan_mask, torch.zeros_like(ref_c), ref_c)
+        torch.testing.assert_close(y_c, ref_c, rtol=rtol, atol=atol, equal_nan=True)
 
     print(f"Case {case_id}: PASSED  (x={x_shape}, idx={idx_shape}, x_dtype={x_dtype_str}, idx_dtype={idx_dtype_str}, dim={dim})")
 
