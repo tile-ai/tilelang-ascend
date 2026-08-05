@@ -44,56 +44,131 @@
 
 打开它照着写。**算子原文件一个字都别改。**
 
-### 一条要守住的:让算子代码在 pytest 进程里跑
+样板里那 20 行同时示范了三件事,下面逐条说。
 
-别用 `subprocess` 另起一个进程去跑原脚本。那样测试也能过,精度也能测到,但有两个代价:
-
-- **覆盖率会记成 0。**`--cov` 挂在 pytest 进程上,追不进子进程。实测同一个算子:进程内直调记到 3655 行 tilelang 代码,子进程写法记到 0 行。
-- **失败时只剩一段 stdout**,看不到 `assert_close` 的断言现场(哪个元素差多少)。
-
-### 原脚本不好 import 怎么办
-
-没有 `if __name__ == "__main__"`、顶层直接跑、甚至顶层就 `parse_args()` 的,都能进程内跑 —— 临时换掉 `sys.argv` 再 `exec_module` 就行:
+### 红线:加载算子的那句,必须写在测试函数里面
 
 ```python
-import importlib.util
+# ✗ 写在模块顶层 —— pytest 收集阶段就会执行算子
+EXAMPLE = _load_example()
+
+def test_xxx():
+    ...
+```
+
+```python
+# ✓ 写在测试函数里 —— 真正跑这个测试时才执行
+def test_xxx():
+    example = _load_example()
+```
+
+pytest 分两步:先「收集」(把每个 `test_*.py` import 一遍,看看里面有哪些测试),再「运行」。
+
+写模块顶层的话,算子在**收集阶段**就跑了。这时候它一旦失败,pytest 认为是「这个文件读不进来」,后果比测试失败严重得多:
+
+```
+顶层加载：  Interrupted: 1 error during collection   → 同一批里其它文件一个都没跑
+函数内加载：1 failed, 3 passed                        → 只死自己那一个
+```
+
+写在函数里,收集阶段只读测试文件本身那几行 import,完全不碰 NPU。
+
+**这一条比下面所有内容都重要。**
+
+### 算子顶层有 `parse_args()` 的,要把 `sys.argv` 换掉
+
+不少算子在顶层就解析命令行:
+
+```python
+args = parser.parse_args()      # 它去读 sys.argv
+```
+
+而 CI 跑的是 `pytest --forked -n 8 -m "..."`,`sys.argv` 里全是 pytest 的参数。算子的 parser 不认识 `--forked`,直接 `SystemExit`。
+
+所以加载前把 `sys.argv` 临时换成算子自己的样子,加载完换回来 —— 样板里就是这么写的:
+
+```python
+original_argv = sys.argv
+try:
+    # batch_gemm.py parses arguments at import time. Hide Pytest arguments
+    # while loading it without changing the original Example.
+    sys.argv = [str(source)]
+    spec.loader.exec_module(module)
+finally:
+    sys.argv = original_argv
+```
+
+`finally` 里那句一定要有:算子中途抛异常时也得把 `sys.argv` 还回去,否则后面的测试全遭殃。
+
+要指定 shape 就把参数拼进去:
+
+```python
+sys.argv = [str(source), "--m", str(m), "--n", str(n), "--k", str(k)]
+```
+
+### 三种写法,按你的算子是什么结构挑一种
+
+**A. 算子有现成函数可以调**(`main()` / `check_case()` / `batch_matmul()` 之类)
+
+加载完直接调它,最省事,样板就是这一种:
+
+```python
+def test_batch_gemm_accuracy() -> None:
+    example = _load_example()
+    kernel = example.batch_matmul(batch, m, n, k, block_M=128, block_N=256, K_L1=64)
+    ...
+    torch.testing.assert_close(actual, expected, rtol=1e-2, atol=1e-2)
+```
+
+**B. 算子没有 `if __name__ == "__main__"`,顶层直接跑完并断言**
+
+`exec_module` 执行完就等于算子跑完、精度也比完了,异常自然抛给 pytest。测试体就一行:
+
+```python
+def test_silu_run() -> None:
+    _load_example()
+```
+
+**C. 算子的活儿写在 `if __name__ == "__main__":` 里**
+
+这种文件被 import 时那段**根本不执行**(因为 `__name__` 不是 `__main__`),要用 `runpy` 指定名字来跑:
+
+```python
+import runpy
 import sys
 from pathlib import Path
 
-import pytest
 
-
-def _run_example(m: int, n: int, k: int) -> None:
-    source = Path(__file__).with_name("example_gemm.py")
-    spec = importlib.util.spec_from_file_location("_example_gemm_under_test", source)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load example module: {source}")
-
-    module = importlib.util.module_from_spec(spec)
+def _run_example(*argv) -> None:
+    source = Path(__file__).with_name("xattention.py")
     original_argv = sys.argv
     try:
-        # The example parses its arguments and runs the comparison at import
-        # time, so the shape is chosen here and the module body is the test.
-        sys.argv = [str(source), "--m", str(m), "--n", str(n), "--k", str(k)]
-        spec.loader.exec_module(module)
+        sys.argv = [str(source), *argv]
+        runpy.run_path(str(source), run_name="__main__")
     finally:
         sys.argv = original_argv
-
-
-@pytest.mark.parametrize(
-    ("m", "n", "k"),
-    [(1024, 1024, 1024), (512, 512, 512)],
-    ids=["default_1024x1024x1024", "small_512x512x512"],
-)
-def test_example_gemm_precision(m: int, n: int, k: int) -> None:
-    _run_example(m, n, k)
 ```
 
-原脚本里已经有现成函数可以调的(`main()` / `check_case()` 之类),直接 import 那个函数更省事:
+### 不要用 `subprocess` 包装原脚本
 
-```python
-from example_quant_batch_matmul import check_case
+`subprocess.run([sys.executable, "silu.py"])` 这种写法测试也能过,精度也真能抓错,但算子的代码跑在**子进程**里,而 `--cov` 挂在 pytest 进程上,追不进去。
+
+算子一旦登记进本表,`bench_test.sh` 就不再用 `coverage run` 跑它的原脚本了(改走 `pytest --cov`),所以子进程写法会让这个算子的覆盖率变成 0。实测同一个算子:
+
 ```
+subprocess      1 passed   31s   tilelang 覆盖 0 行
+importlib 直调  1 passed   27s   tilelang 覆盖 3629 行 / 144 文件
+```
+
+顺带,失败时 subprocess 只能给你一段 stdout,进程内直调会直接指到 `assert_close` 那一行,告诉你哪个元素差多少。
+
+### shape 别照抄原文件里最大的那组
+
+CI 是 `pytest --forked -n 8`,八个用例同时在设备上。原文件为了跑性能常用很大的 shape,单个张量几百 MB 甚至几 GB,几个撞一起就 `NPU out of memory`,而且撞不撞看调度,时绿时红。
+
+挑够用的小 shape,把大的留给原文件自己。注意有些 kernel 内部有 `assert dim == 128` 这类约束,改之前先看一眼。
+
+如果算子的参考实现本身就要几十 GB(比如先把完整的 score 张量算出来再 mask),那这个算子暂时不适合迁,让它继续留在 `bench_test.sh` 里跑。
 
 ---
 
@@ -261,8 +336,14 @@ head repository:  <你的用户名>/tilelang-ascend    compare:  <你自己的�
 
 ```
 从 ascendc_pto 切分支 → 查登记表拿文件名 → 照 test_batch_gemm.py 写
-→ 算子代码在 pytest 进程里跑，别开 subprocess
 → 本地跑通 + ruff 检查 → PR 提到 ascendc_pto
 ```
+
+写测试时守住这四条:
+
+1. **加载算子那句写在测试函数里**,不写模块顶层 —— 写顶层的话一个算子失败会让整批测试 `Interrupted`
+2. 算子顶层有 `parse_args()` 的,**加载前后换掉 `sys.argv`**
+3. **别用 `subprocess` 包装原脚本** —— 覆盖率会记成 0
+4. **shape 挑小的** —— CI 是 8 路并行,照抄原文件的大 shape 容易 OOM
 
 **只交测试文件,不改 manifest。**
