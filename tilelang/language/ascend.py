@@ -2,7 +2,8 @@ from __future__ import annotations
 import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, Var
 from typing import Union, Literal  # noqa: F401, UP035
-from tvm import tir
+from tvm import DataType, tir
+from tvm._ffi.runtime_ctypes import DataTypeCode
 
 
 _pipe = Literal["fix", "mte1", "mte2", "mte3", "m", "v", "s"]
@@ -111,6 +112,80 @@ def _retrieve_ptr(object: Buffer | BufferRegion, access_type: str = "r") -> Prim
         return buffer.access_ptr(access_mask=access_type, offset=offset)
     else:
         raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
+
+
+def _get_static_int(value: PrimExpr | int) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, tir.IntImm):
+        return int(value)
+    return None
+
+
+def _get_tmp_arena_access_ptr(
+    op_name: str,
+    tmp: Buffer | BufferRegion,
+) -> PrimExpr:
+    """Validate a public explicit-tmp arena and return its read/write access pointer."""
+    if not isinstance(tmp, (Buffer, BufferRegion)):
+        raise TypeError(f"{op_name} tmp must be a one-dimensional UB Buffer or BufferRegion, but got {type(tmp).__name__}")
+
+    buffer = tmp.buffer if isinstance(tmp, BufferRegion) else tmp
+    if len(buffer.shape) != 1:
+        raise ValueError(f"{op_name} tmp must be one-dimensional, but the backing buffer has rank {len(buffer.shape)}")
+    dtype = DataType(buffer.dtype)
+    if dtype.lanes != 1 or dtype.type_code == DataTypeCode.HANDLE:
+        raise ValueError(f"{op_name} tmp must have a fixed-width scalar dtype, but got {buffer.dtype}")
+    if buffer.scope() != "shared.ub":
+        raise ValueError(f"{op_name} tmp must use scope shared.ub, but got {buffer.scope()}")
+
+    dtype_bytes = dtype.itemsize()
+
+    buffer_extent = _get_static_int(buffer.shape[0])
+    if buffer_extent is None:
+        raise ValueError(f"{op_name} tmp backing-buffer extent must be static")
+    if buffer_extent < 0:
+        raise ValueError(f"{op_name} tmp backing-buffer extent must be non-negative, but got {buffer_extent}")
+
+    if len(buffer.strides) != 0:
+        if len(buffer.strides) != 1:
+            raise ValueError(f"{op_name} tmp must be a contiguous one-dimensional arena")
+        stride_value = _get_static_int(buffer.strides[0])
+        if stride_value != 1:
+            raise ValueError(f"{op_name} tmp must be contiguous with unit stride, but got {buffer.strides[0]}")
+
+    elem_offset = _get_static_int(buffer.elem_offset)
+    if elem_offset is None:
+        raise ValueError(f"{op_name} tmp starting offset must be static")
+
+    relative_offset = 0
+    extent = buffer_extent
+    if isinstance(tmp, BufferRegion):
+        if len(tmp.region) != 1:
+            raise ValueError(f"{op_name} tmp BufferRegion must be one-dimensional, but got rank {len(tmp.region)}")
+        relative_offset = _get_static_int(tmp.region[0].min)
+        extent = _get_static_int(tmp.region[0].extent)
+        if relative_offset is None:
+            raise ValueError(f"{op_name} tmp BufferRegion offset must be static")
+        if extent is None:
+            raise ValueError(f"{op_name} tmp BufferRegion extent must be static")
+        if relative_offset < 0 or relative_offset + extent > buffer_extent:
+            raise ValueError(
+                f"{op_name} tmp BufferRegion [{relative_offset}, {relative_offset + extent}) exceeds backing extent {buffer_extent}"
+            )
+
+    if extent < 0:
+        raise ValueError(f"{op_name} tmp extent must be non-negative, but got {extent} elements")
+
+    absolute_byte_offset = (elem_offset + relative_offset) * dtype_bytes
+    if absolute_byte_offset < 0:
+        raise ValueError(f"{op_name} tmp starting address must be non-negative, but got byte offset {absolute_byte_offset}")
+    if absolute_byte_offset % 32 != 0:
+        raise ValueError(f"{op_name} tmp starting address must be 32-byte aligned, but got byte offset {absolute_byte_offset}")
+
+    return buffer.access_ptr("rw", offset=relative_offset, extent=extent)
 
 
 def set_cross_flag(pipe: str, flag: int, mode: int = 2):

@@ -279,16 +279,15 @@ private:
 
   Map<String, PrimExpr> address_offset_;
 
-  // Element type used by each emitted AscendC LocalTensor.  Storage rewrite
-  // may reuse that allocation through an access_ptr of another dtype; codegen
-  // must then emit ReinterpretCast before applying the element offset.
-  std::unordered_map<const VarNode *, DataType> local_tensor_dtypes_;
-
   bool use_swizzle_{false};
+
+  bool enable_exception_dump_{false};
 
   std::string platform_;
 
   Map<Var, Array<PrimExpr>> buffer_shapes_;
+
+  std::unordered_map<const VarNode *, DataType> buffer_dtypes_;
 };
 
 } // namespace codegen

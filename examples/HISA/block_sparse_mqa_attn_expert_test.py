@@ -35,14 +35,19 @@ def block_sparse_mqa_attn_return_logits(
     block_N: int = 8,
     num_stages: int = 2,  # noqa: ARG001
     threads: int = 2,  # noqa: ARG001
-    num_pairs: int = 20,
+    grid_size: int = 24,
 ):
     dtype = "float16"
     accum_dtype = "float32"
     index_dtype = "int32"
 
+    # grid_size is the controllable input. num_pairs is derived from it:
+    # each block must cover ceildiv(seq_len, grid_size) tokens, rounded up to
+    # whole pairs so that num_tokens_per_kernel == 2*num_pairs. Any tokens
+    # provisioned beyond seq_len are guarded by the `if token_* < seq_len` checks.
+    tokens_per_block = (seq_len + grid_size - 1) // grid_size
+    num_pairs = (tokens_per_block + 1) // 2
     num_tokens_per_kernel = 2 * num_pairs
-    grid_size = T.ceildiv(seq_len, num_tokens_per_kernel)
 
     index_q_shape = [seq_len, heads, index_dim]
     index_k_shape = [seq_len_kv, index_dim]
@@ -84,6 +89,16 @@ def block_sparse_mqa_attn_return_logits(
         workspace_1: T.Tensor([seq_len, topk, H_per_block, kv_block_size], accum_dtype),
     ):
         with T.Kernel(grid_size, is_npu=True) as (bx, by):
+            # Per-core valid pair count. Compile-time num_pairs is the upper
+            # bound (buffer alloc / unroll); each core loops only over the pairs
+            # it actually owns. This is what makes an arbitrary grid_size safe:
+            # the tail core (fewer valid tokens) runs fewer iterations instead of
+            # entering fully-empty pairs. A fully-empty pair would still execute
+            # the unconditional set/wait_cross_flag with no buffer work to pace
+            # it, desyncing the intra-block cube<->vec handshake -> device hang.
+            # T.min clamps to num_pairs; negative arg on an over-shot core yields
+            # a 0-trip loop (harmless; our derivation never produces empty cores).
+            num_pairs_bx = T.min(num_pairs, T.ceildiv(seq_len - bx * num_tokens_per_kernel, 2))
             # ---- V scope: UB allocations (4 blocks merged) ----
             s_ub_4x = T.alloc_ub([H_per_block, kv_block_size * 4], accum_dtype)
             logits_4x = T.alloc_ub([1, kv_block_size * 4], accum_dtype)
@@ -103,7 +118,9 @@ def block_sparse_mqa_attn_return_logits(
             # Double-buffered K L1
             k_l1_0 = T.alloc_L1([kv_block_size, index_dim], dtype)
             k_l1_1 = T.alloc_L1([kv_block_size, index_dim], dtype)
-            l0a = T.alloc_L0A([H_per_block, index_dim], dtype)
+            # Double-buffered L0A (token_a uses l0a_0, token_b uses l0a_1)
+            l0a_0 = T.alloc_L0A([H_per_block, index_dim], dtype)
+            l0a_1 = T.alloc_L0A([H_per_block, index_dim], dtype)
             # Double-buffered L0B
             l0b_0 = T.alloc_L0B([index_dim, kv_block_size], dtype)
             l0b_1 = T.alloc_L0B([index_dim, kv_block_size], dtype)
@@ -124,7 +141,7 @@ def block_sparse_mqa_attn_return_logits(
                 T.set_flag("FIX", "M", SIG_L0C_0)
                 T.set_flag("FIX", "M", SIG_L0C_1)
 
-                for pair_i in T.serial(num_pairs):
+                for pair_i in T.serial(num_pairs_bx):
                     for n_outer in T.serial(topk_groups):
                         n_i0 = n_outer * 4 + 0
                         n_i1 = n_outer * 4 + 1
@@ -167,7 +184,7 @@ def block_sparse_mqa_attn_return_logits(
                             T.copy(IndexQ[token_a, :, :], q_l1)
                             T.set_flag("MTE2", "MTE1", SIG_Q_L1)
                             T.wait_flag("MTE2", "MTE1", SIG_Q_L1)
-                            T.copy(q_l1, l0a)
+                            T.copy(q_l1, l0a_0)
                             T.set_flag("MTE1", "MTE2", SIG_Q_L1)
                             T.copy(k_l1_0, l0b_0, transpose=True)
                             T.set_flag("MTE1", "MTE2", SIG_K_L1_0)
@@ -193,7 +210,7 @@ def block_sparse_mqa_attn_return_logits(
 
                             T.wait_flag("MTE1", "M", SIG_L0AB_0)
                             T.wait_flag("FIX", "M", SIG_L0C_0)
-                            T.mma(l0a, l0b_0, l0c_0, init=True)
+                            T.mma(l0a_0, l0b_0, l0c_0, init=True)
                             T.set_flag("M", "MTE1", SIG_L0AB_0)
                             T.set_flag("M", "FIX", SIG_L0C_0)
 
@@ -217,7 +234,7 @@ def block_sparse_mqa_attn_return_logits(
 
                             T.wait_flag("MTE1", "M", SIG_L0AB_1)
                             T.wait_flag("FIX", "M", SIG_L0C_1)
-                            T.mma(l0a, l0b_1, l0c_1, init=True)
+                            T.mma(l0a_0, l0b_1, l0c_1, init=True)
                             T.set_flag("M", "MTE1", SIG_L0AB_1)
                             T.set_flag("M", "FIX", SIG_L0C_1)
 
@@ -234,7 +251,7 @@ def block_sparse_mqa_attn_return_logits(
 
                             T.wait_flag("MTE1", "M", SIG_L0AB_0)
                             T.wait_flag("FIX", "M", SIG_L0C_0)
-                            T.mma(l0a, l0b_0, l0c_0, init=True)
+                            T.mma(l0a_0, l0b_0, l0c_0, init=True)
                             T.set_flag("M", "MTE1", SIG_L0AB_0)
                             T.set_flag("M", "FIX", SIG_L0C_0)
 
@@ -245,7 +262,7 @@ def block_sparse_mqa_attn_return_logits(
                             # ---- Wave 5: MMA K[3]→l0c_1 | Copy l0c_0→ws (drain) ----
                             T.wait_flag("MTE1", "M", SIG_L0AB_1)
                             T.wait_flag("FIX", "M", SIG_L0C_1)
-                            T.mma(l0a, l0b_1, l0c_1, init=True)
+                            T.mma(l0a_0, l0b_1, l0c_1, init=True)
                             T.set_flag("M", "MTE1", SIG_L0AB_1)
                             T.set_flag("M", "FIX", SIG_L0C_1)
 
@@ -298,7 +315,7 @@ def block_sparse_mqa_attn_return_logits(
                             T.copy(IndexQ[token_b, :, :], q_l1)
                             T.set_flag("MTE2", "MTE1", SIG_Q_L1)
                             T.wait_flag("MTE2", "MTE1", SIG_Q_L1)
-                            T.copy(q_l1, l0a)
+                            T.copy(q_l1, l0a_1)
                             T.set_flag("MTE1", "MTE2", SIG_Q_L1)
                             T.copy(k_l1_0, l0b_0, transpose=True)
                             T.set_flag("MTE1", "MTE2", SIG_K_L1_0)
@@ -324,7 +341,7 @@ def block_sparse_mqa_attn_return_logits(
 
                             T.wait_flag("MTE1", "M", SIG_L0AB_0)
                             T.wait_flag("FIX", "M", SIG_L0C_0)
-                            T.mma(l0a, l0b_0, l0c_0, init=True)
+                            T.mma(l0a_1, l0b_0, l0c_0, init=True)
                             T.set_flag("M", "MTE1", SIG_L0AB_0)
                             T.set_flag("M", "FIX", SIG_L0C_0)
 
@@ -348,7 +365,7 @@ def block_sparse_mqa_attn_return_logits(
 
                             T.wait_flag("MTE1", "M", SIG_L0AB_1)
                             T.wait_flag("FIX", "M", SIG_L0C_1)
-                            T.mma(l0a, l0b_1, l0c_1, init=True)
+                            T.mma(l0a_1, l0b_1, l0c_1, init=True)
                             T.set_flag("M", "MTE1", SIG_L0AB_1)
                             T.set_flag("M", "FIX", SIG_L0C_1)
 
@@ -365,7 +382,7 @@ def block_sparse_mqa_attn_return_logits(
 
                             T.wait_flag("MTE1", "M", SIG_L0AB_0)
                             T.wait_flag("FIX", "M", SIG_L0C_0)
-                            T.mma(l0a, l0b_0, l0c_0, init=True)
+                            T.mma(l0a_1, l0b_0, l0c_0, init=True)
                             T.set_flag("M", "MTE1", SIG_L0AB_0)
                             T.set_flag("M", "FIX", SIG_L0C_0)
 
@@ -376,7 +393,7 @@ def block_sparse_mqa_attn_return_logits(
                             # ---- Wave 5: MMA K[3]→l0c_1 | Copy l0c_0→ws (drain) ----
                             T.wait_flag("MTE1", "M", SIG_L0AB_1)
                             T.wait_flag("FIX", "M", SIG_L0C_1)
-                            T.mma(l0a, l0b_1, l0c_1, init=True)
+                            T.mma(l0a_1, l0b_1, l0c_1, init=True)
                             T.set_flag("M", "MTE1", SIG_L0AB_1)
                             T.set_flag("M", "FIX", SIG_L0C_1)
 
@@ -415,7 +432,7 @@ def block_sparse_mqa_attn_return_logits(
                 T.set_flag("V", "MTE2", SIG_W_UB)
                 T.set_flag("MTE3", "V", SIG_LOGITS)
 
-                for pair_i in T.serial(num_pairs):
+                for pair_i in T.serial(num_pairs_bx):
                     for n_outer in T.serial(topk_groups):
                         # Per-n_outer sync: wait for C scope to finish this topk tile
                         if n_outer % 2 == 0:
@@ -555,7 +572,6 @@ def ref_block_sparse_mqa_attn(
     scores = torch.einsum("qhd,qkbd->qkbh", q, k_gathered)
 
     weights_expanded = weights.unsqueeze(1).unsqueeze(2)
-    # scores = scores.relu()
     scores = scores.relu() * weights_expanded
 
     logits = scores.sum(dim=-1)
@@ -578,7 +594,7 @@ def test_block_sparse_mqa_attn(
     kv_block_size: int,
     topk: int,
     dtype: str = "float16",
-    num_pairs: int = 64,
+    grid_size: int = 24,
 ):
     """Test sparse MQA attention kernel with golden validation."""
     kernel = block_sparse_mqa_attn_return_logits(
@@ -588,7 +604,7 @@ def test_block_sparse_mqa_attn(
         topk=topk,
         heads=heads,
         index_dim=index_dim,
-        num_pairs=num_pairs,
+        grid_size=grid_size,
     )
     print(kernel.get_kernel_source())
 
@@ -635,15 +651,31 @@ def test_block_sparse_mqa_attn(
     return logits
 
 
+def get_npu_core_num() -> int:
+    """Query the current NPU's AI Cube core count (== the kernel's grid_size).
+
+    Each kernel block uses 1 cube + 2 vector sub-cores (by in {0,1}), so the
+    number of blocks we launch is the cube core count. Raises if the device
+    can't be queried -- grid_size is compiled into the kernel, so a wrong guess
+    would silently mis-shape it; failing loudly is safer.
+    """
+    import torch_npu  # noqa: F401
+
+    props = torch.npu.get_device_properties(0)
+    cube = int(getattr(props, "cube_core_num", 0))
+    if cube <= 0:
+        raise RuntimeError(f"could not determine NPU cube_core_num (got {cube!r})")
+    return cube
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Block Sparse MQA Attention Kernel Test")
-    parser.add_argument("--seq_len", type=int, default=32, help="Query sequence length")
+    parser.add_argument("--seq_len", type=int, default=1024, help="Query sequence length")
     parser.add_argument("--seq_len_kv", type=int, default=128 * 1024, help="KV sequence length")
     parser.add_argument("--heads", type=int, default=32, help="Number of attention heads")
     parser.add_argument("--index_dim", type=int, default=128, help="Index dimension")
     parser.add_argument("--kv_block_size", type=int, default=128, help="KV block size")
     parser.add_argument("--topk", type=int, default=64, help="Number of top blocks (must be divisible by 4)")
-    parser.add_argument("--num_pairs", type=int, default=16, help="Number of token pairs per kernel block")
     parser.add_argument("--dtype", type=str, default="float16", help="Data type")
     args = parser.parse_args()
 
@@ -651,8 +683,9 @@ if __name__ == "__main__":
     torch.manual_seed(42)
     tilelang.disable_cache()
 
-    # assert args.seq_len % (2 * args.num_pairs) == 0, \
-    #     f"seq_len ({args.seq_len}) must be divisible by 2*num_pairs ({2 * args.num_pairs})"
+    # grid_size is always the current NPU's cube core count (one block per cube).
+    args.grid_size = get_npu_core_num()
+    print(f"[grid_size] NPU cube core count -> grid_size={args.grid_size}")
 
     print("=" * 60)
     print("Block Sparse MQA Attention Kernel Test")
@@ -664,8 +697,11 @@ if __name__ == "__main__":
     print(f"  index_dim: {args.index_dim}")
     print(f"  kv_block_size: {args.kv_block_size}")
     print(f"  topk: {args.topk}")
-    print(f"  num_pairs: {args.num_pairs}")
-    print(f"  kernel_blocks: {args.seq_len // (2 * args.num_pairs)}")
+    print(f"  grid_size: {args.grid_size}")
+    _tokens_per_block = (args.seq_len + args.grid_size - 1) // args.grid_size
+    _num_pairs = (_tokens_per_block + 1) // 2
+    print(f"  derived num_pairs: {_num_pairs}")
+    print(f"  tokens_per_block: {2 * _num_pairs}")
     print(f"  dtype: {args.dtype}")
     print()
 
@@ -676,7 +712,7 @@ if __name__ == "__main__":
         index_dim=args.index_dim,
         kv_block_size=args.kv_block_size,
         topk=args.topk,
-        num_pairs=args.num_pairs,
+        grid_size=args.grid_size,
         dtype=args.dtype,
     )
     print("Kernel Output Match!")

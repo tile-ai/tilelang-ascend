@@ -140,6 +140,16 @@ block_M = [bs for bs in [64, 128] if bs <= M]  # 排除 256
 
 ## 运行时错误
 
+### 0. 先按执行阶段归因 aclnn 报错
+
+看到 `aclnnInplaceRandom`、`aclnnCast`、`aclnnCopy` 等名称时，先定位它发生在
+输入准备、kernel launch、golden 还是结果验证阶段。`aclnnInplaceRandom` 表示测试
+在 NPU 上生成/改写随机输入，不是 kernel 内存不足、精度失败或 kernel 超时。
+
+评测兼容测试应在 CPU 完成随机数、特殊值注入、dtype 转换和 golden 物理重排，
+随后只执行 H2D → TileLang kernel → D2H。不得把 host/test aclnn 缺失误诊为 NPU
+容量问题，也不得通过跳过 large case 规避。
+
 ### 1. 结果不正确
 
 **可能原因**:

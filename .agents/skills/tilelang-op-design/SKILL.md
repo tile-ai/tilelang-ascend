@@ -92,6 +92,8 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
    - **动态 shape 判定**：是否存在运行时才确定的维度
 4. **非整除场景预判**：检查输入 shape 是否可能不被 block size 整除。`T.ceildiv(M, block_M)` 对非整除或 `M < block_M` 返回 ≥1（非零），`T.copy` 已支持动态 shape 切片自动处理尾块，**不需要 host padding**。用 `T.ceildiv` + 动态切片 `T.copy(A[m:m+valid, ...])`，参考 `examples/chunk_gated_delta_rule/expert_chunk_gated_delta_rule.py:107-108`。仅当多个 group 共享同一输出 buffer 时需注意尾块写入竞态——用 metadata 的 valid_m 字段限制写入范围 `T.copy(C_L0, Y[m:m+valid_m, ...])`
 5. **多 group 输出竞态约束**（grouped 类算子）：当多个 group 共享同一输出 buffer（紧凑排列，不 padding）时，尾块按 block_M 整块写会溢出到隔壁 group 的区域，导致竞态条件（执行顺序不确定→结果不确定）。解法：metadata 记录 valid_m，kernel 用 `T.copy(C_L0, Y[m_start : m_start + valid_m, ...])` 只写有效行。参考 `examples/grouped_gemm/example_grouped_gemm_fwd.py` 的 block_metadata[2]（valid_m 字段，当前未使用，应启用）。
+6. **数据重排成本建模**：按 [references/ascend-constraints.md](references/ascend-constraints.md) §4.2 为每条路径和最大/关键 case 计算 DMA/GM
+   标量访问/地址解码/并行度；不能只给 tile shape，不计算 transaction 数量。
 
 ### Phase 2：信息收集
 
@@ -99,21 +101,35 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 
 ### Phase 3：生成 design.md
 
+> **⚠️ 生成 design.md 时必须遵守 [references/ascend-constraints.md](references/ascend-constraints.md) §5「Host 侧 Buffer 操作约束」**。下游
+> `tilelang-op-develop` 会再次校验；违规设计在 Stage 2 返回 `[DESIGN_ERROR]`。
+
 基于 [examples/design-template.md](examples/design-template.md) 模板，填充所有章节：
 
 1. 概述
 2. 编程模式选型
 3. API 映射设计
 4. 数据规格与内存规划
-5. Tiling 策略（**必含：非整除时 padding+crop 策略，或 Kernel 内动态 block 方案**）
+5. Tiling 策略（非整除时用输入、输出两侧显式 valid extent/BufferRegion；前端负责
+   按这些动态切片裁剪搬运，**不代表尾块无需设计**；host 侧不允许 padding + crop）
 6. 循环与调度结构
 7. 同步策略
 8. CV 融合设计（**按模式分支**：Developer 默认消除 workspace/vid——`threads=2` + 片上直连，不产出 workspace 规格；仅 Expert/混合或复杂场景回退才设计 workspace + `workspace_idx`。详见 design-template.md §8.2）
-9. 验证方案（Golden + **L0 门槛测试计划**；完整分层套件 L1/L2/Boundary 交由 `tilelang-op-test-design`，不在此枚举）
+9. 验证方案（Golden + **L0 门槛测试计划** + **性能可行性哨兵**；除规则
+   shape 外，至少包含每条路径最坏 dtype/最大任务数的用户关键 case，并给出单 case 超时预算；
+   完整分层套件 L1/L2/Boundary 交由 `tilelang-op-test-design`）。若算子支持
+   NaN/Inf，精度方案必须声明位置敏感比较：特殊值用“有限值 + 稀疏特殊值”的
+   混合输入，先严格比较 NaN/正 Inf/负 Inf mask，再只对有限值应用数值容差；
+   禁止使用全 NaN/全 Inf 输入作为唯一特殊值用例，因为数据重排或索引错误可能被掩盖
 10. 风险点与注意事项
 11. 交付清单
 
 ### Phase 4：质量自检
+
+**⚠️ 首要检查：host 侧 Buffer 操作合规性（违反则立即修订，不得继续）**
+
+核对 design.md 的完整 host 路径是否只含经证明不物理化的 metadata view、kernel
+调用与验证；命中真实拷贝或 aclnn 调用必须修订（详见 [references/ascend-constraints.md](references/ascend-constraints.md) §5）。
 
 按照 [references/quality-checklist.md](references/quality-checklist.md) 中的自检清单逐项检查，确保文档质量。
 
@@ -168,7 +184,7 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 
 - [references/ascend-constraints.md](references/ascend-constraints.md) — 技术约束清单、强制检测规则、警告输出格式
 - [references/decision-tree.md](references/decision-tree.md) — 算子特征分析决策树、平台识别、NPU 硬件约束、API 映射规则
-- [references/quality-checklist.md](references/quality-checklist.md) — 18 项质量自检清单
+- [references/quality-checklist.md](references/quality-checklist.md) — 质量自检清单
 - [references/info-sources.md](references/info-sources.md) — 信息收集步骤、信息源优先级、冲突处理原则
 - [examples/design-template.md](examples/design-template.md) — design.md 完整模板
 - [examples/completion-report-template.md](examples/completion-report-template.md) — 完成报告输出模板

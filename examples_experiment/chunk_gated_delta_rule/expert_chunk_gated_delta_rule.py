@@ -91,6 +91,9 @@ def chunk_gated_delta_rule_fwd_kernel(
             g_exp_ub = T.alloc_ub([BT // 2], accum_dtype)
             g_exp_ub_broc = T.alloc_ub([BT // 2, V_half], accum_dtype)
 
+            g_exp_ub_pad = T.alloc_ub([BT], accum_dtype)
+            g_mask_ub_pad = T.alloc_ub([BT // 8], "uint8")
+
             k_chunk_l1 = T.alloc_L1([2, BT, K], dtype)
             w_chunk_l1 = T.alloc_L1([2, BT, K], dtype)
             h_state_l1 = T.alloc_L1([2, K, V_half], dtype)
@@ -219,6 +222,16 @@ def chunk_gated_delta_rule_fwd_kernel(
                         T.wait_flag("mte2", "v", 2)
                         T.pipe_barrier("v")
                         T.tile.sub(g_exp_ub, g_exp_ub, g_chunk_ub[pid, :])
+                        T.copy(g_exp_ub, g_exp_ub_pad[0 : BT // 2])
+                        T.tile.compare(g_mask_ub_pad, g_exp_ub_pad, T.float32(0), "LE")
+                        T.tile.select(
+                            g_exp_ub_pad,
+                            g_mask_ub_pad,
+                            g_exp_ub_pad,
+                            -T.infinity(accum_dtype),
+                            "VSEL_TENSOR_SCALAR_MODE",
+                        )
+                        T.copy(g_exp_ub_pad[0 : BT // 2], g_exp_ub)
                         T.pipe_barrier("v")
                         T.tile.exp(g_exp_ub, g_exp_ub)
                         T.pipe_barrier("v")
@@ -294,14 +307,14 @@ def chunk_gated_delta_rule_fwd_h(
     k: torch.Tensor,
     w: torch.Tensor,
     u: torch.Tensor,
-    g: torch.Tensor | None = None,
-    initial_state: torch.Tensor | None = None,
+    g=None,
+    initial_state=None,
     output_final_state: bool = False,
     chunk_size: int = 64,
     save_new_value: bool = True,
-    cu_seqlens: torch.LongTensor | None = None,
-    chunk_offsets: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    cu_seqlens=None,
+    chunk_offsets=None,
+):
     BT = chunk_size
     USE_G = g is not None
 
@@ -377,12 +390,12 @@ def ref_chunk_gated_delta_rule(
     k: torch.Tensor,
     w: torch.Tensor,
     u: torch.Tensor,
-    g: torch.Tensor | None = None,
-    initial_state: torch.Tensor | None = None,
+    g=None,
+    initial_state=None,
     output_final_state: bool = False,
     chunk_size: int = 64,
-    cu_seqlens: torch.LongTensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    cu_seqlens=None,
+):
     BT = chunk_size
 
     k = k.float().squeeze(0)  # [T_total, Hg, K]
@@ -430,7 +443,9 @@ def ref_chunk_gated_delta_rule(
                 if g is not None:
                     g_chunk = g[bos + t_start : bos + t_end, i_h]
                     g_last = g_chunk[-1].item()
-                    v_n = v_n * torch.exp(g_last - g_chunk)[:, None]
+                    g_diff = g_last - g_chunk
+                    g_diff_masked = torch.where(g_diff <= 0.0, g_diff, torch.full_like(g_diff, float("-inf")))
+                    v_n = v_n * g_diff_masked.exp()[:, None]
                     h_state = h_state * torch.exp(torch.tensor(g_last, device=k.device))
 
                 h_state = h_state + torch.matmul(k_chunk.transpose(-1, -2), v_n)
@@ -445,15 +460,15 @@ def ref_chunk_gated_delta_rule(
 # ==========================================
 # 5. Test Functions
 # ==========================================
-def test_chunk_gated_delta_rule(seqlens, H, Hg, K, V, use_g=True, use_initial_state=True):
+def test_chunk_gated_delta_rule(seqlens, H, Hg, K, V, use_g=True, use_initial_state=True, seed=41):
     print(f"Testing Varlen seqlens={seqlens}, H={H}, Hg={Hg}, K={K}, V={V}, use_g={use_g}, use_initial_state={use_initial_state}")
-    torch.manual_seed(41)
+    torch.manual_seed(seed)
 
     T_total = sum(seqlens)
     N = len(seqlens)
     cu_seqlens = torch.tensor([0] + [sum(seqlens[: i + 1]) for i in range(len(seqlens))], dtype=torch.int32).npu()
 
-    torch.manual_seed(41)
+    torch.manual_seed(seed)
     k = torch.rand(1, T_total, Hg, K, dtype=torch.float16).npu() * 0.01
     w = torch.rand(1, T_total, H, K, dtype=torch.float16).npu() * 0.01
     u = torch.rand(1, T_total, H, V, dtype=torch.float16).npu() * 0.01
@@ -478,6 +493,7 @@ def test_chunk_gated_delta_rule(seqlens, H, Hg, K, V, use_g=True, use_initial_st
     torch.testing.assert_close(h.cpu(), ref_h.cpu(), rtol=1e-5, atol=1e-5)
     torch.testing.assert_close(v_new.cpu(), ref_v_new.cpu(), rtol=1e-5, atol=1e-5)
     torch.testing.assert_close(ht.cpu(), ref_ht.cpu(), rtol=1e-5, atol=1e-5)
+    print(f"[PASS] seqlens={seqlens}, H={H}, Hg={Hg}, K={K}, V={V}")
 
 
 if __name__ == "__main__":
@@ -489,8 +505,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--seqlens",
         type=str,
-        default="2048",
-        help="Sequence lengths for varlen mode (comma-separated)",
+        default=None,
+        help="Sequence lengths for varlen mode (comma-separated). If not specified, runs all test cases.",
     )
     parser.add_argument("--H", type=int, default=8, help="Number of heads")
     parser.add_argument("--Hg", type=int, default=4, help="Number of grouped heads (must be <= H)")
@@ -499,8 +515,38 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     print("=" * 60)
-    seqlens = [int(x) for x in args.seqlens.split(",")]
-    test_chunk_gated_delta_rule(
-        seqlens=seqlens, H=args.H, Hg=args.Hg, K=args.K, V=args.V, use_g=args.use_g, use_initial_state=args.use_initial_state
-    )
+
+    if args.seqlens is not None:
+        seqlens = [int(x) for x in args.seqlens.split(",")]
+        test_chunk_gated_delta_rule(
+            seqlens=seqlens, H=args.H, Hg=args.Hg, K=args.K, V=args.V, use_g=args.use_g, use_initial_state=args.use_initial_state
+        )
+    else:
+        test_cases = [
+            # Original test case
+            {"seqlens": [2048], "H": 8, "Hg": 4, "K": 128, "V": 128, "seed": 41},
+            # Test cases from xllm C++ gtest:
+            #   chunk_gated_delta_rule_fwd_h_wrapper_test.cpp
+            # Shape verification cases
+            {"seqlens": [64], "H": 16, "Hg": 16, "K": 128, "V": 128, "seed": 20260511},
+            {"seqlens": [128], "H": 16, "Hg": 8, "K": 128, "V": 128, "seed": 20260515},
+            {"seqlens": [128, 128], "H": 16, "Hg": 16, "K": 128, "V": 128, "seed": 20260512},
+            {"seqlens": [128], "H": 32, "Hg": 16, "K": 128, "V": 128, "seed": 20260512},
+            # Accuracy verification cases
+            {"seqlens": [64], "H": 16, "Hg": 16, "K": 128, "V": 128, "seed": 20260513},
+            {"seqlens": [128], "H": 16, "Hg": 8, "K": 128, "V": 128, "seed": 20260516},
+            {"seqlens": [128], "H": 32, "Hg": 16, "K": 128, "V": 128, "seed": 20260514},
+        ]
+        for case in test_cases:
+            test_chunk_gated_delta_rule(
+                seqlens=case["seqlens"],
+                H=case["H"],
+                Hg=case["Hg"],
+                K=case["K"],
+                V=case["V"],
+                use_g=args.use_g,
+                use_initial_state=args.use_initial_state,
+                seed=case["seed"],
+            )
+
     print("Batch Kernel Output Match!")

@@ -59,6 +59,11 @@ class PassConfigKey(str, Enum):
     TL_ASCEND_PTO_USE_PIPE_IN_CV_COPY = "tl.ascend_pto_use_pipe_in_cv_copy"
     """Enable PTO copy-through-pipe path in cross CV copy. When False, PTO falls back to copy-through-GM path. Default: True"""
 
+    TL_ASCEND_EXCEPTION_DUMP = "tl.ascend_exception_dump"
+    """Enable/disable AI CORE exception dump callback. Requires a CANN version
+    that provides aclrtSetExceptionInfoCallback / aclrtGetArgsFromExceptionInfo.
+    Default: False"""
+
     # TIR related configs
     TIR_ENABLE_EQUIV_TERMS_IN_CSE = "tir.enable_equiv_terms_in_cse_tir"
     """Enable equivalent terms in TIR Common Subexpression Elimination. Default: True"""

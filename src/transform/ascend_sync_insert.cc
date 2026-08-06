@@ -1259,7 +1259,7 @@ private:
 
             auto config_it = operation_config_.find(normalized_name);
             if (config_it != operation_config_.end()) {
-              const auto &config = config_it->second;
+              const OperationConfig config = ResolveOperationConfig(call);
 
               std::unordered_map<std::string, BufferAccess> buffer_access_map;
 

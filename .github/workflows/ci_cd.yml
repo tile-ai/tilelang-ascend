@@ -202,6 +202,26 @@ jobs:
           pytest_files_array=()
           pytest_dirs_array=()
 
+          # A migrated operator is covered by its Pytest test, so a change to either
+          # one only needs that test; there is no reason to run the whole directory.
+          declare -A source_to_test=()
+          declare -A test_to_test=()
+          # Collected separately from pytest_files_array: that one is for
+          # testing/python/ and gets collapsed by rules further down. Every rule
+          # that decides on a full run clears these along with the rest, or what
+          # was collected before it would be written back afterwards and narrow
+          # the full run to the directory of whichever operator came first.
+          declare -A routed_tests=()
+          routed_example_dirs=()
+          routed_experiment_dirs=()
+          if [ -f scripts/ci/resolve_operator_tests.py ]; then
+            while IFS=$'\t' read -r source test; do
+              [[ -n "$source" && -n "$test" ]] || continue
+              source_to_test["$source"]="$test"
+              test_to_test["$test"]="$test"
+            done < <(python scripts/ci/resolve_operator_tests.py list --format tsv)
+          fi
+
           for file in $changed_files; do
             # 排除 .agents 目录（skill 配置，无需测试）
             if [[ "$file" =~ ^\.agents/ ]]; then
@@ -251,9 +271,37 @@ jobs:
               experiment_dirs_array=()
               pytest_files_array=()
               pytest_dirs_array=()
+              routed_tests=()
+              routed_example_dirs=()
+              routed_experiment_dirs=()
               break
             fi
             
+            if [[ -n "${source_to_test[$file]:-}" ]]; then
+              mapped_test="${source_to_test[$file]}"
+              routed_tests["$mapped_test"]=1
+              if [[ "$file" =~ ^examples/([^/]+)/ ]]; then
+                routed_example_dirs+=("${BASH_REMATCH[1]}")
+              elif [[ "$file" =~ ^examples_experiment/([^/]+)/ ]]; then
+                routed_experiment_dirs+=("${BASH_REMATCH[1]}")
+              fi
+              should_skip=false
+              echo "Mapped migrated operator $file -> $mapped_test"
+              continue
+            fi
+
+            if [[ -n "${test_to_test[$file]:-}" ]]; then
+              routed_tests["$file"]=1
+              if [[ "$file" =~ ^examples/([^/]+)/ ]]; then
+                routed_example_dirs+=("${BASH_REMATCH[1]}")
+              elif [[ "$file" =~ ^examples_experiment/([^/]+)/ ]]; then
+                routed_experiment_dirs+=("${BASH_REMATCH[1]}")
+              fi
+              should_skip=false
+              echo "Mapped migrated test: $file"
+              continue
+            fi
+
             # examples 文件 → 增量 examples + pytest
             if [[ "$file" =~ ^examples/([^/]+)/ ]]; then
               test_dir="${BASH_REMATCH[1]}"
@@ -298,6 +346,9 @@ jobs:
               experiment_dirs_array=()
               pytest_files_array=()
               pytest_dirs_array=()
+              routed_tests=()
+              routed_example_dirs=()
+              routed_experiment_dirs=()
               break
             fi
 
@@ -318,6 +369,9 @@ jobs:
               experiment_dirs_array=()
               pytest_files_array=()
               pytest_dirs_array=()
+              routed_tests=()
+              routed_example_dirs=()
+              routed_experiment_dirs=()
               break
             fi
             
@@ -335,6 +389,9 @@ jobs:
               experiment_dirs_array=()
               pytest_files_array=()
               pytest_dirs_array=()
+              routed_tests=()
+              routed_example_dirs=()
+              routed_experiment_dirs=()
               break
             fi
           done
@@ -359,6 +416,39 @@ jobs:
           
           test_dirs="${test_dirs_array[*]}"
           experiment_dirs="${experiment_dirs_array[*]}"
+          # Decided after the collapsing above, and overriding it: those two rules
+          # (one subdirectory replaces the list, more than three empties it) exist
+          # for testing/python/ and would drop these entries. Nothing else queued
+          # means the whole change is migrated tests, so run exactly those.
+          if [[ ${#routed_tests[@]} -gt 0 ]]; then
+            if [[ ${#pytest_files_array[@]} -eq 0 ]] \
+               && [[ ${#pytest_dirs_array[@]} -eq 0 ]] \
+               && [[ ${#test_dirs_array[@]} -eq 0 ]] \
+               && [[ ${#experiment_dirs_array[@]} -eq 0 ]] \
+               && [[ "$run_examples" == false ]]; then
+              pytest_files="${!routed_tests[*]}"
+              run_pytest_only=true
+              echo "Only migrated tests changed: ${pytest_files}"
+            else
+              run_examples=true
+              run_pytest_only=false
+              pytest_files=""
+              for routed_dir in "${routed_example_dirs[@]}"; do
+                if [[ ! " ${test_dirs_array[*]} " =~ " $routed_dir " ]]; then
+                  test_dirs_array+=("$routed_dir")
+                fi
+              done
+              for routed_dir in "${routed_experiment_dirs[@]}"; do
+                if [[ ! " ${experiment_dirs_array[*]} " =~ " $routed_dir " ]]; then
+                  experiment_dirs_array+=("$routed_dir")
+                fi
+              done
+              test_dirs="${test_dirs_array[*]}"
+              experiment_dirs="${experiment_dirs_array[*]}"
+              echo "Migrated tests alongside other changes: running examples plus every registered test"
+            fi
+          fi
+
           echo "run_examples=${run_examples}" >> $GITHUB_OUTPUT
           echo "run_pytest_only=${run_pytest_only}" >> $GITHUB_OUTPUT
           echo "test_dirs=${test_dirs}" >> $GITHUB_OUTPUT
@@ -591,8 +681,14 @@ jobs:
                 # 只跑 pytest（testing/ 修改）
                 if [ -n \"\$PYTEST_FILES_ARG\" ]; then
                   echo 'Running incremental pytest for: '\$PYTEST_FILES_ARG
+                  # Prefix every path, not just the first: the value can hold several
+                  # files and the rest would otherwise resolve against examples/.
+                  PYTEST_TARGETS=()
+                  for pytest_target in \$PYTEST_FILES_ARG; do
+                    PYTEST_TARGETS+=(\"../\$pytest_target\")
+                  done
                   set +e
-                  pytest --forked ../\$PYTEST_FILES_ARG -v -n 4 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee test_output.log
+                  pytest --forked \"\${PYTEST_TARGETS[@]}\" -v -n 4 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee test_output.log
                 else
                   echo 'Running full pytest (testing/ modified)'
                   set +e
@@ -614,6 +710,27 @@ jobs:
                   fi
                 fi
                 TEST_EXIT_CODE=\${PIPESTATUS[0]}
+
+                # Operator tests were moved out of the legacy runner, so run them here:
+                # one Pytest invocation gets xdist scheduling, the marker filter and the
+                # full failure output. Entries reserved but not migrated yet are absent
+                # from list-tests, so nothing points at a file that does not exist.
+                #
+                # Scoped by the same two arguments the runner just took, so an
+                # incremental run tests the operators in the directories it ran and
+                # no others. Both are empty on a full run, which selects them all.
+                OPERATOR_TESTS=()
+                while IFS= read -r operator_test; do
+                  [ -n \"\$operator_test\" ] && OPERATOR_TESTS+=(\"../\$operator_test\")
+                done < <(python ../scripts/ci/resolve_operator_tests.py list-tests \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG)
+                if [ \${#OPERATOR_TESTS[@]} -gt 0 ]; then
+                  echo 'Running operator tests: '\${OPERATOR_TESTS[*]}
+                  pytest --forked \"\${OPERATOR_TESTS[@]}\" -v -n 8 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee -a test_output.log
+                  OPERATOR_EXIT_CODE=\${PIPESTATUS[0]}
+                  if [ \"\$TEST_EXIT_CODE\" -eq 0 ]; then
+                    TEST_EXIT_CODE=\$OPERATOR_EXIT_CODE
+                  fi
+                fi
                 set -e
               fi
 
