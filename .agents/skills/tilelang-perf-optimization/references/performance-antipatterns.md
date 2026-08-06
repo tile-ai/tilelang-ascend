@@ -417,20 +417,60 @@ T.reduce_sum(row_buf, result, dim=-1)  # [rows] → scalar
 
 ---
 
-## 正交轴串行化（Scalar Scan on Parallelizable Axis）
+**检查点**：
+- `get_kernel_source()` 是否只有 `IS_ASCEND_AIV`（纯 Vector）？
+- pass_configs 是否开了 `AUTO_CV_COMBINE`？
+- kernel 内是否使用了 `T.alloc_var`？
+- 三者同时满足 → 检查生成代码中变量定义/使用的核归属；仅在确认误分核后关闭
+  `AUTO_CV_COMBINE`
 
-**识别特征**：两层嵌套循环中，外层遍历正交轴（如行），内层沿扫描轴逐元素处理，且外层各迭代独立无依赖。内层操作是标量（`if`/`GetValue`/`SetValue`），而非 `T.tile` 向量操作。
+---
 
-```python
-# ❌ 正交轴被串行化，内层是标量操作
-for r in range(sub_block_R):
-    for i in range(1, L):
-        if a[r, i] <= v[r, i - 1]:    # 标量 if-else
-            v[r, i] = a[r, i]
-            idx[r, i] = i
-        else:
-            v[r, i] = v[r, i - 1]
-            idx[r, i] = idx[r, i - 1]
+## T.copy(UB→UB) 走 MTE2 导致 gamma 预加载无效
+
+**识别特征**：尝试"gamma 预加载常驻 UB"——循环前一次性 `T.copy(G[0:D], gamma_ub_full)`，循环内用 UB→UB 切片替代 GM 读取。
+
+**性能原因**：`T.copy(UB→UB)` 生成 `copy_ub_to_ub` 走 **MTE2 引擎**（DMA），不能与 GM→UB 重叠。MTE2 总字节数从 D 翻倍到 D + n_num×block_N，无带宽节省。
+
+**替代方案**：保持原路径（循环内每轮从 GM 读 gamma 分块）。
+
+---
+
+## mul_add_dst 硬件性能反转
+
+**识别特征**：用 `T.tile.mul_add_dst` 替代 `mul + add`，期望减少指令数。
+
+**性能原因**：910B3/910C 上 `mul_add_dst` 延迟可能**高于**独立 `mul+add`。fp16/bf16 case 回归 5-8%。
+
+**替代方案**：必须实测验证，不更快则回退为 `mul+add`。
+
+---
+
+## UB buffer 命名 tmp_ub 导致 AscendMemoryPlanning 冲突
+
+**识别特征**：buffer 命名为 `tmp_ub`，编译报 "Duplicate buffer name"。
+
+**替代方案**：用语义化命名（`newton_ub`、`accum_ub`）。
+
+---
+
+## Pass 1（无 MTE3 写回）双缓冲不可行
+
+**识别特征**：两遍扫描算子的 Pass 1 尝试 Double Buffer/T.Pipelined，性能无提升或精度失败。
+
+**性能原因**：Pass 1 只有 MTE2→V 两路（无 MTE3），`v→mte2` flag 在 AIV 不可用（死锁）。只能用 `barrier_all()`，但同步所有引擎阻止重叠。
+
+**替代方案**：Pass 1 保持串行，集中优化 Pass 2（有 MTE3 可形成闭环）。
+
+---
+
+## Fixed Core 在小 D + 大 S 场景反而变慢
+
+**识别特征**：D≤8 + S>100000，Fixed Core 模式性能下降。
+
+**性能原因**：软件循环开销 > launch 节省；硬件 block scheduler 更高效。
+
+**替代方案**：保持按逻辑任务数 launch，让硬件 scheduler 调度。
 ```
 
 **性能原因**：扫描轴有真依赖无法消除，但正交轴各元素独立——串行处理正交轴浪费了向量化的并行能力。标量操作导致指令数和 icache miss 随并行轴规模线性增长。
@@ -482,6 +522,54 @@ PASS_CONFIGS = {
 - kernel 内是否使用了 `T.alloc_var`？
 - 三者同时满足 → 检查生成代码中变量定义/使用的核归属；仅在确认误分核后关闭
   `AUTO_CV_COMBINE`
+
+---
+
+## T.copy(UB→UB) 走 MTE2 导致 gamma 预加载无效
+
+**识别特征**：尝试"gamma 预加载常驻 UB"——循环前一次性 `T.copy(G[0:D], gamma_ub_full)`，循环内用 UB→UB 切片替代 GM 读取。
+
+**性能原因**：`T.copy(UB→UB)` 生成 `copy_ub_to_ub` 走 **MTE2 引擎**（DMA），不能与 GM→UB 重叠。MTE2 总字节数从 D 翻倍到 D + n_num×block_N，无带宽节省。
+
+**替代方案**：保持原路径（循环内每轮从 GM 读 gamma 分块）。
+
+---
+
+## mul_add_dst 硬件性能反转
+
+**识别特征**：用 `T.tile.mul_add_dst` 替代 `mul + add`，期望减少指令数。
+
+**性能原因**：910B3/910C 上 `mul_add_dst` 延迟可能**高于**独立 `mul+add`。fp16/bf16 case 回归 5-8%。
+
+**替代方案**：必须实测验证，不更快则回退为 `mul+add`。
+
+---
+
+## UB buffer 命名 tmp_ub 导致 AscendMemoryPlanning 冲突
+
+**识别特征**：buffer 命名为 `tmp_ub`，编译报 "Duplicate buffer name"。
+
+**替代方案**：用语义化命名（`newton_ub`、`accum_ub`）。
+
+---
+
+## Pass 1（无 MTE3 写回）双缓冲不可行
+
+**识别特征**：两遍扫描算子的 Pass 1 尝试 Double Buffer/T.Pipelined，性能无提升或精度失败。
+
+**性能原因**：Pass 1 只有 MTE2→V 两路（无 MTE3），`v→mte2` flag 在 AIV 不可用（死锁）。只能用 `barrier_all()`，但同步所有引擎阻止重叠。
+
+**替代方案**：Pass 1 保持串行，集中优化 Pass 2（有 MTE3 可形成闭环）。
+
+---
+
+## Fixed Core 在小 D + 大 S 场景反而变慢
+
+**识别特征**：D≤8 + S>100000，Fixed Core 模式性能下降。
+
+**性能原因**：软件循环开销 > launch 节省；硬件 block scheduler 更高效。
+
+**替代方案**：保持按逻辑任务数 launch，让硬件 scheduler 调度。
 
 ---
 
