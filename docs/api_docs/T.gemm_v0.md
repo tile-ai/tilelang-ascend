@@ -50,6 +50,8 @@ def gemm_v0(
 |------|:---:|:---:|:---:|
 | Ascend A2 / A3 | float16, bfloat16, float32, int8 | float16, bfloat16, float32, int8 | float32（A/B 为浮点时）, int32（A/B 为 int8 时） |
 
+> float32 输入：ascendc 后端暂不支持（编译报错），pto 后端可用。参考 [issue #1016](https://github.com/tile-ai/tilelang-ascend/issues/1016)
+
 #### 2.3.2 Shape 支持
 
 - A、B、C：≥2D，最后两维为矩阵维度（M×K、K×N、M×N）
@@ -62,7 +64,7 @@ A、B 的 dtype 必须相同，C 的 dtype 由 A/B 的 dtype 决定：
 |-----------|---------|
 | float16 | float32 |
 | bfloat16 | float32 |
-| float32 | float32 |
+| float32 | float32（仅 pto 后端） |
 | int8 | int32 |
 
 #### 2.3.4 分形尺寸

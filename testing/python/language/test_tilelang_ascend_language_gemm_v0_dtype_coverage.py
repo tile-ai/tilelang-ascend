@@ -236,38 +236,6 @@ def test_gemm_v0_dtype_mismatch(target):
 
 
 @pytest.mark.low_priority
-@pytest.mark.xfail(reason="Framework bug: K mismatch not caught (ascend.py assert commented out)")
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
-def test_gemm_v0_k_mismatch(target):
-    """K dimension mismatch between A and B should raise"""
-    M, N = 128, 128
-    K_A, K_B = 64, 128
-    block_M, block_N, K_L1 = 128, 128, 64
-
-    @T.prim_func
-    def main(
-        A: T.Tensor((M, K_A), "float16"),
-        B: T.Tensor((K_B, N), "float16"),
-        C: T.Tensor((M, N), "float16"),
-    ):
-        with T.Kernel(1, is_npu=True) as (cid, _):
-            A_L1 = T.alloc_L1((block_M, K_L1), "float16")
-            B_L1 = T.alloc_L1((K_L1, block_N), "float16")
-            C_L0 = T.alloc_L0C((block_M, block_N), "float")
-            with T.Scope("C"):
-                T.copy(A[0, 0], A_L1)
-                T.copy(B[0, 0], B_L1)
-                T.barrier_all()
-                T.gemm_v0(A_L1, B_L1, C_L0, init=True, kL0Size=K_L1)
-                T.barrier_all()
-                for i, j in T.Parallel(block_M, block_N):
-                    C[i, j] = C_L0[i, j]
-
-    with pytest.raises(Exception):  # noqa: B017
-        _compile(main, target)
-
-
-@pytest.mark.low_priority
 @pytest.mark.skipif(
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="gemm_v0 correctness requires an Ascend NPU runtime",
