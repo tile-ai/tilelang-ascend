@@ -1,12 +1,12 @@
 # T.gemm_v0
 
-## 1. 功能说明
+## 1. Description
 
-对操作数矩阵 A 和 B 执行分形矩阵乘加运算：`C += op(A) × op(B)`，其中 `op` 为可选转置操作。当 `init=True` 时先清零累加器 C 再计算，等价于 `C = op(A) × op(B)`。
+Performs a fractal matrix multiply-accumulate operation: `C += op(A) × op(B)`, where `op` is an optional transpose. When `init=True`, the accumulator C is cleared before computation, equivalent to `C = op(A) × op(B)`.
 
-## 2. 函数原型
+## 2. Function Prototype
 
-### 2.1 函数定义
+### 2.1 Function Definition
 
 ```python
 def gemm_v0(
@@ -21,78 +21,78 @@ def gemm_v0(
 )
 ```
 
-### 2.2 参数说明
+### 2.2 Parameters
 
-| 参数名 | 输入/输出 | 描述 | 类型 | 必填/可选 |
-|--------|----------|------|------|----------|
-| A | 输入 | 左矩阵，最后两维为矩阵维度，须位于 L1 | 张量（tensor） | 必填 |
-| B | 输入 | 右矩阵，最后两维为矩阵维度，须位于 L1 | 张量（tensor） | 必填 |
-| C | 输入/输出 | 输出矩阵（累加器），最后两维为矩阵维度，须位于 L0C | 张量（tensor） | 必填 |
-| transpose_A | 输入 | 是否转置矩阵 A | 布尔 | 可选（默认 `False`） |
-| transpose_B | 输入 | 是否转置矩阵 B | 布尔 | 可选（默认 `False`） |
-| init | 输入 | 是否在计算前将累加器 C 清零（`True`：清零后计算 C=A×B；`False`：在现有 C 上累加 C+=A×B） | 布尔 | 可选（默认 `False`） |
-| kL0Size | 输入 | K 轴分块大小，控制 L1→L0A/L0B 的数据搬运粒度，须为 16 的倍数且 ≤ 4095 | 整数 | 可选（默认 `128`） |
-| n_actual | 输入 | 运行时输出列数（≤ N 且为 16 的倍数），仅 transpose_B 路径生效 | 整数 | 可选（默认 `None`） |
+| Parameter | Input/Output | Description | Type | Required/Optional |
+|-----------|-------------|-------------|------|-------------------|
+| A | Input | Left matrix, last two dimensions are matrix dimensions, must be in L1 | tensor | Required |
+| B | Input | Right matrix, last two dimensions are matrix dimensions, must be in L1 | tensor | Required |
+| C | Input/Output | Output matrix (accumulator), last two dimensions are matrix dimensions, must be in L0C | tensor | Required |
+| transpose_A | Input | Whether to transpose matrix A | bool | Optional (default `False`) |
+| transpose_B | Input | Whether to transpose matrix B | bool | Optional (default `False`) |
+| init | Input | Whether to clear accumulator C before computation (`True`: clear then compute C=A×B; `False`: accumulate on existing C, C+=A×B) | bool | Optional (default `False`) |
+| kL0Size | Input | K-axis tile size controlling L1→L0A/L0B data movement granularity, must be a multiple of 16 and ≤ 4095 | int | Optional (default `128`) |
+| n_actual | Input | Runtime output column count (≤ N and multiple of 16), only effective on transpose_B path | int | Optional (default `None`) |
 
-> **类型说明**：
-> - **tensor**：通过 `T.alloc_L1`、`T.alloc_L0C` 等分配的缓冲区（Buffer），或其切片（BufferRegion）
+> **Type Description**:
+> - **tensor**: A buffer allocated via `T.alloc_L1`, `T.alloc_L0C`, etc., or its slice (BufferRegion)
 >
-> **内存层级说明**：
-> - A、B 须位于 L1（通过 `T.alloc_L1` 分配），gemm_v0 内部自动将数据从 L1 搬运到 L0A/L0B 进行矩阵乘计算
-> - C 须位于 L0C（通过 `T.alloc_L0C` 分配），Mmad 硬件指令的输出固定写入 L0C
-> - 数据流：`GM → L1（用户搬运）→ L0A/L0B（gemm_v0 自动搬运）→ Mmad 计算 → L0C（结果）→ GM（用户搬运）`
+> **Memory Hierarchy**:
+> - A, B must be in L1 (allocated via `T.alloc_L1`). gemm_v0 internally transfers data from L1 to L0A/L0B for matrix multiplication
+> - C must be in L0C (allocated via `T.alloc_L0C`). The Mmad hardware instruction output is written to L0C
+> - Data flow: `GM → L1 (user transfer) → L0A/L0B (gemm_v0 auto transfer) → Mmad compute → L0C (result) → GM (user transfer)`
 
-### 2.3 参数规格
+### 2.3 Specifications
 
-#### 2.3.1 DataType 支持
+#### 2.3.1 DataType Support
 
-| 平台 | A | B | C |
-|------|:---:|:---:|:---:|
-| Ascend A2 / A3 | float16, bfloat16, float32, int8 | float16, bfloat16, float32, int8 | float32（A/B 为浮点时）, int32（A/B 为 int8 时） |
+| Platform | A | B | C |
+|----------|:---:|:---:|:---:|
+| Ascend A2 / A3 | float16, bfloat16, float32, int8 | float16, bfloat16, float32, int8 | float32 (when A/B are floating-point), int32 (when A/B are int8) |
 
-> float32 输入：ascendc 后端暂不支持（编译报错），pto 后端可用。参考 [issue #1016](https://github.com/tile-ai/tilelang-ascend/issues/1016)
+> float32 input: ascendc backend not supported yet (compile error), pto backend available. See [issue #1016](https://github.com/tile-ai/tilelang-ascend/issues/1016)
 
-#### 2.3.2 Shape 支持
+#### 2.3.2 Shape Support
 
-- A、B、C：≥2D，最后两维为矩阵维度（M×K、K×N、M×N）
+- A, B, C: ≥2D, last two dimensions are matrix dimensions (M×K, K×N, M×N)
 
-#### 2.3.3 A/B/C dtype 组合约束
+#### 2.3.3 A/B/C dtype Combination Constraints
 
-A、B 的 dtype 必须相同，C 的 dtype 由 A/B 的 dtype 决定：
+A and B must have the same dtype. C dtype is determined by A/B dtype:
 
 | A/B dtype | C dtype |
 |-----------|---------|
 | float16 | float32 |
 | bfloat16 | float32 |
-| float32 | float32（仅 pto 后端） |
+| float32 | float32 (pto only) |
 | int8 | int32 |
 
-#### 2.3.4 分形尺寸
+#### 2.3.4 Fractal Dimensions
 
-硬件以分形矩阵为最小计算单元，各 dtype 对应的分形尺寸如下：
+The hardware uses fractal matrices as the minimum compute unit. Fractal dimensions per dtype:
 
-| A/B dtype | A 分形（L0A） | B 分形（L0B） | C 分形（L0C） |
-|-----------|--------------|--------------|--------------|
-| float16 / bfloat16（2B） | 16×16 | 16×16 | 16×16 |
-| float32（4B） | 16×8 | 8×16 | 16×16 |
-| int8（1B） | 16×32 | 32×16 | 16×16 |
+| A/B dtype | A fractal (L0A) | B fractal (L0B) | C fractal (L0C) |
+|-----------|-----------------|-----------------|-----------------|
+| float16 / bfloat16 (2B) | 16×16 | 16×16 | 16×16 |
+| float32 (4B) | 16×8 | 8×16 | 16×16 |
+| int8 (1B) | 16×32 | 32×16 | 16×16 |
 
-### 2.4 约束条件
+### 2.4 Constraints
 
-1. A、B、C 必须为 ≥2D 张量，>2D 时所有前导维度必须为 1
-2. A 与 B 的 K 维度必须一致：若 `transpose_A=False`，取 `A.shape[-1]` 作为 K；否则取 `A.shape[-2]`；B 同理。两边 K 值必须相等
-3. A 与 B 的 dtype 必须相同
-4. A、B 须位于 L1，C 须位于 L0C（硬件约束）。gemm_v0 内部自动将 A/B 从 L1 搬运到 L0A/L0B，用户无需手动搬运到 L0A/L0B
-5. A 的起始地址需 512 字节对齐（硬件约束）
-6. B 的起始地址需 512 字节对齐（硬件约束）
-7. C 的起始地址需 256 个元素对齐（硬件约束）
-8. Mmad 单次调用的 m/n/k 取值范围为 `[0, 4095]`，当 m/n/k 中任意一个为 0 时指令不执行（硬件约束）。gemm_v0 通过 tiling 自动拆分，整体矩阵的 M/N/K 不受此限制
-9. 当 `M=1` 时硬件默认开启 GEMV（General Matrix-Vector Multiplication），此时 A 须以 ND 格式排布而非 ZZ 格式（硬件约束）
-10. `kL0Size` 须为 16 的倍数且 ≤ 4095
+1. A, B, C must be ≥2D tensors. For >2D, all leading dimensions must be 1
+2. K dimension of A and B must match: if `transpose_A=False`, K = `A.shape[-1]`; otherwise K = `A.shape[-2]`. Same for B. Both K values must be equal
+3. A and B must have the same dtype
+4. A, B must be in L1, C must be in L0C (hardware constraint). gemm_v0 internally transfers A/B from L1 to L0A/L0B; users do not need to manually transfer to L0A/L0B
+5. A starting address must be 512-byte aligned (hardware constraint)
+6. B starting address must be 512-byte aligned (hardware constraint)
+7. C starting address must be 256-element aligned (hardware constraint)
+8. Mmad single-call m/n/k range is `[0, 4095]`. When any of m/n/k is 0, the instruction is not executed (hardware constraint). gemm_v0 automatically splits via tiling; overall matrix M/N/K is not limited by this range
+9. When `M=1`, hardware enables GEMV (General Matrix-Vector Multiplication) by default. In this case, A must be in ND format instead of ZZ format (hardware constraint)
+10. `kL0Size` must be a multiple of 16 and ≤ 4095
 
-## 3. 示例代码
+## 3. Examples
 
-**示例 1：基本用法（fp16 输入，fp32 累加，init=True 清零后计算）**
+**Example 1: Basic usage (fp16 input, fp32 accumulation, init=True)**
 
 ```python
 block_M, block_K, block_N = 128, 128, 128
@@ -102,7 +102,7 @@ C_L0 = T.alloc_L0C((block_M, block_N), "float")
 T.gemm_v0(A_L1, B_L1, C_L0, init=True)
 ```
 
-**示例 2：累加模式（init=False，在现有 C 值上累加）**
+**Example 2: Accumulation mode (init=False, accumulate on existing C)**
 
 ```python
 A_L1 = T.alloc_L1((block_M, block_K), "float16")
@@ -111,11 +111,11 @@ C_L0 = T.alloc_L0C((block_M, block_N), "float")
 T.gemm_v0(A_L1, B_L1, C_L0, init=False)  # C_L0 += A_L1 × B_L1
 ```
 
-**示例 3：转置矩阵 B**
+**Example 3: Transpose matrix B**
 
 ```python
 A_L1 = T.alloc_L1((block_M, block_K), "float16")
-B_L1 = T.alloc_L1((block_N, block_K), "float16")  # B 的 shape 为 (N, K)
+B_L1 = T.alloc_L1((block_N, block_K), "float16")  # B shape is (N, K)
 C_L0 = T.alloc_L0C((block_M, block_N), "float")
 T.gemm_v0(A_L1, B_L1, C_L0, transpose_B=True, init=True)
 ```
