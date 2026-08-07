@@ -287,7 +287,10 @@ def run_test_adds(M, N, block_M, block_N, scalar, dtype, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "dtype",
+    ["float", "float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_adds(dtype, target, shape):
@@ -791,7 +794,10 @@ def run_test_bitwise_lshift_slice(M, N, block_M, block_N, scalarvalue, dtype, ta
     assert_close_npu(b, ref_b, dtype, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["int16", "int32", pytest.param("uint16", marks=pytest.mark.low_priority), pytest.param("uint32", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "dtype",
+    ["int16", "int32", pytest.param("uint16", marks=pytest.mark.low_priority), pytest.param("uint32", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_lshift_slice(dtype, target, shape):
@@ -989,7 +995,10 @@ def run_test_bitwise_rshift_slice(M, N, block_M, block_N, scalarvalue, dtype, ta
     assert_close_npu(b, ref_b, dtype, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["int16", "int32", pytest.param("uint16", marks=pytest.mark.low_priority), pytest.param("uint32", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "dtype",
+    ["int16", "int32", pytest.param("uint16", marks=pytest.mark.low_priority), pytest.param("uint32", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_rshift_slice(dtype, target, shape):
@@ -2073,7 +2082,10 @@ def run_test_createvecindex(M, N, block_M, block_N, firstValue, dtype, target):
         torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", [pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority), "float16", "float"])
+@pytest.mark.parametrize(
+    "dtype",
+    [pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority), "float16", "float"],
+)
 @pytest.mark.parametrize("target", ["ascendc"])
 def test_createvecindex_ascendc(dtype, target):
     M = 1
@@ -2084,7 +2096,15 @@ def test_createvecindex_ascendc(dtype, target):
     run_test_createvecindex(M, N, block_M, block_N, firstValue, dtype, target)
 
 
-@pytest.mark.parametrize("dtype", [pytest.param("int32", marks=pytest.mark.low_priority), pytest.param("uint32", marks=pytest.mark.low_priority), "int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pytest.param("int32", marks=pytest.mark.low_priority),
+        pytest.param("uint32", marks=pytest.mark.low_priority),
+        "int16",
+        pytest.param("uint16", marks=pytest.mark.low_priority),
+    ],
+)
 @pytest.mark.parametrize("target", ["pto"])
 def test_createvecindex_pto(dtype, target):
     M = 1
@@ -2368,7 +2388,18 @@ def run_test_gather(M, N, block_M, block_N, dtype, target):
         torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", [pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority), pytest.param("uint16", marks=pytest.mark.low_priority), pytest.param("uint32", marks=pytest.mark.low_priority), "float", "float16", pytest.param("bfloat16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pytest.param("int16", marks=pytest.mark.low_priority),
+        pytest.param("int32", marks=pytest.mark.low_priority),
+        pytest.param("uint16", marks=pytest.mark.low_priority),
+        pytest.param("uint32", marks=pytest.mark.low_priority),
+        "float",
+        "float16",
+        pytest.param("bfloat16", marks=pytest.mark.low_priority),
+    ],
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(128, 1024)])
 def test_gather(dtype, target, shape):
@@ -2569,7 +2600,18 @@ def run_test_gather_slice(M, N, block_M, block_N, dtype, target):
         torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", [pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority), pytest.param("uint16", marks=pytest.mark.low_priority), pytest.param("uint32", marks=pytest.mark.low_priority), "float", "float16", pytest.param("bfloat16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pytest.param("int16", marks=pytest.mark.low_priority),
+        pytest.param("int32", marks=pytest.mark.low_priority),
+        pytest.param("uint16", marks=pytest.mark.low_priority),
+        pytest.param("uint32", marks=pytest.mark.low_priority),
+        "float",
+        "float16",
+        pytest.param("bfloat16", marks=pytest.mark.low_priority),
+    ],
+)
 @pytest.mark.parametrize("target", ["ascendc"])
 @pytest.mark.parametrize("shape", [(128, 1024)])
 def test_gather_slice(dtype, target, shape):
@@ -2884,7 +2926,18 @@ def run_test_gathermask(M, N, block_M, block_N, dtype, target):
         torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", [pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority), pytest.param("uint16", marks=pytest.mark.low_priority), pytest.param("uint32", marks=pytest.mark.low_priority), "float", "float16", pytest.param("bfloat16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pytest.param("int16", marks=pytest.mark.low_priority),
+        pytest.param("int32", marks=pytest.mark.low_priority),
+        pytest.param("uint16", marks=pytest.mark.low_priority),
+        pytest.param("uint32", marks=pytest.mark.low_priority),
+        "float",
+        "float16",
+        pytest.param("bfloat16", marks=pytest.mark.low_priority),
+    ],
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(4, 256)])
 def test_gathermask(dtype, target, shape):
@@ -3004,7 +3057,10 @@ def run_test_vec_max(M, N, block_M, block_N, dtype, target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "dtype",
+    ["float", "float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_vec_max(dtype, target, shape):
@@ -3062,7 +3118,10 @@ def run_test_vec_maxs(M, N, block_M, block_N, scalar, dtype, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "dtype",
+    ["float", "float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_vec_maxs(dtype, target, shape):
@@ -3129,7 +3188,10 @@ def run_test_vec_min(M, N, block_M, block_N, dtype, target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "dtype",
+    ["float", "float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_vec_min(dtype, target, shape):
@@ -3187,7 +3249,10 @@ def run_test_vec_mins(M, N, block_M, block_N, scalar, dtype, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "dtype",
+    ["float", "float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_vec_mins(dtype, target, shape):
@@ -3254,7 +3319,10 @@ def run_test_vec_mul(M, N, block_M, block_N, dtype, target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "dtype",
+    ["float", "float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_vec_mul(dtype, target, shape):
@@ -3310,7 +3378,10 @@ def run_test_vec_muls(M, N, block_M, block_N, scalar, dtype, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "dtype",
+    ["float", "float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_vec_muls(dtype, target, shape):
@@ -4289,7 +4360,10 @@ def run_test_vec_sub(M, N, block_M, block_N, dtype, target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "dtype",
+    ["float", "float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_vec_sub(dtype, target, shape):
@@ -4350,7 +4424,10 @@ def run_test_vec_subs(M, N, block_M, block_N, scalar, dtype, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "dtype",
+    ["float", "float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_vec_subs(dtype, target, shape):
@@ -4433,9 +4510,22 @@ def test_transpose(dtype, target, shape):
     run_test_transpose(M, N, 16, 16, dtype, target)
 
 
-@pytest.mark.parametrize("dtype", ["float16", "float", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "dtype",
+    ["float16", "float", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
-@pytest.mark.parametrize("shape", [(32, 32), (64, 64), (32, 16), pytest.param((16, 32), marks=pytest.mark.low_priority), pytest.param((64, 32), marks=pytest.mark.low_priority), pytest.param((32, 64), marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (32, 32),
+        (64, 64),
+        (32, 16),
+        pytest.param((16, 32), marks=pytest.mark.low_priority),
+        pytest.param((64, 32), marks=pytest.mark.low_priority),
+        pytest.param((32, 64), marks=pytest.mark.low_priority),
+    ],
+)
 def test_transpose_tiled(dtype, target, shape):
     M, N = shape
     run_test_transpose(M, N, M, N, dtype, target)
@@ -4443,13 +4533,18 @@ def test_transpose_tiled(dtype, target, shape):
 
 @pytest.mark.parametrize("dtype", ["float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
-@pytest.mark.parametrize("shape", [(48, 48), (128, 128), pytest.param((16, 48), marks=pytest.mark.low_priority), pytest.param((48, 16), marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "shape",
+    [(48, 48), (128, 128), pytest.param((16, 48), marks=pytest.mark.low_priority), pytest.param((48, 16), marks=pytest.mark.low_priority)],
+)
 def test_transpose_block_b16(dtype, target, shape):
     M, N = shape
     run_test_transpose(M, N, M, N, dtype, target)
 
 
-@pytest.mark.parametrize("dtype", ["float", pytest.param("uint32", marks=pytest.mark.low_priority), pytest.param("uint16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "dtype", ["float", pytest.param("uint32", marks=pytest.mark.low_priority), pytest.param("uint16", marks=pytest.mark.low_priority)]
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(16, 16), (32, 32)])
 def test_transpose_block_b32(dtype, target, shape):
@@ -4950,7 +5045,9 @@ def run_test_reduce_runtime_semantics(op, dim, target, clear=True, init_value=0.
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("op", ["sum", pytest.param("max", marks=pytest.mark.low_priority), pytest.param("min", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize(
+    "op", ["sum", pytest.param("max", marks=pytest.mark.low_priority), pytest.param("min", marks=pytest.mark.low_priority)]
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_dim0_runtime_smoke(op, target):
     run_test_reduce_runtime_semantics(op, dim=0, target=target, clear=True)
