@@ -15,7 +15,10 @@ Unified formula:  out = x * cos + rotate(x) * (sin * sin_mask)
 """
 
 import argparse
+import os
+import subprocess
 import sys
+import tempfile
 
 import tilelang
 import tilelang.language as T
@@ -31,6 +34,15 @@ pass_configs = {
 
 NUM_CORES = 48
 device = torch.device("npu")
+
+# Module-level golden mode: "torch" (default) or "cann".
+# Set by main() via --golden; run_case reads this to pick the reference.
+_GOLDEN_MODE = "torch"
+
+# Path to the AscendC driver (relative to this file).
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PERF_BIN = os.path.join(_SCRIPT_DIR, "build", "perf_rope_ascendc")
+_BUILD_SCRIPT = os.path.join(_SCRIPT_DIR, "build_perf_rope.sh")
 
 torch_dtype_map = {
     "float16": torch.float16,
@@ -311,6 +323,135 @@ def torch_rope_ref(x, sin, cos, layout="interleaved"):
     return out
 
 
+# ========== CANN Golden (aclnnRotaryPositionEmbedding via subprocess) ==========
+def _ensure_perf_bin():
+    """Build perf_rope_ascendc if missing. Returns path to the binary."""
+    if os.path.isfile(_PERF_BIN) and os.access(_PERF_BIN, os.X_OK):
+        return _PERF_BIN
+    if not os.path.isfile(_BUILD_SCRIPT):
+        raise FileNotFoundError(f"build script not found: {_BUILD_SCRIPT}")
+    print(f"[BUILD] perf_rope_ascendc not found, building via {_BUILD_SCRIPT} ...")
+    result = subprocess.run(["bash", _BUILD_SCRIPT], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"build_perf_rope.sh failed (exit {result.returncode}):\n{result.stderr}")
+    if not os.path.isfile(_PERF_BIN):
+        raise FileNotFoundError(f"build succeeded but binary not found: {_PERF_BIN}")
+    print("[BUILD] OK")
+    return _PERF_BIN
+
+
+def cann_rope_ref(x_cpu, sin_cpu, cos_cpu, layout, dtype_str):
+    """Reference via aclnnRotaryPositionEmbedding (subprocess to C++ driver).
+
+    CANN op is full-rope + non-in-place. We extract the rotating slice
+    (x[..., dim_start:]), run the CANN op on it, and place it back.
+
+    Args:
+        x_cpu, sin_cpu, cos_cpu: CPU tensors (same shapes as TileLang input)
+        layout: "half" or "interleaved"
+        dtype_str: "float16" or "bfloat16"
+
+    Returns:
+        out: CPU tensor, same shape as x_cpu, with RoPE applied to the slice.
+    """
+    perf_bin = _ensure_perf_bin()
+
+    rope_dim = sin_cpu.shape[-1]
+    hidden_size = x_cpu.shape[-1]
+    dim_start = hidden_size - rope_dim
+
+    # --- Extract the rotating slice and reshape to 4D [B, S, N, RD] ---
+    x_slice = x_cpu[..., dim_start:].contiguous()
+
+    if x_slice.dim() == 3:
+        # TND: [BS, N, RD] -> 4D [BS, 1, N, RD]
+        bs, n, rd = x_slice.shape
+        b, s = bs, 1
+        x_4d = x_slice.unsqueeze(1)  # [BS, 1, N, RD]
+        # sin [BS, 1, RD] -> [BS, 1, 1, RD]
+        sin_4d = sin_cpu.unsqueeze(1).contiguous()
+        cos_4d = cos_cpu.unsqueeze(1).contiguous()
+    elif x_slice.dim() == 4:
+        # BSND: [B, S, N, RD]
+        b_orig, s_orig, n, rd = x_slice.shape
+        # CANN op interleave (mode=1) doesn't support BSND sin/cos broadcast
+        # when B>1 and S>1. Reshape to equivalent TND so S=1.
+        b, s = b_orig * s_orig, 1
+        x_4d = x_slice.reshape(b, 1, n, rd)
+        # sin [1, S, 1, RD] -> expand to [B_orig, S, 1, RD] -> reshape [B*S, 1, 1, RD]
+        sin_4d = sin_cpu.expand(b_orig, s_orig, 1, rd).reshape(b, 1, 1, rd).contiguous()
+        cos_4d = cos_cpu.expand(b_orig, s_orig, 1, rd).reshape(b, 1, 1, rd).contiguous()
+    else:
+        raise NotImplementedError(f"x_slice.dim()={x_slice.dim()} not supported")
+
+    out_shape = x_slice.shape  # remember original slice shape for output reshape
+
+    # --- Dump inputs to temp files ---
+    tmp_dir = tempfile.mkdtemp(prefix="rope_golden_")
+    prefix = os.path.join(tmp_dir, "input")
+    x_path = f"{prefix}_x.bin"
+    sin_path = f"{prefix}_sin.bin"
+    cos_path = f"{prefix}_cos.bin"
+    out_path = os.path.join(tmp_dir, "output.bin")
+
+    try:
+        # bf16 not supported by numpy; view as uint16 (same bit layout).
+        # Works for fp16 too since we only need raw bytes.
+        with open(x_path, "wb") as f:
+            f.write(x_4d.view(torch.uint16).numpy().tobytes())
+        with open(sin_path, "wb") as f:
+            f.write(sin_4d.view(torch.uint16).numpy().tobytes())
+        with open(cos_path, "wb") as f:
+            f.write(cos_4d.view(torch.uint16).numpy().tobytes())
+
+        # --- Run CANN op ---
+        # mode: 0=half, 1=interleave (NOT 2; the header comment is wrong,
+        #       confirmed by op_host enum + ST golden)
+        mode = "0" if layout == "half" else "1"
+        cmd = [
+            perf_bin,
+            "--shape",
+            str(b),
+            str(s),
+            str(n),
+            str(rd),
+            "--mode",
+            mode,
+            "--dtype",
+            dtype_str,
+            "--load-prefix",
+            prefix,
+            "--dump-output",
+            out_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"perf_rope_ascendc failed (exit {result.returncode}):\n{result.stderr}")
+
+        # --- Read output ---
+        # torch.frombuffer doesn't support bfloat16; read as uint16 via
+        # numpy then view to the target dtype (works for fp16 and bf16).
+        import numpy as np
+
+        with open(out_path, "rb") as f:
+            out_bytes = f.read()
+        torch_dtype = torch_dtype_map[dtype_str]
+        out_slice = torch.from_numpy(np.frombuffer(out_bytes, dtype=np.uint16).copy()).view(torch_dtype).reshape(b, s, n, rd)
+
+    finally:
+        import shutil
+
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # --- Reshape output back to match original x_slice shape ---
+    out_slice = out_slice.reshape(out_shape)
+
+    # --- Place slice back into x ---
+    out = x_cpu.clone()
+    out[..., dim_start:] = out_slice
+    return out
+
+
 # ========== Precision Standard (mixed tolerance) ==========
 def get_precision(dtype):
     """Return (atol, rtol, max_abs_error_limit, required_matched_ratio)."""
@@ -375,7 +516,10 @@ def run_case(shape, layout, dtype_str, layout_kind, level="l0", inputs=None, tag
     else:
         x_cpu, sin_cpu, cos_cpu = inputs
 
-    out_ref = torch_rope_ref(x_cpu.clone(), sin_cpu, cos_cpu, layout)
+    if _GOLDEN_MODE == "cann":
+        out_ref = cann_rope_ref(x_cpu.clone(), sin_cpu, cos_cpu, layout, dtype_str)
+    else:
+        out_ref = torch_rope_ref(x_cpu.clone(), sin_cpu, cos_cpu, layout)
 
     x_npu = x_cpu.to(device)
     sin_npu = sin_cpu.to(device)
@@ -580,13 +724,18 @@ def test_rope_boundary():
 
 # ========== Main ==========
 def main():
+    global _GOLDEN_MODE
     parser = argparse.ArgumentParser(description="RoPE (Half + Interleaved) on Ascend NPU")
     parser.add_argument("--level", default="l0", choices=["l0", "l1", "l2", "boundary", "all"], help="Test level to run (default: l0)")
     parser.add_argument("--shape", type=int, nargs="+", help="Single-case shape: 4 ints (TND: BS H HS RD) or 5 ints (BSND: B S H HS RD)")
     parser.add_argument("--layout", default="interleaved", choices=["interleaved", "half"], help="RoPE layout (default: interleaved)")
     parser.add_argument("--dtype", default="float16", choices=["float16", "bfloat16"], help="Data type (default: float16)")
+    parser.add_argument(
+        "--golden", default="torch", choices=["torch", "cann"], help="Golden source: torch (CPU ref) or cann (aclnn op via subprocess)"
+    )
     args = parser.parse_args()
 
+    _GOLDEN_MODE = args.golden
     tilelang.disable_cache()
     torch.manual_seed(42)
 

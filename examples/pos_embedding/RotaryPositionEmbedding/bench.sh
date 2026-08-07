@@ -22,7 +22,7 @@ set -euo pipefail
 REPEATS=6
 LAYOUT="half"
 DTYPE="float16"
-OP_TYPE_TL="main_kernel"
+OP_TYPE_TL="kernel_kernel"
 OP_TYPE_AC="RotaryPositionEmbedding"
 OUTPUT_DIR="./msprof_output"
 CUSTOM_SHAPE=""
@@ -210,11 +210,14 @@ with open(sys.argv[1], encoding="utf-8") as f:
 PYEOF
 }
 
-# TileLang layout → aclnn mode (see aclnn_rotary_position_embedding.h)
+# TileLang layout → aclnn mode (see op_host/rotary_position_embedding_tiling.h
+# enum: 0=HALF, 1=INTERLEAVE, 2=QUARTER, 3=DEEPSEEK_INTERLEAVE.
+# NOTE: aclnn header comment is wrong — it says 2=interleave but actual
+# enum is 1=interleave. Confirmed by proto def + ST golden.)
 layout_to_ac_mode() {
     case "$1" in
         half)        echo 0 ;;
-        interleaved) echo 2 ;;
+        interleaved) echo 1 ;;
         *) echo "ERROR: unknown layout $1" >&2; exit 1 ;;
     esac
 }

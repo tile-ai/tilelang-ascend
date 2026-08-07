@@ -1,15 +1,31 @@
 /**
- * perf_rope_ascendc.cpp — RoPE AscendC baseline driver for msprof.
+ * perf_rope_ascendc.cpp — RoPE AscendC baseline driver.
  *
  * Calls aclnnRotaryPositionEmbedding (CANN ops-transformer/posembedding/
- * rotary_position_embedding) N times on a single shape. No timing —
- * msprof wraps this process to collect device Task Duration.
+ * rotary_position_embedding) on a single shape.
  *
- * Usage:
+ * Two modes:
+ *   1. Perf mode (default): random-filled tensors, N repeats, no I/O.
+ *      Used with msprof for device Task Duration collection.
+ *   2. Golden mode (--load-prefix + --dump-output): load x/sin/cos from
+ *      binary files, run once, dump output to file. Used by the Python
+ *      test harness for accuracy comparison.
+ *
+ * Usage (perf):
  *   ./perf_rope_ascendc --shape B S N D --mode 0 --dtype float16 --repeats 6
  *
- * mode: 0=half, 2=interleave  (see aclnn_rotary_position_embedding.h)
+ * Usage (golden):
+ *   ./perf_rope_ascendc --shape B S N D --mode 0 --dtype float16 \
+ *     --load-prefix /tmp/rope --dump-output /tmp/rope_out.bin
+ *
+ * mode: 0=half, 1=interleave  (see aclnn_rotary_position_embedding.h;
+ *       NOTE: the header comment says 2=interleave but the actual enum
+ *       in op_host is 0=half, 1=interleave, 2=quarter, 3=interleave-half)
  * dtype: float16, bfloat16, float32
+ *
+ * File format: raw little-endian bytes (fp16/bf16 = 2 bytes/elem,
+ * fp32 = 4 bytes/elem). load-prefix reads {prefix}_x.bin, {prefix}_sin.bin,
+ * {prefix}_cos.bin. dump-output writes a single file.
  */
 
 #include "acl/acl.h"
@@ -18,6 +34,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <random>
 #include <string>
 #include <vector>
@@ -60,6 +77,33 @@ size_t DtypeSize(const std::string &dtype) {
   if (dtype == "float32")
     return 4;
   return 0;
+}
+
+// Read a binary file into a host buffer. Returns false on failure.
+bool ReadFile(const std::string &path, void *buf, size_t bytes) {
+  std::ifstream f(path, std::ios::binary);
+  if (!f) {
+    LOG_PRINT("Error: cannot open '%s' for reading\n", path.c_str());
+    return false;
+  }
+  f.read(static_cast<char *>(buf), static_cast<std::streamsize>(bytes));
+  if (static_cast<size_t>(f.gcount()) != bytes) {
+    LOG_PRINT("Error: short read on '%s' (got %lld, expected %zu)\n",
+              path.c_str(), static_cast<long long>(f.gcount()), bytes);
+    return false;
+  }
+  return true;
+}
+
+// Write a host buffer to a binary file. Returns false on failure.
+bool WriteFile(const std::string &path, const void *buf, size_t bytes) {
+  std::ofstream f(path, std::ios::binary | std::ios::trunc);
+  if (!f) {
+    LOG_PRINT("Error: cannot open '%s' for writing\n", path.c_str());
+    return false;
+  }
+  f.write(static_cast<const char *>(buf), static_cast<std::streamsize>(bytes));
+  return f.good();
 }
 
 // Fill host buffer with random values scaled to [-1, 1]
@@ -117,11 +161,11 @@ int Init(int32_t deviceId, aclrtStream *stream) {
   return 0;
 }
 
-// Create aclTensor with random data on device
-int CreateAclTensorRandom(const std::vector<int64_t> &shape,
-                          aclDataType dataType, size_t type_size,
-                          void **deviceAddr, aclTensor **tensor,
-                          bool zero_fill = false) {
+// Create aclTensor on device.
+// fill_mode: "random" (FillRandom), "zero" (zero-fill), or file path (load).
+int CreateAclTensor(const std::vector<int64_t> &shape, aclDataType dataType,
+                    size_t type_size, void **deviceAddr, aclTensor **tensor,
+                    const std::string &fill_mode = "random") {
   int64_t elem_count = GetShapeSize(shape);
   size_t bytes = static_cast<size_t>(elem_count) * type_size;
 
@@ -129,27 +173,24 @@ int CreateAclTensorRandom(const std::vector<int64_t> &shape,
   CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed: %d\n", ret);
             return ret);
 
-  if (zero_fill) {
-    // Output tensor: zero-fill on host then copy
-    std::vector<uint8_t> host_buf(bytes, 0);
-    ret = aclrtMemcpy(*deviceAddr, bytes, host_buf.data(), bytes,
-                      ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(ret == ACL_SUCCESS,
-              LOG_PRINT("aclrtMemcpy (zero) failed: %d\n", ret);
-              return ret);
-  } else {
-    // Input tensor: random data on host then copy
-    std::vector<uint8_t> host_buf(bytes);
+  std::vector<uint8_t> host_buf(bytes);
+  if (fill_mode == "zero") {
+    std::memset(host_buf.data(), 0, bytes);
+  } else if (fill_mode == "random") {
     std::string dtype_str = (dataType == ACL_FLOAT)     ? "float32"
                             : (dataType == ACL_FLOAT16) ? "float16"
                                                         : "bfloat16";
     FillRandom(host_buf.data(), elem_count, dtype_str);
-    ret = aclrtMemcpy(*deviceAddr, bytes, host_buf.data(), bytes,
-                      ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(ret == ACL_SUCCESS,
-              LOG_PRINT("aclrtMemcpy (rand) failed: %d\n", ret);
-              return ret);
+  } else {
+    // fill_mode is a file path
+    if (!ReadFile(fill_mode, host_buf.data(), bytes)) {
+      return 1;
+    }
   }
+  ret = aclrtMemcpy(*deviceAddr, bytes, host_buf.data(), bytes,
+                    ACL_MEMCPY_HOST_TO_DEVICE);
+  CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed: %d\n", ret);
+            return ret);
 
   // Strides for contiguous ND tensor
   std::vector<int64_t> strides(shape.size(), 1);
@@ -168,21 +209,28 @@ int CreateAclTensorRandom(const std::vector<int64_t> &shape,
 
 struct Args {
   std::vector<int64_t> shape; // 4D: B S N D
-  int64_t mode = 0;           // 0=half, 2=interleave
+  int64_t mode = 0;           // 0=half, 1=interleave
   std::string dtype = "float16";
   int repeats = 6;
   int32_t device_id = 0;
+  std::string load_prefix; // if set: load {prefix}_x/sin/cos.bin
+  std::string dump_output; // if set: dump output to this path
 };
 
 void PrintUsage() {
   fprintf(stderr,
           "Usage: perf_rope_ascendc --shape B S N D [--mode 0] [--dtype "
           "float16] [--repeats 6] [--device 0]\n"
-          "  --shape    4 ints (B S N D), e.g. 4 1 64 128\n"
-          "  --mode     0=half, 2=interleave (default: 0)\n"
-          "  --dtype    float16|bfloat16|float32 (default: float16)\n"
-          "  --repeats  kernel launches (default: 6, first is warm-up)\n"
-          "  --device   NPU device id (default: 0)\n");
+          "       perf_rope_ascendc --shape B S N D --load-prefix P "
+          "--dump-output F\n"
+          "  --shape        4 ints (B S N D), e.g. 4 1 64 128\n"
+          "  --mode         0=half, 1=interleave (default: 0)\n"
+          "  --dtype        float16|bfloat16|float32 (default: float16)\n"
+          "  --repeats      kernel launches (default: 6, first is warm-up)\n"
+          "  --device       NPU device id (default: 0)\n"
+          "  --load-prefix  load {prefix}_x.bin, {prefix}_sin.bin, "
+          "{prefix}_cos.bin\n"
+          "  --dump-output  run once and dump output to this file\n");
 }
 
 Args ParseArgs(int argc, char *argv[]) {
@@ -201,6 +249,10 @@ Args ParseArgs(int argc, char *argv[]) {
       a.repeats = std::atoi(argv[++i]);
     } else if (arg == "--device" && i + 1 < argc) {
       a.device_id = std::atoi(argv[++i]);
+    } else if (arg == "--load-prefix" && i + 1 < argc) {
+      a.load_prefix = argv[++i];
+    } else if (arg == "--dump-output" && i + 1 < argc) {
+      a.dump_output = argv[++i];
     } else if (arg == "-h" || arg == "--help") {
       PrintUsage();
       exit(0);
@@ -214,6 +266,10 @@ Args ParseArgs(int argc, char *argv[]) {
     LOG_PRINT("Error: --shape requires exactly 4 ints (B S N D)\n");
     PrintUsage();
     exit(1);
+  }
+  // Golden mode: force repeats=1 (only need one run for output)
+  if (!a.dump_output.empty()) {
+    a.repeats = 1;
   }
   return a;
 }
@@ -237,6 +293,12 @@ int main(int argc, char *argv[]) {
   std::vector<int64_t> sc_shape = {args.shape[0], args.shape[1], 1,
                                    args.shape[3]}; // B S 1 D
 
+  // --- Determine fill modes ---
+  bool golden = !args.load_prefix.empty();
+  std::string x_fill = golden ? (args.load_prefix + "_x.bin") : "random";
+  std::string sin_fill = golden ? (args.load_prefix + "_sin.bin") : "random";
+  std::string cos_fill = golden ? (args.load_prefix + "_cos.bin") : "random";
+
   // --- Create tensors ---
   void *x_dev = nullptr;
   void *cos_dev = nullptr;
@@ -247,14 +309,13 @@ int main(int argc, char *argv[]) {
   aclTensor *sin = nullptr;
   aclTensor *out = nullptr;
 
-  ret = CreateAclTensorRandom(x_shape, dtype, type_size, &x_dev, &x);
+  ret = CreateAclTensor(x_shape, dtype, type_size, &x_dev, &x, x_fill);
   CHECK_RET(ret == 0, return ret);
-  ret = CreateAclTensorRandom(sc_shape, dtype, type_size, &cos_dev, &cos);
+  ret = CreateAclTensor(sc_shape, dtype, type_size, &cos_dev, &cos, cos_fill);
   CHECK_RET(ret == 0, return ret);
-  ret = CreateAclTensorRandom(sc_shape, dtype, type_size, &sin_dev, &sin);
+  ret = CreateAclTensor(sc_shape, dtype, type_size, &sin_dev, &sin, sin_fill);
   CHECK_RET(ret == 0, return ret);
-  ret = CreateAclTensorRandom(x_shape, dtype, type_size, &out_dev, &out,
-                              /*zero_fill=*/true);
+  ret = CreateAclTensor(x_shape, dtype, type_size, &out_dev, &out, "zero");
   CHECK_RET(ret == 0, return ret);
 
   // --- Run kernel N times (no timing, msprof wraps) ---
@@ -289,6 +350,21 @@ int main(int argc, char *argv[]) {
     if (workspace != nullptr)
       aclrtFree(workspace);
     // executor freed internally by aclnn, do not manually free
+  }
+
+  // --- Dump output (golden mode) ---
+  if (!args.dump_output.empty()) {
+    int64_t out_elems = GetShapeSize(x_shape);
+    size_t out_bytes = static_cast<size_t>(out_elems) * type_size;
+    std::vector<uint8_t> host_buf(out_bytes);
+    ret = aclrtMemcpy(host_buf.data(), out_bytes, out_dev, out_bytes,
+                      ACL_MEMCPY_DEVICE_TO_HOST);
+    CHECK_RET(ret == ACL_SUCCESS,
+              LOG_PRINT("aclrtMemcpy (D2H) failed: %d\n", ret);
+              return ret);
+    if (!WriteFile(args.dump_output, host_buf.data(), out_bytes)) {
+      return 1;
+    }
   }
 
   // --- Cleanup ---

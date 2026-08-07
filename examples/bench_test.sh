@@ -230,6 +230,7 @@ collect_test_scripts() {
         -not -path "*/bench_sfa/*" \
         -not -path "*/generative_recommendation/golden.py" \
         -not -path "*/generative_recommendation/testcase.py" \
+        -not -path "*/RotaryPositionEmbedding/perf_rope.py" \
         | sort)
     for f in $py_files; do
         should_skip_python_script "$f" || scripts+=("$f")
