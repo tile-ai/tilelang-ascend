@@ -471,6 +471,11 @@ tl::ascend::tail_broadcast<T>(
 
 ## 9.2 axis=1：`GetValue + Duplicate`
 
+axis=1 的 source 是窄行 `[rows,1]`。AscendC `DataCopyPad` 和 PTO `TLOAD` 的普通多 burst
+模式会把不足 32 字节的每行 destination pitch 向上对齐。内存规划因此为这种 tail broadcast
+source 保留 `rows × 32B` 的物理 backing store；AscendC helper 和 PTO ND source view 也按同一
+32B pitch 读取。逻辑 shape 仍保持 `[rows,1]`，不会影响 access_ptr 或 GM 索引。
+
 算法：
 
 ```cpp

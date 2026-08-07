@@ -3284,29 +3284,34 @@ void CodeGenTileLangAscendPto::TailBroadcastOpCodegen(const CallNode *op) {
   bool row_broadcast = is_one(op->args[shape_index + 3]);
   ShapeInfo dst_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo src_info = GetSliceInfo(op->args[2].as<CallNode>());
-  if (row_broadcast) {
-    // As in the established non-tail path, expand the padded physical source
-    // tile and let the guarded store discard invalid rows/columns.  A dynamic
-    // TROWEXPAND view changes the PTO layout contract and produced incorrect
-    // values on both fp16 and fp32 tails.
-    CodegenRowBroadcast(dst_info, src_info);
-    return;
-  }
   std::string valid_row = PrintExpr(op->args[tail_index]);
   std::string valid_col = PrintExpr(op->args[tail_index + 1]);
+  std::string src_valid_row = PrintExpr(op->args[tail_index + 2]);
   std::string src_valid_col = PrintExpr(op->args[tail_index + 3]);
   std::string dst = CreateUbVariableDynamic(dst_info, valid_row, valid_col);
   std::string src = GetTempVarName(src_info.ub_name);
   this->PrintIndent();
-  this->stream << kAscendPtoScope << "TileUbDataND<" << src_info.type << ", "
-               << src_info.row << ", " << src_info.col << ", 1, pto::DYNAMIC> "
-               << src << "(" << src_valid_col << ");\n";
+  if (row_broadcast) {
+    // A narrow GM->UB TLOAD places each logical source row in its own 32-byte
+    // block. Preserve that physical row pitch instead of reinterpreting the
+    // allocation as a packed DN column.
+    std::string src_rows = PrintExpr(op->args[shape_index + 2]);
+    this->stream << kAscendPtoScope << "TileUbDataND<" << src_info.type << ", "
+                 << src_rows << ", " << src_info.col << ", pto::DYNAMIC, 1> "
+                 << src << "(" << src_valid_row << ");\n";
+  } else {
+    this->stream << kAscendPtoScope << "TileUbDataND<" << src_info.type << ", "
+                 << src_info.row << ", " << src_info.col
+                 << ", 1, pto::DYNAMIC> " << src << "(" << src_valid_col
+                 << ");\n";
+  }
   this->PrintIndent();
   this->stream << "TASSIGN(" << src << ", " << src_info.first_addr << " + "
                << src_info.offset << " * " << GetTypeLen(src_info.type)
                << ");\n";
   this->PrintIndent();
-  this->stream << "TCOLEXPAND(" << dst << ", " << src << ");\n";
+  this->stream << (row_broadcast ? "TROWEXPAND(" : "TCOLEXPAND(") << dst << ", "
+               << src << ");\n";
 }
 
 void CodeGenTileLangAscendPto::ScalarOpCodegen(const CallNode *op,

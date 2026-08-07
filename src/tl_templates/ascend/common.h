@@ -1087,16 +1087,18 @@ tail_broadcast(LocalTensor<T> dst, LocalTensor<T> src, int axis,
     return;
   if (axis == 1) {
     uint32_t rows = validRow < srcValidRow ? validRow : srcValidRow;
+    constexpr uint32_t elemsPerBlock = 32 / sizeof(T);
+    uint32_t srcRowStride =
+        ((srcPhysCol + elemsPerBlock - 1) / elemsPerBlock) * elemsPerBlock;
     AscendC::PipeBarrier<PIPE_ALL>();
     for (uint32_t r = 0; r < rows; ++r) {
-      T scalar = src.GetValue(r * srcPhysCol);
-      if (validCol == dstPhysCol) {
-        AscendC::Duplicate(dst[r * dstPhysCol], scalar,
-                           static_cast<int32_t>(validCol));
-      } else {
-        for (uint32_t c = 0; c < validCol; ++c)
-          dst.SetValue(r * dstPhysCol + c, scalar);
-      }
+      T scalar = src.GetValue(r * srcRowStride);
+      // Keep both full and tail rows on the vector path.  SetValue is a
+      // scalar-pipeline store and is not a sound producer for the following
+      // MTE3 copy on device; Duplicate supports an arbitrary element count and
+      // therefore writes exactly the valid prefix of every physical row.
+      AscendC::Duplicate(dst[r * dstPhysCol], scalar,
+                         static_cast<int32_t>(validCol));
     }
     AscendC::PipeBarrier<PIPE_ALL>();
     return;

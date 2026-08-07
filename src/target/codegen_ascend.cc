@@ -2587,14 +2587,6 @@ void CodeGenTileLangAscend::TailBroadcastOpCodegen(const CallNode *op) {
   const size_t shape_index = dim_index + 1;
   const size_t tail_index = op->args.size() - 4;
   int axis = is_one(op->args[shape_index + 3]) ? 1 : 0;
-  if (axis == 1) {
-    // Row broadcast is safe on the padded physical tile: GM->UB initializes
-    // invalid source rows, and the guarded UB->GM copy stores only the valid
-    // output rectangle.  Keep the established vector implementation here;
-    // scalar GetValue/SetValue loops do not share its MTE2->V contract.
-    BroadcastOpCodegen(op);
-    return;
-  }
   std::string dtype = getType(GetAccessPtrDtype(op->args[1].as<CallNode>()));
   std::string dst = PrintBufferOffset(op->args[1].as<CallNode>());
   std::string src = PrintBufferOffset(op->args[2].as<CallNode>());

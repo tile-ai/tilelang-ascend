@@ -503,9 +503,11 @@ def test_tail_compare_select_emits_backend_path(target, dtype, scalar_compare, s
             assert int(out_offset.group(1)) - int(mask_offset.group(1)) >= 4 * 32, src
         if dtype == "float16" and scalar_compare and scalar_select:
             # Storage rewrite can reuse a half/float LocalTensor for the
-            # uint8 predicate. Both compare/select and the final UB->GM copy
-            # must reinterpret it before indexing.
-            assert src.count(".ReinterpretCast<uint8_t>()") >= 3, src
+            # uint8 predicate, but arena planning may instead retain a native
+            # uint8 allocation.  Validate either semantically correct layout;
+            # the exact reuse choice is deliberately planner-dependent.
+            explicit_uint8_mask = re.search(r"auto mask_ub = .*GetWithOffset<uint8_t>", src)
+            assert explicit_uint8_mask or src.count(".ReinterpretCast<uint8_t>()") >= 3, src
     else:
         compare = "compare_scalar(" if scalar_compare else "compare("
         select = "TSELS(" if scalar_select else "TSEL("
@@ -522,13 +524,19 @@ def test_tail_broadcast_emits_backend_path(target, dtype, axis):
     func = _tail_broadcast_axis0(5, 69, 4, 64, dtype) if axis == 0 else _tail_broadcast_axis1(5, 69, 4, 64, dtype)
     src = _source(func, target=target)
     if target == "ascendc":
-        expected_op = "tl::ascend::tail_broadcast" if axis == 0 else "tl::ascend::Broadcast"
-        assert expected_op in src, src
+        assert "tl::ascend::tail_broadcast" in src, src
+        if axis == 1:
+            src_offset = re.search(r"src_ub = .*?, (\d+)\);", src)
+            dst_offset = re.search(r"dst_ub = .*?, (\d+)\);", src)
+            assert src_offset and dst_offset, src
+            assert int(dst_offset.group(1)) - int(src_offset.group(1)) >= 4 * 32, src
     else:
         expected_op = "TCOLEXPAND(" if axis == 0 else "TROWEXPAND("
         assert expected_op in src, src
         if axis == 1:
-            assert "tail_row_expand(" not in src, src
+            assert "TileUbDataND" in src and "pto::DYNAMIC, 1>" in src, src
+            dst_addr = re.search(r"TASSIGN\(dst_ub, (\d+)\);", src)
+            assert dst_addr and int(dst_addr.group(1)) >= 4 * 32, src
 
 
 @pytest.mark.parametrize("target", TAIL_TARGETS)

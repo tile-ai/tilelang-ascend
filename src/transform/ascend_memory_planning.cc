@@ -965,6 +965,36 @@ private:
         });
         size_bytes = std::max(size_bytes, aligned_cmp_bytes);
       }
+      // A tail row-broadcast source such as [rows, 1] has one 32-byte UB block
+      // per GM->UB burst. Preserve the logical shape used by access_ptr while
+      // reserving the complete physical row-padded backing store.
+      size_t padded_broadcast_bytes = 0;
+      PostOrderVisit(alloc->body, [&](const ObjectRef &node) {
+        const auto *call = node.as<CallNode>();
+        if (call == nullptr || !call->op.same_as(ascend_tail_broadcast()) ||
+            (call->args.size() != 12 && call->args.size() != 13)) {
+          return;
+        }
+        const auto *ptr = call->args[2].as<CallNode>();
+        if (ptr == nullptr || !ptr->op.same_as(builtin::tvm_access_ptr()) ||
+            ptr->args.size() < 2 ||
+            ptr->args[1].as<VarNode>() != alloc->buffer_var.get()) {
+          return;
+        }
+        const bool has_tmp = call->args[3].as<CallNode>() != nullptr;
+        const size_t dim_index = has_tmp ? 4 : 3;
+        const size_t shape_index = dim_index + 1;
+        const auto *rows = call->args[shape_index + 2].as<IntImmNode>();
+        const auto *cols = call->args[shape_index + 3].as<IntImmNode>();
+        ICHECK(rows && cols) << "tail broadcast source shape must be static";
+        const size_t row_bytes = static_cast<size_t>(cols->value) *
+                                 alloc->dtype.bytes() * alloc->dtype.lanes();
+        if (rows->value > 0 && row_bytes < 32) {
+          padded_broadcast_bytes = std::max(
+              padded_broadcast_bytes, static_cast<size_t>(rows->value) * 32);
+        }
+      });
+      size_bytes = std::max(size_bytes, padded_broadcast_bytes);
       return AlignUp(size_bytes, 32);
     }
 
