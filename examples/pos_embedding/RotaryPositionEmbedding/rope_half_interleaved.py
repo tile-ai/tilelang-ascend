@@ -363,8 +363,7 @@ def _make_input(shape, dtype_str, layout_kind):
     return x_cpu, sin_cpu, cos_cpu
 
 
-def run_case(shape, layout, dtype_str, layout_kind, level="l0",
-             inputs=None, tag="PRECISION", label=None):
+def run_case(shape, layout, dtype_str, layout_kind, level="l0", inputs=None, tag="PRECISION", label=None):
     """Run a single test case. Returns (passed, ratio, max_abs).
 
     inputs:  optional (x, sin, cos) CPU tuple; if None, generated via _make_input
@@ -459,26 +458,42 @@ def test_rope_l1():
 
 # ========== L2 Tests (negative: invalid inputs should be rejected) ==========
 L2_CASES = [
-    ("odd_rope_dim", lambda: (
-        torch.randn(4, 8, 128, dtype=torch.float16, device=device),
-        torch.randn(4, 1, 63, dtype=torch.float16, device=device),
-        torch.randn(4, 1, 63, dtype=torch.float16, device=device)),
-     ValueError),
-    ("bad_dim_1d", lambda: (
-        torch.randn(128, dtype=torch.float16, device=device),
-        torch.randn(1, 64, dtype=torch.float16, device=device),
-        torch.randn(1, 64, dtype=torch.float16, device=device)),
-     NotImplementedError),
-    ("bad_dim_5d", lambda: (
-        torch.randn(2, 4, 8, 16, 64, dtype=torch.float16, device=device),
-        torch.randn(2, 4, 1, 32, dtype=torch.float16, device=device),
-        torch.randn(2, 4, 1, 32, dtype=torch.float16, device=device)),
-     NotImplementedError),
-    ("rope_dim_too_large", lambda: (
-        torch.randn(4, 8, 64, dtype=torch.float16, device=device),
-        torch.randn(4, 1, 128, dtype=torch.float16, device=device),
-        torch.randn(4, 1, 128, dtype=torch.float16, device=device)),
-     (ValueError, IndexError, RuntimeError)),
+    (
+        "odd_rope_dim",
+        lambda: (
+            torch.randn(4, 8, 128, dtype=torch.float16, device=device),
+            torch.randn(4, 1, 63, dtype=torch.float16, device=device),
+            torch.randn(4, 1, 63, dtype=torch.float16, device=device),
+        ),
+        ValueError,
+    ),
+    (
+        "bad_dim_1d",
+        lambda: (
+            torch.randn(128, dtype=torch.float16, device=device),
+            torch.randn(1, 64, dtype=torch.float16, device=device),
+            torch.randn(1, 64, dtype=torch.float16, device=device),
+        ),
+        NotImplementedError,
+    ),
+    (
+        "bad_dim_5d",
+        lambda: (
+            torch.randn(2, 4, 8, 16, 64, dtype=torch.float16, device=device),
+            torch.randn(2, 4, 1, 32, dtype=torch.float16, device=device),
+            torch.randn(2, 4, 1, 32, dtype=torch.float16, device=device),
+        ),
+        NotImplementedError,
+    ),
+    (
+        "rope_dim_too_large",
+        lambda: (
+            torch.randn(4, 8, 64, dtype=torch.float16, device=device),
+            torch.randn(4, 1, 128, dtype=torch.float16, device=device),
+            torch.randn(4, 1, 128, dtype=torch.float16, device=device),
+        ),
+        (ValueError, IndexError, RuntimeError),
+    ),
 ]
 
 
@@ -490,36 +505,66 @@ def test_rope_l2():
 
 # ========== Boundary Tests (legal special/extreme values, non-blocking) ==========
 BOUNDARY_CASES = [
-    ("large_values", lambda: (
-        torch.randn(16, 64, 512, dtype=torch.float16) * 1000,
-        torch.randn(16, 1, 256, dtype=torch.float16),
-        torch.randn(16, 1, 256, dtype=torch.float16)),
-     "interleaved", "float16"),
-    ("zero_values", lambda: (
-        torch.zeros(16, 64, 512, dtype=torch.float16),
-        torch.randn(16, 1, 256, dtype=torch.float16),
-        torch.randn(16, 1, 256, dtype=torch.float16)),
-     "half", "float16"),
-    ("full_rope_large_batch", lambda: (
-        torch.randn(128, 64, 256, dtype=torch.float16),
-        torch.randn(128, 1, 256, dtype=torch.float16),
-        torch.randn(128, 1, 256, dtype=torch.float16)),
-     "interleaved", "float16"),
-    ("min_rope_dim", lambda: (
-        torch.randn(8, 16, 128, dtype=torch.bfloat16),
-        torch.randn(8, 1, 64, dtype=torch.bfloat16),
-        torch.randn(8, 1, 64, dtype=torch.bfloat16)),
-     "half", "bfloat16"),
-    ("single_row", lambda: (
-        torch.randn(1, 1, 128, dtype=torch.float16),
-        torch.randn(1, 1, 64, dtype=torch.float16),
-        torch.randn(1, 1, 64, dtype=torch.float16)),
-     "interleaved", "float16"),
-    ("bsnd_tail", lambda: (
-        torch.randn(3, 33, 8, 256, dtype=torch.float16),
-        torch.randn(1, 33, 1, 128, dtype=torch.float16),
-        torch.randn(1, 33, 1, 128, dtype=torch.float16)),
-     "half", "float16"),
+    (
+        "large_values",
+        lambda: (
+            torch.randn(16, 64, 512, dtype=torch.float16) * 1000,
+            torch.randn(16, 1, 256, dtype=torch.float16),
+            torch.randn(16, 1, 256, dtype=torch.float16),
+        ),
+        "interleaved",
+        "float16",
+    ),
+    (
+        "zero_values",
+        lambda: (
+            torch.zeros(16, 64, 512, dtype=torch.float16),
+            torch.randn(16, 1, 256, dtype=torch.float16),
+            torch.randn(16, 1, 256, dtype=torch.float16),
+        ),
+        "half",
+        "float16",
+    ),
+    (
+        "full_rope_large_batch",
+        lambda: (
+            torch.randn(128, 64, 256, dtype=torch.float16),
+            torch.randn(128, 1, 256, dtype=torch.float16),
+            torch.randn(128, 1, 256, dtype=torch.float16),
+        ),
+        "interleaved",
+        "float16",
+    ),
+    (
+        "min_rope_dim",
+        lambda: (
+            torch.randn(8, 16, 128, dtype=torch.bfloat16),
+            torch.randn(8, 1, 64, dtype=torch.bfloat16),
+            torch.randn(8, 1, 64, dtype=torch.bfloat16),
+        ),
+        "half",
+        "bfloat16",
+    ),
+    (
+        "single_row",
+        lambda: (
+            torch.randn(1, 1, 128, dtype=torch.float16),
+            torch.randn(1, 1, 64, dtype=torch.float16),
+            torch.randn(1, 1, 64, dtype=torch.float16),
+        ),
+        "interleaved",
+        "float16",
+    ),
+    (
+        "bsnd_tail",
+        lambda: (
+            torch.randn(3, 33, 8, 256, dtype=torch.float16),
+            torch.randn(1, 33, 1, 128, dtype=torch.float16),
+            torch.randn(1, 33, 1, 128, dtype=torch.float16),
+        ),
+        "half",
+        "float16",
+    ),
 ]
 
 
@@ -528,8 +573,7 @@ def test_rope_boundary():
     torch.manual_seed(123)
     for name, make_inputs, layout, dtype_str in BOUNDARY_CASES:
         try:
-            run_case(None, layout, dtype_str, None, level="boundary",
-                     inputs=make_inputs(), tag="BOUNDARY", label=name)
+            run_case(None, layout, dtype_str, None, level="boundary", inputs=make_inputs(), tag="BOUNDARY", label=name)
         except Exception as e:
             print(f"[BOUNDARY_WARN] boundary {name}: {type(e).__name__}: {e}")
 
