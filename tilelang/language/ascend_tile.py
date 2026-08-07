@@ -2,12 +2,25 @@ from __future__ import annotations
 import tilelang.language as T
 from tvm.ir import Range
 from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call, IntImm, Ramp
-from tvm import DataType, tir
-from tilelang.language.ascend import _dtype
+from tvm import DataType, arith, tir
+from tilelang.language.ascend import _dtype, _get_tmp_arena_access_ptr
 import functools
 import warnings
+from typing import Any
 
 import math
+
+
+def _call_intrin_with_optional_tmp(
+    intrin_name: str,
+    args: list[Any],
+    tmp_position: int,
+    tmp: Buffer | BufferRegion | None,
+) -> PrimExpr:
+    """Build an Ascend intrinsic call with an optional public tmp arena."""
+    if tmp is not None:
+        args.insert(tmp_position, _get_tmp_arena_access_ptr(intrin_name, tmp))
+    return tir.call_intrin("handle", tir.op.Op.get(f"tl.ascend_{intrin_name}"), *args)
 
 
 def deprecated(message=None):
@@ -68,7 +81,117 @@ def _handle_buffer_region(br: BufferRegion, mask):
     return bf.access_ptr(mask, offset=offset, extent=size_extent), extent
 
 
-def _handle_buffer_region_2d(br: BufferRegion, mask):
+def _is_const_one(val) -> bool:
+    """Check if a value is constant 1 (int or IntImm)."""
+    if isinstance(val, (int, float)):
+        return val == 1
+    if isinstance(val, IntImm):
+        return val.value == 1
+    return False
+
+
+def _const_int(val) -> int | None:
+    """Return a Python int for a static integer expression."""
+    if isinstance(val, int):
+        return val
+    if isinstance(val, IntImm):
+        return int(val)
+    return None
+
+
+def _resolve_let_expr(val):
+    """Substitute scalar let bindings that are visible while building TIR."""
+    if not isinstance(val, PrimExpr):
+        return val
+
+    bindings = {}
+
+    def collect(node):
+        if isinstance(node, tir.Var) and T.has_let_value(node):
+            bound = T.get_let_value(node)
+            if isinstance(bound, PrimExpr):
+                bindings[node] = bound
+
+    while True:
+        bindings.clear()
+        tir.stmt_functor.post_order_visit(val, collect)
+        if not bindings:
+            return val
+        val = tir.stmt_functor.substitute(val, bindings)
+
+
+def _is_provably_divisible(val, divisor: int) -> bool:
+    """Check whether a static or symbolic integer is divisible by a constant."""
+    val = _resolve_let_expr(val)
+    static_val = _const_int(val)
+    if static_val is not None:
+        return static_val % divisor == 0
+    return arith.Analyzer().can_prove(val % divisor == 0)
+
+
+def _const_equal(a, b) -> bool:
+    """Compare two values that may be int, IntImm, or symbolic PrimExpr."""
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return a == b
+    if isinstance(a, IntImm) and isinstance(b, IntImm):
+        return a.value == b.value
+    if isinstance(a, (int, float)) and isinstance(b, IntImm):
+        return a == b.value
+    if isinstance(a, IntImm) and isinstance(b, (int, float)):
+        return a.value == b
+    import tvm
+
+    return tvm.ir.structural_equal(a, b)
+
+
+def _shapes_equal(shape1, shape2) -> bool:
+    """Compare two shape lists that may contain symbolic PrimExpr."""
+    if len(shape1) != len(shape2):
+        return False
+    return all(_const_equal(x, y) for x, y in zip(shape1, shape2))
+
+
+def _fold_nd_shape_to_2d(shape):
+    """Fold all leading dimensions of a shape into a single row dimension."""
+    shape = list(shape)
+    if len(shape) <= 1:
+        return shape
+    return [math.prod(shape[:-1]), shape[-1]]
+
+
+def _validate_buffer_region_contiguity(
+    br: BufferRegion,
+    *,
+    require_flat_contiguous: bool,
+) -> None:
+    """Reject rectangular regions that cross gaps in a dense row-major buffer.
+
+    A 2D row operation may use a narrower final-axis window because codegen
+    retains the physical row stride. A flat stream must include the final axis
+    in the same check.
+    """
+    regions = br.region if require_flat_contiguous else br.region[:-1]
+    spans_multiple_entries = False
+    for axis, region in enumerate(regions):
+        if spans_multiple_entries:
+            starts_at_zero = _const_equal(region.min, 0)
+            has_full_extent = _const_equal(region.extent, br.buffer.shape[axis])
+            if not (starts_at_zero and has_full_extent):
+                if require_flat_contiguous:
+                    requirement = "BufferRegion must be contiguous when flattened"
+                else:
+                    requirement = "BufferRegion outer dimensions must be contiguous"
+                raise ValueError(f"{requirement}; axis {axis} is not selected in full.")
+        elif not _is_const_one(region.extent):
+            spans_multiple_entries = True
+
+
+def _handle_buffer_region_2d(
+    br: BufferRegion,
+    mask,
+    *,
+    require_flat_contiguous: bool = False,
+):
     """Like _handle_buffer_region but flattens ND extents to 2D [rows, cols].
 
     For a 3D buffer s_ub[T, 32, 512] sliced as s_ub[tile, :, :]:
@@ -76,15 +199,16 @@ def _handle_buffer_region_2d(br: BufferRegion, mask):
 
     Leading dimensions are folded into rows; the innermost dimension is kept as cols.
     """
+    _validate_buffer_region_contiguity(
+        br,
+        require_flat_contiguous=require_flat_contiguous,
+    )
     bf = br.buffer
     indices = [x.min for x in br.region]
     offset = bf.offset_of(indices)[0]
     extent_nd = [x.extent for x in br.region]
     size_extent = math.prod(extent_nd)
-    if len(extent_nd) >= 2:
-        extent_2d = [math.prod(extent_nd[:-1]), extent_nd[-1]]
-    else:
-        extent_2d = [1, extent_nd[0]]
+    extent_2d = _fold_nd_shape_to_2d(extent_nd)
     return bf.access_ptr(mask, offset=offset, extent=size_extent), extent_2d
 
 
@@ -287,7 +411,13 @@ def arith_progression(buffer: Buffer, first_value: PrimExpr, diff_value: PrimExp
     )
 
 
-def sort(dst: Buffer, src: Buffer, actual_num: PrimExpr):
+def sort(
+    dst: Buffer,
+    src: Buffer,
+    actual_num: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):
     """
     Performs a full sort on arbitrarily-lengthed input data with automatic internal
     alignment. Sorts each 32-element block via sort32, then merges all sorted
@@ -301,19 +431,23 @@ def sort(dst: Buffer, src: Buffer, actual_num: PrimExpr):
     dst: Destination buffer for interleaved (value, index) pairs. Must have
          at least 2 * aligned_size elements.
     src: Source buffer containing the data to be sorted.
-    tmp: Temporary buffer for intermediate sort/merge results (2x the size of src).
     actual_num: The number of valid elements in src. When actual_num is less than
                 the buffer size, unused positions are padded with -inf before sorting.
+    tmp: Optional complete UB scratch storage. Its scalar dtype is reinterpreted
+         by lowering and has no semantic meaning.
     """
     repeatTimes = (actual_num + 31) // 32  # ceiling to 32-aligned
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_sort"),
-        f"Sort<{_dtype(dst)}>",
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
-        repeatTimes,
-        actual_num,
+    return _call_intrin_with_optional_tmp(
+        "sort",
+        [
+            f"Sort<{_dtype(dst)}>",
+            dst.access_ptr("w"),
+            src.access_ptr("r"),
+            repeatTimes,
+            actual_num,
+        ],
+        3,
+        tmp,
     )
 
 
@@ -323,6 +457,8 @@ def merge_sort(
     src1: Buffer | BufferRegion,
     src2: Buffer | BufferRegion | None = None,
     src3: Buffer | BufferRegion | None = None,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
 ):
     """Performs a 2/3/4-way merge sort operation.
 
@@ -342,6 +478,8 @@ def merge_sort(
         src1: Second source buffer or buffer region.
         src2: Third source buffer or buffer region (optional, for 3-way or 4-way merge).
         src3: Fourth source buffer or buffer region (optional, for 4-way merge).
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the merge sort operation.
@@ -408,15 +546,17 @@ def merge_sort(
         + [retrieve_ptr(buf, "r") for buf in src_buffers]
         + blockLens
     )
-
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_merge_sort"),
-        *args,
-    )
+    return _call_intrin_with_optional_tmp("merge_sort", args, 3, tmp)
 
 
-def topk(dst: Buffer, src: Buffer, K: PrimExpr, actual_num: PrimExpr):
+def topk(
+    dst: Buffer,
+    src: Buffer,
+    K: PrimExpr,
+    actual_num: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):
     """Performs a TopK operation by sorting the source data and extracting the top K elements.
 
     Internally calls Sort on the source data, then copies the top K interleaved
@@ -429,6 +569,8 @@ def topk(dst: Buffer, src: Buffer, K: PrimExpr, actual_num: PrimExpr):
              Assumes src has static shape for buffer sizing.
         K: Number of top elements to extract.
         actual_num: The number of valid elements in src (can be symbolic for dynamic shapes).
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the TopK operation.
@@ -449,20 +591,29 @@ def topk(dst: Buffer, src: Buffer, K: PrimExpr, actual_num: PrimExpr):
             )
 
     repeatTimes = (max_actual_num + 31) // 32
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_topk"),
-        f"TopK<{_dtype(dst)}>",
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
-        K,
-        repeatTimes,
-        actual_num,
-        max_actual_num,
+    return _call_intrin_with_optional_tmp(
+        "topk",
+        [
+            f"TopK<{_dtype(dst)}>",
+            dst.access_ptr("w"),
+            src.access_ptr("r"),
+            K,
+            repeatTimes,
+            actual_num,
+            max_actual_num,
+        ],
+        3,
+        tmp,
     )
 
 
-def gather_mask(dst: Buffer, src: Buffer, src1Pattern: str | Buffer):
+def gather_mask(
+    dst: Buffer,
+    src: Buffer,
+    src1Pattern: str | Buffer,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):
     """Performs a gather mask operation.
 
     This intrinsic invokes the underlying implementation to perform a gather mask
@@ -482,6 +633,8 @@ def gather_mask(dst: Buffer, src: Buffer, src1Pattern: str | Buffer):
             - "P1000": Extract the fourth element from every four elements.
             - "P1111": Extract all elements.
         When the custom mode is enabled, the data type of src1Pattern is Buffer.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the gather mask operation.
@@ -490,22 +643,28 @@ def gather_mask(dst: Buffer, src: Buffer, src1Pattern: str | Buffer):
     if isinstance(src1Pattern, Buffer):
         assert src1Pattern.dtype == "uint32", f"src1Pattern dtype must be uint32, got {src1Pattern.dtype}"
 
-        return tir.call_intrin(
-            "handle",
-            tir.op.Op.get("tl.ascend_gather_mask"),
-            f"GatherMask<{_dtype(dst)}>",
-            dst.access_ptr("w"),
-            src.access_ptr("r"),
-            src1Pattern.access_ptr("r"),
+        return _call_intrin_with_optional_tmp(
+            "gather_mask",
+            [
+                f"GatherMask<{_dtype(dst)}>",
+                dst.access_ptr("w"),
+                src.access_ptr("r"),
+                src1Pattern.access_ptr("r"),
+            ],
+            4,
+            tmp,
         )
     else:
-        return tir.call_intrin(
-            "handle",
-            tir.op.Op.get("tl.ascend_gather_mask"),
-            f"GatherMask<{_dtype(dst)}>",
-            dst.access_ptr("w"),
-            src.access_ptr("r"),
-            src1Pattern,
+        return _call_intrin_with_optional_tmp(
+            "gather_mask",
+            [
+                f"GatherMask<{_dtype(dst)}>",
+                dst.access_ptr("w"),
+                src.access_ptr("r"),
+                src1Pattern,
+            ],
+            4,
+            tmp,
         )
 
 
@@ -553,6 +712,8 @@ def select(
     src0: Buffer | BufferRegion,
     src1: Buffer | BufferLoad | PrimExpr,
     selMode: str,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
 ):
     """Performs an element-wise Select operation based on a mask.
 
@@ -570,6 +731,8 @@ def select(
             - 'VSEL_CMPMASK_SPR': Select based on compare mask.
             - 'VSEL_TENSOR_SCALAR_MODE': Select between a tensor and a scalar.
             - 'VSEL_TENSOR_TENSOR_MODE': Select between two tensors.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the Select operation.
@@ -617,7 +780,7 @@ def select(
         else:
             raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
 
-    dst_ptr = retrieve_ptr(dst, "r")
+    dst_ptr = retrieve_ptr(dst, "w")
     src0_ptr = retrieve_ptr(src0, "r")
 
     sel_mask_ptr = selMask.access_ptr("r")
@@ -637,50 +800,59 @@ def select(
         src1_type = 0
         buffer_1 = src1.buffer
         indices_1 = src1.indices
-        return tir.call_intrin(
-            "handle",
-            tir.op.Op.get("tl.ascend_select"),
-            dst_ptr,
-            sel_mask_ptr,
-            src0_ptr,
-            src1_type,
-            buffer_1.access_ptr("r"),
-            indices_1[0],
-            selMode,
-            size_0,
+        return _call_intrin_with_optional_tmp(
+            "select",
+            [
+                dst_ptr,
+                sel_mask_ptr,
+                src0_ptr,
+                src1_type,
+                buffer_1.access_ptr("r"),
+                indices_1[0],
+                selMode,
+                size_0,
+            ],
+            3,
+            tmp,
         )
     elif isinstance(src1, (PrimExpr, float)):
         assert selMode == "VSEL_TENSOR_SCALAR_MODE", "selMode must be VSEL_TENSOR_SCALAR_MODE"
 
         src1_type = 1
-        return tir.call_intrin(
-            "handle",
-            tir.op.Op.get("tl.ascend_select"),
-            dst_ptr,
-            sel_mask_ptr,
-            src0_ptr,
-            src1_type,
-            src1,
-            selMode,
-            size_0,
-            _dtype(src0),
-            _dtype(selMask),
+        return _call_intrin_with_optional_tmp(
+            "select",
+            [
+                dst_ptr,
+                sel_mask_ptr,
+                src0_ptr,
+                src1_type,
+                src1,
+                selMode,
+                size_0,
+                _dtype(src0),
+                _dtype(selMask),
+            ],
+            3,
+            tmp,
         )
     else:
         assert selMode in ["VSEL_CMPMASK_SPR", "VSEL_TENSOR_TENSOR_MODE"], "selMode must be VSEL_CMPMASK_SPR or VSEL_TENSOR_TENSOR_MODE"
 
         src1_type = 2
         src1_ptr = src1.access_ptr("r")
-        return tir.call_intrin(
-            "handle",
-            tir.op.Op.get("tl.ascend_select"),
-            dst_ptr,
-            sel_mask_ptr,
-            src0_ptr,
-            src1_type,
-            src1_ptr,
-            selMode,
-            size_0,
+        return _call_intrin_with_optional_tmp(
+            "select",
+            [
+                dst_ptr,
+                sel_mask_ptr,
+                src0_ptr,
+                src1_type,
+                src1_ptr,
+                selMode,
+                size_0,
+            ],
+            3,
+            tmp,
         )
 
 
@@ -977,12 +1149,20 @@ def exp(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
     return unary_op(dst, src0, "exp")
 
 
-def sigmoid(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):
+def sigmoid(
+    dst: Buffer | BufferRegion,
+    src: Buffer | BufferRegion,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):
+    """Compute sigmoid, optionally using explicit UB scratch storage.
+
+    ``tmp`` may use any fixed-width scalar dtype; lowering reinterprets its
+    storage for the selected backend.
+    """
     if isinstance(dst, BufferRegion):
-        print("test1")
         dst_ptr, buffer_extent = _handle_buffer_region(dst, "w")
         size = math.prod(buffer_extent)
-        print("test2")
     else:
         dst_ptr = dst.access_ptr("w")
         size = math.prod(dst.shape)
@@ -991,13 +1171,7 @@ def sigmoid(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):
         src_ptr, _ = _handle_buffer_region(src, "r")
     else:
         src_ptr = src.access_ptr("r")
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_sigmoid"),
-        dst_ptr,
-        src_ptr,
-        size,
-    )
+    return _call_intrin_with_optional_tmp("sigmoid", [dst_ptr, src_ptr, size], 2, tmp)
 
 
 def silu(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):
@@ -1303,20 +1477,26 @@ def bilinear_interpolation(
     dst_blk_stride: PrimExpr,
     v_r_offset: PrimExpr,
     v_repeat: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
 ):
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_bilinear_interpolation"),
-        dst.access_ptr("w"),
-        src0.access_ptr("r"),
-        src0_offset.access_ptr("r"),
-        src1.access_ptr("r"),
-        mask,
-        h_repeat,
-        repeat_mode,
-        dst_blk_stride,
-        v_r_offset,
-        v_repeat,
+    """Run the deprecated bilinear API with an optional explicit tmp arena."""
+    return _call_intrin_with_optional_tmp(
+        "bilinear_interpolation",
+        [
+            dst.access_ptr("w"),
+            src0.access_ptr("r"),
+            src0_offset.access_ptr("r"),
+            src1.access_ptr("r"),
+            mask,
+            h_repeat,
+            repeat_mode,
+            dst_blk_stride,
+            v_r_offset,
+            v_repeat,
+        ],
+        10,
+        tmp,
     )
 
 
@@ -1480,7 +1660,14 @@ def transpose(dst: Buffer, src: Buffer):
     )
 
 
-def gather(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, src_offset: Buffer | BufferRegion, src_base_addr: PrimExpr):  # noqa: F821
+def gather(
+    dst: Buffer | BufferRegion,
+    src: Buffer | BufferRegion,
+    src_offset: Buffer | BufferRegion,
+    src_base_addr: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):  # noqa: F821
     """Performs a gather operation.
 
     This intrinsic gathers elements from the source buffer based on the provided
@@ -1491,6 +1678,8 @@ def gather(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, src_offset: B
         src: The source buffer containing the data table.
         src_offset: The buffer containing offsets/indices for gathering.
         src_base_addr: The base address offset to be added to the gather indices.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
     """
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
@@ -1513,14 +1702,11 @@ def gather(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, src_offset: B
 
     size = tir.min(dst_size, offset_size)
 
-    return T.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_gather"),
-        dst_ptr,
-        src_ptr,
-        src_offset_ptr,
-        src_base_addr,
-        size,
+    return _call_intrin_with_optional_tmp(
+        "gather",
+        [dst_ptr, src_ptr, src_offset_ptr, src_base_addr, size],
+        5,
+        tmp,
     )
 
 
@@ -1789,12 +1975,19 @@ def cast(dst: Buffer | BufferRegion, src: Buffer | BufferRegion, mode: str, coun
     )
 
 
-def sin(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):  # noqa: F821
+def sin(
+    dst: Buffer | BufferRegion,
+    src: Buffer | BufferRegion,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):  # noqa: F821
     """Performs element-wise sine calculation: dst = sin(src).
 
     Args:
         dst: The destination buffer where the result will be stored.
         src: The source buffer containing the input data.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the sine operation.
@@ -1815,21 +2008,22 @@ def sin(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):  # noqa: F821
 
     assert size_0 == size_2, "size must be same"
 
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_sin"),
-        dst_ptr,
-        src_ptr,
-        size_0,
-    )
+    return _call_intrin_with_optional_tmp("sin", [dst_ptr, src_ptr, size_0], 2, tmp)
 
 
-def cos(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):  # noqa: F821
+def cos(
+    dst: Buffer | BufferRegion,
+    src: Buffer | BufferRegion,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):  # noqa: F821
     """Performs element-wise cosine calculation: dst = cos(src).
 
     Args:
         dst: The destination buffer where the result will be stored.
         src: The source buffer containing the input data.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the cosine operation.
@@ -1850,13 +2044,7 @@ def cos(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):  # noqa: F821
 
     assert size_0 == size_2, "size must be same"
 
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_cos"),
-        dst_ptr,
-        src_ptr,
-        size_0,
-    )
+    return _call_intrin_with_optional_tmp("cos", [dst_ptr, src_ptr, size_0], 2, tmp)
 
 
 # def clampMax(dst: Buffer, src: Buffer, tmp: Buffer, scalar_value: PrimExpr, count: PrimExpr):
@@ -1871,13 +2059,21 @@ def cos(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):  # noqa: F821
 #
 #     return cast(dst, src, "CAST_ROUND", count)
 #
-def pow(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion):  # noqa: F821
+def pow(
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):  # noqa: F821
     """Performs element-wise power calculation: dst = src0 ^ src1.
 
     Args:
         dst: The destination buffer where the result will be stored.
         src0: The base buffer.
         src1: The exponent buffer.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the power operation.
@@ -1897,22 +2093,24 @@ def pow(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | 
     else:
         src1_ptr = src1.access_ptr("r")
 
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_pow"),
-        dst_ptr,
-        src0_ptr,
-        src1_ptr,
-    )
+    return _call_intrin_with_optional_tmp("pow", [dst_ptr, src0_ptr, src1_ptr], 3, tmp)
 
 
-def bitwise_xor(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion):  # noqa: F821
+def bitwise_xor(
+    dst: Buffer | BufferRegion,
+    src0: Buffer | BufferRegion,
+    src1: Buffer | BufferRegion,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):  # noqa: F821
     """Performs element-wise bitwise XOR operation: dst = src0 ^ src1.
 
     Args:
         dst: The destination buffer where the result will be stored.
         src0: The first source operand buffer.
         src1: The second source operand buffer.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the bitwise XOR operation.
@@ -1932,10 +2130,17 @@ def bitwise_xor(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: B
     else:
         src1_ptr = src1.access_ptr("r")
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_bitwise_xor"), dst_ptr, src0_ptr, src1_ptr)
+    return _call_intrin_with_optional_tmp("bitwise_xor", [dst_ptr, src0_ptr, src1_ptr], 3, tmp)
 
 
-def clamp_max(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, scalar_value: PrimExpr, count: PrimExpr):  # noqa: F821
+def clamp_max(
+    out: Buffer | BufferRegion,
+    buffer: Buffer | BufferRegion,
+    scalar_value: PrimExpr,
+    count: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):  # noqa: F821
     """_summary_
     Clip tensor elements to no more than scalar_value, replace elements larger than scalar_value with scalar_value,
     keep original values for elements less than or equal to scalar_value
@@ -1945,6 +2150,8 @@ def clamp_max(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, scalar_
         buffer: The first source operand buffer.
         scalar_value: The max scalar value
         count: The size of tensor out
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the clamp_max operation.
@@ -1959,18 +2166,28 @@ def clamp_max(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, scalar_
     else:
         buffer_ptr = buffer.access_ptr("r")
 
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_clamp_max"),
-        f"ClampMax<{_dtype(buffer)}>",
-        out_ptr,
-        buffer_ptr,
-        scalar_value,
-        count,
+    return _call_intrin_with_optional_tmp(
+        "clamp_max",
+        [
+            f"ClampMax<{_dtype(buffer)}>",
+            out_ptr,
+            buffer_ptr,
+            scalar_value,
+            count,
+        ],
+        3,
+        tmp,
     )
 
 
-def clamp_min(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, scalar_value: PrimExpr, count: PrimExpr):  # noqa: F821
+def clamp_min(
+    out: Buffer | BufferRegion,
+    buffer: Buffer | BufferRegion,
+    scalar_value: PrimExpr,
+    count: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):  # noqa: F821
     """
     Clip tensor elements to no less than v, replace elements smaller than scalar_value with scalar_value,
     keep original values for elements greater than or equal to scalar_value
@@ -1980,6 +2197,8 @@ def clamp_min(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, scalar_
         buffer: The first source operand buffer.
         scalar_value: The min scalar value
         count: The size of tensor out
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the clamp_min operation.
@@ -1994,18 +2213,29 @@ def clamp_min(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, scalar_
     else:
         buffer_ptr = buffer.access_ptr("r")
 
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_clamp_min"),
-        f"ClampMin<{_dtype(buffer)}>",
-        out_ptr,
-        buffer_ptr,
-        scalar_value,
-        count,
+    return _call_intrin_with_optional_tmp(
+        "clamp_min",
+        [
+            f"ClampMin<{_dtype(buffer)}>",
+            out_ptr,
+            buffer_ptr,
+            scalar_value,
+            count,
+        ],
+        3,
+        tmp,
     )
 
 
-def clamp(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, min_scalar: PrimExpr, max_scalar: PrimExpr, count: PrimExpr):  # noqa: F821
+def clamp(
+    out: Buffer | BufferRegion,
+    buffer: Buffer | BufferRegion,
+    min_scalar: PrimExpr,
+    max_scalar: PrimExpr,
+    count: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):  # noqa: F821
     """
     Clip tensor elements to [min_scalar, max_scalar] range, replace out-of-bounds values with boundary values
 
@@ -2015,6 +2245,8 @@ def clamp(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, min_scalar:
         min_scalar: The min scalar value
         max_scalar: The max scalar value
         count: The size of tensor out
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the clamp operation.
@@ -2029,19 +2261,33 @@ def clamp(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, min_scalar:
     else:
         buffer_ptr = buffer.access_ptr("r")
 
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_clamp"),
-        f"Clamp<{_dtype(buffer)}>",
-        out_ptr,
-        buffer_ptr,
-        min_scalar,
-        max_scalar,
-        count,
+    return _call_intrin_with_optional_tmp(
+        "clamp",
+        [
+            f"Clamp<{_dtype(buffer)}>",
+            out_ptr,
+            buffer_ptr,
+            min_scalar,
+            max_scalar,
+            count,
+        ],
+        3,
+        tmp,
     )
 
 
-def round(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, count: PrimExpr):  # noqa: F821
+def round(
+    out: Buffer | BufferRegion,
+    buffer: Buffer | BufferRegion,
+    count: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):  # noqa: F821
+    """Round elements, optionally using explicit UB scratch storage.
+
+    ``tmp`` may use any fixed-width scalar dtype; lowering reinterprets its
+    storage for the selected backend.
+    """
     if isinstance(out, BufferRegion):
         out_ptr, _ = _handle_buffer_region(out, "w")
     else:
@@ -2052,13 +2298,15 @@ def round(out: Buffer | BufferRegion, buffer: Buffer | BufferRegion, count: Prim
     else:
         buffer_ptr = buffer.access_ptr("r")
 
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_round"), out_ptr, buffer_ptr, count)
+    return _call_intrin_with_optional_tmp("round", [out_ptr, buffer_ptr, count], 2, tmp)
 
 
 def broadcast(
     dst: Buffer | BufferRegion,
     src: Buffer | BufferRegion,
     axis: int | None = None,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
 ):
     """Generates a TIR intrinsic call for the Ascend `Broadcast` operation.
 
@@ -2070,6 +2318,12 @@ def broadcast(
         dst: Destination buffer (must be in UB).
         src: Source buffer (must be in UB).
         axis: Broadcasting axis (0 or 1). If None, auto-inferred.
+        tmp: Optional complete target-specific scratch storage. It must be a
+            one-dimensional, static, contiguous fixed-width scalar buffer in
+            ``shared.ub``, or an equivalent 32-byte-aligned buffer region. Its
+            dtype is ignored and lowering reinterprets the storage by byte address.
+            Zero extent is allowed when the selected backend needs no
+            workspace. PTO broadcast is such a path and omits the operand.
 
     Returns:
         tvm.tir.Call: Intrinsic call for AscendC Broadcast API.
@@ -2139,15 +2393,19 @@ def broadcast(
             raise ValueError(f"1D broadcast requires src[0]=1 or shapes must match: src={src_extent}, dst={dst_extent}")
 
     # --- 5. Generate TIR intrinsic call ---
-    return tir.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_broadcast"),
+    args = [
         f"Broadcast<{dtype}, {dst_dim}, {axis}, false>",
         dst_ptr,
         src_ptr,
-        dst_dim,
-        *dst_extent,
-        *src_extent,
+    ]
+    if tmp is not None:
+        args.append(_get_tmp_arena_access_ptr("broadcast", tmp))
+    args.extend([dst_dim, *dst_extent, *src_extent])
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_broadcast"),
+        *args,
     )
 
 
@@ -2269,35 +2527,101 @@ def _normalize_buffer_arg(obj: Buffer | BufferRegion | BufferLoad) -> Buffer | B
     return obj
 
 
-def _is_const_one(val) -> bool:
-    """Check if a value is constant 1 (int or IntImm)."""
-    if isinstance(val, (int, float)):
-        return val == 1
-    if isinstance(val, IntImm):
-        return val.value == 1
-    return False
+def _underlying_buffer(obj: Buffer | BufferRegion) -> Buffer:
+    """Return the Buffer referenced by a Buffer or BufferRegion."""
+    return obj.buffer if isinstance(obj, BufferRegion) else obj
 
 
-def _const_equal(a, b) -> bool:
-    """Compare two values that may be int, IntImm, or symbolic PrimExpr."""
-    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-        return a == b
-    if isinstance(a, IntImm) and isinstance(b, IntImm):
-        return a.value == b.value
-    if isinstance(a, (int, float)) and isinstance(b, IntImm):
-        return a == b.value
-    if isinstance(a, IntImm) and isinstance(b, (int, float)):
-        return a.value == b
-    import tvm
+def _get_folded_2d_access(
+    obj: Buffer | BufferRegion,
+    mask: str,
+    *,
+    require_flat_contiguous: bool = False,
+):
+    """Return an access pointer and a shape with all leading dimensions folded."""
+    if isinstance(obj, BufferRegion):
+        return _handle_buffer_region_2d(
+            obj,
+            mask,
+            require_flat_contiguous=require_flat_contiguous,
+        )
+    return obj.access_ptr(mask), _fold_nd_shape_to_2d(obj.shape)
 
-    return tvm.ir.structural_equal(a, b)
+
+_ROW_EXPAND_BLOCK_BYTES = 32
+_ROW_EXPAND_ROW_BYTES = 256
+_ROW_EXPAND_MAX_ROWS = 248
+_ROW_EXPAND_SUPPORTED_DTYPES = (DataType("float16"), DataType("float32"))
 
 
-def _shapes_equal(shape1, shape2) -> bool:
-    """Compare two shape lists that may contain symbolic PrimExpr."""
-    if len(shape1) != len(shape2):
-        return False
-    return all(_const_equal(x, y) for x, y in zip(shape1, shape2))
+def _validate_row_expand_access_alignment(
+    obj: Buffer | BufferRegion,
+    *,
+    elems_per_block: int,
+    op_name: str,
+    arg_name: str,
+) -> None:
+    """Require an access pointer aligned to one 32-byte vector block."""
+    buffer = _underlying_buffer(obj)
+    indices = [region.min for region in obj.region] if isinstance(obj, BufferRegion) else [0] * len(buffer.shape)
+    element_offset = buffer.offset_of(indices)[0]
+    if not _is_provably_divisible(element_offset, elems_per_block):
+        requirement = f"a {_ROW_EXPAND_BLOCK_BYTES}-byte-aligned access offset"
+        raise ValueError(f"{op_name} requires {requirement} for {arg_name}.")
+
+
+def _row_expand_physical_stride_blocks(
+    obj: Buffer | BufferRegion,
+    *,
+    elems_per_block: int,
+    op_name: str,
+    arg_name: str,
+) -> int:
+    """Validate one data operand's physical row layout."""
+    buffer = _underlying_buffer(obj)
+    physical_cols = _const_int(buffer.shape[-1]) if len(buffer.shape) > 0 else None
+    if physical_cols is None:
+        raise ValueError(f"{op_name} requires a static physical last dimension for {arg_name}.")
+    if physical_cols % elems_per_block != 0:
+        requirement = f"a physical row stride aligned to {_ROW_EXPAND_BLOCK_BYTES} bytes"
+        raise ValueError(f"{op_name} requires {requirement} for {arg_name}; got {physical_cols} elements.")
+
+    stride_blocks = physical_cols // elems_per_block
+    if not 1 <= stride_blocks <= 255:
+        raise ValueError(f"{op_name} requires {arg_name} physical row stride to fit 1..255 blocks; got {stride_blocks}.")
+
+    _validate_row_expand_access_alignment(
+        obj,
+        elems_per_block=elems_per_block,
+        op_name=op_name,
+        arg_name=arg_name,
+    )
+    return stride_blocks
+
+
+def _row_expand_src1_rows(
+    shape,
+    *,
+    has_tmp: bool,
+    elems_per_block: int,
+    op_name: str,
+):
+    """Validate src1's physical layout and return its logical row count."""
+    if not has_tmp:
+        if len(shape) == 2 and _const_equal(shape[1], elems_per_block):
+            return shape[0]
+        requirement = f"packed src1 shape [R, {elems_per_block}] when tmp is omitted"
+        raise ValueError(f"{op_name} requires {requirement}; got {shape}.")
+
+    if len(shape) == 1:
+        return shape[0]
+    if len(shape) == 2:
+        if _is_const_one(shape[0]):
+            return shape[1]
+        if _is_const_one(shape[1]):
+            return shape[0]
+    requirement = "scalar src1 shape [R], [1, R], or [R, 1] when tmp is provided"
+    raise ValueError(f"{op_name} requires {requirement}; got {shape}.")
 
 
 def _row_expand_binop_experiment(
@@ -2307,7 +2631,6 @@ def _row_expand_binop_experiment(
     tmp,
     op_name: str,
     ir_op_name: str,
-    desc: str,
 ):
     dst = _normalize_buffer_arg(dst)
     src0 = _normalize_buffer_arg(src0)
@@ -2315,46 +2638,98 @@ def _row_expand_binop_experiment(
     if tmp is not None:
         tmp = _normalize_buffer_arg(tmp)
 
-    if isinstance(dst, BufferRegion):
-        dst_ptr, dst_shape = _handle_buffer_region_2d(dst, "w")
-    else:
-        dst_ptr = dst.access_ptr("w")
-        dst_shape = list(dst.shape[-2:])
+    dst_ptr, dst_shape = _get_folded_2d_access(dst, "w")
+    src0_ptr, src0_shape = _get_folded_2d_access(src0, "r")
 
-    if isinstance(src0, BufferRegion):
-        src0_ptr, src0_shape = _handle_buffer_region_2d(src0, "r")
-    else:
-        src0_ptr = src0.access_ptr("r")
-        src0_shape = list(src0.shape[-2:])
-
-    if isinstance(src1, BufferRegion):
-        src1_ptr, src1_nd_extent = _handle_buffer_region(src1, "r")
-        src1_full_shape = [src1_nd_extent[-1]] if len(src1_nd_extent) >= 2 else src1_nd_extent
-    else:
-        src1_ptr = src1.access_ptr("r")
-        src1_full_shape = list(src1.shape)
-
-    if len(src1_full_shape) == 1:
-        src1_len = src1_full_shape[0]
-    elif len(src1_full_shape) == 2:
-        s0, s1 = src1_full_shape[-2], src1_full_shape[-1]
-        if _is_const_one(s0):
-            src1_len = s1
-        elif _is_const_one(s1) or _const_equal(s0, dst_shape[0]):
-            src1_len = s0
-        else:
-            raise ValueError(f"src1 must be 1D [R], [1, R], or [R, 1]; got {src1_full_shape}")
-    else:
-        raise ValueError(f"src1 must be 1D or 2D, got shape {src1_full_shape}")
+    dst_buffer = _underlying_buffer(dst)
+    src0_buffer = _underlying_buffer(src0)
+    src1_buffer = _underlying_buffer(src1)
+    dst_dtype = DataType(dst_buffer.dtype)
+    src0_dtype = DataType(src0_buffer.dtype)
+    src1_dtype = DataType(src1_buffer.dtype)
+    if not (dst_dtype == src0_dtype == src1_dtype):
+        mismatch = f"dst={dst_buffer.dtype}, src0={src0_buffer.dtype}, src1={src1_buffer.dtype}"
+        raise ValueError(f"{op_name} requires matching operand dtypes: {mismatch}")
+    if dst_dtype not in _ROW_EXPAND_SUPPORTED_DTYPES:
+        raise ValueError(f"{op_name} supports only float16 and float32 operands; got {dst_buffer.dtype}.")
 
     if len(dst_shape) != 2 or len(src0_shape) != 2:
         raise ValueError(f"{op_name} requires 2D buffers for dst and src0.")
-
     if not _shapes_equal(dst_shape, src0_shape):
         raise ValueError(f"dst and src0 shapes must match: dst={dst_shape}, src0={src0_shape}")
 
-    if not _const_equal(src1_len, dst_shape[0]):
-        raise ValueError(f"src1 scalar count must match dst rows: src1={src1_len}, dst[0]={dst_shape[0]}")
+    dtype_bits = dst_dtype.bits
+    elems_per_block = _ROW_EXPAND_BLOCK_BYTES * 8 // dtype_bits
+
+    expected_cols = _ROW_EXPAND_ROW_BYTES * 8 // dtype_bits
+    if not _const_equal(dst_shape[1], expected_cols):
+        requirement = f"a {_ROW_EXPAND_ROW_BYTES}-byte last dimension ({expected_cols} {dst_buffer.dtype} elements)"
+        raise ValueError(f"{op_name} requires {requirement}, got {dst_shape[1]}.")
+
+    rows = _const_int(dst_shape[0])
+    if rows is None or rows < 8 or rows > _ROW_EXPAND_MAX_ROWS or rows % 8 != 0:
+        requirement = f"a static row count in 8..{_ROW_EXPAND_MAX_ROWS}, divisible by 8"
+        raise ValueError(f"{op_name} requires {requirement}; got {dst_shape[0]}.")
+
+    dst_stride = _row_expand_physical_stride_blocks(
+        dst,
+        elems_per_block=elems_per_block,
+        op_name=op_name,
+        arg_name="dst",
+    )
+    src0_stride = _row_expand_physical_stride_blocks(
+        src0,
+        elems_per_block=elems_per_block,
+        op_name=op_name,
+        arg_name="src0",
+    )
+    if dst_stride != src0_stride:
+        mismatch = f"dst={dst_stride}, src0={src0_stride} blocks"
+        raise ValueError(f"{op_name} requires matching dst/src0 physical row strides: {mismatch}")
+
+    src1_ptr, src1_shape = _get_folded_2d_access(
+        src1,
+        "r",
+        require_flat_contiguous=True,
+    )
+    src1_rows = _row_expand_src1_rows(
+        src1_shape,
+        has_tmp=tmp is not None,
+        elems_per_block=elems_per_block,
+        op_name=op_name,
+    )
+    _validate_row_expand_access_alignment(
+        src1,
+        elems_per_block=elems_per_block,
+        op_name=op_name,
+        arg_name="src1",
+    )
+    if not _const_equal(src1_rows, dst_shape[0]):
+        mismatch = f"src1={src1_rows}, dst[0]={dst_shape[0]}"
+        raise ValueError(f"src1 scalar count must match dst rows: {mismatch}")
+
+    tmp_ptr = None
+    if tmp is not None:
+        tmp_buffer = _underlying_buffer(tmp)
+        if DataType(tmp_buffer.dtype) != dst_dtype:
+            mismatch = f"tmp={tmp_buffer.dtype}, operands={dst_buffer.dtype}"
+            raise ValueError(f"{op_name} requires matching tmp and operand dtypes: {mismatch}")
+        tmp_ptr, tmp_shape = _get_folded_2d_access(
+            tmp,
+            "rw",
+            require_flat_contiguous=True,
+        )
+        _validate_row_expand_access_alignment(
+            tmp,
+            elems_per_block=elems_per_block,
+            op_name=op_name,
+            arg_name="tmp",
+        )
+        tmp_size = math.prod(tmp_shape)
+        expected_tmp_size = dst_shape[0] * elems_per_block
+        if not _const_equal(tmp_size, expected_tmp_size):
+            requirement = f"tmp must contain {expected_tmp_size} elements"
+            raise ValueError(f"{op_name} {requirement}; got {tmp_size}.")
 
     dtype = _dtype(src0)
     args = [
@@ -2364,10 +2739,6 @@ def _row_expand_binop_experiment(
         src1_ptr,
     ]
     if tmp is not None:
-        if isinstance(tmp, BufferRegion):
-            tmp_ptr, _ = _handle_buffer_region(tmp, "rw")
-        else:
-            tmp_ptr = tmp.access_ptr("rw")
         args.append(tmp_ptr)
 
     return tir.call_intrin(
@@ -2387,6 +2758,12 @@ def row_expand_mul_experiment(
 
     AscendC: brcb(src1→tmp) + mul_mask(dst, src0, tmp).
     PTO: TROWEXPANDMUL_row_vec(dst, src0, src1).
+
+    Contiguous leading dimensions of dst/src0 are folded into 8..248 rows in
+    multiples of 8; each row is 256 bytes. Their physical row strides must
+    match, and row windows are 32-byte aligned. Without tmp, src1 contains one
+    packed 32-byte block per row with the scalar replicated across its lanes.
+    With tmp, src1 is scalar-linear and tmp supplies those packed blocks.
     """
     return _row_expand_binop_experiment(
         dst,
@@ -2395,7 +2772,6 @@ def row_expand_mul_experiment(
         tmp,
         "RowExpandMulExperiment",
         "tl.ascend_row_expand_mul_experiment",
-        "multiply",
     )
 
 
@@ -2409,6 +2785,12 @@ def row_expand_sub_experiment(
 
     AscendC: brcb(src1→tmp) + sub_mask(dst, src0, tmp).
     PTO: TROWEXPANDSUB_row_vec(dst, src0, src1).
+
+    Contiguous leading dimensions of dst/src0 are folded into 8..248 rows in
+    multiples of 8; each row is 256 bytes. Their physical row strides must
+    match, and row windows are 32-byte aligned. Without tmp, src1 contains one
+    packed 32-byte block per row with the scalar replicated across its lanes.
+    With tmp, src1 is scalar-linear and tmp supplies those packed blocks.
     """
     return _row_expand_binop_experiment(
         dst,
@@ -2417,7 +2799,6 @@ def row_expand_sub_experiment(
         tmp,
         "RowExpandSubExperiment",
         "tl.ascend_row_expand_sub_experiment",
-        "subtract",
     )
 
 
@@ -2431,6 +2812,12 @@ def row_expand_div_experiment(
 
     AscendC: brcb(src1→tmp) + div_mask(dst, src0, tmp).
     PTO: TROWEXPANDDIV_row_vec(dst, src0, src1).
+
+    Contiguous leading dimensions of dst/src0 are folded into 8..248 rows in
+    multiples of 8; each row is 256 bytes. Their physical row strides must
+    match, and row windows are 32-byte aligned. Without tmp, src1 contains one
+    packed 32-byte block per row with the scalar replicated across its lanes.
+    With tmp, src1 is scalar-linear and tmp supplies those packed blocks.
     """
     return _row_expand_binop_experiment(
         dst,
@@ -2439,7 +2826,6 @@ def row_expand_div_experiment(
         tmp,
         "RowExpandDivExperiment",
         "tl.ascend_row_expand_div_experiment",
-        "divide",
     )
 
 
@@ -2564,25 +2950,40 @@ def mins_experiment(dst: Buffer, src: Buffer, scalarValue: PrimExpr, count: Prim
     )
 
 
-def reduce_sum_experiment(dst: Buffer, src: Buffer, count: PrimExpr):
+def reduce_sum_experiment(
+    dst: Buffer,
+    src: Buffer,
+    count: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):
     """Performs summation of all input data.
 
     Args:
         dst: The destination buffer where the result will be stored.
         src: The base buffer.
         count: The number of elements to process.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
     """
 
-    return T.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_reducesum_experiment"),
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
-        count,
+    return _call_intrin_with_optional_tmp(
+        "reducesum_experiment",
+        [dst.access_ptr("w"), src.access_ptr("r"), count],
+        2,
+        tmp,
     )
 
 
-def reduce_sum_mask_experiment(dst: Buffer, src: Buffer, mask: PrimExpr, repeatTime: PrimExpr, srcRepStride: PrimExpr):
+def reduce_sum_mask_experiment(
+    dst: Buffer,
+    src: Buffer,
+    mask: PrimExpr,
+    repeatTime: PrimExpr,
+    srcRepStride: PrimExpr,
+    *,
+    tmp: Buffer | BufferRegion | None = None,
+):
     """Performs summation of all input data(High-dimensional tensor slicing and computation).
 
     Args:
@@ -2591,16 +2992,15 @@ def reduce_sum_mask_experiment(dst: Buffer, src: Buffer, mask: PrimExpr, repeatT
         mask: Used to control the elements participating in the computation within each iteration.
         repeatTime: Number of iterations.
         srcRepStride: The address step size of the source operand between adjacent iterations.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
     """
 
-    return T.call_intrin(
-        "handle",
-        tir.op.Op.get("tl.ascend_reducesum_mask_experiment"),
-        dst.access_ptr("w"),
-        src.access_ptr("r"),
-        mask,
-        repeatTime,
-        srcRepStride,
+    return _call_intrin_with_optional_tmp(
+        "reducesum_mask_experiment",
+        [dst.access_ptr("w"), src.access_ptr("r"), mask, repeatTime, srcRepStride],
+        2,
+        tmp,
     )
 
 

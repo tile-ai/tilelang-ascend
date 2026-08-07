@@ -177,6 +177,9 @@ private:
         for (const auto &buffer_config : config.buffer_accesses) {
           size_t arg_index = buffer_config.first;
           const std::string &access_type = buffer_config.second;
+          ICHECK_LT(arg_index + 1, op->args.size())
+              << "Operation config for " << normalized_name
+              << " references missing argument " << arg_index;
           if (const auto *access_ptr = op->args[arg_index + 1].as<CallNode>()) {
             if (access_ptr->op.same_as(builtin::tvm_access_ptr())) {
               const VarNode *buffer_var = access_ptr->args[1].as<VarNode>();
@@ -206,13 +209,13 @@ private:
         }
       }
     } else if (is_func_in_operation_config(op)) {
-      auto *op_ptr = op->op.as<OpNode>();
-      std::string op_name = op_ptr->name;
-      auto config_it = GetOperationConfig().find(op_name);
-      const auto &config = config_it->second;
+      const OperationConfig config = ResolveOperationConfig(op);
       for (const auto &buffer_config : config.buffer_accesses) {
         size_t arg_index = buffer_config.first;
         const std::string &access_type = buffer_config.second;
+        ICHECK_LT(arg_index, op->args.size())
+            << "Operation config for " << op->op.as<OpNode>()->name
+            << " references missing argument " << arg_index;
         if (const auto *access_ptr = op->args[arg_index].as<CallNode>()) {
           if (access_ptr->op.same_as(builtin::tvm_access_ptr())) {
             const VarNode *buffer_var = access_ptr->args[1].as<VarNode>();

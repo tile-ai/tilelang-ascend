@@ -73,55 +73,12 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 
 ## 3. 代码生成流程
 
-### 3.1 算子 kernel 划分原则（强制规则，生成代码前必须遵守）⭐
+**开始生成代码前，必须先读取并遵从 [references/ascend-constraints.md](references/ascend-constraints.md)**——其中定义了两条强制规则：
 
-多 kernel 或 host 多路径方案必须保证支持域完整：保留覆盖全部声明输入域的通用
-fallback，再按可判定的 dtype、shape、对齐性或输入拓扑增加有限快路径。具体 shape 或
-perm 特化本身不是违规；没有 fallback、未命中即不支持才是设计错误。
+- §1 算子 kernel 划分原则：支持域完整 + fallback 审计，未覆盖输入立即返回 `[DESIGN_ERROR]`
+- §2 Host 侧 Buffer 操作约束：算子核心逻辑全部在 kernel 内实现，host 侧禁止改数据指针 / 真实重排 / 改写 buffer / 用新 buffer 作弊 / 隐式触发 aclnn 调用
 
-生成前记录每条路径的适用谓词、fallback、语义等价依据和验证用例。若 design.md 没有
-完整覆盖支持域，返回 `[DESIGN_ERROR]`；不要擅自缩小支持范围。
-
-Edit 前必须从 design.md 读取 `[DISPATCH-COVERAGE]` 并在实现日志复核：
-
-```text
-[DISPATCH-COVERAGE-AUDIT]
-supported_domain: <...>
-generic_fallback: <...>
-uncovered_input: none/<反例>
-specialization_cases: <每条路径至少一个>
-result: pass/fail
-```
-
-找出任何未覆盖输入时立即返回 `[DESIGN_ERROR]`，不得靠删除 case、缩小输入域或新增
-无 fallback 的枚举分支继续。
-
----
-
-### 3.2 Host 侧 Buffer 操作约束（生成代码时必须遵守）⭐
-
-> **⚠️ 核心原则：算子的主要操作必须全部在 kernel 内实现，host 侧禁止触发 aclnn 调用**
->
-> 算子的所有核心计算逻辑（包括数据搬运、数学运算、归约、归一化等）必须在 `@tilelang.jit` 装饰的 kernel 函数内部完成。**kernel 外部（host 侧 Python 代码）对 NPU 侧张量数据严禁以下行为**（约束范围覆盖 kernel 调用前的输入预处理和 kernel 调用后的输出后处理）：
->
-> | # | 禁止行为 | 说明 | 典型反例 |
-> |---|---------|------|---------|
-> | 1 | 修改张量数据指针 | 禁止把输入/输出 tensor 重新绑定到另一个 tensor（改变 `data_ptr`）后传入 kernel | `x = y`（y 是另一个 tensor）后再传入 kernel |
-> | 2 | 修改张量真实排布 | 禁止任何会触发真实数据拷贝/重排的操作 | `x.reshape(...).contiguous()`、`x.transpose(...).contiguous()`、`x.permute(...).contiguous()`、**`x_perm.reshape(-1)`（x_perm 非 contiguous 时等价于 `.contiguous()`）** |
-> | 3 | 修改 buffer 真实内容 | 禁止在 host 侧直接改写 tensor 数据 | `x[:] = ...`、`x.add_(1)`、`torch.mul(x, 2, out=x)` |
-> | 4 | 用新 buffer 作弊 | 禁止「创建新 buffer → host 侧处理 → 替换原 tensor」绕过限制 | `x = x.add(1)`（host 算完用新 tensor 顶替原输入） |
-> | 5 | **隐式触发 aclnn 调用** | cann-bench 评测环境可能裁剪 aclnn 编译产物，以下操作在 NPU tensor 上会触发 aclnn 调用导致运行时失败：`torch.nn.functional.pad`/`cat`/`interpolate`、`torch.cat`/`stack`、`.to(dtype)` dtype 转换、`.clone()`、对非 contiguous 张量的 `reshape`（含**输出侧切片+reshape**） | `y = y[:, :, :, :S]; y.reshape(shape)`（切片后非 contiguous，reshape 隐式 `.contiguous()` → `aclnnCopy`）；`x = torch.nn.functional.pad(x, (0, pad_size))`（→ `aclnnPad`） |
->
-> **允许**的 host 侧操作：经证明只改 metadata、共享原 storage 的 view 操作，以及
-> 数据准备、kernel 调用和结果验证。
->
-> **判定准则**：`is_contiguous()` 为 True 是 reshape 常见的零拷贝充分条件，不是必要
-> 条件。非 contiguous 输入需证明目标 shape 与 stride 兼容且操作前后共享 storage；
-> 不能证明时改用 stride-aware kernel。`permute`/`transpose` 本身通常只是 metadata view。
-
-生成代码后逐项记录 `[HOST-METADATA-AUDIT]`。对每个 host tensor 操作写明输入/输出
-stride、是否共享 storage/data pointer、是否触发 aclnn/物理拷贝；任一结论为 unknown
-都不得交付。具体检查项见 [references/checklist.md §0](references/checklist.md#0-前置检查必须最先确认)。
+以下流程步骤均建立在这些约束之上；生成代码后会在步骤 5 上库前检查中逐项复核。
 
 ### 步骤 1：读取设计文档
 
@@ -157,7 +114,7 @@ stride、是否共享 storage/data pointer、是否触发 aclnn/物理拷贝；�
 
 ### 步骤 3：生成实现代码
 
-> **⚠️ 生成代码时必须遵守 §3 开头的「核心原则」**：算子的核心计算逻辑全部在 kernel 内实现。host 侧对 NPU 张量只能做「只改元数据」的视图操作（`reshape`/`view`/`transpose`/`permute`/`expand`）以及数据准备 / kernel 调用 / 结果验证；禁止改数据指针、禁止 `.contiguous()` 等真实重排、禁止改写 buffer 内容、禁止用新 buffer 作弊。拿不准时，一律放入 kernel。
+> **⚠️ 生成代码时必须遵守 [references/ascend-constraints.md](references/ascend-constraints.md) §2「Host 侧 Buffer 操作约束」**：算子的核心计算逻辑全部在 kernel 内实现。host 侧对 NPU 张量只能做「只改元数据」的视图操作（`reshape`/`view`/`transpose`/`permute`/`expand`）以及数据准备 / kernel 调用 / 结果验证；禁止改数据指针、禁止 `.contiguous()` 等真实重排、禁止改写 buffer 内容、禁止用新 buffer 作弊。拿不准时，一律放入 kernel。
 
 > **⚠️ dtype 特化检查（支持多 dtype 的算子必须执行）**：生成代码时必须检查每个支持的 dtype 是否走硬件加速路径。如果 dtype 回退标量路径，必须比较同宽 reinterpret、kernel 内 cast、record-aware DMA、块 DMA + UB-local 标量重排等候选。**禁止把大张量降级成逐元素 strided GM load/store，也不能把“逐行 T.copy”误当成可完成任意转置。** UB 内局部标量 lowering 可以作为经最大 case 验证的 fallback；不得在 host 侧用 `.to(dtype)` / `.contiguous()` / `torch.stack` 绕过。详见 [references/coding-conventions.md §7](references/coding-conventions.md#7-dtype-性能特化)。
 
@@ -235,7 +192,7 @@ python examples/{op}/test_{op}.py --level l0
 
 **⚠️ 首要检查：算子主要操作是否全部在 kernel 内实现（违反则立即修改，不得继续）**
 
-逐项检查前，先回顾生成的代码，按 §3 开头「核心原则」的五条禁令逐条核对 host 侧代码（**含 kernel 调用后的输出后处理路径**）：
+逐项检查前，先回顾生成的代码，按 [references/ascend-constraints.md](references/ascend-constraints.md) §2「Host 侧 Buffer 操作约束」的五条禁令逐条核对 host 侧代码（**含 kernel 调用后的输出后处理路径**）：
 
 1. 是否把输入/输出 tensor 重新绑定到别的 tensor（改了 `data_ptr`）后传入 kernel？
 2. 是否存在真实数据拷贝/重排？对 reshape 应验证 storage/stride 兼容性，不能把
@@ -268,6 +225,7 @@ python examples/{op}/test_{op}.py --level l0
 
 ## 子目录索引
 
+- [references/ascend-constraints.md](references/ascend-constraints.md) — 算子 kernel 划分原则 + Host 侧 Buffer 操作约束（生成代码前/时必须遵守的强制规则）
 - [references/coding-conventions.md](references/coding-conventions.md) — Buffer 分配 / 索引 / 同步 / 广播 / 测试模板（写代码遇到具体规范时查）
 - [references/vector-parallelism.md](references/vector-parallelism.md) — V 核并行化（用到 vid 切分时查）
 - [references/gemm-cv-fusion.md](references/gemm-cv-fusion.md) — GEMM 与 CV 融合 pass_configs（含 GEMM 或融合算子时查）

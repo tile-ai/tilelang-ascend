@@ -342,8 +342,9 @@ def main(
     use_qk_l2norm=True,
     softplus_beta=1.0,
     block_v=128,
+    seed=41,
 ):
-    torch.manual_seed(41)
+    torch.manual_seed(seed)
     device = "npu"
 
     if seqlens:
@@ -475,12 +476,48 @@ if __name__ == "__main__":
     import argparse
 
     test_cases = [
+        # Original test case
         {
             "seqlens": [4, 8] * 50,
             "nk": 16,
             "nv": 32,
             "dk": 128,
             "dv": 128,
+            "seed": 41,
+        },
+        # Test cases from xllm C++ gtest:
+        #   fused_sigmoid_gating_delta_rule_wrapper_test.cpp
+        {
+            "seqlens": [4, 8, 6, 3],
+            "nk": 4,
+            "nv": 8,
+            "dk": 128,
+            "dv": 128,
+            "seed": 20260421,
+        },
+        {
+            "seqlens": [4, 8, 12, 6, 3, 7, 5, 9],
+            "nk": 16,
+            "nv": 32,
+            "dk": 128,
+            "dv": 128,
+            "seed": 20260422,
+        },
+        {
+            "seqlens": [1] * 40,
+            "nk": 16,
+            "nv": 32,
+            "dk": 128,
+            "dv": 128,
+            "seed": 20260703,
+        },
+        {
+            "seqlens": [1, 1, 1, 1],
+            "nk": 4,
+            "nv": 8,
+            "dk": 128,
+            "dv": 128,
+            "seed": 20260704,
         },
     ]
 

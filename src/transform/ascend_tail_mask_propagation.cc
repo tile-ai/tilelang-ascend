@@ -386,8 +386,8 @@ private:
   }
 
   Stmt RewriteReduce(const CallNode *call) {
-    // name(0) out(1) src(2) tmp(3) clear(4)
-    if (call->args.size() < 5)
+    // name(0) out(1) src(2) [tmp(3)] clear(3/4)
+    if (call->args.size() < 4)
       return Stmt();
     const auto *name = call->args[0].as<StringImmNode>();
     if (name == nullptr)
@@ -417,10 +417,14 @@ private:
     bool supported_kind =
         kind == "reduce_sum" || kind == "reduce_max" || kind == "reduce_min";
     bool supported_dim = raw_dim == 0 || raw_dim == -2;
+    const bool has_tmp =
+        call->args.size() == 5 && GetPtrVar(call->args[3]) != nullptr;
+    const size_t clear_index = has_tmp ? 4 : 3;
     PrimExpr expected_out_extent = in.physical_col;
     bool supported_contract =
-        call->args.size() == 5 && supported_kind && supported_dim &&
-        is_one(call->args[4]) && src_dtype == DataType::Float(32) &&
+        call->args.size() == clear_index + 1 && supported_kind &&
+        supported_dim && is_one(call->args[clear_index]) &&
+        src_dtype == DataType::Float(32) &&
         PtrDtype(call->args[1]) == src_dtype && out_extent.defined() &&
         expected_out_extent.defined() &&
         analyzer_->CanProveEqual(out_extent, expected_out_extent) &&
@@ -443,42 +447,41 @@ private:
     if (!ok)
       return Stmt();
 
-    // tail_reduce: kind(0) out(1) src(2) tmp(3) dim(4)
-    //              valid_row(5) valid_col(6) phys_col(7) clear(8)
-    Array<PrimExpr> a = {StringImm(kind),
-                         call->args[1],
-                         call->args[2],
-                         call->args[3],
-                         IntImm(DataType::Int(32), 0),
-                         in.valid_row,
-                         in.valid_col,
-                         in.physical_col,
-                         call->args[4]};
+    // The validated tail helper uses basic vector instructions and consumes no
+    // workspace, irrespective of the native reduce layout.
+    Array<PrimExpr> a = {StringImm(kind), call->args[1], call->args[2]};
+    a.push_back(IntImm(DataType::Int(32), 0));
+    a.push_back(in.valid_row);
+    a.push_back(in.valid_col);
+    a.push_back(in.physical_col);
+    a.push_back(call->args[clear_index]);
     return Evaluate(Call(DataType::Handle(), ascend_tail_reduce(), a));
   }
 
   void PropagateBroadcast(const CallNode *call) {
-    // name(0) dst(1) src(2) tmp(3) dim(4) dstShape[dim] srcShape[dim]
-    if (call->args.size() < 5)
+    // name(0) dst(1) src(2) [tmp(3)] dim(3/4) dstShape... srcShape...
+    if (call->args.size() < 4)
       return;
     const VarNode *dst_v = GetPtrVar(call->args[1]);
     if (dst_v == nullptr)
       return;
     TailMaskInfo in = GetMask(GetPtrVar(call->args[2]));
-    const auto *dim_imm = call->args[4].as<IntImmNode>();
+    const bool has_tmp = GetPtrVar(call->args[3]) != nullptr;
+    const size_t dim_index = has_tmp ? 4 : 3;
+    const auto *dim_imm = call->args[dim_index].as<IntImmNode>();
     if (!in.is_tail() || dim_imm == nullptr || dim_imm->value != 2) {
       state_[dst_v] = in; // 1D / untracked: pass through
       return;
     }
-    // 2D broadcast. dstShape = args[5],args[6]; srcShape = args[7],args[8].
-    if (call->args.size() < 9) {
+    const size_t shape_index = dim_index + 1;
+    if (call->args.size() < shape_index + 4) {
       state_[dst_v] = in;
       return;
     }
-    PrimExpr dst_rows = call->args[5];
-    PrimExpr dst_cols = call->args[6];
-    PrimExpr src_rows = call->args[7];
-    PrimExpr src_cols = call->args[8];
+    PrimExpr dst_rows = call->args[shape_index];
+    PrimExpr dst_cols = call->args[shape_index + 1];
+    PrimExpr src_rows = call->args[shape_index + 2];
+    PrimExpr src_cols = call->args[shape_index + 3];
     TailMaskInfo out;
     out.kind = TailMaskKind::kTail;
     out.physical_row = dst_rows;

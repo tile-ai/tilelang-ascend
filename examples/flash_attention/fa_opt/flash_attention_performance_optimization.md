@@ -168,7 +168,7 @@ for h_i in range(block_M // 2):
     T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])
 
 # After: Single tile operation
-T.tile.broadcast(m_i_2d, m_i, tmp_ub)
+T.tile.broadcast(m_i_2d, m_i, tmp=tmp_ub)
 T.tile.sub(acc_s_ub, acc_s_ub, m_i_2d)
 ```
 

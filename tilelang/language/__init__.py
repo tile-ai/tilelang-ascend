@@ -173,32 +173,6 @@ def import_source(source: str | None = None):
     return block_attr({"pragma_import_c": source}) if source is not None else None
 
 
-def init_flag(fmap):
-    inst = ""
-    for src, d in fmap.items():
-        for dst, stages in d.items():
-            for stage in stages:
-                inst += f"AscendC::SetFlag<AscendC::HardEvent::{src}_{dst}>({stage});\n"
-
-    return attr(None, "init_flag", inst)
-
-
-def clear_flag(fmap):
-    inst = ""
-    for src, d in fmap.items():
-        for dst, stages in d.items():
-            for stage in stages:
-                inst += f"AscendC::WaitFlag<AscendC::HardEvent::{src}_{dst}>({stage});\n"
-
-    @macro
-    def _get_inst():
-        with attr(None, "clear_flag", inst):
-            call_extern("handle", "...")
-
-    # return attr(call_extern("handle", "..."), "clear_flag", inst)
-    return _get_inst()
-
-
 def npu_use_swizzle(cid, m, n, k, block_m, block_n, off=1, dir=0, in_loop=False):
     # If order is row, use rasterization2DRow, otherwise use rasterization2DColumn
     # The panel size is the number of threads in a warp

@@ -6,7 +6,7 @@
 
 | # | 检查项 | 是否必须通过 |
 |---|--------|-------------|
-| 0 | **Host 侧 Buffer 操作合规性**（对应 SKILL.md §3.2）| ✅ 必须 |
+| 0 | **Host 侧 Buffer 操作合规性**（对应 ascend-constraints.md §5）| ✅ 必须 |
 
 **第 0 项核对**：design.md 的 host 侧（kernel 外的 Python 代码）步骤是否仅限视图操作（`reshape`/`view`/`transpose`/`permute`/`expand`，只改 stride/shape 元数据）+ kernel 调用 + 结果 reshape？是否出现以下改动 buffer 真实内容的描述（命中即违规，必须修订后再继续后续检查）：
 
