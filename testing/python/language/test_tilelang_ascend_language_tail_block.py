@@ -551,10 +551,17 @@ def compare_select_tail_expert(M, N, block_M, block_N):
             with T.Scope("V"):
                 T.copy(A[bx * block_M, by * block_N], a_ub)
                 T.copy(B[bx * block_M, by * block_N], b_ub)
-                T.barrier_all()
+                # PTO tail GM->UB copies are issued on MTE2.  In expert mode
+                # auto-sync is deliberately disabled, so use an explicit
+                # cross-pipeline event instead of relying on PIPE_ALL to order
+                # the following vector compare.
+                T.set_flag("MTE2", "V", 0)
+                T.wait_flag("MTE2", "V", 0)
                 T.tile.compare(mask_ub, a_ub, b_ub, "LT")
                 T.tile.select(out_ub, mask_ub, a_ub, b_ub, "VSEL_TENSOR_TENSOR_MODE")
-                T.barrier_all()
+                # Likewise, make the vector result visible to the MTE3 store.
+                T.set_flag("V", "MTE3", 1)
+                T.wait_flag("V", "MTE3", 1)
                 T.copy(out_ub, C[bx * block_M, by * block_N])
 
     return main
