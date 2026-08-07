@@ -21,6 +21,7 @@
 
 #include "../op/ascend.h"
 #include "../op/builtin.h"
+#include "./common/ascend_vector_mask_contract.h"
 #include "./common/collector.h"
 
 namespace tvm {
@@ -1466,8 +1467,15 @@ private:
           Array<PrimExpr> new_args =
               AdjustCallArgs(origin_map_, call->args, call);
           if (new_args.size() > 0) {
-            if (call->op.same_as(tl::ascend_muls()) ||
-                call->op.same_as(tl::ascend_adds())) {
+            Op semantic_op;
+            if (IsSelectedVectorTerminal(GetRef<Call>(call))) {
+              semantic_op = BaseOperationOf(GetRef<Call>(call));
+            } else if (const auto *op_node = call->op.as<OpNode>()) {
+              semantic_op = GetRef<Op>(op_node);
+            }
+            if (semantic_op.defined() &&
+                (semantic_op.same_as(tl::ascend_muls()) ||
+                 semantic_op.same_as(tl::ascend_adds()))) {
               if (const CallNode *scalar_call = new_args[2].as<CallNode>()) {
                 if (const VarNode *var = scalar_call->args[1].as<VarNode>()) {
                   std::string buffer_name = var->name_hint;

@@ -1256,9 +1256,7 @@ private:
             op_name = op_ptr->name;
 
             std::string normalized_name = op_name;
-
-            auto config_it = operation_config_.find(normalized_name);
-            if (config_it != operation_config_.end()) {
+            if (HasOperationConfig(call)) {
               const OperationConfig config = ResolveOperationConfig(call);
 
               std::unordered_map<std::string, BufferAccess> buffer_access_map;

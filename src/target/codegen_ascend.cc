@@ -24,6 +24,7 @@
 
 #include "../op/ascend.h"
 #include "../op/builtin.h"
+#include "../transform/common/ascend_vector_mask_contract.h"
 #include "../transform/common/attr.h"
 
 #include "arith/pattern_match.h"
@@ -507,7 +508,24 @@ void CodeGenTileLangAscend::VisitStmt_(const BufferStoreNode *op) {
 }
 
 void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
-  if (op->op.same_as(builtin::call_extern())) {
+  Call call = GetRef<Call>(op);
+  if (tl::IsVectorMaskSetter(call)) {
+    MaskSetterCodegen(op);
+  } else if (tl::IsSelectedVectorTerminal(call)) {
+    ICHECK(platform_ == "A2" || platform_ == "A3")
+        << "Compiler-selected Vector terminal reached unsupported platform "
+        << platform_ << ": " << call;
+    SelectedVectorTerminalCodegen(op);
+  } else if ((platform_ == "A2" || platform_ == "A3") &&
+             op->op.as<OpNode>() != nullptr &&
+             !op->op.same_as(builtin::call_extern()) &&
+             !tl::SelectedVectorTerminalSpecsForBase(
+                  GetRef<Op>(op->op.as<OpNode>()))
+                  .empty()) {
+    ICHECK(false) << "Semantic Vector call bypassed "
+                     "AscendVectorInstructionSelection on managed "
+                  << platform_ << ": " << call;
+  } else if (op->op.same_as(builtin::call_extern())) {
     std::string op_name = Downcast<StringImm>(op->args[0])->value;
     if (op_name.find("tl::ascend::copy") != std::string::npos ||
         op_name.find("tl::ascend::atomic_add_ub_to_gm") != std::string::npos ||
@@ -3000,6 +3018,509 @@ void CodeGenTileLangAscend::BrcbExperimentCodegen(const CallNode *op) {
   std::string op_name =
       "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   PrintOpCall(op, op_name, {1, 3}, {3, 6});
+}
+
+void CodeGenTileLangAscend::SelectedVectorTerminalCodegen(const CallNode *op) {
+  Call selected = GetRef<Call>(op);
+  const tl::SelectedVectorTerminalSpec *spec =
+      tl::SelectedVectorTerminalSpecOf(selected);
+  ICHECK(spec != nullptr);
+  const std::string selected_name = spec->selected->name;
+
+  size_t strip = 0;
+  if (spec->contract_kind ==
+          tl::SelectedMaskContractKind::kRawNormalDynamicPayload ||
+      spec->contract_kind ==
+          tl::SelectedMaskContractKind::kSelfContainedNormalDynamicPayload) {
+    strip = 2;
+  }
+  ICHECK_GE(op->args.size(), strip);
+  Array<PrimExpr> base_args;
+  for (size_t i = 0; i + strip < op->args.size(); ++i) {
+    base_args.push_back(op->args[i]);
+  }
+  Call base_call(op->dtype, spec->base, base_args, op->span);
+  const CallNode *base = base_call.get();
+
+  if (selected_name.find("copy_ub_to_ub_") != std::string::npos) {
+    CopyCodegen(base);
+    return;
+  }
+
+  const Op &base_op = spec->base;
+  if (base_op.same_as(tl::ascend_add())) {
+    ManagedBinaryCodegen(base, "AscendC::Add");
+  } else if (base_op.same_as(tl::ascend_sub()) ||
+             base_op.same_as(tl::ascend_sub_experiment())) {
+    ManagedBinaryCodegen(base, "AscendC::Sub",
+                         base_op.same_as(tl::ascend_sub()) ? 0 : 1);
+  } else if (base_op.same_as(tl::ascend_mul())) {
+    ManagedBinaryCodegen(base, "AscendC::Mul");
+  } else if (base_op.same_as(tl::ascend_div())) {
+    ManagedBinaryCodegen(base, "AscendC::Div");
+  } else if (base_op.same_as(tl::ascend_max())) {
+    ManagedBinaryCodegen(base, "AscendC::Max");
+  } else if (base_op.same_as(tl::ascend_min())) {
+    ManagedBinaryCodegen(base, "AscendC::Min");
+  } else if (base_op.same_as(tl::ascend_bitwise_and())) {
+    ManagedBinaryCodegen(base, "AscendC::And");
+  } else if (base_op.same_as(tl::ascend_bitwise_or())) {
+    ManagedBinaryCodegen(base, "AscendC::Or");
+  } else if (base_op.same_as(tl::ascend_adds())) {
+    ManagedScalarCodegen(base, "AscendC::Adds");
+  } else if (base_op.same_as(tl::ascend_subs())) {
+    ManagedScalarCodegen(base, "AscendC::Adds", true);
+  } else if (base_op.same_as(tl::ascend_muls())) {
+    ManagedScalarCodegen(base, "AscendC::Muls");
+  } else if (base_op.same_as(tl::ascend_divs())) {
+    ManagedScalarCodegen(base, "AscendC::Muls", false, true);
+  } else if (base_op.same_as(tl::ascend_maxs())) {
+    ManagedScalarCodegen(base, "AscendC::Maxs");
+  } else if (base_op.same_as(tl::ascend_mins())) {
+    ManagedScalarCodegen(base, "AscendC::Mins");
+  } else if (base_op.same_as(tl::ascend_leaky_relu())) {
+    ManagedScalarCodegen(base, "AscendC::LeakyRelu");
+  } else if (base_op.same_as(tl::ascend_axpy())) {
+    ManagedScalarCodegen(base, "AscendC::Axpy");
+  } else if (base_op.same_as(tl::ascend_bitwise_lshift())) {
+    ManagedScalarCodegen(base, "AscendC::ShiftLeft");
+  } else if (base_op.same_as(tl::ascend_bitwise_rshift())) {
+    ManagedScalarCodegen(base, "AscendC::ShiftRight");
+  } else if (base_op.same_as(tl::ascend_exp())) {
+    ManagedUnaryCodegen(base, "AscendC::Exp");
+  } else if (base_op.same_as(tl::ascend_ln())) {
+    ManagedUnaryCodegen(base, "AscendC::Ln");
+  } else if (base_op.same_as(tl::ascend_abs()) ||
+             base_op.same_as(tl::ascend_abs_experiment())) {
+    ManagedUnaryCodegen(base, "AscendC::Abs",
+                        base_op.same_as(tl::ascend_abs()) ? 0 : 1);
+  } else if (base_op.same_as(tl::ascend_reciprocal())) {
+    ManagedUnaryCodegen(base, "AscendC::Reciprocal");
+  } else if (base_op.same_as(tl::ascend_sqrt())) {
+    ManagedUnaryCodegen(base, "AscendC::Sqrt");
+  } else if (base_op.same_as(tl::ascend_rsqrt())) {
+    ManagedUnaryCodegen(base, "AscendC::Rsqrt");
+  } else if (base_op.same_as(tl::ascend_relu())) {
+    ManagedUnaryCodegen(base, "AscendC::Relu");
+  } else if (base_op.same_as(tl::ascend_bitwise_not())) {
+    ManagedUnaryCodegen(base, "AscendC::Not");
+  } else if (base_op.same_as(tl::ascend_compare())) {
+    CompareCodegen(base, "AscendC::Compare");
+  } else if (base_op.same_as(tl::ascend_compare_scalar())) {
+    CompareScalarCodegen(base, "AscendC::CompareScalar");
+  } else if (base_op.same_as(tl::ascend_select())) {
+    SelectCodegen(base, "AscendC::Select");
+  } else if (base_op.same_as(tl::ascend_cast())) {
+    ManagedCastCodegen(base);
+  } else if (base_op.same_as(tl::ascend_round()) &&
+             selected_name.find("round_cast") != std::string::npos) {
+    ManagedCastCodegen(base, true);
+  } else if (base_op.same_as(tl::ascend_mul_add_dst())) {
+    DataType dst_dtype = GetAccessPtrDtype(base->args[0].as<CallNode>());
+    DataType src_dtype = GetAccessPtrDtype(base->args[1].as<CallNode>());
+    this->PrintIndent();
+    this->stream << "AscendC::MulAddDst<" << getType(dst_dtype) << ", "
+                 << getType(src_dtype) << ", false>("
+                 << PrintBufferOffset(base->args[0].as<CallNode>()) << ", "
+                 << PrintBufferOffset(base->args[1].as<CallNode>()) << ", "
+                 << PrintBufferOffset(base->args[2].as<CallNode>())
+                 << ", AscendC::MASK_PLACEHOLDER, 1, "
+                    "AscendC::BinaryRepeatParams());\n";
+  } else if (base_op.same_as(tl::ascend_fill())) {
+    DataType dtype = GetAccessPtrDtype(base->args[1].as<CallNode>());
+    this->PrintIndent();
+    this->stream << "AscendC::Duplicate<" << getType(dtype) << ", false>("
+                 << PrintBufferOffset(base->args[1].as<CallNode>()) << ", "
+                 << PrintExpr(base->args[2])
+                 << ", AscendC::MASK_PLACEHOLDER, 1, 1, 8);\n";
+  } else if (base_op.same_as(tl::ascend_mins_experiment())) {
+    ManagedScalarCodegen(base, "AscendC::Mins");
+  } else if (base_op.same_as(tl::ascend_clamp_max()) ||
+             base_op.same_as(tl::ascend_clamp_min()) ||
+             base_op.same_as(tl::ascend_clamp())) {
+    int scalar_index = base->args[3].as<CallNode>() ? 4 : 3;
+    DataType dtype = GetAccessPtrDtype(base->args[1].as<CallNode>());
+    std::string type = getType(dtype);
+    std::string dst = PrintBufferOffset(base->args[1].as<CallNode>());
+    std::string src = PrintBufferOffset(base->args[2].as<CallNode>());
+    auto emit_scalar = [&](const std::string &api, const std::string &source,
+                           int index) {
+      this->PrintIndent();
+      this->stream << api << "<" << type << ", false>(" << dst << ", " << source
+                   << ", " << PrintExpr(base->args[index])
+                   << ", AscendC::MASK_PLACEHOLDER, 1, "
+                      "AscendC::UnaryRepeatParams());\n";
+    };
+    if (base_op.same_as(tl::ascend_clamp_max())) {
+      emit_scalar("AscendC::Mins", src, scalar_index);
+    } else if (base_op.same_as(tl::ascend_clamp_min())) {
+      emit_scalar("AscendC::Maxs", src, scalar_index);
+    } else {
+      emit_scalar("AscendC::Maxs", src, scalar_index);
+      emit_scalar("AscendC::Mins", dst, scalar_index + 1);
+    }
+  } else if (base_op.same_as(tl::ascend_broadcast()) &&
+             selected_name.find("raw_counter") != std::string::npos) {
+    Array<PrimExpr> args = base->args;
+    std::string tag = Downcast<StringImm>(args[0])->value;
+    ICHECK(!tag.empty() && tag.back() == '>');
+    tag.insert(tag.size() - 1, ", false");
+    args.Set(0, StringImm(tag));
+    Call raw(base->dtype, base->op, args, base->span);
+    BroadcastOpCodegen(raw.get());
+  } else if (base_op.same_as(tl::ascend_reduce()) ||
+             base_op.same_as(tl::ascend_block_reduce_max()) ||
+             base_op.same_as(tl::ascend_block_reduce_min()) ||
+             base_op.same_as(tl::ascend_block_reduce_sum()) ||
+             base_op.same_as(tl::ascend_wholereducemax()) ||
+             base_op.same_as(tl::ascend_wholereducemin()) ||
+             base_op.same_as(tl::ascend_wholereducesum())) {
+    if (selected_name.find("raw_normal") != std::string::npos) {
+      ManagedNormalReduceCodegen(op, selected_name);
+    } else {
+      ReduceOpCodegen(base);
+    }
+  } else if (base_op.same_as(tl::ascend_fill_experiment())) {
+    DataType dtype = GetAccessPtrDtype(base->args[1].as<CallNode>());
+    this->PrintIndent();
+    this->stream << "AscendC::Duplicate<" << getType(dtype) << ", false>("
+                 << PrintBufferOffset(base->args[1].as<CallNode>()) << ", "
+                 << PrintExpr(base->args[2]) << ", " << PrintExpr(base->args[3])
+                 << ", " << PrintExpr(base->args[4]) << ", "
+                 << PrintExpr(base->args[5]) << ", " << PrintExpr(base->args[6])
+                 << ");\n";
+  } else if (base_op.same_as(tl::ascend_silu())) {
+    SigmoidCodegen(base, "AscendC::Silu");
+  } else if (base_op.same_as(tl::ascend_sigmoid())) {
+    SigmoidCodegen(base, "AscendC::Sigmoid");
+  } else if (base_op.same_as(tl::ascend_sort32())) {
+    Sort32Codegen(base, "AscendC::Sort32");
+  } else if (base_op.same_as(tl::ascend_createvecindex())) {
+    CreateVecIndexCodegen(base, "AscendC::CreateVecIndex");
+  } else if (base_op.same_as(tl::ascend_arith_progression())) {
+    ArithProgressionCodegen(base);
+  } else if (base_op.same_as(tl::ascend_sin())) {
+    TrigOpCodegen(base, "AscendC::Sin");
+  } else if (base_op.same_as(tl::ascend_cos())) {
+    TrigOpCodegen(base, "AscendC::Cos");
+  } else if (base_op.same_as(tl::ascend_transpose())) {
+    TransposeCodegen(base, "AscendC::Transpose");
+  } else if (base_op.same_as(tl::ascend_gather())) {
+    GatherCodegen(base, "AscendC::Gather");
+  } else if (base_op.same_as(tl::ascend_gatherb())) {
+    GatherbCodegen(base);
+  } else if (base_op.same_as(tl::ascend_pow())) {
+    PowerOpCodegen(base, "AscendC::Power");
+  } else if (base_op.same_as(tl::ascend_bitwise_xor())) {
+    PrintOpCall(base, "AscendC::Xor", {0, base->args.size()}, {0, 0});
+  } else if (base_op.same_as(tl::ascend_broadcast())) {
+    BroadcastOpCodegen(base);
+  } else if (base_op.same_as(tl::ascend_sort())) {
+    SortCodegen(base);
+  } else if (base_op.same_as(tl::ascend_merge_sort())) {
+    MergeSortCodegen(base);
+  } else if (base_op.same_as(tl::ascend_topk())) {
+    TopKCodegen(base);
+  } else if (base_op.same_as(tl::ascend_gather_mask())) {
+    GatherMaskCodegen(base);
+  } else if (base_op.same_as(tl::ascend_init_sort_buf())) {
+    InitSortBufCodegen(base);
+  } else if (base_op.same_as(tl::ascend_bilinear_interpolation())) {
+    BilinearInterpolationCodegen(base);
+  } else if (base_op.same_as(tl::ascend_round())) {
+    RoundCodegen(base, "AscendC::Round");
+  } else if (base_op.same_as(tl::ascend_reducesum_experiment())) {
+    CreateReduceSumExperimentCodegen(base, "AscendC::ReduceSum");
+  } else if (base_op.same_as(tl::ascend_reducesum_mask_experiment())) {
+    CreateReduceSumExperimentCodegen(base, "AscendC::ReduceSum");
+  } else if (base_op.same_as(tl::ascend_gather_mask_experiment())) {
+    GatherMaskExperimentCodegen(base);
+  } else if (base_op.same_as(tl::ascend_sum_experiment())) {
+    SumExperimentCodegen(base);
+  } else if (base_op.same_as(
+                 tl::ascend_datacachecleanandinvalid_experiment())) {
+    CreateDatacacheExperimentCodegen(base);
+  } else if (base_op.same_as(tl::ascend_brcb_experiment())) {
+    BrcbExperimentCodegen(base);
+  } else if (base_op.same_as(tl::ascend_row_expand_mul_experiment())) {
+    RowExpandMulExperimentCodegen(base);
+  } else if (base_op.same_as(tl::ascend_row_expand_sub_experiment())) {
+    RowExpandSubExperimentCodegen(base);
+  } else if (base_op.same_as(tl::ascend_row_expand_div_experiment())) {
+    RowExpandDivExperimentCodegen(base);
+  } else if (base_op.same_as(tl::ascend_exp_experiment())) {
+    ExpExperimentCodegen(base);
+  } else if (base_op.same_as(tl::ascend_tail_unary())) {
+    TailUnaryOpCodegen(base);
+  } else if (base_op.same_as(tl::ascend_tail_binary())) {
+    TailBinaryOpCodegen(base);
+  } else if (base_op.same_as(tl::ascend_tail_scalar())) {
+    TailScalarOpCodegen(base);
+  } else if (base_op.same_as(tl::ascend_tail_reduce())) {
+    TailReduceOpCodegen(base);
+  } else {
+    ICHECK(false) << "Selected Vector terminal has no mechanical emitter: "
+                  << selected;
+  }
+}
+
+void CodeGenTileLangAscend::MaskSetterCodegen(const CallNode *op) {
+  this->PrintIndent();
+  if (op->op.same_as(tl::ascend_set_mask_mode())) {
+    ICHECK_EQ(op->args.size(), 1U);
+    const auto *mode = op->args[0].as<IntImmNode>();
+    ICHECK(mode && (mode->value == 0 || mode->value == 1));
+    this->stream << (mode->value == 0 ? "AscendC::SetMaskNorm();\n"
+                                      : "AscendC::SetMaskCount();\n");
+    return;
+  }
+  ICHECK(op->op.same_as(tl::ascend_set_mask_payload()));
+  ICHECK_EQ(op->args.size(), 2U);
+  auto print_payload = [&](const PrimExpr &value) {
+    const auto *imm = value.as<IntImmNode>();
+    if (imm != nullptr && imm->dtype.is_uint() && imm->dtype.bits() == 64 &&
+        imm->value < 0) {
+      std::ostringstream stream;
+      stream << "0x" << std::hex << static_cast<uint64_t>(imm->value) << "ULL";
+      return stream.str();
+    }
+    const auto *call = value.as<CallNode>();
+    if (call != nullptr && call->op.same_as(tir::builtin::large_uint_imm())) {
+      ICHECK_EQ(call->args.size(), 2U);
+      uint64_t low =
+          static_cast<uint64_t>(Downcast<IntImm>(call->args[0])->value);
+      uint64_t high =
+          static_cast<uint64_t>(Downcast<IntImm>(call->args[1])->value);
+      std::ostringstream stream;
+      stream << "0x" << std::hex << ((high << 32U) | low) << "ULL";
+      return stream.str();
+    }
+    return PrintExpr(value);
+  };
+  // The managed IR schema is (lo, hi), while AscendC's public API is
+  // SetVectorMask(high, low).
+  this->stream << "AscendC::SetVectorMask<uint8_t>("
+               << print_payload(op->args[1]) << ", "
+               << print_payload(op->args[0]) << ");\n";
+}
+
+void CodeGenTileLangAscend::ManagedBinaryCodegen(const CallNode *op,
+                                                 const std::string &op_name,
+                                                 int first_buffer) {
+  ICHECK_GE(op->args.size(), static_cast<size_t>(first_buffer + 4));
+  DataType dtype = GetAccessPtrDtype(op->args[first_buffer].as<CallNode>());
+  this->PrintIndent();
+  this->stream << op_name << "<" << getType(dtype) << ", false>(";
+  for (int i = 0; i < 3; ++i) {
+    if (i != 0) {
+      this->stream << ", ";
+    }
+    this->stream << PrintBufferOffset(
+        op->args[first_buffer + i].as<CallNode>());
+  }
+  this->stream << ", AscendC::MASK_PLACEHOLDER, 1, "
+                  "AscendC::BinaryRepeatParams());\n";
+}
+
+void CodeGenTileLangAscend::ManagedUnaryCodegen(const CallNode *op,
+                                                const std::string &op_name,
+                                                int first_buffer) {
+  ICHECK_GE(op->args.size(), static_cast<size_t>(first_buffer + 3));
+  DataType dtype = GetAccessPtrDtype(op->args[first_buffer].as<CallNode>());
+  this->PrintIndent();
+  this->stream << op_name << "<" << getType(dtype) << ", false>("
+               << PrintBufferOffset(op->args[first_buffer].as<CallNode>())
+               << ", "
+               << PrintBufferOffset(op->args[first_buffer + 1].as<CallNode>())
+               << ", AscendC::MASK_PLACEHOLDER, 1, "
+                  "AscendC::UnaryRepeatParams());\n";
+}
+
+void CodeGenTileLangAscend::ManagedScalarCodegen(const CallNode *op,
+                                                 const std::string &op_name,
+                                                 bool negate, bool reciprocal) {
+  ICHECK_GE(op->args.size(), 4U);
+  DataType dtype = GetAccessPtrDtype(op->args[0].as<CallNode>());
+  std::string type = getType(dtype);
+  std::string dst = PrintBufferOffset(op->args[0].as<CallNode>());
+  std::string src = PrintBufferOffset(op->args[1].as<CallNode>());
+
+  this->PrintIndent();
+  this->stream << "{\n";
+  std::string scalar;
+  if (op->args[2].as<CallNode>()) {
+    std::string tensor = PrintBufferOffset(op->args[2].as<CallNode>(), false);
+    std::string index = PrintExpr(op->args[op->args.size() - 2]);
+    this->PrintIndent();
+    this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
+    this->PrintIndent();
+    scalar = tensor + "_managed_scalar";
+    this->stream << "auto " << scalar << " = ";
+    if (reciprocal) {
+      this->stream << (dtype.is_float16() ? "half(1.0f / (float)"
+                                          : "1.0f / (float)")
+                   << tensor << ".GetValue(" << index << ")"
+                   << (dtype.is_float16() ? ")" : "") << ";\n";
+    } else if (negate) {
+      this->stream << (dtype.is_float16() ? "half(-(float)" : "-(float)")
+                   << tensor << ".GetValue(" << index << ")"
+                   << (dtype.is_float16() ? ")" : "") << ";\n";
+    } else {
+      this->stream << tensor << ".GetValue(" << index << ");\n";
+    }
+  } else {
+    scalar = PrintExpr(op->args[op->args.size() - 2]);
+    if (reciprocal) {
+      scalar = dtype.is_float16() ? "half(1.0f / " + scalar + ")"
+                                  : "1.0f / " + scalar;
+    } else if (negate) {
+      scalar = type + "(-" + scalar + ")";
+    } else if (op->args[op->args.size() - 2].dtype() != dtype) {
+      scalar = type + "(" + scalar + ")";
+    }
+  }
+
+  this->PrintIndent();
+  if (op_name == "AscendC::Axpy") {
+    this->stream << op_name << "<" << type << ", " << type << ", false>(";
+  } else {
+    this->stream << op_name << "<" << type << ", false>(";
+  }
+  this->stream << dst << ", " << src << ", " << scalar
+               << ", AscendC::MASK_PLACEHOLDER, 1, "
+                  "AscendC::UnaryRepeatParams());\n";
+  this->PrintIndent();
+  this->stream << "}\n";
+}
+
+void CodeGenTileLangAscend::ManagedCastCodegen(const CallNode *op,
+                                               bool round_cast) {
+  DataType dst_dtype = GetAccessPtrDtype(op->args[0].as<CallNode>());
+  DataType src_dtype = GetAccessPtrDtype(op->args[1].as<CallNode>());
+  ICHECK_NE(dst_dtype.bits(), 4)
+      << "Compiler-managed Cast does not yet support an int4 destination";
+  ICHECK_NE(src_dtype.bits(), 4)
+      << "Compiler-managed Cast does not yet support an int4 source";
+  int dst_repeat_stride = 8;
+  int src_repeat_stride = 8;
+  if (dst_dtype.bytes() > src_dtype.bytes()) {
+    src_repeat_stride = 4;
+  } else if (dst_dtype.bytes() < src_dtype.bytes()) {
+    dst_repeat_stride = 4;
+  }
+  std::string round_mode =
+      round_cast ? "CAST_RINT"
+                 : std::string(Downcast<StringImm>(op->args[2])->value);
+  this->PrintIndent();
+  this->stream << "AscendC::Cast<" << getType(dst_dtype) << ", "
+               << getType(src_dtype) << ", false>("
+               << PrintBufferOffset(op->args[0].as<CallNode>()) << ", "
+               << PrintBufferOffset(op->args[1].as<CallNode>())
+               << ", AscendC::RoundMode::" << round_mode
+               << ", AscendC::MASK_PLACEHOLDER, 1, "
+                  "AscendC::UnaryRepeatParams(1, 1, "
+               << dst_repeat_stride << ", " << src_repeat_stride << "));\n";
+}
+
+void CodeGenTileLangAscend::ManagedNormalReduceCodegen(
+    const CallNode *op, const std::string &selected_name) {
+  ICHECK_GE(op->args.size(), 4U);
+  Array<PrimExpr> args;
+  for (size_t i = 0; i + 2 < op->args.size(); ++i) {
+    args.push_back(op->args[i]);
+  }
+  Call base_call(op->dtype, tl::BaseOperationOf(GetRef<Call>(op)), args,
+                 op->span);
+  const CallNode *base = base_call.get();
+
+  if (selected_name.find("block_reduce") != std::string::npos) {
+    std::string api = selected_name.find("_max_") != std::string::npos
+                          ? "AscendC::BlockReduceMax"
+                      : selected_name.find("_min_") != std::string::npos
+                          ? "AscendC::BlockReduceMin"
+                          : "AscendC::BlockReduceSum";
+    DataType dtype = GetAccessPtrDtype(base->args[1].as<CallNode>());
+    this->PrintIndent();
+    this->stream << api << "<" << getType(dtype) << ", false>("
+                 << PrintBufferOffset(base->args[0].as<CallNode>()) << ", "
+                 << PrintBufferOffset(base->args[1].as<CallNode>());
+    for (size_t i = 2; i < base->args.size(); ++i) {
+      if (const auto *order = base->args[i].as<StringImmNode>()) {
+        this->stream << ", AscendC::ReduceOrder::" << order->value;
+      } else {
+        this->stream << ", " << PrintExpr(base->args[i]);
+      }
+    }
+    this->stream << ");\n";
+    return;
+  }
+
+  if (selected_name.find("wholereduce") != std::string::npos) {
+    std::string api = selected_name.find("max") != std::string::npos
+                          ? "AscendC::WholeReduceMax"
+                      : selected_name.find("min") != std::string::npos
+                          ? "AscendC::WholeReduceMin"
+                          : "AscendC::WholeReduceSum";
+    DataType dtype = GetAccessPtrDtype(base->args[1].as<CallNode>());
+    this->PrintIndent();
+    this->stream << api << "<" << getType(dtype) << ", false>("
+                 << PrintBufferOffset(base->args[0].as<CallNode>()) << ", "
+                 << PrintBufferOffset(base->args[1].as<CallNode>());
+    for (size_t i = 2; i < base->args.size(); ++i) {
+      if (const auto *order = base->args[i].as<StringImmNode>()) {
+        this->stream << ", AscendC::ReduceOrder::" << order->value;
+      } else {
+        this->stream << ", " << PrintExpr(base->args[i]);
+      }
+    }
+    this->stream << ");\n";
+    return;
+  }
+
+  // Narrow and fp16-sum reductions retain the existing compile-time operand
+  // derivation, but call a helper whose explicit false template argument is
+  // now the frozen physical terminal.
+  std::string tag = Downcast<StringImm>(base->args[0])->value;
+  size_t lt = tag.find('<');
+  size_t comma = tag.find(',', lt);
+  std::string dtype = tag.substr(lt + 1, comma - lt - 1);
+  std::string dst = PrintBufferOffset(base->args[1].as<CallNode>());
+  std::string src = PrintBufferOffset(base->args[2].as<CallNode>());
+  std::vector<std::string> params;
+  std::stringstream parser(tag.substr(lt + 1, tag.rfind('>') - lt - 1));
+  std::string item;
+  while (std::getline(parser, item, ',')) {
+    item.erase(0, item.find_first_not_of(" \t"));
+    item.erase(item.find_last_not_of(" \t") + 1);
+    params.push_back(item);
+  }
+  ICHECK_EQ(params.size(), 4U);
+  int64_t m = std::stoll(params[1]);
+  int64_t n = std::stoll(params[2]);
+  int64_t dim = std::stoll(params[3]);
+  int64_t mask = dim == -1 ? n : (dim == 0 ? m : m * n);
+  int64_t repeat = dim == -1 ? m : (dim == 0 ? n : 1);
+
+  this->PrintIndent();
+  if (selected_name.find("half_sum") != std::string::npos) {
+    int64_t stride = dim == -1 ? (n + 15) / 16 : (m + 15) / 16;
+    this->stream << "tl::ascend::reduce_sum_half<" << dtype << ", false>("
+                 << dst << ", " << src << ", " << mask << ", " << repeat << ", "
+                 << stride << ");\n";
+    return;
+  }
+  ICHECK(base->args.back().as<IntImmNode>());
+  int64_t physical_row = Downcast<IntImm>(base->args.back())->value;
+  DataType src_dtype = GetAccessPtrDtype(base->args[2].as<CallNode>());
+  ICHECK_EQ((physical_row * src_dtype.bytes()) % 32, 0);
+  int64_t stride = physical_row * src_dtype.bytes() / 32;
+  std::string helper =
+      tag.find("reduce_sum") != std::string::npos   ? "reduce_sum_narrow"
+      : tag.find("reduce_min") != std::string::npos ? "reduce_min_narrow"
+                                                    : "reduce_max_narrow";
+  this->stream << "tl::ascend::" << helper << "<" << dtype << ", false>(" << dst
+               << ", " << src << ", " << mask << ", " << repeat << ", "
+               << stride << ");\n";
 }
 
 } // namespace codegen

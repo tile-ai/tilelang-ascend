@@ -129,15 +129,7 @@ private:
   }
 
   bool is_func_in_operation_config(const CallNode *op) {
-    bool result = false;
-    if (auto *op_ptr = op->op.as<OpNode>()) {
-      std::string op_name = op_ptr->name;
-      auto config_it = GetOperationConfig().find(op_name);
-      if (config_it != GetOperationConfig().end()) {
-        result = true;
-      }
-    }
-    return result;
+    return HasOperationConfig(op);
   }
 
   void VisitExpr_(const CallNode *op) final {

@@ -46,6 +46,11 @@ def allow_vectorize(pass_ctx: PassContext | None = None) -> bool:
     return not disable_vectorize
 
 
+def use_compiler_managed_vector_mask(target: Target, platform: str) -> bool:
+    """Return whether the mandatory A2/A3 AscendC mask pipeline applies."""
+    return target.model in {"ascendc", "auto"} and platform in {"A2", "A3"}
+
+
 def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     # allocate the tmp buffer for vector api
     mod = tilelang.transform.InjectTmpBuffer(target)(mod)
@@ -97,6 +102,9 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     from tilelang.utils.target import check_npu_availability
 
     pass_ctx = tilelang.transform.get_pass_context()
+    managed_vector_mask = use_compiler_managed_vector_mask(target, platform)
+    if managed_vector_mask:
+        mod = tilelang.transform.AscendVectorInstructionSelection(target, platform)(mod)
     mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
     mod = tilelang.transform.CrossCorePipeline()(mod)
     mod = tilelang.transform.CombineCV()(mod)
@@ -120,5 +128,10 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     mod = tilelang.transform.AscendMemoryPlanning()(mod)
     mod = tilelang.transform.AscendSyncInsert(target, platform)(mod)
     mod = tilelang.transform.AscendSyncInsertVS(target, platform)(mod)
+    if managed_vector_mask:
+        # This is the final structured simplification.  No TIR rewrite may run
+        # between legalization and the mechanical AscendC emitter.
+        mod = tir.transform.Simplify()(mod)
+        mod = tilelang.transform.AscendVectorMaskLegalize(target, platform)(mod)
     # print(mod)
     return mod

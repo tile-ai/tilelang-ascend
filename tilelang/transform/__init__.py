@@ -392,6 +392,16 @@ def AscendSyncInsertVS(target: Target, platform: str):
     return _ffi_api.AscendSyncInsertVS(target, platform)  # type: ignore
 
 
+def AscendVectorInstructionSelection(target: Target, platform: str):
+    """Select compiler-managed Ascend Vector terminals on A2/A3 AscendC."""
+    return _ffi_api.AscendVectorInstructionSelection(target, platform)  # type: ignore
+
+
+def AscendVectorMaskLegalize(target: Target, platform: str):
+    """Repair compiler-managed Ascend Vector mask state before codegen."""
+    return _ffi_api.AscendVectorMaskLegalize(target, platform)  # type: ignore
+
+
 def CombineCV():
     """CombineCV
 

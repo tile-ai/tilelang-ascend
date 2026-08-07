@@ -1513,5 +1513,21 @@ TIR_DEFINE_TL_BUILTIN(ascend_tail_reduce)
     .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_set_mask_mode)
+    .set_num_inputs(1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_set_mask_payload)
+    .set_num_inputs(2)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+#define TL_ASCEND_SELECTED_VECTOR_OP(Name, Arity, Base, ContractKind)          \
+  TIR_DEFINE_TL_BUILTIN(Name).set_num_inputs(Arity).set_attr<TCallEffectKind>( \
+      "TCallEffectKind", Integer(CallEffectKind::kOpaque));
+#include "ascend_vector_mask_ops.inc"
+#undef TL_ASCEND_SELECTED_VECTOR_OP
 } // namespace tl
 } // namespace tvm

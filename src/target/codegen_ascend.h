@@ -227,6 +227,24 @@ private:
 
   void BrcbExperimentCodegen(const CallNode *op);
 
+  void MaskSetterCodegen(const CallNode *op);
+
+  void SelectedVectorTerminalCodegen(const CallNode *op);
+
+  void ManagedBinaryCodegen(const CallNode *op, const std::string &op_name,
+                            int first_buffer = 0);
+
+  void ManagedUnaryCodegen(const CallNode *op, const std::string &op_name,
+                           int first_buffer = 0);
+
+  void ManagedScalarCodegen(const CallNode *op, const std::string &op_name,
+                            bool negate = false, bool reciprocal = false);
+
+  void ManagedCastCodegen(const CallNode *op, bool round_cast = false);
+
+  void ManagedNormalReduceCodegen(const CallNode *op,
+                                  const std::string &selected_name);
+
 private:
   // Whether scope such as "__shared__" or "__constant__"  is part of type.
   bool IsScopePartOfType() const final { return false; }

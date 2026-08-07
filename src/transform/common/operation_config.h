@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "../../op/ascend.h"
+#include "ascend_vector_mask_contract.h"
 
 namespace tvm {
 namespace tl {
@@ -390,14 +391,49 @@ GetWorkspaceOpConfigs() {
 }
 
 inline OperationConfig ResolveOperationConfig(const tvm::tir::CallNode *call) {
-  const auto *op_node = call->op.as<tvm::OpNode>();
-  ICHECK(op_node);
-  const auto config_it = GetOperationConfig().find(op_node->name);
+  tvm::tir::Call call_ref = GetRef<tvm::tir::Call>(call);
+  const tvm::Op *config_op = nullptr;
+  tvm::Op base;
+  if (const auto *spec = SelectedVectorTerminalSpecOf(call_ref)) {
+    base = spec->base;
+    config_op = &base;
+  } else if (const auto *op_node = call->op.as<tvm::OpNode>()) {
+    base = GetRef<tvm::Op>(op_node);
+    config_op = &base;
+  }
+  ICHECK(config_op != nullptr);
+
+  std::string config_name;
+  size_t access_offset = 0;
+  if (config_op->same_as(tvm::tir::builtin::call_extern())) {
+    ICHECK(!call->args.empty() && call->args[0].as<tvm::tir::StringImmNode>())
+        << "Selected call_extern terminal is missing its function name";
+    config_name =
+        std::string(call->args[0].as<tvm::tir::StringImmNode>()->value);
+    size_t template_pos = config_name.find('<');
+    if (template_pos != std::string::npos) {
+      config_name = config_name.substr(0, template_pos);
+    }
+    size_t namespace_pos = config_name.find("tl::ascend::");
+    if (namespace_pos != std::string::npos) {
+      config_name = config_name.substr(namespace_pos + 12);
+    }
+    access_offset = 1;
+  } else {
+    config_name = (*config_op)->name;
+  }
+
+  const auto config_it = GetOperationConfig().find(config_name);
   ICHECK(config_it != GetOperationConfig().end())
-      << "Missing operation configuration for " << op_node->name;
+      << "Missing operation configuration for " << config_name;
 
   OperationConfig config = config_it->second;
-  if (!GetWorkspaceOpConfigs().count(op_node)) {
+  if (!GetWorkspaceOpConfigs().count(config_op->get())) {
+    if (access_offset != 0) {
+      for (auto &access : config.buffer_accesses) {
+        access.first += access_offset;
+      }
+    }
     return config;
   }
 
@@ -411,10 +447,10 @@ inline OperationConfig ResolveOperationConfig(const tvm::tir::CallNode *call) {
       continue;
     }
     ICHECK_GE(arg->args.size(), 5U)
-        << "Malformed tvm_access_ptr in " << op_node->name;
+        << "Malformed tvm_access_ptr in " << config_name;
     const auto *mask = arg->args[4].as<tvm::IntImmNode>();
     ICHECK(mask && mask->value > 0 && (mask->value & ~3) == 0)
-        << "Invalid access mask in " << op_node->name;
+        << "Invalid access mask in " << config_name;
     if (mask->value & 1) {
       config.buffer_accesses.emplace_back(i, "read");
     }
@@ -423,6 +459,33 @@ inline OperationConfig ResolveOperationConfig(const tvm::tir::CallNode *call) {
     }
   }
   return config;
+}
+
+inline bool HasOperationConfig(const tvm::tir::CallNode *call) {
+  tvm::tir::Call call_ref = GetRef<tvm::tir::Call>(call);
+  if (const auto *spec = SelectedVectorTerminalSpecOf(call_ref)) {
+    if (spec->base.same_as(tvm::tir::builtin::call_extern())) {
+      if (call->args.empty() || !call->args[0].as<tvm::tir::StringImmNode>()) {
+        return false;
+      }
+      std::string name =
+          std::string(call->args[0].as<tvm::tir::StringImmNode>()->value);
+      size_t template_pos = name.find('<');
+      if (template_pos != std::string::npos) {
+        name = name.substr(0, template_pos);
+      }
+      size_t namespace_pos = name.find("tl::ascend::");
+      if (namespace_pos != std::string::npos) {
+        name = name.substr(namespace_pos + 12);
+      }
+      return GetOperationConfig().count(name) != 0;
+    }
+    return GetOperationConfig().count(spec->base->name) != 0;
+  }
+  if (const auto *op_node = call->op.as<tvm::OpNode>()) {
+    return GetOperationConfig().count(op_node->name) != 0;
+  }
+  return false;
 }
 
 } // namespace tl

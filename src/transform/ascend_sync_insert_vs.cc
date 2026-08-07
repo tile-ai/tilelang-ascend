@@ -450,13 +450,10 @@ private:
       }
     } else {
       auto *op_ptr = call->op.as<OpNode>();
-      if (op_ptr) {
+      if (op_ptr && HasOperationConfig(call)) {
         std::string op_name = op_ptr->name;
-        auto config_it = operation_config_.find(op_name);
-        if (config_it != operation_config_.end()) {
-          CollectBufferAccesses(ResolveOperationConfig(call), op_name,
-                                call->args, 0, accesses);
-        }
+        CollectBufferAccesses(ResolveOperationConfig(call), op_name, call->args,
+                              0, accesses);
       }
     }
 
