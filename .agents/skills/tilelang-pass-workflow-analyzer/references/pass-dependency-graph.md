@@ -29,6 +29,9 @@ CollectBufferShapes → buffer_shapess (Map<Var, Array<PrimExpr>>)
     ↓
 [Phase 2: OptimizeForTarget]
     ↓
+AscendVectorInstructionSelection
+    → selected terminal identity + mask contract operands（仅 A2/A3 AscendC/auto）
+    ↓
 CrossCorePipeline (使用 buffer scope)
     ↓
 CombineCV (使用 buffer scope)
@@ -37,7 +40,13 @@ AscendMemoryPlanning (使用 buffer_shapess) → address_map, size_map
     ↓
 AscendSyncInsert (使用 address_map, size_map)
     ↓
-Final IR
+AscendSyncInsertVS
+    ↓
+tir.transform.Simplify（managed 路径最后一次结构化简化）
+    ↓
+AscendVectorMaskLegalize（使用 selected terminal contract 和完整同步边界）
+    ↓
+AscendC codegen-ready IR
 ```
 
 ---
@@ -54,6 +63,7 @@ Final IR
 | **Size Map** | `size_map` | Map<Var, PrimExpr> | `AscendMemoryPlanning` | `AscendSyncInsert` | 记录每个 buffer 的大小 |
 | **Pipeline Layout** | pipeline layout annotations | Map | `PipelinePlanning` | `InjectSoftwarePipeline` | 记录流水线的 layout 信息 |
 | **Cross-Core Pipeline** | cross-core annotations | Map | `CrossCorePipeline` | `CombineCV` | 记录 Cube-Vector 核间流水线信息 |
+| **Selected Vector Terminal** | 无独立 attr；物化为 Op identity + operands | TIR Call | `AscendVectorInstructionSelection` | 中间 Pass 保持；`AscendVectorMaskLegalize` 与 AscendC codegen 消费 | 固定物理实现并携带 mask requirement/ensure contract |
 
 ### 辅助数据流
 
@@ -62,6 +72,7 @@ Final IR
 | **Target Attr** | `tir.transform.BindTarget` | 多个 Pass | 记录编译目标（Ascend NPU） |
 | **Buffer Allocation Plan** | `tir.transform.PlanAndUpdateBufferAllocationLocation` | `Flatten2DBuffer`, `FlattenBuffer` | 确定 buffer 分配位置 |
 | **Vectorized IR** | `AscendLowerParallelToVector` | `LegalizeVectorizedLoop` | 提供 Vector 指令 IR |
+| **同步边界** | `AscendSyncInsert`, `AscendSyncInsertVS` | `AscendVectorMaskLegalize` | 使 Legalizer 在 barrier/不透明边界后保守失效 mask facts |
 
 ---
 
@@ -72,8 +83,12 @@ Final IR
 ```
 DSL IR
   ↓
+InjectTmpBuffer
+  ↓ (output: IR with Vector tmp buffers)
 AscendInferBufferScope
   ↓ (output: buffer scope annotations)
+AscendVidReduction
+  ↓ (output: normalized vid IR)
 BufferShapeCollector
   ↓ (output: buffer shapes (初步))
 tir.transform.BindTarget
@@ -90,6 +105,10 @@ CollectBufferShapes
   ↓ (output: buffer_shapess) ← **关键输出**
 LowerTileOp
   ↓ (output: lowered tile ops)
+AscendTailMaskPropagation
+  ↓ (output: tail-aware Vector IR; 配置关闭时为 no-op)
+AscendWorkspaceReduction
+  ↓ (output: workspace-reduced IR)
 LegalizeVectorizedLoop
   ↓
 LegalizeSafeMemoryAccess
@@ -103,11 +122,15 @@ Phase 1 Final IR
 
 | Pass | 输入依赖 | 输出供给 | 重要性 |
 |------|---------|---------|--------|
+| `InjectTmpBuffer` | DSL IR | IR with Vector tmp buffers | 为底层 Vector helper 注入临时空间 |
 | `AscendInferBufferScope` | DSL IR | buffer scope annotations | **基础 Pass**：为 Phase 2 多个 Pass 提供依赖 |
+| `AscendVidReduction` | buffer scope | normalized vid IR | 规约 1:2 Vector core 映射下的 UB shape、index 和相关操作参数 |
 | `BufferShapeCollector` | buffer scope | buffer shapes (初步) | 辅助 Pass：收集初步形状信息 |
 | `AscendLowerParallelToVector` | simplified IR | vectorized IR | **核心 Lowering Pass**：将 Parallel → Vector |
 | `CollectBufferShapes` | layout annotations | **`buffer_shapess`** | **关键 Pass**：Phase 2 的 `AscendMemoryPlanning` 依赖此输出 |
 | `LowerTileOp` | buffer shapes | lowered tile ops | **核心 Lowering Pass**：将 Tile DSL → 底层 IR |
+| `AscendTailMaskPropagation` | lowered tile ops | tail-aware Vector IR | 传播 UB tail valid region；配置关闭时为 no-op |
+| `AscendWorkspaceReduction` | tail-aware IR | workspace-reduced IR | 消除 virtual CV copy 的手工 workspace |
 
 ---
 
@@ -118,6 +141,8 @@ Phase 1 Final IR
 ```
 Phase 1 Final IR (含 buffer_shapess)
   ↓
+AscendVectorInstructionSelection
+  ↓ (仅 A2/A3 AscendC/auto；output: selected terminals + mask contracts)
 tir.transform.PlanAndUpdateBufferAllocationLocation
   ↓ (output: buffer allocation plan)
 CrossCorePipeline
@@ -160,7 +185,13 @@ AscendMemoryPlanning
   ↓ (output: **address_map**, **size_map**, 使用 buffer_shapess)
 AscendSyncInsert
   ↓ (使用 address_map, size_map)
-Phase 2 Final IR
+AscendSyncInsertVS
+  ↓ (补充 V→V、Scalar↔其他 pipeline 的同步)
+tir.transform.Simplify
+  ↓ (仅 managed 路径；最后一次 structured simplify)
+AscendVectorMaskLegalize
+  ↓ (仅 managed 路径；插入最小必要 compiler mask setter)
+AscendC codegen-ready IR
 ```
 
 ### Phase 2 依赖说明
@@ -172,7 +203,10 @@ Phase 2 Final IR
 | `InjectSoftwarePipeline` | pipeline layout | software pipeline | **性能优化 Pass**：依赖 layout 信息 |
 | `AscendStorageRewrite` | vectorized loops | optimized storage | **内存优化 Pass**：为 memory planning 提供优化的 IR |
 | `AscendMemoryPlanning` | **`buffer_shapess`** (来自 Phase 1) | **`address_map`**, **`size_map`** | **关键 Pass**：跨阶段依赖，使用 Phase 1 输出 |
-| `AscendSyncInsert` | **`address_map`**, **`size_map`** | final IR with syncs | **最后一环**：依赖 memory planning 的输出 |
+| `AscendSyncInsert` | **`address_map`**, **`size_map`** | IR with general syncs | 依赖 memory planning 的输出 |
+| `AscendSyncInsertVS` | 通用同步后的 IR | IR with VS syncs | 补充 V→V 和 Scalar↔其他 pipeline 同步 |
+| `AscendVectorInstructionSelection` | semantic Vector IR | selected terminals + mask contracts | managed 路径第一步，必须先于所有 Phase 2 重写 |
+| `AscendVectorMaskLegalize` | selected terminals + 完整同步边界 | codegen-ready IR | managed 路径最后一个结构化 TIR Pass |
 
 ---
 
@@ -206,14 +240,14 @@ CombineCV ← buffer scope (使用)
 ### 依赖链 1: Buffer Scope 相关
 
 ```
-AscendInferBufferScope (Phase 1, 步骤 1)
+AscendInferBufferScope (Phase 1)
   ↓ (output: buffer scope annotations)
   
 [跨阶段传递]
   
-CrossCorePipeline (Phase 2, 步骤 2)
+CrossCorePipeline (Phase 2)
   ↓ (使用 buffer scope, output: cross-core annotations)
-CombineCV (Phase 2, 步骤 3)
+CombineCV (Phase 2)
   ↓ (使用 buffer scope, output: separated CV ops)
 ```
 
@@ -225,14 +259,14 @@ CombineCV (Phase 2, 步骤 3)
 ### 依赖链 2: Buffer Shapes 相关
 
 ```
-CollectBufferShapes (Phase 1, 步骤 8)
+CollectBufferShapes (Phase 1)
   ↓ (output: buffer_shapess)
   
 [跨阶段传递]
   
-AscendMemoryPlanning (Phase 2, 步骤 20)
+AscendMemoryPlanning (Phase 2)
   ↓ (使用 buffer_shapess, output: address_map, size_map)
-AscendSyncInsert (Phase 2, 步骤 21)
+AscendSyncInsert (Phase 2)
   ↓ (使用 address_map, size_map)
 ```
 
@@ -244,14 +278,14 @@ AscendSyncInsert (Phase 2, 步骤 21)
 ### 依赖链 3: Lowering 相关
 
 ```
-AscendLowerParallelToVector (Phase 1, 步骤 6)
+AscendLowerParallelToVector (Phase 1)
   ↓ (output: vectorized IR)
-LegalizeVectorizedLoop (Phase 1, 步骤 10)
+LegalizeVectorizedLoop (Phase 1)
   ↓ (使用 vectorized IR, output: legalized loops)
 
-LowerTileOp (Phase 1, 步骤 9)
+LowerTileOp (Phase 1)
   ↓ (output: lowered tile ops)
-LegalizeSafeMemoryAccess (Phase 1, 步骤 11)
+LegalizeSafeMemoryAccess (Phase 1)
   ↓ (使用 lowered tile ops, output: safe memory IR)
 ```
 
@@ -264,13 +298,13 @@ LegalizeSafeMemoryAccess (Phase 1, 步骤 11)
 ### 依赖链 4: 流水线相关
 
 ```
-CrossCorePipeline (Phase 2, 步骤 2)
+CrossCorePipeline (Phase 2)
   ↓ (output: cross-core annotations)
-CombineCV (Phase 2, 步骤 3)
+CombineCV (Phase 2)
   ↓ (使用 cross-core annotations, output: separated CV ops)
-PipelinePlanning (Phase 2, 步骤 4)
+PipelinePlanning (Phase 2)
   ↓ (output: pipeline layout)
-InjectSoftwarePipeline (Phase 2, 步骤 5)
+InjectSoftwarePipeline (Phase 2)
   ↓ (使用 pipeline layout, output: software pipeline)
 ```
 
@@ -279,6 +313,34 @@ InjectSoftwarePipeline (Phase 2, 步骤 5)
 - `CombineCV` 分离 Cube/Vector 操作，依赖跨核流水线信息
 - `PipelinePlanning` 推断流水线的 layout
 - `InjectSoftwarePipeline` 注入软件流水线，依赖 layout 信息
+
+### 依赖链 5: Compiler-managed Vector mask
+
+```
+AscendVectorInstructionSelection
+  ↓ (selected terminal identity + contract operands 物化在 TIR Call 中)
+Phase 2 中间重写
+  ↓ (必须保持 selected identity、operands 和顶层 Evaluate terminal)
+AscendSyncInsert
+  ↓
+AscendSyncInsertVS
+  ↓
+tir.transform.Simplify
+  ↓ (最后一次 structured simplify)
+AscendVectorMaskLegalize
+  ↓ (局部 must-facts 数据流；插入显式 mode/payload setter)
+AscendC mechanical emitter
+```
+
+**依赖说明**：
+- Selection 必须位于 Phase 2 第一项，避免 allocation、pipeline 或 control-flow 重写后
+  再做物理指令选择。
+- selected terminal contract 不通过 `PrimFunc` attr 旁路传递，而是物化在 Op identity 和
+  operands 中，因此中间 Pass 必须保持它们。
+- Legalizer 必须位于 `AscendSyncInsertVS` 和最后一次 `Simplify` 之后，才能看到所有会使
+  mask facts 失效的同步和控制流边界。
+- managed 路径的 `device_codegen()` 跳过旧的额外 `Simplify`，Legalizer 输出直接交给
+  AscendC emitter。
 
 ---
 
@@ -330,14 +392,17 @@ DSL IR
   └─ buffer_shapess → AscendMemoryPlanning
   ↓
 [Phase 2]
+  ├─ AscendVectorInstructionSelection → selected terminals + contracts ★
   ├─ CrossCorePipeline ← buffer scope
   ├─ CombineCV ← buffer scope
   ├─ InjectSoftwarePipeline ← pipeline layout
   ├─ AscendStorageRewrite → optimized storage
   ├─ AscendMemoryPlanning ← buffer_shapess → address_map, size_map ★
-  └─ AscendSyncInsert ← address_map, size_map
+  ├─ AscendSyncInsert ← address_map, size_map
+  ├─ AscendSyncInsertVS → complete sync boundaries
+  └─ AscendVectorMaskLegalize ← selected contracts + sync boundaries ★
   ↓
-Final IR
+AscendC codegen-ready IR
 ```
 
 ### 关键数据流路径
@@ -355,6 +420,13 @@ CollectBufferShapes → buffer_shapess
 AscendMemoryPlanning ← buffer_shapess → address_map, size_map
   ↓ [Phase 2 内部]
 AscendSyncInsert ← address_map, size_map
+
+[A2/A3 AscendC/auto managed mask]
+AscendVectorInstructionSelection → selected terminal + mask contract
+  ↓ [中间 Pass 保持 identity/operands]
+AscendSyncInsert → AscendSyncInsertVS → final Simplify
+  ↓
+AscendVectorMaskLegalize → explicit compiler mask setters
 ```
 
 ---
@@ -370,10 +442,18 @@ AscendSyncInsert ← address_map, size_map
 2. **Phase 2 内部顺序严格**
    - `AscendMemoryPlanning` 必须在 `AscendSyncInsert` 前执行
    - `CrossCorePipeline` 必须在 `CombineCV` 前执行
+   - managed 路径必须以 `AscendVectorInstructionSelection` 开始
+   - managed 路径必须以 final `Simplify` → `AscendVectorMaskLegalize` 结束，之后不得再有
+     结构化 TIR rewrite
 
 3. **跨阶段依赖不可打破**
    - 不能在 Phase 1 之前添加需要 Phase 2 输入的 Pass
    - 不能在 Phase 2 之后添加需要 Phase 1 输出的 Pass
+
+4. **Selected terminal contract 不可丢失**
+   - 中间 Pass 不得把 selected terminal 还原为 semantic op
+   - 不得改写或丢弃承载 mask contract 的 operands
+   - 新增 barrier 或不透明调用必须位于 Legalizer 之前，使 facts 能正确失效
 
 ### 添加新 Pass 的约束
 

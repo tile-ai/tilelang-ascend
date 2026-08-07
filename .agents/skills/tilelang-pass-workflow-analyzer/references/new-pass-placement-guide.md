@@ -2,6 +2,9 @@
 
 本文档提供添加新 Pass 到 TileLang-Ascend Pipeline 的完整指南，帮助确定 Pass 应该在哪个位置添加。
 
+> **定位规则：** Pipeline 含 target-dependent 分支，步骤号会随 A2/A3 managed 流程变化。
+> 新 Pass 必须使用相邻 Pass 名称作为定位锚点，不要依赖全局步骤号。
+
 ---
 
 ## 定位原则
@@ -27,12 +30,12 @@
 
 | 输入数据 | 上游 Pass | 约束 |
 |---------|-----------|------|
-| **buffer scope** | `AscendInferBufferScope` (Phase 1, 步骤 1) | 必须在此 Pass 后执行 |
-| **buffer_shapess** | `CollectBufferShapes` (Phase 1, 步骤 8) | 必须在此 Pass 后执行 |
-| **address_map** | `AscendMemoryPlanning` (Phase 2, 步骤 20) | 必须在此 Pass 后执行 |
-| **size_map** | `AscendMemoryPlanning` (Phase 2, 步骤 20) | 必须在此 Pass 后执行 |
-| **pipeline layout** | `PipelinePlanning` (Phase 2, 步骤 4) | 必须在此 Pass 后执行 |
-| **cross-core annotations** | `CrossCorePipeline` (Phase 2, 步骤 2) | 必须在此 Pass 后执行 |
+| **buffer scope** | `AscendInferBufferScope` (Phase 1) | 必须在此 Pass 后执行 |
+| **buffer_shapess** | `CollectBufferShapes` (Phase 1) | 必须在此 Pass 后执行 |
+| **address_map** | `AscendMemoryPlanning` (Phase 2) | 必须在此 Pass 后执行 |
+| **size_map** | `AscendMemoryPlanning` (Phase 2) | 必须在此 Pass 后执行 |
+| **pipeline layout** | `PipelinePlanning` (Phase 2) | 必须在此 Pass 后执行 |
+| **cross-core annotations** | `CrossCorePipeline` (Phase 2) | 必须在此 Pass 后执行 |
 
 ### 3. 输出供给原则
 
@@ -55,6 +58,18 @@
 | **Ascend 特定** | Phase 2 | 针对 Ascend NPU 的硬件特性优化 |
 | **GPU/CPU 兼容** | Phase 1 | 如果 Pass 需要支持多种平台，放在 Phase 1 |
 
+### 5. Compiler-managed Vector mask 边界
+
+对于 A2/A3 AscendC/auto，Phase 2 以 `AscendVectorInstructionSelection` 开始，并以
+final `Simplify` → `AscendVectorMaskLegalize` 结束：
+
+- 修改 semantic Vector op 或参与物理指令选择的 Pass，必须放在 Selection 之前，或把逻辑
+  合并到 Selection 中。
+- Selection 之后的 Pass 必须保持 selected terminal identity、operands 和顶层
+  `Evaluate(Call(...))` 终端形式。
+- 会新增 barrier、不透明调用或控制流的 Pass 必须放在 Legalizer 之前。
+- Legalizer 之后不得再添加结构化 TIR rewrite；其输出直接进入 mechanical AscendC emitter。
+
 ---
 
 ## 典型定位场景
@@ -70,14 +85,14 @@
 | **输出**：合法化报告 | 供调试使用 | 不影响后续 Pass |
 | **语义**：平台无关 | Phase 1 | 不依赖 Ascend 特性 |
 
-**具体位置**：Phase 1，在 `tir.transform.Simplify`（步骤 12）后，或替换为新的合法化 Pass。
+**具体位置**：Phase 1，在末尾的 `tir.transform.Simplify` 后，或替换该合法化位置。
 
 **示例**：
 ```python
 # tilelang/engine/phase.py
 def LowerAndLegalize(mod, target):
-    # ... 现有 Pass (步骤 1-11)
-    mod = tir.transform.Simplify()(mod)  # 步骤 12
+    # ... 现有 Phase 1 Pass
+    mod = tir.transform.Simplify()(mod)  # Phase 1 末尾
     # 新增 Pass
     mod = MyIRLegalizationPass()(mod)
     return mod
@@ -93,18 +108,20 @@ def LowerAndLegalize(mod, target):
 | **语义**：平台无关（如通用操作）或 Ascend 特定（如硬件原语） | Phase 1 或 Phase 2 | 根据操作的语义范围决定 |
 
 **具体位置**：
-- 如果是**通用 Tile 操作**：Phase 1，在 `LowerTileOp`（步骤 9）后，`LegalizeVectorizedLoop`（步骤 10）前。
-- 如果是**Ascend 特定 Tile 操作**：可以考虑在 Phase 2，`AscendLowerOpaqueBlock`（步骤 6）后。
+- 如果是**通用 Tile 操作**：Phase 1，在 `LowerTileOp` 后、
+  `LegalizeVectorizedLoop` 前。
+- 如果是**Ascend 特定 Tile 操作**：可以考虑在 Phase 2，
+  `AscendLowerOpaqueBlock` 后。
 
 **示例**：
 ```python
 # tilelang/engine/phase.py
 def LowerAndLegalize(mod, target):
-    # ... 现有 Pass (步骤 1-8)
-    mod = LowerTileOp()(mod)  # 步骤 9
+    # ... 现有 Phase 1 Pass
+    mod = LowerTileOp()(mod)
     # 新增 Pass
     mod = MyNewTileOpLoweringPass()(mod)
-    mod = LegalizeVectorizedLoop()(mod)  # 步骤 10
+    mod = LegalizeVectorizedLoop()(mod)
     # ...
 ```
 
@@ -117,7 +134,7 @@ def LowerAndLegalize(mod, target):
 | **输出**：优化后的内存分配 | 供 `AscendMemoryPlanning` 使用 | 影响 memory planning |
 | **语义**：Ascend 特定 | Phase 2 | 针对 Ascend 内存层级优化 |
 
-**具体位置**：Phase 2，在 `AscendStorageRewrite`（步骤 13）后，`AscendMemoryPlanning`（步骤 20）前。
+**具体位置**：Phase 2，在 `AscendStorageRewrite` 后、`AscendMemoryPlanning` 前。
 
 **注意**：
 - 如果新 Pass 影响 buffer 的数量或大小，需要在 `AscendMemoryPlanning` 前执行。
@@ -127,16 +144,16 @@ def LowerAndLegalize(mod, target):
 ```python
 # tilelang/engine/phase.py
 def OptimizeForTarget(mod, target, platform):
-    # ... 现有 Pass (步骤 1-13)
-    mod = AscendStorageRewrite(is_npu)(mod)  # 步骤 13
+    # ... 现有 Phase 2 Pass
+    mod = AscendStorageRewrite(is_npu)(mod)
     # 新增 Pass（影响 buffer 数量/大小）
     mod = MyMemoryOptimizationPass()(mod)
-    mod = tir.transform.UnrollLoop()(mod)  # 步骤 14
-    # ... (步骤 15-19)
-    mod = AscendMemoryPlanning()(mod)  # 步骤 20
+    mod = tir.transform.UnrollLoop()(mod)
+    # ... 中间 Phase 2 Pass
+    mod = AscendMemoryPlanning()(mod)
     # 新增 Pass（不影响 buffer 数量/大小）
     mod = MyAddressReorderPass()(mod)
-    mod = AscendSyncInsert(target, platform)(mod)  # 步骤 21
+    mod = AscendSyncInsert(target, platform)(mod)
     return mod
 ```
 
@@ -149,17 +166,19 @@ def OptimizeForTarget(mod, target, platform):
 | **输出**：同步建议或替代同步策略 | 供 `AscendSyncInsert` 使用或替代 | 影响同步插入 |
 | **语义**：Ascend 特定 | Phase 2 | 针对 Ascend 多核同步优化 |
 
-**具体位置**：Phase 2，在 `AscendMemoryPlanning`（步骤 20）后，`AscendSyncInsert`（步骤 21）前，或替代 `AscendSyncInsert`。
+**具体位置**：Phase 2，在 `AscendMemoryPlanning` 后、`AscendSyncInsert` 前，
+或替代 `AscendSyncInsert`。managed 路径的最终 `Simplify` 和
+`AscendVectorMaskLegalize` 仍必须位于完整同步流程之后。
 
 **示例**：
 ```python
 # tilelang/engine/phase.py
 def OptimizeForTarget(mod, target, platform):
-    # ... 现有 Pass (步骤 1-20)
-    mod = AscendMemoryPlanning()(mod)  # 步骤 20
+    # ... 现有 Phase 2 Pass
+    mod = AscendMemoryPlanning()(mod)
     # 新增 Pass
     mod = MySyncOptimizationPass()(mod)
-    mod = AscendSyncInsert(target, platform)(mod)  # 步骤 21
+    mod = AscendSyncInsert(target, platform)(mod)
     return mod
 ```
 
@@ -173,18 +192,19 @@ def OptimizeForTarget(mod, target, platform):
 | **语义**：Ascend 特定 | Phase 2 | 针对 Ascend 多核流水线 |
 
 **具体位置**：
-- 如果是**调整流水线阶段**：Phase 2，在 `PipelinePlanning`（步骤 4）后，`InjectSoftwarePipeline`（步骤 5）前。
-- 如果是**优化核间协作**：Phase 2，在 `CombineCV`（步骤 3）后，`PipelinePlanning`（步骤 4）前。
+- 如果是**调整流水线阶段**：Phase 2，在 `PipelinePlanning` 后、
+  `InjectSoftwarePipeline` 前。
+- 如果是**优化核间协作**：Phase 2，在 `CombineCV` 后、`PipelinePlanning` 前。
 
 **示例**：
 ```python
 # tilelang/engine/phase.py
 def OptimizeForTarget(mod, target, platform):
-    # ... 现有 Pass (步骤 1-3)
-    mod = CombineCV()(mod)  # 步骤 3
+    # ... 现有 Phase 2 Pass
+    mod = CombineCV()(mod)
     # 新增 Pass
     mod = MyCrossCoreOptimizationPass()(mod)
-    mod = PipelinePlanning()(mod)  # 步骤 4
+    mod = PipelinePlanning()(mod)
     # ...
 ```
 
@@ -206,11 +226,11 @@ def OptimizeForTarget(mod, target, platform):
 ```python
 # tilelang/engine/phase.py
 def LowerAndLegalize(mod, target):
-    # ... 现有 Pass (步骤 1-7)
-    mod = LayoutInference()(mod)  # 步骤 7
+    # ... 现有 Phase 1 Pass
+    mod = LayoutInference()(mod)
     # 新增 Pass
     mod = MyBufferInfoCollectorPass()(mod)
-    mod = CollectBufferShapes()(mod)  # 步骤 8
+    mod = CollectBufferShapes()(mod)
     # ...
 ```
 
@@ -291,9 +311,9 @@ def LowerAndLegalize(mod, target):
 
 **Step 2: 分析依赖**
 - 输入数据：`buffer_shapess`（buffer 形状信息）
-- 输入数据来源：`CollectBufferShapes` (Phase 1, 步骤 8)
+- 输入数据来源：`CollectBufferShapes` (Phase 1)
 - 输出数据：优化后的 buffer 定义
-- 输出数据使用：`AscendMemoryPlanning` (Phase 2, 步骤 20) 会使用 buffer 信息
+- 输出数据使用：`AscendMemoryPlanning` (Phase 2) 会使用 buffer 信息
 
 **Step 3: 确定阶段**
 - 功能是硬件优化 → Phase 2
@@ -304,10 +324,10 @@ def LowerAndLegalize(mod, target):
 
 **Step 4: 确定位置**
 - 输入依赖：必须在 `CollectBufferShapes` 后 → Phase 1 已完成
-- 输出供给：必须在 `AscendMemoryPlanning` 前 → Phase 2 步骤 20 前
-- 功能相邻：内存优化 Pass → 在 `AscendStorageRewrite`（步骤 13）附近
+- 输出供给：必须在 `AscendMemoryPlanning` 前
+- 功能相邻：内存优化 Pass → 在 `AscendStorageRewrite` 附近
 
-**推荐位置**：Phase 2，在 `AscendStorageRewrite`（步骤 13）后，`AscendMemoryPlanning`（步骤 20）前。
+**推荐位置**：Phase 2，在 `AscendStorageRewrite` 后、`AscendMemoryPlanning` 前。
 
 **Step 5: 验证**
 - 依赖数据可用：`buffer_shapess` 来自 Phase 1，已满足 ✓
@@ -319,13 +339,13 @@ def LowerAndLegalize(mod, target):
 ```python
 # tilelang/engine/phase.py
 def OptimizeForTarget(mod, target, platform):
-    # ... (步骤 1-13)
-    mod = AscendStorageRewrite(is_npu)(mod)  # 步骤 13
+    # ... 现有 Phase 2 Pass
+    mod = AscendStorageRewrite(is_npu)(mod)
     # 新增 Pass
     mod = BufferSizeOptimizationPass()(mod)
-    mod = tir.transform.UnrollLoop()(mod)  # 步骤 14
-    # ... (步骤 15-19)
-    mod = AscendMemoryPlanning()(mod)  # 步骤 20
+    mod = tir.transform.UnrollLoop()(mod)
+    # ... 中间 Phase 2 Pass
+    mod = AscendMemoryPlanning()(mod)
     # ...
 ```
 
@@ -341,9 +361,9 @@ def OptimizeForTarget(mod, target, platform):
 
 **Step 2: 分析依赖**
 - 输入数据：buffer scope（知道哪个 buffer 是 L0C）
-- 输入数据来源：`AscendInferBufferScope` (Phase 1, 步骤 1)
+- 输入数据来源：`AscendInferBufferScope` (Phase 1)
 - 输出数据：优化后的 L0C layout
-- 输出数据使用：`CrossCorePipeline` (Phase 2, 步骤 2) 会考虑 L0C layout
+- 输出数据使用：`CrossCorePipeline` (Phase 2) 会考虑 L0C layout
 
 **Step 3: 确定阶段**
 - 功能是硬件优化 → Phase 2
@@ -359,9 +379,9 @@ def OptimizeForTarget(mod, target, platform):
 
 **考虑两种方案**：
 1. **方案 A**：在 `CrossCorePipeline` 前（影响流水线规划）
-   - 位置：Phase 2，步骤 2 前（替换或修改步骤 1）
+   - 位置：Phase 2，在 `CrossCorePipeline` 前
 2. **方案 B**：在 `CrossCorePipeline` 后（不影响流水线规划）
-   - 位置：Phase 2，步骤 2 后，`CombineCV` 前
+   - 位置：Phase 2，在 `CrossCorePipeline` 后、`CombineCV` 前
 
 **推荐方案**：方案 A（影响流水线规划更合理）
 
@@ -375,11 +395,11 @@ def OptimizeForTarget(mod, target, platform):
 ```python
 # tilelang/engine/phase.py
 def OptimizeForTarget(mod, target, platform):
-    # ... (步骤 1)
-    mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)  # 步骤 1
+    # ... 现有 Phase 2 Pass
+    mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
     # 新增 Pass
     mod = L0CLayoutOptimizationPass()(mod)
-    mod = CrossCorePipeline()(mod)  # 步骤 2
+    mod = CrossCorePipeline()(mod)
     # ...
 ```
 
@@ -411,7 +431,7 @@ def OptimizeForTarget(mod, target, platform):
 - 输出供给：不影响后续 Pass，位置灵活
 - 功能相邻：合法化 Pass → 在 Phase 1 末尾
 
-**推荐位置**：Phase 1，在 `tir.transform.Simplify`（步骤 12）后，Phase 1 末尾。
+**推荐位置**：Phase 1，在末尾的 `tir.transform.Simplify` 后。
 
 **Step 5: 验证**
 - 依赖数据可用：Phase 1 IR 已完成 ✓
@@ -423,8 +443,8 @@ def OptimizeForTarget(mod, target, platform):
 ```python
 # tilelang/engine/phase.py
 def LowerAndLegalize(mod, target):
-    # ... (步骤 1-11)
-    mod = tir.transform.Simplify()(mod)  # 步骤 12
+    # ... 现有 Phase 1 Pass
+    mod = tir.transform.Simplify()(mod)  # Phase 1 末尾
     # 新增 Pass
     mod = IRCorrectnessValidationPass()(mod)
     return mod

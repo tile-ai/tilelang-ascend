@@ -8,7 +8,10 @@
 
 | Pass 名称 | 注册名 | Python 函数 | C++ 文件 | 配置键 |
 |-----------|--------|-------------|---------|--------|
+| AscendVectorInstructionSelection | tl.transform.AscendVectorInstructionSelection | `AscendVectorInstructionSelection(target, platform)` | `ascend_vector_instruction_selection.cc` | -（A2/A3 AscendC/auto 强制启用） |
 | AscendSyncInsert | tl.transform.AscendSyncInsert | `AscendSyncInsert(target, platform)` | `ascend_sync_insert.cc` | `tl.ascend_auto_sync` |
+| AscendSyncInsertVS | tl.transform.AscendSyncInsertVS | `AscendSyncInsertVS(target, platform)` | `ascend_sync_insert_vs.cc` | `tl.ascend_auto_sync` |
+| AscendVectorMaskLegalize | tl.transform.AscendVectorMaskLegalize | `AscendVectorMaskLegalize(target, platform)` | `ascend_vector_mask_legalize.cc` | -（A2/A3 AscendC/auto 强制启用） |
 | AscendMemoryPlanning | tl.transform.AscendMemoryPlanning | `AscendMemoryPlanning()` | `ascend_memory_planning.cc` | `tl.ascend_memory_planning` |
 | CombineCV | tl.transform.CombineCV | `CombineCV()` | `ascend_combinecv.cc` | `tl.ascend_auto_cv_combine` |
 | CrossCorePipeline | tl.transform.CrossCorePipeline | `CrossCorePipeline()` | `cross_core_pipeline.cc` | `tl.ascend_auto_cross_core_sync` |
@@ -24,6 +27,25 @@
 ---
 
 ## Pass 详细信息
+
+### AscendVectorInstructionSelection
+
+**核心类：** `AscendVectorInstructionSelector`（继承 `IRMutatorWithAnalyzer`）
+
+**核心方法：**
+- `VisitStmt_(EvaluateNode)` - 识别 Vector 语义调用，并改写为带固定物理实现和
+  mask contract 的 selected terminal
+- `SelectSemanticTerminal()` - 根据语义操作和静态参数选择唯一 terminal
+- `ValidateSelectedPayloads()` - 检查 COUNTER/NORMAL mask payload 的作用域和合法性
+
+**功能简述：** 在 Phase 2 的第一步冻结 A2/A3 AscendC Vector 指令的物理实现，
+把后续 mask 分析所需的 requirement/ensure contract 编码到 selected terminal 身份和参数中。
+中间 Pass 只能保持这些 terminal，不能重新执行物理指令选择。
+
+**触发条件：** `target.model` 为 `ascendc` 或 `auto`，且 `platform` 为 `A2` 或 `A3`。
+这是编译器正确性流程，没有用户可关闭的 PassConfig 开关；A5、PTO 和非 AscendC 路径不启用。
+
+---
 
 ### AscendSyncInsert
 
@@ -44,6 +66,38 @@
 - `EventPair_<src>_<dst>` - 跨 pipeline 同步（共26种组合，见 operation_config.h:264-300）
 
 **功能简述：** 通过循环展开分析内存依赖，在 VisitStmt_(EvaluateNode) 中完成依赖检测、同步选择和插入，确保多 pipeline 异步执行的正确性。
+
+---
+
+### AscendSyncInsertVS
+
+**核心类：** `AscendSyncInsertVS`（继承 `IRMutatorWithAnalyzer`）
+
+**功能简述：** 作为 `AscendSyncInsert` 的补充，处理 V→V 和 Scalar↔其他 pipeline 的
+同步关系。compiler-managed mask 流程必须在此 Pass 完成后再运行最终 `Simplify` 和
+`AscendVectorMaskLegalize`，使 Legalizer 能看到完整的同步边界。
+
+---
+
+### AscendVectorMaskLegalize
+
+**核心类：** `AscendVectorMaskLegalizer`（继承 `IRMutatorWithAnalyzer`）
+
+**核心方法：**
+- `RewriteConsumer()` - 在 selected terminal 前补齐最小必要的 mode/payload setter
+- `MergeFacts()` - 合并 `if` 分支和控制流路径上的已知 mask facts
+- `ApplyContract()` - 根据 terminal 的 ensure contract 更新抽象 mask 状态
+- `CompletePayload()` - 为部分 payload requirement 构造完整、确定的 payload pair
+
+**功能简述：** 在所有结构化 TIR 改写和同步插入完成后，对每个 AIV 区域执行
+前向 mask-state 数据流分析；只在当前 facts 不满足 selected terminal requirement 时插入
+compiler mask setter，并在 barrier、不透明调用和控制流汇合处保守失效状态。
+
+**顺序约束：** 必须紧跟 Phase 2 最后的 `tir.transform.Simplify()`，并且是进入
+AscendC codegen 前最后一个结构化 TIR Pass。managed 路径的 `device_codegen()` 不得再运行
+额外的 `Simplify()`。
+
+**触发条件：** 与 `AscendVectorInstructionSelection` 相同，无用户可关闭的 PassConfig 开关。
 
 ---
 
@@ -183,7 +237,10 @@ tilelang_root → 创建两个 Emitter(is_aiv=true/false)
 
 ```
 src/transform/
+├── ascend_vector_instruction_selection.cc (~650 行)
+├── ascend_vector_mask_legalize.cc   (~550 行)
 ├── ascend_sync_insert.cc          (1559 行)
+├── ascend_sync_insert_vs.cc       (~920 行)
 ├── ascend_memory_planning.cc      (884 行)
 ├── ascend_combinecv.cc            (~700 行)
 ├── cross_core_pipeline.cc         (~1200 行)

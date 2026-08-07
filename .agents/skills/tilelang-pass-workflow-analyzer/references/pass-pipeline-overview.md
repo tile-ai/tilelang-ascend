@@ -12,12 +12,12 @@ Python DSL (@tilelang.jit)
 [Phase 1: LowerAndLegalize] ← 前端标准化、Lowering
     - 目标：将高级 DSL 转换为标准化 TIR
     - 特点：语义保持、平台无关优化
-    - Pass 数量：12 个
+    - Pass 数量：16 个
     ↓
 [Phase 2: OptimizeForTarget] ← 后端优化、平台特化
     - 目标：针对 Ascend 硬件特性的优化
     - 特点：硬件相关、性能导向
-    - Pass 数量：21 个
+    - Pass 数量：A2/A3 AscendC/auto 25 个；其他 OptimizeForTarget 路径 22 个
     ↓
 CANN 工具链 → NPU 执行
 ```
@@ -63,18 +63,22 @@ CANN 工具链 → NPU 执行
 
 | 步骤 | Pass | 功能 | 输入依赖 | 输出供给 | 关键逻辑 |
 |------|------|------|---------|---------|---------|
-| 1 | `AscendInferBufferScope()` | 推断 buffer scope (L1/UB/L0A/L0B/L0C) | DSL IR | buffer scope annotations | 分析 buffer 访问模式，推断内存层级 |
-| 2 | `BufferShapeCollector()` | 收集 buffer 形状信息 | buffer scope | buffer shapes (初步) | 为后续 Pass 提供形状信息 |
-| 3 | `tir.transform.BindTarget(target)` | 绑定 Target 信息 | IR | target attr | 记录编译目标（Ascend NPU） |
-| 4 | `HostProcesser()` | Host 端数据处理 | IR | processed host data | 处理 CPU 端数据准备 |
-| 5 | `tir.transform.Simplify()` | 简化 IR 表达式 | IR | simplified IR | 算术简化、常量折叠 |
-| 6 | `AscendLowerParallelToVector()` | Parallel 循环 → Vector 指令 | simplified IR | vectorized IR | **核心 Pass**：将高级 Parallel 原语 lowering 到 Vector 指令 |
-| 7 | `LayoutInference()` | 推断 fragment/shared memory layout | vectorized IR | layout annotations | 分析数据布局，推断最优 layout |
-| 8 | `CollectBufferShapes()` | 再次收集 buffer 形状 | layout annotations | `buffer_shapess` | **关键输出**：为 Phase 2 提供 buffer 形状 |
-| 9 | `LowerTileOp()` | Tile 操作 → 底层 IR | buffer shapes | lowered tile ops | **核心 Pass**：将 `T.copy`、`T.matmul` 等 lowering 到具体硬件操作 |
-| 10 | `LegalizeVectorizedLoop()` | 合法化向量化循环 | lowered tile ops | legalized loops | 确保向量化循环符合硬件约束 |
-| 11 | `LegalizeSafeMemoryAccess()` | 安全内存访问检查 | legalized loops | safe memory IR | 检查内存访问是否越界、是否符合硬件规范 |
-| 12 | `tir.transform.Simplify()` | 再次简化 | safe memory IR | final Phase 1 IR | 清理冗余 IR，为 Phase 2 准备 |
+| 1 | `InjectTmpBuffer(target)` | 为 Vector API 分配临时 buffer | DSL IR | IR with tmp buffers | 注入底层 Vector helper 所需临时空间 |
+| 2 | `AscendInferBufferScope()` | 推断 buffer scope (L1/UB/L0A/L0B/L0C) | DSL IR | buffer scope annotations | 分析 buffer 访问模式，推断内存层级 |
+| 3 | `AscendVidReduction()` | 规约 Vector core id 使用 | buffer scope | normalized vid IR | 规范化 Ascend Vector core 映射 |
+| 4 | `BufferShapeCollector()` | 收集 buffer 形状信息 | buffer scope | buffer shapes (初步) | 为后续 Pass 提供形状信息 |
+| 5 | `tir.transform.BindTarget(target)` | 绑定 Target 信息 | IR | target attr | 记录编译目标（Ascend NPU） |
+| 6 | `HostProcesser()` | Host 端数据处理 | IR | processed host data | 处理 CPU 端数据准备 |
+| 7 | `tir.transform.Simplify()` | 简化 IR 表达式 | IR | simplified IR | 算术简化、常量折叠 |
+| 8 | `AscendLowerParallelToVector()` | Parallel 循环 → Vector 指令 | simplified IR | vectorized IR | **核心 Pass**：将高级 Parallel 原语 lowering 到 Vector 指令 |
+| 9 | `LayoutInference()` | 推断 fragment/shared memory layout | vectorized IR | layout annotations | 分析数据布局，推断最优 layout |
+| 10 | `CollectBufferShapes()` | 再次收集 buffer 形状 | layout annotations | `buffer_shapess` | **关键输出**：为 Phase 2 提供 buffer 形状 |
+| 11 | `LowerTileOp()` | Tile 操作 → 底层 IR | buffer shapes | lowered tile ops | **核心 Pass**：将 `T.copy`、`T.matmul` 等 lowering 到具体硬件操作 |
+| 12 | `AscendTailMaskPropagation(rewrite_reduce)` | 传播 UB tail valid region | lowered tile ops | tail-aware Vector IR | 配置关闭时为 no-op；启用时改写 allow-list 操作 |
+| 13 | `AscendWorkspaceReduction()` | 消除 virtual CV copy 的手工 workspace | tail-aware IR | workspace-reduced IR | 为后续自动 workspace 处理准备 IR |
+| 14 | `LegalizeVectorizedLoop()` | 合法化向量化循环 | lowered tile ops | legalized loops | 确保向量化循环符合硬件约束 |
+| 15 | `LegalizeSafeMemoryAccess()` | 安全内存访问检查 | legalized loops | safe memory IR | 检查内存访问是否越界、是否符合硬件规范 |
+| 16 | `tir.transform.Simplify()` | 再次简化 | safe memory IR | final Phase 1 IR | 清理冗余 IR，为 Phase 2 准备 |
 
 ### Phase 1 关键 Pass 说明
 
@@ -122,33 +126,64 @@ CANN 工具链 → NPU 执行
 
 针对 Ascend 硬件特性进行性能优化，生成高效的机器码。
 
+### A2/A3 AscendC/auto 的强制扩展
+
+当 `target.model` 为 `ascendc` 或 `auto`，且 `platform` 为 `A2` 或 `A3` 时，
+`OptimizeForTarget` 强制启用 compiler-managed Vector mask 流程：
+
+1. `AscendVectorInstructionSelection` 在所有其他 Phase 2 Pass 之前冻结物理 Vector terminal，
+   并附带显式 mask contract。
+2. 中间 Pass 可以重排或插入同步，但必须保持 selected terminal 身份和 contract 参数。
+3. `AscendSyncInsert` 与 `AscendSyncInsertVS` 完成同步插入后，运行最后一次 `Simplify`。
+4. `AscendVectorMaskLegalize` 作为最后一个结构化 TIR Pass 修复 mask state；之后直接进入
+   AscendC codegen。
+
+该流程属于正确性约束，没有用户可关闭的 PassConfig 开关。A5、PTO 和非 AscendC 路径
+保持原有流程。
+
 ### Pass 列表（按执行顺序）
 
 | 步骤 | Pass | 功能 | 输入依赖 | 输出供给 | 关键逻辑 |
 |------|------|------|---------|---------|---------|
-| 1 | `tir.transform.PlanAndUpdateBufferAllocationLocation()` | Buffer 分配位置规划 | Phase 1 IR | buffer allocation plan | 确定每个 buffer 在代码中的分配位置 |
-| 2 | `CrossCorePipeline()` | 跨核流水线规划 | buffer scope, allocation plan | cross-core pipeline | **核心 Pass**：规划 Cube-Vector 核间流水线 |
-| 3 | `CombineCV()` | 分离 Cube/Vector 操作 | cross-core pipeline | separated CV ops | 将操作分离为 Cube 和 Vector 两部分 |
-| 4 | `PipelinePlanning()` | 流水线 layout 推断 | separated CV ops | pipeline layout | 推断流水线中每个阶段的 layout |
-| 5 | `InjectSoftwarePipeline()` | 软件流水线注入 | pipeline layout | software pipeline | 注入软件流水线，提升吞吐量 |
-| 6 | `AscendLowerOpaqueBlock()` | Block IR → 可执行 IR | software pipeline | executable IR | 将 Block IR lowering 到可执行形式 |
-| 7 | `tir.transform.NarrowDataType(32)` | 数据类型缩窄 | executable IR | narrowed data types | 缩窄数据类型以减少内存占用 |
-| 8 | `ConfigIndexBitwidth()` | 索引位宽配置 | narrowed data types | configured indices | 配置索引变量的位宽 |
-| 9 | `Flatten2DBuffer()` | Buffer 扁平化到 2D | configured indices | 2D buffers | 将多维 buffer 扁平化为 2D |
-| 10 | `FlattenBuffer()` | Buffer 扁平化到 1D | 2D buffers | 1D buffers | 将 2D buffer 扁平化为 1D |
-| 11 | `tir.transform.Simplify()` | 简化 | 1D buffers | simplified IR | 清理扁平化后的冗余 IR |
-| 12 | `VectorizeLoop()` | 循环向量化（可配置） | simplified IR | vectorized loops | 将循环转换为向量指令 |
-| 13 | `AscendStorageRewrite(is_npu)` | 存储重写优化 | vectorized loops | optimized storage | **核心 Pass**：优化内存访问模式，共享存储 |
-| 14 | `tir.transform.UnrollLoop()` | 循环展开 | optimized storage | unrolled loops | 展开小循环以提升性能 |
-| 15 | `tir.transform.RenormalizeSplitPattern()` | 重规范化分割模式 | unrolled loops | renormalized patterns | 规范化循环分割模式 |
-| 16 | `tir.transform.Simplify()` | 简化 | renormalized patterns | simplified IR | 清理展开后的冗余 IR |
-| 17 | `tir.transform.RemoveNoOp()` | 移除空操作 | simplified IR | no-op removed | 删除无实际作用的 IR |
-| 18 | `tir.transform.RewriteUnsafeSelect()` | 重写不安全 select | no-op removed | safe select | 重写可能导致硬件异常的 select |
-| 19 | `tir.transform.HoistIfThenElse()` | 提升 if-then-else | safe select | hoisted conditionals | 提升 if-then-else 以减少分支开销 |
-| 20 | `AscendMemoryPlanning()` | 内存规划 | `buffer_shapess` | `address_map`, `size_map` | **关键 Pass**：规划 buffer 地址，输出地址映射 |
-| 21 | `AscendSyncInsert()` | 同步插入 | `address_map`, `size_map` | final IR with syncs | **最后一环**：插入同步指令 |
+| 1* | `AscendVectorInstructionSelection(target, platform)` | 冻结物理 Vector terminal 与 mask contract | Phase 1 semantic Vector IR | selected terminals | **仅 A2/A3 AscendC/auto**；必须在其他 Phase 2 Pass 之前 |
+| 2 | `tir.transform.PlanAndUpdateBufferAllocationLocation()` | Buffer 分配位置规划 | Phase 1 IR | buffer allocation plan | 确定每个 buffer 在代码中的分配位置 |
+| 3 | `CrossCorePipeline()` | 跨核流水线规划 | buffer scope, allocation plan | cross-core pipeline | **核心 Pass**：规划 Cube-Vector 核间流水线 |
+| 4 | `CombineCV()` | 分离 Cube/Vector 操作 | cross-core pipeline | separated CV ops | 将操作分离为 Cube 和 Vector 两部分 |
+| 5 | `PipelinePlanning()` | 流水线 layout 推断 | separated CV ops | pipeline layout | 推断流水线中每个阶段的 layout |
+| 6 | `InjectSoftwarePipeline()` | 软件流水线注入 | pipeline layout | software pipeline | 注入软件流水线，提升吞吐量 |
+| 7 | `AscendLowerOpaqueBlock()` | Block IR → 可执行 IR | software pipeline | executable IR | 将 Block IR lowering 到可执行形式 |
+| 8 | `tir.transform.NarrowDataType(32)` | 数据类型缩窄 | executable IR | narrowed data types | 缩窄数据类型以减少内存占用 |
+| 9 | `ConfigIndexBitwidth()` | 索引位宽配置 | narrowed data types | configured indices | 配置索引变量的位宽 |
+| 10 | `Flatten2DBuffer()` | Buffer 扁平化到 2D | configured indices | 2D buffers | 将多维 buffer 扁平化为 2D |
+| 11 | `FlattenBuffer()` | Buffer 扁平化到 1D | 2D buffers | 1D buffers | 将 2D buffer 扁平化为 1D |
+| 12 | `tir.transform.Simplify()` | 简化 | 1D buffers | simplified IR | 清理扁平化后的冗余 IR |
+| 13 | `VectorizeLoop()` | 循环向量化（可配置） | simplified IR | vectorized loops | 将循环转换为向量指令 |
+| 14 | `AscendStorageRewrite(is_npu)` | 存储重写优化 | vectorized loops | optimized storage | **核心 Pass**：优化内存访问模式，共享存储 |
+| 15 | `tir.transform.UnrollLoop()` | 循环展开 | optimized storage | unrolled loops | 展开小循环以提升性能 |
+| 16 | `tir.transform.RenormalizeSplitPattern()` | 重规范化分割模式 | unrolled loops | renormalized patterns | 规范化循环分割模式 |
+| 17 | `tir.transform.Simplify()` | 简化 | renormalized patterns | simplified IR | 清理展开后的冗余 IR |
+| 18 | `tir.transform.RemoveNoOp()` | 移除空操作 | simplified IR | no-op removed | 删除无实际作用的 IR |
+| 19 | `tir.transform.RewriteUnsafeSelect()` | 重写不安全 select | no-op removed | safe select | 重写可能导致硬件异常的 select |
+| 20 | `tir.transform.HoistIfThenElse()` | 提升 if-then-else | safe select | hoisted conditionals | 提升 if-then-else 以减少分支开销 |
+| 21 | `AscendMemoryPlanning()` | 内存规划 | `buffer_shapess` | `address_map`, `size_map` | **关键 Pass**：规划 buffer 地址，输出地址映射 |
+| 22 | `AscendSyncInsert()` | 通用同步插入 | `address_map`, `size_map` | IR with general syncs | 插入 pipeline 同步指令 |
+| 23 | `AscendSyncInsertVS()` | Vector-Scalar 同步插入 | 通用同步后的 IR | IR with VS syncs | 完成后续 mask 分析必须看到的同步边界 |
+| 24* | `tir.transform.Simplify()` | 最后一次结构化简化 | 完整同步后的 IR | canonical managed IR | **仅 A2/A3 AscendC/auto**；之后不得再运行 TIR rewrite |
+| 25* | `AscendVectorMaskLegalize(target, platform)` | 修复并复用 Vector mask state | selected terminals, sync boundaries | codegen-ready IR | **仅 A2/A3 AscendC/auto**；最后一个结构化 TIR Pass |
+
+带 `*` 的步骤只在 A2/A3 AscendC/auto compiler-managed mask 路径执行。其他路径从步骤 2
+开始，并在步骤 23 后结束。
 
 ### Phase 2 关键 Pass 说明
+
+#### `AscendVectorInstructionSelection`
+
+- **功能**：把语义 Vector 调用改写为唯一的 selected terminal，并显式携带 mask contract
+- **核心逻辑**：
+  1. 根据 semantic op、dtype、shape 和静态参数选择固定物理实现
+  2. 校验 selected terminal 的 mask payload 和词法作用域
+  3. 拒绝 A2/A3 managed grammar 不支持或未分类的调用
+- **重要性**：把“选择物理指令”和“发射目标代码”分离，确保后续数据流分析面对稳定终端
 
 #### `CrossCorePipeline`
 
@@ -202,7 +237,17 @@ CANN 工具链 → NPU 执行
   1. 使用 `address_map` 和 `size_map`（来自 `AscendMemoryPlanning`）
   2. 分析操作的依赖关系
   3. 在必要位置插入同步（`T.barrier_all`、`T.set_flag`、`T.wait_flag`）
-- **重要性**：Pipeline 的最后一环，确保执行正确性
+- **重要性**：确保 pipeline 执行正确性；managed mask 路径还会继续运行
+  `AscendSyncInsertVS`、最终 `Simplify` 和 `AscendVectorMaskLegalize`
+
+#### `AscendVectorMaskLegalize`
+
+- **功能**：在 codegen 前修复并复用 AIV 的 Vector mask hardware state
+- **核心逻辑**：
+  1. 跟踪 NORMAL/COUNTER mode 以及 low/high payload facts
+  2. 在 selected terminal 前仅插入缺失的 compiler setter
+  3. 在分支、循环、barrier 和不透明调用处合并或失效 facts
+- **重要性**：必须看到所有上游同步和控制流变化，因此是 managed 路径最后一个 TIR Pass
 
 ---
 
@@ -236,14 +281,24 @@ def AscendSyncInsert(target: Target, platform: str):
 ### Pipeline 调用
 
 ```python
-# 文件: tilelang/engine/phase.py:79-105
+# 文件: tilelang/engine/phase.py
 def OptimizeForTarget(mod, target, platform):
     """Optimize the TIR for the target platform."""
-    # ... (调用所有 Phase 2 Pass)
+    managed_vector_mask = use_compiler_managed_vector_mask(target, platform)
+    if managed_vector_mask:
+        mod = AscendVectorInstructionSelection(target, platform)(mod)
+    # ... (调用中间 Phase 2 Pass)
     mod = AscendMemoryPlanning()(mod)
     mod = AscendSyncInsert(target, platform)(mod)
+    mod = AscendSyncInsertVS(target, platform)(mod)
+    if managed_vector_mask:
+        mod = tir.transform.Simplify()(mod)
+        mod = AscendVectorMaskLegalize(target, platform)(mod)
     return mod
 ```
+
+`tilelang/engine/lower.py::device_codegen()` 只在非 managed 路径补做 `Simplify()`；
+managed 路径直接把 Legalizer 输出交给 AscendC codegen，保持 Legalizer 的最终性。
 
 ---
 
@@ -285,6 +340,12 @@ if (!ascend_auto_sync) {
   return f;  // 配置为 false 时跳过该 Pass
 }
 ```
+
+### Compiler-managed Vector mask 门控
+
+`AscendVectorInstructionSelection` 和 `AscendVectorMaskLegalize` 不读取 PassConfig。
+它们由 `use_compiler_managed_vector_mask(target, platform)` 统一门控，并在 A2/A3 AscendC/auto
+路径强制成对运行，避免用户关闭其中一半而破坏 codegen contract。
 
 ---
 

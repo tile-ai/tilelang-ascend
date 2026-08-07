@@ -20,6 +20,8 @@
 | Pass | 功能简述 | 配置项 | 核心类 |
 |------|---------|--------|--------|
 | AscendSyncInsert | 自动插入同步指令，确保数据依赖正确 | `tl.ascend_auto_sync` | AscendSyncInsert |
+| AscendSyncInsertVS | 补充 V→V 和 Scalar↔其他 pipeline 同步 | `tl.ascend_auto_sync` | AscendSyncInsertVS |
+| AscendVectorMaskLegalize | 在 codegen 前修复并复用 Vector mask state | -（A2/A3 AscendC/auto 强制启用） | AscendVectorMaskLegalizer |
 | CrossCorePipeline | 跨核 (Cube-Vector) 流水线同步调度 | `tl.ascend_auto_cross_core_sync` | CrossCorePipeline |
 | CombineCV | 分离 Cube/Vector 操作，拆分为两块独立代码 | `tl.ascend_auto_cv_combine` | CVCombineEmitter |
 
@@ -27,6 +29,7 @@
 
 | Pass | 功能简述 | 配置项 | 核心类 |
 |------|---------|--------|--------|
+| AscendVectorInstructionSelection | 固化物理 Vector terminal 及 mask contract | -（A2/A3 AscendC/auto 强制启用） | AscendVectorInstructionSelector |
 | AscendLowerParallelToVector | Parallel 循环 lowering 为 Vector 指令 | - | AscendLowerParallelToVector |
 | AscendLowerOpaqueBlock | Opaque Block 结构 lowering | - | OpaqueBlockLower |
 
@@ -130,7 +133,9 @@ PassContext.current().config = {
 ```
 FrontendLegalize
   → AscendLowerParallelToVector (Parallel → Vector)
-  → Simplify (简化)
+  → AscendVectorInstructionSelection (A2/A3 AscendC/auto)
+  → ... Phase 2 中间 Pass 与同步插入
+  → AscendVectorMaskLegalize (最后一个结构化 TIR Pass)
   → MakePackedAPI
 ```
 
@@ -180,9 +185,9 @@ FrontendLegalize
 | 关键词 | 相关 Pass |
 |--------|----------|
 | 内存 / memory | AscendMemoryPlanning, AscendStorageRewrite, FlattenBuffer |
-| 同步 / sync | AscendSyncInsert, CrossCorePipeline |
+| 同步 / sync | AscendSyncInsert, AscendSyncInsertVS, AscendVectorMaskLegalize, CrossCorePipeline |
 | 流水线 / pipeline | CrossCorePipeline, InjectSoftwarePipeline |
-| 向量化 / vector | AscendLowerParallelToVector, VectorizeLoop, LoopVectorizeDynamic |
+| 向量化 / vector | AscendVectorInstructionSelection, AscendVectorMaskLegalize, AscendLowerParallelToVector, VectorizeLoop, LoopVectorizeDynamic |
 | Lowering | AscendLowerOpaqueBlock, LowerTileOp |
 | Layout | LayoutInference, InferAllocScope |
 | 简化 / simplify | Simplify |
