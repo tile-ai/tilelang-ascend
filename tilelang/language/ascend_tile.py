@@ -295,8 +295,6 @@ def _atomic_add_to_tile_region(data, access_type: str, extents: list[PrimExpr]):
     if isinstance(data, BufferRegion):
         mins = [x.min for x in data.region]
         region_extents = [x.extent for x in data.region]
-        if len(region_extents) < len(extents):
-            raise ValueError(f"{_ATOMIC_ADD_V1_ERR} Region rank is smaller than inferred extent rank.")
         return _tile_region(
             T.BufferLoad(data.buffer, mins),
             access_type,
