@@ -750,9 +750,18 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
       << "tl.ascend_atomic_add V1 requires UB/shared or L0C/wmma.accumulator "
          "src, got "
       << src.scope();
-  ICHECK(src->dtype == dst->dtype)
-      << "tl.ascend_atomic_add requires src and dst dtype to match, got src "
-      << src->dtype << " and dst " << dst->dtype;
+  // L0C（wmma.accumulator）src 时，L0C 累加器是 fp32，原子加在硬件按 fp32 累加、
+  // 经 SetAtomicAdd<DstT>() 写回 GM（可为 bf16），对应 AscendC mm enAtomic=1。
+  // 因此 L0C 分支只要求 src 是 fp32（A2 的 copy_l0c_to_gm 也支持 fp32→bf16）；
+  // UB 分支才要求 src==dst dtype。
+  if (src.scope() == "wmma.accumulator") {
+    ICHECK(src->dtype == DataType::Float(32))
+        << "tl.ascend_atomic_add L0C src must be fp32, got " << src->dtype;
+  } else {
+    ICHECK(src->dtype == dst->dtype)
+        << "tl.ascend_atomic_add requires src and dst dtype to match, got src "
+        << src->dtype << " and dst " << dst->dtype;
+  }
   ICHECK_EQ(src_extents.size(), src->shape.size())
       << "tl.ascend_atomic_add source region rank must match source buffer "
          "rank";
