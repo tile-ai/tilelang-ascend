@@ -361,24 +361,30 @@ def _run_dtype_precision(dtype, accum_dtype, target, shape_group="A"):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.low_priority
 @pytest.mark.skipif(
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="gemm_v0 correctness requires an Ascend NPU runtime",
 )
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_gemm_v0_bfloat16_precision(target):
     """bfloat16 precision test (existing tests only cover float16)."""
     _run_dtype_precision("bfloat16", "float", target)
 
 
-@pytest.mark.low_priority
 @pytest.mark.skipif(
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="gemm_v0 correctness requires an Ascend NPU runtime",
 )
-@pytest.mark.parametrize("transpose_A,transpose_B", [(False, False), (False, True), (True, False), (True, True)])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize(
+    "transpose_A,transpose_B",
+    [
+        (False, False),
+        pytest.param(False, True, marks=pytest.mark.low_priority),
+        pytest.param(True, False, marks=pytest.mark.low_priority),
+        (True, True),
+    ],
+)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_gemm_v0_int8_transpose_full(target, transpose_A, transpose_B):
     """int8 transpose full coverage (existing tests only cover 2 combinations)."""
     M, N, K = 128, 256, 128
@@ -403,7 +409,6 @@ def test_gemm_v0_int8_transpose_full(target, transpose_A, transpose_B):
     torch.testing.assert_close(c.cpu(), ref_c, rtol=0, atol=0)
 
 
-@pytest.mark.low_priority
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_gemm_v0_dtype_mismatch(target):
     """A/B dtype mismatch should fail to compile."""
@@ -433,7 +438,6 @@ def test_gemm_v0_dtype_mismatch(target):
         _compile(main, target)
 
 
-@pytest.mark.low_priority
 @pytest.mark.skipif(
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="gemm_v0 correctness requires an Ascend NPU runtime",
