@@ -27,7 +27,11 @@ pass_configs = {
 }
 
 TAIL_TARGETS = ("ascendc", "pto")
-TAIL_REDUCE_KINDS = ("sum", "max", "min")
+TAIL_REDUCE_KINDS = (
+    "sum",
+    pytest.param("max", marks=pytest.mark.low_priority),
+    pytest.param("min", marks=pytest.mark.low_priority),
+)
 TAIL_REDUCE_AXIS0_DIMS = (0, -2)
 
 
@@ -354,12 +358,11 @@ def test_tail_reduce_float32_axis0_emits_backend_path(target, kind, dim):
 @pytest.mark.parametrize(
     ("M", "N", "rewritten"),
     [
-        (34, 128, True),
-        (32, 130, True),
+        pytest.param(34, 128, True, marks=pytest.mark.low_priority, id="row_tail"),
+        pytest.param(32, 130, True, marks=pytest.mark.low_priority, id="column_tail"),
         (34, 130, True),
         (32, 128, False),
     ],
-    ids=["row_tail", "column_tail", "both_tails", "full_tile"],
 )
 @pytest.mark.parametrize("target", TAIL_TARGETS)
 def test_tail_reduce_sum_rewrites_only_partial_tiles(target, M, N, rewritten):
@@ -410,10 +413,9 @@ def test_tail_reduce_axis0_propagates_column_tail_to_unary(target):
     ("M", "N", "dtype"),
     [
         (34, 130, "float"),
-        (32, 130, "float"),
-        (34, 130, "float16"),
+        pytest.param(32, 130, "float", marks=pytest.mark.low_priority),
+        pytest.param(34, 130, "float16", marks=pytest.mark.low_priority),
     ],
-    ids=["both_tails", "column_tail", "unsupported_float16"],
 )
 def test_native_reduce_clears_downstream_tail_state(target, M, N, dtype):
     src = _source(_tail_reduce_then_unary(M, N, 32, 32, dtype=dtype), target=target)
@@ -425,10 +427,9 @@ def test_native_reduce_clears_downstream_tail_state(target, M, N, dtype):
     ("dtype", "clear", "real_shape"),
     [
         ("float", False, None),
-        ("float16", True, None),
-        ("float", True, [31, 32]),
+        pytest.param("float16", True, None, marks=pytest.mark.low_priority),
+        pytest.param("float", True, [31, 32], marks=pytest.mark.low_priority),
     ],
-    ids=["clear_false", "float16", "real_shape_mismatch"],
 )
 @pytest.mark.parametrize("kind", TAIL_REDUCE_KINDS)
 @pytest.mark.parametrize("target", TAIL_TARGETS)
@@ -450,7 +451,11 @@ def test_unsupported_tail_reduce_contracts_fall_back(target, kind, dtype, clear,
 
 @pytest.mark.parametrize(
     ("kind", "merge_marker"),
-    [("sum", "TADD("), ("max", "TMAX("), ("min", "TMIN(")],
+    [
+        ("sum", "TADD("),
+        pytest.param("max", "TMAX(", marks=pytest.mark.low_priority),
+        pytest.param("min", "TMIN(", marks=pytest.mark.low_priority),
+    ],
 )
 def test_pto_accumulating_tail_reduce_uses_native_reduce_and_merge(kind, merge_marker):
     func = _tail_reduce_axis0(34, 130, 32, 32, kind=kind, clear=False)

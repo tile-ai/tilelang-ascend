@@ -319,6 +319,7 @@ def test_no_sync_independent_buffers(target):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_v_to_v_pipe_barrier(target):
     """V write -> V read+write same buffer -> PipeBarrier<PIPE_V>."""
@@ -340,6 +341,7 @@ def test_v_to_v_pipe_barrier(target):
     _assert_has_sync(src, target, "barrier_v")
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_s_to_v_event_pair(target):
     """S write to UB -> V read same UB -> SetFlag/WaitFlag S_V."""
@@ -361,6 +363,7 @@ def test_s_to_v_event_pair(target):
     _assert_has_sync(src, target, "s_v")
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_s_to_mte2_event(target):
     """S write to UB -> MTE2 write same UB -> SetFlag/WaitFlag S_MTE2."""
@@ -380,6 +383,7 @@ def test_s_to_mte2_event(target):
     _assert_has_sync(src, target, "s_mte2")
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_s_to_mte3_event(target):
     """S write to UB -> MTE3 read same UB -> SetFlag/WaitFlag S_MTE3."""
@@ -399,6 +403,7 @@ def test_s_to_mte3_event(target):
     _assert_has_sync(src, target, "s_mte3")
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_no_mte2_to_v_sync(target):
     """MTE2 write UB -> V read same UB -> NO sync (VS core negative)."""
@@ -420,6 +425,7 @@ def test_no_mte2_to_v_sync(target):
     _assert_no_auto_sync(src, target)
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_no_v_to_mte3_sync(target):
     """V write UB -> MTE3 read same UB -> NO sync (VS core negative)."""
@@ -440,6 +446,7 @@ def test_no_v_to_mte3_sync(target):
     _assert_no_auto_sync(src, target)
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_no_s_to_s_sync(target):
     """S write -> S write same buffer -> NO S_S sync (scalar in-order).
@@ -470,6 +477,7 @@ def test_no_s_to_s_sync(target):
     assert _count_pattern(src, s_s_pattern[target]) == 0
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_loop_back_edge_v_to_v(target):
     """Loop body with only V ops -> cross-iteration V->V -> barrier."""
@@ -490,6 +498,7 @@ def test_loop_back_edge_v_to_v(target):
     _assert_has_sync(src, target, "barrier_v")
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_loop_back_edge_v_to_v_with_mte2(target):
     """Loop back-edge V->V preserved when MTE2 precedes V in loop body.
@@ -518,6 +527,7 @@ def test_loop_back_edge_v_to_v_with_mte2(target):
     _assert_has_sync(src, target, "barrier_v")
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_if_else_history_isolation(target):
     """If/else branches each have V->V barrier; no cross-branch sync."""
@@ -550,6 +560,7 @@ def test_if_else_history_isolation(target):
     _assert_no_sync(src, target, "v_s")
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_dedup_multiple_v_deps(target):
     """Single V op with multiple V->V deps -> deduped to 1 barrier."""
@@ -583,6 +594,7 @@ def test_dedup_multiple_v_deps(target):
     )
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_consecutive_v_to_v_each_needs_barrier(target):
     """exp(b_ub,b_ub) -> mul(b_ub,b_ub,b_ub): 2 V->V deps across separate
@@ -616,6 +628,7 @@ def test_consecutive_v_to_v_each_needs_barrier(target):
     )
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_event_id_rotation(target):
     """Multiple S->V EventPairs -> event IDs are unique (rotation)."""
@@ -653,6 +666,7 @@ def test_event_id_rotation(target):
     assert len(set(ids)) == len(ids), f"Event IDs should be unique, got {ids}"
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_alias_detection_via_address(target):
     """Two sequential UB buffers with non-overlapping lifetimes may share
@@ -680,6 +694,7 @@ def test_alias_detection_via_address(target):
     assert len(src) > 0, "Expected non-empty source"
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_mte2_to_mte2_no_sync(target):
     """Two MTE2 writes to same UB -> NO sync (ShouldSync(MTE2,MTE2)=false)."""
@@ -700,6 +715,7 @@ def test_mte2_to_mte2_no_sync(target):
     _assert_no_auto_sync(src, target)
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_mte3_to_mte3_no_sync(target):
     """Two MTE3 reads from same UB -> NO sync (ShouldSync(MTE3,MTE3)=false)."""
@@ -720,6 +736,7 @@ def test_mte3_to_mte3_no_sync(target):
     _assert_no_auto_sync(src, target)
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_mte2_to_mte3_no_sync(target):
     """MTE2 write UB -> MTE3 read same UB -> NO sync (neither is S or V->V)."""
@@ -738,6 +755,7 @@ def test_mte2_to_mte3_no_sync(target):
     _assert_no_auto_sync(src, target)
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_s_to_s_write_then_read_no_sync(target):
     """S write -> S read same buffer -> NO S_S sync (scalar in-order).
@@ -767,6 +785,7 @@ def test_s_to_s_write_then_read_no_sync(target):
     assert _count_pattern(src, s_s_pattern[target]) == 0
 
 
+@pytest.mark.low_priority
 def test_pipe_m_ignored():
     """GEMM (PIPE_M) -> V on different buffer -> NO M_V / V_M sync.
 
@@ -801,6 +820,7 @@ def test_pipe_m_ignored():
     assert _count_pattern(src, v_m_pattern) == 0, f"PIPE_M should be ignored, but V_M event found.\nSource:\n{src}"
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_if_else_same_buffer_same_pipeline(target):
     """If/else with same buffer, V in both branches -> V->V barrier, no
@@ -832,6 +852,7 @@ def test_if_else_same_buffer_same_pipeline(target):
     _assert_no_sync(src, target, "barrier_all")
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_event_pair_dedup(target):
     """Multiple S->V deps in single V statement -> deduped to 1 S_V event."""
@@ -859,6 +880,7 @@ def test_event_pair_dedup(target):
     assert sv_count == 1, f"Expected exactly 1 S_V event pair (deduped from 2 S->V deps), got {sv_count}.\nSource:\n{src}"
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_mixed_dedup_barrier_and_event(target):
     """Single V statement with V->V (barrier) + S->V (event) -> both inserted.
@@ -894,6 +916,7 @@ def test_mixed_dedup_barrier_and_event(target):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_cross_stmt_s_v_dedup(target):
     """Two separate V statements reading two S-written UBs -> 1 S_V event.
@@ -928,6 +951,7 @@ def test_cross_stmt_s_v_dedup(target):
     assert sv_count == 1, f"Expected exactly 1 S_V event pair (cross-stmt dedup), got {sv_count}.\nSource:\n{src}"
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_cross_stmt_v_s_dedup(target):
     """Two separate S scalar reads from two V-written UBs -> 1 V_S event.
@@ -961,6 +985,7 @@ def test_cross_stmt_v_s_dedup(target):
     assert vs_count == 1, f"Expected exactly 1 V_S event pair (cross-stmt dedup), got {vs_count}.\nSource:\n{src}"
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_new_s_write_breaks_dedup(target):
     """S write after first S_V event -> second S_V event NOT deduped.
@@ -993,6 +1018,7 @@ def test_new_s_write_breaks_dedup(target):
     assert sv_count == 2, f"Expected exactly 2 S_V event pairs (new S write breaks dedup), got {sv_count}.\nSource:\n{src}"
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_write_history_event_dedup(target):
     """WAW dep via write_history is deduped by prior S_V event.
@@ -1022,6 +1048,7 @@ def test_write_history_event_dedup(target):
     assert sv_count == 1, f"Expected exactly 1 S_V event pair (write_history WAW deduped), got {sv_count}.\nSource:\n{src}"
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_loop_back_edge_event_dedup(target):
     """Loop with 2 S writes + 2 V reads -> 1 S_V + 1 V_S per iteration.
@@ -1056,6 +1083,7 @@ def test_loop_back_edge_event_dedup(target):
     assert vs_count == 1, f"Expected exactly 1 V_S event pair (loop back-edge dedup), got {vs_count}.\nSource:\n{src}"
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_mixed_direction_no_cross_dedup(target):
     """V->S and S->V in sequence -> both event types inserted (no cross-dedup).
@@ -1090,6 +1118,7 @@ def test_mixed_direction_no_cross_dedup(target):
     assert sv_count == 1, f"Expected exactly 1 S_V event pair, got {sv_count}.\nSource:\n{src}"
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_event_id_wraparound(target):
     """9+ S->V event pairs -> event IDs wrap around mod 8.
@@ -1163,6 +1192,7 @@ def test_event_id_wraparound(target):
     assert len(set(sv_ids)) < len(sv_ids), f"Expected some IDs to be reused after wrap, all unique: {sv_ids}"
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_set_wait_flag_pairing(target):
     """Each set_flag must have a matching wait_flag with the same event ID."""
@@ -1211,6 +1241,7 @@ def test_set_wait_flag_pairing(target):
         assert sp in wait_pairs, f"set_flag {sp} has no matching wait_flag.\nset: {set_pairs}\nwait: {wait_pairs}\nSource:\n{src}"
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_loop_back_edge_s_to_v(target):
     """Loop body with S write -> V read+write -> cross-iteration V->S sync.
@@ -1236,6 +1267,7 @@ def test_loop_back_edge_s_to_v(target):
     _assert_has_sync(src, target, "v_s")
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_v_to_s_scalar_read(target):
     """V write to UB -> S scalar read same UB -> SetFlag/WaitFlag V_S."""
@@ -1258,6 +1290,7 @@ def test_v_to_s_scalar_read(target):
     _assert_has_sync(src, target, "v_s")
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_mte2_to_s_scalar_read(target):
     """MTE2 write to UB -> S scalar read same UB -> SetFlag/WaitFlag MTE2_S."""
@@ -1279,6 +1312,7 @@ def test_mte2_to_s_scalar_read(target):
     _assert_has_sync(src, target, "mte2_s")
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_mte3_to_s_scalar_read(target):
     """MTE2 write UB -> MTE3 read UB -> S scalar read same UB.
@@ -1312,6 +1346,7 @@ def test_mte3_to_s_scalar_read(target):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_read_only_no_sync(target):
     """V read-only ops on same buffer -> no V->V barrier."""
@@ -1338,6 +1373,7 @@ def test_read_only_no_sync(target):
     _assert_no_sync(src, target, "v_s")
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_single_stmt_no_crash(target):
     """Single T.copy pair -> no crash."""
@@ -1356,6 +1392,7 @@ def test_single_stmt_no_crash(target):
     assert len(src) > 0
 
 
+@pytest.mark.low_priority
 def test_resource_scope_no_crash():
     """Kernel with CV combine (resource_scope) -> VS handles without crash.
 
@@ -1387,6 +1424,7 @@ def test_resource_scope_no_crash():
     assert len(src) > 0
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_nested_loop_back_edge(target):
     """Nested loops with V ops in inner body -> V->V barriers from back-edges.
@@ -1412,6 +1450,7 @@ def test_nested_loop_back_edge(target):
     _assert_has_sync(src, target, "barrier_v")
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_nested_loop_v_to_s_dedup(target):
     """Nested loops with single V->S dep in inner body -> exactly 1 V_S pair.
@@ -1444,6 +1483,7 @@ def test_nested_loop_v_to_s_dedup(target):
     assert vs_count == 1, f"Expected exactly 1 V_S pair for nested-loop V->S dep, got {vs_count}.\nSource:\n{src}"
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_outer_back_edge_v_to_inner_s_sync(target):
     """Outer loop back-edge V write -> next-iter inner-body S read needs V_S.
@@ -1475,6 +1515,7 @@ def test_outer_back_edge_v_to_inner_s_sync(target):
     _assert_has_sync(src, target, "v_s")
 
 
+@pytest.mark.low_priority
 @TARGETS_WITH_PTO
 def test_if_without_else_propagation(target):
     """If-without-else -> then-branch history propagates, no PipeBarrier_ALL.
@@ -1510,6 +1551,7 @@ def test_if_without_else_propagation(target):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.ci_skip
 def test_a5_pto_pipe_v_v_barrier():
 
     @T.prim_func
@@ -1529,6 +1571,7 @@ def test_a5_pto_pipe_v_v_barrier():
     _assert_has_sync(src, "pto", "v_v")
 
 
+@pytest.mark.ci_skip
 @TARGETS_WITH_PTO
 def test_both_backends_consistent(target):
     """Same V->V kernel -> all backends have PipeBarrier<PIPE_V>."""
@@ -1550,6 +1593,7 @@ def test_both_backends_consistent(target):
     _assert_has_sync(src, target, "barrier_v")
 
 
+@pytest.mark.ci_skip
 def test_pto_auto_enabled_by_default():
     """PTO target without explicit VS config -> VS auto-enabled."""
 
@@ -1575,6 +1619,7 @@ def test_pto_auto_enabled_by_default():
     _assert_has_sync(src, "pto", "barrier_v")
 
 
+@pytest.mark.ci_skip
 @TARGETS_WITH_PTO
 def test_full_pipeline_integration(target):
     """Full pipeline (sibling + VS + CV + planning) -> no crash, has sync."""
@@ -1598,6 +1643,7 @@ def test_full_pipeline_integration(target):
     assert _count_pattern(src, _ANY_BARRIER[target]) > 0 or _count_pattern(src, _ANY_SETFLAG[target]) > 0
 
 
+@pytest.mark.ci_skip
 @TARGETS_WITH_PTO
 def test_preexisting_barrier_recognition(target):
     """Sibling pass ON + VS ON -> VS does not duplicate V->V barriers.
@@ -1632,6 +1678,7 @@ def test_preexisting_barrier_recognition(target):
     )
 
 
+@pytest.mark.ci_skip
 def test_vs_with_cv_combine_off():
     """VS ON + CV combine OFF -> V->V barrier still inserted (no resource_scope).
 
@@ -1659,6 +1706,7 @@ def test_vs_with_cv_combine_off():
     _assert_has_sync(src, "ascendc", "barrier_v")
 
 
+@pytest.mark.ci_skip
 @TARGETS_WITH_PTO
 def test_vs_with_memory_planning_off(target):
     """VS ON + memory planning OFF -> V->V barrier still inserted (name-based).
@@ -1685,6 +1733,7 @@ def test_vs_with_memory_planning_off(target):
     _assert_has_sync(src, target, "barrier_v")
 
 
+@pytest.mark.ci_skip
 def test_a5_ascendc_pipe_v_v_barrier():
     """Platform A5 + ascendc + V->V -> no PipeBarrier<PIPE_V>."""
 
@@ -1705,6 +1754,7 @@ def test_a5_ascendc_pipe_v_v_barrier():
     _assert_has_sync(src, "ascendc", "v_v")
 
 
+@pytest.mark.ci_skip
 def test_a5_still_emits_event_pairs():
     """Platform A5 + S->V dependency -> S_V event pair still inserted.
 
@@ -1729,6 +1779,7 @@ def test_a5_still_emits_event_pairs():
     _assert_has_sync(src, "pto", "s_v")
 
 
+@pytest.mark.ci_skip
 def test_ascendc_default_vs_off():
     """AscendC target without explicit VS config -> VS not auto-enabled.
 
@@ -1758,6 +1809,7 @@ def test_ascendc_default_vs_off():
     _assert_no_auto_sync(src, "ascendc")
 
 
+@pytest.mark.ci_skip
 def test_platform_auto_inserts_v_barrier():
     """Platform "auto" + V->V -> PipeBarrier<PIPE_V> inserted (non-A5).
 

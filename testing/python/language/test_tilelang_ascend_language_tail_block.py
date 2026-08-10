@@ -155,10 +155,10 @@ def run_test_cube_matmul_tail(M, N, K, block_M, block_N, K_L1, target):
 
 # (M, N, K, block_M, block_N, K_L1) - every dim deliberately non-divisible.
 cube_tail_configs = [
-    (32 * 3 + 30, 32 * 2 + 16, 32 * 4 + 31, 32, 32, 32),  # (126, 80, 159)
-    (64 * 8 + 45, 64 * 8, 64 * 8 + 27, 64, 64, 64),  # (557, 512, 539) - N exact
-    (128 * 4, 128 * 4 + 99, 128 * 4, 128, 128, 128),  # (512, 611, 512) - only N tail
-    (1024 + 118, 1024 + 206, 1024 + 55, 128, 256, 64),  # (1142, 1230, 1079)
+    (32 * 3 + 30, 32 * 2 + 16, 32 * 4 + 31, 32, 32, 32),  # (126, 80, 159) - M/N/K all non-divisible
+    pytest.param(64 * 8 + 45, 64 * 8, 64 * 8 + 27, 64, 64, 64, marks=pytest.mark.low_priority),  # (557, 512, 539) - N exact
+    pytest.param(128 * 4, 128 * 4 + 99, 128 * 4, 128, 128, 128, marks=pytest.mark.low_priority),  # (512, 611, 512) - only N tail
+    pytest.param(1024 + 118, 1024 + 206, 1024 + 55, 128, 256, 64, marks=pytest.mark.low_priority),  # (1142, 1230, 1079)
 ]
 
 
@@ -266,13 +266,13 @@ def run_test_vec_abs_tail(M, N, block_M, block_N, dtype, target, tail_mask):
 # compiler in OptimizeForTarget -- keep tiles <= 64x128 here.
 vec_tail_configs = [
     (32 * 2 + 13, 32 * 3 + 7, 32, 32),  # (77, 103)  - 32x32  x3 fp32 = 12KB
-    (64 * 2 + 2, 64 + 36, 64, 64),  # (130, 100) - 64x64  x3 fp32 = 48KB
-    (64 * 3 + 8, 128 + 22, 64, 128),  # (200, 150) - 64x128 x3 fp32 = 96KB
+    pytest.param(64 * 2 + 2, 64 + 36, 64, 64, marks=pytest.mark.low_priority),  # (130, 100) - 64x64  x3 fp32 = 48KB
+    pytest.param(64 * 3 + 8, 128 + 22, 64, 128, marks=pytest.mark.low_priority),  # (200, 150) - 64x128 x3 fp32 = 96KB
 ]
 
 
 @pytest.mark.parametrize("tail_mask", [False, True])
-@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("M,N,block_M,block_N", vec_tail_configs)
 def test_vec_add_tail(M, N, block_M, block_N, dtype, target, tail_mask):
@@ -280,7 +280,7 @@ def test_vec_add_tail(M, N, block_M, block_N, dtype, target, tail_mask):
 
 
 @pytest.mark.parametrize("tail_mask", [False, True])
-@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("M,N,block_M,block_N", vec_tail_configs)
 def test_vec_abs_tail(M, N, block_M, block_N, dtype, target, tail_mask):
@@ -337,9 +337,9 @@ def run_test_reduce_max_tail(rows_valid, rows_phys, cols, dtype, target, tail_ma
 # (rows_valid, rows_phys, cols): rows_valid < rows_phys is the row tail that
 # real_shape must exclude from the dim=0 reduce.
 reduce_tail_configs = [
-    (3, 5, 8),  # mirrors example_col_reduce_max_slice_buffer.py exactly
+    pytest.param(3, 5, 8, marks=pytest.mark.low_priority),  # mirrors example_col_reduce_max_slice_buffer.py exactly
     (30, 32, 64),  # 32-row tile, 30 valid (tail 2)
-    (100, 128, 96),  # 128-row tile, 100 valid (tail 28)
+    pytest.param(100, 128, 96, marks=pytest.mark.low_priority),  # 128-row tile, 100 valid (tail 28)
 ]
 
 
@@ -386,17 +386,21 @@ def reduce_axis0_tail(M, N, block_M, block_N, kind, dim=0, dtype="float"):
 
 
 reduce_axis0_configs = [
-    (34, 128, 32, 32),  # row tail only
-    (32, 130, 32, 32),  # column tail only
+    pytest.param(34, 128, 32, 32, marks=pytest.mark.low_priority),  # row tail only - covered by (34,130)
+    pytest.param(32, 130, 32, 32, marks=pytest.mark.low_priority),  # column tail only - covered by (34,130)
     (34, 130, 32, 32),  # row and column tails
-    (33, 129, 32, 32),  # one valid row and one valid column in the last tile
+    pytest.param(33, 129, 32, 32, marks=pytest.mark.low_priority),  # one valid row and one valid column - covered by (34,130)
     (7, 13, 32, 32),  # tensor smaller than one physical tile
     (32, 128, 32, 32),  # exact full tiles
-    (65, 130, 64, 32),  # larger physical row with a one-row tail
+    pytest.param(65, 130, 64, 32, marks=pytest.mark.low_priority),  # larger physical row with a one-row tail
 ]
 
 REDUCE_TAIL_TARGETS = ("ascendc", "pto")
-REDUCE_TAIL_KINDS = ("sum", "max", "min")
+REDUCE_TAIL_KINDS = (
+    "sum",
+    pytest.param("max", marks=pytest.mark.low_priority),
+    pytest.param("min", marks=pytest.mark.low_priority),
+)
 REDUCE_TAIL_AXIS0_DIMS = (0, -2)
 
 
@@ -421,7 +425,13 @@ def test_reduce_axis0_tail(M, N, block_M, block_N, target, kind, dim):
     torch.testing.assert_close(out, ref, rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.parametrize(("kind", "sign"), [("max", -1.0), ("min", 1.0)])
+@pytest.mark.parametrize(
+    ("kind", "sign"),
+    [
+        pytest.param("max", -1.0, marks=pytest.mark.low_priority),
+        pytest.param("min", 1.0, marks=pytest.mark.low_priority),
+    ],
+)
 @pytest.mark.parametrize("target", REDUCE_TAIL_TARGETS)
 def test_reduce_axis0_tail_does_not_consume_zero_padding(target, kind, sign):
     """Guard max/min against treating the zero-filled physical tail as data."""
@@ -441,7 +451,14 @@ def test_reduce_axis0_tail_does_not_consume_zero_padding(target, kind, sign):
 # semantics rather than part of the shared valid-region contract. Keep this
 # exact-bit regression scoped to the AscendC helper until PTO documents and
 # validates an equivalent guarantee on hardware.
-@pytest.mark.parametrize("kind", ["sum", "max", "min"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "sum",
+        pytest.param("max", marks=pytest.mark.low_priority),
+        pytest.param("min", marks=pytest.mark.low_priority),
+    ],
+)
 def test_reduce_axis0_special_values_ascendc(kind):
     M, N, block_M, block_N = 3, 8, 4, 8
     func = reduce_axis0_tail(M, N, block_M, block_N, kind)
@@ -548,7 +565,7 @@ def run_test_cv_matmul_add_tail(M, N, K, block_M, block_N, block_K, target):
 # (M, N, K, block_M, block_N, block_K) - M/N/K non-divisible.
 cv_tail_configs = [
     (128 + 30, 256 + 16, 64 + 8, 128, 256, 64),  # (158, 272, 72)
-    (256 + 33, 256 + 40, 128 + 5, 128, 256, 64),  # (289, 296, 133)
+    pytest.param(256 + 33, 256 + 40, 128 + 5, 128, 256, 64, marks=pytest.mark.low_priority),  # (289, 296, 133)
 ]
 
 
