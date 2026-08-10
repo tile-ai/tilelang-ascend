@@ -863,8 +863,7 @@ def test_sliced_3d_l1_to_l0b_transpose(STACK, ROWS, COLS, BM, dtype, accum_dtype
         l0b_t_lines = re.findall(r"copy_l1_to_l0b<[^,]+,\s*\d+,\s*\d+,\s*\d+,\s*\d+,\s*true>", src)
         assert l0b_t_lines, "no transposed copy_l1_to_l0b template in generated source"
         for line in l0b_t_lines:
-            assert (
-                str(physical_row) not in line
+            assert (str(physical_row) not in line
             ), f"copy_l1_to_l0b (transpose) used physical row {physical_row} instead of valid {ROWS}: {line}"
     else:
         # ascendc: copy_l1_to_l0b<type, dst_M, dst_N, true> (3-arg template).
