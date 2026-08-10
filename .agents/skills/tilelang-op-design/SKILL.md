@@ -71,6 +71,34 @@ description: "根据算子需求生成 TileLang-Ascend 算子设计文档（desi
 
 详细已知限制清单、强制检测规则、警告输出模板见 [references/ascend-constraints.md](references/ascend-constraints.md)。
 
+### 3.1 数值稳定方案的向量化约束 ⭐
+
+数值稳定方案选定后，**必须评估其对向量化的影响**。这是 Stage 3 性能可达性的决定性因素——同一算子选不同方案可能差 45 倍性能。
+
+**硬约束**：若方案依赖 `T.if_then_else` 逐元素条件分支，**必须先探索数学等价变换**消除分支。只有当所有等价变换都不可行时，才允许用条件分支，并在 design 文档 §1 显式标注"此方案会导致串行循环，性能代价 X"。
+
+**数学等价变换工具箱**（优先级从高到低）：
+
+| 场景 | 错误方案（条件分支） | 正确方案（数学等价变换） | 案例 |
+|------|---------------------|-------------------------|------|
+| 大值域 exp 溢出 | `if x > thresh: exp(x) else: exp(x)` | **log-sum-exp trick**：`softplus(x) = max(x,0) + ln(1+exp(-\|x\|))`（exp 参数恒非正，不溢出） | mish 官方 speedup 0.7168 |
+| tanh 实现无 `T.tile.tanh` | `if sp > thresh: 1.0 else: tanh(sp)` | **sigmoid 等价**：`tanh(s) = 2*sigmoid(2s) - 1`（全向量化） | mish kernel L96-99 |
+| 小值精度损失 | `if abs(x) < eps: approx else: full` | **分段多项式逼近**（用 `T.tile.max/min` 消除分支）或 **有理逼近** | 待案例 |
+| 大数累加溢出 | `if sum > max: max else: sum` | **Kahan summation** 或 **分段累加 + 末尾合并** | 待案例 |
+
+**反面案例**（禁止重蹈覆辙）：
+- mish 性能灾难版（`custom/mish/history_version/mish_impl_s2_attempt1.py` L152-158）用 `T.if_then_else` 解决 softplus 大负值域精度问题 → 无法被 `ascend_lower_parallel` pass 向量化 → 降级为串行循环（每 tile 8192 次标量迭代）→ 官方 speedup 0.0159
+- mish 官方达标版（`custom/mish/mish.py` L113-129）用 log-sum-exp trick 消除分支 → 全 `T.tile.xxx` 向量化 → 官方 speedup 0.7168
+
+**差距 45 倍，根因纯粹是数值稳定方案是否引入条件分支。**
+
+**设计阶段自检清单**（生成 design.md §3 API 映射后必须执行）：
+1. 方案中是否出现 `T.if_then_else` / `T.tile.compare` + `T.tile.select`？→ 是则触发等价变换探索
+2. 等价变换是否消除了所有逐元素条件分支？→ 是则记录到 design 文档；否则标注性能代价
+3. 变换后的精度是否在目标 dtype 阈值内？→ 用最小 reproducer 验证
+
+> 注：`T.tile.compare` + `T.tile.select` 在 128 元素整数倍 buffer 上有 mask 反转 bug（见 [tilelang-api-best-practices/references/troubleshooting.md](../tilelang-api-best-practices/references/troubleshooting.md)），不应作为条件分支的替代方案。
+
 ---
 
 ## 4. 工作流程

@@ -149,6 +149,58 @@ T.tile.sub(acc_ub, acc_ub, max_2d)
 
 **评审建议**：看到 `for row in range(...)`、`for col in range(...)` 里反复调用 `T.tile.add/sub/mul/div/max/min` 时，优先确认能否改成 broadcast + 整 tile 计算。
 
+### 子模式：`T.if_then_else` 逐元素条件分支导致串行循环 ⭐
+
+**识别特征**：kernel 中用 `T.if_then_else` 做逐元素条件分支（如 `x < thresh` 时用近似公式），被 `ascend_lower_parallel` pass 降级为串行循环。
+
+```python
+# ❌ 反模式：T.if_then_else 逐元素条件分支
+for i, j in T.Parallel(block_M, block_N):
+    x = x_ub[i, j]
+    y_ub[i, j] = T.if_then_else(
+        x < SPILL_THRESH,
+        x * tmp_ub[i, j],           # 近似公式
+        x * (1.0 - 2.0 / tmp2_ub[i, j])  # 完整公式
+    )
+```
+
+**性能原因**：`T.if_then_else` 无法被 `ascend_lower_parallel` pass 向量化，整个 `T.Parallel` 循环降级为**串行标量迭代**（每 tile 64×128=8192 次）。串行循环内每元素都执行条件判断 + 分支选择 + 标量读写，性能灾难性下降。
+
+**实测数据**（mish 算子对照）：
+- 用 `T.if_then_else` 条件分支：本地 bench mean speedup **0.0159**（比 baseline 慢 63 倍）
+- 用数学等价变换消除分支：官方 cann-bench mean speedup **0.7168**（达标）
+- **差距 45 倍**，根因纯粹是是否引入条件分支
+
+**替代写法**：用数学等价变换消除条件分支（详见 [tilelang-op-design SKILL.md §3.1 数值稳定方案的向量化约束](../../tilelang-op-design/SKILL.md)）：
+
+```python
+# ✅ 正模式：log-sum-exp trick 消除 softplus 大值域条件分支
+# 错误：if x > thresh: log(1+exp(x)) else: exp(x)
+# 正确：softplus(x) = max(x, 0) + ln(1 + exp(-|x|))  # exp 参数恒非正，不溢出
+T.tile.abs(t0_ub, a_ub)           # t0 = |x|
+T.tile.mul(t0_ub, t0_ub, -1.0)    # t0 = -|x|
+T.tile.exp(t0_ub, t0_ub)          # t0 = exp(-|x|) ∈ [0,1]
+T.tile.add(t0_ub, t0_ub, one_ub)  # t0 = 1 + exp(-|x|)
+T.tile.ln(t0_ub, t0_ub)           # t0 = ln(1+exp(-|x|))
+T.tile.max(t1_ub, a_ub, 0.0)      # t1 = max(x, 0)
+T.tile.add(t0_ub, t0_ub, t1_ub)   # t0 = softplus = max(x,0) + ln(1+exp(-|x|))
+```
+
+**等价变换工具箱**：
+| 场景 | 错误方案 | 正确方案 |
+|------|---------|---------|
+| 大值域 exp 溢出 | `if x > thresh: exp(x) else: ...` | log-sum-exp trick：`softplus = max(x,0) + ln(1+exp(-|x|))` |
+| tanh 无原生 API | `if sp > thresh: 1.0 else: tanh(sp)` | sigmoid 等价：`tanh(s) = 2*sigmoid(2s) - 1` |
+| 小值精度损失 | `if abs(x) < eps: approx else: full` | 分段多项式逼近（用 `T.tile.max/min` 消除分支） |
+
+**注意**：`T.tile.compare` + `T.tile.select` 在 128 元素整数倍 buffer 上有 mask 反转 bug（见 [tilelang-api-best-practices/references/troubleshooting.md](../../tilelang-api-best-practices/references/troubleshooting.md)），**不应作为条件分支的替代方案**。
+
+**评审建议**：看到 `T.if_then_else` 在 `T.Parallel` 循环内做逐元素条件分支时，**强制要求**改用数学等价变换。只有当所有等价变换都不可行时才允许条件分支，并在 design 文档显式标注性能代价。
+
+**参考案例**：
+- 反面：`custom/mish/history_version/mish_impl_s2_attempt1.py` L152-158（speedup 0.0159）
+- 正面：`custom/mish/mish.py` L113-129（speedup 0.7168）
+
 ---
 
 ## 冗余全局同步

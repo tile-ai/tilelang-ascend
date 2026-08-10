@@ -44,6 +44,29 @@ msprof op --kernel-name="main_kernel" --output=./msprof_output python ./examples
 
 精度未通过 → 禁止后续步骤。
 
+#### 1.1 性能数字来源核实（强制）⭐
+
+> **背景**：perf-tuner 曾在 Stage 3 报告中把 skill 文档里的**另一个算子案例的历史数据**当作当前 kernel 的 baseline，导致 Orchestrator 误判"已达标"。本地 bench 与官方 cann-bench 存在系统性偏差（element-wise 算子偏差 +58%），不能混用。
+
+**报告任何性能数字时必须标注来源**：
+
+| 来源类型 | 标注格式 | 可信度 |
+|---------|---------|--------|
+| **当前 kernel 本地 bench 实测** | `[本地 bench, {timestamp}]` | 低（与官方偏差大） |
+| **当前 kernel 官方 cann-bench 上传结果** | `[官方 cann-bench, job_id={xxx}]` | 高（达标判断基准） |
+| **skill 文档历史数据**（另一算子案例） | `[skill 文档历史, {skill_path}]` | ❌ **禁止当作当前 kernel baseline** |
+
+**强制规则**：
+1. perf-tuner 报告 baseline speedup 时**必须**标注数字来源（以上三种之一）
+2. **禁止用 skill 文档历史数据当作当前 kernel 的 baseline**——skill 文档里的 mish 0.6641 是另一案例的数据，不是当前 kernel 实测
+3. Orchestrator 在采纳任何性能数字前**必须**核实来源（读 bench 脚本输出或官方 `results.json`，不能凭 perf-tuner 文字报告）
+4. **达标判断必须以官方 cann-bench 测评结果为准**——本地 bench 仅用于验证优化方向有效（相对提升 > 3%），不用于判定"目标未达"或"已达标"
+5. 当本地 bench 显示 speedup < 0.5 时，官方可能在 0.65-0.80 范围（element-wise 算子偏差 +58%），**不要基于本地数据过早中止**
+
+**反面案例**：
+- mish Stage 3 iter1 perf-tuner 报告 "Official cann-bench mean speedup was 0.6641"——实际是 skill 文档中另一 mish 案例的历史数据，当前 kernel 本地 bench 实际是 0.0159，Orchestrator 采信后误判"已达标"
+- 正确做法：perf-tuner 应报告 `[本地 bench, 2026-08-07] speedup=0.0159`，Orchestrator 据此判断"未达标，需继续优化或上传官方确认"
+
 ### Step 2: 算子类型判断
 
 **生成翻译后的 Ascend C 代码**：
@@ -144,6 +167,62 @@ Edit 调用方、dispatch 或 planner 前，再写 `[KERNEL-REUSE-AUDIT]` 复核
 调试手段：`T.printf`、`T.dump_tensor`、`get_kernel_source()`，详见 [Programming Guide](../../../docs/TileLang-Ascend%20Programming%20Guide.md)。
 
 迭代终止：达到目标或连续 3 次无提升则中断上报。
+
+---
+
+### Step 5.5: element-wise 算子 host 侧 tiling 优化决策树 ⭐
+
+> **背景**：element-wise 算子（如 mish/sigmoid/relu）的 kernel 时间通常已接近 baseline（大 shape 0.92-0.96x），性能瓶颈在 **host 侧 adapter 的 tiling 选择**导致的 `num_blocks` 过多。mish 官方 speedup 从 0.5932 提升到 0.7168（达标），**+20.5% 全部来自 host 侧优化，不是 kernel 优化**。
+
+**决策树**（按输入 shape 类别逐项检查）：
+
+| 输入 shape 类别 | 问题 | 优化方案 | 预期收益 |
+|---------------|------|---------|---------|
+| **1D shape**（M≤2，含质数如 `[1000003]`） | `block_N` cap 默认 512 → num_blocks 数千（如 1954） | **`block_N` cap 提到 8192**（rows_per_vec=1 时单 buffer 8192×4B=32KB < 192KB UB） | num_blocks 从数千降到数百，speedup +650%（mish case 12: 0.076→0.570） |
+| **ND shape 且最后一维小**（如 `[11,13,17,67,67]` N=67） | 固定 "merge 除最后维度外到 M" → M 巨大 N 极小 → num_blocks 暴增 | **smart-flatten**：搜索所有 split_idx，选 `num_blocks` 最小的 (M, N) 切分 | num_blocks -73% → kernel -69%（mish case 13: 0.220→0.714） |
+| **ND shape 已良好 tile** | 固定切分可能不是最优 | smart-flatten 在 `num_blocks` 平局时优先选更大 split_idx（接近原逻辑，避免回归） | 无回归，部分 case bonus +36%（mish case 18） |
+
+**零拷贝前提**（必须满足）：
+- 输入 contiguous 时 `reshape` 只改 stride/shape metadata，**不触发物理拷贝**（cann-bench 默认 contiguous）
+- 非 contiguous 时 `.contiguous()` 兜底（会触发拷贝，应避免）
+
+**判定指标**：
+- `num_blocks = m_num * n_num = ceil(M/block_M) * ceil(N/block_N)` 是 compute-bound element-wise op 的 kernel 时间可靠代理
+- 实测 mish case 13：num_blocks -73.1% → kernel -69.2%（线性相关）
+
+**adapter 实现模板**（参考 `custom/mish/Mish/cann_bench/mish.py`）：
+
+```python
+def _select_tiling(tl_dtype, M, N):
+    # 1D shape（M<=2）：block_N cap 提到 8192
+    if M <= 2:
+        max_bn = min(N, 8192)
+    else:
+        max_bn = min(N, 512)
+    # 搜索 block_N in {128, 256, 512, 1024, ...} up to max_bn
+    # block_M 由 UB 预算反推：block_M = (2 * effective_budget) // block_N
+    # 选 (num_iters, -block_N) 最小的组合
+
+def _estimate_num_blocks(tl_dtype, M, N):
+    """用于 ND smart-flatten 选最优切分点"""
+    block_M, block_N = _select_tiling(tl_dtype, M, N)
+    return ceil(M/block_M) * ceil(N/block_N)
+
+def mish(x):
+    if x.ndim <= 1:
+        # 1D：近平方 reshape 启用 VEC_NUM=2
+        ...
+    else:
+        # ND：smart-flatten 搜索所有 split_idx
+        for split_idx in range(len(dims) - 1):
+            M = prod(dims[:split_idx+1]); N = total // M
+            nb = _estimate_num_blocks(tl_dtype, M, N)
+            # 选 nb 最小的切分
+```
+
+**反模式**（禁止）：
+- ❌ host 侧 `F.pad` 补齐到整除 shape（mish iter2 测试：pad 增 20us device copy，净退化）
+- ❌ kernel 内 stride indexing 处理 ND（需 kernel 重写 + lowering 改动，smart-flatten 零拷贝达到同样效果）
 
 ---
 
