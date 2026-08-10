@@ -457,9 +457,16 @@ private:
   }
 
   Stmt RewriteCompare(const CallNode *call, bool scalar) {
-    if (call->args.size() != 5)
+    const VarNode *dst_v =
+        call->args.empty() ? nullptr : GetPtrVar(call->args[0]);
+    if (call->args.size() != 5) {
+      // Unsupported forms (notably BufferLoad scalar compare) overwrite dst
+      // through the native path. Drop packed provenance left by an earlier
+      // compare on the same UB buffer before a later select can consume it.
+      if (dst_v != nullptr)
+        state_[dst_v] = TailMaskInfo{};
       return Stmt();
-    const VarNode *dst_v = GetPtrVar(call->args[0]);
+    }
     TailMaskInfo lhs = GetMask(GetPtrVar(call->args[1]));
     TailMaskInfo data = lhs;
     if (!scalar) {
@@ -516,13 +523,20 @@ private:
   }
 
   Stmt RewriteSelect(const CallNode *call) {
-    if (call->args.size() < 7)
+    const VarNode *dst_v =
+        call->args.empty() ? nullptr : GetPtrVar(call->args[0]);
+    if (call->args.size() < 7) {
+      if (dst_v != nullptr)
+        state_[dst_v] = TailMaskInfo{};
       return Stmt();
-    const VarNode *dst_v = GetPtrVar(call->args[0]);
+    }
     TailMaskInfo packed = GetMask(GetPtrVar(call->args[1]));
     int type_idx = call->args[3].as<IntImmNode>() != nullptr ? 3 : 4;
-    if (type_idx >= static_cast<int>(call->args.size()))
+    if (type_idx >= static_cast<int>(call->args.size())) {
+      if (dst_v != nullptr)
+        state_[dst_v] = TailMaskInfo{};
       return Stmt();
+    }
     const auto *type_imm = call->args[type_idx].as<IntImmNode>();
     if (!packed.is_packed_cmp() || type_imm == nullptr ||
         (type_imm->value != 1 && type_imm->value != 2)) {
@@ -534,8 +548,11 @@ private:
     int src1_idx = type_idx + 1;
     int mode_idx = type_idx + 2;
     int size_idx = type_idx + 3;
-    if (size_idx >= static_cast<int>(call->args.size()))
+    if (size_idx >= static_cast<int>(call->args.size())) {
+      if (dst_v != nullptr)
+        state_[dst_v] = TailMaskInfo{};
       return Stmt();
+    }
     TailMaskInfo out =
         IntersectDataMask(packed, GetMask(GetPtrVar(call->args[2])));
     if (type_imm->value == 2) {
@@ -665,23 +682,31 @@ private:
 
   Stmt RewriteBroadcast(const CallNode *call) {
     // name(0) dst(1) src(2) [tmp(3)] dim(3/4) dstShape... srcShape...
-    if (call->args.size() < 4)
+    if (call->args.size() < 2)
       return Stmt();
     const VarNode *dst_v = GetPtrVar(call->args[1]);
     if (dst_v == nullptr)
       return Stmt();
+    if (call->args.size() < 4) {
+      state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
     TailMaskInfo in = GetMask(GetPtrVar(call->args[2]));
     const bool has_tmp = GetPtrVar(call->args[3]) != nullptr;
     const size_t dim_index = has_tmp ? 4 : 3;
+    if (call->args.size() <= dim_index) {
+      state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
     const auto *dim_imm = call->args[dim_index].as<IntImmNode>();
     if (!in.valid_row.defined() || !in.valid_col.defined() ||
         dim_imm == nullptr || dim_imm->value != 2) {
-      state_[dst_v] = in;
+      state_[dst_v] = TailMaskInfo{};
       return Stmt();
     }
     const size_t shape_index = dim_index + 1;
     if (call->args.size() < shape_index + 4) {
-      state_[dst_v] = in;
+      state_[dst_v] = TailMaskInfo{};
       return Stmt();
     }
     PrimExpr dst_rows = call->args[shape_index];
@@ -698,6 +723,20 @@ private:
     if (!dst_extent.defined() || !src_extent.defined() ||
         !analyzer_->CanProveEqual(dst_extent, dst_rows * dst_cols) ||
         !analyzer_->CanProveEqual(src_extent, src_rows * src_cols)) {
+      state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
+    // Same-shape broadcast is a shape-preserving native copy. It needs no
+    // tail helper, but its valid rectangle remains valid for downstream ops.
+    if (analyzer_->CanProveEqual(dst_rows, src_rows) &&
+        analyzer_->CanProveEqual(dst_cols, src_cols)) {
+      state_[dst_v] = in;
+      return Stmt();
+    }
+    // [1, 1] makes both axes look like the broadcast axis. The current tail
+    // ABI does not carry the explicit frontend axis, so retain the native op
+    // rather than silently choosing axis 1 for an axis-0 broadcast.
+    if (is_one(src_rows) && is_one(src_cols)) {
       state_[dst_v] = TailMaskInfo{};
       return Stmt();
     }

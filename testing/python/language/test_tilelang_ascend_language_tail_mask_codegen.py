@@ -18,7 +18,9 @@ import pytest
 import tilelang
 import tilelang.language as T
 from tilelang import tvm
+from tilelang.engine.phase import LowerAndLegalize
 from tilelang.transform.pass_config import process_default_pass_config
+from tilelang.utils.target import determine_platform
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
@@ -258,6 +260,7 @@ def _tail_compare_select(
     dtype="float",
     scalar_compare=False,
     scalar_select=False,
+    mode="LT",
 ):
     m_num = T.ceildiv(M, block_M)
     n_num = T.ceildiv(N, block_N)
@@ -280,9 +283,9 @@ def _tail_compare_select(
             T.copy(A[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N], a_ub)
             T.copy(B[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N], b_ub)
             if scalar_compare:
-                T.tile.compare(mask_ub, a_ub, 0.0, "LT")
+                T.tile.compare(mask_ub, a_ub, 0.0, mode)
             else:
-                T.tile.compare(mask_ub, a_ub, b_ub, "LT")
+                T.tile.compare(mask_ub, a_ub, b_ub, mode)
             if scalar_select:
                 T.tile.select(out_ub, mask_ub, a_ub, 1.0, "VSEL_TENSOR_SCALAR_MODE")
             else:
@@ -297,6 +300,39 @@ def _tail_compare_select(
                     bx * block_M : (bx + 1) * block_M,
                     by * (block_N // 8) : (by + 1) * (block_N // 8),
                 ],
+            )
+
+    return main
+
+
+def _tail_compare_bufferload_overwrite(M, N, block_M, block_N):
+    """Overwrite a tracked predicate through the unsupported BufferLoad ABI."""
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), "float"),
+        B: T.Tensor((M, N), "float"),
+        C: T.Tensor((M, N), "float"),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M, block_N), "float")
+            b_ub = T.alloc_ub((block_M, block_N), "float")
+            mask_ub = T.alloc_ub((block_M, block_N // 8), "uint8")
+            out_ub = T.alloc_ub((block_M, block_N), "float")
+            scalar_ub = T.alloc_ub((1,), "float")
+            scalar_ub[0] = T.cast(0.0, "float")
+            T.copy(A[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N], a_ub)
+            T.copy(B[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N], b_ub)
+            T.tile.compare(mask_ub, a_ub, b_ub, "LT")
+            T.tile.compare(mask_ub, a_ub, scalar_ub[0], "LT")
+            T.tile.select(out_ub, mask_ub, a_ub, b_ub, "VSEL_TENSOR_TENSOR_MODE")
+            T.copy(
+                out_ub,
+                C[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N],
             )
 
     return main
@@ -336,6 +372,46 @@ def _tail_broadcast_axis0(M, N, block_M, block_N, dtype="float"):
             dst_ub = T.alloc_ub((block_M, block_N), dtype)
             T.copy(A[bx : bx + 1, by * block_N : (by + 1) * block_N], src_ub)
             T.tile.broadcast(dst_ub, src_ub, axis=0)
+            T.copy(
+                dst_ub,
+                C[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N],
+            )
+
+    return main
+
+
+def _tail_broadcast_ambiguous_axis0(M, block_M, dtype="float"):
+    """Legal axis-0 [1,1] -> [block_M,1], ambiguous to shape inference."""
+    m_num = T.ceildiv(M, block_M)
+
+    @T.prim_func
+    def main(A: T.Tensor((m_num, 1), dtype), C: T.Tensor((M, 1), dtype)):
+        with T.Kernel(m_num, is_npu=True) as (bx, _):
+            src_ub = T.alloc_ub((1, 1), dtype)
+            dst_ub = T.alloc_ub((block_M, 1), dtype)
+            T.copy(A[bx : bx + 1, 0:1], src_ub)
+            T.tile.broadcast(dst_ub, src_ub, axis=0)
+            T.copy(dst_ub, C[bx * block_M : (bx + 1) * block_M, 0:1])
+
+    return main
+
+
+def _tail_broadcast_noop_then_unary(M, N, block_M, block_N):
+    """A same-shape native broadcast must preserve tail provenance."""
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+
+    @T.prim_func
+    def main(A: T.Tensor((M, N), "float"), C: T.Tensor((M, N), "float")):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            src_ub = T.alloc_ub((block_M, block_N), "float")
+            mid_ub = T.alloc_ub((block_M, block_N), "float")
+            dst_ub = T.alloc_ub((block_M, block_N), "float")
+            T.copy(A[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N], src_ub)
+            T.tile.broadcast(mid_ub, src_ub, axis=0)
+            T.tile.exp(dst_ub, mid_ub)
             T.copy(
                 dst_ub,
                 C[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N],
@@ -395,6 +471,19 @@ def _source(func, target="ascendc", tail_mask=True):
         artifact = tilelang.lower(func, target=target, platform="auto")
 
     return artifact.kernel_source
+
+
+def _lowered_tir(func, target="ascendc"):
+    """Return post-tail-pass TIR without invoking backend source codegen."""
+    platform = determine_platform("auto")
+    target_obj = tvm.target.Target({"kind": "llvm", "model": target})
+    mod = tvm.IRModule({func.attrs["global_symbol"]: func})
+    for gvar, prim_func in mod.functions_items():
+        mod[gvar] = prim_func.with_attr("npu_platform", platform)
+    cfg = process_default_pass_config(target, pass_configs)
+    with tvm.transform.PassContext(opt_level=3, config=cfg):
+        mod = LowerAndLegalize(mod, target_obj)
+    return str(mod)
 
 
 # Per-backend "a tail-aware op was emitted" marker. The two backends express the
@@ -518,6 +607,32 @@ def test_tail_compare_select_emits_backend_path(target, dtype, scalar_compare, s
 
 
 @pytest.mark.parametrize("target", TAIL_TARGETS)
+@pytest.mark.parametrize("mode", ["EQ", "NE", "GT", "GE", "LT", "LE"])
+def test_tail_compare_supports_all_modes(target, mode):
+    src = _source(_tail_compare_select(5, 69, 4, 64, mode=mode), target=target)
+    expected = f"AscendC::CMPMODE::{mode}" if target == "ascendc" else f"CmpMode::{mode}"
+    assert expected in src, src
+
+
+@pytest.mark.parametrize("target", TAIL_TARGETS)
+def test_bufferload_compare_clears_packed_mask_state(target):
+    # The second compare takes a BufferLoad scalar and therefore remains on
+    # the native path. It must invalidate the first compare's packed-mask
+    # provenance before the following select is considered for tail rewrite.
+    func = _tail_compare_bufferload_overwrite(5, 69, 4, 64)
+    if target == "ascendc":
+        src = _source(func, target=target)
+        assert "tl::ascend::tail_compare" in src, src
+        assert "tl::ascend::tail_select" not in src, src
+    else:
+        # PTO's established native scalar-compare source codegen does not
+        # accept BufferLoad, so inspect the shared transformed TIR directly.
+        tir = _lowered_tir(func, target=target)
+        assert "T.ascend_tail_compare" in tir, tir
+        assert "T.ascend_tail_select" not in tir, tir
+
+
+@pytest.mark.parametrize("target", TAIL_TARGETS)
 @pytest.mark.parametrize("dtype", ["float16", "float"])
 @pytest.mark.parametrize("axis", [0, 1])
 def test_tail_broadcast_emits_backend_path(target, dtype, axis):
@@ -537,6 +652,26 @@ def test_tail_broadcast_emits_backend_path(target, dtype, axis):
             assert "TileUbDataND" in src and "pto::DYNAMIC, 1>" in src, src
             dst_addr = re.search(r"TASSIGN\(dst_ub, (\d+)\);", src)
             assert dst_addr and int(dst_addr.group(1)) >= 4 * 32, src
+
+
+@pytest.mark.parametrize("target", TAIL_TARGETS)
+def test_ambiguous_scalar_broadcast_keeps_native_path(target):
+    src = _source(_tail_broadcast_ambiguous_axis0(5, 4), target=target)
+    if target == "ascendc":
+        assert "tl::ascend::tail_broadcast" not in src, src
+    else:
+        assert "dst_ub_temp_" not in src, src
+
+
+@pytest.mark.parametrize("target", TAIL_TARGETS)
+def test_same_shape_broadcast_preserves_tail_state(target):
+    src = _source(_tail_broadcast_noop_then_unary(5, 69, 4, 64), target=target)
+    if target == "ascendc":
+        assert "tl::ascend::tail_broadcast" not in src, src
+        assert "tl::ascend::tail_unary" in src, src
+    else:
+        assert "TEXP(" in src, src
+        assert "pto::DYNAMIC" in src, src
 
 
 @pytest.mark.parametrize("target", TAIL_TARGETS)
