@@ -243,12 +243,8 @@ def run_test_k_tail_gemm(M, N, K, block_M, block_N, K_L1, dtype, accum_dtype):
 # (M, N, K, block_M, block_N, K_L1) -- K deliberately non-divisible.
 k_tail_configs = [
     (128, 128, 160, 128, 128, 64),  # K=160, last tile K=32 (half tile)
-    pytest.param(
-        128, 256, 96, 128, 256, 64, marks=pytest.mark.low_priority
-    ),  # K=96,  last tile K=32
-    pytest.param(
-        128, 128, 176, 128, 128, 64, marks=pytest.mark.low_priority
-    ),  # K=176, last tile K=48
+    pytest.param(128, 256, 96, 128, 256, 64, marks=pytest.mark.low_priority),  # K=96,  last tile K=32
+    pytest.param(128, 128, 176, 128, 128, 64, marks=pytest.mark.low_priority),  # K=176, last tile K=48
 ]
 
 
@@ -412,16 +408,10 @@ def run_test_splice_3way_tail(block_M, block_N, dim, s0, s1, s2, dtype, accum_dt
 
 # (s0, s1, s2, block_N) -- total < block_N, tail must be zero-padded.
 splice_3way_configs = [
-    pytest.param(
-        48, 48, 24, 128, marks=pytest.mark.low_priority
-    ),  # total=120, tail=8  (aligned groups + sub-group tail)
+    pytest.param(48, 48, 24, 128, marks=pytest.mark.low_priority),  # total=120, tail=8  (aligned groups + sub-group tail)
     (32, 32, 32, 128),  # total=96,  tail=32 (clean group boundary)
-    pytest.param(
-        16, 16, 1, 128, marks=pytest.mark.low_priority
-    ),  # total=33,  tail=95 (heavy tail, non-aligned last)
-    pytest.param(
-        32, 32, 17, 128, marks=pytest.mark.low_priority
-    ),  # total=81,  tail=47 (non-aligned last)
+    pytest.param(16, 16, 1, 128, marks=pytest.mark.low_priority),  # total=33,  tail=95 (heavy tail, non-aligned last)
+    pytest.param(32, 32, 17, 128, marks=pytest.mark.low_priority),  # total=81,  tail=47 (non-aligned last)
 ]
 
 
@@ -555,9 +545,7 @@ def run_test_splice_with_k_tail(block_M, block_N, dim, split, K_L1, dtype, accum
 # dim (=K) is non-divisible by K_L1; split divides N.
 splice_ktail_configs = [
     (64, 128, 160, 64, 64),  # K=160, K_L1=64, last K-tile=32; split=64
-    pytest.param(
-        64, 128, 96, 64, 32, marks=pytest.mark.low_priority
-    ),  # K=96,  K_L1=32, last K-tile=32; split=64
+    pytest.param(64, 128, 96, 64, 32, marks=pytest.mark.low_priority),  # K=96,  K_L1=32, last K-tile=32; split=64
 ]
 
 
@@ -706,12 +694,8 @@ def run_test_k_tail_gemm_dynamic_k(M, N, K, block_M, block_N, K_L1, dtype, accum
 # K is symbolic; values are non-divisible by K_L1 to exercise the K-tail.
 dynamic_k_configs = [
     (128, 128, 160, 128, 128, 64),  # K=160, last tile K=32
-    pytest.param(
-        128, 256, 96, 128, 256, 64, marks=pytest.mark.low_priority
-    ),  # K=96,  last tile K=32
-    pytest.param(
-        128, 128, 176, 128, 128, 64, marks=pytest.mark.low_priority
-    ),  # K=176, last tile K=48
+    pytest.param(128, 256, 96, 128, 256, 64, marks=pytest.mark.low_priority),  # K=96,  last tile K=32
+    pytest.param(128, 128, 176, 128, 128, 64, marks=pytest.mark.low_priority),  # K=176, last tile K=48
 ]
 
 

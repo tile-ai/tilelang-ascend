@@ -283,13 +283,9 @@ def run_test_boundary(M, N, block_M, block_N, dtype, use_vid, target):
 boundary_configs = [
     # fp32: 32B = 8 elements on the contiguous dim.
     (8, 8, 8, 8, "float", False),  # smallest aligned tile, single block
-    pytest.param(
-        8, 8, 8, 8, "float", True, marks=pytest.mark.low_priority
-    ),  # ... with vid split (rows=4)
+    pytest.param(8, 8, 8, 8, "float", True, marks=pytest.mark.low_priority),  # ... with vid split (rows=4)
     # float16: 32B = 16 elements (vid split variant only; False is redundant).
-    pytest.param(
-        16, 16, 16, 16, "float16", True, marks=pytest.mark.low_priority
-    ),  # smallest aligned fp16 tile
+    pytest.param(16, 16, 16, 16, "float16", True, marks=pytest.mark.low_priority),  # smallest aligned fp16 tile
     # smallest vid split: block_M=2 -> rows=1 per AIV (fp32, N=8 aligned).
     (8, 8, 2, 8, "float", True),
     # int32: 32B = 8 elements.
@@ -401,12 +397,8 @@ def run_test_tail_pad_full(M, N, block_M, block_N, dtype, pad_value, pad_torch):
 # omitted: its 64x64 tail pattern duplicates (100,100).
 tail_configs = [
     (100, 100, 64, 64),  # last block 36x36
-    pytest.param(
-        77, 103, 32, 32, marks=pytest.mark.low_priority
-    ),  # 32x32 tiles, both tails
-    pytest.param(
-        200, 150, 64, 128, marks=pytest.mark.low_priority
-    ),  # 64x128 tiles, M tail 8, N tail 22
+    pytest.param(77, 103, 32, 32, marks=pytest.mark.low_priority),  # 32x32 tiles, both tails
+    pytest.param(200, 150, 64, 128, marks=pytest.mark.low_priority),  # 64x128 tiles, M tail 8, N tail 22
 ]
 
 
@@ -648,9 +640,7 @@ def test_dyn_m_single_block(target):
     "shapes",
     [
         [(64, 64), (100, 100), (128, 128)],  # mix of divisible and tail
-        pytest.param(
-            [(50, 70), (200, 150)], marks=pytest.mark.low_priority
-        ),  # both dims non-divisible
+        pytest.param([(50, 70), (200, 150)], marks=pytest.mark.low_priority),  # both dims non-divisible
     ],
 )
 def test_dyn_mn(target, shapes):
@@ -1047,9 +1037,7 @@ def run_test_col_grid(M, N, block_M, dtype, use_vid, target):
 # fp16) suffice; vid split is covered by Group 1/2.
 row_grid_configs = [
     (64, 256, 64, "float", False),  # 4 column blocks, no vid
-    pytest.param(
-        64, 512, 128, "float16", False, marks=pytest.mark.low_priority
-    ),  # 4 column blocks, fp16
+    pytest.param(64, 512, 128, "float16", False, marks=pytest.mark.low_priority),  # 4 column blocks, fp16
 ]
 
 
@@ -1064,9 +1052,7 @@ def test_row_grid(M, N, block_N, dtype, use_vid, target):
 # + vid) suffice.
 col_grid_configs = [
     (256, 64, 64, "float", False),  # 4 row blocks, no vid
-    pytest.param(
-        256, 64, 64, "float", True, marks=pytest.mark.low_priority
-    ),  # ... with vid split
+    pytest.param(256, 64, 64, "float", True, marks=pytest.mark.low_priority),  # ... with vid split
 ]
 
 
@@ -1089,9 +1075,7 @@ def test_col_grid(M, N, block_M, dtype, use_vid, target):
 pad_ext_configs = [
     # (M, N, block_M, block_N, dtype, pad_value, pad_torch)
     (50, 50, 64, 64, "float", 1.0, 1.0),  # positive finite pad
-    pytest.param(
-        100, 100, 128, 128, "float", -5.0, -5.0, marks=pytest.mark.low_priority
-    ),  # negative pad, larger tile
+    pytest.param(100, 100, 128, 128, "float", -5.0, -5.0, marks=pytest.mark.low_priority),  # negative pad, larger tile
 ]
 
 

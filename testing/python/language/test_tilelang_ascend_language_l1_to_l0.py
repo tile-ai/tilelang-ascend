@@ -295,13 +295,9 @@ def run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, a
 # (M, N, K, block_M, block_N, block_K) -- divisible shapes, varied block sizes.
 explicit_configs = [
     (128, 128, 128, 128, 128, 128),  # single tile, block == full dim
-    pytest.param(
-        256, 256, 256, 128, 128, 64, marks=pytest.mark.low_priority
-    ),  # 2x2 grid, K split into 4
+    pytest.param(256, 256, 256, 128, 128, 64, marks=pytest.mark.low_priority),  # 2x2 grid, K split into 4
     pytest.param(512, 512, 512, 128, 256, 64, marks=pytest.mark.low_priority),  # asymm block_N
-    pytest.param(
-        256, 256, 256, 64, 64, 64, marks=pytest.mark.low_priority
-    ),  # smaller block, 4x4 grid
+    pytest.param(256, 256, 256, 64, 64, 64, marks=pytest.mark.low_priority),  # smaller block, 4x4 grid
 ]
 
 
@@ -404,18 +400,10 @@ def test_gemm_v0_implicit(M, N, K, block_M, block_N, block_K, transpose_B, dtype
 # =============================================================================
 k_tail_configs = [
     (128, 128, 160, 128, 128, 64),  # K=160, last tile K=32 (half tile)
-    pytest.param(
-        128, 256, 96, 128, 256, 64, marks=pytest.mark.low_priority
-    ),  # K=96, last tile K=32
-    pytest.param(
-        256, 256, 176, 128, 128, 64, marks=pytest.mark.low_priority
-    ),  # K=176, last tile K=48
-    pytest.param(
-        113, 113, 113, 64, 64, 32, marks=pytest.mark.low_priority
-    ),  # odd prime sizes, last tile K=17
-    pytest.param(
-        112, 112, 112, 32, 32, 64, marks=pytest.mark.low_priority
-    ),  # odd prime sizes, last tile K=48
+    pytest.param(128, 256, 96, 128, 256, 64, marks=pytest.mark.low_priority),  # K=96, last tile K=32
+    pytest.param(256, 256, 176, 128, 128, 64, marks=pytest.mark.low_priority),  # K=176, last tile K=48
+    pytest.param(113, 113, 113, 64, 64, 32, marks=pytest.mark.low_priority),  # odd prime sizes, last tile K=17
+    pytest.param(112, 112, 112, 32, 32, 64, marks=pytest.mark.low_priority),  # odd prime sizes, last tile K=48
 ]
 
 
@@ -438,12 +426,8 @@ def test_k_tail_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, tar
 fractal_configs = [
     (32, 32, 32, 16, 16, 16),  # minimum fractal for fp16/bf16
     pytest.param(64, 64, 64, 16, 16, 16, marks=pytest.mark.low_priority),  # 4x4 grid at min fractal
-    pytest.param(
-        128, 128, 128, 64, 64, 16, marks=pytest.mark.low_priority
-    ),  # min K, larger M/N blocks
-    pytest.param(
-        128, 128, 128, 16, 128, 16, marks=pytest.mark.low_priority
-    ),  # asymm: min M, large N, min K
+    pytest.param(128, 128, 128, 64, 64, 16, marks=pytest.mark.low_priority),  # min K, larger M/N blocks
+    pytest.param(128, 128, 128, 16, 128, 16, marks=pytest.mark.low_priority),  # asymm: min M, large N, min K
 ]
 
 
@@ -466,12 +450,8 @@ def test_fractal_boundary(M, N, K, block_M, block_N, block_K, dtype, accum_dtype
 # =============================================================================
 k_tiling_configs = [
     (128, 128, 512, 128, 128, 64),  # K split into 8 tiles
-    pytest.param(
-        128, 128, 1024, 128, 128, 64, marks=pytest.mark.low_priority
-    ),  # K split into 16 tiles
-    pytest.param(
-        64, 64, 768, 64, 64, 64, marks=pytest.mark.low_priority
-    ),  # K split into 12 tiles, smaller block
+    pytest.param(128, 128, 1024, 128, 128, 64, marks=pytest.mark.low_priority),  # K split into 16 tiles
+    pytest.param(64, 64, 768, 64, 64, 64, marks=pytest.mark.low_priority),  # K split into 12 tiles, smaller block
 ]
 
 
@@ -657,9 +637,7 @@ def run_test_persistent_gemm(M, N, K, block_M, block_N, block_K, core_num, dtype
     "M,N,K,block_M,block_N,block_K,core_num",
     [
         (256, 256, 128, 128, 128, 64, 4),  # 2x2 grid, 4 cores
-        pytest.param(
-            512, 256, 128, 128, 128, 64, 4, marks=pytest.mark.low_priority
-        ),  # 4x2 grid, 4 cores
+        pytest.param(512, 256, 128, 128, 128, 64, 4, marks=pytest.mark.low_priority),  # 4x2 grid, 4 cores
     ],
 )
 def test_persistent_scheduling(M, N, K, block_M, block_N, block_K, core_num, dtype, accum_dtype, target):
@@ -761,9 +739,7 @@ def sliced_3d_l1_to_l0a(STACK, BM, K, BLOCK_N, dtype="float16", accum_dtype="flo
     "STACK,ROWS,COLS,BM",
     [
         (4, 128, 128, 128),  # [4,128,128] -> physical 512, valid 128 per slice
-        pytest.param(
-            2, 128, 128, 128, marks=pytest.mark.low_priority
-        ),  # [2,128,128] -> physical 256, valid 128 per slice
+        pytest.param(2, 128, 128, 128, marks=pytest.mark.low_priority),  # [2,128,128] -> physical 256, valid 128 per slice
         pytest.param(4, 64, 128, 64, marks=pytest.mark.low_priority),  # smaller rows
     ],
 )
@@ -787,24 +763,12 @@ def test_sliced_3d_l1_to_l0b(STACK, ROWS, COLS, BM, dtype, accum_dtype, target):
     "STACK,BM,K,BLOCK_N",
     [
         (2, 128, 128, 128),  # [2,128,128] -> physical 256, valid 128 per slice
-        pytest.param(
-            4, 64, 53, 27, marks=pytest.mark.low_priority
-        ),  # non-power-of-2 K, smaller BM, physical 256, valid 64
-        pytest.param(
-            4, 128, 64, 128, marks=pytest.mark.low_priority
-        ),  # smaller K=64, physical 512, valid 128 per slice
-        pytest.param(
-            3, 128, 128, 128, marks=pytest.mark.low_priority
-        ),  # odd STACK, physical 384, valid 128 per slice
-        pytest.param(
-            4, 48, 64, 64, marks=pytest.mark.low_priority
-        ),  # non-power-of-2 BM, physical 192, valid 48
-        pytest.param(
-            4, 128, 96, 128, marks=pytest.mark.low_priority
-        ),  # non-power-of-2 K, physical 512, valid 128
-        pytest.param(
-            4, 64, 96, 64, marks=pytest.mark.low_priority
-        ),  # non-power-of-2 K, smaller BM, physical 256
+        pytest.param(4, 64, 53, 27, marks=pytest.mark.low_priority),  # non-power-of-2 K, smaller BM, physical 256, valid 64
+        pytest.param(4, 128, 64, 128, marks=pytest.mark.low_priority),  # smaller K=64, physical 512, valid 128 per slice
+        pytest.param(3, 128, 128, 128, marks=pytest.mark.low_priority),  # odd STACK, physical 384, valid 128 per slice
+        pytest.param(4, 48, 64, 64, marks=pytest.mark.low_priority),  # non-power-of-2 BM, physical 192, valid 48
+        pytest.param(4, 128, 96, 128, marks=pytest.mark.low_priority),  # non-power-of-2 K, physical 512, valid 128
+        pytest.param(4, 64, 96, 64, marks=pytest.mark.low_priority),  # non-power-of-2 K, smaller BM, physical 256
     ],
 )
 def test_sliced_3d_l1_to_l0a(STACK, BM, K, BLOCK_N, dtype, accum_dtype, target):
@@ -869,9 +833,7 @@ def sliced_3d_l1_to_l0b_transpose(STACK, BLOCK_N, D, BM, dtype="float16", accum_
     "STACK,ROWS,COLS,BM",
     [
         (4, 128, 128, 128),  # [4,128,128] -> physical 512, valid 128 per slice
-        pytest.param(
-            2, 128, 128, 128, marks=pytest.mark.low_priority
-        ),  # [2,128,128] -> physical 256, valid 128 per slice
+        pytest.param(2, 128, 128, 128, marks=pytest.mark.low_priority),  # [2,128,128] -> physical 256, valid 128 per slice
     ],
 )
 def test_sliced_3d_l1_to_l0b_transpose(STACK, ROWS, COLS, BM, dtype, accum_dtype, target):
@@ -901,9 +863,9 @@ def test_sliced_3d_l1_to_l0b_transpose(STACK, ROWS, COLS, BM, dtype, accum_dtype
         l0b_t_lines = re.findall(r"copy_l1_to_l0b<[^,]+,\s*\d+,\s*\d+,\s*\d+,\s*\d+,\s*true>", src)
         assert l0b_t_lines, "no transposed copy_l1_to_l0b template in generated source"
         for line in l0b_t_lines:
-            assert str(physical_row) not in line, (
-                f"copy_l1_to_l0b (transpose) used physical row {physical_row} instead of valid {ROWS}: {line}"
-            )
+            assert (
+                str(physical_row) not in line
+            ), f"copy_l1_to_l0b (transpose) used physical row {physical_row} instead of valid {ROWS}: {line}"
     else:
         # ascendc: copy_l1_to_l0b<type, dst_M, dst_N, true> (3-arg template).
         # Assert the physical row value does not appear as a template dim.
@@ -963,9 +925,7 @@ def row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM, dtype="float16", accum_dtype="flo
     "PHYS_ROW,COL,BM",
     [
         (256, 128, 128),  # slice_valid_row=128 < phys_row=256
-        pytest.param(
-            256, 128, 64, marks=pytest.mark.low_priority
-        ),  # slice_valid_row=64 < phys_row=256
+        pytest.param(256, 128, 64, marks=pytest.mark.low_priority),  # slice_valid_row=64 < phys_row=256
     ],
 )
 def test_row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM, dtype, accum_dtype, target):
