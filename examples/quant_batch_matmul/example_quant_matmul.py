@@ -155,7 +155,7 @@ def main(custom_args=None):
     check_case(M, N, K, scale_size="N", block_M=128, block_N=256, block_K=64)
 
     print("QuantMatmul example passed!")
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")
 
 
 if __name__ == "__main__":

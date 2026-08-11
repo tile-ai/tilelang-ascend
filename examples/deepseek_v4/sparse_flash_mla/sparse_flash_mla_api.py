@@ -269,4 +269,4 @@ if __name__ == "__main__":
         check_lse(lse.cpu(), case["cpu_ref_lse"], dtype)
         check_result(out.cpu(), case["cpu_ref"])
         print(f"[{name}] passed")
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")

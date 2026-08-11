@@ -244,5 +244,5 @@ def test_aux_fi(params):
 if __name__ == "__main__":
     exit_code = pytest.main([__file__, "-v"])
     if exit_code == pytest.ExitCode.OK:
-        print("All aux_fi tests passed! Kernel Output Match!")
+        print("ALL TESTS PASSED")
     sys.exit(exit_code)

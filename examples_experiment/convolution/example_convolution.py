@@ -228,5 +228,5 @@ if __name__ == "__main__":
         print(f"[{i}/6] {tc['name']}")
         run_test(tc["name"], tc["B"], tc["C"], tc["H"], tc["W"], tc["OC"], tc["KH"], tc["KW"], tc.get("stride", 1), tc.get("padding", 0))
     print("=" * 60)
-    print("TEST PASSED!")
+    print("ALL TESTS PASSED")
     print("=" * 60)

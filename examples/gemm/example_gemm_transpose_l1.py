@@ -76,5 +76,5 @@ c = func(a, b)
 ref_c = a @ b.T
 
 torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")
 # print(func.get_kernel_source())

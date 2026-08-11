@@ -138,7 +138,7 @@ def main(custom_args=None):
     check_case(1024, 1024, 128)
 
     print("topk_selector example passed!")
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")
 
 
 if __name__ == "__main__":

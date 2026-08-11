@@ -543,4 +543,4 @@ if __name__ == "__main__":
             print(f"Running test case {i + 1}: {case}")
             main(**case)
 
-    print("All tests passed!")
+    print("ALL TESTS PASSED")

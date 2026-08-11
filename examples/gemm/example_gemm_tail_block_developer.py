@@ -66,4 +66,4 @@ for idx, (M, N, K, block_M, block_N, block_K) in enumerate(test_configs, 1):
         raise
 
 print("All test cases passed!")
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")

@@ -253,7 +253,7 @@ def test_topk_sparse_attention_qlen_lt_klen():
 def main():
     test_topk_sparse_attention()
     test_topk_sparse_attention_qlen_lt_klen()
-    print("Test passed!")
+    print("ALL TESTS PASSED")
 
 
 if __name__ == "__main__":

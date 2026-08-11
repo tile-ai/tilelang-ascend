@@ -54,7 +54,7 @@ torch.npu.synchronize()
 # print(f"output: {output[:, :4]}")
 
 torch.testing.assert_close(ref_output, output[:, :4], rtol=1e-2, atol=1e-2)
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")
 
 # kernel = tilelang.engine.lower(func,target="pto")
 # print(kernel.kernel_source)

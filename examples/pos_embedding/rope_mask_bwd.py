@@ -387,4 +387,4 @@ if __name__ == "__main__":
         for dtype_str in ["float16", "bfloat16", "float"]:
             check_case_bsnd(B, S, head_num, hidden_size, rope_dim, dtype_str, rotary_mode)
 
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")

@@ -100,4 +100,4 @@ for rank in range(num_processes):
 for p in processes:
     p.join()
 
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")

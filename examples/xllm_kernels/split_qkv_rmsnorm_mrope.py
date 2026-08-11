@@ -883,7 +883,7 @@ def main() -> None:
 
     print("=" * 70)
     print("[PASS] split_qkv_rmsnorm_mrope kernel 所有配置验证通过")
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")
     print("=" * 70)
 
 

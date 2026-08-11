@@ -179,4 +179,4 @@ torch.npu.synchronize()
 
 torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
 
-print("Test Passed!")
+print("ALL TESTS PASSED")

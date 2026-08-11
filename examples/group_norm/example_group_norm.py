@@ -591,7 +591,7 @@ if __name__ == "__main__":
 
     print()
     if all_passed:
-        print("Test Passed!")
+        print("ALL TESTS PASSED")
     else:
         failed = [r[0] for r in results if not r[1]]
         print(f"[PRECISION_FAIL] {len(failed)} test(s) failed: {failed}")

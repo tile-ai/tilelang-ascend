@@ -114,7 +114,7 @@ def main(custom_args=None):
     check_case(64, 64, 16, 16)
 
     print("GEMV example passed!")
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")
 
 
 if __name__ == "__main__":

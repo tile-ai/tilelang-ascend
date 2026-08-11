@@ -184,4 +184,4 @@ if __name__ == "__main__":
         torch.testing.assert_close(g_sum.cpu(), ref_g_sum.cpu(), rtol=1e-5, atol=1e-5)
         print("  Passed!")
 
-    print("\nKernel Output Match!")
+    print("ALL TESTS PASSED")

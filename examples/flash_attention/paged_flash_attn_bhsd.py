@@ -223,7 +223,7 @@ def main(custom_args=None):
     check_case(batch, heads, seq_len, dim)
 
     print("Paged Flash Attention example passed!")
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")
 
 
 if __name__ == "__main__":

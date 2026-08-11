@@ -151,4 +151,4 @@ test_op(
     act_kv_s=2560,
     tl_ops=tl_ops,
 )
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")

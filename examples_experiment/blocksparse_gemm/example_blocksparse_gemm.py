@@ -291,6 +291,6 @@ if __name__ == "__main__":
         test_typical()
         test_boundary_dense()
         test_boundary_sparse()
-        print("Kernel Output Match!")
+        print("ALL TESTS PASSED")
     else:
         main()

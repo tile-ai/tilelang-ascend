@@ -473,7 +473,7 @@ def main(custom_args=None):
 
     print("=" * 60)
     print("All tests passed!")
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")
     print("=" * 60)
 
 

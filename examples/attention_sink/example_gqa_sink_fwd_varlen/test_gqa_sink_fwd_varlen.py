@@ -270,7 +270,7 @@ def main():
     if args.level == "bench":
         ok = run_bench()
         if ok:
-            print("Test Passed!")
+            print("ALL TESTS PASSED")
             sys.exit(0)
         sys.exit(1)
 
@@ -290,7 +290,7 @@ def main():
         test_gqa_sink_fwd_boundary()
 
     if blocking_ok:
-        print("Test Passed!")
+        print("ALL TESTS PASSED")
         sys.exit(0)
     sys.exit(1)
 

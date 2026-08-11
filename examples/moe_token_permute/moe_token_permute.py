@@ -404,7 +404,7 @@ def test_permute():
 
     print(f"\n{'=' * 60}")
     if overall_passed:
-        print("Test passed!")
+        print("ALL TESTS PASSED")
     else:
         print("Test failed! The precision is not correct!")
     print(f"{'=' * 60}")

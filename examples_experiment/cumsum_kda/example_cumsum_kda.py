@@ -943,4 +943,4 @@ if __name__ == "__main__":
     torch.testing.assert_close(o_global_varlen_v.cpu(), ref_o_global_varlen_v.cpu(), rtol=1e-4, atol=1e-4)
     print("varlen global vector dispatcher: Passed!")
 
-    print("\nKernel Output Match!")
+    print("ALL TESTS PASSED")

@@ -388,6 +388,6 @@ if __name__ == "__main__":
         ref_output = ref_flash_attn(q, k, v)
         torch.npu.synchronize()
         torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
-        print("Test Passed!")
+        print("ALL TESTS PASSED")
     else:
         print("Reference check skipped.")

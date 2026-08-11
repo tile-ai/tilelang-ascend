@@ -292,5 +292,5 @@ if __name__ == "__main__":
             use_autotune=use_autotune,
         )
     print("=" * 60)
-    print("TEST PASSED!")
+    print("ALL TESTS PASSED")
     print("=" * 60)

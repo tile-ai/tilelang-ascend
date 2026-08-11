@@ -93,4 +93,4 @@ c_fp32 = func(a_fp8, b_fp8)
 ref_c = a_fp8.float() @ b_fp8.float()
 
 torch.testing.assert_close(c_fp32, ref_c, rtol=1e-2, atol=1e-2)
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")

@@ -364,7 +364,7 @@ def main():
     # contains "Test Passed!" / "Kernel Output Match!". Print it when all
     # run_one correctness checks passed; exit 1 otherwise.
     if all(results):
-        print("Test Passed!")
+        print("ALL TESTS PASSED")
     else:
         sys.exit(1)
 

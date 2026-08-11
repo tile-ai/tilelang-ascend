@@ -353,4 +353,4 @@ if __name__ == "__main__":
     print("=" * 60)
     _run_test("float16", torch.float16)
     _run_test("bfloat16", torch.bfloat16)
-    print("Batch Kernel Output Match!")
+    print("ALL TESTS PASSED")

@@ -46,4 +46,4 @@ torch.npu.synchronize()
 ref_output = torch.sigmoid(input)
 
 torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")

@@ -217,4 +217,4 @@ for B, H, L, D, block_L, block_D in test_configs:
     torch.testing.assert_close(o.cpu(), ref_o.cpu(), rtol=1e-3, atol=1e-3)
     print("Test passed!")
 
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")

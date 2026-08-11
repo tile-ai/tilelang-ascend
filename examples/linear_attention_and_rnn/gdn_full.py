@@ -81,4 +81,4 @@ for Batch, H, L, DK, DV, C, BK, BV in test_configs:
     torch.testing.assert_close(ker_o.cpu(), ref_chunk_o_result.cpu(), rtol=1e-3, atol=1e-3)
     print("Test passed!")
 
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")

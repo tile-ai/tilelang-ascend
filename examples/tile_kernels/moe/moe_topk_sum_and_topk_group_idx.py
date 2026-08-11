@@ -506,5 +506,5 @@ def test_topk_sum_and_topk_group_idx_backward(params):
 if __name__ == "__main__":
     exit_code = pytest.main([__file__, "-v"])
     if exit_code == pytest.ExitCode.OK:
-        print("All topk_sum_and_topk_group_idx tests passed! Kernel Output Match!")
+        print("ALL TESTS PASSED")
     sys.exit(exit_code)

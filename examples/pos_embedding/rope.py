@@ -185,4 +185,4 @@ if __name__ == "__main__":
     tilelang_apply_rope_partial_in_place(x_tl, sin, cos)
 
     torch.testing.assert_close(x_tl, x_ref, rtol=1e-3, atol=1e-3)
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")

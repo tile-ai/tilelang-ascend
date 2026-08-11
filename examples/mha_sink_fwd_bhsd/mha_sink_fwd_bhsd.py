@@ -670,4 +670,4 @@ if __name__ == "__main__":
     max_diff = (out.float() - ref_out.float()).abs().max().item()
     print(f"max_diff: {max_diff:.6e}")
     assert max_diff < atol, f"Precision check failed: max_diff={max_diff} >= atol={atol}"
-    print("Test Passed!")
+    print("ALL TESTS PASSED")

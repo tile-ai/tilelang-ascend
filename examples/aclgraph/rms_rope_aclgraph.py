@@ -271,4 +271,4 @@ if __name__ == "__main__":
     g.replay()
 
     torch.testing.assert_close(q, q_ref, rtol=1e-2, atol=1e-2)
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")

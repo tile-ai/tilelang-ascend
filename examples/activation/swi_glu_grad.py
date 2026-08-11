@@ -177,4 +177,4 @@ for i in range(1):
         torch.testing.assert_close(ascend_grad.cpu(), tile_grad.cpu(), rtol=1e-2, atol=1e-2)
         print("Backward Test Passed")
 
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")

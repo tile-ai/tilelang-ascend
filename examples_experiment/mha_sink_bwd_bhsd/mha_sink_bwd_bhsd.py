@@ -780,7 +780,7 @@ if __name__ == "__main__":
                 torch.testing.assert_close(dsinks, dsinks_ref, rtol=rtol, atol=atol)
                 if attempt > 0:
                     print(f"  [retry] smoke test passed on attempt {attempt + 1}/{max_attempts}")
-                print("Test Passed!")
+                print("ALL TESTS PASSED")
                 break
             except AssertionError:
                 if attempt < max_attempts - 1:

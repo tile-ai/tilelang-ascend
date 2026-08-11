@@ -356,4 +356,4 @@ if __name__ == "__main__":
     _test(25, 256, 4, "bfloat16")
     _test(256, 128, 16, "bfloat16")
 
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")

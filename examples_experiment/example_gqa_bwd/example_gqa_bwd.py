@@ -1304,4 +1304,4 @@ if __name__ == "__main__":
     assert bwd_max_diff < atol, f"Backward precision check failed: max_diff={bwd_max_diff} >= atol={atol}"
 
     print(f"max_diff: fwd={fwd_max_diff:.6e} bwd={bwd_max_diff:.6e}")
-    print("Test Passed!")
+    print("ALL TESTS PASSED")

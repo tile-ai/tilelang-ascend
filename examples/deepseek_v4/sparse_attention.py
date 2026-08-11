@@ -231,7 +231,7 @@ def test():
     output_golden = sparse_attn(q, kv, attn_sink, topk_idxs, softmax_scale)
 
     torch.testing.assert_close(output_golden, output, rtol=1e-2, atol=1e-2)
-    logging.info("Kernel Output Match!")
+    print("ALL TESTS PASSED")
 
 
 if __name__ == "__main__":

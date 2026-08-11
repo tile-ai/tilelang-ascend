@@ -100,4 +100,4 @@ for M, N, block_M, block_N in test_configs:
     torch.testing.assert_close(grad_input.cpu(), ref_grad_input.cpu(), rtol=1e-3, atol=1e-2)
     print("Test pass!")
 
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")

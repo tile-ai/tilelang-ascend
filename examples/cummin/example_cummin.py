@@ -561,7 +561,7 @@ def main():
     ok = test_cummin_all()
 
     if ok:
-        print("Test Passed!")
+        print("ALL TESTS PASSED")
         sys.exit(0)
     sys.exit(1)
 

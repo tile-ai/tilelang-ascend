@@ -32,4 +32,4 @@ python test_torch.py || { echo "python test_torch.py failed"; exit 1; }
 echo "Running test_source.py"
 python test_source.py || { echo "python test_source.py failed"; exit 1; }
 
-echo "All Test Passed!"
+echo "ALL TESTS PASSED"

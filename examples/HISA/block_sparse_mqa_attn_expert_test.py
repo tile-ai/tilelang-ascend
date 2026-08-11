@@ -715,4 +715,4 @@ if __name__ == "__main__":
         grid_size=args.grid_size,
         dtype=args.dtype,
     )
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")

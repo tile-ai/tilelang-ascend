@@ -209,7 +209,7 @@ def main():
     rtol = 1e-2 if dtype in ["float16", "bfloat16"] else 1e-3
     atol = 1e-2 if dtype in ["float16", "bfloat16"] else 1e-3
     torch.testing.assert_close(y.cpu(), y_ref.cpu(), rtol=rtol, atol=atol)
-    print(f"Test passed! (rtol={rtol}, atol={atol})")
+    print("ALL TESTS PASSED")
 
 
 if __name__ == "__main__":

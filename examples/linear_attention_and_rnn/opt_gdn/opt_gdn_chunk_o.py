@@ -215,4 +215,4 @@ if __name__ == "__main__":
         torch.testing.assert_close(o.cpu(), ref_o.cpu(), rtol=1e-5, atol=1e-5)
         print("Test passed!")
 
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")

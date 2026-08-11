@@ -75,4 +75,4 @@ if __name__ == "__main__":
     ref_c = torch.matmul(a, b)
 
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-    print("Batch Kernel Output Match!")
+    print("ALL TESTS PASSED")

@@ -58,4 +58,4 @@ if __name__ == "__main__":
     ref_c = torch.min(a, dim=-1).values
 
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")

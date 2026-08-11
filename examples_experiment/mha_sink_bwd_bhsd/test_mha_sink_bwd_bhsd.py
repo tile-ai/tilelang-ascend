@@ -357,7 +357,7 @@ def run_layered_tests(level: str, exit_on_fail: bool = True):
 
     if exit_on_fail:
         if blocking_ok:
-            print("Test Passed!")
+            print("ALL TESTS PASSED")
             sys.exit(0)
         sys.exit(1)
     return blocking_ok
@@ -441,7 +441,7 @@ def main():
         run_perf_benchmark()
 
     if precision_ok:
-        print("\nTest Passed!")
+        print("ALL TESTS PASSED")
         sys.exit(0)
     print("\nTest FAILED!")
     sys.exit(1)

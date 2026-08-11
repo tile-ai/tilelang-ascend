@@ -154,4 +154,4 @@ from tilelang.profiler import do_bench
 tilelang_time = do_bench(lambda: func(q, k, v))
 print(tilelang_time)
 
-print("Test Passed!")
+print("ALL TESTS PASSED")

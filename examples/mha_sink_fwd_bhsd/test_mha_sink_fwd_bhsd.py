@@ -586,7 +586,7 @@ def run_perf_mode(args):
     # contains "Test Passed!" / "Kernel Output Match!". Print it when all
     # run_one correctness checks passed; exit 1 otherwise.
     if all(results):
-        print("Test Passed!")
+        print("ALL TESTS PASSED")
     else:
         sys.exit(1)
 
@@ -665,7 +665,7 @@ def main():
         test_mha_sink_fwd_bhsd_boundary()
 
     if blocking_ok:
-        print("Test Passed!")
+        print("ALL TESTS PASSED")
         sys.exit(0)
     sys.exit(1)
 

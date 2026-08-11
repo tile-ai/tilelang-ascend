@@ -307,7 +307,7 @@ def main() -> None:
 
     print("=" * 70)
     print("[PASS] RoPE kernel 验证通过")
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")
     print("=" * 70)
 
 

@@ -2416,5 +2416,5 @@ def test_per_block_cast_lossless(params: dict) -> None:
 if __name__ == "__main__":
     exit_code = pytest.main([__file__, "-v"])
     if exit_code == pytest.ExitCode.OK:
-        print("All per_block_cast_lossless tests passed! Kernel Output Match!")
+        print("ALL TESTS PASSED")
     sys.exit(exit_code)

@@ -357,4 +357,4 @@ ref_output = ref_sparse_attention_fwd_interface_gqa(q, kv, indices, q_start_s_in
 torch.npu.synchronize()
 torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
 
-print("Test Passed!")
+print("ALL TESTS PASSED")

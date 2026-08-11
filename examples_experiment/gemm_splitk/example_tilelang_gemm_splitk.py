@@ -86,7 +86,7 @@ def main():
         test(128, 128, 128, 2)
         test(1024, 1024, 1024, 4)
 
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")
 
 
 if __name__ == "__main__":

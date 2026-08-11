@@ -202,4 +202,4 @@ for B, H, L, D, C in test_configs:
     torch.testing.assert_close(o.cpu(), ref_o.cpu(), rtol=1e-2, atol=atol)
     print("  passed!")
 
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")

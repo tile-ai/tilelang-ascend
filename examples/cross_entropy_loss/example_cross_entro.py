@@ -170,7 +170,7 @@ def main(custom_args=None):
     check_case(64, 64, 32, 16)
 
     print("cross_entropy_loss example passed!")
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")
 
 
 if __name__ == "__main__":
