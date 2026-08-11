@@ -149,6 +149,37 @@ T.tile.sub(acc_ub, acc_ub, max_2d)
 
 **评审建议**：看到 `for row in range(...)`、`for col in range(...)` 里反复调用 `T.tile.add/sub/mul/div/max/min` 时，优先确认能否改成 broadcast + 整 tile 计算。
 
+### 子模式：`T.if_then_else` 逐元素条件分支导致串行循环 ⭐
+
+**识别特征**：kernel 中用 `T.if_then_else` 做逐元素条件分支（如 `x < threshold` 时用近似公式），被 `ascend_lower_parallel` pass 降级为串行循环。
+
+```python
+# 反模式：T.if_then_else 逐元素条件分支
+for i, j in T.Parallel(block_M, block_N):
+    x = x_ub[i, j]
+    y_ub[i, j] = T.if_then_else(x < threshold, approx_fn(x), full_fn(x))
+```
+
+**性能原因**：`T.if_then_else` 无法被 `ascend_lower_parallel` pass 向量化，整个 `T.Parallel` 循环降级为**串行标量迭代**（每 tile 数千次）。串行循环内每元素都执行条件判断 + 分支选择 + 标量读写，性能灾难性下降。
+
+**与"基础指令拼接未融合"的区别**：后者是多个 `T.tile.xxx` 可融合为一条复合指令（如 `mul+add`→`mul_add_dst`）；本子模式是条件分支本身导致无法向量化，即使分支内的操作都是向量化的。
+
+**替代写法**：用数学等价变换消除条件分支（完整工具箱见 [tilelang-op-design ascend-constraints.md §7](../../tilelang-op-design/references/ascend-constraints.md)）：
+
+```python
+# 正模式：用数学等价公式消除分支，全部用 T.tile.xxx 向量化
+# 核心思路：将条件分支改写为无条件分支的等价数学表达式
+# 例：log-sum-exp trick 将 ln(1+exp(x)) 改写为 max(x,0) + ln(1+exp(-|x|))
+#     使 exp 参数恒非正，不溢出，且全向量化无需条件判断
+T.tile.max(t1_ub, a_ub, 0.0)       # max(x, 0)
+T.tile.abs(t0_ub, a_ub)            # |x|
+T.tile.mul(t0_ub, t0_ub, -1.0)     # -|x|（exp 参数 ≤ 0）
+T.tile.exp(t0_ub, t0_ub)           # exp(-|x|)，结果有界
+# ... 后续 add/ln 步骤完成等价变换
+```
+
+**评审建议**：看到 `T.if_then_else` 在 `T.Parallel` 循环内做逐元素条件分支时，**强制要求**改用数学等价变换。只有当所有等价变换都不可行时才允许条件分支，并在 design 文档显式标注性能代价。
+
 ---
 
 ## 冗余全局同步
