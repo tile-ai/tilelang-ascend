@@ -4,7 +4,7 @@
     {
       "id": 1,
       "prompt": "帮我把 softmax 算子合并成上库文件，准备提 PR",
-      "expected_output": "在 examples/softmax/ 下生成 example_softmax.py，包含 softmax kernel + 1个L0用例(128,4096) + 1个L1用例(512,512)，用 torch.testing.assert_close，无 import softmax 语句，可直接 python 运行打印 Kernel Output Match!",
+      "expected_output": "在 examples/softmax/ 下生成 example_softmax.py，包含 softmax kernel + 1个L0用例(128,4096) + 1个L1用例(512,512)，用 torch.testing.assert_close，无 import softmax 语句，可直接 python 运行并在全部用例成功后恰好打印一次 ALL TESTS PASSED",
       "files": []
     },
     {

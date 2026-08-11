@@ -55,7 +55,7 @@ cd examples/gemm
 python example_gemm.py
 
 成功后会打印：
-Kernel Output Match!
+ALL TESTS PASSED
 ```
 
 ### 2.2 TileLang 算子kernel示例
@@ -125,7 +125,7 @@ c = func(a, b)
 ref_c = a + b
 
 torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")
 
 ```
 

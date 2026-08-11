@@ -148,7 +148,7 @@ python example_gemm.py
 Upon success, it will print:
 
 ```
-Kernel Output Match!
+ALL TESTS PASSED
 ```
 
 ## Comparison with NVIDIA Backend Implementation
@@ -664,13 +664,24 @@ We welcome contributions of new operators and framework improvements! Please fol
 When adding a new operator:
 
 1. Create your operator under the `examples/` directory (e.g., `examples/my_op/my_op.py`).
-2. Make sure your script prints `Kernel Output Match!` or `Test Passed!` upon success, so the CI can recognize it.
+2. Follow the benchmark result contract below so CI can recognize the completed test suite.
 3. Verify that `bench_test.sh` can discover and run your script — it auto-discovers `*.py` files up to 2 levels deep under `examples/`.
 4. Run the full test suite locally before submitting:
    ```bash
    cd examples
    bash bench_test.sh
    ```
+
+#### Benchmark result contract
+
+Every entrypoint collected by `examples/bench_test.sh` must:
+
+- exit with status 0 and print the exact, case-sensitive line `ALL TESTS PASSED` exactly once,
+  only after all intended cases and stages complete successfully;
+- return a nonzero status and never print `ALL TESTS PASSED` when a blocking check fails; and
+- use other messages for per-case or per-stage progress. Legacy messages such as
+  `Kernel Output Match!` and `Test Passed!` may remain as progress output, but the runner no
+  longer treats them as terminal success markers.
 
 ### Contributing Framework Changes
 

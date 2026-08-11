@@ -698,7 +698,7 @@ def main():
         test_{op}_boundary()   # 非阻塞
 
     if blocking_ok:
-        print("Test Passed!")  # L0/L1 全过；bench_test.sh 据此判定
+        print("ALL TESTS PASSED")  # L0/L1 全过；bench_test.sh 据此判定
         sys.exit(0)
     sys.exit(1)
 
@@ -722,7 +722,7 @@ if __name__ == "__main__":
 | **L2 测试** | 负向测试：非法 dtype / shape 应被拒绝——**正确抛异常 = PASS，静默接受 = WARN**；用 `_run_exception`，不比精度（无合法 golden），≤20 用例，非阻塞 |
 | **Boundary 测试** | 合法特殊值（INF/NAN/极值/空 tensor）——用 `_run_boundary` 跑 kernel+golden，**按精度验收标准（check_precision）比对，精度不过 = WARN**，≤10 用例，非阻塞 |
 | **分层标记** | L0/L1 → `[PRECISION_PASS]`/`[PRECISION_FAIL]`（阻塞，计入退出码）；L2/Boundary → `[BOUNDARY_PASS]`/`[BOUNDARY_WARN]`（非阻塞，不改退出码） |
-| **退出码** | L0/L1 全过 → 打印 `"Test Passed!"` 且 `exit(0)`；L0/L1 任一失败 → `exit(1)`；L2/Boundary 失败不影响退出码 |
+| **退出码** | L0/L1 全过 → 恰好打印一次 `"ALL TESTS PASSED"` 且 `exit(0)`；L0/L1 任一失败 → 不打印终态标记并 `exit(1)`；L2/Boundary 失败不影响退出码 |
 | **--level 分发** | main 支持 `--level {l0,l1,l2,boundary,all}`；精度收敛跑 `l0`，扩展后跑 `all` |
 | **异常隔离** | L2 用 `_run_exception`（期望拒绝，抛异常 = PASS）、Boundary 用 `_run_boundary`（比精度，精度不过 = WARN）；两者都 `try/except` 包裹、非阻塞、失败后继续，不得中断后续用例 |
 | **覆盖标注** | 每条 L1 用例带 `tags=`（命中的 `D-*` 维度 ID）；文件含 `COVERAGE_MANIFEST` / `COVERAGE_NA`。无标注 → checker 判 MISS |

@@ -789,7 +789,7 @@ def padded_to_varlen(padded, cu_seqlens, heads, dim):
     return torch.cat(parts, dim=0)
 
 
-# ========== Smoke Test (CI entry — prints "Test Passed!") ==========
+# ========== Smoke Test (CI entry — prints final "ALL TESTS PASSED") ==========
 
 
 if __name__ == "__main__":

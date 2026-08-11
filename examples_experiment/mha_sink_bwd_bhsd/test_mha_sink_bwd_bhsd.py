@@ -335,8 +335,8 @@ def run_layered_tests(level: str, exit_on_fail: bool = True):
     L0/L1 are blocking (PRECISION_PASS/FAIL); L2/Boundary are non-blocking
     (BOUNDARY_PASS/WARN). Returns True iff all blocking tests pass.
 
-    When exit_on_fail=True (default), prints "Test Passed!" and sys.exit(0/1)
-    — preserves legacy behavior for callers like mha_sink_bwd_bhsd.__main__.
+    When exit_on_fail=True (default), prints "ALL TESTS PASSED" and exits 0
+    only when blocking tests pass; otherwise it exits 1 without the marker.
     When exit_on_fail=False, returns the bool so the caller can chain perf
     benchmark or other post-precision work.
     """

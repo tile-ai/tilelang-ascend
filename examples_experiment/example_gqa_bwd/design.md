@@ -955,7 +955,7 @@ example_gqa_bwd/
 | 文件 | 说明 |
 |------|------|
 | `design.md` | 算子设计文档：I/O 规格、编程模式、API 映射、内存规划、tiling、同步策略、验证方案 |
-| `example_gqa_bwd.py` | 算子实现：全部 kernel + golden reference + autograd wrapper + `__main__` 冒烟测试（输出 "Test Passed!"） |
+| `example_gqa_bwd.py` | 算子实现：全部 kernel + golden reference + autograd wrapper + `__main__` 冒烟测试（输出 "ALL TESTS PASSED"） |
 | `test_gqa_bwd.py` | 分层精度测试 + 性能测试：L0（规则 shape，阻塞）/ L1（不规则 shape，阻塞）/ L2（异常输入，非阻塞）/ Boundary（特殊值，非阻塞）/ Perf（do_bench 性能测试）+ `argparse --level` |
 
 ### 15.3 函数清单
@@ -977,11 +977,11 @@ example_gqa_bwd/
 ```bash
 # 1. 冒烟测试（CI 直接运行主文件）
 python example_gqa_bwd.py
-# 输出: "Test Passed!"
+# 最终输出: "ALL TESTS PASSED"
 
 # 2. 默认运行（L0 精度 + 性能测试，CI 直接运行）
 python test_gqa_bwd.py
-# 输出: [PRECISION_PASS] 标记 + 性能表格 + "Test Passed!"
+# 输出: [PRECISION_PASS] 标记 + 性能表格 + 最终 "ALL TESTS PASSED"
 
 # 3. 只跑 L0 精度（快速验证）
 python test_gqa_bwd.py --level l0

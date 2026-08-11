@@ -1238,7 +1238,7 @@ attention = _attention.apply
 
 # ===========================================================================
 # __main__: minimal L0 smoke test (CI bench_test.sh runs this directly).
-# stdout must contain "Test Passed!" for CI to mark the script PASSED.
+# stdout must contain exactly one "ALL TESTS PASSED" line for CI to pass it.
 # Matches L0 "FWD-GQA-causal + BWD-GQA-causal" minimal config:
 #   B=1, H=2, H_kv=1, N=128, D_qk=D_v=64, groups=2, causal=True.
 # ===========================================================================
