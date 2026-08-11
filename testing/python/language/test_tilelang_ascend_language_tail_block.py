@@ -696,6 +696,121 @@ def test_broadcast_axis0_tail(target, dtype):
 
 
 # =============================================================================
+# Group 2f - mixed vector tail pipelines                         [risk: high]
+# Exercise valid-region state across operator-family boundaries rather than
+# testing compare/select/broadcast only in isolation.
+# =============================================================================
+def mixed_broadcast_compare_select_tail(M, N, block_M, block_N, dtype="float"):
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        Row: T.Tensor((M, n_num), dtype),  # type: ignore
+        Col: T.Tensor((m_num, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+            row_ub = T.alloc_ub((block_M, 1), dtype)
+            col_ub = T.alloc_ub((1, block_N), dtype)
+            row_full_ub = T.alloc_ub((block_M, block_N), dtype)
+            col_full_ub = T.alloc_ub((block_M, block_N), dtype)
+            sum_ub = T.alloc_ub((block_M, block_N), dtype)
+            abs_ub = T.alloc_ub((block_M, block_N), dtype)
+            mask_ub = T.alloc_ub((block_M, block_N // 8), "uint8")
+            out_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+            T.copy(Row[bx * block_M, by], row_ub)
+            T.copy(Col[bx, by * block_N], col_ub)
+            T.tile.broadcast(row_full_ub, row_ub, axis=1)
+            T.tile.broadcast(col_full_ub, col_ub, axis=0)
+            T.tile.add(sum_ub, row_full_ub, col_full_ub)
+            T.tile.abs(abs_ub, a_ub)
+            T.tile.compare(mask_ub, abs_ub, sum_ub, "LT")
+            T.tile.select(out_ub, mask_ub, abs_ub, sum_ub, "VSEL_TENSOR_TENSOR_MODE")
+            T.copy(out_ub, C[bx * block_M, by * block_N])
+
+    return main
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+def test_mixed_broadcast_compare_select_tail(target, dtype):
+    M, N, block_M, block_N = 5, 69, 4, 64
+    m_num = (M + block_M - 1) // block_M
+    n_num = (N + block_N - 1) // block_N
+    func = tilelang.compile(
+        mixed_broadcast_compare_select_tail(M, N, block_M, block_N, dtype),
+        out_idx=[-1],
+        pass_configs=_vec_configs(True),
+        target=target,
+    )
+    torch.manual_seed(0)
+    td = _torch_dtype(dtype)
+    a = torch.randn(M, N, dtype=td).npu()
+    row = (torch.rand(M, n_num, dtype=td) + 0.25).npu()
+    col = (torch.rand(m_num, N, dtype=td) + 0.25).npu()
+    out = func(a, row, col)
+    threshold = torch.empty_like(a)
+    for bx in range(m_num):
+        row_start = bx * block_M
+        row_end = min(row_start + block_M, M)
+        for by in range(n_num):
+            col_start = by * block_N
+            col_end = min(col_start + block_N, N)
+            threshold[row_start:row_end, col_start:col_end] = row[row_start:row_end, by : by + 1] + col[bx : bx + 1, col_start:col_end]
+    ref = torch.minimum(torch.abs(a), threshold)
+    torch.testing.assert_close(out, ref, rtol=1e-3, atol=1e-3)
+
+
+def mixed_unary_scalar_select_tail(M, N, block_M, block_N, dtype="float"):
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+
+    @T.prim_func
+    def main(A: T.Tensor((M, N), dtype), C: T.Tensor((M, N), dtype)):  # type: ignore
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+            abs_ub = T.alloc_ub((block_M, block_N), dtype)
+            shifted_ub = T.alloc_ub((block_M, block_N), dtype)
+            mask_ub = T.alloc_ub((block_M, block_N // 8), "uint8")
+            out_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+            T.tile.abs(abs_ub, a_ub)
+            T.tile.add(shifted_ub, abs_ub, 0.5)
+            T.tile.compare(mask_ub, shifted_ub, 1.0, "LT")
+            T.tile.select(out_ub, mask_ub, shifted_ub, 1.0, "VSEL_TENSOR_SCALAR_MODE")
+            T.copy(out_ub, C[bx * block_M, by * block_N])
+
+    return main
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+def test_mixed_unary_scalar_select_tail(target, dtype):
+    M, N, block_M, block_N = 5, 69, 4, 64
+    func = tilelang.compile(
+        mixed_unary_scalar_select_tail(M, N, block_M, block_N, dtype),
+        out_idx=[-1],
+        pass_configs=_vec_configs(True),
+        target=target,
+    )
+    torch.manual_seed(0)
+    a = torch.randn(M, N, dtype=_torch_dtype(dtype)).npu()
+    out = func(a)
+    ref = torch.minimum(torch.abs(a) + 0.5, torch.ones_like(a))
+    torch.testing.assert_close(out, ref, rtol=1e-3, atol=1e-3)
+
+
+# =============================================================================
 # Group 3 - CV fusion (matmul + add) tail   [risk: medium]
 # Mirrors examples/simple_fusion/matmul_add.py, but the grid uses T.ceildiv with
 # non-divisible M/N. C-scope (cube) tails ride gm2l1/l0c2gm; V-scope (vector,

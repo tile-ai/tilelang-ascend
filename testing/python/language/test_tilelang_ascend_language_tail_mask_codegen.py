@@ -420,6 +420,75 @@ def _tail_broadcast_noop_then_unary(M, N, block_M, block_N):
     return main
 
 
+def _tail_mixed_broadcast_compare_select(M, N, block_M, block_N, dtype="float"):
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),
+        Row: T.Tensor((M, n_num), dtype),
+        Col: T.Tensor((m_num, N), dtype),
+        C: T.Tensor((M, N), dtype),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+            row_ub = T.alloc_ub((block_M, 1), dtype)
+            col_ub = T.alloc_ub((1, block_N), dtype)
+            row_full_ub = T.alloc_ub((block_M, block_N), dtype)
+            col_full_ub = T.alloc_ub((block_M, block_N), dtype)
+            sum_ub = T.alloc_ub((block_M, block_N), dtype)
+            abs_ub = T.alloc_ub((block_M, block_N), dtype)
+            mask_ub = T.alloc_ub((block_M, block_N // 8), "uint8")
+            out_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            T.copy(A[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N], a_ub)
+            T.copy(Row[bx * block_M : (bx + 1) * block_M, by : by + 1], row_ub)
+            T.copy(Col[bx : bx + 1, by * block_N : (by + 1) * block_N], col_ub)
+            T.tile.broadcast(row_full_ub, row_ub, axis=1)
+            T.tile.broadcast(col_full_ub, col_ub, axis=0)
+            T.tile.add(sum_ub, row_full_ub, col_full_ub)
+            T.tile.abs(abs_ub, a_ub)
+            T.tile.compare(mask_ub, abs_ub, sum_ub, "LT")
+            T.tile.select(out_ub, mask_ub, abs_ub, sum_ub, "VSEL_TENSOR_TENSOR_MODE")
+            T.copy(
+                out_ub,
+                C[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N],
+            )
+
+    return main
+
+
+def _tail_mixed_unary_scalar_select(M, N, block_M, block_N, dtype="float"):
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+
+    @T.prim_func
+    def main(A: T.Tensor((M, N), dtype), C: T.Tensor((M, N), dtype)):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+            abs_ub = T.alloc_ub((block_M, block_N), dtype)
+            shifted_ub = T.alloc_ub((block_M, block_N), dtype)
+            mask_ub = T.alloc_ub((block_M, block_N // 8), "uint8")
+            out_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            T.copy(A[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N], a_ub)
+            T.tile.abs(abs_ub, a_ub)
+            T.tile.add(shifted_ub, abs_ub, 0.5)
+            T.tile.compare(mask_ub, shifted_ub, 1.0, "LT")
+            T.tile.select(out_ub, mask_ub, shifted_ub, 1.0, "VSEL_TENSOR_SCALAR_MODE")
+            T.copy(
+                out_ub,
+                C[bx * block_M : (bx + 1) * block_M, by * block_N : (by + 1) * block_N],
+            )
+
+    return main
+
+
 def _tail_select_external_mask(M, N, block_M, block_N):
     m_num = T.ceildiv(M, block_M)
     n_num = T.ceildiv(N, block_N)
@@ -671,6 +740,43 @@ def test_same_shape_broadcast_preserves_tail_state(target):
         assert "tl::ascend::tail_unary" in src, src
     else:
         assert "TEXP(" in src, src
+        assert "pto::DYNAMIC" in src, src
+
+
+@pytest.mark.parametrize("target", TAIL_TARGETS)
+@pytest.mark.parametrize("dtype", ["float16", "float"])
+def test_mixed_broadcast_compare_select_emits_all_tail_paths(target, dtype):
+    src = _source(_tail_mixed_broadcast_compare_select(5, 69, 4, 64, dtype), target=target)
+    if target == "ascendc":
+        assert src.count("tl::ascend::tail_broadcast") == 2, src
+        assert "tl::ascend::tail_binary" in src, src
+        assert "tl::ascend::tail_unary" in src, src
+        assert "tl::ascend::tail_compare" in src, src
+        assert "tl::ascend::tail_select" in src, src
+    else:
+        assert "TROWEXPAND(" in src, src
+        assert "TCOLEXPAND(" in src, src
+        assert "TADD(" in src, src
+        assert "TABS(" in src, src
+        assert "tl::ascend_pto::compare(" in src, src
+        assert "TSEL(" in src, src
+        assert "pto::DYNAMIC" in src, src
+
+
+@pytest.mark.parametrize("target", TAIL_TARGETS)
+@pytest.mark.parametrize("dtype", ["float16", "float"])
+def test_mixed_unary_scalar_select_emits_all_tail_paths(target, dtype):
+    src = _source(_tail_mixed_unary_scalar_select(5, 69, 4, 64, dtype), target=target)
+    if target == "ascendc":
+        assert "tl::ascend::tail_unary" in src, src
+        assert "tl::ascend::tail_scalar" in src, src
+        assert "tl::ascend::tail_compare_scalar" in src, src
+        assert "tl::ascend::tail_select_scalar" in src, src
+    else:
+        assert "TABS(" in src, src
+        assert "TADDS(" in src, src
+        assert "tl::ascend_pto::compare_scalar(" in src, src
+        assert "TSELS(" in src, src
         assert "pto::DYNAMIC" in src, src
 
 
