@@ -167,5 +167,6 @@ if __name__ == "__main__":
     block_K = 64
 
     run_tilelang_grouped_gemm_fwd_ptr(batch_sizes_list, args.K, args.N, block_M, block_N, block_K, profile=args.profile)
+    print("ALL TESTS PASSED")
 
     # test_grouped_gemm_fwd_ptr()

@@ -1568,7 +1568,7 @@ if __name__ == "__main__":
         if ok:
             print("  Kernel Output Match!")
         else:
-            print(f"  MISMATCH ({detail})")
+            raise AssertionError(f"{name}: {detail}")
 
     # Example 1: BSND + BSND
     def example_bsnd_bsnd():
@@ -1659,4 +1659,6 @@ if __name__ == "__main__":
     elif arg in examples:
         examples[arg]()
     else:
-        print(f"Usage: python lightning_indexer.py [{('|').join(examples.keys())}|all]")
+        raise SystemExit(f"Usage: python lightning_indexer.py [{('|').join(examples.keys())}|all]")
+
+    print("ALL TESTS PASSED")

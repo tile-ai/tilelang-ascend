@@ -790,3 +790,5 @@ if __name__ == "__main__":
 
     for config in test_configs:
         test(config)
+
+    print("ALL TESTS PASSED")

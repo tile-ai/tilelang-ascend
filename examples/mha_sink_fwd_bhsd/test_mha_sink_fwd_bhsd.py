@@ -582,13 +582,7 @@ def run_perf_mode(args):
             )
 
     print("\nDone.")
-    # CI compatibility: bench_test.sh marks a script PASSED only if stdout
-    # contains "Test Passed!" / "Kernel Output Match!". Print it when all
-    # run_one correctness checks passed; exit 1 otherwise.
-    if all(results):
-        print("ALL TESTS PASSED")
-    else:
-        sys.exit(1)
+    return all(results)
 
 
 # ===========================================================================
@@ -634,8 +628,10 @@ def main():
 
     if args.level == "perf":
         # Performance benchmark mode only (integrated from perf_mha_sink_fwd_bhsd.py).
-        run_perf_mode(args)
-        return
+        if run_perf_mode(args):
+            print("ALL TESTS PASSED")
+            return
+        sys.exit(1)
 
     if args.level == "default":
         # Default mode: run L0 precision gate + one perf bench (default shape, with golden).
@@ -648,10 +644,11 @@ def main():
         print("=" * 70)
         print("Stage 2: performance benchmark (default shape, with golden)")
         print("=" * 70)
-        run_perf_mode(args)
-        if not blocking_ok:
-            sys.exit(1)
-        return
+        perf_ok = run_perf_mode(args)
+        if blocking_ok and perf_ok:
+            print("ALL TESTS PASSED")
+            return
+        sys.exit(1)
 
     blocking_ok = True  # Only L0/L1 count toward blocking
 

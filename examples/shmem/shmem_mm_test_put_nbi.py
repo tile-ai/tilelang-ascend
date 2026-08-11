@@ -74,9 +74,11 @@ def worker(rank, barrier):
         func(a, b)
         barrier.wait()
         if torch.equal(a, b):
+            matched = True
             print(f"Rank {rank}: Test passed!")
         else:
-            print("[ERROR] Kernel Output Not Match!")
+            matched = False
+            print(f"Rank {rank}: kernel output does not match")
         aclshmem_module.aclshmem_free_tensor(tensor)
 
     else:
@@ -84,6 +86,25 @@ def worker(rank, barrier):
     # Clean
     aclshmem_module.aclshmem_finialize()
     print(f"Rank {rank}: Finalized")
+    if ret != 0:
+        raise RuntimeError(f"Rank {rank}: initialization failed with code {ret}")
+    if not matched:
+        raise AssertionError(f"Rank {rank}: kernel output does not match")
+
+
+def abort_and_join_processes(barrier, processes):
+    try:
+        barrier.abort()
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+        for process in processes:
+            process.join(timeout=1)
+            if process.is_alive():
+                process.kill()
+        for process in processes:
+            process.join()
 
 
 # [Program Start Location]
@@ -92,12 +113,24 @@ print(f"Number of processes: {num_processes}")
 barrier = Barrier(num_processes)
 processes = []
 
-for rank in range(num_processes):
-    p = mp.Process(target=worker, args=(rank, barrier))
-    p.start()
-    processes.append(p)
+try:
+    for rank in range(num_processes):
+        p = mp.Process(target=worker, args=(rank, barrier))
+        p.start()
+        processes.append(p)
+    while any(p.is_alive() for p in processes):
+        failed_processes = [p.pid for p in processes if p.exitcode not in (None, 0)]
+        if failed_processes:
+            raise RuntimeError(f"worker processes failed: {failed_processes}")
+        for p in processes:
+            p.join(timeout=0.1)
 
-for p in processes:
-    p.join()
-
+    for p in processes:
+        p.join()
+    failed_processes = [p.pid for p in processes if p.exitcode != 0]
+    if failed_processes:
+        raise RuntimeError(f"worker processes failed: {failed_processes}")
+except BaseException:
+    abort_and_join_processes(barrier, processes)
+    raise
 print("ALL TESTS PASSED")

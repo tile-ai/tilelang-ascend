@@ -525,6 +525,21 @@ def init_input(rank, Bs, H, K, ep_world_size, local_expert_num):
     return x, expert_ids
 
 
+def abort_and_join_processes(barrier, processes):
+    try:
+        barrier.abort()
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+        for process in processes:
+            process.join(timeout=1)
+            if process.is_alive():
+                process.kill()
+        for process in processes:
+            process.join()
+
+
 if __name__ == "__main__":
     Bs = 64
     H = 7168
@@ -535,11 +550,38 @@ if __name__ == "__main__":
     num_processes = 16
     barrier = Barrier(num_processes)
     processes = []
-    for rank in range(num_processes):
-        x, expert_ids = init_input(rank, Bs, H, K, ep_world_size, local_expert_num)
-        p = mp.Process(target=worker, args=(rank, barrier, x, expert_ids, aiv_num, ep_world_size, local_expert_num, Bs))
-        p.start()
-        processes.append(p)
-    for p in processes:
-        p.join()
+    try:
+        for rank in range(num_processes):
+            x, expert_ids = init_input(rank, Bs, H, K, ep_world_size, local_expert_num)
+            p = mp.Process(
+                target=worker,
+                args=(
+                    rank,
+                    barrier,
+                    x,
+                    expert_ids,
+                    aiv_num,
+                    ep_world_size,
+                    local_expert_num,
+                    Bs,
+                ),
+            )
+            p.start()
+            processes.append(p)
+        while any(p.is_alive() for p in processes):
+            failed_processes = [p.pid for p in processes if p.exitcode not in (None, 0)]
+            if failed_processes:
+                raise RuntimeError(f"worker processes failed: {failed_processes}")
+            for p in processes:
+                p.join(timeout=0.1)
+
+        for p in processes:
+            p.join()
+        failed_processes = [p.pid for p in processes if p.exitcode != 0]
+        if failed_processes:
+            raise RuntimeError(f"worker processes failed: {failed_processes}")
+    except BaseException:
+        abort_and_join_processes(barrier, processes)
+        raise
     print("All processes completed")
+    print("ALL TESTS PASSED")

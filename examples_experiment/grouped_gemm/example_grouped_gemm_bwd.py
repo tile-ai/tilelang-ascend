@@ -160,6 +160,7 @@ def run_tilelang_grouped_gemm_bwd(batch_sizes_list, M, N, block_M, block_N, bloc
         print(f"❌ TileLang and Torch mismatch (batch_sizes={batch_sizes_list}, M={M}, N={N})")
         max_diff = torch.max(torch.abs(out - ref_output)).item()
         print(f"   Max difference: {max_diff}")
+        raise AssertionError("TileLang and Torch grouped GEMM backward outputs do not match")
 
 
 if __name__ == "__main__":
@@ -177,3 +178,4 @@ if __name__ == "__main__":
     block_M, block_N, block_K = args.block_M, args.block_N, args.block_K
 
     run_tilelang_grouped_gemm_bwd(batch_sizes_list, M, N, block_M, block_N, block_K)
+    print("ALL TESTS PASSED")

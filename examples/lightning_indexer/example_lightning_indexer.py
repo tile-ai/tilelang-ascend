@@ -221,7 +221,7 @@ def test_indexer():
     if (1 - total_mismatches / (B * S1 * N2 * TOP_K)) > 0.99:
         print("ALL TESTS PASSED")
     else:
-        print("Test failed! The precision is not correct!")
+        raise AssertionError("lightning indexer precision is not correct")
 
 
 if __name__ == "__main__":

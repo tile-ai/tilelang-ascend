@@ -209,6 +209,10 @@ def main():
         status = "Kernel Output Match!" if success else "FAIL"
         print(f"  {merge_num}-way merge: {status}")
 
+    if not all(success for _, success in results):
+        raise AssertionError("one or more merge-sort cases failed")
+    print("ALL TESTS PASSED")
+
 
 if __name__ == "__main__":
     main()

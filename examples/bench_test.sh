@@ -485,16 +485,15 @@ for script in "${all_scripts[@]}"; do
 
         # 结果判定逻辑
         # 1. 进程必须正常退出
-        # 2. 任务还必须匹配 KERNEL OUTPUT MATCH 或 TEST PASSED!
+        # 2. 任务必须恰好输出一次完整的终态标记 ALL TESTS PASSED
         last_line=$(echo "$output" | tail -n 1)
-        if (( exit_code == 0 )) && {
-            [[ "$output" =~ [Kk][Ee][Rr][Nn][Ee][Ll][[:space:]][Oo][Uu][Tt][Pp][Uu][Tt][[:space:]][Mm][Aa][Tt][Cc][Hh] ]] ||
-            [[ "$output" =~ [Tt][Ee][Ss][Tt][[:space:]][Pp][Aa][Ss][Ss][Ee][Dd][!] ]]
-        }; then
+        marker_count=$(grep -Fxc 'ALL TESTS PASSED' <<< "$output" || true)
+        if (( exit_code == 0 && marker_count == 1 )); then
             echo "[PASSED] $current_script_ref"
             touch "$temp_dir/pass_$total_scripts"
         else
             echo "[FAILED] $current_script_ref (Exit: $exit_code)"
+            echo "  ALL TESTS PASSED markers: $marker_count"
             echo "  Last line: $last_line"
             # 失败时打印最后5行方便调试
             echo "$output" | tail -n 5 | sed 's/^/  /'
