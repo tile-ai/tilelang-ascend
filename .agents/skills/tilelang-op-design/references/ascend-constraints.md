@@ -42,6 +42,7 @@
 | Host 侧 `reshape` 隐式拷贝 | design.md 中 host 侧对 `permute`/`transpose`/`movedim` 后（非 contiguous）的张量做 `reshape`（尤其是 `reshape(-1)`） | **立即警告**，指出 `reshape` 对非 contiguous 张量等价于 `.contiguous()`，属 §5 禁止行为；要求改用 stride buffer 方案（见 §6「非连续数据归一化设计」） |
 | Host 侧 `torch.nn.functional.*` / `torch.cat` 等隐式 aclnn 调用 | design.md 中 host 侧出现 `torch.nn.functional.pad`/`cat`/`interpolate`、`torch.cat`/`stack`、`.to(dtype)` dtype 转换、`.clone()` 等操作 | **立即警告**，指出这些操作在 NPU tensor 上会触发 aclnn 调用，cann-bench 评测环境可能裁剪 aclnn 导致运行时失败；属 §5 禁止行为 #5；要求改为在 kernel 内用 `T.tile.cast`/`T.copy`+`pad_value` 等完成 |
 | 输出侧切片 + reshape 隐式 contiguous | design.md 中 kernel 调用后对输出张量做切片（如 `y[:,:,:,:S]`）再 `reshape` | **立即警告**，指出切片后 tensor 非 contiguous，reshape 会隐式 `.contiguous()` → `aclnnCopy`；属 §5 禁止行为 #5；要求改为让 kernel 直接输出到与原始 shape 一致的 buffer（`T.copy`+`pad_value` 处理尾块），host 侧仅做纯 view reshape |
+| 数值稳定方案引入 `T.if_then_else` 逐元素条件分支 | design.md §3 API 映射中方案依赖 `T.if_then_else` / `T.tile.compare` + `T.tile.select` 做逐元素条件分支 | **立即警告**，要求先探索数学等价变换消除分支（见 §7）；只有所有等价变换都不可行时才允许条件分支，并显式标注性能代价 |
 
 ## 3. 警告输出格式
 
@@ -234,3 +235,25 @@ design.md 中如果对非 contiguous 张量做 `reshape` 降维，必须回答�
 - 输入张量在 `reshape` 之前是否 contiguous？（`x.is_contiguous()`）
 - 如果非 contiguous，`reshape` 会触发物理拷贝——是否已改用方案 B（stride 作为 JIT 编译期常量传入 kernel）？
 - 如果答案仍是 `reshape` → **设计违规**，必须改用方案 B
+
+## 7. 数值稳定方案的向量化约束 ⭐
+
+数值稳定方案选定后，**必须评估其对向量化的影响**。同一算子选不同方案可能差数十倍性能。
+
+**硬约束**：若方案依赖 `T.if_then_else` 逐元素条件分支，**必须先探索数学等价变换**消除分支。只有当所有等价变换都不可行时，才允许用条件分支，并在 design 文档 §1 显式标注"此方案会导致串行循环，性能代价 X"。
+
+**数学等价变换工具箱**（优先级从高到低）：
+
+| 场景 | 错误方案（条件分支） | 正确方案（数学等价变换） |
+|------|---------------------|-------------------------|
+| 大值域 exp 溢出 | `if x > thresh: exp(x) else: ...` | **log-sum-exp trick**：`softplus(x) = max(x,0) + ln(1+exp(-|x|))`（exp 参数恒非正，不溢出） |
+| tanh 实现无 `T.tile.tanh` | `if sp > thresh: 1.0 else: tanh(sp)` | **sigmoid 等价**：`tanh(s) = 2*sigmoid(2s) - 1`（全向量化） |
+| 小值精度损失 | `if abs(x) < eps: approx else: full` | **分段多项式逼近**（用 `T.tile.max/min` 消除分支）或 **有理逼近** |
+| 大数累加溢出 | `if sum > max: max else: sum` | **Kahan summation** 或 **分段累加 + 末尾合并** |
+
+**性能根因**：`T.if_then_else` 无法被 `ascend_lower_parallel` pass 向量化，整个 `T.Parallel` 循环降级为**串行标量迭代**（每 tile 数千次迭代）。
+
+**设计阶段自检清单**（生成 design.md §3 API 映射后必须执行）：
+1. 方案中是否出现 `T.if_then_else` / `T.tile.compare` + `T.tile.select`？→ 是则触发等价变换探索
+2. 等价变换是否消除了所有逐元素条件分支？→ 是则记录到 design 文档；否则标注性能代价
+3. 变换后的精度是否在目标 dtype 阈值内？→ 用最小 reproducer 验证

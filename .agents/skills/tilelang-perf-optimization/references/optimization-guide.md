@@ -1612,7 +1612,43 @@ kernel 的以下形态：
 - 只验证最终 shape/axes，不验证各 stage 尾块和 batch 边界。
 - 优化失败后静默回退，却报告该优化精度通过或性能有收益。
 
-无端到端收益时保留正确 fallback，并将本优化记录为“不适用/无收益”。
+无端到端收益时保留正确 fallback，并将本优化记录为"不适用/无收益"。
+
+---
+
+### 2.18 element-wise 算子 host 侧 tiling 优化（Smart-Flatten + Dynamic Tiling）
+
+> **适用场景**：element-wise 算子（如激活函数 mish/sigmoid/silu、逐元素运算等）。这类算子的 kernel 计算时间通常已接近 baseline，性能瓶颈在 **host 侧 adapter 的 tiling 选择**导致的 `num_blocks` 过多。
+
+**与 §2.11/§2.12 的区别**：§2.11 解决单个 (M, N) 的 tile size 选择（UB 预算反推）；§2.12 消除 host 侧不必要的 pad/contiguous 拷贝；本节解决 **多维输入如何选择最优 (M, N) 切分**来最小化 num_blocks。三者互补，可叠加使用。
+
+**核心思路**：element-wise 算子任何 flatten 不改变结果（只要 contiguous），因此可以自由选择 (M, N) 切分来最小化 `num_blocks = ceil(M/block_M) * ceil(N/block_N)`，从而减少 kernel launch 开销和提升核心利用率。
+
+#### 优化决策树
+
+| 输入 shape 类别 | 问题 | 优化方案 |
+|---------------|------|---------|
+| **1D shape**（M≤2，含质数） | block_N 上限过小 → num_blocks 数千 | **放宽 block_N 上限**（rows_per_vec=1 时单 buffer 可用到 8192×4B=32KB < 192KB UB） |
+| **ND shape 且最后一维小** | 固定 "merge 除最后维度外到 M" → M 巨大 N 极小 → num_blocks 暴增 | **smart-flatten**：搜索所有 split_idx，选 `num_blocks` 最小的 (M, N) 切分 |
+| **ND shape 已良好 tile** | 固定切分可能不是最优 | smart-flatten 在 `num_blocks` 平局时优先选更大 split_idx（避免回归） |
+
+#### 零拷贝前提
+
+- 输入 contiguous 时 `reshape` 只改 stride/shape metadata，**不触发物理拷贝**（与 §2.12 零拷贝前提一致）
+- 非 contiguous 时 `.contiguous()` 兜底（会触发拷贝，应避免）
+
+#### 判定指标
+
+`num_blocks = ceil(M/block_M) * ceil(N/block_N)` 是 compute-bound element-wise op 的 kernel 时间可靠代理。block_M 通过 §2.11 的 UB 预算反推，block_N 搜索最优值。
+
+#### block_N 32B 对齐约束
+
+block_N 必须对齐到 32B（DataCopyNd 粒度硬约束）：fp32→8 elems, fp16/bf16→16 elems。非对齐会导致数据损坏。
+
+#### 反模式
+
+- ❌ host 侧 `F.pad` 补齐到整除 shape（增加额外 device copy 开销，净退化）
+- ❌ kernel 内 stride indexing 处理 ND（需 kernel 重写 + lowering 改动，smart-flatten 零拷贝达到同样效果）
 
 ---
 
