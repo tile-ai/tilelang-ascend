@@ -14,13 +14,11 @@ pass_configs = {
 
 
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
-def rms_rope_fused(
-    M, block_M, batch_size, head_dim, rope_dim, head_num, eps, dtype="float16"
-):
+def rms_rope_fused(M, block_M, batch_size, head_dim, rope_dim, head_num, eps, dtype="float16"):
 
     ACC_DTYPE = "float"
     MASK_DTYPE = "uint32"
-    TMP_DTYPE = "uint8"
+    _TMP_DTYPE = "uint8"
 
     VEC_NUM = 2
     m_num = M // block_M
@@ -37,7 +35,6 @@ def rms_rope_fused(
         out: T.Tensor((M, head_dim), dtype),  # type: ignore
     ):
         with T.Kernel(m_num, is_npu=True) as (cid, vid):
-
             row_x = cid * block_M + vid * row_per_vec
             row_sin_cos = row_x // head_num
 
@@ -142,9 +139,7 @@ def tilelang_rms_rope_fused(q, sin, cos, eps):
     cos = cos.to(device)
     mask = mask.to(device)
 
-    kernel = rms_rope_fused(
-        total_batch, block_M, batch_size, head_dim, rope_dim, head_num, eps
-    )
+    kernel = rms_rope_fused(total_batch, block_M, batch_size, head_dim, rope_dim, head_num, eps)
     q_out = kernel(q, sin, cos, mask, sin_mask)
 
     return q_out.view(org_shape)
@@ -216,9 +211,7 @@ if __name__ == "__main__":
     q_ref = rms_norm_reference(q, head_dim, eps)
 
     q_part = q_ref[..., dim_start:]
-    q_part_out = rope_reference(
-        q_part.to(torch.float32), cos.to(torch.float32), sin.to(torch.float32)
-    )
+    q_part_out = rope_reference(q_part.to(torch.float32), cos.to(torch.float32), sin.to(torch.float32))
     q_ref[..., dim_start:] = q_part_out
 
     # 2. Run TileLang Kernel

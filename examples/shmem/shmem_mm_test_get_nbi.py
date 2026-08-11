@@ -6,8 +6,6 @@ import torch
 import shmem as aclshmem_module
 import multiprocessing as mp
 from multiprocessing import Barrier
-import sys
-import os
 
 tilelang.cache.clear_cache()
 
@@ -28,6 +26,7 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
 }
 
+
 @tilelang.jit(pass_configs=pass_configs)
 def shmem_get_nbi(M, N, nelems, newPe, dtype="int8"):
     @T.prim_func
@@ -35,12 +34,13 @@ def shmem_get_nbi(M, N, nelems, newPe, dtype="int8"):
         A: T.Tensor((M, N), dtype),
         B: T.Tensor((M, N), dtype),
     ):
-        with T.Kernel(1, is_npu=True) as (cid, vid):
-            with T.Scope("V"):
-                if vid == 0:
-                    # Copy from the newPe GM to the local GM
-                    T.shmem_get_nbi(B, A, nelems, newPe)
+        with T.Kernel(1, is_npu=True) as (cid, vid), T.Scope("V"):
+            if vid == 0:
+                # Copy from the newPe GM to the local GM
+                T.shmem_get_nbi(B, A, nelems, newPe)
+
     return main
+
 
 def worker(rank, barrier):
     print(f"Rank {rank}: Setting device")
@@ -62,9 +62,9 @@ def worker(rank, barrier):
         print(f"Rank {rank}: Initialization successful")
         torch.manual_seed(0)
         # Create shared memory tensor
-        tensor = aclshmem_module.aclshmem_create_tensor([M, 2*N], dtype=torch.int8, device_id=rank)
+        tensor = aclshmem_module.aclshmem_create_tensor([M, 2 * N], dtype=torch.int8, device_id=rank)
         a = tensor[0:1, 0:N].fill_(2)
-        b = tensor[0:1, N:2*N].fill_(0)
+        b = tensor[0:1, N : 2 * N].fill_(0)
         torch.npu.synchronize()
         nelems = M * N
         # Get data from a new card to this PE; here, it's set as the previous rank.
@@ -80,10 +80,11 @@ def worker(rank, barrier):
         aclshmem_module.aclshmem_free_tensor(tensor)
 
     else:
-        print(f"Rank {rank}: Initialization failed with code {ret}")    
+        print(f"Rank {rank}: Initialization failed with code {ret}")
     # Clean
     aclshmem_module.aclshmem_finialize()
     print(f"Rank {rank}: Finalized")
+
 
 # [Program Start Location]
 print(f"Number of processes: {num_processes}")

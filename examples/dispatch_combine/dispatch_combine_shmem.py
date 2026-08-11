@@ -5,30 +5,36 @@ import shmem as aclshmem_module
 import multiprocessing as mp
 import random
 from multiprocessing import Barrier
+
 tilelang.cache.clear_cache()
-G_IP_PORT = "tcp://xxx.xxx.xxx.xxx:xxxx"    # Enter IP and Port
+G_IP_PORT = "tcp://xxx.xxx.xxx.xxx:xxxx"  # Enter IP and Port
 g_ash_size = 1024 * 1024 * 1024
 pass_configs = {
     tilelang.PassConfigKey.TIR_MERGE_STATIC_SMEM: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
-#--- 1. Implement Dispatch Operator ---
-@tilelang.jit(out_idx=[4,5,6,7], workspace_idx=[8], pass_configs=pass_configs)
+
+
+# --- 1. Implement Dispatch Operator ---
+@tilelang.jit(out_idx=[4, 5, 6, 7], workspace_idx=[8], pass_configs=pass_configs)
 def moe_dispatch_kernel(
-    Bs,     # Total number of tokens
-    H,      # Token length
-    K,      # Number of MOE experts to send
+    Bs,  # Total number of tokens
+    H,  # Token length
+    K,  # Number of MOE experts to send
     ep_world_size,  # Total number of ranks
-    local_expert_num,   # Number of MOE experts per rank
-    rank,   # Current rank ID
-    ub_size,    # Single row size of the win data area
-    aiv_num,    # v-core count
+    local_expert_num,  # Number of MOE experts per rank
+    rank,  # Current rank ID
+    ub_size,  # Single row size of the win data area
+    aiv_num,  # v-core count
 ):
-    total_expert_num = ep_world_size * local_expert_num     # Total MOE experts count
-    assist_size = 3     # Triple size
-    ub_align = 32   # UB requires 32-byte alignment
+    total_expert_num = ep_world_size * local_expert_num  # Total MOE experts count
+    assist_size = 3  # Triple size
+    ub_align = 32  # UB requires 32-byte alignment
     ub_float_int32_align = 8
-    status_per_core = (total_expert_num + aiv_num - 1) // aiv_num   # Number of states to be processed per v-core, rounded up to the nearest integer
+    status_per_core = (
+        total_expert_num + aiv_num - 1
+    ) // aiv_num  # Number of states to be processed per v-core, rounded up to the nearest integer
+
     # Calculate the number of tokens already received by the current MoE expert.
     @T.macro
     def cal_token_send_expert_cnt(
@@ -52,35 +58,52 @@ def moe_dispatch_kernel(
         T.barrier_all()
         T.tile.reduce_sum_experiment(tmp_out_fp_32, tmp_fp_32, cal_cnt)
         T.barrier_all()
+
     # Synchronization function between different pipelines
     @T.macro
     def sync_func(src, dst, event_id: "str"):
         T.set_flag(src, dst, event_id)
         T.wait_flag(src, dst, event_id)
+
     @T.prim_func
     def main_dispatch(
-        x: T.Tensor([Bs, H], "bfloat16"),   # Tokens to be dispatched
-        expert_ids: T.Tensor([Bs, K], "int32"),     # Target MoE expert index
-        win_data: T.Tensor([total_expert_num * Bs, ub_size], "bfloat16"),   # Shared memory space for receiving tokens sent from other ranks
-        win_status: T.Tensor([total_expert_num, ub_float_int32_align], "float"),    # Shared memory space for receiving status sent from other ranks
-        expand_x_out: T.Tensor([ep_world_size * Bs * local_expert_num, H], "bfloat16"),     # Dispatch output: tokens received by this card
-        expand_ids: T.Tensor([ep_world_size * Bs * local_expert_num, assist_size], "int32"),    # Dispatch output: Triplet information indicating the source of the current token
-        ep_receive_count: T.Tensor([total_expert_num], "int32"),    # Prefix sum of tokens received by the current rank + number of tokens received by itself
-        expert_token_nums_out: T.Tensor([local_expert_num], "int64"),   # Number of tokens received by each MOE expert of the current rank
-        workspace: T.Tensor([aiv_num, ub_float_int32_align], "int32"),  # Global buffer for storing the prefix sum of tokens received by ranks
+        x: T.Tensor([Bs, H], "bfloat16"),  # Tokens to be dispatched
+        expert_ids: T.Tensor([Bs, K], "int32"),  # Target MoE expert index
+        win_data: T.Tensor([total_expert_num * Bs, ub_size], "bfloat16"),  # Shared memory space for receiving tokens sent from other ranks
+        win_status: T.Tensor(
+            [total_expert_num, ub_float_int32_align], "float"
+        ),  # Shared memory space for receiving status sent from other ranks
+        expand_x_out: T.Tensor([ep_world_size * Bs * local_expert_num, H], "bfloat16"),  # Dispatch output: tokens received by this card
+        expand_ids: T.Tensor(
+            [ep_world_size * Bs * local_expert_num, assist_size], "int32"
+        ),  # Dispatch output: Triplet information indicating the source of the current token
+        ep_receive_count: T.Tensor(
+            [total_expert_num], "int32"
+        ),  # Prefix sum of tokens received by the current rank + number of tokens received by itself
+        expert_token_nums_out: T.Tensor([local_expert_num], "int64"),  # Number of tokens received by each MOE expert of the current rank
+        workspace: T.Tensor(
+            [aiv_num, ub_float_int32_align], "int32"
+        ),  # Global buffer for storing the prefix sum of tokens received by ranks
     ):
-        with T.Kernel(aiv_num // 2, is_npu=True) as (cid, vid):     # Enable kernel logic, with the first parameter being the number of AI Cores
+        with T.Kernel(aiv_num // 2, is_npu=True) as (
+            cid,
+            vid,
+        ):  # Enable kernel logic, with the first parameter being the number of AI Cores
             # Allocate ub space
-            x_ub = T.alloc_ub([H + (32 + 12) // 2], "bfloat16")     # Data to be dispatched, H is the token length, 32-bit reserved quantization parameter space, 12 is the triple size (4 bytes * 3)
+            x_ub = T.alloc_ub(
+                [H + (32 + 12) // 2], "bfloat16"
+            )  # Data to be dispatched, H is the token length, 32-bit reserved quantization parameter space, 12 is the triple size (4 bytes * 3)
             x_ub_cast32 = T.alloc_ub([H + (32 + 12) // 2], "int32")
             x_win_ub = T.alloc_ub([H], "bfloat16")  # Local win area token -> ub
-            expert_ids_ub = T.alloc_ub([Bs* K], "int32")
-            dst_expert_id_ub = T.alloc_ub([Bs* K], "int32") # Used for cal_token_send_expert_cnt, filling in the target MOE expert index
-            sub_ub = T.alloc_ub([Bs* K], "int32")
-            tmp_fp_32 = T.alloc_ub([Bs* K], "float")
-            tmp_out_fp_32 = T.alloc_ub([Bs* K], "float")
-            work_local_ub = T.alloc_ub([Bs* K], "float")
-            win_status_ub = T.alloc_ub([status_per_core * ub_float_int32_align], "int32")    # Store the status to be sent to the win status area of other ranks
+            expert_ids_ub = T.alloc_ub([Bs * K], "int32")
+            dst_expert_id_ub = T.alloc_ub([Bs * K], "int32")  # Used for cal_token_send_expert_cnt, filling in the target MOE expert index
+            sub_ub = T.alloc_ub([Bs * K], "int32")
+            tmp_fp_32 = T.alloc_ub([Bs * K], "float")
+            tmp_out_fp_32 = T.alloc_ub([Bs * K], "float")
+            work_local_ub = T.alloc_ub([Bs * K], "float")
+            win_status_ub = T.alloc_ub(
+                [status_per_core * ub_float_int32_align], "int32"
+            )  # Store the status to be sent to the win status area of other ranks
             win_status_fp_ub = T.alloc_ub([status_per_core * ub_float_int32_align], "float")
             status_sum_ub = T.alloc_ub([status_per_core * ub_float_int32_align], "float")
             status_sum_int_ub = T.alloc_ub([status_per_core * ub_float_int32_align], "int32")
@@ -108,10 +131,10 @@ def moe_dispatch_kernel(
             begin_idx_ub = T.alloc_ub([1], "int32")
             state_reset_floor_ub = T.alloc_ub([status_per_core - 1, ub_float_int32_align], "float")
             receive_count_floor_ub = T.alloc_ub([status_per_core - 1], "int32")
-            cur_vid[0] = (vid + 2 * cid)
+            cur_vid[0] = vid + 2 * cid
             cur_send_token_cnt = Bs * K
             with T.Scope("C"):
-                T.sync_all()       # The number of C cores involved in the sync_all synchronization must match the number of V cores.
+                T.sync_all()  # The number of C cores involved in the sync_all synchronization must match the number of V cores.
                 T.sync_all()
                 T.sync_all()
             with T.Scope("V"):
@@ -119,18 +142,29 @@ def moe_dispatch_kernel(
                 send_token_num = cur_send_token_cnt // aiv_num
                 remainder_token_num = cur_send_token_cnt % aiv_num
                 start_send_token_id = send_token_num * cur_vid[0]
-                start_send_token_id = T.if_then_else(cur_vid[0] < remainder_token_num, start_send_token_id + cur_vid[0], start_send_token_id + remainder_token_num)
+                start_send_token_id = T.if_then_else(
+                    cur_vid[0] < remainder_token_num, start_send_token_id + cur_vid[0], start_send_token_id + remainder_token_num
+                )
                 send_token_num = T.if_then_else(cur_vid[0] < remainder_token_num, send_token_num + 1, send_token_num)
                 T.tile.fill(state_reset_ub, 0.0)
                 T.tile.fill(state_reset_floor_ub, 0.0)
-                T.copy(expert_ids[0,0], expert_ids_ub)
+                T.copy(expert_ids[0, 0], expert_ids_ub)
                 sync_func("mte2", "s", 0)
                 token_repeat_num[0] = 0
                 # Send data:AlltoAllDispatch
                 for cur_send_token_id in range(start_send_token_id, start_send_token_id + send_token_num):
-                    cal_token_send_expert_cnt(expert_ids_ub[cur_send_token_id], cur_send_token_id, dst_expert_id_ub, sub_ub, expert_ids_ub, tmp_fp_32, tmp_out_fp_32, work_local_ub)
+                    cal_token_send_expert_cnt(
+                        expert_ids_ub[cur_send_token_id],
+                        cur_send_token_id,
+                        dst_expert_id_ub,
+                        sub_ub,
+                        expert_ids_ub,
+                        tmp_fp_32,
+                        tmp_out_fp_32,
+                        work_local_ub,
+                    )
                     token_repeat_num[0] = cur_send_token_id - dst_expert_id_ub[0]
-                    if (cur_send_token_id == 0):
+                    if cur_send_token_id == 0:
                         token_repeat_num[0] = 0
                     dest_rank_id = expert_ids_ub[cur_send_token_id] // local_expert_num
                     dest_expert_id = expert_ids_ub[cur_send_token_id] % local_expert_num
@@ -145,29 +179,50 @@ def moe_dispatch_kernel(
                     x_ub_cast32[(H + 16) // 2 + 1] = cur_send_token_id // K
                     x_ub_cast32[(H + 16) // 2 + 2] = token_in_topkid
                     sync_func("s", "mte3", 4)
-                    T.shmem_ub_put_nbi(x_ub, win_data, ub_size, dest_rank_id, (rank * Bs * local_expert_num + dest_expert_id * Bs + token_repeat_num[0]) * ub_size)     # Dispatch tokens
+                    T.shmem_ub_put_nbi(
+                        x_ub,
+                        win_data,
+                        ub_size,
+                        dest_rank_id,
+                        (rank * Bs * local_expert_num + dest_expert_id * Bs + token_repeat_num[0]) * ub_size,
+                    )  # Dispatch tokens
                 # Send status:SetStatus
                 # Status distributed across cores
                 aiv_expert_num = total_expert_num // aiv_num
                 remainder_expert_num = total_expert_num % aiv_num
                 start_expert_id = aiv_expert_num * cur_vid[0]
-                start_expert_id = T.if_then_else(cur_vid[0] < remainder_expert_num, start_expert_id + cur_vid[0], start_expert_id + remainder_expert_num)
+                start_expert_id = T.if_then_else(
+                    cur_vid[0] < remainder_expert_num, start_expert_id + cur_vid[0], start_expert_id + remainder_expert_num
+                )
                 aiv_expert_num = T.if_then_else(cur_vid[0] < remainder_expert_num, aiv_expert_num + 1, aiv_expert_num)
                 total_send_token_num = Bs * K
                 for cur_expert_id in range(start_expert_id, start_expert_id + aiv_expert_num):
-                    cal_token_send_expert_cnt(cur_expert_id, total_send_token_num, dst_expert_id_ub, sub_ub, expert_ids_ub, tmp_fp_32, tmp_out_fp_32, work_local_ub)
+                    cal_token_send_expert_cnt(
+                        cur_expert_id,
+                        total_send_token_num,
+                        dst_expert_id_ub,
+                        sub_ub,
+                        expert_ids_ub,
+                        tmp_fp_32,
+                        tmp_out_fp_32,
+                        work_local_ub,
+                    )
                     cnt_pos_index = (cur_expert_id - start_expert_id) * 8
-                    win_status_ub[cnt_pos_index + 1] = total_send_token_num - dst_expert_id_ub[0]   # The second position in the status area is filled with the number of tokens.
-                    win_status_ub[cnt_pos_index] = 1    # The first position in the status area is the flag indicator. Flag "1" indicates that the current state is ready.
+                    win_status_ub[cnt_pos_index + 1] = (
+                        total_send_token_num - dst_expert_id_ub[0]
+                    )  # The second position in the status area is filled with the number of tokens.
+                    win_status_ub[cnt_pos_index] = (
+                        1  # The first position in the status area is the flag indicator. Flag "1" indicates that the current state is ready.
+                    )
                 T.barrier_all()
-                T.sync_all()    # Ensure that all cores have completed sending data previously.
+                T.sync_all()  # Ensure that all cores have completed sending data previously.
                 T.reinterpretcast(win_status_fp_ub, win_status_ub, "float")
                 T.barrier_all()
                 for cur_expert_id in range(start_expert_id, start_expert_id + aiv_expert_num):
-                    dest_rank_id = cur_expert_id // local_expert_num    # Target rank
+                    dest_rank_id = cur_expert_id // local_expert_num  # Target rank
                     local_expert_id = cur_expert_id % local_expert_num  # Target MOE expert
                     index = (cur_expert_id - start_expert_id) * 8
-                    T.copy(win_status_fp_ub[index:index+8], win_status_ub_single)
+                    T.copy(win_status_fp_ub[index : index + 8], win_status_ub_single)
                     T.shmem_ub_put_nbi(win_status_ub_single, win_status, 8, dest_rank_id, local_expert_id * ep_world_size * 8 + rank * 8)
                     sync_func("mte3", "s", 5)
                 # Loop waiting for status WaitDispatch
@@ -177,11 +232,13 @@ def moe_dispatch_kernel(
                 start_status_index = start_expert_id
                 status_num_per_core = aiv_expert_num
                 sync_func("mte3", "s", 6)
-                while (sum_of_flag[0] != aiv_expert_fp_num):
+                while sum_of_flag[0] != aiv_expert_fp_num:
                     T.copy(win_status[start_status_index, 0], status_sum_ub)
                     sync_func("mte2", "v", 7)
                     T.pipe_barrier("v")
-                    T.tile.reduce_sum_mask_experiment(status_sum_out, status_sum_ub, mask, status_num_per_core, 1)  # Each core accumulates the flag bits of the status area it is responsible for.
+                    T.tile.reduce_sum_mask_experiment(
+                        status_sum_out, status_sum_ub, mask, status_num_per_core, 1
+                    )  # Each core accumulates the flag bits of the status area it is responsible for.
                     sync_func("v", "s", 8)
                     sum_of_flag[0] = status_sum_out[0]
                 sync_func("v", "mte3", 9)
@@ -225,11 +282,13 @@ def moe_dispatch_kernel(
                     receive_count_max_ub[i] = begin_idx + count
                     if status_num_per_core == status_per_core - 1:
                         receive_count_floor_ub[i] = begin_idx + count
-                    win_data_offset[0] = (i + start_status_index) % ep_world_size * (Bs * local_expert_num) + (i + start_status_index) // ep_world_size * Bs
+                    win_data_offset[0] = (i + start_status_index) % ep_world_size * (Bs * local_expert_num) + (
+                        i + start_status_index
+                    ) // ep_world_size * Bs
                     for j in range(count):
                         T.copy(win_data[win_data_offset[0] + j, 0:H], x_win_ub)
                         # Decompose triple
-                        T.copy(win_data[win_data_offset[0] + j, H+16:H+22], status_local_data)
+                        T.copy(win_data[win_data_offset[0] + j, H + 16 : H + 22], status_local_data)
                         sync_func("mte2", "v", 12)
                         T.reinterpretcast(tmp_triple, status_local_data, "int32_t")
                         sync_func("v", "mte3", 13)
@@ -237,7 +296,7 @@ def moe_dispatch_kernel(
                         T.copy(tmp_triple, expand_ids[begin_idx + j, 0])
                         T.copy(x_win_ub, expand_x_out[begin_idx + j, 0])
                         T.barrier_all()
-                    begin_idx_ub[0] = begin_idx + count # Update prefix sum to obtain output ep_receive_count
+                    begin_idx_ub[0] = begin_idx + count  # Update prefix sum to obtain output ep_receive_count
                 T.barrier_all()
                 # Obtain ep_receive_count
                 if status_num_per_core > 0 and status_num_per_core == status_per_core:
@@ -263,7 +322,9 @@ def moe_dispatch_kernel(
                         token_sums = cur_moe_index_cnt - pre_moe_index_cnt
                         expert_token_nums_out[local_moe_index] = token_sums
                         T.tile.datacachecleanandinvalid_experiment(expert_token_nums_out, "SINGLE_CACHE_LINE", "CACHELINE_OUT")
+
     return main_dispatch
+
 
 # --- 2. Implement the Combine operator ---
 @tilelang.jit(out_idx=[6], pass_configs=pass_configs)
@@ -280,15 +341,16 @@ def moe_combine_kernel(
     assist_size = 3
     token_per_core = (send_token_cnt + aiv_num - 1) // aiv_num
     float_align_ub = 8
+
     @T.prim_func
     def main_combine(
-        expand_x: T.Tensor([send_token_cnt, H], "bfloat16"),    # Data processed by the MOE expert to be returned by the current rank
-        assist_info_combine: T.Tensor([send_token_cnt, assist_size], "int32"),      # Triple information of returned tokens
+        expand_x: T.Tensor([send_token_cnt, H], "bfloat16"),  # Data processed by the MOE expert to be returned by the current rank
+        assist_info_combine: T.Tensor([send_token_cnt, assist_size], "int32"),  # Triple information of returned tokens
         ep_send_counts: T.Tensor([local_expert_num * ep_world_size], "int32"),
         expert_scales: T.Tensor([Bs, K], "float"),  # The weight coefficients for the MOE experts.
         win_data: T.Tensor([Bs * K, H], "bfloat16"),
         win_status: T.Tensor([Bs * K, float_align_ub], "float"),
-        combine_out: T.Tensor([Bs, H], "bfloat16")
+        combine_out: T.Tensor([Bs, H], "bfloat16"),
     ):
         with T.Kernel(aiv_num // 2, is_npu=True) as (cid, vid):
             # Allocate ub
@@ -296,7 +358,7 @@ def moe_combine_kernel(
             assist_ub = T.alloc_ub([token_per_core * assist_size], "int32")
             status_ub = T.alloc_ub([float_align_ub], "float")
             state_ub = T.alloc_ub([K * float_align_ub], "float")
-            work_local_ub = T.alloc_ub([K * float_align_ub], "float")
+            _work_local_ub = T.alloc_ub([K * float_align_ub], "float")
             state_sum_out = T.alloc_ub([K * float_align_ub], "float")
             state_reset = T.alloc_ub([K * float_align_ub], "float")
             win_data_ub_bfloat = T.alloc_ub([H], "bfloat16")
@@ -311,7 +373,9 @@ def moe_combine_kernel(
             send_token_num = send_token_cnt // aiv_num
             remainder_send_token_num = send_token_cnt % aiv_num
             start_send_token_id = send_token_num * cur_vid[0]
-            start_send_token_id = T.if_then_else(cur_vid[0] < remainder_send_token_num, start_send_token_id + cur_vid[0], start_send_token_id + remainder_send_token_num)
+            start_send_token_id = T.if_then_else(
+                cur_vid[0] < remainder_send_token_num, start_send_token_id + cur_vid[0], start_send_token_id + remainder_send_token_num
+            )
             send_token_num = T.if_then_else(cur_vid[0] < remainder_send_token_num, send_token_num + 1, send_token_num)
             with T.Scope("V"):
                 T.tile.fill(status_ub, 1.0)
@@ -328,7 +392,7 @@ def moe_combine_kernel(
                     T.copy(expand_x[tk_index, 0], x_ub)
                     T.barrier_all()
                     win_gm = token_id * K + topk_id
-                    T.shmem_ub_put_nbi(x_ub, win_data, H, to_rank_id, win_gm * H)   # Return data
+                    T.shmem_ub_put_nbi(x_ub, win_data, H, to_rank_id, win_gm * H)  # Return data
                     T.barrier_all()
                     T.shmem_ub_put_nbi(status_ub, win_status, float_align_ub, to_rank_id, win_gm * float_align_ub)  # Return status
                 T.barrier_all()
@@ -336,7 +400,9 @@ def moe_combine_kernel(
                 token_num = Bs // aiv_num
                 remainder_token_num = Bs % aiv_num
                 start_token_id = token_num * cur_vid[0]
-                start_token_id = T.if_then_else(cur_vid[0] < remainder_token_num, start_token_id + cur_vid[0], start_token_id + remainder_token_num)
+                start_token_id = T.if_then_else(
+                    cur_vid[0] < remainder_token_num, start_token_id + cur_vid[0], start_token_id + remainder_token_num
+                )
                 token_num = T.if_then_else(cur_vid[0] < remainder_token_num, token_num + 1, token_num)
                 compare_target = K * float_align_ub
                 # Loop processing combine returned data, from win to ub to global output.
@@ -345,7 +411,7 @@ def moe_combine_kernel(
                     T.tile.fill(combine_out_ub_float, 0.0)
                     sum_of_flag[0] = -1.0
                     state_gm = cur_idx * K
-                    while((sum_of_flag[0] < (compare_target - 0.5)) or (sum_of_flag[0] > (compare_target + 0.5))):
+                    while (sum_of_flag[0] < (compare_target - 0.5)) or (sum_of_flag[0] > (compare_target + 0.5)):
                         T.copy(win_status[state_gm, 0], state_ub)
                         T.barrier_all()
                         T.tile.reduce_sum_experiment(state_sum_out, state_ub, compare_target)
@@ -368,7 +434,9 @@ def moe_combine_kernel(
                     T.tile.cast(combine_out_ub_bfloat, combine_out_ub_float, "CAST_RINT", H)
                     T.barrier_all()
                     T.copy(combine_out_ub_bfloat, combine_out[cur_idx, 0])
+
     return main_combine
+
 
 def worker(rank, barrier, x, expert_ids, aiv_num, ep_world_size, local_expert_num, Bs):
     print(f"Rank {rank}: Setting device")
@@ -399,9 +467,13 @@ def worker(rank, barrier, x, expert_ids, aiv_num, ep_world_size, local_expert_nu
         print(f"Rank {rank}: Initialization successful")
         torch.manual_seed(0)
         # Initialize shmem tensor
-        tensorData_dispatch = aclshmem_module.aclshmem_create_tensor([ep_world_size * local_expert_num * Bs, ub_size], dtype = torch.bfloat16, device_id = rank)
-        tensorStatus_dispatch = aclshmem_module.aclshmem_create_tensor([ep_world_size * local_expert_num, 8], dtype = torch.float, device_id = rank)
-        tensor_combine = aclshmem_module.aclshmem_create_tensor([Bs * K, H], dtype=torch.bfloat16, device_id = rank)
+        tensorData_dispatch = aclshmem_module.aclshmem_create_tensor(
+            [ep_world_size * local_expert_num * Bs, ub_size], dtype=torch.bfloat16, device_id=rank
+        )
+        tensorStatus_dispatch = aclshmem_module.aclshmem_create_tensor(
+            [ep_world_size * local_expert_num, 8], dtype=torch.float, device_id=rank
+        )
+        tensor_combine = aclshmem_module.aclshmem_create_tensor([Bs * K, H], dtype=torch.bfloat16, device_id=rank)
         tensorStatus_combine = aclshmem_module.aclshmem_create_tensor([Bs * K, 8], dtype=torch.float, device_id=rank)
         win_dispatch = tensorData_dispatch.fill_(0)
         win_status_dispatch = tensorStatus_dispatch.fill_(0)
@@ -412,8 +484,8 @@ def worker(rank, barrier, x, expert_ids, aiv_num, ep_world_size, local_expert_nu
         expand_x, expand_idx, ep_recv_counts, expert_token_nums = func_dispatch(x, expert_ids, win_dispatch, win_status_dispatch)
         barrier.wait()
         # combine
-        expand_x = expand_x[:ep_recv_counts[-1].item(), :]
-        expand_idx = expand_idx[:ep_recv_counts[-1].item(), :]
+        expand_x = expand_x[: ep_recv_counts[-1].item(), :]
+        expand_idx = expand_idx[: ep_recv_counts[-1].item(), :]
         expert_scales = torch.empty(size=[Bs, K], dtype=torch.float32).uniform_(-1, 1).npu()
         func_combine = moe_combine_kernel(Bs, ep_recv_counts[-1].item(), H, K, ep_world_size, local_expert_num, rank, aiv_num)
         x_out = func_combine(expand_x, expand_idx, ep_recv_counts, expert_scales, win_combine, win_status_combine)
@@ -427,11 +499,12 @@ def worker(rank, barrier, x, expert_ids, aiv_num, ep_world_size, local_expert_nu
     aclshmem_module.aclshmem_finialize()
     print(f"Rank {rank}: Finalization")
     # golden
-    x_f32 = x.to(torch.float32) # bfloat16 → float32
+    x_f32 = x.to(torch.float32)  # bfloat16 → float32
     weight_sum_f32 = (x_f32.unsqueeze(1) * expert_scales.unsqueeze(-1)).sum(dim=1)
-    dispatch_combine_golden = weight_sum_f32.to(torch.bfloat16) # float32 → bfloat16
+    dispatch_combine_golden = weight_sum_f32.to(torch.bfloat16)  # float32 → bfloat16
     torch.testing.assert_close(x_out, dispatch_combine_golden, rtol=1e-2, atol=1e-2)
     print("Kernel Output Match!")
+
 
 # Construct input
 def init_input(rank, Bs, H, K, ep_world_size, local_expert_num):
@@ -451,7 +524,8 @@ def init_input(rank, Bs, H, K, ep_world_size, local_expert_num):
     expert_ids = torch.tensor(expert_ids_list, dtype=torch.int32)
     return x, expert_ids
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     Bs = 64
     H = 7168
     K = 4

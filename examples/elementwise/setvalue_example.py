@@ -5,7 +5,7 @@ import tilelang.language as T
 import torch
 
 tilelang.cache.clear_cache()
-torch.set_default_device('npu')
+torch.set_default_device("npu")
 
 parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
 parser.add_argument("--m", type=int, default=1, help="Matrix M dimension")
@@ -26,12 +26,12 @@ def getvalue(M, N, block_M, block_N, dtype="int32"):
 
     @T.prim_func
     def main(
-            A: T.Tensor((N,), dtype),
-            B: T.Tensor((N // block_N * 2,), dtype),
+        A: T.Tensor((N,), dtype),
+        B: T.Tensor((N // block_N * 2,), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
-            by = cid % n_num
+            _by = cid % n_num
 
             a_ub = T.alloc_ub((1, block_v), dtype)
             b_ub = T.alloc_ub((1,), dtype)

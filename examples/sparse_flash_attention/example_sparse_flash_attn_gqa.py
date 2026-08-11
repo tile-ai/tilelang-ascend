@@ -212,7 +212,6 @@ def sparse_attention_fwd(
 
                     T.reduce_max(acc_s_ub, m_i, dim=-1)
 
-
                     T.tile.max(m_i, m_i, m_i_prev)
 
                     T.tile.sub(m_i_prev, m_i_prev, m_i)
@@ -225,7 +224,6 @@ def sparse_attention_fwd(
                     T.tile.exp(acc_s_ub, acc_s_ub)
 
                     T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
-
 
                     T.tile.mul(sumexp, sumexp, m_i_prev)  # check
 

@@ -20,7 +20,7 @@ def rms_norm(M, head_dim, block_M, eps, dtype="float16"):
     row_per_vec = block_M // VEC_NUM
 
     ACC_DTYPE = "float32"
-    TMP_DTYPE = "uint8"
+    _TMP_DTYPE = "uint8"
 
     @T.prim_func
     def main(

@@ -1,3 +1,6 @@
+# TileLang decorators require runtime-evaluated tensor annotations.
+# ruff: noqa: FA102
+
 import functools
 
 import tilelang

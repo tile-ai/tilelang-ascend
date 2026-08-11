@@ -1,6 +1,6 @@
 import argparse
 import tilelang
-from tilelang import DataType, language as T
+from tilelang import language as T
 from tilelang.intrinsics import make_zn_layout, make_nz_layout
 
 import torch

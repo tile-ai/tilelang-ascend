@@ -1,5 +1,4 @@
 import argparse
-import itertools
 
 import tilelang
 import tilelang.language as T
@@ -26,17 +25,18 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
+
 def get_config() -> list[dict]:
     arch = Ascend()
     carver_template = carver.MatmulTemplate(
-        M = M,
-        N = N,
-        K = K,
+        M=M,
+        N=N,
+        K=K,
         in_dtype="float16",
         accum_dtype="float16",
         out_dtype="float16",
     ).with_arch(arch)
-    
+
     hints = carver_template.recommend_hints(topk=20)
     configs = []
     for hint in hints:
@@ -46,18 +46,18 @@ def get_config() -> list[dict]:
             "K_L1": hint.rstep[0],
         }
         configs.append(config)
-    
+
     return configs
+
 
 def ref_prog(A, B):
     return A @ B
 
+
 def supply_prog(params):
     torch.manual_seed(0)
-    return [
-        torch.randn(M, K).half().npu(),
-        torch.randn(K, N).half().npu()
-    ]
+    return [torch.randn(M, K).half().npu(), torch.randn(K, N).half().npu()]
+
 
 @tilelang.autotune(
     configs=get_config(),
@@ -73,9 +73,9 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num

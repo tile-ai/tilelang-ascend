@@ -1,8 +1,8 @@
 import tilelang
-from tilelang import DataType, language as T
+from tilelang import language as T
 import torch
 
-torch.set_default_device('npu')
+torch.set_default_device("npu")
 torch.manual_seed(42)
 
 tilelang.disable_cache()
@@ -13,13 +13,15 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
+
 @tilelang.jit(out_idx=[1], target="pto", pass_configs=pass_configs)
 def reduce_max_slice_buffer():
     dtype = "float"
 
     @T.prim_func
-    def main(Input: T.Tensor([4, 8], dtype),
-             Output: T.Tensor([1, 8], dtype),
+    def main(
+        Input: T.Tensor([4, 8], dtype),
+        Output: T.Tensor([1, 8], dtype),
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             in_shared = T.alloc_ub((4, 8), dtype)
@@ -44,7 +46,7 @@ torch.npu.synchronize()
 output = func(input)
 torch.npu.synchronize()
 
-ref_output = torch.max(input[:, :4], dim =-1, keepdim=True).values.T
+ref_output = torch.max(input[:, :4], dim=-1, keepdim=True).values.T
 torch.npu.synchronize()
 
 # print(f"ref_output: {ref_output}")

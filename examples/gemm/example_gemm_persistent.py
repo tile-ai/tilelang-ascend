@@ -6,29 +6,28 @@ import torch
 
 tilelang.cache.clear_cache()
 
+
 @tilelang.jit(out_idx=[-1])
 def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
-    
+
     core_num = 24
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
-            
             A_L1 = T.alloc_L1((block_M, K_L1), dtype)
             B_L1 = T.alloc_L1((K_L1, block_N), dtype)
 
             C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
 
             with T.Scope("C"):
-                for bx, by in T.Persistent([T.ceildiv(M, block_M), T.ceildiv(N, block_N)],
-                    core_num, cid):
+                for bx, by in T.Persistent([T.ceildiv(M, block_M), T.ceildiv(N, block_N)], core_num, cid):
                     loop_k = T.ceildiv(K, K_L1)
                     for k in T.serial(loop_k):
                         T.copy(A[bx * block_M, k * K_L1], A_L1)

@@ -1,5 +1,5 @@
 import tilelang
-from tilelang import DataType, language as T
+from tilelang import language as T
 import torch
 
 torch.set_default_device("npu")
@@ -136,7 +136,6 @@ def sparse_attention_fwd(heads, dim, tail_dim, topk, kv_stride, kv_group=1, sm_s
                     bx = pid % (seq_len * REPLICATE_H)
                     by = pid // (seq_len * REPLICATE_H) % batch
                     bz = pid // (seq_len * REPLICATE_H) // batch % kv_group
-
 
                     b_i = by
                     g_i = bz

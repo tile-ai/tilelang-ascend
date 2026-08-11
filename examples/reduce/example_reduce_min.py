@@ -4,6 +4,7 @@ import tilelang
 from tilelang import language as T
 import torch
 
+
 @tilelang.jit(out_idx=[1])
 def reduce_min(M, N, block_M, dtype="float"):
     m_num = M // block_M
@@ -30,6 +31,7 @@ def reduce_min(M, N, block_M, dtype="float"):
                 T.copy(b_ub, B[row_base : row_base + sub_block_M])
 
     return main
+
 
 if __name__ == "__main__":
     tilelang.cache.clear_cache()
