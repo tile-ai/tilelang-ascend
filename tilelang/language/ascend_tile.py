@@ -2313,11 +2313,13 @@ def broadcast(
     This function performs a broadcast copy from the source buffer (`src`) to the
     destination buffer (`dst`). It automatically infers the broadcasting axis
     based on the shapes of the input buffers, or uses the explicitly provided axis.
+    Supports int8, uint8, int16, uint16, float16, bfloat16, float32, int32,
+    uint32. Both ``dst`` and ``src`` must be in UB and have the same dtype.
 
     Args:
-        dst: Destination buffer (must be in UB).
-        src: Source buffer (must be in UB).
-        axis: Broadcasting axis (0 or 1). If None, auto-inferred.
+        dst: Destination buffer (must be in UB). Same dtype as ``src``.
+        src: Source buffer (must be in UB). Same dtype as ``dst``.
+        axis: Broadcasting axis (0 or 1). If None, auto-inferred from shapes.
         tmp: Optional complete target-specific scratch storage. It must be a
             one-dimensional, static, contiguous fixed-width scalar buffer in
             ``shared.ub``, or an equivalent 32-byte-aligned buffer region. Its
