@@ -1,5 +1,6 @@
 import argparse
 import os
+import tempfile
 
 parser = argparse.ArgumentParser(description="TileLang Exception Dump Example")
 parser.add_argument("--m", type=int, default=128, help="Matrix M dimension")
@@ -15,9 +16,10 @@ args = parser.parse_args()
 # CANN reads ASCEND_DUMP_PATH / ASCEND_DUMP_SCENE during ACL initialization,
 # which happens at the first NPU call (or torch_npu import). These must be
 # set before importing torch / tilelang so they take effect.
-os.environ["ASCEND_DUMP_PATH"] = args.dump_dir
-os.environ["ASCEND_DUMP_SCENE"] = "aic_err_brief_dump"
 os.makedirs(args.dump_dir, exist_ok=True)
+run_dump_dir = tempfile.mkdtemp(prefix="run-", dir=args.dump_dir)
+os.environ["ASCEND_DUMP_PATH"] = run_dump_dir
+os.environ["ASCEND_DUMP_SCENE"] = "aic_err_brief_dump"
 
 import ctypes
 
@@ -69,10 +71,10 @@ def launch_kernel_with_hw_exception_triggered(kernel, x, y):
     address — which reliably triggers an MTE (Memory Transfer Engine) error
     and invokes the exception dump callback.
 
-    Raises
+    Returns
     ------
-    RuntimeError
-        Propagated from stream.synchronize() when the hardware exception fires.
+    torch.npu.Stream
+        The stream whose synchronization should report the hardware exception.
     """
     so_path = kernel.adapter.libpath
     lib = ctypes.CDLL(so_path)
@@ -94,8 +96,7 @@ def launch_kernel_with_hw_exception_triggered(kernel, x, y):
         z_null,
         ctypes.c_void_p(exc_stream.npu_stream),
     )
-    exc_stream.synchronize()
-    print("  Stream sync completed without error (unexpected)")
+    return exc_stream
 
 
 print("Compiling kernel...")
@@ -108,17 +109,23 @@ print("Normal execution...")
 c = func(a, b)
 ref_c = a + b
 torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-print("Kernel Output Match!")
 
 print("\n--- Triggering AI Core exception (null output pointer) ---")
+print(f"  Fresh dump directory: {run_dump_dir}")
+exc_stream = launch_kernel_with_hw_exception_triggered(func, a, b)
 try:
-    launch_kernel_with_hw_exception_triggered(func, a, b)
-except Exception as e:
+    exc_stream.synchronize()
+except RuntimeError as e:
     print(f"  Exception caught: {type(e).__name__}")
-    tensors = parse_exception_dump(args.dump_dir, kernel_name="main_kernel")
+    tensors = parse_exception_dump(run_dump_dir, kernel_name="main_kernel")
+    if not tensors:
+        raise RuntimeError("exception dump parsing recovered no tensors") from e
     print(f"  Dump file parsed, {len(tensors)} tensor(s) recovered:")
     for t in tensors:
         data = t["data"].reshape(M, N)
         print(f"    {t['type']}[{t['index']}] dtype={t['dtype']}, shape={data.shape}, min={data.min():.4f}, max={data.max():.4f}")
+else:
+    raise RuntimeError("expected an AI Core hardware exception, but the stream synchronized successfully")
 
 print("--- Exception test done ---")
+print("ALL TESTS PASSED")

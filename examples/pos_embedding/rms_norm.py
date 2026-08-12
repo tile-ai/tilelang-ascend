@@ -20,7 +20,7 @@ def rms_norm(M, head_dim, block_M, eps, dtype="float16"):
     row_per_vec = block_M // VEC_NUM
 
     ACC_DTYPE = "float32"
-    TMP_DTYPE = "uint8"
+    _TMP_DTYPE = "uint8"
 
     @T.prim_func
     def main(
@@ -105,4 +105,4 @@ if __name__ == "__main__":
     ref_q = rms_norm_reference(q, variance_epsilon)
 
     torch.testing.assert_close(q_out.cpu(), ref_q.cpu(), rtol=1e-2, atol=1e-2)
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")

@@ -186,7 +186,7 @@ def run_tilelang_grouped_gemm(
     if torch.allclose(out, ref_output, rtol=0.01, atol=0.01):
         print("Kernel Output Match!")
     else:
-        print("Kernel Output Mismatch!")
+        raise AssertionError("TileLang and Torch grouped GEMM outputs do not match")
 
 
 def test_grouped_gemm():
@@ -221,5 +221,6 @@ if __name__ == "__main__":
         block_K,
         trans_b,
     )
+    print("ALL TESTS PASSED")
 
     # test_grouped_gemm()

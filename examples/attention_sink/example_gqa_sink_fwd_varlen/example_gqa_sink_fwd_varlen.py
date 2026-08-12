@@ -789,7 +789,7 @@ def padded_to_varlen(padded, cu_seqlens, heads, dim):
     return torch.cat(parts, dim=0)
 
 
-# ========== Smoke Test (CI entry — prints "Test Passed!") ==========
+# ========== Smoke Test (CI entry — prints final "ALL TESTS PASSED") ==========
 
 
 if __name__ == "__main__":
@@ -878,4 +878,4 @@ if __name__ == "__main__":
     atol, rtol = 1e-2, 1e-2
     torch.testing.assert_close(out_3d.cpu().float(), ref_out.cpu().float(), rtol=rtol, atol=atol)
     print(f"max_diff={max_diff:.6f}")
-    print("Test Passed!")
+    print("ALL TESTS PASSED")

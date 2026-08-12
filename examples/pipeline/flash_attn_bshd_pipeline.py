@@ -1,8 +1,8 @@
 import tilelang
-from tilelang import DataType, language as T
+from tilelang import language as T
 import torch
 
-torch.set_default_device('npu')
+torch.set_default_device("npu")
 torch.manual_seed(0)
 
 tilelang.disable_cache()
@@ -16,7 +16,8 @@ pass_configs = {
     "tl.ascend_auto_sync": True,
 }
 
-@tilelang.jit(out_idx=[3], workspace_idx=[4,5,6], pass_configs=pass_configs)
+
+@tilelang.jit(out_idx=[3], workspace_idx=[4, 5, 6], pass_configs=pass_configs)
 def flash_attention_fwd(
     heads,
     dim,
@@ -29,7 +30,7 @@ def flash_attention_fwd(
     dtype = "float16"
     accum_dtype = "float"
 
-    sm_scale = (1.0 / dim)**0.5
+    sm_scale = (1.0 / dim) ** 0.5
 
     shape = [batch, heads, seq_len, dim]
 
@@ -37,13 +38,13 @@ def flash_attention_fwd(
 
     @T.prim_func
     def main(
-            Q: T.Tensor(shape, dtype),  # type: ignore
-            K: T.Tensor(shape, dtype),  # type: ignore
-            V: T.Tensor(shape, dtype),  # type: ignore
-            Output: T.Tensor(shape, dtype),  # type: ignore
-            workspace_1: T.Tensor([block_num, block_M, block_N], accum_dtype),
-            workspace_2: T.Tensor([block_num, block_M, block_N], dtype),
-            workspace_3: T.Tensor([block_num, block_M, dim], accum_dtype),
+        Q: T.Tensor(shape, dtype),  # type: ignore
+        K: T.Tensor(shape, dtype),  # type: ignore
+        V: T.Tensor(shape, dtype),  # type: ignore
+        Output: T.Tensor(shape, dtype),  # type: ignore
+        workspace_1: T.Tensor([block_num, block_M, block_N], accum_dtype),
+        workspace_2: T.Tensor([block_num, block_M, block_N], dtype),
+        workspace_3: T.Tensor([block_num, block_M, dim], accum_dtype),
     ):
         with T.Kernel(block_num, is_npu=True) as (cid, vid):
             bx = cid % (seq_len // block_M)
@@ -73,19 +74,17 @@ def flash_attention_fwd(
 
             T.tile.fill(acc_o, 0.0)
             T.tile.fill(sumexp, 0.0)
-            T.tile.fill(m_i, -2**30)
-            T.copy(Q[bz, by, bx * block_M:(bx + 1) * block_M, :], q_l1)
+            T.tile.fill(m_i, -(2**30))
+            T.copy(Q[bz, by, bx * block_M : (bx + 1) * block_M, :], q_l1)
 
             for k in T.Pipelined(T.ceildiv(seq_len, block_N), num_stages=2):
-                T.copy(K[bz, by, k * block_N:(k + 1) * block_N, :], k_l1)
+                T.copy(K[bz, by, k * block_N : (k + 1) * block_N, :], k_l1)
                 T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
                 T.copy(acc_s_l0c, workspace_1[cid, :, :])
 
                 T.tile.fill(acc_s_ub, 0.0)
                 T.copy(m_i, m_i_prev)
-                T.copy(
-                    workspace_1[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :],
-                    acc_s_ub_)
+                T.copy(workspace_1[cid, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :], acc_s_ub_)
                 T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
                 T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
                 T.reduce_max(acc_s_ub, m_i, dim=-1)
@@ -99,29 +98,23 @@ def flash_attention_fwd(
                 T.tile.mul(sumexp, sumexp, m_i_prev)
                 T.tile.add(sumexp, sumexp, sumexp_i_ub)
                 T.copy(acc_s_ub, acc_s_half)
-                T.copy(
-                    acc_s_half,
-                    workspace_2[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :])
+                T.copy(acc_s_half, workspace_2[cid, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :])
 
                 T.copy(workspace_2[cid, :, :], acc_s_l1)
-                T.copy(V[bz, by, k * block_N:(k + 1) * block_N, :], v_l1)
+                T.copy(V[bz, by, k * block_N : (k + 1) * block_N, :], v_l1)
                 T.gemm_v0(acc_s_l1, v_l1, acc_o_l0c, init=True)
                 T.copy(acc_o_l0c, workspace_3[cid, :, :])
 
                 for h_i in range(block_M // 2):
                     T.tile.mul(acc_o[h_i, :], acc_o[h_i, :], m_i_prev[h_i])
-                T.copy(
-                    workspace_3[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :],
-                    acc_o_ub)
+                T.copy(workspace_3[cid, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :], acc_o_ub)
                 T.tile.add(acc_o, acc_o, acc_o_ub)
 
             for h_i in range(block_M // 2):
                 T.tile.div(acc_o[h_i, :], acc_o[h_i, :], sumexp[h_i])
 
             T.copy(acc_o, acc_o_half)
-            T.copy(
-                acc_o_half, Output[bz, by, bx * block_M + vid * block_M // 2:bx * block_M +
-                                    vid * block_M // 2 + block_M // 2, :])
+            T.copy(acc_o_half, Output[bz, by, bx * block_M + vid * block_M // 2 : bx * block_M + vid * block_M // 2 + block_M // 2, :])
 
     return main
 
@@ -137,10 +130,11 @@ def ref_flash_attn(q, k, v):
     k = k.float()
     v = v.float()
 
-    acc = torch.einsum("bhsd,bhkd->bhsk", q, k) * (1.0 / q.shape[-1])**0.5
+    acc = torch.einsum("bhsd,bhkd->bhsk", q, k) * (1.0 / q.shape[-1]) ** 0.5
     acc = acc.softmax(dim=-1)
     o = torch.einsum("bhsk,bhkd->bhsd", acc, v)
     return o.to(torch.float16)
+
 
 q = torch.randn((B, H, S, D), dtype=torch.float16)
 k = torch.randn((B, H, S, D), dtype=torch.float16)
@@ -160,4 +154,4 @@ from tilelang.profiler import do_bench
 tilelang_time = do_bench(lambda: func(q, k, v))
 print(tilelang_time)
 
-print("Test Passed!")
+print("ALL TESTS PASSED")

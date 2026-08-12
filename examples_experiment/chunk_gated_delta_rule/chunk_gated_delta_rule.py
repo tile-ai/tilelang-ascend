@@ -1,3 +1,6 @@
+# TileLang decorators require runtime-evaluated tensor annotations.
+# ruff: noqa: FA102
+
 import tilelang
 from tilelang import language as T
 import torch
@@ -386,4 +389,4 @@ if __name__ == "__main__":
     test_chunk_gated_delta_rule_varlen(
         seqlens=seqlens, H=args.H, Hg=args.Hg, K=args.K, V=args.V, use_g=args.use_g, use_initial_state=args.use_initial_state
     )
-    print("Batch Kernel Output Match!")
+    print("ALL TESTS PASSED")

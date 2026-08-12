@@ -404,9 +404,9 @@ def test_permute():
 
     print(f"\n{'=' * 60}")
     if overall_passed:
-        print("Test passed!")
+        print("ALL TESTS PASSED")
     else:
-        print("Test failed! The precision is not correct!")
+        raise AssertionError("one or more token-permute cases failed")
     print(f"{'=' * 60}")
 
 

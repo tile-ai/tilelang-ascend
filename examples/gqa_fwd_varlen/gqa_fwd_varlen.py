@@ -527,7 +527,7 @@ def flashattn(
 # Smoke test entry (CI compatibility)
 #
 # Repository CI (examples/bench_test.sh) marks a script PASSED only if its
-# stdout contains "Test Passed!" or "Kernel Output Match!". This __main__
+# stdout contains exactly one `ALL TESTS PASSED` line. This __main__
 # runs the minimal L0 shape (l0_min_full_nc config) and validates against
 # F.scaled_dot_product_attention so the main file is independently runnable
 # in CI. The @tilelang.jit flashattn kernel above is unchanged.
@@ -591,4 +591,4 @@ if __name__ == "__main__":
     max_diff = (out.float() - ref_out.float()).abs().max().item()
     print(f"max_diff: {max_diff:.6e}")
     assert max_diff < atol, f"Precision check failed: max_diff={max_diff} >= atol={atol}"
-    print("Test Passed!")
+    print("ALL TESTS PASSED")

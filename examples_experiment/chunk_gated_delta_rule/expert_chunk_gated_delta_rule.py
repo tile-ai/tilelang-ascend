@@ -549,4 +549,4 @@ if __name__ == "__main__":
                 seed=case["seed"],
             )
 
-    print("Batch Kernel Output Match!")
+    print("ALL TESTS PASSED")

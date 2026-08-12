@@ -26,10 +26,10 @@ def matmul_add(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype=
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
-            D: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
+        D: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -43,7 +43,6 @@ def matmul_add(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype=
             c_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype)
 
             with T.Scope("C"):
-
                 loop_k = T.ceildiv(K, block_K)
                 for k in T.serial(loop_k):
                     T.copy(A[bx * block_M, k * block_K], A_L1)
@@ -90,4 +89,4 @@ c = func(a, b, d)
 ref_c = a @ b + d
 
 torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")

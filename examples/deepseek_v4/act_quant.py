@@ -164,7 +164,7 @@ def test(custom_args=None):
 
     torch.testing.assert_close(Y, x_int8_torch, rtol=1e-2, atol=1)
     torch.testing.assert_close(S.reshape(M), scales_torch.reshape(M), rtol=1e-2, atol=1e-2)
-    logging.info("Kernel Output Match!")
+    print("ALL TESTS PASSED")
 
 
 if __name__ == "__main__":

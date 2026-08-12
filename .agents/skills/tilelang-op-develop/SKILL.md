@@ -210,7 +210,7 @@ python examples/{op}/test_{op}.py --level l0
 |--------|------|---------|
 | **Golden 实现一致** | 迁移算子必须使用原算子的 golden 实现 | #9 |
 | **tilelang.disable_cache()** | 放在 `__main__` 下方或 `main()` 内部 | #11 |
-| **分层标记 + --level** | L0/L1 打 `[PRECISION_PASS/FAIL]`、L2/Boundary 打 `[BOUNDARY_PASS/WARN]`；main 支持 `--level`；L0/L1 全过才 `"Test Passed!"`+exit 0 | #14-17 |
+| **分层标记 + --level** | L0/L1 打 `[PRECISION_PASS/FAIL]`、L2/Boundary 打 `[BOUNDARY_PASS/WARN]`；main 支持 `--level`；L0/L1 全过才打印一次 `"ALL TESTS PASSED"` + exit 0 | #14-17 |
 | **代码格式** | `ruff check` + `ruff format --check` 通过 | #18 |
 
 ---

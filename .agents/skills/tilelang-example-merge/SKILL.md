@@ -208,7 +208,7 @@ for B, N, block_M, block_N, dtype, level in test_configs:
     assert ratio >= {required_ratio} and max_abs <= {max_abs_limit}, f"precision fail: ratio={ratio:.4f} max_abs={max_abs:.3e}"
     print(f"Test pass! matched_ratio={ratio:.4f} max_abs={max_abs:.3e}")
 
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")
 ```
 
 #### 关键格式约定（必须遵循仓库惯例）
@@ -225,7 +225,7 @@ print("Kernel Output Match!")
 3. **输入数据**：用 `torch.randn(...).npu()` 生成随机输入。如果原测试用了特定数值范围
    （如 `uniform_(-1000, 1000)`），L1 代表用例可以保留该范围，但 L0 用标准 `randn`。
 4. **打印格式**：`print(f"Testing {op} ... with ...")` → `print("Init successful!")` →
-   `print("Test pass!")` → 末尾 `print("Kernel Output Match!")`，与仓库现有示例一致。
+   `print("Test pass!")` → 所有用例完成后恰好一次 `print("ALL TESTS PASSED")`。
 5. **无 import 兄弟模块**：`example_{op}.py` 中**禁止**出现 `from {op} import {op}`
    或 `sys.path.insert` 等导入语句。kernel 代码直接内联。
 6. **无分层测试框架**：不要保留 `--level` 参数分发、`COVERAGE_CATEGORY`、
@@ -247,7 +247,7 @@ source set_env.sh
 python examples/{op}/example_{op}.py
 ```
 
-确认输出包含 "Kernel Output Match!"。如果失败，检查：
+确认输出包含且只包含一行 `ALL TESTS PASSED`。如果失败，检查：
 - kernel 代码是否完整复制（漏了常量或辅助函数）
 - golden 实现是否正确
 - shape/dtype 是否与原测试一致
@@ -315,8 +315,8 @@ python examples/{op}/example_{op}.py
 - `examples/developer_mode/gelu_mul_developer.py` — kernel + test_configs 循环 + assert_close
 - `examples/normalization/rms_norm.py` — 同上模式
 
-这些文件的共同特征：单文件、模块级测试、`tilelang.cache.clear_cache()`、末尾
-`print("Kernel Output Match!")`。
+这些文件的共同特征：单文件、模块级测试、`tilelang.cache.clear_cache()`、所有用例
+成功后恰好一次 `print("ALL TESTS PASSED")`。
 
 **与本 skill 的差异**：仓库现有示例用 `torch.testing.assert_close(rtol=1e-2, atol=1e-2)`
 做精度检查，但本 skill 按用户要求采用 `test_{op}.py` 的混合容差标准（内联，按 dtype

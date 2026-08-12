@@ -1,5 +1,5 @@
 import tilelang
-from tilelang import DataType, language as T
+from tilelang import language as T
 import torch
 import sfa_golden as ref
 # import numpy as np
@@ -454,4 +454,4 @@ print(f"output:{output}, \nshape:{output.shape}")
 print(f"cpu_out:{cpu_out}, \nshape:{cpu_out.shape}")
 
 torch.testing.assert_close(cpu_out, output, rtol=1e-2, atol=1e-2)
-print("Test Passed!")
+print("ALL TESTS PASSED")

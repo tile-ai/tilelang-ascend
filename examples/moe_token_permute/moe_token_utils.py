@@ -57,4 +57,4 @@ if __name__ == "__main__":
     assert pad_last_dim(a, 5).shape == (3, 5)
     assert pad_last_dim(a, 9).shape == (3, 9)
 
-    print("Kernel Output Match")
+    print("ALL TESTS PASSED")

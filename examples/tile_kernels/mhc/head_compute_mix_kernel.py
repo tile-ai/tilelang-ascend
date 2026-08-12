@@ -260,3 +260,4 @@ def test_bwd():
 if __name__ == "__main__":
     test_fwd()
     test_bwd()
+    print("ALL TESTS PASSED")

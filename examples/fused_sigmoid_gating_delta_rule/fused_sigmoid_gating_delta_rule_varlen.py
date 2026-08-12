@@ -472,8 +472,8 @@ def main(
 
 
 if __name__ == "__main__":
-    import threading
     import argparse
+    from concurrent.futures import ThreadPoolExecutor
 
     test_cases = [
         # Original test case
@@ -526,21 +526,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.threads > 1:
-        threads = []
-        for i, case in enumerate(test_cases):
-            t = threading.Thread(target=main, kwargs=case, name=f"Test-{i + 1}")
-            threads.append(t)
-            t.start()
-            if len(threads) >= args.threads:
-                for t in threads:
-                    t.join()
-                threads = []
-
-        for t in threads:
-            t.join()
+        with ThreadPoolExecutor(max_workers=args.threads, thread_name_prefix="Test") as executor:
+            futures = [executor.submit(main, **case) for case in test_cases]
+            for future in futures:
+                future.result()
     else:
         for i, case in enumerate(test_cases):
             print(f"Running test case {i + 1}: {case}")
             main(**case)
 
-    print("All tests passed!")
+    print("ALL TESTS PASSED")

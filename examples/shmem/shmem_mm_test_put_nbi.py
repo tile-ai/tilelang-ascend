@@ -6,8 +6,6 @@ import torch
 import shmem as aclshmem_module
 import multiprocessing as mp
 from multiprocessing import Barrier
-import sys
-import os
 
 tilelang.cache.clear_cache()
 
@@ -28,6 +26,7 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
 }
 
+
 @tilelang.jit(pass_configs=pass_configs)
 def shmem_put_nbi(M, N, nelems, newPe, dtype="int8"):
     @T.prim_func
@@ -35,12 +34,13 @@ def shmem_put_nbi(M, N, nelems, newPe, dtype="int8"):
         A: T.Tensor((M, N), dtype),
         B: T.Tensor((M, N), dtype),
     ):
-        with T.Kernel(1, is_npu=True) as (cid, vid):
-            with T.Scope("V"):
-                if vid == 0:
-                    # Copy from the local GM to the newPe GM
-                    T.shmem_put_nbi(B, A, nelems, newPe)
+        with T.Kernel(1, is_npu=True) as (cid, vid), T.Scope("V"):
+            if vid == 0:
+                # Copy from the local GM to the newPe GM
+                T.shmem_put_nbi(B, A, nelems, newPe)
+
     return main
+
 
 def worker(rank, barrier):
     print(f"Rank {rank}: Setting device")
@@ -62,9 +62,9 @@ def worker(rank, barrier):
         print(f"Rank {rank}: Initialization successful")
         torch.manual_seed(0)
         # Create shared memory tensor
-        tensor = aclshmem_module.aclshmem_create_tensor([M, 2*N], dtype=torch.int8, device_id=rank)
+        tensor = aclshmem_module.aclshmem_create_tensor([M, 2 * N], dtype=torch.int8, device_id=rank)
         a = tensor[0:1, 0:N].fill_(2)
-        b = tensor[0:1, N:2*N].fill_(0)
+        b = tensor[0:1, N : 2 * N].fill_(0)
         torch.npu.synchronize()
         nelems = M * N
         # Put the data from this rank onto another rank; here it is set to the next rank.
@@ -74,16 +74,38 @@ def worker(rank, barrier):
         func(a, b)
         barrier.wait()
         if torch.equal(a, b):
+            matched = True
             print(f"Rank {rank}: Test passed!")
         else:
-            print("[ERROR] Kernel Output Not Match!")
+            matched = False
+            print(f"Rank {rank}: kernel output does not match")
         aclshmem_module.aclshmem_free_tensor(tensor)
 
     else:
-        print(f"Rank {rank}: Initialization failed with code {ret}")    
+        print(f"Rank {rank}: Initialization failed with code {ret}")
     # Clean
     aclshmem_module.aclshmem_finialize()
     print(f"Rank {rank}: Finalized")
+    if ret != 0:
+        raise RuntimeError(f"Rank {rank}: initialization failed with code {ret}")
+    if not matched:
+        raise AssertionError(f"Rank {rank}: kernel output does not match")
+
+
+def abort_and_join_processes(barrier, processes):
+    try:
+        barrier.abort()
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+        for process in processes:
+            process.join(timeout=1)
+            if process.is_alive():
+                process.kill()
+        for process in processes:
+            process.join()
+
 
 # [Program Start Location]
 print(f"Number of processes: {num_processes}")
@@ -91,12 +113,24 @@ print(f"Number of processes: {num_processes}")
 barrier = Barrier(num_processes)
 processes = []
 
-for rank in range(num_processes):
-    p = mp.Process(target=worker, args=(rank, barrier))
-    p.start()
-    processes.append(p)
+try:
+    for rank in range(num_processes):
+        p = mp.Process(target=worker, args=(rank, barrier))
+        p.start()
+        processes.append(p)
+    while any(p.is_alive() for p in processes):
+        failed_processes = [p.pid for p in processes if p.exitcode not in (None, 0)]
+        if failed_processes:
+            raise RuntimeError(f"worker processes failed: {failed_processes}")
+        for p in processes:
+            p.join(timeout=0.1)
 
-for p in processes:
-    p.join()
-
-print("Kernel Output Match!")
+    for p in processes:
+        p.join()
+    failed_processes = [p.pid for p in processes if p.exitcode != 0]
+    if failed_processes:
+        raise RuntimeError(f"worker processes failed: {failed_processes}")
+except BaseException:
+    abort_and_join_processes(barrier, processes)
+    raise
+print("ALL TESTS PASSED")

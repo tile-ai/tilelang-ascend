@@ -4,6 +4,7 @@ import tilelang
 from tilelang import language as T
 import torch
 
+
 @tilelang.jit(out_idx=[1])
 def broadcast(M, N, block_M, dtype="float"):
     m_num = M // block_M
@@ -32,6 +33,7 @@ def broadcast(M, N, block_M, dtype="float"):
 
     return main
 
+
 if __name__ == "__main__":
     tilelang.cache.clear_cache()
 
@@ -57,4 +59,4 @@ if __name__ == "__main__":
     ref_c = a.expand(M, N)
 
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")

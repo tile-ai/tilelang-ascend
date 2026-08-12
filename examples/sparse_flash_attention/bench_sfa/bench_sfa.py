@@ -78,7 +78,7 @@ def test_op(T, B, KV_S, Q_N, KV_N, D, D_rope, sparse_size, scale_value, sparse_b
             out = out.to(first_out.dtype)
             torch.testing.assert_close(out, first_out, rtol=1e-2, atol=1e-2, equal_nan=True)
     print(f"(last op) {tl_op.__name__} {out=}")
-    print("[PASSED]")
+    print(f"Case completed: T={T}, KV_S={KV_S}")
 
 
 from sparse_flash_attn_pa import init_test
@@ -151,3 +151,4 @@ test_op(
     act_kv_s=2560,
     tl_ops=tl_ops,
 )
+print("ALL TESTS PASSED")

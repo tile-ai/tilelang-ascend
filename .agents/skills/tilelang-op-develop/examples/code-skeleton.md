@@ -155,7 +155,7 @@ def main():
         test_{op}_boundary()  # Boundary 比精度：精度不过=WARN，非阻塞
 
     if blocking_ok:
-        print("Test Passed!")  # L0/L1 全过；据此（退出码 + 该行）判定
+        print("ALL TESTS PASSED")  # L0/L1 全过；据此（退出码 + 该行）判定
         sys.exit(0)
     sys.exit(1)
 

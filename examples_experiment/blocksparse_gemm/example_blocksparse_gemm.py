@@ -280,6 +280,7 @@ def main():
     except AssertionError as e:
         print("❌ Verification FAILED: Results differ significantly.")
         print(e)
+        raise
 
 
 if __name__ == "__main__":
@@ -291,6 +292,7 @@ if __name__ == "__main__":
         test_typical()
         test_boundary_dense()
         test_boundary_sparse()
-        print("Kernel Output Match!")
     else:
         main()
+
+    print("ALL TESTS PASSED")

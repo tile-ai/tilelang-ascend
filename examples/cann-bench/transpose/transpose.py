@@ -450,4 +450,4 @@ if __name__ == "__main__":
     y = transpose(x, perm)
     ref = torch.permute(x.cpu(), perm)
     torch.testing.assert_close(y.cpu().float(), ref.float(), rtol=1e-3, atol=1e-3)
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")

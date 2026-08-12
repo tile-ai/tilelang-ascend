@@ -1,5 +1,5 @@
 import tilelang
-from tilelang import DataType, language as T
+from tilelang import language as T
 import torch
 
 torch.set_default_device("npu")
@@ -276,4 +276,4 @@ ref_output = ref_sparse_attention_fwd_interface(q, kv, indices, q_start_s_index,
 torch.npu.synchronize()
 torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
 
-print("Test Passed!")
+print("ALL TESTS PASSED")

@@ -130,4 +130,4 @@ print(f"tilelang time: {tilelang_time} ms")
 print(f"torch time: {torch_time} ms")
 
 torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")

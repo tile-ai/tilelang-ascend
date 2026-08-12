@@ -594,4 +594,4 @@ if __name__ == "__main__":
         topk=args.topk,
         max_blocks=args.max_blocks,
     )
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")

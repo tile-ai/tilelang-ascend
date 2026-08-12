@@ -360,11 +360,10 @@ def main():
             )
 
     print("\nDone.")
-    # CI compatibility: bench_test.sh marks a script PASSED only if stdout
-    # contains "Test Passed!" / "Kernel Output Match!". Print it when all
-    # run_one correctness checks passed; exit 1 otherwise.
+    # CI compatibility: bench_test.sh requires exactly one ALL TESTS PASSED
+    # line after every run_one correctness check passes; exit 1 otherwise.
     if all(results):
-        print("Test Passed!")
+        print("ALL TESTS PASSED")
     else:
         sys.exit(1)
 

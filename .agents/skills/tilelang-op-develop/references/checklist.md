@@ -54,7 +54,7 @@
 | 13 | **`# type: ignore`** | `T.Tensor` 参数定义后追加，避免 Pylance 报错 |
 | 14 | **分层异常处理** | L0/L1 用例用 `try/except` 包裹：通过打 `[PRECISION_PASS]`、失败打 `[PRECISION_FAIL]` 并记 `ok=False`（不中断本层其余用例）。L2/Boundary 失败打 `[BOUNDARY_WARN]` 后继续，**不影响退出码**。不要裸 `assert` 直接崩 |
 | 15 | **分层标记输出** | 每个用例按层打标记：L0/L1 → `[PRECISION_PASS]`/`[PRECISION_FAIL]`；L2/Boundary → `[BOUNDARY_PASS]`/`[BOUNDARY_WARN]`，含 shape/dtype，避免看似卡住 |
-| 16 | **最终输出 + 退出码** | `test_{op}.py` 的 main 在 L0/L1 全过时最后一行 `print("Test Passed!")`（或 `"Kernel Output Match!"`）并 `sys.exit(0)`（据退出码 + 该行判定）；L0/L1 任一失败 `sys.exit(1)`。L2/Boundary 的 `[BOUNDARY_WARN]` 不改变退出码 |
+| 16 | **最终输出 + 退出码** | `test_{op}.py` 的 main 在 L0/L1 全过后恰好一次 `print("ALL TESTS PASSED")` 并 `sys.exit(0)`（据退出码 + 精确完整行判定）；L0/L1 任一失败不得输出终态标记并须 `sys.exit(1)`。L2/Boundary 的 `[BOUNDARY_WARN]` 不改变退出码 |
 | 17 | **--level 参数** | `argparse` 提供 `--level {l0,l1,l2,boundary,all}`（默认 `l0`）：精度收敛跑 `l0`、扩展后跑 `all`；main 按 level 分发各层函数 |
 | 18 | **代码格式检查** | `ruff check examples/{op}/{op}.py examples/{op}/test_{op}.py` + `ruff format --check examples/{op}/{op}.py examples/{op}/test_{op}.py` 通过 |
 

@@ -207,7 +207,7 @@ def main():
         # Level 2: K=1024
         test(256, 256, 1024)
 
-    print("Test Passed!")
+    print("ALL TESTS PASSED")
 
 
 if __name__ == "__main__":

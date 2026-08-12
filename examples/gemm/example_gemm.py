@@ -24,9 +24,9 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -67,4 +67,4 @@ c = func(a, b)
 ref_c = a @ b
 
 torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")

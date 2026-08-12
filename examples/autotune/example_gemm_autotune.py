@@ -23,6 +23,7 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
+
 # config method 1: directly defining search space in get_config function
 def get_config():
     return [
@@ -31,28 +32,29 @@ def get_config():
         {"block_M": 128, "block_N": 256, "K_L1": 64},
     ]
 
+
 # config method 2: using itertools to generate combinations
 def get_config_combination():
     block_M_options = [64, 128, 256]
     block_N_options = [64, 128, 256]
     K_L1_options = [64, 128]
-    
+
     _config = list(itertools.product(block_M_options, block_N_options, K_L1_options))
     config = [{"block_M": c[0], "block_N": c[1], "K_L1": c[2]} for c in _config]
     return config
 
+
 def ref_prog(A, B):
     return A @ B
 
+
 def supply_prog(params):
     torch.manual_seed(0)
-    return [
-        torch.randn(M, K).half().npu(),
-        torch.randn(K, N).half().npu()
-    ]
+    return [torch.randn(M, K).half().npu(), torch.randn(K, N).half().npu()]
+
 
 @tilelang.autotune(
-    configs=get_config(), # get_config_combination is also ok
+    configs=get_config(),  # get_config_combination is also ok
     ref_prog=ref_prog,
     supply_prog=supply_prog,
     atol=1e-2,
@@ -65,9 +67,9 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -95,4 +97,4 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
 func = matmul(M, N, K)
 
 print("Best Config:", func.get_tuner_result())
-print("Test passed!")
+print("ALL TESTS PASSED")

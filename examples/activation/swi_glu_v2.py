@@ -139,4 +139,4 @@ for i in range(1):
         torch.testing.assert_close(b.cpu(), ascendc_b.cpu(), rtol=1e-2, atol=1e-2)
         print("Test passed!")
 
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")

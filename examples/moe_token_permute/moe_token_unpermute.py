@@ -757,9 +757,9 @@ def test_unpermute():
 
     print(f"\n{'=' * 65}")
     if overall_passed:
-        print("Test passed!")
+        print("ALL TESTS PASSED")
     else:
-        print("Test failed! The precision is not correct!")
+        raise AssertionError("one or more token-unpermute cases failed")
     print(f"{'=' * 65}")
 
 

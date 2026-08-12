@@ -490,7 +490,7 @@ def main() -> None:
 
     print("=" * 70)
     print("[PASS] fused_gdn_gating 所有配置验证通过")
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")
     print("=" * 70)
 
 

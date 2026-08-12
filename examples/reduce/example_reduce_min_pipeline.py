@@ -13,6 +13,7 @@ args = parser.parse_args()
 M = args.m
 N = args.n
 
+
 @tilelang.jit(out_idx=[1], target="ascendc")
 def reduce_min_pipeline(M, N, block_M, block_N, sub_M, dtype="float"):
     m_num = M // block_M
@@ -23,8 +24,8 @@ def reduce_min_pipeline(M, N, block_M, block_N, sub_M, dtype="float"):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M), dtype),
+        A: T.Tensor((M, N), dtype),
+        B: T.Tensor((M), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -47,8 +48,7 @@ def reduce_min_pipeline(M, N, block_M, block_N, sub_M, dtype="float"):
 
                     if mm < vec_proc - 1:
                         T.barrier_all()
-                        T.copy(A[bx * block_M + vid * sub_M // VEC_NUM + (mm + 1) * sub_M, by * block_N],
-                               a_ub[nxt, :, :])
+                        T.copy(A[bx * block_M + vid * sub_M // VEC_NUM + (mm + 1) * sub_M, by * block_N], a_ub[nxt, :, :])
                         T.barrier_all()
 
                     T.barrier_all()
@@ -82,9 +82,9 @@ if __name__ == "__main__":
     c = func(a)
 
     torch.npu.synchronize()
-    torch.set_printoptions(threshold=float('inf'), sci_mode=False)
+    torch.set_printoptions(threshold=float("inf"), sci_mode=False)
 
     ref_c = torch.min(a, dim=-1).values
 
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")

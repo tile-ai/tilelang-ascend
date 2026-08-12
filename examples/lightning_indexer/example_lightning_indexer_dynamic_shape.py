@@ -218,9 +218,9 @@ def test_indexer():
     total_mismatches = count_mismatches_last_dim(golden_out.cpu(), npu_out.cpu())
 
     if (1 - total_mismatches / (B * S1 * N2 * TOP_K)) > 0.99:
-        print("Test passed!")
+        print("ALL TESTS PASSED")
     else:
-        print("Test failed! The precision is not correct!")
+        raise AssertionError("dynamic lightning indexer precision is not correct")
 
 
 if __name__ == "__main__":

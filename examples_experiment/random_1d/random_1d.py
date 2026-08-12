@@ -91,4 +91,4 @@ if __name__ == "__main__":
 
     ref_output = reference_random_1d(M, SEED)
     torch.testing.assert_close(output_truncated.cpu(), ref_output, rtol=0, atol=0)
-    print("Random Kernel Output Match!")
+    print("ALL TESTS PASSED")

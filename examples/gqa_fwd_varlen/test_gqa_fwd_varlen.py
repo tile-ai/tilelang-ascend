@@ -612,7 +612,7 @@ def main():
         test_gqa_fwd_varlen_boundary()
 
     if blocking_ok:
-        print("Test Passed!")
+        print("ALL TESTS PASSED")
         sys.exit(0)
     sys.exit(1)
 

@@ -27,9 +27,9 @@ def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="flo
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -39,12 +39,11 @@ def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="flo
 
             C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
 
-            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N // vec_proc), dtype)
-            d_ub = T.alloc_ub((block_M // VEC_NUM, block_N // vec_proc), dtype)
-            e_ub = T.alloc_ub((block_M // VEC_NUM, block_N // vec_proc), dtype)
+            _c_ub = T.alloc_ub((block_M // VEC_NUM, block_N // vec_proc), dtype)
+            _d_ub = T.alloc_ub((block_M // VEC_NUM, block_N // vec_proc), dtype)
+            _e_ub = T.alloc_ub((block_M // VEC_NUM, block_N // vec_proc), dtype)
 
             with T.Scope("C"):
-
                 loop_k = T.ceildiv(K, block_K)
                 for k in T.Pipelined(loop_k, num_stages=3):
                     T.barrier_all()
@@ -77,4 +76,4 @@ c = func(a, b)
 ref_c = a @ b
 
 torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")

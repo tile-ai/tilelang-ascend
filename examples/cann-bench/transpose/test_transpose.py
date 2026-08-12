@@ -350,7 +350,7 @@ def main():
         test_transpose_boundary()  # Boundary: precision fail=WARN, non-blocking
 
     if blocking_ok:
-        print("Test Passed!")
+        print("ALL TESTS PASSED")
         sys.exit(0)
     sys.exit(1)
 

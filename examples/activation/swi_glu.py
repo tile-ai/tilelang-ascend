@@ -10,10 +10,11 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
 }
 
+
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def swi_glu(M, N, block_M, block_N, split_dim, dtype="float"):
-    # The `swi_glu` operator splits the input tensor into two tensors, x1 and x2, based on the split dimension. 
-    # It performs a Swish operation on x1 and multiplies the result by x2. 
+    # The `swi_glu` operator splits the input tensor into two tensors, x1 and x2, based on the split dimension.
+    # It performs a Swish operation on x1 and multiplies the result by x2.
     m_div = 1
     n_div = 2
     m_offset = 0
@@ -25,19 +26,15 @@ def swi_glu(M, N, block_M, block_N, split_dim, dtype="float"):
         n_offset = 0
     m_num = T.ceildiv(M // m_div, block_M)
     n_num = T.ceildiv(N // n_div, block_N)
-    
+
     VEC_NUM = 2
 
-
     @T.prim_func
-    def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M // m_div, N // n_div), dtype)
-    ):
+    def main(A: T.Tensor((M, N), dtype), B: T.Tensor((M // m_div, N // n_div), dtype)):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
-            a0_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)    
+            a0_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             a1_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             zero_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
@@ -70,7 +67,7 @@ test_configs = [
     (256, 256, 64, 64, 0),
     (256, 256, 64, 64, 1),
     (1024, 1024, 128, 128, -2),
-    (1024, 1024, 128, 128, -1),    
+    (1024, 1024, 128, 128, -1),
 ]
 
 for M, N, block_M, block_N, split_dim in test_configs:
@@ -89,4 +86,4 @@ for M, N, block_M, block_N, split_dim in test_configs:
     torch.testing.assert_close(b.cpu(), ref_b.cpu(), rtol=1e-2, atol=1e-2)
     print("Test passed!")
 
-print("Kernel Output Match!")
+print("ALL TESTS PASSED")

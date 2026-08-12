@@ -563,7 +563,7 @@ def main():
             blocking_ok = False
 
     if blocking_ok:
-        print("Test Passed!")
+        print("ALL TESTS PASSED")
         sys.exit(0)
     sys.exit(1)
 

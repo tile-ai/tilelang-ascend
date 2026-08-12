@@ -32,9 +32,9 @@ def batch_matmul(B, M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtyp
 
     @T.prim_func
     def main(
-            A_mat: T.Tensor((B, M, K), dtype),
-            B_mat: T.Tensor((B, K, N), dtype),
-            C_mat: T.Tensor((B, M, N), dtype),
+        A_mat: T.Tensor((B, M, K), dtype),
+        B_mat: T.Tensor((B, K, N), dtype),
+        C_mat: T.Tensor((B, M, N), dtype),
     ):
         total = B * m_num * n_num
         with T.Kernel(total, is_npu=True) as (cid, _):
@@ -75,4 +75,4 @@ if __name__ == "__main__":
     ref_c = torch.matmul(a, b)
 
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-    print("Batch Kernel Output Match!")
+    print("ALL TESTS PASSED")

@@ -169,7 +169,7 @@ def test(custom_args=None):
     torch.npu.synchronize()
 
     torch.testing.assert_close(result, output_torch_ref, rtol=1e-2, atol=1e-2)
-    logging.info("Kernel Output Match!")
+    print("ALL TESTS PASSED")
 
 
 if __name__ == "__main__":

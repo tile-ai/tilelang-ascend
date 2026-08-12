@@ -5,6 +5,7 @@ import tilelang as tl
 import tilelang.language as T
 import torch
 
+
 @tl.jit(
     out_idx=[3],
     workspace_idx=[4],
@@ -12,13 +13,21 @@ import torch
         tl.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
         tl.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
         tl.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
-    }
+    },
 )
 def simple_quant_batch_matmul(
-    Batch:int, M:int, N:int, K:int, scale_size:Literal["1", "N"],
-    block_M:int, block_N:int, block_K:int,
-    in_dtype: Literal["int8"] = "int8", out_dtype: Literal["float16", "bfloat16"] = "float16",
-    accum_dtype: Literal["int32"] = "int32", scale_dtype: Literal["float32"] = "float32"
+    Batch: int,
+    M: int,
+    N: int,
+    K: int,
+    scale_size: Literal["1", "N"],
+    block_M: int,
+    block_N: int,
+    block_K: int,
+    in_dtype: Literal["int8"] = "int8",
+    out_dtype: Literal["float16", "bfloat16"] = "float16",
+    accum_dtype: Literal["int32"] = "int32",
+    scale_dtype: Literal["float32"] = "float32",
 ):
     """Simple QuantMatmul implementation with per-tensor / per-channel quantization scale"""
 
@@ -35,11 +44,11 @@ def simple_quant_batch_matmul(
 
     @T.prim_func
     def main(
-            A: T.Tensor([Batch, M, K], in_dtype),              # type: ignore
-            B: T.Tensor([Batch, K, N], in_dtype),              # type: ignore
-            scale: T.Tensor([N_scale], scale_dtype),       # type: ignore
-            C: T.Tensor([Batch, M, N], out_dtype),             # type: ignore
-            workspace_1: T.Tensor([Batch, M, N], accum_dtype), # type: ignore
+        A: T.Tensor([Batch, M, K], in_dtype),  # type: ignore
+        B: T.Tensor([Batch, K, N], in_dtype),  # type: ignore
+        scale: T.Tensor([N_scale], scale_dtype),  # type: ignore
+        C: T.Tensor([Batch, M, N], out_dtype),  # type: ignore
+        workspace_1: T.Tensor([Batch, M, N], accum_dtype),  # type: ignore
     ):
         with T.Kernel(Batch * m_num * n_num, is_npu=True) as (cid, vid):
             bb = cid // (m_num * n_num)
@@ -90,19 +99,34 @@ def simple_quant_batch_matmul(
 
     return main
 
+
 def ref_program(A, B, scale, out_dtype, accum_dtype):
     C = A.to(accum_dtype) @ B.to(accum_dtype)
     return (C.to(scale.dtype) * scale).to(out_dtype)
 
+
 def check_case(
-    Batch:int, M:int, N:int, K:int, scale_size:Literal["1", "N"],
-    block_M:int, block_N:int, block_K:int,
-    in_dtype: Literal["int8"] = "int8", out_dtype: Literal["float16", "bfloat16"] = "float16",
-    accum_dtype: Literal["int32"] = "int32", scale_dtype: Literal["float32"] = "float32"
+    Batch: int,
+    M: int,
+    N: int,
+    K: int,
+    scale_size: Literal["1", "N"],
+    block_M: int,
+    block_N: int,
+    block_K: int,
+    in_dtype: Literal["int8"] = "int8",
+    out_dtype: Literal["float16", "bfloat16"] = "float16",
+    accum_dtype: Literal["int32"] = "int32",
+    scale_dtype: Literal["float32"] = "float32",
 ):
     torch_dtype_map = {
-        "float16": torch.half, "float32": torch.float32, "bfloat16": torch.bfloat16,
-        "int8": torch.int8, "int32": torch.int32, "int64": torch.int64, "uint64": torch.uint64
+        "float16": torch.half,
+        "float32": torch.float32,
+        "bfloat16": torch.bfloat16,
+        "int8": torch.int8,
+        "int32": torch.int32,
+        "int64": torch.int64,
+        "uint64": torch.uint64,
     }
 
     A = torch.randint(-128, 127, [Batch, M, K], dtype=torch_dtype_map[in_dtype])
@@ -114,6 +138,7 @@ def check_case(
     ref_C = ref_program(A, B, scale, torch_dtype_map[out_dtype], torch_dtype_map[accum_dtype])
 
     torch.testing.assert_close(C.cpu(), ref_C.cpu(), rtol=1e-2, atol=1e-2)
+
 
 def main(custom_args=None):
     parser = argparse.ArgumentParser(description="QuantBatchMatmul Example")
@@ -133,7 +158,8 @@ def main(custom_args=None):
     check_case(Batch, M, N, K, scale_size="N", block_M=128, block_N=256, block_K=64, out_dtype="bfloat16")
 
     print("QuantBatchMatmul example passed!")
-    print("Kernel Output Match!")
+    print("ALL TESTS PASSED")
+
 
 if __name__ == "__main__":
     main()

@@ -2737,4 +2737,4 @@ if __name__ == "__main__":
         dtype="bfloat16",
         core_num=DEFAULT_CORE_NUM,
     )
-    print("TEST PASSED!")
+    print("ALL TESTS PASSED")

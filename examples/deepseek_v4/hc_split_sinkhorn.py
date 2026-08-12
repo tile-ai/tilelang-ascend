@@ -213,7 +213,7 @@ def test():
     torch.testing.assert_close(post_ref, post, rtol=1e-2, atol=1e-2)
     torch.testing.assert_close(comb_ref, comb, rtol=1e-2, atol=1e-2)
 
-    logging.info("Kernel Output Match!")
+    print("ALL TESTS PASSED")
 
 
 if __name__ == "__main__":
