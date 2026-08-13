@@ -206,6 +206,22 @@ collect_test_scripts() {
             echo "${scripts[@]}"
             return
             ;;
+        "./cann-bench")
+            # cann-bench 目录下的测试需要串行执行，避免 Cython JIT adapter 编译锁竞争
+            # 错误日志会显示 "Waiting for lock to compile cython jit adapter..."
+            # 然后 "Another process has already compiled the file, using it..."
+            # 导致测试框架误判为失败
+            local py_files=$(find "$dir" -maxdepth 2 -name "*.py" \
+                -not -name "__init__.py" \
+                -not -name "*_golden.py" \
+                -not -path "*/bench_sfa/*" \
+                | sort)
+            for f in $py_files; do
+                should_skip_python_script "$f" || scripts+=("$f")
+            done
+            echo "${scripts[@]}"
+            return
+            ;;
         "./flash_attention")
             # 收集主目录的 py 文件（排除 fa_opt）
             local py_files=$(find "$dir" -maxdepth 1 -name "*.py" \
@@ -445,7 +461,13 @@ temp_dir=$(mktemp -d) # 创建临时目录仅用于存放结果标记文件，�
 for script in "${all_scripts[@]}"; do
     total_scripts=$((total_scripts + 1))
 
-    # 启动后台子进程
+    # 判断是否为 cann-bench 目录下的测试，需要串行执行避免 Cython JIT 编译锁竞争
+    is_cann_bench_test=false
+    if [[ "$script" == ./cann-bench/* ]]; then
+        is_cann_bench_test=true
+    fi
+
+    # 启动执行（cann-bench 串行，其他并行）
     {
         # 判断是否为自定义任务
         if [[ "$script" == CUSTOM_TASK::* ]]; then
@@ -496,14 +518,21 @@ for script in "${all_scripts[@]}"; do
         else
             echo "[FAILED] $current_script_ref (Exit: $exit_code)"
             echo "  Last line: $last_line"
-            # 失败时打印最后5行方便调试
+            # 失败时打印最后 5 行方便调试
             echo "$output" | tail -n 5 | sed 's/^/  /'
         fi
     } &
 
-    # 并发控制
-    if [[ $(jobs -r -p | wc -l) -ge $MAX_JOBS ]]; then
-        wait -n
+    # cann-bench 测试串行执行：立即等待，不启动下一个并行任务
+    if [ "$is_cann_bench_test" = true ]; then
+        wait
+    fi
+
+    # 并发控制（仅对非 cann-bench 测试）
+    if [ "$is_cann_bench_test" = false ]; then
+        if [[ $(jobs -r -p | wc -l) -ge $MAX_JOBS ]]; then
+            wait -n
+        fi
     fi
 done
 
