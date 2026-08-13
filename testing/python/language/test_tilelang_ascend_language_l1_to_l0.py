@@ -295,14 +295,17 @@ def run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, a
 # (M, N, K, block_M, block_N, block_K) -- divisible shapes, varied block sizes.
 explicit_configs = [
     (128, 128, 128, 128, 128, 128),  # single tile, block == full dim
-    (256, 256, 256, 128, 128, 64),  # 2x2 grid, K split into 4
-    (512, 512, 512, 128, 256, 64),  # asymm block_N
-    (256, 256, 256, 64, 64, 64),  # smaller block, 4x4 grid
+    pytest.param(256, 256, 256, 128, 128, 64, marks=pytest.mark.low_priority),  # 2x2 grid, K split into 4
+    pytest.param(512, 512, 512, 128, 256, 64, marks=pytest.mark.low_priority),  # asymm block_N
+    pytest.param(256, 256, 256, 64, 64, 64, marks=pytest.mark.low_priority),  # smaller block, 4x4 grid
 ]
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize(
+    "dtype,accum_dtype",
+    [("float16", "float"), pytest.param("bfloat16", "float", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize("M,N,K,block_M,block_N,block_K", explicit_configs)
 def test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target):
     run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target)
@@ -373,13 +376,16 @@ def run_test_gemm_v0_implicit(M, N, K, block_M, block_N, block_K, transpose_B, d
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize(
+    "dtype,accum_dtype",
+    [("float16", "float"), pytest.param("bfloat16", "float", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize("transpose_B", [False, True])
 @pytest.mark.parametrize(
     "M,N,K,block_M,block_N,block_K",
     [
         (128, 128, 128, 128, 128, 128),
-        (256, 256, 256, 128, 128, 64),
+        pytest.param(256, 256, 256, 128, 128, 64, marks=pytest.mark.low_priority),
     ],
 )
 def test_gemm_v0_implicit(M, N, K, block_M, block_N, block_K, transpose_B, dtype, accum_dtype, target):
@@ -394,15 +400,18 @@ def test_gemm_v0_implicit(M, N, K, block_M, block_N, block_K, transpose_B, dtype
 # =============================================================================
 k_tail_configs = [
     (128, 128, 160, 128, 128, 64),  # K=160, last tile K=32 (half tile)
-    (128, 256, 96, 128, 256, 64),  # K=96, last tile K=32
-    (256, 256, 176, 128, 128, 64),  # K=176, last tile K=48
-    (113, 113, 113, 64, 64, 32),  # odd prime sizes, last tile K=17
-    (112, 112, 112, 32, 32, 64),  # odd prime sizes, last tile K=48
+    pytest.param(128, 256, 96, 128, 256, 64, marks=pytest.mark.low_priority),  # K=96, last tile K=32
+    pytest.param(256, 256, 176, 128, 128, 64, marks=pytest.mark.low_priority),  # K=176, last tile K=48
+    pytest.param(113, 113, 113, 64, 64, 32, marks=pytest.mark.low_priority),  # odd prime sizes, last tile K=17
+    pytest.param(112, 112, 112, 32, 32, 64, marks=pytest.mark.low_priority),  # odd prime sizes, last tile K=48
 ]
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize(
+    "dtype,accum_dtype",
+    [("float16", "float"), pytest.param("bfloat16", "float", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize("M,N,K,block_M,block_N,block_K", k_tail_configs)
 def test_k_tail_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target):
     run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target)
@@ -416,14 +425,17 @@ def test_k_tail_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, tar
 # =============================================================================
 fractal_configs = [
     (32, 32, 32, 16, 16, 16),  # minimum fractal for fp16/bf16
-    (64, 64, 64, 16, 16, 16),  # 4x4 grid at min fractal
-    (128, 128, 128, 64, 64, 16),  # min K, larger M/N blocks
-    (128, 128, 128, 16, 128, 16),  # asymm: min M, large N, min K
+    pytest.param(64, 64, 64, 16, 16, 16, marks=pytest.mark.low_priority),  # 4x4 grid at min fractal
+    pytest.param(128, 128, 128, 64, 64, 16, marks=pytest.mark.low_priority),  # min K, larger M/N blocks
+    pytest.param(128, 128, 128, 16, 128, 16, marks=pytest.mark.low_priority),  # asymm: min M, large N, min K
 ]
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize(
+    "dtype,accum_dtype",
+    [("float16", "float"), pytest.param("bfloat16", "float", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize("M,N,K,block_M,block_N,block_K", fractal_configs)
 def test_fractal_boundary(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target):
     run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target)
@@ -438,13 +450,16 @@ def test_fractal_boundary(M, N, K, block_M, block_N, block_K, dtype, accum_dtype
 # =============================================================================
 k_tiling_configs = [
     (128, 128, 512, 128, 128, 64),  # K split into 8 tiles
-    (128, 128, 1024, 128, 128, 64),  # K split into 16 tiles
-    (64, 64, 768, 64, 64, 64),  # K split into 12 tiles, smaller block
+    pytest.param(128, 128, 1024, 128, 128, 64, marks=pytest.mark.low_priority),  # K split into 16 tiles
+    pytest.param(64, 64, 768, 64, 64, 64, marks=pytest.mark.low_priority),  # K split into 12 tiles, smaller block
 ]
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize(
+    "dtype,accum_dtype",
+    [("float16", "float"), pytest.param("bfloat16", "float", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize("M,N,K,block_M,block_N,block_K", k_tiling_configs)
 def test_k_tiling_accumulation(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target):
     run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target)
@@ -538,7 +553,10 @@ def run_test_layout_annotated_gemm(M, N, K, block_M, block_N, block_K, a_layout,
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize(
+    "dtype,accum_dtype",
+    [("float16", "float"), pytest.param("bfloat16", "float", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize(
     "a_layout,b_layout,transpose_B",
     [
@@ -611,12 +629,15 @@ def run_test_persistent_gemm(M, N, K, block_M, block_N, block_K, core_num, dtype
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize(
+    "dtype,accum_dtype",
+    [("float16", "float"), pytest.param("bfloat16", "float", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize(
     "M,N,K,block_M,block_N,block_K,core_num",
     [
         (256, 256, 128, 128, 128, 64, 4),  # 2x2 grid, 4 cores
-        (512, 256, 128, 128, 128, 64, 4),  # 4x2 grid, 4 cores
+        pytest.param(512, 256, 128, 128, 128, 64, 4, marks=pytest.mark.low_priority),  # 4x2 grid, 4 cores
     ],
 )
 def test_persistent_scheduling(M, N, K, block_M, block_N, block_K, core_num, dtype, accum_dtype, target):
@@ -710,13 +731,16 @@ def sliced_3d_l1_to_l0a(STACK, BM, K, BLOCK_N, dtype="float16", accum_dtype="flo
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize(
+    "dtype,accum_dtype",
+    [("float16", "float"), pytest.param("bfloat16", "float", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize(
     "STACK,ROWS,COLS,BM",
     [
         (4, 128, 128, 128),  # [4,128,128] -> physical 512, valid 128 per slice
-        (2, 128, 128, 128),  # [2,128,128] -> physical 256, valid 128 per slice
-        (4, 64, 128, 64),  # smaller rows
+        pytest.param(2, 128, 128, 128, marks=pytest.mark.low_priority),  # [2,128,128] -> physical 256, valid 128 per slice
+        pytest.param(4, 64, 128, 64, marks=pytest.mark.low_priority),  # smaller rows
     ],
 )
 def test_sliced_3d_l1_to_l0b(STACK, ROWS, COLS, BM, dtype, accum_dtype, target):
@@ -731,17 +755,20 @@ def test_sliced_3d_l1_to_l0b(STACK, ROWS, COLS, BM, dtype, accum_dtype, target):
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize(
+    "dtype,accum_dtype",
+    [("float16", "float"), pytest.param("bfloat16", "float", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize(
     "STACK,BM,K,BLOCK_N",
     [
         (2, 128, 128, 128),  # [2,128,128] -> physical 256, valid 128 per slice
-        (4, 64, 53, 27),  # non-power-of-2 K, smaller BM, physical 256, valid 64
-        (4, 128, 64, 128),  # smaller K=64, physical 512, valid 128 per slice
-        (3, 128, 128, 128),  # odd STACK, physical 384, valid 128 per slice
-        (4, 48, 64, 64),  # non-power-of-2 BM, physical 192, valid 48
-        (4, 128, 96, 128),  # non-power-of-2 K, physical 512, valid 128
-        (4, 64, 96, 64),  # non-power-of-2 K, smaller BM, physical 256
+        pytest.param(4, 64, 53, 27, marks=pytest.mark.low_priority),  # non-power-of-2 K, smaller BM, physical 256, valid 64
+        pytest.param(4, 128, 64, 128, marks=pytest.mark.low_priority),  # smaller K=64, physical 512, valid 128 per slice
+        pytest.param(3, 128, 128, 128, marks=pytest.mark.low_priority),  # odd STACK, physical 384, valid 128 per slice
+        pytest.param(4, 48, 64, 64, marks=pytest.mark.low_priority),  # non-power-of-2 BM, physical 192, valid 48
+        pytest.param(4, 128, 96, 128, marks=pytest.mark.low_priority),  # non-power-of-2 K, physical 512, valid 128
+        pytest.param(4, 64, 96, 64, marks=pytest.mark.low_priority),  # non-power-of-2 K, smaller BM, physical 256
     ],
 )
 def test_sliced_3d_l1_to_l0a(STACK, BM, K, BLOCK_N, dtype, accum_dtype, target):
@@ -798,12 +825,15 @@ def sliced_3d_l1_to_l0b_transpose(STACK, BLOCK_N, D, BM, dtype="float16", accum_
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize(
+    "dtype,accum_dtype",
+    [("float16", "float"), pytest.param("bfloat16", "float", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize(
     "STACK,ROWS,COLS,BM",
     [
         (4, 128, 128, 128),  # [4,128,128] -> physical 512, valid 128 per slice
-        (2, 128, 128, 128),  # [2,128,128] -> physical 256, valid 128 per slice
+        pytest.param(2, 128, 128, 128, marks=pytest.mark.low_priority),  # [2,128,128] -> physical 256, valid 128 per slice
     ],
 )
 def test_sliced_3d_l1_to_l0b_transpose(STACK, ROWS, COLS, BM, dtype, accum_dtype, target):
@@ -887,12 +917,15 @@ def row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM, dtype="float16", accum_dtype="flo
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
+@pytest.mark.parametrize(
+    "dtype,accum_dtype",
+    [("float16", "float"), pytest.param("bfloat16", "float", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize(
     "PHYS_ROW,COL,BM",
     [
         (256, 128, 128),  # slice_valid_row=128 < phys_row=256
-        (256, 128, 64),  # slice_valid_row=64 < phys_row=256
+        pytest.param(256, 128, 64, marks=pytest.mark.low_priority),  # slice_valid_row=64 < phys_row=256
     ],
 )
 def test_row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM, dtype, accum_dtype, target):

@@ -202,7 +202,7 @@ def run_test_full_copy_plain(M, N, K, block_M, block_N, K_L1, dtype, accum_dtype
 @pytest.mark.parametrize(
     "dtype,accum_dtype",
     [
-        ("bfloat16", "float32"),
+        pytest.param("bfloat16", "float32", marks=pytest.mark.low_priority),
         ("float16", "float32"),
     ],
 )
@@ -214,7 +214,7 @@ def test_full_copy_annotated(dtype, accum_dtype):
     "dtype,accum_dtype",
     [
         ("float16", "float"),
-        ("bfloat16", "float"),
+        pytest.param("bfloat16", "float", marks=pytest.mark.low_priority),
     ],
 )
 def test_full_copy_plain(dtype, accum_dtype):
@@ -243,8 +243,8 @@ def run_test_k_tail_gemm(M, N, K, block_M, block_N, K_L1, dtype, accum_dtype):
 # (M, N, K, block_M, block_N, K_L1) -- K deliberately non-divisible.
 k_tail_configs = [
     (128, 128, 160, 128, 128, 64),  # K=160, last tile K=32 (half tile)
-    (128, 256, 96, 128, 256, 64),  # K=96,  last tile K=32
-    (128, 128, 176, 128, 128, 64),  # K=176, last tile K=48
+    pytest.param(128, 256, 96, 128, 256, 64, marks=pytest.mark.low_priority),  # K=96,  last tile K=32
+    pytest.param(128, 128, 176, 128, 128, 64, marks=pytest.mark.low_priority),  # K=176, last tile K=48
 ]
 
 
@@ -310,9 +310,20 @@ def run_test_splice_2way_nz(block_M, block_N, dim, split, dtype, accum_dtype):
 
 
 # Aligned splits (multiple of C0_SIZE=16 for bfloat16/float16)
-splice_aligned = [16, 32, 48, 64, 80, 96, 112]
+splice_aligned = [
+    pytest.param(16, marks=pytest.mark.low_priority),
+    pytest.param(32, marks=pytest.mark.low_priority),
+    pytest.param(48, marks=pytest.mark.low_priority),
+    64,
+    pytest.param(80, marks=pytest.mark.low_priority),
+    pytest.param(96, marks=pytest.mark.low_priority),
+    pytest.param(112, marks=pytest.mark.low_priority),
+]
 # Non-aligned splits (stress offset / DMA alignment)
-splice_unaligned = [1, 127]
+splice_unaligned = [
+    1,
+    pytest.param(127, marks=pytest.mark.low_priority),
+]
 
 
 @pytest.mark.parametrize("split", splice_aligned)
@@ -325,7 +336,14 @@ def test_splice_2way_nz_unaligned(split):
     run_test_splice_2way_nz(64, 128, 128, split, "bfloat16", "float32")
 
 
-@pytest.mark.parametrize("split", [32, 64, 96])
+@pytest.mark.parametrize(
+    "split",
+    [
+        pytest.param(32, marks=pytest.mark.low_priority),
+        64,
+        pytest.param(96, marks=pytest.mark.low_priority),
+    ],
+)
 def test_splice_2way_nz_float16(split):
     run_test_splice_2way_nz(64, 128, 128, split, "float16", "float32")
 
@@ -390,10 +408,10 @@ def run_test_splice_3way_tail(block_M, block_N, dim, s0, s1, s2, dtype, accum_dt
 
 # (s0, s1, s2, block_N) -- total < block_N, tail must be zero-padded.
 splice_3way_configs = [
-    (48, 48, 24, 128),  # total=120, tail=8  (aligned groups + sub-group tail)
+    pytest.param(48, 48, 24, 128, marks=pytest.mark.low_priority),  # total=120, tail=8  (aligned groups + sub-group tail)
     (32, 32, 32, 128),  # total=96,  tail=32 (clean group boundary)
-    (16, 16, 1, 128),  # total=33,  tail=95 (heavy tail, non-aligned last)
-    (32, 32, 17, 128),  # total=81,  tail=47 (non-aligned last)
+    pytest.param(16, 16, 1, 128, marks=pytest.mark.low_priority),  # total=33,  tail=95 (heavy tail, non-aligned last)
+    pytest.param(32, 32, 17, 128, marks=pytest.mark.low_priority),  # total=81,  tail=47 (non-aligned last)
 ]
 
 
@@ -453,7 +471,14 @@ def run_test_splice_2way_zn(block_M, block_N, K, split, dtype, accum_dtype):
     torch.testing.assert_close(c, ref, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("split", [32, 64, 96])
+@pytest.mark.parametrize(
+    "split",
+    [
+        pytest.param(32, marks=pytest.mark.low_priority),
+        64,
+        pytest.param(96, marks=pytest.mark.low_priority),
+    ],
+)
 def test_splice_2way_zn(split):
     run_test_splice_2way_zn(128, 128, 128, split, "float16", "float")
 
@@ -520,7 +545,7 @@ def run_test_splice_with_k_tail(block_M, block_N, dim, split, K_L1, dtype, accum
 # dim (=K) is non-divisible by K_L1; split divides N.
 splice_ktail_configs = [
     (64, 128, 160, 64, 64),  # K=160, K_L1=64, last K-tile=32; split=64
-    (64, 128, 96, 64, 32),  # K=96,  K_L1=32, last K-tile=32; split=64
+    pytest.param(64, 128, 96, 64, 32, marks=pytest.mark.low_priority),  # K=96,  K_L1=32, last K-tile=32; split=64
 ]
 
 
@@ -594,8 +619,23 @@ def run_test_splice_2way_nz_dynamic_batch(block_M, block_N, dim, split, batch, d
     torch.testing.assert_close(s, ref, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("batch", [1, 2, 3])
-@pytest.mark.parametrize("split", [11, 32, 57, 96])
+@pytest.mark.parametrize(
+    "batch",
+    [
+        pytest.param(1, marks=pytest.mark.low_priority),
+        2,
+        pytest.param(3, marks=pytest.mark.low_priority),
+    ],
+)
+@pytest.mark.parametrize(
+    "split",
+    [
+        pytest.param(11, marks=pytest.mark.low_priority),
+        32,
+        pytest.param(57, marks=pytest.mark.low_priority),
+        pytest.param(96, marks=pytest.mark.low_priority),
+    ],
+)
 def test_splice_2way_nz_dynamic_batch(batch, split):
     run_test_splice_2way_nz_dynamic_batch(64, 128, 128, split, batch, "bfloat16", "float32")
 
@@ -654,8 +694,8 @@ def run_test_k_tail_gemm_dynamic_k(M, N, K, block_M, block_N, K_L1, dtype, accum
 # K is symbolic; values are non-divisible by K_L1 to exercise the K-tail.
 dynamic_k_configs = [
     (128, 128, 160, 128, 128, 64),  # K=160, last tile K=32
-    (128, 256, 96, 128, 256, 64),  # K=96,  last tile K=32
-    (128, 128, 176, 128, 128, 64),  # K=176, last tile K=48
+    pytest.param(128, 256, 96, 128, 256, 64, marks=pytest.mark.low_priority),  # K=96,  last tile K=32
+    pytest.param(128, 128, 176, 128, 128, 64, marks=pytest.mark.low_priority),  # K=176, last tile K=48
 ]
 
 
@@ -726,6 +766,7 @@ def run_test_splice_2way_nz_dynamic_split(block_M, block_N, dim, split, dtype, a
     torch.testing.assert_close(s, ref, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.low_priority
 @pytest.mark.parametrize("split", [16, 32, 64, 96, 127])
 def test_splice_2way_nz_dynamic_split(split):
     run_test_splice_2way_nz_dynamic_split(64, 128, 128, split, "bfloat16", "float32")

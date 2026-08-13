@@ -238,9 +238,9 @@ def run_test_gm_ub_gm_1d(N, block_N, dtype, target):
 regular_2d_configs = [
     # (M, N, block_M, block_N, dtype, use_vid)
     (1024, 1024, 128, 128, "float", True),
-    (1024, 1024, 128, 256, "float16", True),
-    (512, 512, 64, 128, "bfloat16", True),
-    (256, 256, 64, 64, "int32", True),
+    pytest.param(1024, 1024, 128, 256, "float16", True, marks=pytest.mark.low_priority),
+    pytest.param(512, 512, 64, 128, "bfloat16", True, marks=pytest.mark.low_priority),
+    pytest.param(256, 256, 64, 64, "int32", True, marks=pytest.mark.low_priority),
     # no vid split (single AIV per block)
     (256, 256, 64, 64, "float", False),
 ]
@@ -257,8 +257,8 @@ def test_gm_ub_gm_2d(M, N, block_M, block_N, dtype, use_vid, target):
     "N,block_N,dtype",
     [
         (1024, 128, "float"),
-        (1024, 128, "float16"),
-        (256, 32, "int32"),
+        pytest.param(1024, 128, "float16", marks=pytest.mark.low_priority),
+        pytest.param(256, 32, "int32", marks=pytest.mark.low_priority),
     ],
 )
 def test_gm_ub_gm_1d(N, block_N, dtype, target):
@@ -283,13 +283,13 @@ def run_test_boundary(M, N, block_M, block_N, dtype, use_vid, target):
 boundary_configs = [
     # fp32: 32B = 8 elements on the contiguous dim.
     (8, 8, 8, 8, "float", False),  # smallest aligned tile, single block
-    (8, 8, 8, 8, "float", True),  # ... with vid split (rows=4)
+    pytest.param(8, 8, 8, 8, "float", True, marks=pytest.mark.low_priority),  # ... with vid split (rows=4)
     # float16: 32B = 16 elements (vid split variant only; False is redundant).
-    (16, 16, 16, 16, "float16", True),  # smallest aligned fp16 tile
+    pytest.param(16, 16, 16, 16, "float16", True, marks=pytest.mark.low_priority),  # smallest aligned fp16 tile
     # smallest vid split: block_M=2 -> rows=1 per AIV (fp32, N=8 aligned).
     (8, 8, 2, 8, "float", True),
     # int32: 32B = 8 elements.
-    (8, 8, 8, 8, "int32", False),
+    pytest.param(8, 8, 8, 8, "int32", False, marks=pytest.mark.low_priority),
 ]
 
 
@@ -397,13 +397,16 @@ def run_test_tail_pad_full(M, N, block_M, block_N, dtype, pad_value, pad_torch):
 # omitted: its 64x64 tail pattern duplicates (100,100).
 tail_configs = [
     (100, 100, 64, 64),  # last block 36x36
-    (77, 103, 32, 32),  # 32x32 tiles, both tails
-    (200, 150, 64, 128),  # 64x128 tiles, M tail 8, N tail 22
+    pytest.param(77, 103, 32, 32, marks=pytest.mark.low_priority),  # 32x32 tiles, both tails
+    pytest.param(200, 150, 64, 128, marks=pytest.mark.low_priority),  # 64x128 tiles, M tail 8, N tail 22
 ]
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize(
+    "dtype",
+    ["float", pytest.param("float16", marks=pytest.mark.low_priority)],
+)
 @pytest.mark.parametrize("M,N,block_M,block_N", tail_configs)
 def test_tail_identity(M, N, block_M, block_N, dtype, target):
     run_test_tail_identity(M, N, block_M, block_N, dtype, use_vid=False, target=target)
@@ -423,8 +426,13 @@ def test_tail_identity_vid(M, N, block_M, block_N, dtype, target):
     "dtype,pad_value,pad_torch",
     [
         ("float", -T.infinity("float"), float("-inf")),
-        ("float", -1.0, -1.0),
-        ("float16", -T.infinity("float16"), float("-inf")),
+        pytest.param("float", -1.0, -1.0, marks=pytest.mark.low_priority),
+        pytest.param(
+            "float16",
+            -T.infinity("float16"),
+            float("-inf"),
+            marks=pytest.mark.low_priority,
+        ),
     ],
 )
 @pytest.mark.parametrize("M,N,block_M,block_N", [(50, 50, 64, 64)])
@@ -504,7 +512,7 @@ def run_test_high4d(B, H, M, N, block_M, block_N, dtype, target):
     "B,M,N,block_M,block_N,dtype",
     [
         (2, 128, 128, 64, 64, "float"),
-        (3, 128, 256, 64, 128, "float16"),
+        pytest.param(3, 128, 256, 64, 128, "float16", marks=pytest.mark.low_priority),
     ],
 )
 def test_high3d(B, M, N, block_M, block_N, dtype, target):
@@ -516,7 +524,7 @@ def test_high3d(B, M, N, block_M, block_N, dtype, target):
     "B,H,M,N,block_M,block_N,dtype",
     [
         (2, 2, 64, 64, 64, 64, "float"),
-        (2, 4, 128, 128, 64, 64, "float16"),
+        pytest.param(2, 4, 128, 128, 64, 64, "float16", marks=pytest.mark.low_priority),
     ],
 )
 def test_high4d(B, H, M, N, block_M, block_N, dtype, target):
@@ -611,7 +619,10 @@ def run_test_dyn_mn(block_M, block_N, dtype, target, shapes):
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize(
+    "dtype",
+    ["float", pytest.param("float16", marks=pytest.mark.low_priority)],
+)
 def test_dyn_m(target, dtype):
     # N divisible by block_N; M spans divisible, non-divisible, and single-block.
     run_test_dyn_m(128, 64, 64, dtype, target, M_values=[64, 128, 192, 50])
@@ -629,7 +640,7 @@ def test_dyn_m_single_block(target):
     "shapes",
     [
         [(64, 64), (100, 100), (128, 128)],  # mix of divisible and tail
-        [(50, 70), (200, 150)],  # both dims non-divisible
+        pytest.param([(50, 70), (200, 150)], marks=pytest.mark.low_priority),  # both dims non-divisible
     ],
 )
 def test_dyn_mn(target, shapes):
@@ -760,7 +771,7 @@ def run_test_gm_slice_offset_load(M, N, block_M, block_N, dtype, target):
     "M,N,block_M,block_N,dtype",
     [
         (256, 256, 64, 64, "float"),
-        (256, 256, 64, 64, "int32"),
+        pytest.param(256, 256, 64, 64, "int32", marks=pytest.mark.low_priority),
     ],
 )
 def test_gm_slice_to_ub(M, N, block_M, block_N, dtype, target):
@@ -772,7 +783,7 @@ def test_gm_slice_to_ub(M, N, block_M, block_N, dtype, target):
     "M,N,block_M,block_N,dtype",
     [
         (64, 64, 64, 64, "float"),
-        (32, 32, 32, 32, "bfloat16"),
+        pytest.param(32, 32, 32, 32, "bfloat16", marks=pytest.mark.low_priority),
     ],
 )
 def test_ub_subregion_copy(M, N, block_M, block_N, dtype, target):
@@ -918,7 +929,7 @@ def run_test_load_compute_abs(M, N, block_M, block_N, dtype, target):
     "M,N,block_M,block_N,dtype",
     [
         (128, 128, 64, 64, "float"),
-        (128, 128, 64, 64, "int32"),
+        pytest.param(128, 128, 64, 64, "int32", marks=pytest.mark.low_priority),
     ],
 )
 def test_load_compute_add(M, N, block_M, block_N, dtype, target):
@@ -930,7 +941,7 @@ def test_load_compute_add(M, N, block_M, block_N, dtype, target):
     "M,N,block_M,block_N,dtype",
     [
         (128, 128, 64, 64, "float"),
-        (64, 64, 64, 64, "int32"),
+        pytest.param(64, 64, 64, 64, "int32", marks=pytest.mark.low_priority),
     ],
 )
 def test_load_compute_scale(M, N, block_M, block_N, dtype, target):
@@ -1026,7 +1037,7 @@ def run_test_col_grid(M, N, block_M, dtype, use_vid, target):
 # fp16) suffice; vid split is covered by Group 1/2.
 row_grid_configs = [
     (64, 256, 64, "float", False),  # 4 column blocks, no vid
-    (64, 512, 128, "float16", False),  # 4 column blocks, fp16
+    pytest.param(64, 512, 128, "float16", False, marks=pytest.mark.low_priority),  # 4 column blocks, fp16
 ]
 
 
@@ -1041,7 +1052,7 @@ def test_row_grid(M, N, block_N, dtype, use_vid, target):
 # + vid) suffice.
 col_grid_configs = [
     (256, 64, 64, "float", False),  # 4 row blocks, no vid
-    (256, 64, 64, "float", True),  # ... with vid split
+    pytest.param(256, 64, 64, "float", True, marks=pytest.mark.low_priority),  # ... with vid split
 ]
 
 
@@ -1064,7 +1075,7 @@ def test_col_grid(M, N, block_M, dtype, use_vid, target):
 pad_ext_configs = [
     # (M, N, block_M, block_N, dtype, pad_value, pad_torch)
     (50, 50, 64, 64, "float", 1.0, 1.0),  # positive finite pad
-    (100, 100, 128, 128, "float", -5.0, -5.0),  # negative pad, larger tile
+    pytest.param(100, 100, 128, 128, "float", -5.0, -5.0, marks=pytest.mark.low_priority),  # negative pad, larger tile
 ]
 
 
@@ -1137,7 +1148,7 @@ def run_test_multi_buffer_fused(M, N, block_M, block_N, dtype, target):
     "M,N,block_M,block_N,dtype",
     [
         (64, 64, 64, 64, "float"),
-        (64, 64, 64, 64, "int32"),
+        pytest.param(64, 64, 64, 64, "int32", marks=pytest.mark.low_priority),
     ],
 )
 def test_multi_buffer_fused(M, N, block_M, block_N, dtype, target):

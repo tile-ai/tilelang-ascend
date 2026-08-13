@@ -420,22 +420,30 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False, kL0Size=1
     Performs a block-level General Matrix Multiplication (GEMM).
 
     This function computes the matrix product $C = op(A) \\times op(B)$, where $op$ represents
-    an optional transpose operation. It calculates the M, N, and K dimensions based on the
+    an optional transpose operation. When ``init=False``, the result is accumulated:
+    ``C += op(A) × op(B)``. When ``init=True``, C is cleared first, equivalent to
+    ``C = op(A) × op(B)``. It calculates the M, N, and K dimensions based on the
     shapes of the input buffers and generates the corresponding hardware intrinsic call.
 
+    A and B must be in L1 (``T.alloc_L1``). gemm_v0 internally handles
+    L1→L0A/L0B movement. C must be in L0C (``T.alloc_L0C``).
+
     Args:
-        A (Union[Buffer, BufferRegion]): The input matrix A. Can be a high-dimensional tensor,
-            but the last two dimensions are treated as the matrix dimensions.
-        B (Union[Buffer, BufferRegion]): The input matrix B. Can be a high-dimensional tensor,
-            but the last two dimensions are treated as the matrix dimensions.
-        C (Union[Buffer, BufferRegion]): The output matrix C. Must be a 2D tensor (M, N).
+        A (Union[Buffer, BufferRegion]): The input matrix A allocated in L1. Can be a
+            high-dimensional tensor, but the last two dimensions are treated as the
+            matrix dimensions. Supports float16, bfloat16, float32, int8.
+        B (Union[Buffer, BufferRegion]): The input matrix B allocated in L1. Can be a
+            high-dimensional tensor, but the last two dimensions are treated as the
+            matrix dimensions. dtype must match A.
+        C (Union[Buffer, BufferRegion]): The output matrix C allocated in L0C. Must be
+            a 2D tensor (M, N). float32 for float A/B, int32 for int8 A/B.
         transpose_A (bool, optional): Whether to transpose matrix A. Defaults to False.
         transpose_B (bool, optional): Whether to transpose matrix B. Defaults to False.
         init (bool, optional): Whether to initialize the accumulator matrix C (typically to zero)
             before computation. Defaults to False.
         kL0Size (int, optional, advanced): K-axis tile size for L1->L0 data movement.
             Controls how the K dimension is split when copying from L1 to L0A/L0B.
-            Must be a multiple of 16. Defaults to 128.
+            Must be a multiple of 16 and ≤ 4095. Defaults to 128.
 
             Normally you don't need to change this. Consider tuning it when:
             - L0C is underutilized (e.g., block_M x block_N x 4 < 128KB)
