@@ -540,6 +540,100 @@ reduce_sum(LocalTensor<T> const &dstTensor, LocalTensor<T> const &srcTensor,
 }
 
 template <typename T>
+CATLASS_DEVICE void abs_contiguous(LocalTensor<T> dstTensor,
+                                   LocalTensor<T> srcTensor, uint32_t count) {
+  constexpr uint32_t kOneRepeatBytes = 256;
+  constexpr uint32_t kOneRepeatElems = kOneRepeatBytes / sizeof(T);
+  uint32_t repeatTime = count / kOneRepeatElems;
+  uint32_t tail = count % kOneRepeatElems;
+
+  if (repeatTime > 0) {
+    uint64_t mask = kOneRepeatElems;
+    AscendC::Abs(dstTensor, srcTensor, mask, repeatTime, {1, 1, 8, 8});
+  }
+
+  if (tail > 0) {
+    uint64_t mask = tail;
+    AscendC::Abs(dstTensor[repeatTime * kOneRepeatElems],
+                 srcTensor[repeatTime * kOneRepeatElems], mask, 1,
+                 {1, 1, 8, 8});
+  }
+}
+
+template <typename T, uint32_t M, uint32_t N, int32_t dim>
+CATLASS_DEVICE void
+reduce_abssum(LocalTensor<T> const &dstTensor, LocalTensor<T> const &srcTensor,
+              LocalTensor<uint8_t> const &sharedTmpBuffer, bool clear = true) {
+  (void)clear;
+
+  constexpr uint32_t srcCount = M * N;
+  constexpr uint32_t absTmpBytes = srcCount * sizeof(T);
+
+  LocalTensor<T> absTmp = const_cast<LocalTensor<uint8_t> &>(sharedTmpBuffer)
+                              .template ReinterpretCast<T>();
+  LocalTensor<uint8_t> reduceTmp =
+      const_cast<LocalTensor<uint8_t> &>(sharedTmpBuffer)[absTmpBytes];
+
+  abs_contiguous<T>(absTmp, srcTensor, srcCount);
+
+  uint32_t shape[] = {M, N};
+  if constexpr (dim == -1) {
+    AscendC::ReduceSum<T, AscendC::Pattern::Reduce::AR>(dstTensor, absTmp,
+                                                        reduceTmp, shape, true);
+  } else {
+    AscendC::ReduceSum<T, AscendC::Pattern::Reduce::RA>(dstTensor, absTmp,
+                                                        reduceTmp, shape, true);
+  }
+}
+
+template <typename T, uint32_t M, uint32_t N, int32_t dim>
+CATLASS_DEVICE void
+reduce_absmax(LocalTensor<T> const &dstTensor, LocalTensor<T> const &srcTensor,
+              LocalTensor<uint8_t> const &sharedTmpBuffer, bool clear = true) {
+  (void)clear;
+
+  constexpr uint32_t srcCount = M * N;
+  constexpr uint32_t absTmpBytes = srcCount * sizeof(T);
+
+  LocalTensor<T> absTmp = const_cast<LocalTensor<uint8_t> &>(sharedTmpBuffer)
+                              .template ReinterpretCast<T>();
+  LocalTensor<uint8_t> reduceTmp =
+      const_cast<LocalTensor<uint8_t> &>(sharedTmpBuffer)[absTmpBytes];
+
+  abs_contiguous<T>(absTmp, srcTensor, srcCount);
+
+  uint32_t shape[] = {M, N};
+  if constexpr (dim == -1) {
+    AscendC::ReduceMax<T, AscendC::Pattern::Reduce::AR>(dstTensor, absTmp,
+                                                        reduceTmp, shape, true);
+  } else {
+    AscendC::ReduceMax<T, AscendC::Pattern::Reduce::RA>(dstTensor, absTmp,
+                                                        reduceTmp, shape, true);
+  }
+}
+
+constexpr AscendC::CumSumConfig kCumSumLastAxisConfig{
+    true, false, true, AscendC::CumSumAlgorithm::CUMSUM_ALGORITHM_LINEBYLINE};
+
+constexpr AscendC::CumSumConfig kCumSumFirstAxisConfig{
+    false, false, true, AscendC::CumSumAlgorithm::CUMSUM_ALGORITHM_LINEBYLINE};
+
+template <typename T, uint32_t M, uint32_t N, int32_t dim>
+CATLASS_DEVICE void
+cumsum(LocalTensor<T> dstTensor, LocalTensor<T> lastRowTensor,
+       LocalTensor<T> srcTensor, LocalTensor<uint8_t> sharedTmpBuffer) {
+  const AscendC::CumSumInfo cumSumInfo{M, N};
+
+  if constexpr (dim == 1 || dim == -1) {
+    AscendC::CumSum<T, kCumSumLastAxisConfig>(
+        dstTensor, lastRowTensor, srcTensor, sharedTmpBuffer, cumSumInfo);
+  } else {
+    AscendC::CumSum<T, kCumSumFirstAxisConfig>(
+        dstTensor, lastRowTensor, srcTensor, sharedTmpBuffer, cumSumInfo);
+  }
+}
+
+template <typename T>
 CATLASS_DEVICE T reduce_scalar_max_safe(T lhsValue, T rhsValue) {
   // Bisheng/AICore does not allow scalar half/bfloat16 comparisons inside
   // device code, so the clear=false fallback compares through float.

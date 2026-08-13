@@ -727,6 +727,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     CreateDatacacheExperimentCodegen(op);
   } else if (op->op.same_as(tl::ascend_brcb_experiment())) {
     BrcbExperimentCodegen(op);
+  } else if (op->op.same_as(tl::ascend_cumsum())) {
+    CumSumOpCodegen(op);
   } else {
     // tvm::Dump(op);
     CodeGenC::VisitExpr_(op, os);
@@ -3000,6 +3002,22 @@ void CodeGenTileLangAscend::BrcbExperimentCodegen(const CallNode *op) {
   std::string op_name =
       "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
   PrintOpCall(op, op_name, {1, 3}, {3, 6});
+}
+
+void CodeGenTileLangAscend::CumSumOpCodegen(const CallNode *op) {
+  std::string op_name =
+      "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
+
+  auto dst = PrintBufferOffset(op->args[1].as<CallNode>());
+  auto src = PrintBufferOffset(op->args[2].as<CallNode>());
+  auto tmp = PrintBufferOffset(op->args[3].as<CallNode>());
+  auto last_row = PrintBufferOffset(op->args[4].as<CallNode>());
+  bool reverse = !is_zero(op->args[5]);
+  ICHECK(!reverse) << "AscendC cumsum reverse=True is not implemented yet";
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << dst << ", " << last_row << ", " << src
+               << ", " << tmp << ");\n";
 }
 
 } // namespace codegen

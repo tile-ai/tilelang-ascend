@@ -165,7 +165,7 @@ int64_t ParseStaticInt(const std::string &value, const std::string &op_name) {
   return result;
 }
 
-enum class ReduceKind { kSum, kMax, kMin };
+enum class ReduceKind { kSum, kMax, kMin, kAbsSum, kAbsMax };
 
 struct ReduceTemplateInfo {
   ReduceKind kind;
@@ -195,7 +195,11 @@ ReduceTemplateInfo ParseReduceTemplateInfo(const CallNode *call) {
   ICHECK_EQ(params.size(), 4U) << "Failed to parse reduce template " << op_name;
 
   ReduceKind kind;
-  if (op_name.find("reduce_sum") != std::string::npos) {
+  if (op_name.find("reduce_abssum") != std::string::npos) {
+    kind = ReduceKind::kAbsSum;
+  } else if (op_name.find("reduce_absmax") != std::string::npos) {
+    kind = ReduceKind::kAbsMax;
+  } else if (op_name.find("reduce_sum") != std::string::npos) {
     kind = ReduceKind::kSum;
   } else if (op_name.find("reduce_max") != std::string::npos) {
     kind = ReduceKind::kMax;
@@ -419,6 +423,10 @@ EstimateAscendCReduceWorkspaceBytes(const CallNode *call,
     }
   }
 
+  if (info.kind == ReduceKind::kAbsSum || info.kind == ReduceKind::kAbsMax) {
+    bytes += info.rows * info.cols * dtype_bytes;
+  }
+
   // The current wrapper still has a sharedTmpBuffer parameter even when the
   // selected CANN branch reports zero bytes. Keep one aligned block
   // for implicit calls; explicit arenas are deliberately not size-checked.
@@ -509,7 +517,56 @@ WorkspaceSpec RequireWorkspace(DataType dtype, int64_t bytes) {
   ICHECK_GE(bytes, 0);
   return WorkspaceSpec{true, dtype, bytes, kWorkspaceWriteAccess};
 }
+//////
+struct CumSumWorkspaceLayout {
+  int64_t tmp_bytes;
+  int64_t last_row_offset;
+  int64_t last_row_bytes;
+  DataType last_row_dtype;
+};
 
+CumSumWorkspaceLayout GetCumSumWorkspaceLayout(const CallNode *call) {
+  ICHECK(call->op.same_as(tl::ascend_cumsum()));
+  ICHECK_GE(call->args.size(), 4U) << "Malformed AscendC cumsum call.";
+
+  const std::string op_name = Downcast<StringImm>(call->args[0])->value;
+  const size_t left = op_name.find('<');
+  const size_t right = op_name.rfind('>');
+  ICHECK(left != std::string::npos && right != std::string::npos &&
+         left < right)
+      << "Failed to parse cumsum template " << op_name;
+
+  std::vector<std::string> params;
+  size_t begin = left + 1;
+  while (begin < right) {
+    const size_t comma = op_name.find(',', begin);
+    const size_t end =
+        comma == std::string::npos || comma > right ? right : comma;
+    params.push_back(Trim(op_name.substr(begin, end - begin)));
+    begin = end + 1;
+  }
+  ICHECK_EQ(params.size(), 4U) << "Failed to parse cumsum template " << op_name;
+
+  const int64_t m = ParseStaticInt(params[1], op_name);
+  const int64_t n = ParseStaticInt(params[2], op_name);
+  ICHECK_GT(m, 0);
+  ICHECK_GT(n, 0);
+
+  const DataType src_dtype = GetAccessPtrDtype(call->args[2]);
+  const int64_t src_bytes = GetAccessPtrBytes(call->args[2]);
+
+  // Keep the old first implementation's heuristic:
+  // tmp_ub size = src element bytes * 4.
+  const int64_t tmp_bytes = src_bytes * 4;
+
+  // CANN CumSum lastRowTensor holds the last row/column result.
+  const int64_t last_row_elems = std::max(m, n);
+  const int64_t last_row_offset = AlignUp(tmp_bytes, 32);
+  const int64_t last_row_bytes = last_row_elems * src_dtype.bytes();
+
+  return {tmp_bytes, last_row_offset, last_row_bytes, src_dtype};
+}
+//////
 WorkspaceSpec GetPTOWorkspaceSpec(const CallNode *call,
                                   const Array<Buffer> &alloc_buffers) {
   const DataType byte_dtype = DataType::UInt(8);
@@ -646,6 +703,13 @@ WorkspaceSpec GetAscendCWorkspaceSpec(const CallNode *call,
     return RequireWorkspace(GetAccessPtrDtype(call->args[1]),
                             GetAccessPtrBytes(call->args[1]));
   }
+  //////
+  if (call->op.same_as(tl::ascend_cumsum())) {
+    const CumSumWorkspaceLayout layout = GetCumSumWorkspaceLayout(call);
+    return RequireWorkspace(byte_dtype,
+                            layout.last_row_offset + layout.last_row_bytes);
+  }
+  //////
   if (call->op.same_as(tl::ascend_merge_sort()) ||
       call->op.same_as(tl::ascend_select()) ||
       call->op.same_as(tl::ascend_gather_mask()) ||
@@ -752,6 +816,12 @@ private:
                      ? CallWithoutWorkspaceArgs(op, tmp_buffer_param_offset)
                      : StmtExprMutator::VisitExpr_(op);
         }
+        //////
+        if (op->op.same_as(tl::ascend_cumsum())) {
+          return CallNodeAddCumSumWorkspace(op, tmp_buffer_param_offset, spec,
+                                            has_workspace);
+        }
+        //////
         if (has_workspace) {
           return HandleExistingTmp(op, tmp_buffer_param_offset, spec);
         }
@@ -907,6 +977,37 @@ private:
     return Call(op->dtype, op->op, new_args, Span());
   }
 
+  //////
+  Call CallNodeAddCumSumWorkspace(const CallNode *op,
+                                  int64_t tmp_buffer_param_offset,
+                                  const WorkspaceSpec &spec,
+                                  bool has_workspace) {
+    const CumSumWorkspaceLayout layout = GetCumSumWorkspaceLayout(op);
+    ICHECK_GE(spec.primary_bytes,
+              layout.last_row_offset + layout.last_row_bytes);
+
+    const PrimExpr arena =
+        has_workspace ? op->args[tmp_buffer_param_offset]
+                      : MakeAccessPtrFromBuffer_(tmp_buf_, spec.access_mask);
+
+    Array<PrimExpr> new_args;
+    for (int64_t i = 0; i < tmp_buffer_param_offset; ++i) {
+      new_args.push_back(op->args[i]);
+    }
+
+    new_args.push_back(MakeAccessPtrView(arena, 0, layout.tmp_bytes,
+                                         DataType::UInt(8), spec.access_mask));
+    new_args.push_back(MakeAccessPtrView(arena, layout.last_row_offset,
+                                         layout.last_row_bytes,
+                                         layout.last_row_dtype, 2));
+
+    const size_t skip = has_workspace ? 1 : 0;
+    for (size_t i = tmp_buffer_param_offset + skip; i < op->args.size(); ++i) {
+      new_args.push_back(op->args[i]);
+    }
+    return Call(op->dtype, op->op, new_args, op->span);
+  }
+  //////
   Call CallNodeAddReduceOutputTmp(const CallNode *op,
                                   int64_t tmp_buffer_param_offset,
                                   const WorkspaceSpec &spec) {

@@ -10,7 +10,7 @@ from .ascend import _dtype, _get_tmp_arena_access_ptr, _retrieve_shape
 
 _REDUCE_KWARG_SENTINEL = object()
 
-__all__ = ["reduce", "reduce_sum", "reduce_max", "reduce_min"]
+__all__ = ["reduce", "reduce_sum", "reduce_max", "reduce_min", "reduce_abssum", "reduce_absmax", "cumsum"]
 
 
 def _get_buffer_extent(object: Buffer | BufferRegion) -> list[int]:
@@ -482,4 +482,90 @@ def reduce_sum(
         parsed_clear,
         parsed_real_shape,
         tmp=tmp,
+    )
+
+
+def reduce_abssum(
+    buffer: Buffer | BufferRegion,
+    out: Buffer | BufferRegion,
+    dim: int = -1,
+    *args,
+    real_shape=_REDUCE_KWARG_SENTINEL,
+):
+    """Perform absolute-sum reduction on the current Ascend fast-path."""
+    parsed_clear, parsed_real_shape = _parse_reduce_optional_args(
+        "reduce_abssum",
+        args,
+        clear=True,
+        real_shape=real_shape,
+    )
+    if parsed_clear is not True:
+        raise ValueError("reduce_abssum requires clear=True in the first implementation")
+    legalized_dim = _legalize_reduce_dim(_get_buffer_extent(buffer), dim)
+    return _reduce_with_clear(
+        buffer,
+        out,
+        "reduce_abssum",
+        legalized_dim,
+        True,
+        parsed_real_shape,
+    )
+
+
+def reduce_absmax(
+    buffer: Buffer | BufferRegion,
+    out: Buffer | BufferRegion,
+    dim: int = -1,
+    *args,
+    clear=_REDUCE_KWARG_SENTINEL,
+    real_shape=_REDUCE_KWARG_SENTINEL,
+):
+    """Perform absolute-max reduction on the current Ascend fast-path."""
+    parsed_clear, parsed_real_shape = _parse_reduce_optional_args(
+        "reduce_absmax",
+        args,
+        clear=clear,
+        real_shape=real_shape,
+    )
+    if parsed_clear is not True:
+        raise ValueError("reduce_absmax requires clear=True in the first implementation")
+    legalized_dim = _legalize_reduce_dim(_get_buffer_extent(buffer), dim)
+    return _reduce_with_clear(
+        buffer,
+        out,
+        "reduce_absmax",
+        legalized_dim,
+        parsed_clear,
+        parsed_real_shape,
+    )
+
+
+def cumsum(
+    src: Buffer | BufferRegion,
+    dst: Buffer | BufferRegion | None = None,
+    dim: int = 0,
+    reverse: bool = False,
+):
+    if dst is None:
+        dst = src
+
+    shape = _get_buffer_extent(src)
+    if len(shape) != 2:
+        raise ValueError("Ascend cumsum first implementation only supports 2D UB tensor")
+    if dim < 0:
+        dim = len(shape) + dim
+    if dim not in (0, 1):
+        raise ValueError("Ascend cumsum only supports dim=0/-2 or dim=1/-1")
+    if reverse:
+        raise ValueError("Ascend cumsum reverse=True is not implemented in the first version")
+
+    dtype = _dtype(src)
+    op_name = f"cumsum<{dtype}, {shape[0]}, {shape[1]}, {dim}>"
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_cumsum"),
+        op_name,
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        reverse,
     )

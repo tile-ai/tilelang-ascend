@@ -212,6 +212,7 @@ GetOperationConfig() {
        {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_reduce",
        {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
+      {"tl.ascend_cumsum", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_block_reduce_max", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"tl.ascend_block_reduce_min", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"tl.ascend_block_reduce_sum", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
@@ -385,6 +386,7 @@ GetWorkspaceOpConfigs() {
           {tl::ascend_select().get(), {3, true, true}},
           {tl::ascend_gather_mask().get(), {4, true, true}},
           {tl::ascend_gather().get(), {5, true, true}},
+          {tl::ascend_cumsum().get(), {3, true, false}},
       };
   return ops;
 }
