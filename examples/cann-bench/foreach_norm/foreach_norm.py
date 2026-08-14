@@ -2073,3 +2073,37 @@ def foreach_norm(x: List[torch.Tensor], scalar: float) -> List[torch.Tensor]:
                 results[idx] = result[i].view(())
 
     return results
+
+
+def main():
+    """Simple self-test for foreach_norm operator."""
+    import torch
+
+    # Test case 1: L2 norm (batch=1, single tensor)
+    x1 = torch.randn(1024, dtype=torch.float16, device="cpu").npu()
+    result1 = foreach_norm([x1], scalar=2.0)
+    expected1 = torch.norm(x1.cpu(), p=2.0).npu()
+    assert len(result1) == 1, f"Expected 1 result, got {len(result1)}"
+    assert torch.allclose(result1[0], expected1, rtol=1e-2, atol=1e-3), f"L2 norm mismatch: {result1[0].item()} vs {expected1.item()}"
+
+    # Test case 2: L1 norm (batch=2, different tensors)
+    x2 = [torch.randn(512, dtype=torch.float16, device="cpu").npu() for _ in range(2)]
+    result2 = foreach_norm(x2, scalar=1.0)
+    expected2 = [torch.norm(t.cpu(), p=1.0).npu() for t in x2]
+    assert len(result2) == 2, f"Expected 2 results, got {len(result2)}"
+    for r, e in zip(result2, expected2):
+        assert torch.allclose(r, e, rtol=1e-2, atol=1e-3), f"L1 norm mismatch: {r.item()} vs {e.item()}"
+
+    # Test case 3: Inf norm (batch=1)
+    x3 = torch.randn(2048, dtype=torch.float32, device="cpu").npu()
+    result3 = foreach_norm([x3], scalar=float("inf"))
+    expected3 = torch.norm(x3.cpu(), p=float("inf")).npu()
+    assert len(result3) == 1, f"Expected 1 result, got {len(result3)}"
+    assert torch.allclose(result3[0], expected3, rtol=1e-3, atol=1e-4), f"Inf norm mismatch: {result3[0].item()} vs {expected3.item()}"
+
+    print("KERNEL OUTPUT MATCH")
+    print("TEST PASSED!")
+
+
+if __name__ == "__main__":
+    main()
