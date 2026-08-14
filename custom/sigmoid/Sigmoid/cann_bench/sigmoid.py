@@ -314,8 +314,15 @@ _EXP_DIV_SAFE_SHAPES = {
 
 # bf16 cases with large |x|: clamp±87 + exp_div (avoids exp overflow in fp32)
 _BF16_CLAMP_EXP_DIV_SHAPES = {
+    # Replaced by _RECIP_SHAPES (reciprocal handles inf without clamp)
+}
+
+# fp16/bf16 cases with large |x| or inf: use reciprocal (handles inf, 6 V ops)
+_RECIP_SHAPES = {
     ("bfloat16", (363, 367, 373)),  # case 9: [-50, 100]
     ("bfloat16", (1000003,)),  # case 12: [-inf, inf]
+    ("float16", (2049, 513)),  # case 10: [-65504, 65504]
+    ("float16", (4097, 511)),  # case 17: [-1000, 1000]
 }
 
 # fp32 cases with |x|>88: clamp±87 + exp_div
@@ -324,7 +331,7 @@ _FP32_CLAMP_EXP_DIV_SHAPES = {
 }
 
 
-def _get_kernel(tl_dtype, M, N, use_exp_div=False, use_bf16_clamp_exp_div=False, use_fp32_clamp_exp_div=False):
+def _get_kernel(tl_dtype, M, N, use_exp_div=False, use_bf16_clamp_exp_div=False, use_fp32_clamp_exp_div=False, use_recip=False):
     """Get or compile a cached kernel for (dtype, M, N)."""
     block_M, block_N = _select_tiling(tl_dtype, M, N)
     key = (tl_dtype, M, N, block_M, block_N, use_exp_div, use_bf16_clamp_exp_div, use_fp32_clamp_exp_div)
