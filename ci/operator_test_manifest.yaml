@@ -48,8 +48,8 @@ mappings:
   # examples/cross_entropy_loss
   examples/cross_entropy_loss/example_cross_entro.py: examples/cross_entropy_loss/test_example_cross_entro.py
 
-  # examples/cummin
-  examples/cummin/example_cummin.py: examples/cummin/test_example_cummin.py
+  # examples/cann-bench/cummin (moved from examples/cummin by #1542)
+  examples/cann-bench/cummin/example_cummin.py: examples/cann-bench/cummin/test_example_cummin.py
 
   # examples/deepseek_v4
   examples/deepseek_v4/act_quant.py: examples/deepseek_v4/test_act_quant.py
@@ -110,8 +110,8 @@ mappings:
   examples/gqa_fwd_varlen/gqa_fwd_varlen.py: examples/gqa_fwd_varlen/test_gqa_fwd_varlen.py
   examples/gqa_fwd_varlen/perf_gqa_fwd_varlen.py: examples/gqa_fwd_varlen/test_perf_gqa_fwd_varlen.py
 
-  # examples/group_norm
-  examples/group_norm/example_group_norm.py: examples/group_norm/test_example_group_norm.py
+  # examples/cann-bench/group_norm (moved from examples/group_norm by #1542)
+  examples/cann-bench/group_norm/example_group_norm.py: examples/cann-bench/group_norm/test_example_group_norm.py
 
   # examples/lightning_indexer
   examples/lightning_indexer/example_lightning_indexer.py: examples/lightning_indexer/test_example_lightning_indexer.py
