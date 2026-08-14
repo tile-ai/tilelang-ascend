@@ -73,16 +73,17 @@ OPERATOR_TEST_RESOLVER="${PROJECT_ROOT}/scripts/ci/resolve_operator_tests.py"
 if [ -f "$OPERATOR_TEST_RESOLVER" ]; then
     # This script has no `set -e`, so a failure here would otherwise leave the
     # skip list empty and let every migrated operator run twice unnoticed.
-    if ! python "$OPERATOR_TEST_RESOLVER" validate; then
+    # Pass --repo-root since this script may be run from examples/ subdirectory
+    if ! python "$OPERATOR_TEST_RESOLVER" --repo-root "$PROJECT_ROOT" validate; then
         echo "Operator test manifest is invalid" >&2
         exit 1
     fi
-    python "$OPERATOR_TEST_RESOLVER" check-orphans
+    python "$OPERATOR_TEST_RESOLVER" --repo-root "$PROJECT_ROOT" check-orphans
     while IFS=$'\t' read -r source test; do
         [ -n "$source" ] || continue
         MIGRATED_SOURCES["$source"]=1
         MIGRATED_TESTS["$test"]=1
-    done < <(python "$OPERATOR_TEST_RESOLVER" list --format tsv)
+    done < <(python "$OPERATOR_TEST_RESOLVER" --repo-root "$PROJECT_ROOT" list --format tsv)
 fi
 
 # experiment 算子根目录（相对 examples 工作目录）
