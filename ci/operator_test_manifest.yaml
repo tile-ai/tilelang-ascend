@@ -57,6 +57,9 @@ mappings:
   examples/deepseek_v4/int8_gemm.py: examples/deepseek_v4/test_int8_gemm.py
   examples/deepseek_v4/sparse_attention.py: examples/deepseek_v4/test_sparse_attention.py
 
+  # examples/deepseek_nsa
+  examples/deepseek_nsa/example_tilelang_nsa_fwd.py: examples/deepseek_nsa/test_example_tilelang_nsa_fwd.py
+
   # examples/developer_mode
   examples/developer_mode/flash_attn_bshd_developer.py: examples/developer_mode/test_flash_attn_bshd_developer.py
   examples/developer_mode/gelu_mul_developer.py: examples/developer_mode/test_gelu_mul_developer.py
