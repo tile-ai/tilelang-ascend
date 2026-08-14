@@ -357,9 +357,9 @@ def axpy(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-    A: T.Tensor((M, N), dtype),  # type: ignore
-    InitialDst: T.Tensor((M, N), dtype),  # type: ignore
-    B: T.Tensor((M, N), dtype),  # type: ignore
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        InitialDst: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
