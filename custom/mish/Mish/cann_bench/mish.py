@@ -21,7 +21,6 @@ Single path (no dtype dispatch):
 
 import math
 
-import torch
 
 from ._common import BYTES_PER_ELEM, UB_BUDGET, VEC_NUM, torch_dtype_to_tl
 from ._mish_kernel import _mish_kernel
@@ -62,7 +61,7 @@ def _select_tiling(dtype_str, M, N):
         block_M = 128
         if N >= 128:
             block_N = 128
-        elif N >= align:
+        elif align <= N:
             block_N = (N // align) * align
             if block_N < align:
                 block_N = align
@@ -74,7 +73,7 @@ def _select_tiling(dtype_str, M, N):
     max_bn = min(N, 8192)
     candidates_bn = set()
     if N < 128:
-        if N < align:
+        if align > N:
             candidates_bn.add(align)
         else:
             aligned_n = (N // align) * align
@@ -94,7 +93,7 @@ def _select_tiling(dtype_str, M, N):
         max_block_m = (UB_BUDGET * VEC_NUM) // (bn * bpe)
         block_m = (max_block_m // VEC_NUM) * VEC_NUM
         block_m = max(VEC_NUM, min(block_m, 1024))
-        if M < block_m:
+        if block_m > M:
             block_m = max(VEC_NUM, ((M + VEC_NUM - 1) // VEC_NUM) * VEC_NUM)
 
         m_num = math.ceil(M / block_m)

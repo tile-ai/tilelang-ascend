@@ -4,9 +4,6 @@ Normalizes dim, transposes middle dims to last, reshapes to 2D, dispatches to
 the single-input kernel by (split_dim, dtype), and restores output rank/shape.
 """
 
-import torch
-
-from ._common import torch_dtype_to_tl
 from ._swiglu_kernel import _swiglu_kernel
 
 
@@ -114,9 +111,7 @@ def _get_kernel(split_dim, tl_dtype, n_cols, m_out):
     block_M, block_N, stages = _select_tiling(k_out_cols, tl_dtype, m_out)
     key = (split_dim, tl_dtype, block_M, block_N, stages)
     if key not in _kernel_cache:
-        _kernel_cache[key] = _swiglu_kernel(
-            block_M, block_N, stages, split_dim, dtype=tl_dtype
-        )
+        _kernel_cache[key] = _swiglu_kernel(block_M, block_N, stages, split_dim, dtype=tl_dtype)
     return _kernel_cache[key]
 
 
@@ -145,17 +140,12 @@ def swi_glu(input, dim=-1):
 
     # Validate dtype (only fp16/fp32/bf16 supported)
     if torch_dtype_str not in _TORCH_TO_TL_DTYPE:
-        raise ValueError(
-            f"SwiGLU unsupported dtype: {torch_dtype_str}. "
-            f"Supported: {list(_TORCH_TO_TL_DTYPE.keys())}"
-        )
+        raise ValueError(f"SwiGLU unsupported dtype: {torch_dtype_str}. Supported: {list(_TORCH_TO_TL_DTYPE.keys())}")
     tl_dtype = _TORCH_TO_TL_DTYPE[torch_dtype_str]
 
     # Validate split dim is even (required for equal x0/x1 split)
     if input.shape[dim] % 2 != 0:
-        raise ValueError(
-            f"SwiGLU requires even size on dim={dim}, got {input.shape[dim]}"
-        )
+        raise ValueError(f"SwiGLU requires even size on dim={dim}, got {input.shape[dim]}")
 
     original_shape = list(input.shape)
 

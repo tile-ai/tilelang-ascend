@@ -41,10 +41,10 @@ _TORCH_DTYPE_TO_STR = {
 # but we use worst-case for safety.
 _UB_BUDGET = 196352
 _BYTES_PER_ELEM = {
-    "float16": 22,    # cast path: 5 fp32 (20B) + 1 fp16 orig (2B), tmp_orig live
-    "bfloat16": 22,   # cast path: 5 fp32 (20B) + 1 bf16 orig (2B), tmp_orig live
-    "float32": 20,    # direct path: 5 fp32 (20B), tmp_orig dead (need_cast=False),
-                      # MEMORY_PLANNING reuses it. Conservative: still counts if planning disabled.
+    "float16": 22,  # cast path: 5 fp32 (20B) + 1 fp16 orig (2B), tmp_orig live
+    "bfloat16": 22,  # cast path: 5 fp32 (20B) + 1 bf16 orig (2B), tmp_orig live
+    "float32": 20,  # direct path: 5 fp32 (20B), tmp_orig dead (need_cast=False),
+    # MEMORY_PLANNING reuses it. Conservative: still counts if planning disabled.
 }
 
 
@@ -80,7 +80,7 @@ def _select_tiling(dtype_str, M, N):
         # When N < 128: use N aligned down to align (or align if N < align)
         if N >= 128:
             block_N = 128
-        elif N >= align:
+        elif align <= N:
             block_N = (N // align) * align
             if block_N < align:
                 block_N = align
@@ -92,7 +92,7 @@ def _select_tiling(dtype_str, M, N):
     max_bn = min(N, 8192)
     candidates_bn = set()
     if N < 128:
-        if N < align:
+        if align > N:
             candidates_bn.add(align)
         else:
             aligned_n = (N // align) * align
@@ -113,7 +113,7 @@ def _select_tiling(dtype_str, M, N):
         block_M = (max_block_M // _VEC_NUM) * _VEC_NUM
         block_M = max(_VEC_NUM, min(block_M, 1024))
         # Cap block_M to M rounded up to _VEC_NUM
-        if M < block_M:
+        if block_M > M:
             block_M = max(_VEC_NUM, ((M + _VEC_NUM - 1) // _VEC_NUM) * _VEC_NUM)
 
         m_num = math.ceil(M / block_M)

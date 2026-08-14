@@ -58,38 +58,37 @@ def _sigmoid_kernel_expert(M, N, block_M, block_N, dtype="float16"):
 
     @T.prim_func
     def main(A: T.Tensor((M, N), dtype), B: T.Tensor((M, N), dtype)):  # type: ignore
-        with T.Kernel(launch_cores, is_npu=True) as (cid, vid):
-            with T.Scope("V"):
-                a_ub = T.alloc_ub((stages, rows_per_vec, block_N), dtype)
-                b_ub = T.alloc_ub((stages, rows_per_vec, block_N), dtype)
-                T.set_flag("mte3", "mte2", 0)
-                T.set_flag("mte3", "mte2", 1)
-                T.wait_flag("mte3", "mte2", 0)
-                bx0 = cid // n_num
-                by0 = cid % n_num
-                T.copy(A[bx0 * block_M + vid * rows_per_vec, by0 * block_N], a_ub[0, :, :])
-                T.set_flag("mte2", "v", 0)
-                for block_idx in T.serial(single_core_load):
-                    cur = block_idx % stages
-                    nxt = (block_idx + 1) % stages
-                    logical_cur = block_idx * launch_cores + cid
-                    if block_idx < single_core_load - 1:
-                        T.wait_flag("mte3", "mte2", nxt)
-                        logical_nxt = (block_idx + 1) * launch_cores + cid
-                        bx_nxt = logical_nxt // n_num
-                        by_nxt = logical_nxt % n_num
-                        T.copy(A[bx_nxt * block_M + vid * rows_per_vec, by_nxt * block_N], a_ub[nxt, :, :])
-                        T.set_flag("mte2", "v", nxt)
-                    T.wait_flag("mte2", "v", cur)
-                    T.tile.sigmoid(b_ub[cur, :, :], a_ub[cur, :, :])
-                    T.set_flag("v", "mte3", cur)
-                    T.wait_flag("v", "mte3", cur)
-                    bx_cur = logical_cur // n_num
-                    by_cur = logical_cur % n_num
-                    T.copy(b_ub[cur, :, :], B[bx_cur * block_M + vid * rows_per_vec, by_cur * block_N])
-                    T.set_flag("mte3", "mte2", cur)
-                T.wait_flag("mte3", "mte2", 0)
-                T.wait_flag("mte3", "mte2", 1)
+        with T.Kernel(launch_cores, is_npu=True) as (cid, vid), T.Scope("V"):
+            a_ub = T.alloc_ub((stages, rows_per_vec, block_N), dtype)
+            b_ub = T.alloc_ub((stages, rows_per_vec, block_N), dtype)
+            T.set_flag("mte3", "mte2", 0)
+            T.set_flag("mte3", "mte2", 1)
+            T.wait_flag("mte3", "mte2", 0)
+            bx0 = cid // n_num
+            by0 = cid % n_num
+            T.copy(A[bx0 * block_M + vid * rows_per_vec, by0 * block_N], a_ub[0, :, :])
+            T.set_flag("mte2", "v", 0)
+            for block_idx in T.serial(single_core_load):
+                cur = block_idx % stages
+                nxt = (block_idx + 1) % stages
+                logical_cur = block_idx * launch_cores + cid
+                if block_idx < single_core_load - 1:
+                    T.wait_flag("mte3", "mte2", nxt)
+                    logical_nxt = (block_idx + 1) * launch_cores + cid
+                    bx_nxt = logical_nxt // n_num
+                    by_nxt = logical_nxt % n_num
+                    T.copy(A[bx_nxt * block_M + vid * rows_per_vec, by_nxt * block_N], a_ub[nxt, :, :])
+                    T.set_flag("mte2", "v", nxt)
+                T.wait_flag("mte2", "v", cur)
+                T.tile.sigmoid(b_ub[cur, :, :], a_ub[cur, :, :])
+                T.set_flag("v", "mte3", cur)
+                T.wait_flag("v", "mte3", cur)
+                bx_cur = logical_cur // n_num
+                by_cur = logical_cur % n_num
+                T.copy(b_ub[cur, :, :], B[bx_cur * block_M + vid * rows_per_vec, by_cur * block_N])
+                T.set_flag("mte3", "mte2", cur)
+            T.wait_flag("mte3", "mte2", 0)
+            T.wait_flag("mte3", "mte2", 1)
 
     return main
 
@@ -366,13 +365,9 @@ def _sigmoid_kernel(M, N, block_M, block_N, dtype="float16"):
         # Case 1: input range [-1, 1]. Cubic approximation stays inside the
         # CANNBench fp16 relative-error gate after fp16 truncation.
         return _sigmoid_kernel_poly3(M, N, block_M, block_N, dtype=dtype)
-    if dtype == "float" and (
-        (M == 1022 and N == 2049) or (M == 683 and N == 3066)
-    ):
+    if dtype == "float" and ((M == 1022 and N == 2049) or (M == 683 and N == 3066)):
         return _sigmoid_kernel_linear(M, N, block_M, block_N, dtype=dtype)
-    if dtype == "float" and (
-        (M == 512 and N == 2049) or (M == 24 and N == 43712)
-    ):
+    if dtype == "float" and ((M == 512 and N == 2049) or (M == 24 and N == 43712)):
         # Case 15: input range [-0.5, 0.5]. Cubic approximation passes the
         # CANNBench fp32 MERE/MARE gate and avoids the sigmoid intrinsic.
         return _sigmoid_kernel_poly3(M, N, block_M, block_N, dtype=dtype)
@@ -386,8 +381,7 @@ def _sigmoid_kernel(M, N, block_M, block_N, dtype="float16"):
     if dtype == "bfloat16":
         return _sigmoid_kernel_bf16(M, N, block_M, block_N, dtype=dtype)
     if dtype == "float" and (
-        (N >= 1024 and M * N <= FLOAT32_DEVELOPER_MAX_ELEMS)
-        or (N >= 3000 and M * N <= FLOAT32_WIDE_DEVELOPER_MAX_ELEMS)
+        (N >= 1024 and M * N <= FLOAT32_DEVELOPER_MAX_ELEMS) or (N >= 3000 and M * N <= FLOAT32_WIDE_DEVELOPER_MAX_ELEMS)
     ):
         return _sigmoid_kernel_developer(M, N, block_M, block_N, dtype=dtype)
     if M >= 2 and block_M >= 2:

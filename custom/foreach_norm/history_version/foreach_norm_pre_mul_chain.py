@@ -46,9 +46,6 @@ Optimization (Best+List): generalized list kernels for L2/Lp.
   - Linf/Lneg-inf still use _direct_norm (CANN native amax/amin); L0 excluded.
 """
 
-import math
-from typing import List
-
 import tilelang
 from tilelang import language as T
 import torch
@@ -64,7 +61,7 @@ CAST_HIGH2LOW = "CAST_RINT"
 
 DEFAULT_BLOCK_N = 8192
 CORE_NUM = 24  # Ascend910B3 physical AI Core count
-VEC_NUM = 2    # Ascend910B3: each AIV core has 2 vector sub-cores (vid=0,1).
+VEC_NUM = 2  # Ascend910B3: each AIV core has 2 vector sub-cores (vid=0,1).
 
 
 # ============================================================================
@@ -75,6 +72,7 @@ VEC_NUM = 2    # Ascend910B3: each AIV core has 2 vector sub-cores (vid=0,1).
 # Output Partial: (batch, launch_cores) FP32 — per-core partial per tensor.
 # Host combines + finalizes.
 # ============================================================================
+
 
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def l2_norm_kernel(batch, N, block_N, launch_cores, dtype="float16"):
@@ -103,8 +101,7 @@ def l2_norm_kernel(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.serial(single_core_load):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
-                               pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
@@ -144,8 +141,7 @@ def l1_norm_kernel(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.serial(single_core_load):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
-                               pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
@@ -185,8 +181,7 @@ def linf_norm_kernel(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.serial(single_core_load):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
-                               pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
@@ -226,8 +221,7 @@ def lneg_inf_norm_kernel(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.serial(single_core_load):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
-                               pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
@@ -268,16 +262,14 @@ def l0_count_kernel(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.serial(single_core_load):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
-                               pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
                             T.copy(x_ub, x_cal)
                         T.tile.fill(one_ub, 1.0)
                         T.tile.compare(mask_ub, x_cal, 0.0, "NE")
-                        T.tile.select(one_ub, mask_ub, one_ub, 0.0,
-                                      "VSEL_TENSOR_SCALAR_MODE")
+                        T.tile.select(one_ub, mask_ub, one_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
                         T.reduce_sum(one_ub, tile_count_ub, dim=-1)
                         T.tile.add(acc_ub, acc_ub, tile_count_ub)
                 T.copy(acc_ub, Partial[t, cid, vid])
@@ -318,8 +310,7 @@ def lp_norm_kernel(batch, N, block_N, scalar, launch_cores, dtype="float16"):
                 for k in T.serial(single_core_load):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
-                               pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
@@ -350,6 +341,7 @@ def lp_norm_kernel(batch, N, block_N, scalar, launch_cores, dtype="float16"):
 # 1D kernels (batch=1 fast path — avoids 2D T.copy overhead)
 # Used when batch=1 or when torch.stack cost exceeds launch saving (large N).
 # ============================================================================
+
 
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def l2_norm_kernel_1d(N, block_N, launch_cores, dtype="float16"):
@@ -384,6 +376,7 @@ def l2_norm_kernel_1d(N, block_N, launch_cores, dtype="float16"):
                     T.reduce_sum(pow_ub, tile_sum_ub, dim=-1)
                     T.tile.add(acc_ub, acc_ub, tile_sum_ub)
             T.copy(acc_ub, Partial[cid, vid])
+
     return main
 
 
@@ -420,6 +413,7 @@ def l1_norm_kernel_1d(N, block_N, launch_cores, dtype="float16"):
                     T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
                     T.tile.add(acc_ub, acc_ub, tile_sum_ub)
             T.copy(acc_ub, Partial[cid, vid])
+
     return main
 
 
@@ -456,6 +450,7 @@ def linf_norm_kernel_1d(N, block_N, launch_cores, dtype="float16"):
                     T.reduce_max(abs_ub, tile_max_ub, dim=-1)
                     T.tile.max(acc_ub, acc_ub, tile_max_ub)
             T.copy(acc_ub, Partial[cid, vid])
+
     return main
 
 
@@ -486,11 +481,9 @@ def l1_norm_kernel_list2(N, block_N, launch_cores, dtype="float16"):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
                         if tensor_id == 0:
-                            T.copy(X0[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=0.0)
+                            T.copy(X0[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
                         else:
-                            T.copy(X1[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=0.0)
+                            T.copy(X1[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
@@ -499,6 +492,7 @@ def l1_norm_kernel_list2(N, block_N, launch_cores, dtype="float16"):
                         T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
                         T.tile.add(acc_ub, acc_ub, tile_sum_ub)
                 T.copy(acc_ub, Partial[tensor_id, cid, vid])
+
     return main
 
 
@@ -530,14 +524,11 @@ def l1_norm_kernel_list3(N, block_N, launch_cores, dtype="float16"):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
                         if tensor_id == 0:
-                            T.copy(X0[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=0.0)
+                            T.copy(X0[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
                         elif tensor_id == 1:
-                            T.copy(X1[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=0.0)
+                            T.copy(X1[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
                         else:
-                            T.copy(X2[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=0.0)
+                            T.copy(X2[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
@@ -546,6 +537,7 @@ def l1_norm_kernel_list3(N, block_N, launch_cores, dtype="float16"):
                         T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
                         T.tile.add(acc_ub, acc_ub, tile_sum_ub)
                 T.copy(acc_ub, Partial[tensor_id, cid, vid])
+
     return main
 
 
@@ -578,17 +570,13 @@ def l1_norm_kernel_list4(N, block_N, launch_cores, dtype="float16"):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
                         if tensor_id == 0:
-                            T.copy(X0[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=0.0)
+                            T.copy(X0[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
                         elif tensor_id == 1:
-                            T.copy(X1[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=0.0)
+                            T.copy(X1[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
                         elif tensor_id == 2:
-                            T.copy(X2[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=0.0)
+                            T.copy(X2[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
                         else:
-                            T.copy(X3[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=0.0)
+                            T.copy(X3[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
@@ -597,6 +585,7 @@ def l1_norm_kernel_list4(N, block_N, launch_cores, dtype="float16"):
                         T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
                         T.tile.add(acc_ub, acc_ub, tile_sum_ub)
                 T.copy(acc_ub, Partial[tensor_id, cid, vid])
+
     return main
 
 
@@ -604,6 +593,7 @@ def l1_norm_kernel_list4(N, block_N, launch_cores, dtype="float16"):
 # L2 list kernels (batch=2/3/4, multi-input single-launch, no torch.stack).
 # Same structure as l1_norm_kernel_listN but compute x² (mul) instead of |x|.
 # ============================================================================
+
 
 @tilelang.jit(out_idx=[2], pass_configs=pass_configs)
 def l2_norm_kernel_list2(N, block_N, launch_cores, dtype="float16"):
@@ -632,11 +622,9 @@ def l2_norm_kernel_list2(N, block_N, launch_cores, dtype="float16"):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
                         if tensor_id == 0:
-                            T.copy(X0[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=0.0)
+                            T.copy(X0[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
                         else:
-                            T.copy(X1[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=0.0)
+                            T.copy(X1[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
@@ -645,6 +633,7 @@ def l2_norm_kernel_list2(N, block_N, launch_cores, dtype="float16"):
                         T.reduce_sum(pow_ub, tile_sum_ub, dim=-1)
                         T.tile.add(acc_ub, acc_ub, tile_sum_ub)
                 T.copy(acc_ub, Partial[tensor_id, cid, vid])
+
     return main
 
 
@@ -676,14 +665,11 @@ def l2_norm_kernel_list3(N, block_N, launch_cores, dtype="float16"):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
                         if tensor_id == 0:
-                            T.copy(X0[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=0.0)
+                            T.copy(X0[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
                         elif tensor_id == 1:
-                            T.copy(X1[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=0.0)
+                            T.copy(X1[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
                         else:
-                            T.copy(X2[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=0.0)
+                            T.copy(X2[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
@@ -692,6 +678,7 @@ def l2_norm_kernel_list3(N, block_N, launch_cores, dtype="float16"):
                         T.reduce_sum(pow_ub, tile_sum_ub, dim=-1)
                         T.tile.add(acc_ub, acc_ub, tile_sum_ub)
                 T.copy(acc_ub, Partial[tensor_id, cid, vid])
+
     return main
 
 
@@ -724,17 +711,13 @@ def l2_norm_kernel_list4(N, block_N, launch_cores, dtype="float16"):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
                         if tensor_id == 0:
-                            T.copy(X0[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=0.0)
+                            T.copy(X0[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
                         elif tensor_id == 1:
-                            T.copy(X1[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=0.0)
+                            T.copy(X1[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
                         elif tensor_id == 2:
-                            T.copy(X2[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=0.0)
+                            T.copy(X2[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
                         else:
-                            T.copy(X3[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=0.0)
+                            T.copy(X3[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
@@ -743,6 +726,7 @@ def l2_norm_kernel_list4(N, block_N, launch_cores, dtype="float16"):
                         T.reduce_sum(pow_ub, tile_sum_ub, dim=-1)
                         T.tile.add(acc_ub, acc_ub, tile_sum_ub)
                 T.copy(acc_ub, Partial[tensor_id, cid, vid])
+
     return main
 
 
@@ -751,6 +735,7 @@ def l2_norm_kernel_list4(N, block_N, launch_cores, dtype="float16"):
 # Same structure as l1_norm_kernel_listN but compute |x|^p via abs + ln + mul + exp
 # (or special-cased integer powers for p=3/4/5).
 # ============================================================================
+
 
 @tilelang.jit(out_idx=[2], pass_configs=pass_configs)
 def lp_norm_kernel_list2(N, block_N, scalar, launch_cores, dtype="float16"):
@@ -780,11 +765,9 @@ def lp_norm_kernel_list2(N, block_N, scalar, launch_cores, dtype="float16"):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
                         if tensor_id == 0:
-                            T.copy(X0[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=pad_val)
+                            T.copy(X0[logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         else:
-                            T.copy(X1[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=pad_val)
+                            T.copy(X1[logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
@@ -807,6 +790,7 @@ def lp_norm_kernel_list2(N, block_N, scalar, launch_cores, dtype="float16"):
                         T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
                         T.tile.add(acc_ub, acc_ub, tile_sum_ub)
                 T.copy(acc_ub, Partial[tensor_id, cid, vid])
+
     return main
 
 
@@ -839,14 +823,11 @@ def lp_norm_kernel_list3(N, block_N, scalar, launch_cores, dtype="float16"):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
                         if tensor_id == 0:
-                            T.copy(X0[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=pad_val)
+                            T.copy(X0[logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         elif tensor_id == 1:
-                            T.copy(X1[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=pad_val)
+                            T.copy(X1[logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         else:
-                            T.copy(X2[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=pad_val)
+                            T.copy(X2[logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
@@ -869,6 +850,7 @@ def lp_norm_kernel_list3(N, block_N, scalar, launch_cores, dtype="float16"):
                         T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
                         T.tile.add(acc_ub, acc_ub, tile_sum_ub)
                 T.copy(acc_ub, Partial[tensor_id, cid, vid])
+
     return main
 
 
@@ -902,17 +884,13 @@ def lp_norm_kernel_list4(N, block_N, scalar, launch_cores, dtype="float16"):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
                         if tensor_id == 0:
-                            T.copy(X0[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=pad_val)
+                            T.copy(X0[logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         elif tensor_id == 1:
-                            T.copy(X1[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=pad_val)
+                            T.copy(X1[logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         elif tensor_id == 2:
-                            T.copy(X2[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=pad_val)
+                            T.copy(X2[logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         else:
-                            T.copy(X3[logical_tile * block_N + vid * half_block],
-                                   x_ub, pad_value=pad_val)
+                            T.copy(X3[logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
@@ -935,6 +913,7 @@ def lp_norm_kernel_list4(N, block_N, scalar, launch_cores, dtype="float16"):
                         T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
                         T.tile.add(acc_ub, acc_ub, tile_sum_ub)
                 T.copy(acc_ub, Partial[tensor_id, cid, vid])
+
     return main
 
 
@@ -971,6 +950,7 @@ def lneg_inf_norm_kernel_1d(N, block_N, launch_cores, dtype="float16"):
                     T.reduce_min(abs_ub, tile_min_ub, dim=-1)
                     T.tile.min(acc_ub, acc_ub, tile_min_ub)
             T.copy(acc_ub, Partial[cid, vid])
+
     return main
 
 
@@ -1006,11 +986,11 @@ def l0_count_kernel_1d(N, block_N, launch_cores, dtype="float16"):
                         T.copy(x_ub, x_cal)
                     T.tile.fill(one_ub, 1.0)
                     T.tile.compare(mask_ub, x_cal, 0.0, "NE")
-                    T.tile.select(one_ub, mask_ub, one_ub, 0.0,
-                                  "VSEL_TENSOR_SCALAR_MODE")
+                    T.tile.select(one_ub, mask_ub, one_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
                     T.reduce_sum(one_ub, tile_count_ub, dim=-1)
                     T.tile.add(acc_ub, acc_ub, tile_count_ub)
             T.copy(acc_ub, Partial[cid, vid])
+
     return main
 
 
@@ -1064,6 +1044,7 @@ def lp_norm_kernel_1d(N, block_N, scalar, launch_cores, dtype="float16"):
                     T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
                     T.tile.add(acc_ub, acc_ub, tile_sum_ub)
             T.copy(acc_ub, Partial[cid, vid])
+
     return main
 
 
@@ -1096,6 +1077,7 @@ pass_configs_pipelined = {
 
 # --- 2D pipelined kernels (batched) ---
 
+
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs_pipelined)
 def l2_norm_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float16"):
     """L2 pipelined: T.Pipelined(num_stages=2) for single_core_load >= 20."""
@@ -1126,8 +1108,7 @@ def l2_norm_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.Pipelined(single_core_load, num_stages=2):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
-                               pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         T.barrier_all()
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
@@ -1176,8 +1157,7 @@ def l1_norm_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.Pipelined(single_core_load, num_stages=2):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
-                               pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         T.barrier_all()
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
@@ -1226,8 +1206,7 @@ def linf_norm_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float16")
                 for k in T.Pipelined(single_core_load, num_stages=2):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
-                               pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         T.barrier_all()
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
@@ -1247,8 +1226,7 @@ def linf_norm_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float16")
 
 
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs_pipelined)
-def lneg_inf_norm_kernel_pipelined(batch, N, block_N, launch_cores,
-                                   dtype="float16"):
+def lneg_inf_norm_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float16"):
     """Lneg-inf pipelined: T.Pipelined(num_stages=2) for single_core_load >= 20."""
     n_num = T.ceildiv(N, block_N)
     single_core_load = T.ceildiv(n_num, launch_cores)
@@ -1277,8 +1255,7 @@ def lneg_inf_norm_kernel_pipelined(batch, N, block_N, launch_cores,
                 for k in T.Pipelined(single_core_load, num_stages=2):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
-                               pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         T.barrier_all()
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
@@ -1328,8 +1305,7 @@ def l0_count_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.Pipelined(single_core_load, num_stages=2):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
-                               pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         T.barrier_all()
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
@@ -1337,8 +1313,7 @@ def l0_count_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float16"):
                             T.copy(x_ub, x_cal)
                         T.tile.fill(one_ub, 1.0)
                         T.tile.compare(mask_ub, x_cal, 0.0, "NE")
-                        T.tile.select(one_ub, mask_ub, one_ub, 0.0,
-                                      "VSEL_TENSOR_SCALAR_MODE")
+                        T.tile.select(one_ub, mask_ub, one_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
                         T.reduce_sum(one_ub, tile_count_ub, dim=-1)
                         if k % 2 == 0:
                             T.tile.add(acc_a, acc_a, tile_count_ub)
@@ -1352,8 +1327,7 @@ def l0_count_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float16"):
 
 
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs_pipelined)
-def lp_norm_kernel_pipelined(batch, N, block_N, scalar, launch_cores,
-                             dtype="float16"):
+def lp_norm_kernel_pipelined(batch, N, block_N, scalar, launch_cores, dtype="float16"):
     """General p pipelined: T.Pipelined(num_stages=2) for single_core_load >= 20."""
     n_num = T.ceildiv(N, block_N)
     single_core_load = T.ceildiv(n_num, launch_cores)
@@ -1385,8 +1359,7 @@ def lp_norm_kernel_pipelined(batch, N, block_N, scalar, launch_cores,
                 for k in T.Pipelined(single_core_load, num_stages=2):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
-                               pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
                         T.barrier_all()
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
@@ -1420,6 +1393,7 @@ def lp_norm_kernel_pipelined(batch, N, block_N, scalar, launch_cores,
 
 
 # --- 1D pipelined kernels (batch=1 fast path) ---
+
 
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs_pipelined)
 def l2_norm_kernel_1d_pipelined(N, block_N, launch_cores, dtype="float16"):
@@ -1463,6 +1437,7 @@ def l2_norm_kernel_1d_pipelined(N, block_N, launch_cores, dtype="float16"):
             T.tile.add(acc_ub, acc_a, acc_b)
             T.barrier_all()
             T.copy(acc_ub, Partial[cid, vid])
+
     return main
 
 
@@ -1508,6 +1483,7 @@ def l1_norm_kernel_1d_pipelined(N, block_N, launch_cores, dtype="float16"):
             T.tile.add(acc_ub, acc_a, acc_b)
             T.barrier_all()
             T.copy(acc_ub, Partial[cid, vid])
+
     return main
 
 
@@ -1553,6 +1529,7 @@ def linf_norm_kernel_1d_pipelined(N, block_N, launch_cores, dtype="float16"):
             T.tile.max(acc_ub, acc_a, acc_b)
             T.barrier_all()
             T.copy(acc_ub, Partial[cid, vid])
+
     return main
 
 
@@ -1598,6 +1575,7 @@ def lneg_inf_norm_kernel_1d_pipelined(N, block_N, launch_cores, dtype="float16")
             T.tile.min(acc_ub, acc_a, acc_b)
             T.barrier_all()
             T.copy(acc_ub, Partial[cid, vid])
+
     return main
 
 
@@ -1637,8 +1615,7 @@ def l0_count_kernel_1d_pipelined(N, block_N, launch_cores, dtype="float16"):
                         T.copy(x_ub, x_cal)
                     T.tile.fill(one_ub, 1.0)
                     T.tile.compare(mask_ub, x_cal, 0.0, "NE")
-                    T.tile.select(one_ub, mask_ub, one_ub, 0.0,
-                                  "VSEL_TENSOR_SCALAR_MODE")
+                    T.tile.select(one_ub, mask_ub, one_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
                     T.reduce_sum(one_ub, tile_count_ub, dim=-1)
                     if k % 2 == 0:
                         T.tile.add(acc_a, acc_a, tile_count_ub)
@@ -1647,6 +1624,7 @@ def l0_count_kernel_1d_pipelined(N, block_N, launch_cores, dtype="float16"):
             T.tile.add(acc_ub, acc_a, acc_b)
             T.barrier_all()
             T.copy(acc_ub, Partial[cid, vid])
+
     return main
 
 
@@ -1709,12 +1687,14 @@ def lp_norm_kernel_1d_pipelined(N, block_N, scalar, launch_cores, dtype="float16
             T.tile.add(acc_ub, acc_a, acc_b)
             T.barrier_all()
             T.copy(acc_ub, Partial[cid, vid])
+
     return main
 
 
 # ============================================================================
 # Host dispatch: batched multi-core partial reduction + batched host finalize
 # ============================================================================
+
 
 def _choose_block_n(n: int) -> int:
     """Pick block_N adaptively based on element count."""
@@ -1760,70 +1740,56 @@ _kernel_cache_l2_list = {}
 _kernel_cache_lp_list = {}
 
 
-def _get_l1_list_kernel(batch: int, n: int, block_n: int,
-                        launch_cores: int, dt: str):
+def _get_l1_list_kernel(batch: int, n: int, block_n: int, launch_cores: int, dt: str):
     key = ("l1_list", batch, n, block_n, launch_cores, dt)
     if key not in _kernel_cache_l1_list:
         if batch == 2:
-            _kernel_cache_l1_list[key] = l1_norm_kernel_list2(
-                n, block_n, launch_cores, dt)
+            _kernel_cache_l1_list[key] = l1_norm_kernel_list2(n, block_n, launch_cores, dt)
         elif batch == 3:
-            _kernel_cache_l1_list[key] = l1_norm_kernel_list3(
-                n, block_n, launch_cores, dt)
+            _kernel_cache_l1_list[key] = l1_norm_kernel_list3(n, block_n, launch_cores, dt)
         elif batch == 4:
-            _kernel_cache_l1_list[key] = l1_norm_kernel_list4(
-                n, block_n, launch_cores, dt)
+            _kernel_cache_l1_list[key] = l1_norm_kernel_list4(n, block_n, launch_cores, dt)
         else:
             raise ValueError(f"Unsupported L1 list batch: {batch}")
     return _kernel_cache_l1_list[key]
 
 
-def _get_l2_list_kernel(batch: int, n: int, block_n: int,
-                        launch_cores: int, dt: str):
+def _get_l2_list_kernel(batch: int, n: int, block_n: int, launch_cores: int, dt: str):
     key = ("l2_list", batch, n, block_n, launch_cores, dt)
     if key not in _kernel_cache_l2_list:
         if batch == 2:
-            _kernel_cache_l2_list[key] = l2_norm_kernel_list2(
-                n, block_n, launch_cores, dt)
+            _kernel_cache_l2_list[key] = l2_norm_kernel_list2(n, block_n, launch_cores, dt)
         elif batch == 3:
-            _kernel_cache_l2_list[key] = l2_norm_kernel_list3(
-                n, block_n, launch_cores, dt)
+            _kernel_cache_l2_list[key] = l2_norm_kernel_list3(n, block_n, launch_cores, dt)
         elif batch == 4:
-            _kernel_cache_l2_list[key] = l2_norm_kernel_list4(
-                n, block_n, launch_cores, dt)
+            _kernel_cache_l2_list[key] = l2_norm_kernel_list4(n, block_n, launch_cores, dt)
         else:
             raise ValueError(f"Unsupported L2 list batch: {batch}")
     return _kernel_cache_l2_list[key]
 
 
-def _get_lp_list_kernel(scalar: float, batch: int, n: int, block_n: int,
-                        launch_cores: int, dt: str):
+def _get_lp_list_kernel(scalar: float, batch: int, n: int, block_n: int, launch_cores: int, dt: str):
     key = ("lp_list", scalar, batch, n, block_n, launch_cores, dt)
     if key not in _kernel_cache_lp_list:
         if batch == 2:
-            _kernel_cache_lp_list[key] = lp_norm_kernel_list2(
-                n, block_n, scalar, launch_cores, dt)
+            _kernel_cache_lp_list[key] = lp_norm_kernel_list2(n, block_n, scalar, launch_cores, dt)
         elif batch == 3:
-            _kernel_cache_lp_list[key] = lp_norm_kernel_list3(
-                n, block_n, scalar, launch_cores, dt)
+            _kernel_cache_lp_list[key] = lp_norm_kernel_list3(n, block_n, scalar, launch_cores, dt)
         elif batch == 4:
-            _kernel_cache_lp_list[key] = lp_norm_kernel_list4(
-                n, block_n, scalar, launch_cores, dt)
+            _kernel_cache_lp_list[key] = lp_norm_kernel_list4(n, block_n, scalar, launch_cores, dt)
         else:
             raise ValueError(f"Unsupported Lp list batch: {batch}")
     return _kernel_cache_lp_list[key]
 
 
-def _get_list_kernel(scalar: float, batch: int, n: int, block_n: int,
-                     launch_cores: int, dt: str):
+def _get_list_kernel(scalar: float, batch: int, n: int, block_n: int, launch_cores: int, dt: str):
     """Generalized list-kernel dispatcher (L1/L2/Lp)."""
     if scalar == 1.0:
         return _get_l1_list_kernel(batch, n, block_n, launch_cores, dt)
     elif scalar == 2.0:
         return _get_l2_list_kernel(batch, n, block_n, launch_cores, dt)
     else:
-        return _get_lp_list_kernel(scalar, batch, n, block_n,
-                                   launch_cores, dt)
+        return _get_lp_list_kernel(scalar, batch, n, block_n, launch_cores, dt)
 
 
 def _use_list_kernel(scalar: float, batch: int, single_core_load: int) -> bool:
@@ -1838,88 +1804,69 @@ def _use_list_kernel(scalar: float, batch: int, single_core_load: int) -> bool:
     if single_core_load >= PIPELINE_THRESHOLD:
         return False
     # L0/Linf/Lneg-inf don't need list kernels
-    if scalar == 0.0:
-        return False
-    if scalar == float("inf") or scalar == float("-inf"):
-        return False
     # L1 (scalar==1.0), L2 (scalar==2.0), and general Lp (scalar>0 or scalar<0)
-    return True
+    return scalar not in (0.0, float("inf"), float("-inf"))
 
 
-def _get_kernel_pipelined(scalar: float, batch: int, n: int, block_n: int,
-                          launch_cores: int, dt: str):
+def _get_kernel_pipelined(scalar: float, batch: int, n: int, block_n: int, launch_cores: int, dt: str):
     """Get or compile a cached pipelined (2D) kernel for large single_core_load."""
     if scalar == 0.0:
         key = ("l0", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache_pipelined:
-            _kernel_cache_pipelined[key] = l0_count_kernel_pipelined(
-                batch, n, block_n, launch_cores, dt)
+            _kernel_cache_pipelined[key] = l0_count_kernel_pipelined(batch, n, block_n, launch_cores, dt)
     elif scalar == 1.0:
         key = ("l1", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache_pipelined:
-            _kernel_cache_pipelined[key] = l1_norm_kernel_pipelined(
-                batch, n, block_n, launch_cores, dt)
+            _kernel_cache_pipelined[key] = l1_norm_kernel_pipelined(batch, n, block_n, launch_cores, dt)
     elif scalar == 2.0:
         key = ("l2", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache_pipelined:
-            _kernel_cache_pipelined[key] = l2_norm_kernel_pipelined(
-                batch, n, block_n, launch_cores, dt)
+            _kernel_cache_pipelined[key] = l2_norm_kernel_pipelined(batch, n, block_n, launch_cores, dt)
     elif scalar == float("inf"):
         key = ("linf", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache_pipelined:
-            _kernel_cache_pipelined[key] = linf_norm_kernel_pipelined(
-                batch, n, block_n, launch_cores, dt)
+            _kernel_cache_pipelined[key] = linf_norm_kernel_pipelined(batch, n, block_n, launch_cores, dt)
     elif scalar == float("-inf"):
         key = ("lneg_inf", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache_pipelined:
-            _kernel_cache_pipelined[key] = lneg_inf_norm_kernel_pipelined(
-                batch, n, block_n, launch_cores, dt)
+            _kernel_cache_pipelined[key] = lneg_inf_norm_kernel_pipelined(batch, n, block_n, launch_cores, dt)
     else:
         key = ("lp", batch, n, block_n, scalar, launch_cores, dt)
         if key not in _kernel_cache_pipelined:
-            _kernel_cache_pipelined[key] = lp_norm_kernel_pipelined(
-                batch, n, block_n, scalar, launch_cores, dt)
+            _kernel_cache_pipelined[key] = lp_norm_kernel_pipelined(batch, n, block_n, scalar, launch_cores, dt)
     return _kernel_cache_pipelined[key]
 
 
-def _get_kernel_1d_pipelined(scalar: float, n: int, block_n: int,
-                             launch_cores: int, dt: str):
+def _get_kernel_1d_pipelined(scalar: float, n: int, block_n: int, launch_cores: int, dt: str):
     """Get or compile a cached pipelined 1D kernel for large single_core_load."""
     if scalar == 0.0:
         key = ("l0", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d_pipelined:
-            _kernel_cache_1d_pipelined[key] = l0_count_kernel_1d_pipelined(
-                n, block_n, launch_cores, dt)
+            _kernel_cache_1d_pipelined[key] = l0_count_kernel_1d_pipelined(n, block_n, launch_cores, dt)
     elif scalar == 1.0:
         key = ("l1", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d_pipelined:
-            _kernel_cache_1d_pipelined[key] = l1_norm_kernel_1d_pipelined(
-                n, block_n, launch_cores, dt)
+            _kernel_cache_1d_pipelined[key] = l1_norm_kernel_1d_pipelined(n, block_n, launch_cores, dt)
     elif scalar == 2.0:
         key = ("l2", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d_pipelined:
-            _kernel_cache_1d_pipelined[key] = l2_norm_kernel_1d_pipelined(
-                n, block_n, launch_cores, dt)
+            _kernel_cache_1d_pipelined[key] = l2_norm_kernel_1d_pipelined(n, block_n, launch_cores, dt)
     elif scalar == float("inf"):
         key = ("linf", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d_pipelined:
-            _kernel_cache_1d_pipelined[key] = linf_norm_kernel_1d_pipelined(
-                n, block_n, launch_cores, dt)
+            _kernel_cache_1d_pipelined[key] = linf_norm_kernel_1d_pipelined(n, block_n, launch_cores, dt)
     elif scalar == float("-inf"):
         key = ("lneg_inf", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d_pipelined:
-            _kernel_cache_1d_pipelined[key] = lneg_inf_norm_kernel_1d_pipelined(
-                n, block_n, launch_cores, dt)
+            _kernel_cache_1d_pipelined[key] = lneg_inf_norm_kernel_1d_pipelined(n, block_n, launch_cores, dt)
     else:
         key = ("lp", n, block_n, scalar, launch_cores, dt)
         if key not in _kernel_cache_1d_pipelined:
-            _kernel_cache_1d_pipelined[key] = lp_norm_kernel_1d_pipelined(
-                n, block_n, scalar, launch_cores, dt)
+            _kernel_cache_1d_pipelined[key] = lp_norm_kernel_1d_pipelined(n, block_n, scalar, launch_cores, dt)
     return _kernel_cache_1d_pipelined[key]
 
 
-def _get_kernel(scalar: float, batch: int, n: int, block_n: int,
-                launch_cores: int, dt: str):
+def _get_kernel(scalar: float, batch: int, n: int, block_n: int, launch_cores: int, dt: str):
     """Get or compile a cached batched (2D) kernel for the given config.
 
     Routes to pipelined kernel when single_core_load >= PIPELINE_THRESHOLD
@@ -1928,43 +1875,35 @@ def _get_kernel(scalar: float, batch: int, n: int, block_n: int,
     n_num = (n + block_n - 1) // block_n
     single_core_load = (n_num + launch_cores - 1) // launch_cores
     if single_core_load >= PIPELINE_THRESHOLD:
-        return _get_kernel_pipelined(scalar, batch, n, block_n,
-                                     launch_cores, dt)
+        return _get_kernel_pipelined(scalar, batch, n, block_n, launch_cores, dt)
     if scalar == 0.0:
         key = ("l0", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache:
-            _kernel_cache[key] = l0_count_kernel(batch, n, block_n,
-                                                 launch_cores, dt)
+            _kernel_cache[key] = l0_count_kernel(batch, n, block_n, launch_cores, dt)
     elif scalar == 1.0:
         key = ("l1", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache:
-            _kernel_cache[key] = l1_norm_kernel(batch, n, block_n,
-                                                launch_cores, dt)
+            _kernel_cache[key] = l1_norm_kernel(batch, n, block_n, launch_cores, dt)
     elif scalar == 2.0:
         key = ("l2", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache:
-            _kernel_cache[key] = l2_norm_kernel(batch, n, block_n,
-                                                launch_cores, dt)
+            _kernel_cache[key] = l2_norm_kernel(batch, n, block_n, launch_cores, dt)
     elif scalar == float("inf"):
         key = ("linf", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache:
-            _kernel_cache[key] = linf_norm_kernel(batch, n, block_n,
-                                                  launch_cores, dt)
+            _kernel_cache[key] = linf_norm_kernel(batch, n, block_n, launch_cores, dt)
     elif scalar == float("-inf"):
         key = ("lneg_inf", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache:
-            _kernel_cache[key] = lneg_inf_norm_kernel(batch, n, block_n,
-                                                      launch_cores, dt)
+            _kernel_cache[key] = lneg_inf_norm_kernel(batch, n, block_n, launch_cores, dt)
     else:
         key = ("lp", batch, n, block_n, scalar, launch_cores, dt)
         if key not in _kernel_cache:
-            _kernel_cache[key] = lp_norm_kernel(batch, n, block_n, scalar,
-                                                launch_cores, dt)
+            _kernel_cache[key] = lp_norm_kernel(batch, n, block_n, scalar, launch_cores, dt)
     return _kernel_cache[key]
 
 
-def _get_kernel_1d(scalar: float, n: int, block_n: int,
-                   launch_cores: int, dt: str):
+def _get_kernel_1d(scalar: float, n: int, block_n: int, launch_cores: int, dt: str):
     """Get or compile a cached 1D kernel (batch=1 fast path).
 
     Routes to pipelined kernel when single_core_load >= PIPELINE_THRESHOLD.
@@ -1972,43 +1911,35 @@ def _get_kernel_1d(scalar: float, n: int, block_n: int,
     n_num = (n + block_n - 1) // block_n
     single_core_load = (n_num + launch_cores - 1) // launch_cores
     if single_core_load >= PIPELINE_THRESHOLD:
-        return _get_kernel_1d_pipelined(scalar, n, block_n,
-                                        launch_cores, dt)
+        return _get_kernel_1d_pipelined(scalar, n, block_n, launch_cores, dt)
     if scalar == 0.0:
         key = ("l0", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d:
-            _kernel_cache_1d[key] = l0_count_kernel_1d(n, block_n,
-                                                       launch_cores, dt)
+            _kernel_cache_1d[key] = l0_count_kernel_1d(n, block_n, launch_cores, dt)
     elif scalar == 1.0:
         key = ("l1", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d:
-            _kernel_cache_1d[key] = l1_norm_kernel_1d(n, block_n,
-                                                      launch_cores, dt)
+            _kernel_cache_1d[key] = l1_norm_kernel_1d(n, block_n, launch_cores, dt)
     elif scalar == 2.0:
         key = ("l2", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d:
-            _kernel_cache_1d[key] = l2_norm_kernel_1d(n, block_n,
-                                                      launch_cores, dt)
+            _kernel_cache_1d[key] = l2_norm_kernel_1d(n, block_n, launch_cores, dt)
     elif scalar == float("inf"):
         key = ("linf", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d:
-            _kernel_cache_1d[key] = linf_norm_kernel_1d(n, block_n,
-                                                        launch_cores, dt)
+            _kernel_cache_1d[key] = linf_norm_kernel_1d(n, block_n, launch_cores, dt)
     elif scalar == float("-inf"):
         key = ("lneg_inf", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d:
-            _kernel_cache_1d[key] = lneg_inf_norm_kernel_1d(n, block_n,
-                                                            launch_cores, dt)
+            _kernel_cache_1d[key] = lneg_inf_norm_kernel_1d(n, block_n, launch_cores, dt)
     else:
         key = ("lp", n, block_n, scalar, launch_cores, dt)
         if key not in _kernel_cache_1d:
-            _kernel_cache_1d[key] = lp_norm_kernel_1d(n, block_n, scalar,
-                                                      launch_cores, dt)
+            _kernel_cache_1d[key] = lp_norm_kernel_1d(n, block_n, scalar, launch_cores, dt)
     return _kernel_cache_1d[key]
 
 
-def _finalize_single(partial: torch.Tensor, scalar: float,
-                     out_dtype: torch.dtype) -> torch.Tensor:
+def _finalize_single(partial: torch.Tensor, scalar: float, out_dtype: torch.dtype) -> torch.Tensor:
     """Combine per-core partials + finalize + cast for a single tensor."""
     if scalar == float("inf"):
         result = partial.max()
@@ -2035,8 +1966,7 @@ def _should_batch(n: int, batch: int, dt: str) -> bool:
     return False
 
 
-def _finalize_batched(partial: torch.Tensor, scalar: float,
-                      out_dtype: torch.dtype) -> torch.Tensor:
+def _finalize_batched(partial: torch.Tensor, scalar: float, out_dtype: torch.dtype) -> torch.Tensor:
     """Combine per-core FP32 partials + apply finalize + cast.
 
     Args:
@@ -2063,7 +1993,7 @@ def _finalize_batched(partial: torch.Tensor, scalar: float,
     return result.to(out_dtype)
 
 
-def foreach_norm(x: List[torch.Tensor], scalar: float) -> List[torch.Tensor]:
+def foreach_norm(x: list[torch.Tensor], scalar: float) -> list[torch.Tensor]:
     """Compute p-norm of each tensor in the TensorList (multi-core, batched).
 
     Tensors with the same flattened N are batched into a single kernel launch
@@ -2084,16 +2014,11 @@ def foreach_norm(x: List[torch.Tensor], scalar: float) -> List[torch.Tensor]:
 
     first_dt = _dtype_str(x[0])
     if first_dt not in SUPPORTED_DTYPES:
-        raise ValueError(
-            f"Unsupported dtype: {first_dt}. Supported: {sorted(SUPPORTED_DTYPES)}"
-        )
+        raise ValueError(f"Unsupported dtype: {first_dt}. Supported: {sorted(SUPPORTED_DTYPES)}")
     for i, t in enumerate(x[1:], 1):
         dt_i = _dtype_str(t)
         if dt_i != first_dt:
-            raise ValueError(
-                f"All tensors must share the same dtype: tensor 0 is {first_dt}, "
-                f"tensor {i} is {dt_i}"
-            )
+            raise ValueError(f"All tensors must share the same dtype: tensor 0 is {first_dt}, tensor {i} is {dt_i}")
 
     torch_dt = x[0].dtype
 
@@ -2103,14 +2028,13 @@ def foreach_norm(x: List[torch.Tensor], scalar: float) -> List[torch.Tensor]:
         n = t.view(-1).shape[0]
         groups.setdefault(n, []).append(idx)
 
-    results: List[torch.Tensor] = [None] * len(x)  # type: ignore
+    results: list[torch.Tensor] = [None] * len(x)  # type: ignore
 
     for n, indices in groups.items():
         batch = len(indices)
         if n == 0:
             for idx in indices:
-                results[idx] = torch.zeros((), dtype=torch_dt,
-                                           device=x[idx].device)
+                results[idx] = torch.zeros((), dtype=torch_dt, device=x[idx].device)
             continue
 
         if _use_direct_norm(scalar, n, first_dt):
@@ -2125,8 +2049,7 @@ def foreach_norm(x: List[torch.Tensor], scalar: float) -> List[torch.Tensor]:
 
         if _use_list_kernel(scalar, batch, single_core_load):
             flats = [x[idx].view(-1) for idx in indices]
-            kernel = _get_list_kernel(scalar, batch, n, block_n, launch_cores,
-                                      first_dt)
+            kernel = _get_list_kernel(scalar, batch, n, block_n, launch_cores, first_dt)
             partial = kernel(*flats)
             result = _finalize_batched(partial, scalar, torch_dt)
             for i, idx in enumerate(indices):
@@ -2139,16 +2062,14 @@ def foreach_norm(x: List[torch.Tensor], scalar: float) -> List[torch.Tensor]:
             # 1D fast path: per-tensor 1D kernels (no 2D overhead, no stack)
             for idx in indices:
                 x_flat = x[idx].view(-1)
-                kernel = _get_kernel_1d(scalar, n, block_n, launch_cores,
-                                        first_dt)
+                kernel = _get_kernel_1d(scalar, n, block_n, launch_cores, first_dt)
                 partial = kernel(x_flat)  # (launch_cores,) FP32
                 result = _finalize_single(partial, scalar, torch_dt)
                 results[idx] = result.view(())
         else:
             # 2D batched: 1 kernel launch for all same-N tensors
             x_batched = torch.stack([x[idx].view(-1) for idx in indices])
-            kernel = _get_kernel(scalar, batch, n, block_n, launch_cores,
-                                 first_dt)
+            kernel = _get_kernel(scalar, batch, n, block_n, launch_cores, first_dt)
             partial = kernel(x_batched)  # (batch, launch_cores)
             result = _finalize_batched(partial, scalar, torch_dt)  # (batch,)
             for i, idx in enumerate(indices):

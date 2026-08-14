@@ -5,9 +5,6 @@ Normalizes arbitrary-rank input to 2D, dispatches to the kernel by
 in-process so each unique shape compiles only once.
 """
 
-import torch
-
-from ._common import torch_dtype_to_tl
 from ._sigmoid_kernel import _sigmoid_kernel
 
 
@@ -112,10 +109,7 @@ def sigmoid(input):
 
     # Validate dtype
     if torch_dtype_str not in _TORCH_TO_TL_DTYPE:
-        raise ValueError(
-            f"sigmoid unsupported dtype: {torch_dtype_str}. "
-            f"Supported: {list(_TORCH_TO_TL_DTYPE.keys())}"
-        )
+        raise ValueError(f"sigmoid unsupported dtype: {torch_dtype_str}. Supported: {list(_TORCH_TO_TL_DTYPE.keys())}")
     tl_dtype = _TORCH_TO_TL_DTYPE[torch_dtype_str]
 
     # Flatten arbitrary-rank input to 2D (M, N) for the kernel.

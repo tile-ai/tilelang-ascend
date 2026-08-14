@@ -13,9 +13,7 @@ cast.
 
 import math
 
-import torch
 
-from ._common import torch_dtype_to_tl
 from ._sigmoid_kernel import _sigmoid_kernel
 
 
@@ -36,6 +34,7 @@ def _near_square_shape(total):
     while m > 1 and total % m:
         m -= 1
     return m, total // m
+
 
 # Per-buffer (per-stage) byte budget. The Ascend A2/A3 UB is 196352 B.
 # Expert mode uses STAGES=2 double buffer with 2 live buffers (a_ub + b_ub):
@@ -100,12 +99,8 @@ def _select_matrix_shape(tl_dtype, original_shape):
     if tl_dtype == "float16" and (M == 2049 and N == 513):
         return _near_square_shape(total)
     narrow_n = 512 if tl_dtype == "bfloat16" else 256
-    bf16_medium_wide = (
-        tl_dtype == "bfloat16"
-        and 1_500_000 <= total <= 3_000_000
-        and N >= 1500
-    )
-    if N < narrow_n or bf16_medium_wide:
+    bf16_medium_wide = tl_dtype == "bfloat16" and 1_500_000 <= total <= 3_000_000 and N >= 1500
+    if narrow_n > N or bf16_medium_wide:
         alt_M, alt_N = _near_square_shape(total)
         if alt_M > 1 and (alt_N > N or bf16_medium_wide):
             M, N = alt_M, alt_N
@@ -201,7 +196,7 @@ def _select_tiling(tl_dtype, M, N):
         # DMA: non-32B-aligned block_N causes data corruption).
         block_N = (block_N // align) * align
         # If N < align, fall back to N (T.copy handles sub-aligned tail).
-        block_N = max(min(N, align), block_N) if N < align else block_N
+        block_N = max(min(N, align), block_N) if align > N else block_N
         block_N = min(block_N, N, bn_cap)
         if block_N <= 0:
             continue
@@ -254,12 +249,7 @@ def _select_tiling(tl_dtype, M, N):
             best = (sort_key, block_M, block_N)
 
     # Check if Expert path is viable (block_M >= 2 for VEC_NUM=2)
-    expert_viable = (
-        (tl_dtype != "bfloat16")
-        and (not prefer_developer)
-        and (M >= 2)
-        and (best is not None and best[1] >= 2)
-    )
+    expert_viable = (tl_dtype != "bfloat16") and (not prefer_developer) and (M >= 2) and (best is not None and best[1] >= 2)
 
     # If Expert path not viable (block_M < 2), re-search with Developer budget
     # which allows larger block_N (2D alloc_shared, no 3D buffer constraint).
@@ -269,7 +259,7 @@ def _select_tiling(tl_dtype, M, N):
         for bn_cap in bn_caps:
             block_N = min(N, bn_cap)
             block_N = (block_N // align) * align
-            block_N = max(min(N, align), block_N) if N < align else block_N
+            block_N = max(min(N, align), block_N) if align > N else block_N
             block_N = min(block_N, N, bn_cap)
             if block_N <= 0:
                 continue
@@ -326,10 +316,7 @@ def sigmoid(x):
 
     # Validate dtype
     if torch_dtype_str not in _TORCH_TO_TL_DTYPE:
-        raise ValueError(
-            f"sigmoid unsupported dtype: {torch_dtype_str}. "
-            f"Supported: {list(_TORCH_TO_TL_DTYPE.keys())}"
-        )
+        raise ValueError(f"sigmoid unsupported dtype: {torch_dtype_str}. Supported: {list(_TORCH_TO_TL_DTYPE.keys())}")
     tl_dtype = _TORCH_TO_TL_DTYPE[torch_dtype_str]
 
     # Flatten arbitrary-rank input to 2D (M, N) for the kernel.

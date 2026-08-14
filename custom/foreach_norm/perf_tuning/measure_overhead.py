@@ -1,4 +1,5 @@
 """Measure TileLang kernel launch overhead vs CANN native op."""
+
 import time
 import torch
 import tilelang
@@ -19,6 +20,7 @@ def trivial_kernel(N=1):
             x = T.alloc_shared((N,), "float32")
             T.copy(X, x)
             T.copy(x, Y)
+
     return main
 
 
@@ -30,6 +32,7 @@ def trivial_multicore_kernel(launch_cores=24, N=1):
             acc = T.alloc_shared((1,), "float32")
             T.tile.fill(acc, 0.0)
             T.copy(acc, Y[cid])
+
     return main
 
 
@@ -55,7 +58,7 @@ def main():
         t1 = time.perf_counter()
         times.append((t1 - t0) * 1e6)
     times.sort()
-    print(f"TileLang 1-block trivial: {times[len(times)//2]:.1f} us (median of 50)")
+    print(f"TileLang 1-block trivial: {times[len(times) // 2]:.1f} us (median of 50)")
 
     # Measure trivial 24-core TileLang kernel
     times = []
@@ -67,7 +70,7 @@ def main():
         t1 = time.perf_counter()
         times.append((t1 - t0) * 1e6)
     times.sort()
-    print(f"TileLang 24-core trivial: {times[len(times)//2]:.1f} us (median of 50)")
+    print(f"TileLang 24-core trivial: {times[len(times) // 2]:.1f} us (median of 50)")
 
     # CANN native: torch.sum on 1 element
     for _ in range(10):
@@ -82,7 +85,7 @@ def main():
         t1 = time.perf_counter()
         times.append((t1 - t0) * 1e6)
     times.sort()
-    print(f"CANN torch.sum(1 elem): {times[len(times)//2]:.1f} us (median of 50)")
+    print(f"CANN torch.sum(1 elem): {times[len(times) // 2]:.1f} us (median of 50)")
 
     # CANN native: torch.norm on 1M fp32
     x_big = torch.randn(1000003, dtype=torch.float32, device="npu")
@@ -98,7 +101,7 @@ def main():
         t1 = time.perf_counter()
         times.append((t1 - t0) * 1e6)
     times.sort()
-    print(f"CANN torch.norm(1M fp32, inf): {times[len(times)//2]:.1f} us (median of 50)")
+    print(f"CANN torch.norm(1M fp32, inf): {times[len(times) // 2]:.1f} us (median of 50)")
 
     # CANN native: torch.norm on 1M bf16 (upcast to fp32)
     x_bf16 = torch.randn(1000003, dtype=torch.bfloat16, device="npu")
@@ -115,7 +118,7 @@ def main():
         t1 = time.perf_counter()
         times.append((t1 - t0) * 1e6)
     times.sort()
-    print(f"CANN torch.norm(1M bf16->fp32, inf): {times[len(times)//2]:.1f} us (median of 50)")
+    print(f"CANN torch.norm(1M bf16->fp32, inf): {times[len(times) // 2]:.1f} us (median of 50)")
 
 
 if __name__ == "__main__":

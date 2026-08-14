@@ -114,19 +114,19 @@ def mish(M, N, block_M, block_N, dtype="float16"):
             #    Stable softplus: max(x,0) + ln(1+exp(-|x|))   -- 7 steps
             #    Stable tanh:     2*sigmoid(2s) - 1            -- 4 steps
             #    Final mul:       x * tanh(softplus(x))        -- 1 step
-            T.tile.fill(one_ub, 1.0)                       # one = 1.0 (constant buffer for add/sub)
-            T.tile.abs(t0_ub, a_ub)                        # t0 = |x|
-            T.tile.mul(t0_ub, t0_ub, -1.0)                 # t0 = -|x|
-            T.tile.exp(t0_ub, t0_ub)                       # t0 = exp(-|x|)  in [0,1]
-            T.tile.add(t0_ub, t0_ub, one_ub)               # t0 = 1 + exp(-|x|)
-            T.tile.ln(t0_ub, t0_ub)                        # t0 = ln(1 + exp(-|x|))
-            T.tile.max(t1_ub, a_ub, 0.0)                   # t1 = max(x, 0)
-            T.tile.add(t0_ub, t0_ub, t1_ub)                # t0 = softplus = max(x,0) + ln(1+exp(-|x|))
-            T.tile.mul(t0_ub, t0_ub, 2.0)                  # t0 = 2*softplus
-            T.tile.sigmoid(t0_ub, t0_ub)                   # t0 = sigmoid(2*softplus)
-            T.tile.mul(t0_ub, t0_ub, 2.0)                  # t0 = 2*sigmoid
-            T.tile.sub(t0_ub, t0_ub, one_ub)               # t0 = tanh = 2*sigmoid - 1
-            T.tile.mul(b_ub, a_ub, t0_ub)                  # b  = x * tanh(softplus(x))
+            T.tile.fill(one_ub, 1.0)  # one = 1.0 (constant buffer for add/sub)
+            T.tile.abs(t0_ub, a_ub)  # t0 = |x|
+            T.tile.mul(t0_ub, t0_ub, -1.0)  # t0 = -|x|
+            T.tile.exp(t0_ub, t0_ub)  # t0 = exp(-|x|)  in [0,1]
+            T.tile.add(t0_ub, t0_ub, one_ub)  # t0 = 1 + exp(-|x|)
+            T.tile.ln(t0_ub, t0_ub)  # t0 = ln(1 + exp(-|x|))
+            T.tile.max(t1_ub, a_ub, 0.0)  # t1 = max(x, 0)
+            T.tile.add(t0_ub, t0_ub, t1_ub)  # t0 = softplus = max(x,0) + ln(1+exp(-|x|))
+            T.tile.mul(t0_ub, t0_ub, 2.0)  # t0 = 2*softplus
+            T.tile.sigmoid(t0_ub, t0_ub)  # t0 = sigmoid(2*softplus)
+            T.tile.mul(t0_ub, t0_ub, 2.0)  # t0 = 2*sigmoid
+            T.tile.sub(t0_ub, t0_ub, one_ub)  # t0 = tanh = 2*sigmoid - 1
+            T.tile.mul(b_ub, a_ub, t0_ub)  # b  = x * tanh(softplus(x))
 
             # 4. Data copy-out: UB -> GM
             if need_cast:

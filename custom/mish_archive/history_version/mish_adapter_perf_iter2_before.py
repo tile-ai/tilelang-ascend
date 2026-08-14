@@ -17,9 +17,6 @@ Single path (no dtype dispatch):
   heavy 12-step compute). See custom/mish/perf_tuning/perf_report.md §2/§5.
 """
 
-import torch
-
-from ._common import torch_dtype_to_tl
 from ._mish_kernel import _mish_kernel
 
 
@@ -52,8 +49,8 @@ NUM_CORES = 24
 # Effective per-(rows_per_vec * block_N) element budget, by dtype path.
 # Conservative safety margin (~8%) below the theoretical UB limit to absorb
 # MEMORY_PLANNING alignment padding and compiler-emitted scratch.
-_UB_BUDGET_FP32 = 9000       # elems: 196352/20 = 9817, rounded down w/ margin
-_UB_BUDGET_CAST = 8500       # elems: 196352/22 = 8925, rounded down w/ margin
+_UB_BUDGET_FP32 = 9000  # elems: 196352/20 = 9817, rounded down w/ margin
+_UB_BUDGET_CAST = 8500  # elems: 196352/22 = 8925, rounded down w/ margin
 
 
 def _select_tiling(tl_dtype, M, N):
@@ -102,7 +99,7 @@ def _select_tiling(tl_dtype, M, N):
         # Align DOWN to 32B boundary (required for DMA alignment).
         block_N = (block_N // align) * align
         # If N < align, fall back to N (T.copy handles sub-aligned tail).
-        block_N = max(min(N, align), block_N) if N < align else block_N
+        block_N = max(min(N, align), block_N) if align > N else block_N
         block_N = min(block_N, N, bn_cap)
         if block_N <= 0:
             continue
@@ -170,10 +167,7 @@ def mish(x):
 
     # Validate dtype
     if torch_dtype_str not in _TORCH_TO_TL_DTYPE:
-        raise ValueError(
-            f"mish unsupported dtype: {torch_dtype_str}. "
-            f"Supported: {list(_TORCH_TO_TL_DTYPE.keys())}"
-        )
+        raise ValueError(f"mish unsupported dtype: {torch_dtype_str}. Supported: {list(_TORCH_TO_TL_DTYPE.keys())}")
     tl_dtype = _TORCH_TO_TL_DTYPE[torch_dtype_str]
 
     # Flatten arbitrary-rank input to 2D (M, N) for the kernel.
@@ -190,9 +184,10 @@ def mish(x):
             M, N = 1, max(total, 1)
         else:
             import math
+
             sqrt_n = int(math.isqrt(total))
             M = 1
-            while M * 2 <= sqrt_n:
+            while sqrt_n >= M * 2:
                 M *= 2
             M = max(2, min(M, 8192))  # ensure M >= 2 for VEC_NUM=2
             while total % M != 0 and M > 1:

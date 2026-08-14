@@ -46,6 +46,7 @@ from ._common import PASS_CONFIGS, CAST_LOW2HIGH
 # Host combines + finalizes.
 # ============================================================================
 
+
 @tilelang.jit(out_idx=[1], pass_configs=PASS_CONFIGS)
 def l2_norm_kernel(batch, N, block_N, launch_cores, dtype="float16"):
     """L2 partial: per-core sum(x_i^2). Host finalizes with sqrt(sum)."""
@@ -72,8 +73,7 @@ def l2_norm_kernel(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.serial(single_core_load):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N], x_ub,
-                               pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N], x_ub, pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, block_N)
                         else:
@@ -112,8 +112,7 @@ def l1_norm_kernel(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.serial(single_core_load):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N], x_ub,
-                               pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N], x_ub, pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, block_N)
                         else:
@@ -152,8 +151,7 @@ def linf_norm_kernel(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.serial(single_core_load):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N], x_ub,
-                               pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N], x_ub, pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, block_N)
                         else:
@@ -192,8 +190,7 @@ def lneg_inf_norm_kernel(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.serial(single_core_load):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N], x_ub,
-                               pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N], x_ub, pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, block_N)
                         else:
@@ -233,16 +230,14 @@ def l0_count_kernel(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.serial(single_core_load):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N], x_ub,
-                               pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N], x_ub, pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, block_N)
                         else:
                             T.copy(x_ub, x_cal)
                         T.tile.fill(one_ub, 1.0)
                         T.tile.compare(mask_ub, x_cal, 0.0, "NE")
-                        T.tile.select(one_ub, mask_ub, one_ub, 0.0,
-                                      "VSEL_TENSOR_SCALAR_MODE")
+                        T.tile.select(one_ub, mask_ub, one_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
                         T.reduce_sum(one_ub, tile_count_ub, dim=-1)
                         T.tile.add(acc_ub, acc_ub, tile_count_ub)
                 T.copy(acc_ub, Partial[t, cid])
@@ -282,8 +277,7 @@ def lp_norm_kernel(batch, N, block_N, scalar, launch_cores, dtype="float16"):
                 for k in T.serial(single_core_load):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N], x_ub,
-                               pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N], x_ub, pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, block_N)
                         else:
@@ -303,6 +297,7 @@ def lp_norm_kernel(batch, N, block_N, scalar, launch_cores, dtype="float16"):
 # 1D kernels (batch=1 fast path -- avoids 2D T.copy overhead)
 # Used when batch=1 or when torch.stack cost exceeds launch saving (large N).
 # ============================================================================
+
 
 @tilelang.jit(out_idx=[1], pass_configs=PASS_CONFIGS)
 def l2_norm_kernel_1d(N, block_N, launch_cores, dtype="float16"):
@@ -336,6 +331,7 @@ def l2_norm_kernel_1d(N, block_N, launch_cores, dtype="float16"):
                     T.reduce_sum(pow_ub, tile_sum_ub, dim=-1)
                     T.tile.add(acc_ub, acc_ub, tile_sum_ub)
             T.copy(acc_ub, Partial[cid])
+
     return main
 
 
@@ -371,6 +367,7 @@ def l1_norm_kernel_1d(N, block_N, launch_cores, dtype="float16"):
                     T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
                     T.tile.add(acc_ub, acc_ub, tile_sum_ub)
             T.copy(acc_ub, Partial[cid])
+
     return main
 
 
@@ -406,6 +403,7 @@ def linf_norm_kernel_1d(N, block_N, launch_cores, dtype="float16"):
                     T.reduce_max(abs_ub, tile_max_ub, dim=-1)
                     T.tile.max(acc_ub, acc_ub, tile_max_ub)
             T.copy(acc_ub, Partial[cid])
+
     return main
 
 
@@ -441,6 +439,7 @@ def lneg_inf_norm_kernel_1d(N, block_N, launch_cores, dtype="float16"):
                     T.reduce_min(abs_ub, tile_min_ub, dim=-1)
                     T.tile.min(acc_ub, acc_ub, tile_min_ub)
             T.copy(acc_ub, Partial[cid])
+
     return main
 
 
@@ -475,11 +474,11 @@ def l0_count_kernel_1d(N, block_N, launch_cores, dtype="float16"):
                         T.copy(x_ub, x_cal)
                     T.tile.fill(one_ub, 1.0)
                     T.tile.compare(mask_ub, x_cal, 0.0, "NE")
-                    T.tile.select(one_ub, mask_ub, one_ub, 0.0,
-                                  "VSEL_TENSOR_SCALAR_MODE")
+                    T.tile.select(one_ub, mask_ub, one_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
                     T.reduce_sum(one_ub, tile_count_ub, dim=-1)
                     T.tile.add(acc_ub, acc_ub, tile_count_ub)
             T.copy(acc_ub, Partial[cid])
+
     return main
 
 
@@ -521,4 +520,5 @@ def lp_norm_kernel_1d(N, block_N, scalar, launch_cores, dtype="float16"):
                     T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
                     T.tile.add(acc_ub, acc_ub, tile_sum_ub)
             T.copy(acc_ub, Partial[cid])
+
     return main

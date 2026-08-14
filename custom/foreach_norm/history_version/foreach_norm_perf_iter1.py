@@ -23,9 +23,6 @@ Optimization (Stage 3 iter 1): multi-core parallel partial reduction.
     (launch_cores + single_core_load strided assignment pattern).
 """
 
-import math
-from typing import List
-
 import tilelang
 from tilelang import language as T
 import torch
@@ -48,6 +45,7 @@ CORE_NUM = 24  # Ascend910B3 physical AI Core count
 # Each kernel outputs Partial: (launch_cores,) FP32 — per-core partial result.
 # Host combines + finalizes.
 # ============================================================================
+
 
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def l2_norm_kernel(N, block_N, launch_cores, dtype="float16"):
@@ -244,8 +242,7 @@ def l0_count_kernel(N, block_N, launch_cores, dtype="float16"):
                         T.copy(x_ub, x_cal)
                     T.tile.fill(one_ub, 1.0)
                     T.tile.compare(mask_ub, x_cal, 0.0, "NE")
-                    T.tile.select(one_ub, mask_ub, one_ub, 0.0,
-                                  "VSEL_TENSOR_SCALAR_MODE")
+                    T.tile.select(one_ub, mask_ub, one_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
                     T.reduce_sum(one_ub, tile_count_ub, dim=-1)
                     T.tile.add(acc_ub, acc_ub, tile_count_ub)
 
@@ -311,6 +308,7 @@ def lp_norm_kernel(N, block_N, scalar, launch_cores, dtype="float16"):
 # Host dispatch: multi-core partial reduction + host-side combine + finalize
 # ============================================================================
 
+
 def _choose_block_n(n: int) -> int:
     """Pick block_N adaptively based on element count.
 
@@ -335,8 +333,7 @@ def _dtype_str(x: torch.Tensor) -> str:
 _kernel_cache = {}
 
 
-def _get_partial_kernel(scalar: float, n: int, block_n: int,
-                        launch_cores: int, dt: str):
+def _get_partial_kernel(scalar: float, n: int, block_n: int, launch_cores: int, dt: str):
     """Get or compile a cached partial-reduction kernel for the given config."""
     if scalar == 0.0:
         key = ("l0", n, block_n, launch_cores, dt)
@@ -361,13 +358,11 @@ def _get_partial_kernel(scalar: float, n: int, block_n: int,
     else:
         key = ("lp", n, block_n, scalar, launch_cores, dt)
         if key not in _kernel_cache:
-            _kernel_cache[key] = lp_norm_kernel(n, block_n, scalar,
-                                                launch_cores, dt)
+            _kernel_cache[key] = lp_norm_kernel(n, block_n, scalar, launch_cores, dt)
     return _kernel_cache[key]
 
 
-def _finalize(partial: torch.Tensor, scalar: float,
-              out_dtype: torch.dtype) -> torch.Tensor:
+def _finalize(partial: torch.Tensor, scalar: float, out_dtype: torch.dtype) -> torch.Tensor:
     """Combine per-core FP32 partials + apply finalize + cast to out_dtype.
 
     Args:
@@ -397,7 +392,7 @@ def _finalize(partial: torch.Tensor, scalar: float,
     return result.to(out_dtype)
 
 
-def foreach_norm(x_list: List[torch.Tensor], scalar: float) -> List[torch.Tensor]:
+def foreach_norm(x_list: list[torch.Tensor], scalar: float) -> list[torch.Tensor]:
     """Compute p-norm of each tensor in the TensorList (multi-core parallel).
 
     Args:
@@ -416,19 +411,14 @@ def foreach_norm(x_list: List[torch.Tensor], scalar: float) -> List[torch.Tensor
     # Validate dtype consistency and support
     first_dt = _dtype_str(x_list[0])
     if first_dt not in SUPPORTED_DTYPES:
-        raise ValueError(
-            f"Unsupported dtype: {first_dt}. Supported: {sorted(SUPPORTED_DTYPES)}"
-        )
+        raise ValueError(f"Unsupported dtype: {first_dt}. Supported: {sorted(SUPPORTED_DTYPES)}")
     for i, x in enumerate(x_list[1:], 1):
         dt_i = _dtype_str(x)
         if dt_i != first_dt:
-            raise ValueError(
-                f"All tensors must share the same dtype: tensor 0 is {first_dt}, "
-                f"tensor {i} is {dt_i}"
-            )
+            raise ValueError(f"All tensors must share the same dtype: tensor 0 is {first_dt}, tensor {i} is {dt_i}")
 
     torch_dt = x_list[0].dtype
-    results: List[torch.Tensor] = []
+    results: list[torch.Tensor] = []
     for x in x_list:
         # Flatten ND to 1D (view — zero-copy for contiguous tensors)
         x_flat = x.view(-1)

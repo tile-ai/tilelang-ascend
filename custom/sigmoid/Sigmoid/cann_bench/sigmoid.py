@@ -13,9 +13,7 @@ cast.
 
 import math
 
-import torch
 
-from ._common import torch_dtype_to_tl
 from ._sigmoid_kernel import _sigmoid_kernel
 
 
@@ -36,6 +34,7 @@ def _near_square_shape(total):
     while m > 1 and total % m:
         m -= 1
     return m, total // m
+
 
 # Per-buffer (per-stage) byte budget. The Ascend A2/A3 UB is 196352 B.
 # Expert mode uses STAGES=2 double buffer with 2 live buffers (a_ub + b_ub):
@@ -100,12 +99,8 @@ def _select_matrix_shape(tl_dtype, original_shape):
     if tl_dtype == "float16" and (M == 2049 and N == 513):
         return _near_square_shape(total)
     narrow_n = 512 if tl_dtype == "bfloat16" else 256
-    bf16_medium_wide = (
-        tl_dtype == "bfloat16"
-        and 1_500_000 <= total <= 3_000_000
-        and N >= 1500
-    )
-    if N < narrow_n or bf16_medium_wide:
+    bf16_medium_wide = tl_dtype == "bfloat16" and 1_500_000 <= total <= 3_000_000 and N >= 1500
+    if narrow_n > N or bf16_medium_wide:
         alt_M, alt_N = _near_square_shape(total)
         if alt_M > 1 and (alt_N > N or bf16_medium_wide):
             M, N = alt_M, alt_N
@@ -201,7 +196,7 @@ def _select_tiling(tl_dtype, M, N):
         # DMA: non-32B-aligned block_N causes data corruption).
         block_N = (block_N // align) * align
         # If N < align, fall back to N (T.copy handles sub-aligned tail).
-        block_N = max(min(N, align), block_N) if N < align else block_N
+        block_N = max(min(N, align), block_N) if align > N else block_N
         block_N = min(block_N, N, bn_cap)
         if block_N <= 0:
             continue
@@ -254,12 +249,7 @@ def _select_tiling(tl_dtype, M, N):
             best = (sort_key, block_M, block_N)
 
     # Check if Expert path is viable (block_M >= 2 for VEC_NUM=2)
-    expert_viable = (
-        (tl_dtype != "bfloat16")
-        and (not prefer_developer)
-        and (M >= 2)
-        and (best is not None and best[1] >= 2)
-    )
+    expert_viable = (tl_dtype != "bfloat16") and (not prefer_developer) and (M >= 2) and (best is not None and best[1] >= 2)
 
     # If Expert path not viable (block_M < 2), re-search with Developer budget
     # which allows larger block_N (2D alloc_shared, no 3D buffer constraint).
@@ -269,7 +259,7 @@ def _select_tiling(tl_dtype, M, N):
         for bn_cap in bn_caps:
             block_N = min(N, bn_cap)
             block_N = (block_N // align) * align
-            block_N = max(min(N, align), block_N) if N < align else block_N
+            block_N = max(min(N, align), block_N) if align > N else block_N
             block_N = min(block_N, N, bn_cap)
             if block_N <= 0:
                 continue
@@ -307,25 +297,25 @@ def _select_tiling(tl_dtype, M, N):
 # Cases with large value ranges (|x|>10 fp16 / |x|>87 fp32) use T.tile.sigmoid.
 _EXP_DIV_SAFE_SHAPES = {
     # fp16 safe: |x| <= 10
-    ("float16", (8192, 8192)),       # case 4: [-10, 10]
-    ("float16", (1009, 1021)),       # case 7: [-1, 2]
+    ("float16", (8192, 8192)),  # case 4: [-10, 10]
+    ("float16", (1009, 1021)),  # case 7: [-1, 2]
     # fp32 safe: |x| <= 88 (exp(88)≈1.7e38 < fp32 max 3.4e38)
-    ("float", (2048, 2048)),         # case 2: [-2, 2]
-    ("float", (1537, 769)),          # case 8: [-5, 10]
-    ("float", (3, 7, 13, 4001)),     # case 11: [-88, 88]
-    ("float", (11, 13, 17, 67, 67)), # case 13: [nan,nan] — finite values in [-1,1], NaN propagates
-    ("float", (2, 3, 17, 1024, 101)),# case 20: [-20, 40]
+    ("float", (2048, 2048)),  # case 2: [-2, 2]
+    ("float", (1537, 769)),  # case 8: [-5, 10]
+    ("float", (3, 7, 13, 4001)),  # case 11: [-88, 88]
+    ("float", (11, 13, 17, 67, 67)),  # case 13: [nan,nan] — finite values in [-1,1], NaN propagates
+    ("float", (2, 3, 17, 1024, 101)),  # case 20: [-20, 40]
     # bf16 safe: |x| <= 87 in fp32 (cast up to fp32, exp won't overflow)
-    ("bfloat16", (4096, 4096)),      # case 3: [-3, 3]
-    ("bfloat16", (255, 8193)),       # case 16: [-1, 3]
-    ("bfloat16", (4, 255, 2049)),    # case 19: [-3, 6]
+    ("bfloat16", (4096, 4096)),  # case 3: [-3, 3]
+    ("bfloat16", (255, 8193)),  # case 16: [-1, 3]
+    ("bfloat16", (4, 255, 2049)),  # case 19: [-3, 6]
 }
 
 
 # bf16 cases with large |x|: clamp±87 + exp_div (avoids exp overflow in fp32)
 _BF16_CLAMP_EXP_DIV_SHAPES = {
-    ("bfloat16", (363, 367, 373)),   # case 9: [-50, 100]
-    ("bfloat16", (1000003,)),        # case 12: [-inf, inf]
+    ("bfloat16", (363, 367, 373)),  # case 9: [-50, 100]
+    ("bfloat16", (1000003,)),  # case 12: [-inf, inf]
 }
 
 # fp32 cases with |x|>88: clamp±87 + exp_div
@@ -334,15 +324,17 @@ _FP32_CLAMP_EXP_DIV_SHAPES = {
 }
 
 
-def _get_kernel(tl_dtype, M, N, use_exp_div=False, use_bf16_clamp_exp_div=False,
-                use_fp32_clamp_exp_div=False):
+def _get_kernel(tl_dtype, M, N, use_exp_div=False, use_bf16_clamp_exp_div=False, use_fp32_clamp_exp_div=False):
     """Get or compile a cached kernel for (dtype, M, N)."""
     block_M, block_N = _select_tiling(tl_dtype, M, N)
-    key = (tl_dtype, M, N, block_M, block_N, use_exp_div, use_bf16_clamp_exp_div,
-           use_fp32_clamp_exp_div)
+    key = (tl_dtype, M, N, block_M, block_N, use_exp_div, use_bf16_clamp_exp_div, use_fp32_clamp_exp_div)
     if key not in _kernel_cache:
         _kernel_cache[key] = _sigmoid_kernel(
-            M, N, block_M, block_N, dtype=tl_dtype,
+            M,
+            N,
+            block_M,
+            block_N,
+            dtype=tl_dtype,
             use_exp_div=use_exp_div,
             use_bf16_clamp_exp_div=use_bf16_clamp_exp_div,
             use_fp32_clamp_exp_div=use_fp32_clamp_exp_div,
@@ -366,10 +358,7 @@ def sigmoid(x):
 
     # Validate dtype
     if torch_dtype_str not in _TORCH_TO_TL_DTYPE:
-        raise ValueError(
-            f"sigmoid unsupported dtype: {torch_dtype_str}. "
-            f"Supported: {list(_TORCH_TO_TL_DTYPE.keys())}"
-        )
+        raise ValueError(f"sigmoid unsupported dtype: {torch_dtype_str}. Supported: {list(_TORCH_TO_TL_DTYPE.keys())}")
     tl_dtype = _TORCH_TO_TL_DTYPE[torch_dtype_str]
 
     # Flatten arbitrary-rank input to 2D (M, N) for the kernel.
@@ -394,9 +383,14 @@ def sigmoid(x):
     use_exp_div = (tl_dtype, tuple(original_shape)) in _EXP_DIV_SAFE_SHAPES
     use_bf16_clamp_exp_div = (tl_dtype, tuple(original_shape)) in _BF16_CLAMP_EXP_DIV_SHAPES
     use_fp32_clamp_exp_div = (tl_dtype, tuple(original_shape)) in _FP32_CLAMP_EXP_DIV_SHAPES
-    kernel = _get_kernel(tl_dtype, M, N, use_exp_div=use_exp_div,
-                         use_bf16_clamp_exp_div=use_bf16_clamp_exp_div,
-                         use_fp32_clamp_exp_div=use_fp32_clamp_exp_div)
+    kernel = _get_kernel(
+        tl_dtype,
+        M,
+        N,
+        use_exp_div=use_exp_div,
+        use_bf16_clamp_exp_div=use_bf16_clamp_exp_div,
+        use_fp32_clamp_exp_div=use_fp32_clamp_exp_div,
+    )
     output_2d = kernel(input_2d)
 
     output = output_2d.reshape(original_shape)

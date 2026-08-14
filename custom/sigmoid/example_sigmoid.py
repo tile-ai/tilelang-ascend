@@ -83,7 +83,7 @@ if __name__ == "__main__":
     test_configs = [
         # (M, N, block_M, block_N, dtype, level)
         (1024, 8192, 128, 128, "float16", "L0"),  # L0 gate: largest regular shape
-        (512, 512, 128, 128, "float32", "L1"),    # L1 functional: regular shape + fp32 dtype
+        (512, 512, 128, 128, "float32", "L1"),  # L1 functional: regular shape + fp32 dtype
     ]
 
     for M, N, block_M, block_N, dtype, level in test_configs:
@@ -106,9 +106,7 @@ if __name__ == "__main__":
         abs_err = (y_cpu[m] - ref_cpu[m]).abs()
         ratio = (abs_err <= (atol + rtol * ref_cpu[m].abs())).float().mean().item()
         max_abs = abs_err.max().item()
-        assert ratio >= required_ratio and max_abs <= max_abs_limit, (
-            f"precision fail: ratio={ratio:.4f} max_abs={max_abs:.3e}"
-        )
+        assert ratio >= required_ratio and max_abs <= max_abs_limit, f"precision fail: ratio={ratio:.4f} max_abs={max_abs:.3e}"
         print(f"Test pass! matched_ratio={ratio:.4f} max_abs={max_abs:.3e}")
 
     print("Kernel Output Match!")

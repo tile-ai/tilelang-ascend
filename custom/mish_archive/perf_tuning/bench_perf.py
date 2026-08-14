@@ -37,19 +37,19 @@ from mish import mish  # noqa: E402
 # (shape, dtype, block, tag)
 BENCH_CONFIGS = [
     # S aligned
-    ((1024, 1024), "float16",  (128, 128), "S_aligned_fp16"),
-    ((1024, 1024), "float32",  (128, 128), "S_aligned_fp32"),
+    ((1024, 1024), "float16", (128, 128), "S_aligned_fp16"),
+    ((1024, 1024), "float32", (128, 128), "S_aligned_fp32"),
     ((1024, 1024), "bfloat16", (128, 128), "S_aligned_bf16"),
     # M aligned
-    ((2048, 2048), "float16",  (128, 128), "M_aligned_fp16"),
-    ((2048, 2048), "float32",  (128, 128), "M_aligned_fp32"),
+    ((2048, 2048), "float16", (128, 128), "M_aligned_fp16"),
+    ((2048, 2048), "float32", (128, 128), "M_aligned_fp32"),
     # L aligned
-    ((8192, 8192), "float16",  (128, 128), "L_aligned_fp16"),
-    ((8192, 8192), "float32",  (128, 128), "L_aligned_fp32"),
+    ((8192, 8192), "float16", (128, 128), "L_aligned_fp16"),
+    ((8192, 8192), "float32", (128, 128), "L_aligned_fp32"),
     # S non-aligned
     ((1023, 1023), "bfloat16", (128, 128), "S_nonalign_bf16"),
     # S prime non-aligned
-    ((1537, 769),  "float32",  (128, 128), "S_prime_fp32"),
+    ((1537, 769), "float32", (128, 128), "S_prime_fp32"),
 ]
 
 
@@ -85,7 +85,7 @@ def run_config(shape, dtype, block, tag, warmup, iters):
     print(f"\n=== {tag}: shape={shape} dtype={dtype} block={block} ===", flush=True)
 
     # Compile tilelang kernel
-    print(f"[compile] tilelang kernel ...", flush=True)
+    print("[compile] tilelang kernel ...", flush=True)
     t_compile_start = time.perf_counter()
     kernel_fn = mish(M, N, block_M, block_N, dtype=dtype)
     t_compile = time.perf_counter() - t_compile_start
@@ -123,8 +123,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--warmup", type=int, default=30)
     parser.add_argument("--iters", type=int, default=100)
-    parser.add_argument("--out", type=str, default=None,
-                        help="output JSON path (default: bench_perf_result.json)")
+    parser.add_argument("--out", type=str, default=None, help="output JSON path (default: bench_perf_result.json)")
     args = parser.parse_args()
 
     tilelang.disable_cache()
@@ -138,11 +137,18 @@ def main():
         except Exception as e:
             print(f"[ERROR] {tag}: {e}")
             import traceback
+
             traceback.print_exc()
-            results.append({
-                "tag": tag, "shape": list(shape), "dtype": dtype, "block": list(block),
-                "error": str(e), "speedup": 0.0,
-            })
+            results.append(
+                {
+                    "tag": tag,
+                    "shape": list(shape),
+                    "dtype": dtype,
+                    "block": list(block),
+                    "error": str(e),
+                    "speedup": 0.0,
+                }
+            )
 
     # Summary
     print("\n=== SUMMARY ===")

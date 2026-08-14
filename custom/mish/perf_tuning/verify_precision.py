@@ -3,6 +3,7 @@
 Verifies that smart-flatten + dynamic block_M/block_N selection maintains
 precision across all cases (including non-aligned block_N like 67, 101).
 """
+
 import sys
 import os
 from pathlib import Path
@@ -17,16 +18,26 @@ from mish import mish_forward
 
 
 CASES = [
-    (1, [1024,1024], "float16", (-1,1)), (2, [2048,2048], "float32", (-2,2)),
-    (3, [4096,4096], "bfloat16", (-3,3)), (4, [8192,8192], "float16", (-10,10)),
-    (5, [8192,8192], "float32", (-100,100)), (6, [1023,1023], "bfloat16", (-0.1,0.1)),
-    (7, [1009,1021], "float16", (-1,2)), (8, [1537,769], "float32", (-5,10)),
-    (9, [363,367,373], "bfloat16", (-50,100)), (10, [2049,513], "float16", (-65504,65504)),
-    (11, [3,7,13,4001], "float32", (-88,88)), (12, [1000003], "bfloat16", (-1,1)),
-    (13, [11,13,17,67,67], "float32", (-1,1)), (14, [3,7,11,13,1009], "float16", (-1,1)),
-    (15, [512,2049], "float32", (-0.5,0.5)), (16, [255,8193], "bfloat16", (-1,3)),
-    (17, [4097,511], "float16", (-1000,1000)), (18, [2,511,2049], "float32", (-0.2,0.2)),
-    (19, [4,255,2049], "bfloat16", (-3,6)), (20, [2,3,17,1024,101], "float32", (-20,40)),
+    (1, [1024, 1024], "float16", (-1, 1)),
+    (2, [2048, 2048], "float32", (-2, 2)),
+    (3, [4096, 4096], "bfloat16", (-3, 3)),
+    (4, [8192, 8192], "float16", (-10, 10)),
+    (5, [8192, 8192], "float32", (-100, 100)),
+    (6, [1023, 1023], "bfloat16", (-0.1, 0.1)),
+    (7, [1009, 1021], "float16", (-1, 2)),
+    (8, [1537, 769], "float32", (-5, 10)),
+    (9, [363, 367, 373], "bfloat16", (-50, 100)),
+    (10, [2049, 513], "float16", (-65504, 65504)),
+    (11, [3, 7, 13, 4001], "float32", (-88, 88)),
+    (12, [1000003], "bfloat16", (-1, 1)),
+    (13, [11, 13, 17, 67, 67], "float32", (-1, 1)),
+    (14, [3, 7, 11, 13, 1009], "float16", (-1, 1)),
+    (15, [512, 2049], "float32", (-0.5, 0.5)),
+    (16, [255, 8193], "bfloat16", (-1, 3)),
+    (17, [4097, 511], "float16", (-1000, 1000)),
+    (18, [2, 511, 2049], "float32", (-0.2, 0.2)),
+    (19, [4, 255, 2049], "bfloat16", (-3, 6)),
+    (20, [2, 3, 17, 1024, 101], "float32", (-20, 40)),
 ]
 
 _DTYPE = {"float16": torch.float16, "float32": torch.float32, "bfloat16": torch.bfloat16}
@@ -37,9 +48,11 @@ def check(actual, golden, dtype_str):
     atol, rtol, max_limit = _TOL[dtype_str]
     a, g = actual.float(), golden.float()
     # Check NaN/Inf masks
-    masks_ok = (torch.equal(torch.isnan(a), torch.isnan(g)) and
-                torch.equal(torch.isposinf(a), torch.isposinf(g)) and
-                torch.equal(torch.isneginf(a), torch.isneginf(g)))
+    masks_ok = (
+        torch.equal(torch.isnan(a), torch.isnan(g))
+        and torch.equal(torch.isposinf(a), torch.isposinf(g))
+        and torch.equal(torch.isneginf(a), torch.isneginf(g))
+    )
     if not masks_ok:
         return False, 0.0, float("inf")
     finite = torch.isfinite(a) & torch.isfinite(g)

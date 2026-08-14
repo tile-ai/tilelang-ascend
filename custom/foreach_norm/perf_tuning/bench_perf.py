@@ -29,6 +29,7 @@ _OP_DIR = os.path.dirname(_HERE)
 sys.path.insert(0, _OP_DIR)
 
 import tilelang  # noqa: E402
+
 tilelang.enable_cache()  # cache compiled kernels across calls
 
 from foreach_norm import foreach_norm  # noqa: E402
@@ -52,8 +53,7 @@ def load_cases(path: str = CASES_YAML) -> list[dict]:
     return data["cases"]
 
 
-def gen_tensor(shape: tuple[int, ...], dtype_str: str,
-               vrange: tuple[float, float], scalar: float) -> torch.Tensor:
+def gen_tensor(shape: tuple[int, ...], dtype_str: str, vrange: tuple[float, float], scalar: float) -> torch.Tensor:
     """Generate one input tensor with controlled value range."""
     dt = _TORCH_DTYPE[dtype_str]
     lo, hi = vrange
@@ -67,8 +67,7 @@ def gen_tensor(shape: tuple[int, ...], dtype_str: str,
     if math.isinf(lo) or math.isinf(hi):
         # one-sided inf; use randn scaled by a sane factor
         t = torch.randn(shape, dtype=dt, device="npu")
-        scale = max(abs(lo) if math.isfinite(lo) else 1.0,
-                    abs(hi) if math.isfinite(hi) else 1.0)
+        scale = max(abs(lo) if math.isfinite(lo) else 1.0, abs(hi) if math.isfinite(hi) else 1.0)
         return t * scale
     # uniform in [lo, hi]
     t = torch.empty(shape, dtype=dt, device="npu").uniform_(lo, hi)
@@ -89,12 +88,12 @@ def to_compute_dtype(t: torch.Tensor) -> torch.Tensor:
 # Timing helpers
 # ---------------------------------------------------------------------------
 
+
 def _sync():
     torch.npu.synchronize()
 
 
-def measure_baseline(x_list: list[torch.Tensor], scalar: float,
-                     warmup: int, iters: int) -> float:
+def measure_baseline(x_list: list[torch.Tensor], scalar: float, warmup: int, iters: int) -> float:
     """torch.norm per-tensor baseline (matches golden: FP16/BF16 upcast FP32)."""
     # Pre-upcast so timing reflects the norm computation itself (the golden
     # upcasts before torch.norm; we measure the same compute the golden does).
@@ -116,8 +115,7 @@ def measure_baseline(x_list: list[torch.Tensor], scalar: float,
     return times[len(times) // 2]
 
 
-def measure_ours(x_list: list[torch.Tensor], scalar: float,
-                 warmup: int, iters: int) -> float:
+def measure_ours(x_list: list[torch.Tensor], scalar: float, warmup: int, iters: int) -> float:
     """foreach_norm (host dispatch + kernel) end-to-end."""
     for _ in range(warmup):
         _ = foreach_norm(x_list, scalar)
@@ -138,8 +136,8 @@ def measure_ours(x_list: list[torch.Tensor], scalar: float,
 # Main
 # ---------------------------------------------------------------------------
 
-def run_benchmark(warmup: int, iters: int, label: str, out_path: str,
-                  cases: list[dict] = None):
+
+def run_benchmark(warmup: int, iters: int, label: str, out_path: str, cases: list[dict] = None):
     if cases is None:
         cases = load_cases()
 
@@ -148,8 +146,7 @@ def run_benchmark(warmup: int, iters: int, label: str, out_path: str,
     n_valid = 0
 
     print(f"\n=== ForeachNorm bench (label={label}, warmup={warmup}, iters={iters}) ===")
-    print(f"{'cid':>3} {'shape':>30} {'dtype':>9} {'scalar':>6} {'tl':>3} "
-          f"{'base_us':>10} {'ours_us':>10} {'speedup':>8}")
+    print(f"{'cid':>3} {'shape':>30} {'dtype':>9} {'scalar':>6} {'tl':>3} {'base_us':>10} {'ours_us':>10} {'speedup':>8}")
     print("-" * 90)
 
     for case in cases:
@@ -168,8 +165,7 @@ def run_benchmark(warmup: int, iters: int, label: str, out_path: str,
 
         # Build TensorList
         try:
-            x_list = [gen_tensor(tuple(s), dtype_str, vrange, scalar)
-                      for s in tensorlist_shapes]
+            x_list = [gen_tensor(tuple(s), dtype_str, vrange, scalar) for s in tensorlist_shapes]
         except Exception as e:
             print(f"  case {cid}: input gen failed: {e}")
             results.append({"case_id": cid, "error": str(e)})
@@ -198,20 +194,21 @@ def run_benchmark(warmup: int, iters: int, label: str, out_path: str,
         sum_speedup += speedup
         n_valid += 1
 
-        print(f"{cid:>3} {shape_str:>30} {dtype_str:>9} {str(scalar):>6} {tl_len:>3} "
-              f"{base_us:>10.2f} {our_us:>10.2f} {speedup:>8.3f}")
+        print(f"{cid:>3} {shape_str:>30} {dtype_str:>9} {str(scalar):>6} {tl_len:>3} {base_us:>10.2f} {our_us:>10.2f} {speedup:>8.3f}")
 
-        results.append({
-            "case_id": cid,
-            "shape": tensorlist_shapes,
-            "dtype": dtype_str,
-            "scalar": float(scalar) if not math.isinf(scalar) else str(scalar),
-            "list_len": tl_len,
-            "value_range": list(vrange),
-            "baseline_us": base_us,
-            "ours_us": our_us,
-            "speedup": speedup,
-        })
+        results.append(
+            {
+                "case_id": cid,
+                "shape": tensorlist_shapes,
+                "dtype": dtype_str,
+                "scalar": float(scalar) if not math.isinf(scalar) else str(scalar),
+                "list_len": tl_len,
+                "value_range": list(vrange),
+                "baseline_us": base_us,
+                "ours_us": our_us,
+                "speedup": speedup,
+            }
+        )
 
     avg = sum_speedup / n_valid if n_valid else 0.0
     print("-" * 90)

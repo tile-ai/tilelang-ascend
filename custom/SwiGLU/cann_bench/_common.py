@@ -4,7 +4,6 @@ __version__ = "1.0.0"
 
 import torch
 import tilelang
-from tilelang import language as T
 
 
 PASS_CONFIGS = {

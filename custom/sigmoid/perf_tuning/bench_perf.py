@@ -71,7 +71,7 @@ def run_config(shape, dtype, block, warmup, iters):
     print(f"\n=== shape={shape} dtype={dtype} block={block} ===")
 
     # Compile tilelang kernel
-    print(f"[compile] tilelang kernel ...", flush=True)
+    print("[compile] tilelang kernel ...", flush=True)
     t_compile_start = time.perf_counter()
     kernel_fn = sigmoid(M, N, block_M, block_N, dtype=dtype)
     t_compile = time.perf_counter() - t_compile_start
@@ -164,10 +164,13 @@ def main():
     print(f"{'shape':<20} {'dtype':<10} {'pt_ms':<10} {'tl_ms':<10} {'speedup':<10} {'verdict'}")
     for r in results:
         verdict = "FASTER" if r["speedup"] > 1.03 else ("SLOWER" if r["speedup"] < 0.97 else "PARITY")
-        print(f"{str(r['shape']):<20} {r['dtype']:<10} {r['pt_median_ms']:<10.4f} {r['tl_median_ms']:<10.4f} {r['speedup']:<10.3f} {verdict}")
+        print(
+            f"{str(r['shape']):<20} {r['dtype']:<10} {r['pt_median_ms']:<10.4f} {r['tl_median_ms']:<10.4f} {r['speedup']:<10.3f} {verdict}"
+        )
 
     # Save json summary
     import json
+
     summary = {
         "kernel_type": ktype,
         "warmup": args.warmup,

@@ -45,7 +45,7 @@ CANN_BENCH_CASES = [
     (9, [363, 367, 373], "bfloat16", (-50, 100)),
     (10, [2049, 513], "float16", (-65504, 65504)),
     (11, [3, 7, 13, 4001], "float32", (-88, 88)),
-    (12, [1000003], "bfloat16", (-1, 1)),       # original [-inf,inf] -> [-1,1] for perf
+    (12, [1000003], "bfloat16", (-1, 1)),  # original [-inf,inf] -> [-1,1] for perf
     (13, [11, 13, 17, 67, 67], "float32", (-1, 1)),  # original [nan,nan] -> [-1,1] for perf
     (14, [3, 7, 11, 13, 1009], "float16", (-1, 1)),  # original [0,0] -> [-1,1] for perf
     (15, [512, 2049], "float32", (-0.5, 0.5)),
@@ -111,30 +111,36 @@ def run_bench(label="baseline"):
             kernel_ms = _measure_latency(lambda xx: mish_forward(xx), x)
             baseline_ms = _measure_latency(_torch_mish, x)
             speedup = baseline_ms / kernel_ms if kernel_ms > 0 else 0.0
-            results.append({
-                "case_id": case_id,
-                "shape": shape,
-                "dtype": dtype_str,
-                "numel": numel,
-                "kernel_ms": round(kernel_ms, 4),
-                "baseline_ms": round(baseline_ms, 4),
-                "speedup": round(speedup, 4),
-                "status": "ok",
-            })
-            print(f"[case {case_id:2d}] shape={str(shape):25s} {dtype_str:8s} "
-                  f"kernel={kernel_ms:8.4f}ms baseline={baseline_ms:8.4f}ms "
-                  f"speedup={speedup:.4f}x")
+            results.append(
+                {
+                    "case_id": case_id,
+                    "shape": shape,
+                    "dtype": dtype_str,
+                    "numel": numel,
+                    "kernel_ms": round(kernel_ms, 4),
+                    "baseline_ms": round(baseline_ms, 4),
+                    "speedup": round(speedup, 4),
+                    "status": "ok",
+                }
+            )
+            print(
+                f"[case {case_id:2d}] shape={str(shape):25s} {dtype_str:8s} "
+                f"kernel={kernel_ms:8.4f}ms baseline={baseline_ms:8.4f}ms "
+                f"speedup={speedup:.4f}x"
+            )
         except Exception as e:
-            results.append({
-                "case_id": case_id,
-                "shape": shape,
-                "dtype": dtype_str,
-                "numel": numel,
-                "kernel_ms": None,
-                "baseline_ms": None,
-                "speedup": None,
-                "status": f"error: {type(e).__name__}: {e}",
-            })
+            results.append(
+                {
+                    "case_id": case_id,
+                    "shape": shape,
+                    "dtype": dtype_str,
+                    "numel": numel,
+                    "kernel_ms": None,
+                    "baseline_ms": None,
+                    "speedup": None,
+                    "status": f"error: {type(e).__name__}: {e}",
+                }
+            )
             print(f"[case {case_id:2d}] ERROR: {type(e).__name__}: {e}")
 
     # Summary
@@ -151,8 +157,10 @@ def run_bench(label="baseline"):
         "max_speedup": round(max(speedups), 4) if speedups else 0.0,
         "results": results,
     }
-    print(f"\n[{label}] mean_speedup={mean_speedup:.4f}x "
-          f"(min={min(speedups):.4f}, max={max(speedups):.4f}, {len(ok_results)}/{len(results)} ok)")
+    print(
+        f"\n[{label}] mean_speedup={mean_speedup:.4f}x "
+        f"(min={min(speedups):.4f}, max={max(speedups):.4f}, {len(ok_results)}/{len(results)} ok)"
+    )
     return summary
 
 

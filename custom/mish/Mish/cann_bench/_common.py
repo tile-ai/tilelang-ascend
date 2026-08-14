@@ -10,7 +10,6 @@ __version__ = "1.0.0"
 
 import torch
 import tilelang
-from tilelang import language as T
 
 
 PASS_CONFIGS = {
@@ -25,8 +24,8 @@ ACC_DTYPE = "float32"
 VEC_NUM = 2
 
 # Cast modes for T.tile.cast at GM<->UB boundary.
-CAST_MODE_LOW2HIGH = "CAST_NONE"   # fp16/bf16 -> fp32 (lossless)
-CAST_MODE_HIGH2LOW = "CAST_RINT"   # fp32 -> fp16/bf16 (round to nearest)
+CAST_MODE_LOW2HIGH = "CAST_NONE"  # fp16/bf16 -> fp32 (lossless)
+CAST_MODE_HIGH2LOW = "CAST_RINT"  # fp32 -> fp16/bf16 (round to nearest)
 
 # UB budget (Ascend A2/A3 UB = 196352 B). Kernel allocates 5 fp32 compute
 # buffers + 1 orig-dtype cast-bridge buffer. See mish.py docstring for detail.
