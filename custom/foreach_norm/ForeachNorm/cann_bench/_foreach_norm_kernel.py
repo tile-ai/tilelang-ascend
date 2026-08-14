@@ -34,7 +34,7 @@ adapter combines + finalizes.
 import tilelang
 from tilelang import language as T
 
-from ._common import PASS_CONFIGS, CAST_LOW2HIGH, CAST_HIGH2LOW
+from ._common import PASS_CONFIGS, CAST_LOW2HIGH
 
 
 # ============================================================================

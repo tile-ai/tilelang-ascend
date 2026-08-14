@@ -19,7 +19,6 @@ import math
 import os
 import sys
 import time
-from typing import List, Tuple
 
 import torch
 import yaml
@@ -47,14 +46,14 @@ _TORCH_DTYPE = {
 }
 
 
-def load_cases(path: str = CASES_YAML) -> List[dict]:
+def load_cases(path: str = CASES_YAML) -> list[dict]:
     with open(path) as f:
         data = yaml.safe_load(f)
     return data["cases"]
 
 
-def gen_tensor(shape: Tuple[int, ...], dtype_str: str,
-               vrange: Tuple[float, float], scalar: float) -> torch.Tensor:
+def gen_tensor(shape: tuple[int, ...], dtype_str: str,
+               vrange: tuple[float, float], scalar: float) -> torch.Tensor:
     """Generate one input tensor with controlled value range."""
     dt = _TORCH_DTYPE[dtype_str]
     lo, hi = vrange
@@ -94,7 +93,7 @@ def _sync():
     torch.npu.synchronize()
 
 
-def measure_baseline(x_list: List[torch.Tensor], scalar: float,
+def measure_baseline(x_list: list[torch.Tensor], scalar: float,
                      warmup: int, iters: int) -> float:
     """torch.norm per-tensor baseline (matches golden: FP16/BF16 upcast FP32)."""
     # Pre-upcast so timing reflects the norm computation itself (the golden
@@ -117,7 +116,7 @@ def measure_baseline(x_list: List[torch.Tensor], scalar: float,
     return times[len(times) // 2]
 
 
-def measure_ours(x_list: List[torch.Tensor], scalar: float,
+def measure_ours(x_list: list[torch.Tensor], scalar: float,
                  warmup: int, iters: int) -> float:
     """foreach_norm (host dispatch + kernel) end-to-end."""
     for _ in range(warmup):
@@ -140,7 +139,7 @@ def measure_ours(x_list: List[torch.Tensor], scalar: float,
 # ---------------------------------------------------------------------------
 
 def run_benchmark(warmup: int, iters: int, label: str, out_path: str,
-                  cases: List[dict] = None):
+                  cases: list[dict] = None):
     if cases is None:
         cases = load_cases()
 

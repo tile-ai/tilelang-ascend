@@ -46,9 +46,6 @@ Optimization (Best+List): generalized list kernels for L2/Lp.
   - Linf/Lneg-inf still use _direct_norm (CANN native amax/amin); L0 excluded.
 """
 
-import math
-from typing import List
-
 import tilelang
 from tilelang import language as T
 import torch
@@ -1838,10 +1835,8 @@ def _use_list_kernel(scalar: float, batch: int, single_core_load: int) -> bool:
     # L0/Linf/Lneg-inf don't need list kernels
     if scalar == 0.0:
         return False
-    if scalar == float("inf") or scalar == float("-inf"):
-        return False
     # L1 (scalar==1.0), L2 (scalar==2.0), and general Lp (scalar>0 or scalar<0)
-    return True
+    return scalar not in (float("inf"), float("-inf"))
 
 
 def _get_kernel_pipelined(scalar: float, batch: int, n: int, block_n: int,
@@ -2061,7 +2056,7 @@ def _finalize_batched(partial: torch.Tensor, scalar: float,
     return result.to(out_dtype)
 
 
-def foreach_norm(x: List[torch.Tensor], scalar: float) -> List[torch.Tensor]:
+def foreach_norm(x: list[torch.Tensor], scalar: float) -> list[torch.Tensor]:
     """Compute p-norm of each tensor in the TensorList (multi-core, batched).
 
     Tensors with the same flattened N are batched into a single kernel launch
@@ -2101,7 +2096,7 @@ def foreach_norm(x: List[torch.Tensor], scalar: float) -> List[torch.Tensor]:
         n = t.view(-1).shape[0]
         groups.setdefault(n, []).append(idx)
 
-    results: List[torch.Tensor] = [None] * len(x)  # type: ignore
+    results: list[torch.Tensor] = [None] * len(x)  # type: ignore
 
     for n, indices in groups.items():
         batch = len(indices)

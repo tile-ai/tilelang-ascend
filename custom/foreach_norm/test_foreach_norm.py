@@ -1,10 +1,8 @@
 """ForeachNorm layered tests: L0/L1/L2/Boundary + main(--level)."""
 
 import argparse
-import math
 import os
 import sys
-from typing import List
 
 import tilelang
 import torch
@@ -24,7 +22,7 @@ COVERAGE_CATEGORY = "Reduction"
 # Golden reference (matches cann-bench golden.py)
 # ============================================================================
 
-def golden_foreach_norm(x: List[torch.Tensor], scalar: float) -> List[torch.Tensor]:
+def golden_foreach_norm(x: list[torch.Tensor], scalar: float) -> list[torch.Tensor]:
     """PyTorch golden: torch.norm(tensor, p=scalar) with FP16/BF16 upcast."""
     input_dtype = x[0].dtype if x else torch.float32
     if input_dtype in (torch.float16, torch.bfloat16):

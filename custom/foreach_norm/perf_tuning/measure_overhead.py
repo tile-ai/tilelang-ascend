@@ -1,5 +1,5 @@
 """Measure TileLang kernel launch overhead vs CANN native op."""
-import os, sys, time
+import time
 import torch
 import tilelang
 from tilelang import language as T
@@ -41,8 +41,8 @@ def main():
 
     # warmup
     for _ in range(10):
-        y = k1(x)
-        y2 = k2(x)
+        k1(x)
+        k2(x)
     torch.npu.synchronize()
 
     # Measure trivial 1-block TileLang kernel
@@ -50,7 +50,7 @@ def main():
     for _ in range(50):
         torch.npu.synchronize()
         t0 = time.perf_counter()
-        y = k1(x)
+        k1(x)
         torch.npu.synchronize()
         t1 = time.perf_counter()
         times.append((t1 - t0) * 1e6)
@@ -62,7 +62,7 @@ def main():
     for _ in range(50):
         torch.npu.synchronize()
         t0 = time.perf_counter()
-        y2 = k2(x)
+        k2(x)
         torch.npu.synchronize()
         t1 = time.perf_counter()
         times.append((t1 - t0) * 1e6)
