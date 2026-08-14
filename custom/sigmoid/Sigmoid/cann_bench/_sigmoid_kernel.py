@@ -697,7 +697,9 @@ def _sigmoid_kernel_recip(M, N, block_M, block_N, dtype="float16"):
     return main
 
 
-def _sigmoid_kernel(M, N, block_M, block_N, dtype="float16", use_exp_div=False, use_bf16_clamp_exp_div=False, use_fp32_clamp_exp_div=False):
+def _sigmoid_kernel(
+    M, N, block_M, block_N, dtype="float16", use_exp_div=False, use_bf16_clamp_exp_div=False, use_fp32_clamp_exp_div=False, use_recip=False
+):
     """Dispatch to Expert (M>=2 & block_M>=2), Developer, or bf16 cast kernel.
 
     Expert requires block_M >= 2 for VEC_NUM=2 (dual vector sub-core).
@@ -727,23 +729,27 @@ def _sigmoid_kernel(M, N, block_M, block_N, dtype="float16", use_exp_div=False, 
     if dtype == "bfloat16" and M == 1023 and N == 1023:
         return _sigmoid_kernel_bf16_linear(M, N, block_M, block_N, dtype=dtype)
 
-    # bfloat16: exp_div for safe ranges, maxmin+exp_div for large ranges
+    # bfloat16: exp_div for safe ranges, recip for large ranges (handles inf)
     if dtype == "bfloat16":
         if use_exp_div:
             return _sigmoid_kernel_bf16_exp_div(M, N, block_M, block_N, dtype=dtype)
+        if use_recip:
+            return _sigmoid_kernel_recip(M, N, block_M, block_N, dtype=dtype)
         if use_bf16_clamp_exp_div:
             return _sigmoid_kernel_bf16_maxmin_exp_div(M, N, block_M, block_N, dtype=dtype)
         return _sigmoid_kernel_bf16(M, N, block_M, block_N, dtype=dtype)
 
     # exp_div path: safe value ranges only (saves 2 V ops vs T.tile.sigmoid)
     if use_exp_div:
-        if dtype == "bfloat16":
-            return _sigmoid_kernel_bf16_exp_div(M, N, block_M, block_N, dtype=dtype)
         if M >= 2 and block_M >= 2:
             return _sigmoid_kernel_expert_exp_div(M, N, block_M, block_N, dtype=dtype)
         return _sigmoid_kernel_exp_div(M, N, block_M, block_N, dtype=dtype)
 
-    # fp32 large-range: clamp±87+exp_div (4 V ops, saves Muls+Duplicate)
+    # recip path: for large-range fp16/bf16 (handles inf, 6 V ops vs 7 tile_sig)
+    if use_recip:
+        return _sigmoid_kernel_recip(M, N, block_M, block_N, dtype=dtype)
+
+    # fp32 large-range: clamp±87+exp_div
     if use_fp32_clamp_exp_div:
         return _sigmoid_kernel_fp32_clamp_exp_div(M, N, block_M, block_N, dtype=dtype)
 
