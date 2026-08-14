@@ -559,7 +559,7 @@ def run_msprof():
         with open(target_path, "w") as f:
             f.write(_MSPROF_TARGET_SCRIPT)
         result = subprocess.run(cmd, cwd=op_dir, timeout=600)
-        success = (result.returncode == 0)
+        success = result.returncode == 0
         if not success:
             print(f"[msprof] msprof exited with code {result.returncode} (may still have produced data)")
     except FileNotFoundError:
