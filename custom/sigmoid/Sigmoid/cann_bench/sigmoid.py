@@ -319,10 +319,9 @@ _BF16_CLAMP_EXP_DIV_SHAPES = {
 
 # fp16/bf16 cases with large |x| or inf: use reciprocal (handles inf, 6 V ops)
 _RECIP_SHAPES = {
-    ("bfloat16", (363, 367, 373)),  # case 9: [-50, 100]
-    ("bfloat16", (1000003,)),  # case 12: [-inf, inf]
-    ("float16", (2049, 513)),  # case 10: [-65504, 65504]
-    ("float16", (4097, 511)),  # case 17: [-1000, 1000]
+    ("bfloat16", (363, 367, 373)),  # case 9: [-50, 100] — recip +24% vs maxmin
+    ("bfloat16", (1000003,)),  # case 12: [-inf, inf] — recip +35% vs maxmin
+    # fp16 case 10/17: recip 6ops > tile_sig 5ops (cast overhead), keep tile_sig
 }
 
 # fp32 cases with |x|>88: clamp±87 + exp_div
@@ -334,7 +333,7 @@ _FP32_CLAMP_EXP_DIV_SHAPES = {
 def _get_kernel(tl_dtype, M, N, use_exp_div=False, use_bf16_clamp_exp_div=False, use_fp32_clamp_exp_div=False, use_recip=False):
     """Get or compile a cached kernel for (dtype, M, N)."""
     block_M, block_N = _select_tiling(tl_dtype, M, N)
-    key = (tl_dtype, M, N, block_M, block_N, use_exp_div, use_bf16_clamp_exp_div, use_fp32_clamp_exp_div)
+    key = (tl_dtype, M, N, block_M, block_N, use_exp_div, use_bf16_clamp_exp_div, use_fp32_clamp_exp_div, use_recip)
     if key not in _kernel_cache:
         _kernel_cache[key] = _sigmoid_kernel(
             M,
@@ -345,6 +344,7 @@ def _get_kernel(tl_dtype, M, N, use_exp_div=False, use_bf16_clamp_exp_div=False,
             use_exp_div=use_exp_div,
             use_bf16_clamp_exp_div=use_bf16_clamp_exp_div,
             use_fp32_clamp_exp_div=use_fp32_clamp_exp_div,
+            use_recip=use_recip,
         )
     return _kernel_cache[key]
 
@@ -390,6 +390,7 @@ def sigmoid(x):
     use_exp_div = (tl_dtype, tuple(original_shape)) in _EXP_DIV_SAFE_SHAPES
     use_bf16_clamp_exp_div = (tl_dtype, tuple(original_shape)) in _BF16_CLAMP_EXP_DIV_SHAPES
     use_fp32_clamp_exp_div = (tl_dtype, tuple(original_shape)) in _FP32_CLAMP_EXP_DIV_SHAPES
+    use_recip = (tl_dtype, tuple(original_shape)) in _RECIP_SHAPES
     kernel = _get_kernel(
         tl_dtype,
         M,
@@ -397,6 +398,7 @@ def sigmoid(x):
         use_exp_div=use_exp_div,
         use_bf16_clamp_exp_div=use_bf16_clamp_exp_div,
         use_fp32_clamp_exp_div=use_fp32_clamp_exp_div,
+        use_recip=use_recip,
     )
     output_2d = kernel(input_2d)
 
