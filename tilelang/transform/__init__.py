@@ -392,6 +392,16 @@ def AscendSyncInsertVS(target: Target, platform: str):
     return _ffi_api.AscendSyncInsertVS(target, platform)  # type: ignore
 
 
+def AscendVectorInstructionSelection(target: Target, platform: str):
+    """Select physical Ascend Vector terminals and their mask contracts."""
+    return _ffi_api.AscendVectorInstructionSelection(target, platform)  # type: ignore
+
+
+def AscendVectorMaskLegalize(target: Target, platform: str):
+    """Reuse compatible Ascend Vector mask state before code generation."""
+    return _ffi_api.AscendVectorMaskLegalize(target, platform)  # type: ignore
+
+
 def CombineCV():
     """CombineCV
 
