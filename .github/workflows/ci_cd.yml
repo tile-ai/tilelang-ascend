@@ -722,7 +722,7 @@ jobs:
                 OPERATOR_TESTS=()
                 while IFS= read -r operator_test; do
                   [ -n \"\$operator_test\" ] && OPERATOR_TESTS+=(\"../\$operator_test\")
-                done < <(python ../scripts/ci/resolve_operator_tests.py list-tests \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG)
+                done < <(python ../scripts/ci/resolve_operator_tests.py list-tests \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG --repo-root ..)
                 if [ \${#OPERATOR_TESTS[@]} -gt 0 ]; then
                   echo 'Running operator tests: '\${OPERATOR_TESTS[*]}
                   pytest --forked \"\${OPERATOR_TESTS[@]}\" -v -n 8 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee -a test_output.log

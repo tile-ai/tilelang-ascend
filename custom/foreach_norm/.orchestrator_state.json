@@ -1,0 +1,43 @@
+{
+  "operator_name": "foreach_norm",
+  "env_check_passed": true,
+  "current_stage": 3,
+  "stage_status": {"1": "completed", "2": "completed", "3": "completed"},
+  "perf_tuning_requested": "yes",
+  "perf_target": {"type": "baseline_compare", "target_speedup": 0.6, "current_geo_mean": 0.7534},
+  "perf_iteration": {
+    "count": 18,
+    "last_improvement": 0.7534,
+    "consecutive_no_improvement": 0
+  },
+  "cann_bench_eval": {
+    "round5": {
+      "geometric_mean": 0.7534,
+      "overall_score": 69.48,
+      "passed_cases": "20/20",
+      "anti_cheat_failed_cases": 0,
+      "status": "passed"
+    }
+  },
+  "pr_status": {
+    "pr_number": 1594,
+    "url": "https://github.com/tile-ai/tilelang-ascend/pull/1594",
+    "branch": "foreach_norm",
+    "commits": [
+      {
+        "hash": "a7a66e59",
+        "message": "fix: pass --repo-root to resolve_operator_tests.py in bench_test.sh",
+        "status": "pushed",
+        "timestamp": "2026-08-14T05:04:36Z",
+        "fixes_cummin_error": true
+      }
+    ]
+  },
+  "trace_generation": {
+    "status": "completed_with_fix",
+    "timeline_detail_collected": true,
+    "fix_applied": "used launch_cores=1 to avoid TimelineDetail collection failure"
+  },
+  "final_state": "CI_FIX_SUBMITTED",
+  "last_updated": "2026-08-14T05:04:36Z"
+}

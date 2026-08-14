@@ -395,7 +395,7 @@ if [ "$ENABLE_COVERAGE" = true ] || [ "$ENABLE_CPP_COVERAGE" = true ]; then
     if [ -f "$OPERATOR_TEST_RESOLVER" ]; then
         while IFS= read -r operator_test; do
             [ -n "$operator_test" ] && OPERATOR_TESTS+=("${PROJECT_ROOT}/$operator_test")
-        done < <(python "$OPERATOR_TEST_RESOLVER" list-tests "${OPERATOR_SCOPE_ARGS[@]}")
+        done < <(python "$OPERATOR_TEST_RESOLVER" --repo-root "$PROJECT_ROOT" list-tests "${OPERATOR_SCOPE_ARGS[@]}")
     fi
     if [ ${#OPERATOR_TESTS[@]} -gt 0 ]; then
         echo -e "\n====================================="

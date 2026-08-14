@@ -1,0 +1,2 @@
+/mnt/workspace/gitCode/cann/tilelang-ascend/examples/cann-bench/foreach_norm/output/OPPROF_20260813152110_XFIGEGBXQDWNDDYG/device0/main_kernel/0/dump
+main_kernel

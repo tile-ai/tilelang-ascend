@@ -1,0 +1,13 @@
+operator:
+  name: Sigmoid
+  category: Activation
+  formula: |
+    sigmoid(x) = 1 / (1 + exp(-x))
+  attrs: []                              # sigmoid 无影响计算路径的属性
+  inputs:
+    - name: x
+      dtype: [float16, float32]          # 与 DESIGN.md §9.3 精度表 dtype 行一致（全集）
+  outputs:
+    - name: y
+      dtype: [float16, float32]          # 输出 dtype 与输入一致
+  schema: sigmoid(Tensor x) -> Tensor y

@@ -1,0 +1,10 @@
+Op Name=main_kernel
+Block Dim=512
+Run Soc Version=Ascend910_9362
+Device Id=0
+Pid=1343046
+Current Freq=1650
+Rated Freq=1650
+Is MC2=0
+Is Lccl=0
+Has Simt=0

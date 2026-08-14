@@ -1,0 +1,24 @@
+{
+  "operator_name": "sigmoid",
+  "env_check_passed": true,
+  "current_stage": 3,
+  "stage_status": {"1": "completed", "2": "completed", "3": "in_progress"},
+  "stage_retry_count": {"1": 0, "2": 0, "3": 0},
+  "perf_tuning_requested": "yes",
+  "perf_target": {"type": "baseline_compare", "target_speedup": 0.6, "current_geo_mean": 0.5340, "gap": "+12%"},
+  "perf_iteration": {
+    "count": 2,
+    "current_cann_bench_geo_mean": 0.5340,
+    "bottleneck": "bf16 kernel uses Developer single buffer (no MTE2/V pipeline overlap); 6 bf16 cases speedup < 0.5",
+    "planned_direction": "bf16 Expert double buffer pipeline"
+  },
+  "cann_bench_eval": {
+    "result_file": "custom/sigmoid/Sigmoid_best/job_6636823abb97_results.json",
+    "passed_cases": "20/20",
+    "geometric_mean_speedup": 0.5340,
+    "overall_score": 63.69,
+    "target_met": false
+  },
+  "final_state": "IN_PROGRESS_ROUND2",
+  "last_updated": "2026-08-13T10:00:00Z"
+}

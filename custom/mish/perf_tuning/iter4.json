@@ -1,0 +1,284 @@
+{
+  "label": "iter4",
+  "timestamp": "2026-08-10T03:51:32Z",
+  "total_cases": 20,
+  "ok_cases": 20,
+  "mean_speedup": 0.3965,
+  "min_speedup": 0.2187,
+  "max_speedup": 0.943,
+  "results": [
+    {
+      "case_id": 1,
+      "shape": [
+        1024,
+        1024
+      ],
+      "dtype": "float16",
+      "numel": 1048576,
+      "kernel_ms": 0.2256,
+      "baseline_ms": 0.0554,
+      "speedup": 0.2454,
+      "status": "ok"
+    },
+    {
+      "case_id": 2,
+      "shape": [
+        2048,
+        2048
+      ],
+      "dtype": "float32",
+      "numel": 4194304,
+      "kernel_ms": 0.2378,
+      "baseline_ms": 0.09,
+      "speedup": 0.3783,
+      "status": "ok"
+    },
+    {
+      "case_id": 3,
+      "shape": [
+        4096,
+        4096
+      ],
+      "dtype": "bfloat16",
+      "numel": 16777216,
+      "kernel_ms": 0.373,
+      "baseline_ms": 0.2495,
+      "speedup": 0.6688,
+      "status": "ok"
+    },
+    {
+      "case_id": 4,
+      "shape": [
+        8192,
+        8192
+      ],
+      "dtype": "float16",
+      "numel": 67108864,
+      "kernel_ms": 0.9659,
+      "baseline_ms": 0.9108,
+      "speedup": 0.943,
+      "status": "ok"
+    },
+    {
+      "case_id": 5,
+      "shape": [
+        8192,
+        8192
+      ],
+      "dtype": "float32",
+      "numel": 67108864,
+      "kernel_ms": 0.9433,
+      "baseline_ms": 0.8637,
+      "speedup": 0.9157,
+      "status": "ok"
+    },
+    {
+      "case_id": 6,
+      "shape": [
+        1023,
+        1023
+      ],
+      "dtype": "bfloat16",
+      "numel": 1046529,
+      "kernel_ms": 0.218,
+      "baseline_ms": 0.0521,
+      "speedup": 0.239,
+      "status": "ok"
+    },
+    {
+      "case_id": 7,
+      "shape": [
+        1009,
+        1021
+      ],
+      "dtype": "float16",
+      "numel": 1030189,
+      "kernel_ms": 0.2171,
+      "baseline_ms": 0.0528,
+      "speedup": 0.2432,
+      "status": "ok"
+    },
+    {
+      "case_id": 8,
+      "shape": [
+        1537,
+        769
+      ],
+      "dtype": "float32",
+      "numel": 1181953,
+      "kernel_ms": 0.2193,
+      "baseline_ms": 0.0531,
+      "speedup": 0.2422,
+      "status": "ok"
+    },
+    {
+      "case_id": 9,
+      "shape": [
+        363,
+        367,
+        373
+      ],
+      "dtype": "bfloat16",
+      "numel": 49691433,
+      "kernel_ms": 1.0156,
+      "baseline_ms": 0.6907,
+      "speedup": 0.6801,
+      "status": "ok"
+    },
+    {
+      "case_id": 10,
+      "shape": [
+        2049,
+        513
+      ],
+      "dtype": "float16",
+      "numel": 1051137,
+      "kernel_ms": 0.2268,
+      "baseline_ms": 0.0538,
+      "speedup": 0.2371,
+      "status": "ok"
+    },
+    {
+      "case_id": 11,
+      "shape": [
+        3,
+        7,
+        13,
+        4001
+      ],
+      "dtype": "float32",
+      "numel": 1092273,
+      "kernel_ms": 0.2332,
+      "baseline_ms": 0.0541,
+      "speedup": 0.2319,
+      "status": "ok"
+    },
+    {
+      "case_id": 12,
+      "shape": [
+        1000003
+      ],
+      "dtype": "bfloat16",
+      "numel": 1000003,
+      "kernel_ms": 0.2451,
+      "baseline_ms": 0.0536,
+      "speedup": 0.2187,
+      "status": "ok"
+    },
+    {
+      "case_id": 13,
+      "shape": [
+        11,
+        13,
+        17,
+        67,
+        67
+      ],
+      "dtype": "float32",
+      "numel": 10912759,
+      "kernel_ms": 0.3682,
+      "baseline_ms": 0.1702,
+      "speedup": 0.4623,
+      "status": "ok"
+    },
+    {
+      "case_id": 14,
+      "shape": [
+        3,
+        7,
+        11,
+        13,
+        1009
+      ],
+      "dtype": "float16",
+      "numel": 3030027,
+      "kernel_ms": 0.2416,
+      "baseline_ms": 0.0778,
+      "speedup": 0.3222,
+      "status": "ok"
+    },
+    {
+      "case_id": 15,
+      "shape": [
+        512,
+        2049
+      ],
+      "dtype": "float32",
+      "numel": 1049088,
+      "kernel_ms": 0.2213,
+      "baseline_ms": 0.0522,
+      "speedup": 0.2357,
+      "status": "ok"
+    },
+    {
+      "case_id": 16,
+      "shape": [
+        255,
+        8193
+      ],
+      "dtype": "bfloat16",
+      "numel": 2089215,
+      "kernel_ms": 0.2304,
+      "baseline_ms": 0.0659,
+      "speedup": 0.286,
+      "status": "ok"
+    },
+    {
+      "case_id": 17,
+      "shape": [
+        4097,
+        511
+      ],
+      "dtype": "float16",
+      "numel": 2093567,
+      "kernel_ms": 0.2282,
+      "baseline_ms": 0.0685,
+      "speedup": 0.3004,
+      "status": "ok"
+    },
+    {
+      "case_id": 18,
+      "shape": [
+        2,
+        511,
+        2049
+      ],
+      "dtype": "float32",
+      "numel": 2094078,
+      "kernel_ms": 0.2291,
+      "baseline_ms": 0.063,
+      "speedup": 0.2749,
+      "status": "ok"
+    },
+    {
+      "case_id": 19,
+      "shape": [
+        4,
+        255,
+        2049
+      ],
+      "dtype": "bfloat16",
+      "numel": 2089980,
+      "kernel_ms": 0.2299,
+      "baseline_ms": 0.0654,
+      "speedup": 0.2845,
+      "status": "ok"
+    },
+    {
+      "case_id": 20,
+      "shape": [
+        2,
+        3,
+        17,
+        1024,
+        101
+      ],
+      "dtype": "float32",
+      "numel": 10549248,
+      "kernel_ms": 0.3102,
+      "baseline_ms": 0.1614,
+      "speedup": 0.5202,
+      "status": "ok"
+    }
+  ]
+}

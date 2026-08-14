@@ -1,0 +1,52 @@
+{
+  "iteration": 1,
+  "timestamp": "2026-08-03T15:35:00Z",
+  "kernel_file": "custom/sigmoid/sigmoid.py",
+  "kernel_description": "T.tile.sigmoid one-step primitive, Developer mode, block_M=128 block_N=128 VEC_NUM=2, AUTO_CV_COMBINE+AUTO_SYNC+MEMORY_PLANNING on",
+  "programming_mode": "Developer",
+  "test_shapes": [
+    {"shape": [1024, 8192], "dtype": "float16", "block": [128, 128], "role": "primary"},
+    {"shape": [512, 512], "dtype": "float32", "block": [128, 128], "role": "secondary"}
+  ],
+  "precision_status": "pass (Stage 2 [PRECISION_PASS], DESIGN.md §9.3 thresholds)",
+  "baseline_perf": {
+    "float16_1024x8192": {
+      "torch_sigmoid_ms": 0.0556,
+      "tilelang_kernel_ms": 0.2147,
+      "speedup_pt_over_tl": 0.259,
+      "tl_throughput_gbs": 156.30,
+      "pt_throughput_gbs": 602.99,
+      "verdict": "kernel 3.86x SLOWER than torch.sigmoid"
+    },
+    "float32_512x512": {
+      "torch_sigmoid_ms": 0.0383,
+      "tilelang_kernel_ms": 0.1895,
+      "speedup_pt_over_tl": 0.202,
+      "tl_throughput_gbs": 11.07,
+      "pt_throughput_gbs": 54.72,
+      "verdict": "kernel 4.95x SLOWER than torch.sigmoid"
+    }
+  },
+  "kernel_type_diagnosis": {
+    "declared": "KERNEL_TYPE_MIX_AIC_1_2",
+    "actual_compute": "all in `if ASCEND_IS_AIV { ... }` blocks (pure Vector)",
+    "aic_role": "empty Cube core auto-added by AUTO_CV_COMBINE (no MMA/Conv compute)",
+    "antipattern_hit": "AIC/AIV 混合算子未开启 CV overlap is N/A; but 纯 Vector 算子 AUTO_CV_COMBINE 误分核风险 checklist matches (pure Vector + AUTO_CV_COMBINE), need to verify alloc_var cross-core"
+  },
+  "warmup": 30,
+  "iters": 100,
+  "noise_threshold_pct": 3.0,
+  "candidate_perf_iter1": {
+    "optimization": "[#1] close AUTO_CV_COMBINE + [#3] Fixed Core (T.serial, 24-core launch)",
+    "bench_fp16_1024x8192_ms": 0.2153,
+    "bench_fp32_512x512_ms": 0.1923,
+    "msprof_npu_task_duration_us": 53.6,
+    "msprof_block_dim": 24,
+    "msprof_mix_block_dim": 48,
+    "improvement_bench_pct": 0.3,
+    "improvement_msprof_npu_pct": -25.5,
+    "precision": "pass",
+    "adopted": true,
+    "adopt_basis": "msprof kernel-level improvement -25.5% > 3% threshold; bench end-to-end masked by host runtime overhead (~160 us)"
+  }
+}

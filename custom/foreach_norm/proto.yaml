@@ -1,0 +1,37 @@
+# ----------------------------------------------------------------------------
+# ForeachNorm 算子接口规格（覆盖门禁 coverage_check.py --proto 用）
+# dtype 全集取自 DESIGN.md §9.3 精度表（float16 + float32 + bfloat16）
+# attr 取自 §4/§1（scalar 范数阶数），机械派生
+# ----------------------------------------------------------------------------
+
+operator:
+  name: ForeachNorm
+  category: Reduction
+  difficulty: L1
+  formula: |
+    y = (sum |x_i|^p)^(1/p)
+  description: 对输入张量列表（TensorList）的每个张量独立求 p 范数
+  shape_support: 输入 ND 格式（host 侧 flatten 为 1D 传给 kernel）
+  attrs:
+    - name: scalar
+      type: Float
+      default: 2.0
+      description: 范数阶数（支持 0/1/2/inf/-inf/负阶/分数阶，范围 -1024.0~1024.0）
+      required: true
+  inputs:
+    - name: x
+      description: 输入张量列表（TensorList），各 tensor dtype 须一致
+      dtype:
+        - float16
+        - float32
+        - bfloat16
+      is_list: true
+  outputs:
+    - name: y
+      description: 输出张量列表，每个元素为标量张量（范数结果），dtype 与对应输入一致
+      dtype:
+        - float16
+        - float32
+        - bfloat16
+      is_list: true
+  schema: foreach_norm(Tensor[] x, float scalar) -> Tensor[] y

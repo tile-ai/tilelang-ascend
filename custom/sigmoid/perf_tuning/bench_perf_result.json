@@ -1,0 +1,43 @@
+{
+  "kernel_type": "UNKNOWN",
+  "warmup": 30,
+  "iters": 100,
+  "results": [
+    {
+      "shape": [
+        1024,
+        8192
+      ],
+      "dtype": "float16",
+      "block": [
+        128,
+        128
+      ],
+      "tl_median_ms": 0.2153380773961544,
+      "tl_mean_ms": 0.21992858266457915,
+      "pt_median_ms": 0.054527074098587036,
+      "pt_mean_ms": 0.05523471627384424,
+      "speedup": 0.25321612767199714,
+      "tl_throughput_gbs": 155.82210264778388,
+      "pt_throughput_gbs": 615.3719515434169
+    },
+    {
+      "shape": [
+        512,
+        512
+      ],
+      "dtype": "float32",
+      "block": [
+        128,
+        128
+      ],
+      "tl_median_ms": 0.1923474483191967,
+      "tl_mean_ms": 0.19638794008642435,
+      "pt_median_ms": 0.03985653165727854,
+      "pt_mean_ms": 0.03981421934440732,
+      "speedup": 0.20721112760039026,
+      "tl_throughput_gbs": 10.902936422217667,
+      "pt_throughput_gbs": 52.61752372316675
+    }
+  ]
+}

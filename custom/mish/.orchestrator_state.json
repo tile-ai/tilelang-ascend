@@ -1,0 +1,89 @@
+{
+  "operator_name": "mish",
+  "env_check_passed": true,
+  "current_stage": 3,
+  "stage_status": {"1": "completed", "2": "completed", "3": "completed"},
+  "stage_retry_count": {"1": 0, "2": 0, "3": 0},
+  "stage2_failure_breakdown": {"runtime_fail": 0, "precision_fail": 0},
+  "design_revision_count": 0,
+  "perf_tuning_requested": "yes",
+  "perf_target": {
+    "type": "baseline_compare",
+    "baseline": "torch.nn.functional.mish",
+    "target_speedup": null,
+    "test_shapes": "cann-bench 20 standard cases",
+    "noise_threshold": 0.03,
+    "max_iterations": 15
+  },
+  "perf_iteration": {
+    "count": 4,
+    "last_improvement": 0.3916,
+    "consecutive_no_improvement": 2,
+    "baseline_speedup": 0.3733,
+    "final_speedup": 0.3916,
+    "improvement_pct": 4.9
+  },
+  "final_status": "SUCCESS",
+  "stop_reason": "连续 2 次无提升(iter3+iter4 回滚，均 < 3% 噪声阈值) + 优化空间耗尽(kernel 侧 12 步 log-sum-exp 不可简化，host 侧 smart-flatten + 动态 tiling + kernel cache 已做完)",
+  "perf_optimization_rounds": {
+    "iter1": "adopted (host smart-flatten + 动态 tiling, mean_speedup 0.3869, +3.6%)",
+    "iter2": "adopted (smart-flatten 用 128×128 评估, mean_speedup 0.3928, +5.2%, 最终版本)",
+    "iter3": "rolled_back (T.tile.max→relu 融合, 噪声范围内无法确认提升)",
+    "iter4": "rolled_back (手动 kernel cache, tilelang JIT 已缓存, +0.9% < 3%)"
+  },
+  "official_cannbench_result": {
+    "result_file": "custom/mish/Mish/job_13c4d503c5c6_results.json",
+    "eval_code": "cann_final_eval_20260810_062110",
+    "timestamp": "2026-08-10T06:21:10.560366",
+    "device": "npu:2,3",
+    "hardware": "910c",
+    "environment": {
+      "npu": "Ascend910_9362 × 2",
+      "cann": "9.1.0",
+      "pytorch": "2.9.0+cpu",
+      "pytorch_npu": "2.9.0",
+      "python": "3.11.15"
+    },
+    "total_cases": 20,
+    "passed_cases": 20,
+    "failed_cases": 0,
+    "anti_cheat_failed_cases": 0,
+    "pass_rate": 1.0,
+    "genuine_pass_rate": 1.0,
+    "overall_score": 67.9119,
+    "score_breakdown": {
+      "compilation_score": 20,
+      "compile_runtime_score": 20,
+      "function_score": 30,
+      "performance_score": 17.9119
+    },
+    "geometric_mean_speedup": 0.6045,
+    "geometric_mean_speedup_vs_hw": 0.0830,
+    "result_stage": "final",
+    "result_contract_valid": true,
+    "target_met": true,
+    "case_speedups": {
+      "case_1_1024x1024_fp16": 0.6762,
+      "case_2_2048x2048_fp32": 0.8335,
+      "case_3_4096x4096_bf16": 0.8113,
+      "case_4_8192x8192_fp16": 0.8178,
+      "case_5_8192x8192_fp32": 0.8037,
+      "case_6_1023x1023_bf16": 0.6251,
+      "case_7_1009x1021_fp16": 0.4693,
+      "case_8_1537x769_fp32": 0.4976,
+      "case_9_363x367x373_bf16": 0.5672,
+      "case_10_2049x513_fp16": 0.4322,
+      "case_11_3x7x13x4001_fp32": 0.4470,
+      "case_12_1000003_bf16": 0.5249,
+      "case_13_11x13x17x67x67_fp32": 0.5041,
+      "case_14_3x7x11x13x1009_fp16": 0.5515,
+      "case_15_512x2049_fp32": 0.5341,
+      "case_16_255x8193_bf16": 0.5936,
+      "case_17_4097x511_fp16": 0.5396,
+      "case_18_2x511x2049_fp32": 0.4911,
+      "case_19_4x255x2049_bf16": 0.5898,
+      "case_20_2x3x17x1024x101_fp32": 0.7807
+    }
+  },
+  "last_updated": "2026-08-10T06:21:10Z"
+}

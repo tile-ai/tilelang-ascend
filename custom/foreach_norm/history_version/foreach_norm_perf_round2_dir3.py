@@ -36,16 +36,9 @@ Optimization (Round 2 Direction 2): VEC_NUM=2 dual vector sub-core.
     halved buffer sizes, GM read offset by vid*half_block, per-vid Partial
     output (batch, launch_cores, VEC_NUM), host merges via dim=[1,2].
   - Large-shape cases (scl>=20) benefit most: case 9 -23%, case 20 -19%.
-
-Optimization (Best+List): generalized list kernels for L2/Lp.
-  - Extended the L1 list kernel pattern (multi-input single-launch, no stack)
-    to L2 (l2_norm_kernel_list2/3/4) and general Lp (lp_norm_kernel_list2/3/4).
-  - _use_list_kernel replaces _use_l1_list_kernel: routes batch=2/3/4 + scl<20
-    to specialized list kernels for L1/L2/Lp, eliminating torch.stack overhead
-    on the 5 remaining multi-tensor cases (cann-bench case 11/15/18/19).
-  - Linf/Lneg-inf still use _direct_norm (CANN native amax/amin); L0 excluded.
 """
 
+import math
 from typing import List
 
 import tilelang
@@ -63,7 +56,7 @@ CAST_HIGH2LOW = "CAST_RINT"
 
 DEFAULT_BLOCK_N = 8192
 CORE_NUM = 24  # Ascend910B3 physical AI Core count
-VEC_NUM = 2  # Ascend910B3: each AIV core has 2 vector sub-cores (vid=0,1).
+VEC_NUM = 2    # Ascend910B3: each AIV core has 2 vector sub-cores (vid=0,1).
 
 
 # ============================================================================
@@ -74,7 +67,6 @@ VEC_NUM = 2  # Ascend910B3: each AIV core has 2 vector sub-cores (vid=0,1).
 # Output Partial: (batch, launch_cores) FP32 — per-core partial per tensor.
 # Host combines + finalizes.
 # ============================================================================
-
 
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def l2_norm_kernel(batch, N, block_N, launch_cores, dtype="float16"):
@@ -103,7 +95,8 @@ def l2_norm_kernel(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.serial(single_core_load):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
+                               pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
@@ -143,7 +136,8 @@ def l1_norm_kernel(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.serial(single_core_load):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
+                               pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
@@ -183,7 +177,8 @@ def linf_norm_kernel(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.serial(single_core_load):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
+                               pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
@@ -223,7 +218,8 @@ def lneg_inf_norm_kernel(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.serial(single_core_load):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
+                               pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
@@ -264,14 +260,16 @@ def l0_count_kernel(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.serial(single_core_load):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
+                               pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
                             T.copy(x_ub, x_cal)
                         T.tile.fill(one_ub, 1.0)
                         T.tile.compare(mask_ub, x_cal, 0.0, "NE")
-                        T.tile.select(one_ub, mask_ub, one_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
+                        T.tile.select(one_ub, mask_ub, one_ub, 0.0,
+                                      "VSEL_TENSOR_SCALAR_MODE")
                         T.reduce_sum(one_ub, tile_count_ub, dim=-1)
                         T.tile.add(acc_ub, acc_ub, tile_count_ub)
                 T.copy(acc_ub, Partial[t, cid, vid])
@@ -312,26 +310,16 @@ def lp_norm_kernel(batch, N, block_N, scalar, launch_cores, dtype="float16"):
                 for k in T.serial(single_core_load):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
+                               pad_value=pad_val)
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
                             T.copy(x_ub, x_cal)
                         T.tile.abs(abs_ub, x_cal)
-                        if scalar == 3.0:
-                            T.tile.mul(x_cal, abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, x_cal, abs_ub)
-                        elif scalar == 4.0:
-                            T.tile.mul(abs_ub, abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, abs_ub, abs_ub)
-                        elif scalar == 5.0:
-                            T.tile.mul(x_cal, abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, x_cal, x_cal)
-                            T.tile.mul(abs_ub, abs_ub, x_cal)
-                        else:
-                            T.tile.ln(abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, abs_ub, scalar)
-                            T.tile.exp(abs_ub, abs_ub)
+                        T.tile.ln(abs_ub, abs_ub)
+                        T.tile.mul(abs_ub, abs_ub, scalar)
+                        T.tile.exp(abs_ub, abs_ub)
                         T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
                         T.tile.add(acc_ub, acc_ub, tile_sum_ub)
                 T.copy(acc_ub, Partial[t, cid, vid])
@@ -343,7 +331,6 @@ def lp_norm_kernel(batch, N, block_N, scalar, launch_cores, dtype="float16"):
 # 1D kernels (batch=1 fast path — avoids 2D T.copy overhead)
 # Used when batch=1 or when torch.stack cost exceeds launch saving (large N).
 # ============================================================================
-
 
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def l2_norm_kernel_1d(N, block_N, launch_cores, dtype="float16"):
@@ -378,7 +365,6 @@ def l2_norm_kernel_1d(N, block_N, launch_cores, dtype="float16"):
                     T.reduce_sum(pow_ub, tile_sum_ub, dim=-1)
                     T.tile.add(acc_ub, acc_ub, tile_sum_ub)
             T.copy(acc_ub, Partial[cid, vid])
-
     return main
 
 
@@ -415,7 +401,6 @@ def l1_norm_kernel_1d(N, block_N, launch_cores, dtype="float16"):
                     T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
                     T.tile.add(acc_ub, acc_ub, tile_sum_ub)
             T.copy(acc_ub, Partial[cid, vid])
-
     return main
 
 
@@ -452,470 +437,6 @@ def linf_norm_kernel_1d(N, block_N, launch_cores, dtype="float16"):
                     T.reduce_max(abs_ub, tile_max_ub, dim=-1)
                     T.tile.max(acc_ub, acc_ub, tile_max_ub)
             T.copy(acc_ub, Partial[cid, vid])
-
-    return main
-
-
-@tilelang.jit(out_idx=[2], pass_configs=pass_configs)
-def l1_norm_kernel_list2(N, block_N, launch_cores, dtype="float16"):
-    n_num = T.ceildiv(N, block_N)
-    single_core_load = T.ceildiv(n_num, launch_cores)
-    half_block = block_N // VEC_NUM
-    use_upcast = dtype in ["float16", "bfloat16"]
-    cal_dtype = "float32" if use_upcast else dtype
-
-    @T.prim_func
-    def main(
-        X0: T.Tensor((N,), dtype),  # type: ignore
-        X1: T.Tensor((N,), dtype),  # type: ignore
-        Partial: T.Tensor((2, launch_cores, VEC_NUM), cal_dtype),  # type: ignore
-    ):
-        with T.Kernel(launch_cores, is_npu=True) as (cid, vid):
-            x_ub = T.alloc_shared((half_block,), dtype)
-            x_cal = T.alloc_shared((half_block,), cal_dtype)
-            abs_ub = T.alloc_shared((half_block,), cal_dtype)
-            tile_sum_ub = T.alloc_shared((1,), cal_dtype)
-            acc_ub = T.alloc_shared((1,), cal_dtype)
-
-            for tensor_id in T.serial(2):
-                T.tile.fill(acc_ub, 0.0)
-                for k in T.serial(single_core_load):
-                    logical_tile = k * launch_cores + cid
-                    if logical_tile < n_num:
-                        if tensor_id == 0:
-                            T.copy(X0[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
-                        else:
-                            T.copy(X1[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
-                        if use_upcast:
-                            T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
-                        else:
-                            T.copy(x_ub, x_cal)
-                        T.tile.abs(abs_ub, x_cal)
-                        T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
-                        T.tile.add(acc_ub, acc_ub, tile_sum_ub)
-                T.copy(acc_ub, Partial[tensor_id, cid, vid])
-
-    return main
-
-
-@tilelang.jit(out_idx=[3], pass_configs=pass_configs)
-def l1_norm_kernel_list3(N, block_N, launch_cores, dtype="float16"):
-    n_num = T.ceildiv(N, block_N)
-    single_core_load = T.ceildiv(n_num, launch_cores)
-    half_block = block_N // VEC_NUM
-    use_upcast = dtype in ["float16", "bfloat16"]
-    cal_dtype = "float32" if use_upcast else dtype
-
-    @T.prim_func
-    def main(
-        X0: T.Tensor((N,), dtype),  # type: ignore
-        X1: T.Tensor((N,), dtype),  # type: ignore
-        X2: T.Tensor((N,), dtype),  # type: ignore
-        Partial: T.Tensor((3, launch_cores, VEC_NUM), cal_dtype),  # type: ignore
-    ):
-        with T.Kernel(launch_cores, is_npu=True) as (cid, vid):
-            x_ub = T.alloc_shared((half_block,), dtype)
-            x_cal = T.alloc_shared((half_block,), cal_dtype)
-            abs_ub = T.alloc_shared((half_block,), cal_dtype)
-            tile_sum_ub = T.alloc_shared((1,), cal_dtype)
-            acc_ub = T.alloc_shared((1,), cal_dtype)
-
-            for tensor_id in T.serial(3):
-                T.tile.fill(acc_ub, 0.0)
-                for k in T.serial(single_core_load):
-                    logical_tile = k * launch_cores + cid
-                    if logical_tile < n_num:
-                        if tensor_id == 0:
-                            T.copy(X0[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
-                        elif tensor_id == 1:
-                            T.copy(X1[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
-                        else:
-                            T.copy(X2[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
-                        if use_upcast:
-                            T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
-                        else:
-                            T.copy(x_ub, x_cal)
-                        T.tile.abs(abs_ub, x_cal)
-                        T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
-                        T.tile.add(acc_ub, acc_ub, tile_sum_ub)
-                T.copy(acc_ub, Partial[tensor_id, cid, vid])
-
-    return main
-
-
-@tilelang.jit(out_idx=[4], pass_configs=pass_configs)
-def l1_norm_kernel_list4(N, block_N, launch_cores, dtype="float16"):
-    n_num = T.ceildiv(N, block_N)
-    single_core_load = T.ceildiv(n_num, launch_cores)
-    half_block = block_N // VEC_NUM
-    use_upcast = dtype in ["float16", "bfloat16"]
-    cal_dtype = "float32" if use_upcast else dtype
-
-    @T.prim_func
-    def main(
-        X0: T.Tensor((N,), dtype),  # type: ignore
-        X1: T.Tensor((N,), dtype),  # type: ignore
-        X2: T.Tensor((N,), dtype),  # type: ignore
-        X3: T.Tensor((N,), dtype),  # type: ignore
-        Partial: T.Tensor((4, launch_cores, VEC_NUM), cal_dtype),  # type: ignore
-    ):
-        with T.Kernel(launch_cores, is_npu=True) as (cid, vid):
-            x_ub = T.alloc_shared((half_block,), dtype)
-            x_cal = T.alloc_shared((half_block,), cal_dtype)
-            abs_ub = T.alloc_shared((half_block,), cal_dtype)
-            tile_sum_ub = T.alloc_shared((1,), cal_dtype)
-            acc_ub = T.alloc_shared((1,), cal_dtype)
-
-            for tensor_id in T.serial(4):
-                T.tile.fill(acc_ub, 0.0)
-                for k in T.serial(single_core_load):
-                    logical_tile = k * launch_cores + cid
-                    if logical_tile < n_num:
-                        if tensor_id == 0:
-                            T.copy(X0[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
-                        elif tensor_id == 1:
-                            T.copy(X1[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
-                        elif tensor_id == 2:
-                            T.copy(X2[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
-                        else:
-                            T.copy(X3[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
-                        if use_upcast:
-                            T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
-                        else:
-                            T.copy(x_ub, x_cal)
-                        T.tile.abs(abs_ub, x_cal)
-                        T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
-                        T.tile.add(acc_ub, acc_ub, tile_sum_ub)
-                T.copy(acc_ub, Partial[tensor_id, cid, vid])
-
-    return main
-
-
-# ============================================================================
-# L2 list kernels (batch=2/3/4, multi-input single-launch, no torch.stack).
-# Same structure as l1_norm_kernel_listN but compute x² (mul) instead of |x|.
-# ============================================================================
-
-
-@tilelang.jit(out_idx=[2], pass_configs=pass_configs)
-def l2_norm_kernel_list2(N, block_N, launch_cores, dtype="float16"):
-    n_num = T.ceildiv(N, block_N)
-    single_core_load = T.ceildiv(n_num, launch_cores)
-    half_block = block_N // VEC_NUM
-    use_upcast = dtype in ["float16", "bfloat16"]
-    cal_dtype = "float32" if use_upcast else dtype
-
-    @T.prim_func
-    def main(
-        X0: T.Tensor((N,), dtype),  # type: ignore
-        X1: T.Tensor((N,), dtype),  # type: ignore
-        Partial: T.Tensor((2, launch_cores, VEC_NUM), cal_dtype),  # type: ignore
-    ):
-        with T.Kernel(launch_cores, is_npu=True) as (cid, vid):
-            x_ub = T.alloc_shared((half_block,), dtype)
-            x_cal = T.alloc_shared((half_block,), cal_dtype)
-            pow_ub = T.alloc_shared((half_block,), cal_dtype)
-            tile_sum_ub = T.alloc_shared((1,), cal_dtype)
-            acc_ub = T.alloc_shared((1,), cal_dtype)
-
-            for tensor_id in T.serial(2):
-                T.tile.fill(acc_ub, 0.0)
-                for k in T.serial(single_core_load):
-                    logical_tile = k * launch_cores + cid
-                    if logical_tile < n_num:
-                        if tensor_id == 0:
-                            T.copy(X0[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
-                        else:
-                            T.copy(X1[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
-                        if use_upcast:
-                            T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
-                        else:
-                            T.copy(x_ub, x_cal)
-                        T.tile.mul(pow_ub, x_cal, x_cal)
-                        T.reduce_sum(pow_ub, tile_sum_ub, dim=-1)
-                        T.tile.add(acc_ub, acc_ub, tile_sum_ub)
-                T.copy(acc_ub, Partial[tensor_id, cid, vid])
-
-    return main
-
-
-@tilelang.jit(out_idx=[3], pass_configs=pass_configs)
-def l2_norm_kernel_list3(N, block_N, launch_cores, dtype="float16"):
-    n_num = T.ceildiv(N, block_N)
-    single_core_load = T.ceildiv(n_num, launch_cores)
-    half_block = block_N // VEC_NUM
-    use_upcast = dtype in ["float16", "bfloat16"]
-    cal_dtype = "float32" if use_upcast else dtype
-
-    @T.prim_func
-    def main(
-        X0: T.Tensor((N,), dtype),  # type: ignore
-        X1: T.Tensor((N,), dtype),  # type: ignore
-        X2: T.Tensor((N,), dtype),  # type: ignore
-        Partial: T.Tensor((3, launch_cores, VEC_NUM), cal_dtype),  # type: ignore
-    ):
-        with T.Kernel(launch_cores, is_npu=True) as (cid, vid):
-            x_ub = T.alloc_shared((half_block,), dtype)
-            x_cal = T.alloc_shared((half_block,), cal_dtype)
-            pow_ub = T.alloc_shared((half_block,), cal_dtype)
-            tile_sum_ub = T.alloc_shared((1,), cal_dtype)
-            acc_ub = T.alloc_shared((1,), cal_dtype)
-
-            for tensor_id in T.serial(3):
-                T.tile.fill(acc_ub, 0.0)
-                for k in T.serial(single_core_load):
-                    logical_tile = k * launch_cores + cid
-                    if logical_tile < n_num:
-                        if tensor_id == 0:
-                            T.copy(X0[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
-                        elif tensor_id == 1:
-                            T.copy(X1[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
-                        else:
-                            T.copy(X2[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
-                        if use_upcast:
-                            T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
-                        else:
-                            T.copy(x_ub, x_cal)
-                        T.tile.mul(pow_ub, x_cal, x_cal)
-                        T.reduce_sum(pow_ub, tile_sum_ub, dim=-1)
-                        T.tile.add(acc_ub, acc_ub, tile_sum_ub)
-                T.copy(acc_ub, Partial[tensor_id, cid, vid])
-
-    return main
-
-
-@tilelang.jit(out_idx=[4], pass_configs=pass_configs)
-def l2_norm_kernel_list4(N, block_N, launch_cores, dtype="float16"):
-    n_num = T.ceildiv(N, block_N)
-    single_core_load = T.ceildiv(n_num, launch_cores)
-    half_block = block_N // VEC_NUM
-    use_upcast = dtype in ["float16", "bfloat16"]
-    cal_dtype = "float32" if use_upcast else dtype
-
-    @T.prim_func
-    def main(
-        X0: T.Tensor((N,), dtype),  # type: ignore
-        X1: T.Tensor((N,), dtype),  # type: ignore
-        X2: T.Tensor((N,), dtype),  # type: ignore
-        X3: T.Tensor((N,), dtype),  # type: ignore
-        Partial: T.Tensor((4, launch_cores, VEC_NUM), cal_dtype),  # type: ignore
-    ):
-        with T.Kernel(launch_cores, is_npu=True) as (cid, vid):
-            x_ub = T.alloc_shared((half_block,), dtype)
-            x_cal = T.alloc_shared((half_block,), cal_dtype)
-            pow_ub = T.alloc_shared((half_block,), cal_dtype)
-            tile_sum_ub = T.alloc_shared((1,), cal_dtype)
-            acc_ub = T.alloc_shared((1,), cal_dtype)
-
-            for tensor_id in T.serial(4):
-                T.tile.fill(acc_ub, 0.0)
-                for k in T.serial(single_core_load):
-                    logical_tile = k * launch_cores + cid
-                    if logical_tile < n_num:
-                        if tensor_id == 0:
-                            T.copy(X0[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
-                        elif tensor_id == 1:
-                            T.copy(X1[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
-                        elif tensor_id == 2:
-                            T.copy(X2[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
-                        else:
-                            T.copy(X3[logical_tile * block_N + vid * half_block], x_ub, pad_value=0.0)
-                        if use_upcast:
-                            T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
-                        else:
-                            T.copy(x_ub, x_cal)
-                        T.tile.mul(pow_ub, x_cal, x_cal)
-                        T.reduce_sum(pow_ub, tile_sum_ub, dim=-1)
-                        T.tile.add(acc_ub, acc_ub, tile_sum_ub)
-                T.copy(acc_ub, Partial[tensor_id, cid, vid])
-
-    return main
-
-
-# ============================================================================
-# Lp list kernels (batch=2/3/4, general p > 0).
-# Same structure as l1_norm_kernel_listN but compute |x|^p via abs + ln + mul + exp
-# (or special-cased integer powers for p=3/4/5).
-# ============================================================================
-
-
-@tilelang.jit(out_idx=[2], pass_configs=pass_configs)
-def lp_norm_kernel_list2(N, block_N, scalar, launch_cores, dtype="float16"):
-    n_num = T.ceildiv(N, block_N)
-    single_core_load = T.ceildiv(n_num, launch_cores)
-    half_block = block_N // VEC_NUM
-    use_upcast = dtype in ["float16", "bfloat16"]
-    cal_dtype = "float32" if use_upcast else dtype
-    pad_val = 0.0 if scalar > 0 else T.infinity(cal_dtype)
-
-    @T.prim_func
-    def main(
-        X0: T.Tensor((N,), dtype),  # type: ignore
-        X1: T.Tensor((N,), dtype),  # type: ignore
-        Partial: T.Tensor((2, launch_cores, VEC_NUM), cal_dtype),  # type: ignore
-    ):
-        with T.Kernel(launch_cores, is_npu=True) as (cid, vid):
-            x_ub = T.alloc_shared((half_block,), dtype)
-            x_cal = T.alloc_shared((half_block,), cal_dtype)
-            abs_ub = T.alloc_shared((half_block,), cal_dtype)
-            tile_sum_ub = T.alloc_shared((1,), cal_dtype)
-            acc_ub = T.alloc_shared((1,), cal_dtype)
-
-            for tensor_id in T.serial(2):
-                T.tile.fill(acc_ub, 0.0)
-                for k in T.serial(single_core_load):
-                    logical_tile = k * launch_cores + cid
-                    if logical_tile < n_num:
-                        if tensor_id == 0:
-                            T.copy(X0[logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
-                        else:
-                            T.copy(X1[logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
-                        if use_upcast:
-                            T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
-                        else:
-                            T.copy(x_ub, x_cal)
-                        T.tile.abs(abs_ub, x_cal)
-                        if scalar == 3.0:
-                            T.tile.mul(x_cal, abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, x_cal, abs_ub)
-                        elif scalar == 4.0:
-                            T.tile.mul(abs_ub, abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, abs_ub, abs_ub)
-                        elif scalar == 5.0:
-                            T.tile.mul(x_cal, abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, x_cal, x_cal)
-                            T.tile.mul(abs_ub, abs_ub, x_cal)
-                        else:
-                            T.tile.ln(abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, abs_ub, scalar)
-                            T.tile.exp(abs_ub, abs_ub)
-                        T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
-                        T.tile.add(acc_ub, acc_ub, tile_sum_ub)
-                T.copy(acc_ub, Partial[tensor_id, cid, vid])
-
-    return main
-
-
-@tilelang.jit(out_idx=[3], pass_configs=pass_configs)
-def lp_norm_kernel_list3(N, block_N, scalar, launch_cores, dtype="float16"):
-    n_num = T.ceildiv(N, block_N)
-    single_core_load = T.ceildiv(n_num, launch_cores)
-    half_block = block_N // VEC_NUM
-    use_upcast = dtype in ["float16", "bfloat16"]
-    cal_dtype = "float32" if use_upcast else dtype
-    pad_val = 0.0 if scalar > 0 else T.infinity(cal_dtype)
-
-    @T.prim_func
-    def main(
-        X0: T.Tensor((N,), dtype),  # type: ignore
-        X1: T.Tensor((N,), dtype),  # type: ignore
-        X2: T.Tensor((N,), dtype),  # type: ignore
-        Partial: T.Tensor((3, launch_cores, VEC_NUM), cal_dtype),  # type: ignore
-    ):
-        with T.Kernel(launch_cores, is_npu=True) as (cid, vid):
-            x_ub = T.alloc_shared((half_block,), dtype)
-            x_cal = T.alloc_shared((half_block,), cal_dtype)
-            abs_ub = T.alloc_shared((half_block,), cal_dtype)
-            tile_sum_ub = T.alloc_shared((1,), cal_dtype)
-            acc_ub = T.alloc_shared((1,), cal_dtype)
-
-            for tensor_id in T.serial(3):
-                T.tile.fill(acc_ub, 0.0)
-                for k in T.serial(single_core_load):
-                    logical_tile = k * launch_cores + cid
-                    if logical_tile < n_num:
-                        if tensor_id == 0:
-                            T.copy(X0[logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
-                        elif tensor_id == 1:
-                            T.copy(X1[logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
-                        else:
-                            T.copy(X2[logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
-                        if use_upcast:
-                            T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
-                        else:
-                            T.copy(x_ub, x_cal)
-                        T.tile.abs(abs_ub, x_cal)
-                        if scalar == 3.0:
-                            T.tile.mul(x_cal, abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, x_cal, abs_ub)
-                        elif scalar == 4.0:
-                            T.tile.mul(abs_ub, abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, abs_ub, abs_ub)
-                        elif scalar == 5.0:
-                            T.tile.mul(x_cal, abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, x_cal, x_cal)
-                            T.tile.mul(abs_ub, abs_ub, x_cal)
-                        else:
-                            T.tile.ln(abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, abs_ub, scalar)
-                            T.tile.exp(abs_ub, abs_ub)
-                        T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
-                        T.tile.add(acc_ub, acc_ub, tile_sum_ub)
-                T.copy(acc_ub, Partial[tensor_id, cid, vid])
-
-    return main
-
-
-@tilelang.jit(out_idx=[4], pass_configs=pass_configs)
-def lp_norm_kernel_list4(N, block_N, scalar, launch_cores, dtype="float16"):
-    n_num = T.ceildiv(N, block_N)
-    single_core_load = T.ceildiv(n_num, launch_cores)
-    half_block = block_N // VEC_NUM
-    use_upcast = dtype in ["float16", "bfloat16"]
-    cal_dtype = "float32" if use_upcast else dtype
-    pad_val = 0.0 if scalar > 0 else T.infinity(cal_dtype)
-
-    @T.prim_func
-    def main(
-        X0: T.Tensor((N,), dtype),  # type: ignore
-        X1: T.Tensor((N,), dtype),  # type: ignore
-        X2: T.Tensor((N,), dtype),  # type: ignore
-        X3: T.Tensor((N,), dtype),  # type: ignore
-        Partial: T.Tensor((4, launch_cores, VEC_NUM), cal_dtype),  # type: ignore
-    ):
-        with T.Kernel(launch_cores, is_npu=True) as (cid, vid):
-            x_ub = T.alloc_shared((half_block,), dtype)
-            x_cal = T.alloc_shared((half_block,), cal_dtype)
-            abs_ub = T.alloc_shared((half_block,), cal_dtype)
-            tile_sum_ub = T.alloc_shared((1,), cal_dtype)
-            acc_ub = T.alloc_shared((1,), cal_dtype)
-
-            for tensor_id in T.serial(4):
-                T.tile.fill(acc_ub, 0.0)
-                for k in T.serial(single_core_load):
-                    logical_tile = k * launch_cores + cid
-                    if logical_tile < n_num:
-                        if tensor_id == 0:
-                            T.copy(X0[logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
-                        elif tensor_id == 1:
-                            T.copy(X1[logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
-                        elif tensor_id == 2:
-                            T.copy(X2[logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
-                        else:
-                            T.copy(X3[logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
-                        if use_upcast:
-                            T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
-                        else:
-                            T.copy(x_ub, x_cal)
-                        T.tile.abs(abs_ub, x_cal)
-                        if scalar == 3.0:
-                            T.tile.mul(x_cal, abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, x_cal, abs_ub)
-                        elif scalar == 4.0:
-                            T.tile.mul(abs_ub, abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, abs_ub, abs_ub)
-                        elif scalar == 5.0:
-                            T.tile.mul(x_cal, abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, x_cal, x_cal)
-                            T.tile.mul(abs_ub, abs_ub, x_cal)
-                        else:
-                            T.tile.ln(abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, abs_ub, scalar)
-                            T.tile.exp(abs_ub, abs_ub)
-                        T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
-                        T.tile.add(acc_ub, acc_ub, tile_sum_ub)
-                T.copy(acc_ub, Partial[tensor_id, cid, vid])
-
     return main
 
 
@@ -952,7 +473,6 @@ def lneg_inf_norm_kernel_1d(N, block_N, launch_cores, dtype="float16"):
                     T.reduce_min(abs_ub, tile_min_ub, dim=-1)
                     T.tile.min(acc_ub, acc_ub, tile_min_ub)
             T.copy(acc_ub, Partial[cid, vid])
-
     return main
 
 
@@ -988,11 +508,11 @@ def l0_count_kernel_1d(N, block_N, launch_cores, dtype="float16"):
                         T.copy(x_ub, x_cal)
                     T.tile.fill(one_ub, 1.0)
                     T.tile.compare(mask_ub, x_cal, 0.0, "NE")
-                    T.tile.select(one_ub, mask_ub, one_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
+                    T.tile.select(one_ub, mask_ub, one_ub, 0.0,
+                                  "VSEL_TENSOR_SCALAR_MODE")
                     T.reduce_sum(one_ub, tile_count_ub, dim=-1)
                     T.tile.add(acc_ub, acc_ub, tile_count_ub)
             T.copy(acc_ub, Partial[cid, vid])
-
     return main
 
 
@@ -1029,24 +549,12 @@ def lp_norm_kernel_1d(N, block_N, scalar, launch_cores, dtype="float16"):
                     else:
                         T.copy(x_ub, x_cal)
                     T.tile.abs(abs_ub, x_cal)
-                    if scalar == 3.0:
-                        T.tile.mul(x_cal, abs_ub, abs_ub)
-                        T.tile.mul(abs_ub, x_cal, abs_ub)
-                    elif scalar == 4.0:
-                        T.tile.mul(abs_ub, abs_ub, abs_ub)
-                        T.tile.mul(abs_ub, abs_ub, abs_ub)
-                    elif scalar == 5.0:
-                        T.tile.mul(x_cal, abs_ub, abs_ub)
-                        T.tile.mul(abs_ub, x_cal, x_cal)
-                        T.tile.mul(abs_ub, abs_ub, x_cal)
-                    else:
-                        T.tile.ln(abs_ub, abs_ub)
-                        T.tile.mul(abs_ub, abs_ub, scalar)
-                        T.tile.exp(abs_ub, abs_ub)
+                    T.tile.ln(abs_ub, abs_ub)
+                    T.tile.mul(abs_ub, abs_ub, scalar)
+                    T.tile.exp(abs_ub, abs_ub)
                     T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
                     T.tile.add(acc_ub, acc_ub, tile_sum_ub)
             T.copy(acc_ub, Partial[cid, vid])
-
     return main
 
 
@@ -1061,11 +569,11 @@ def lp_norm_kernel_1d(N, block_N, scalar, launch_cores, dtype="float16"):
 # merge: acc_ub = acc_a ⊕ acc_b  (⊕ = add for sum types, max for Linf,
 # min for Lneg-inf).
 #
-# Pipelined kernels use AUTO_SYNC=False with explicit barriers around the
-# load/compute/store boundaries.
+# Uses same pass_configs as serial (AUTO_SYNC=True). The T.Pipelined compiler
+# pass handles double-buffering of input/work buffers automatically.
 # ============================================================================
 
-PIPELINE_THRESHOLD = 24
+PIPELINE_THRESHOLD = 20
 
 # Pipelined kernels use AUTO_SYNC=False for manual pipeline synchronization.
 # T.barrier_all() after MTE2 load (sync MTE2→V) and before MTE3 store (sync V→MTE3).
@@ -1078,7 +586,6 @@ pass_configs_pipelined = {
 
 
 # --- 2D pipelined kernels (batched) ---
-
 
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs_pipelined)
 def l2_norm_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float16"):
@@ -1110,7 +617,8 @@ def l2_norm_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.Pipelined(single_core_load, num_stages=2):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
+                               pad_value=pad_val)
                         T.barrier_all()
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
@@ -1159,7 +667,8 @@ def l1_norm_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.Pipelined(single_core_load, num_stages=2):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
+                               pad_value=pad_val)
                         T.barrier_all()
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
@@ -1208,7 +717,8 @@ def linf_norm_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float16")
                 for k in T.Pipelined(single_core_load, num_stages=2):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
+                               pad_value=pad_val)
                         T.barrier_all()
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
@@ -1228,7 +738,8 @@ def linf_norm_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float16")
 
 
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs_pipelined)
-def lneg_inf_norm_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float16"):
+def lneg_inf_norm_kernel_pipelined(batch, N, block_N, launch_cores,
+                                   dtype="float16"):
     """Lneg-inf pipelined: T.Pipelined(num_stages=2) for single_core_load >= 20."""
     n_num = T.ceildiv(N, block_N)
     single_core_load = T.ceildiv(n_num, launch_cores)
@@ -1257,7 +768,8 @@ def lneg_inf_norm_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float
                 for k in T.Pipelined(single_core_load, num_stages=2):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
+                               pad_value=pad_val)
                         T.barrier_all()
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
@@ -1307,7 +819,8 @@ def l0_count_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float16"):
                 for k in T.Pipelined(single_core_load, num_stages=2):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
+                               pad_value=pad_val)
                         T.barrier_all()
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
@@ -1315,7 +828,8 @@ def l0_count_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float16"):
                             T.copy(x_ub, x_cal)
                         T.tile.fill(one_ub, 1.0)
                         T.tile.compare(mask_ub, x_cal, 0.0, "NE")
-                        T.tile.select(one_ub, mask_ub, one_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
+                        T.tile.select(one_ub, mask_ub, one_ub, 0.0,
+                                      "VSEL_TENSOR_SCALAR_MODE")
                         T.reduce_sum(one_ub, tile_count_ub, dim=-1)
                         if k % 2 == 0:
                             T.tile.add(acc_a, acc_a, tile_count_ub)
@@ -1329,7 +843,8 @@ def l0_count_kernel_pipelined(batch, N, block_N, launch_cores, dtype="float16"):
 
 
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs_pipelined)
-def lp_norm_kernel_pipelined(batch, N, block_N, scalar, launch_cores, dtype="float16"):
+def lp_norm_kernel_pipelined(batch, N, block_N, scalar, launch_cores,
+                             dtype="float16"):
     """General p pipelined: T.Pipelined(num_stages=2) for single_core_load >= 20."""
     n_num = T.ceildiv(N, block_N)
     single_core_load = T.ceildiv(n_num, launch_cores)
@@ -1361,27 +876,17 @@ def lp_norm_kernel_pipelined(batch, N, block_N, scalar, launch_cores, dtype="flo
                 for k in T.Pipelined(single_core_load, num_stages=2):
                     logical_tile = k * launch_cores + cid
                     if logical_tile < n_num:
-                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub, pad_value=pad_val)
+                        T.copy(X[t, logical_tile * block_N + vid * half_block], x_ub,
+                               pad_value=pad_val)
                         T.barrier_all()
                         if use_upcast:
                             T.tile.cast(x_cal, x_ub, CAST_LOW2HIGH, half_block)
                         else:
                             T.copy(x_ub, x_cal)
                         T.tile.abs(abs_ub, x_cal)
-                        if scalar == 3.0:
-                            T.tile.mul(x_cal, abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, x_cal, abs_ub)
-                        elif scalar == 4.0:
-                            T.tile.mul(abs_ub, abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, abs_ub, abs_ub)
-                        elif scalar == 5.0:
-                            T.tile.mul(x_cal, abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, x_cal, x_cal)
-                            T.tile.mul(abs_ub, abs_ub, x_cal)
-                        else:
-                            T.tile.ln(abs_ub, abs_ub)
-                            T.tile.mul(abs_ub, abs_ub, scalar)
-                            T.tile.exp(abs_ub, abs_ub)
+                        T.tile.ln(abs_ub, abs_ub)
+                        T.tile.mul(abs_ub, abs_ub, scalar)
+                        T.tile.exp(abs_ub, abs_ub)
                         T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
                         if k % 2 == 0:
                             T.tile.add(acc_a, acc_a, tile_sum_ub)
@@ -1395,7 +900,6 @@ def lp_norm_kernel_pipelined(batch, N, block_N, scalar, launch_cores, dtype="flo
 
 
 # --- 1D pipelined kernels (batch=1 fast path) ---
-
 
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs_pipelined)
 def l2_norm_kernel_1d_pipelined(N, block_N, launch_cores, dtype="float16"):
@@ -1439,7 +943,6 @@ def l2_norm_kernel_1d_pipelined(N, block_N, launch_cores, dtype="float16"):
             T.tile.add(acc_ub, acc_a, acc_b)
             T.barrier_all()
             T.copy(acc_ub, Partial[cid, vid])
-
     return main
 
 
@@ -1485,7 +988,6 @@ def l1_norm_kernel_1d_pipelined(N, block_N, launch_cores, dtype="float16"):
             T.tile.add(acc_ub, acc_a, acc_b)
             T.barrier_all()
             T.copy(acc_ub, Partial[cid, vid])
-
     return main
 
 
@@ -1531,7 +1033,6 @@ def linf_norm_kernel_1d_pipelined(N, block_N, launch_cores, dtype="float16"):
             T.tile.max(acc_ub, acc_a, acc_b)
             T.barrier_all()
             T.copy(acc_ub, Partial[cid, vid])
-
     return main
 
 
@@ -1577,7 +1078,6 @@ def lneg_inf_norm_kernel_1d_pipelined(N, block_N, launch_cores, dtype="float16")
             T.tile.min(acc_ub, acc_a, acc_b)
             T.barrier_all()
             T.copy(acc_ub, Partial[cid, vid])
-
     return main
 
 
@@ -1617,7 +1117,8 @@ def l0_count_kernel_1d_pipelined(N, block_N, launch_cores, dtype="float16"):
                         T.copy(x_ub, x_cal)
                     T.tile.fill(one_ub, 1.0)
                     T.tile.compare(mask_ub, x_cal, 0.0, "NE")
-                    T.tile.select(one_ub, mask_ub, one_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
+                    T.tile.select(one_ub, mask_ub, one_ub, 0.0,
+                                  "VSEL_TENSOR_SCALAR_MODE")
                     T.reduce_sum(one_ub, tile_count_ub, dim=-1)
                     if k % 2 == 0:
                         T.tile.add(acc_a, acc_a, tile_count_ub)
@@ -1626,7 +1127,6 @@ def l0_count_kernel_1d_pipelined(N, block_N, launch_cores, dtype="float16"):
             T.tile.add(acc_ub, acc_a, acc_b)
             T.barrier_all()
             T.copy(acc_ub, Partial[cid, vid])
-
     return main
 
 
@@ -1667,20 +1167,9 @@ def lp_norm_kernel_1d_pipelined(N, block_N, scalar, launch_cores, dtype="float16
                     else:
                         T.copy(x_ub, x_cal)
                     T.tile.abs(abs_ub, x_cal)
-                    if scalar == 3.0:
-                        T.tile.mul(x_cal, abs_ub, abs_ub)
-                        T.tile.mul(abs_ub, x_cal, abs_ub)
-                    elif scalar == 4.0:
-                        T.tile.mul(abs_ub, abs_ub, abs_ub)
-                        T.tile.mul(abs_ub, abs_ub, abs_ub)
-                    elif scalar == 5.0:
-                        T.tile.mul(x_cal, abs_ub, abs_ub)
-                        T.tile.mul(abs_ub, x_cal, x_cal)
-                        T.tile.mul(abs_ub, abs_ub, x_cal)
-                    else:
-                        T.tile.ln(abs_ub, abs_ub)
-                        T.tile.mul(abs_ub, abs_ub, scalar)
-                        T.tile.exp(abs_ub, abs_ub)
+                    T.tile.ln(abs_ub, abs_ub)
+                    T.tile.mul(abs_ub, abs_ub, scalar)
+                    T.tile.exp(abs_ub, abs_ub)
                     T.reduce_sum(abs_ub, tile_sum_ub, dim=-1)
                     if k % 2 == 0:
                         T.tile.add(acc_a, acc_a, tile_sum_ub)
@@ -1689,14 +1178,12 @@ def lp_norm_kernel_1d_pipelined(N, block_N, scalar, launch_cores, dtype="float16
             T.tile.add(acc_ub, acc_a, acc_b)
             T.barrier_all()
             T.copy(acc_ub, Partial[cid, vid])
-
     return main
 
 
 # ============================================================================
 # Host dispatch: batched multi-core partial reduction + batched host finalize
 # ============================================================================
-
 
 def _choose_block_n(n: int) -> int:
     """Pick block_N adaptively based on element count."""
@@ -1713,157 +1200,86 @@ def _dtype_str(x: torch.Tensor) -> str:
     return str(x.dtype).replace("torch.", "")
 
 
-def _direct_norm(t: torch.Tensor, scalar: float, out_dtype: torch.dtype) -> torch.Tensor:
-    """Use simple CANN reductions for norm orders with cheaper native ops."""
-    x_abs = torch.abs(t.view(-1).to(torch.float32))
-    if scalar == float("inf"):
-        return torch.amax(x_abs, dim=0).to(out_dtype).view(())
-    if scalar == float("-inf"):
-        return torch.amin(x_abs, dim=0).to(out_dtype).view(())
-    raise ValueError(f"Unsupported direct norm scalar: {scalar}")
-
-
-def _use_direct_norm(scalar: float, n: int, dt: str) -> bool:
-    """Return True when a scalar norm maps to one cheap built-in reduction."""
-    return scalar == float("inf") or scalar == float("-inf")
-
-
 _kernel_cache = {}
 _kernel_cache_1d = {}
 _kernel_cache_pipelined = {}
 _kernel_cache_1d_pipelined = {}
-_kernel_cache_l1_list = {}
-_kernel_cache_l2_list = {}
-_kernel_cache_lp_list = {}
 
 
-def _get_l1_list_kernel(batch: int, n: int, block_n: int, launch_cores: int, dt: str):
-    key = ("l1_list", batch, n, block_n, launch_cores, dt)
-    if key not in _kernel_cache_l1_list:
-        if batch == 2:
-            _kernel_cache_l1_list[key] = l1_norm_kernel_list2(n, block_n, launch_cores, dt)
-        elif batch == 3:
-            _kernel_cache_l1_list[key] = l1_norm_kernel_list3(n, block_n, launch_cores, dt)
-        elif batch == 4:
-            _kernel_cache_l1_list[key] = l1_norm_kernel_list4(n, block_n, launch_cores, dt)
-        else:
-            raise ValueError(f"Unsupported L1 list batch: {batch}")
-    return _kernel_cache_l1_list[key]
-
-
-def _get_l2_list_kernel(batch: int, n: int, block_n: int, launch_cores: int, dt: str):
-    key = ("l2_list", batch, n, block_n, launch_cores, dt)
-    if key not in _kernel_cache_l2_list:
-        if batch == 2:
-            _kernel_cache_l2_list[key] = l2_norm_kernel_list2(n, block_n, launch_cores, dt)
-        elif batch == 3:
-            _kernel_cache_l2_list[key] = l2_norm_kernel_list3(n, block_n, launch_cores, dt)
-        elif batch == 4:
-            _kernel_cache_l2_list[key] = l2_norm_kernel_list4(n, block_n, launch_cores, dt)
-        else:
-            raise ValueError(f"Unsupported L2 list batch: {batch}")
-    return _kernel_cache_l2_list[key]
-
-
-def _get_lp_list_kernel(scalar: float, batch: int, n: int, block_n: int, launch_cores: int, dt: str):
-    key = ("lp_list", scalar, batch, n, block_n, launch_cores, dt)
-    if key not in _kernel_cache_lp_list:
-        if batch == 2:
-            _kernel_cache_lp_list[key] = lp_norm_kernel_list2(n, block_n, scalar, launch_cores, dt)
-        elif batch == 3:
-            _kernel_cache_lp_list[key] = lp_norm_kernel_list3(n, block_n, scalar, launch_cores, dt)
-        elif batch == 4:
-            _kernel_cache_lp_list[key] = lp_norm_kernel_list4(n, block_n, scalar, launch_cores, dt)
-        else:
-            raise ValueError(f"Unsupported Lp list batch: {batch}")
-    return _kernel_cache_lp_list[key]
-
-
-def _get_list_kernel(scalar: float, batch: int, n: int, block_n: int, launch_cores: int, dt: str):
-    """Generalized list-kernel dispatcher (L1/L2/Lp)."""
-    if scalar == 1.0:
-        return _get_l1_list_kernel(batch, n, block_n, launch_cores, dt)
-    elif scalar == 2.0:
-        return _get_l2_list_kernel(batch, n, block_n, launch_cores, dt)
-    else:
-        return _get_lp_list_kernel(scalar, batch, n, block_n, launch_cores, dt)
-
-
-def _use_list_kernel(scalar: float, batch: int, single_core_load: int) -> bool:
-    """Whether to use a list kernel (eliminates torch.stack overhead).
-
-    Applies to L1/L2/Lp norms with batch in {2,3,4} and small single_core_load
-    (where stack overhead dominates kernel time). Linf/Lneg-inf use _direct_norm
-    instead; L0 is rare and excluded.
-    """
-    if batch not in (2, 3, 4):
-        return False
-    if single_core_load >= PIPELINE_THRESHOLD:
-        return False
-    # L0/Linf/Lneg-inf don't need list kernels
-    # L1 (scalar==1.0), L2 (scalar==2.0), and general Lp (scalar>0 or scalar<0)
-    return scalar not in (0.0, float("inf"), float("-inf"))
-
-
-def _get_kernel_pipelined(scalar: float, batch: int, n: int, block_n: int, launch_cores: int, dt: str):
+def _get_kernel_pipelined(scalar: float, batch: int, n: int, block_n: int,
+                          launch_cores: int, dt: str):
     """Get or compile a cached pipelined (2D) kernel for large single_core_load."""
     if scalar == 0.0:
         key = ("l0", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache_pipelined:
-            _kernel_cache_pipelined[key] = l0_count_kernel_pipelined(batch, n, block_n, launch_cores, dt)
+            _kernel_cache_pipelined[key] = l0_count_kernel_pipelined(
+                batch, n, block_n, launch_cores, dt)
     elif scalar == 1.0:
         key = ("l1", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache_pipelined:
-            _kernel_cache_pipelined[key] = l1_norm_kernel_pipelined(batch, n, block_n, launch_cores, dt)
+            _kernel_cache_pipelined[key] = l1_norm_kernel_pipelined(
+                batch, n, block_n, launch_cores, dt)
     elif scalar == 2.0:
         key = ("l2", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache_pipelined:
-            _kernel_cache_pipelined[key] = l2_norm_kernel_pipelined(batch, n, block_n, launch_cores, dt)
+            _kernel_cache_pipelined[key] = l2_norm_kernel_pipelined(
+                batch, n, block_n, launch_cores, dt)
     elif scalar == float("inf"):
         key = ("linf", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache_pipelined:
-            _kernel_cache_pipelined[key] = linf_norm_kernel_pipelined(batch, n, block_n, launch_cores, dt)
+            _kernel_cache_pipelined[key] = linf_norm_kernel_pipelined(
+                batch, n, block_n, launch_cores, dt)
     elif scalar == float("-inf"):
         key = ("lneg_inf", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache_pipelined:
-            _kernel_cache_pipelined[key] = lneg_inf_norm_kernel_pipelined(batch, n, block_n, launch_cores, dt)
+            _kernel_cache_pipelined[key] = lneg_inf_norm_kernel_pipelined(
+                batch, n, block_n, launch_cores, dt)
     else:
         key = ("lp", batch, n, block_n, scalar, launch_cores, dt)
         if key not in _kernel_cache_pipelined:
-            _kernel_cache_pipelined[key] = lp_norm_kernel_pipelined(batch, n, block_n, scalar, launch_cores, dt)
+            _kernel_cache_pipelined[key] = lp_norm_kernel_pipelined(
+                batch, n, block_n, scalar, launch_cores, dt)
     return _kernel_cache_pipelined[key]
 
 
-def _get_kernel_1d_pipelined(scalar: float, n: int, block_n: int, launch_cores: int, dt: str):
+def _get_kernel_1d_pipelined(scalar: float, n: int, block_n: int,
+                             launch_cores: int, dt: str):
     """Get or compile a cached pipelined 1D kernel for large single_core_load."""
     if scalar == 0.0:
         key = ("l0", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d_pipelined:
-            _kernel_cache_1d_pipelined[key] = l0_count_kernel_1d_pipelined(n, block_n, launch_cores, dt)
+            _kernel_cache_1d_pipelined[key] = l0_count_kernel_1d_pipelined(
+                n, block_n, launch_cores, dt)
     elif scalar == 1.0:
         key = ("l1", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d_pipelined:
-            _kernel_cache_1d_pipelined[key] = l1_norm_kernel_1d_pipelined(n, block_n, launch_cores, dt)
+            _kernel_cache_1d_pipelined[key] = l1_norm_kernel_1d_pipelined(
+                n, block_n, launch_cores, dt)
     elif scalar == 2.0:
         key = ("l2", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d_pipelined:
-            _kernel_cache_1d_pipelined[key] = l2_norm_kernel_1d_pipelined(n, block_n, launch_cores, dt)
+            _kernel_cache_1d_pipelined[key] = l2_norm_kernel_1d_pipelined(
+                n, block_n, launch_cores, dt)
     elif scalar == float("inf"):
         key = ("linf", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d_pipelined:
-            _kernel_cache_1d_pipelined[key] = linf_norm_kernel_1d_pipelined(n, block_n, launch_cores, dt)
+            _kernel_cache_1d_pipelined[key] = linf_norm_kernel_1d_pipelined(
+                n, block_n, launch_cores, dt)
     elif scalar == float("-inf"):
         key = ("lneg_inf", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d_pipelined:
-            _kernel_cache_1d_pipelined[key] = lneg_inf_norm_kernel_1d_pipelined(n, block_n, launch_cores, dt)
+            _kernel_cache_1d_pipelined[key] = lneg_inf_norm_kernel_1d_pipelined(
+                n, block_n, launch_cores, dt)
     else:
         key = ("lp", n, block_n, scalar, launch_cores, dt)
         if key not in _kernel_cache_1d_pipelined:
-            _kernel_cache_1d_pipelined[key] = lp_norm_kernel_1d_pipelined(n, block_n, scalar, launch_cores, dt)
+            _kernel_cache_1d_pipelined[key] = lp_norm_kernel_1d_pipelined(
+                n, block_n, scalar, launch_cores, dt)
     return _kernel_cache_1d_pipelined[key]
 
 
-def _get_kernel(scalar: float, batch: int, n: int, block_n: int, launch_cores: int, dt: str):
+def _get_kernel(scalar: float, batch: int, n: int, block_n: int,
+                launch_cores: int, dt: str):
     """Get or compile a cached batched (2D) kernel for the given config.
 
     Routes to pipelined kernel when single_core_load >= PIPELINE_THRESHOLD
@@ -1872,35 +1288,43 @@ def _get_kernel(scalar: float, batch: int, n: int, block_n: int, launch_cores: i
     n_num = (n + block_n - 1) // block_n
     single_core_load = (n_num + launch_cores - 1) // launch_cores
     if single_core_load >= PIPELINE_THRESHOLD:
-        return _get_kernel_pipelined(scalar, batch, n, block_n, launch_cores, dt)
+        return _get_kernel_pipelined(scalar, batch, n, block_n,
+                                     launch_cores, dt)
     if scalar == 0.0:
         key = ("l0", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache:
-            _kernel_cache[key] = l0_count_kernel(batch, n, block_n, launch_cores, dt)
+            _kernel_cache[key] = l0_count_kernel(batch, n, block_n,
+                                                 launch_cores, dt)
     elif scalar == 1.0:
         key = ("l1", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache:
-            _kernel_cache[key] = l1_norm_kernel(batch, n, block_n, launch_cores, dt)
+            _kernel_cache[key] = l1_norm_kernel(batch, n, block_n,
+                                                launch_cores, dt)
     elif scalar == 2.0:
         key = ("l2", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache:
-            _kernel_cache[key] = l2_norm_kernel(batch, n, block_n, launch_cores, dt)
+            _kernel_cache[key] = l2_norm_kernel(batch, n, block_n,
+                                                launch_cores, dt)
     elif scalar == float("inf"):
         key = ("linf", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache:
-            _kernel_cache[key] = linf_norm_kernel(batch, n, block_n, launch_cores, dt)
+            _kernel_cache[key] = linf_norm_kernel(batch, n, block_n,
+                                                  launch_cores, dt)
     elif scalar == float("-inf"):
         key = ("lneg_inf", batch, n, block_n, launch_cores, dt)
         if key not in _kernel_cache:
-            _kernel_cache[key] = lneg_inf_norm_kernel(batch, n, block_n, launch_cores, dt)
+            _kernel_cache[key] = lneg_inf_norm_kernel(batch, n, block_n,
+                                                      launch_cores, dt)
     else:
         key = ("lp", batch, n, block_n, scalar, launch_cores, dt)
         if key not in _kernel_cache:
-            _kernel_cache[key] = lp_norm_kernel(batch, n, block_n, scalar, launch_cores, dt)
+            _kernel_cache[key] = lp_norm_kernel(batch, n, block_n, scalar,
+                                                launch_cores, dt)
     return _kernel_cache[key]
 
 
-def _get_kernel_1d(scalar: float, n: int, block_n: int, launch_cores: int, dt: str):
+def _get_kernel_1d(scalar: float, n: int, block_n: int,
+                   launch_cores: int, dt: str):
     """Get or compile a cached 1D kernel (batch=1 fast path).
 
     Routes to pipelined kernel when single_core_load >= PIPELINE_THRESHOLD.
@@ -1908,35 +1332,43 @@ def _get_kernel_1d(scalar: float, n: int, block_n: int, launch_cores: int, dt: s
     n_num = (n + block_n - 1) // block_n
     single_core_load = (n_num + launch_cores - 1) // launch_cores
     if single_core_load >= PIPELINE_THRESHOLD:
-        return _get_kernel_1d_pipelined(scalar, n, block_n, launch_cores, dt)
+        return _get_kernel_1d_pipelined(scalar, n, block_n,
+                                        launch_cores, dt)
     if scalar == 0.0:
         key = ("l0", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d:
-            _kernel_cache_1d[key] = l0_count_kernel_1d(n, block_n, launch_cores, dt)
+            _kernel_cache_1d[key] = l0_count_kernel_1d(n, block_n,
+                                                       launch_cores, dt)
     elif scalar == 1.0:
         key = ("l1", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d:
-            _kernel_cache_1d[key] = l1_norm_kernel_1d(n, block_n, launch_cores, dt)
+            _kernel_cache_1d[key] = l1_norm_kernel_1d(n, block_n,
+                                                      launch_cores, dt)
     elif scalar == 2.0:
         key = ("l2", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d:
-            _kernel_cache_1d[key] = l2_norm_kernel_1d(n, block_n, launch_cores, dt)
+            _kernel_cache_1d[key] = l2_norm_kernel_1d(n, block_n,
+                                                      launch_cores, dt)
     elif scalar == float("inf"):
         key = ("linf", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d:
-            _kernel_cache_1d[key] = linf_norm_kernel_1d(n, block_n, launch_cores, dt)
+            _kernel_cache_1d[key] = linf_norm_kernel_1d(n, block_n,
+                                                        launch_cores, dt)
     elif scalar == float("-inf"):
         key = ("lneg_inf", n, block_n, launch_cores, dt)
         if key not in _kernel_cache_1d:
-            _kernel_cache_1d[key] = lneg_inf_norm_kernel_1d(n, block_n, launch_cores, dt)
+            _kernel_cache_1d[key] = lneg_inf_norm_kernel_1d(n, block_n,
+                                                            launch_cores, dt)
     else:
         key = ("lp", n, block_n, scalar, launch_cores, dt)
         if key not in _kernel_cache_1d:
-            _kernel_cache_1d[key] = lp_norm_kernel_1d(n, block_n, scalar, launch_cores, dt)
+            _kernel_cache_1d[key] = lp_norm_kernel_1d(n, block_n, scalar,
+                                                      launch_cores, dt)
     return _kernel_cache_1d[key]
 
 
-def _finalize_single(partial: torch.Tensor, scalar: float, out_dtype: torch.dtype) -> torch.Tensor:
+def _finalize_single(partial: torch.Tensor, scalar: float,
+                     out_dtype: torch.dtype) -> torch.Tensor:
     """Combine per-core partials + finalize + cast for a single tensor."""
     if scalar == float("inf"):
         result = partial.max()
@@ -1952,18 +1384,26 @@ def _finalize_single(partial: torch.Tensor, scalar: float, out_dtype: torch.dtyp
     return result.to(out_dtype)
 
 
+# TileLang launch overhead measured at ~185us; CANN op ~44us.
+# torch.stack cost: 2 * batch * N * dtype_bytes / GM_BANDWIDTH.
+# Batching is beneficial when launch saving > stack cost.
+_TL_LAUNCH_OVERHEAD_US = 185.0
+_GM_BANDWIDTH_BPS = 1.2e12
+_DTYPE_BYTES = {"float16": 2, "float32": 4, "bfloat16": 2}
+
+
 def _should_batch(n: int, batch: int, dt: str) -> bool:
-    """Return True when same-shape inputs should be stacked into a 2D batch.
+    """Return True if batching saves more than it costs (torch.stack overhead)."""
+    if batch <= 1:
+        return False
+    launch_saving_us = (batch - 1) * _TL_LAUNCH_OVERHEAD_US
+    dtype_bytes = _DTYPE_BYTES.get(dt, 4)
+    stack_cost_us = 2.0 * batch * n * dtype_bytes / _GM_BANDWIDTH_BPS * 1e6
+    return launch_saving_us > stack_cost_us
 
-    In CANN-Bench the host-side torch.stack materializes as aclnnStack_Pack,
-    which is often slower than the TileLang launch it saves for ForeachNorm's
-    official TensorList cases. Prefer the 1D fast path unless a future case
-    proves stack is cheap enough on the target harness.
-    """
-    return False
 
-
-def _finalize_batched(partial: torch.Tensor, scalar: float, out_dtype: torch.dtype) -> torch.Tensor:
+def _finalize_batched(partial: torch.Tensor, scalar: float,
+                      out_dtype: torch.dtype) -> torch.Tensor:
     """Combine per-core FP32 partials + apply finalize + cast.
 
     Args:
@@ -1975,17 +1415,16 @@ def _finalize_batched(partial: torch.Tensor, scalar: float, out_dtype: torch.dty
         (batch,) tensor on NPU in out_dtype.
     """
     # Combine both launch_cores and VEC_NUM dims (vid partials).
-    reduce_dims = (1, 2)
     if scalar == float("inf"):
-        result = torch.amax(partial, dim=reduce_dims)
+        result = partial.max(dim=[1, 2]).values
     elif scalar == float("-inf"):
-        result = torch.amin(partial, dim=reduce_dims)
+        result = partial.min(dim=[1, 2]).values
     elif scalar == 0.0 or scalar == 1.0:
-        result = partial.sum(dim=reduce_dims)
+        result = partial.sum(dim=[1, 2])
     elif scalar == 2.0:
-        result = partial.sum(dim=reduce_dims).sqrt()
+        result = partial.sum(dim=[1, 2]).sqrt()
     else:
-        s = partial.sum(dim=reduce_dims)
+        s = partial.sum(dim=[1, 2])
         result = torch.pow(s, 1.0 / scalar)
     return result.to(out_dtype)
 
@@ -2011,11 +1450,16 @@ def foreach_norm(x: List[torch.Tensor], scalar: float) -> List[torch.Tensor]:
 
     first_dt = _dtype_str(x[0])
     if first_dt not in SUPPORTED_DTYPES:
-        raise ValueError(f"Unsupported dtype: {first_dt}. Supported: {sorted(SUPPORTED_DTYPES)}")
+        raise ValueError(
+            f"Unsupported dtype: {first_dt}. Supported: {sorted(SUPPORTED_DTYPES)}"
+        )
     for i, t in enumerate(x[1:], 1):
         dt_i = _dtype_str(t)
         if dt_i != first_dt:
-            raise ValueError(f"All tensors must share the same dtype: tensor 0 is {first_dt}, tensor {i} is {dt_i}")
+            raise ValueError(
+                f"All tensors must share the same dtype: tensor 0 is {first_dt}, "
+                f"tensor {i} is {dt_i}"
+            )
 
     torch_dt = x[0].dtype
 
@@ -2031,27 +1475,13 @@ def foreach_norm(x: List[torch.Tensor], scalar: float) -> List[torch.Tensor]:
         batch = len(indices)
         if n == 0:
             for idx in indices:
-                results[idx] = torch.zeros((), dtype=torch_dt, device=x[idx].device)
-            continue
-
-        if _use_direct_norm(scalar, n, first_dt):
-            for idx in indices:
-                results[idx] = _direct_norm(x[idx], scalar, torch_dt)
+                results[idx] = torch.zeros((), dtype=torch_dt,
+                                           device=x[idx].device)
             continue
 
         block_n = _choose_block_n(n)
         n_num = (n + block_n - 1) // block_n
         launch_cores = min(n_num, CORE_NUM)
-        single_core_load = (n_num + launch_cores - 1) // launch_cores
-
-        if _use_list_kernel(scalar, batch, single_core_load):
-            flats = [x[idx].view(-1) for idx in indices]
-            kernel = _get_list_kernel(scalar, batch, n, block_n, launch_cores, first_dt)
-            partial = kernel(*flats)
-            result = _finalize_batched(partial, scalar, torch_dt)
-            for i, idx in enumerate(indices):
-                results[idx] = result[i].view(())
-            continue
 
         use_batch = _should_batch(n, batch, first_dt)
 
@@ -2059,50 +1489,19 @@ def foreach_norm(x: List[torch.Tensor], scalar: float) -> List[torch.Tensor]:
             # 1D fast path: per-tensor 1D kernels (no 2D overhead, no stack)
             for idx in indices:
                 x_flat = x[idx].view(-1)
-                kernel = _get_kernel_1d(scalar, n, block_n, launch_cores, first_dt)
+                kernel = _get_kernel_1d(scalar, n, block_n, launch_cores,
+                                        first_dt)
                 partial = kernel(x_flat)  # (launch_cores,) FP32
                 result = _finalize_single(partial, scalar, torch_dt)
                 results[idx] = result.view(())
         else:
             # 2D batched: 1 kernel launch for all same-N tensors
             x_batched = torch.stack([x[idx].view(-1) for idx in indices])
-            kernel = _get_kernel(scalar, batch, n, block_n, launch_cores, first_dt)
+            kernel = _get_kernel(scalar, batch, n, block_n, launch_cores,
+                                 first_dt)
             partial = kernel(x_batched)  # (batch, launch_cores)
             result = _finalize_batched(partial, scalar, torch_dt)  # (batch,)
             for i, idx in enumerate(indices):
                 results[idx] = result[i].view(())
 
     return results
-
-
-def main():
-    """Simple self-test for foreach_norm operator."""
-    import torch
-
-    # Test case 1: L2 norm (batch=1, single tensor)
-    x1 = torch.randn(1024, dtype=torch.float16, device="cpu").npu()
-    result1 = foreach_norm([x1], scalar=2.0)
-    expected1 = torch.norm(x1.cpu(), p=2.0).npu()
-    assert len(result1) == 1, f"Expected 1 result, got {len(result1)}"
-    assert torch.allclose(result1[0], expected1, rtol=1e-2, atol=1e-3), f"L2 norm mismatch: {result1[0].item()} vs {expected1.item()}"
-
-    # Test case 2: L1 norm (batch=2, different tensors)
-    x2 = [torch.randn(512, dtype=torch.float16, device="cpu").npu() for _ in range(2)]
-    result2 = foreach_norm(x2, scalar=1.0)
-    expected2 = [torch.norm(t.cpu(), p=1.0).npu() for t in x2]
-    assert len(result2) == 2, f"Expected 2 results, got {len(result2)}"
-    for r, e in zip(result2, expected2):
-        assert torch.allclose(r, e, rtol=1e-2, atol=1e-3), f"L1 norm mismatch: {r.item()} vs {e.item()}"
-
-    # Test case 3: Inf norm (batch=1)
-    x3 = torch.randn(2048, dtype=torch.float32, device="cpu").npu()
-    result3 = foreach_norm([x3], scalar=float("inf"))
-    expected3 = torch.norm(x3.cpu(), p=float("inf")).npu()
-    assert len(result3) == 1, f"Expected 1 result, got {len(result3)}"
-    assert torch.allclose(result3[0], expected3, rtol=1e-3, atol=1e-4), f"Inf norm mismatch: {result3[0].item()} vs {expected3.item()}"
-
-    print("TEST PASSED", end="!\n")
-
-
-if __name__ == "__main__":
-    main()

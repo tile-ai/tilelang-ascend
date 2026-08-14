@@ -1,0 +1,30 @@
+# ----------------------------------------------------------------------------
+# Mish 算子接口规格（proto.yaml）
+# 由 Stage 1（tilelang-op-analyst / tilelang-op-design）从 DESIGN.md §9.3 精度表
+# + §4/§1 派生生成。供覆盖门禁 coverage_check.py --proto 派生 D-DTYPE-* / D-PARAM-*。
+# ----------------------------------------------------------------------------
+
+operator:
+  name: Mish
+  category: Activation
+  difficulty: L1
+  formula: |
+    y = x * tanh(softplus(x)) = x * tanh(ln(1 + e^x))
+  description: 自正则化的非单调神经网络激活函数
+  shape_support: 输入 1~8 维（cases 实测 1~5D），单维 1~16384，总元素 1~64M
+  attrs: []                              # mish 无影响计算路径的属性
+  inputs:
+    - name: x
+      description: 输入张量
+      dtype:
+        - float16
+        - float32
+        - bfloat16
+  outputs:
+    - name: y
+      description: 输出张量，Mish 激活结果
+      dtype:
+        - float16
+        - float32
+        - bfloat16
+  schema: mish(Tensor x) -> Tensor y

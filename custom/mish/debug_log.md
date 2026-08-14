@@ -1,0 +1,18 @@
+## Attempt 1 — 2026-08-10T11:00:00Z
+- mode: first_impl
+- classification: precision_pass
+- fail_category: none
+- test_level: all (L0 first for convergence, then extended L1/L2/Boundary, ran full suite)
+- coverage: L0:9 L1:10 L2:3 Boundary:4
+- boundary_warnings: none (all L2/Boundary passed)
+- changes:
+  - Generated `mish.py`: pure @tilelang.jit kernel with 12-step T.tile.xxx computation (log-sum-exp softplus + sigmoid-equivalent tanh) in float32 intermediate, T.tile.cast at GM<->UB boundary for fp16/bf16, host adapter mish_forward() for high-dim reshape.
+  - Generated `test_mish.py`: golden (torch.nn.functional.mish) + mixed tolerance check (DESIGN.md §9.3 thresholds) + special value mask check + L0 (9 cases from §9.2) + L1 (10 cases: non-aligned/edge/multi-dim/asymmetric) + L2 (3 negative: unsupported dtype/0-dim) + Boundary (4: inf/nan/zero/dbound) + main(--level).
+  - Fixed `_run_exception` signature: added `tags=None` parameter for coverage checker AST collection.
+  - ruff format applied to both files.
+- error_summary: Initial _run_exception() took 2 args but called with 3 (tags list); fixed by adding tags parameter. No precision errors — all 26 cases passed with matched_ratio=1.0000.
+- design_error_reason: none
+- rollback: no
+- backup_path: n/a (first_impl, no backup needed)
+- instrumentation_cleaned: n/a
+- next_hint: Kernel precision excellent (all matched_ratio=1.0000, max_abs well within limits). All 15 coverage dimensions PASS. Ready for Stage 3 perf tuning if user requests. Note: AUTO_CV_COMBINE intentionally not set (pure Vector, avoids idle AIC core) — this is a design decision, not a bug.

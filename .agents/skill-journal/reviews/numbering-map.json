@@ -1,0 +1,90 @@
+[
+  {
+    "num": 1,
+    "entry": "e11",
+    "skill": "tilelang-op-design",
+    "desc": "A1 多核 launch_cores",
+    "sev": "high",
+    "cat": "生成-设计"
+  },
+  {
+    "num": 2,
+    "entry": "e6",
+    "skill": "tilelang-op-design",
+    "desc": "A2 TensorList batch（e6 升级：从\"优先级标注\"改为\"生成时采用\"）",
+    "sev": "high",
+    "cat": "生成-设计"
+  },
+  {
+    "num": 3,
+    "entry": "e12",
+    "skill": "tilelang-op-develop",
+    "desc": "B2 默认 VEC_NUM=2 提示",
+    "sev": "medium",
+    "cat": "生成-实现"
+  },
+  {
+    "num": 4,
+    "entry": "e5",
+    "skill": "tilelang-perf-optimization",
+    "desc": "B1a T.Pipelined 最小循环次数",
+    "sev": "medium",
+    "cat": "生成-实现"
+  },
+  {
+    "num": 5,
+    "entry": "e9",
+    "skill": "tilelang-perf-optimization",
+    "desc": "B1b V-bound vs MTE2-bound 判定",
+    "sev": "high",
+    "cat": "生成-实现"
+  },
+  {
+    "num": 6,
+    "entry": "e1",
+    "skill": "tilelang-op-develop",
+    "desc": "Subagent 返回格式约束（禁乱码）",
+    "sev": "high",
+    "cat": "防护"
+  },
+  {
+    "num": 7,
+    "entry": "e7",
+    "skill": "tilelang-op-develop",
+    "desc": "cann_bench 接口签名匹配 proto.yaml",
+    "sev": "high",
+    "cat": "防护"
+  },
+  {
+    "num": 8,
+    "entry": "e2",
+    "skill": "tilelang-perf-optimization",
+    "desc": "launch overhead 185us 框架约束（调优前评估可达性）",
+    "sev": "medium",
+    "cat": "Stage3"
+  },
+  {
+    "num": 9,
+    "entry": "e4",
+    "skill": "tilelang-perf-optimization",
+    "desc": "DATA COPIES vs COMPUTE ops 区分",
+    "sev": "medium",
+    "cat": "Stage3"
+  },
+  {
+    "num": 10,
+    "entry": "e10",
+    "skill": "tilelang-perf-optimization",
+    "desc": "op_times 隔离 vs 端到端",
+    "sev": "medium",
+    "cat": "Stage3"
+  },
+  {
+    "num": 11,
+    "entry": "e3",
+    "skill": "tilelang-op-test-design",
+    "desc": "float32 累加误差预估",
+    "sev": "medium",
+    "cat": "低"
+  }
+]

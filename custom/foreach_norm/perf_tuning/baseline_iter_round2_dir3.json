@@ -1,0 +1,36 @@
+{
+  "iteration": "round2_dir3",
+  "timestamp": "2026-08-06T11:30Z",
+  "baseline_kernel": "custom/foreach_norm/history_version/foreach_norm_perf_round2_dir3.py",
+  "baseline_description": "Round 2 Direction 2 (VEC_NUM=2) — current production kernel before dir3 attempts",
+  "test_shape": "cann-bench cases.yaml 20 cases (batch=1~4, fp16/fp32/bf16, scalar=0/1/2/3/4/5/inf/-inf/1.5/2.5/-1)",
+  "test_command": "python custom/foreach_norm/perf_tuning/bench_perf.py --label round2_dir3 --out custom/foreach_norm/perf_tuning/round2_dir3.json",
+  "precision_status": "pass (L0/L1/L2/Boundary all PASS)",
+  "programming_mode": "Developer",
+  "baseline_perf": {
+    "avg_speedup": 0.2429,
+    "source": "round2_dir2.json"
+  },
+  "candidate_attempts": [
+    {
+      "attempt": "A",
+      "strategy": "torch.empty((batch,N)) + per-tensor copy_",
+      "candidate_perf_avg_speedup": 0.2263,
+      "improvement_pct": -6.86,
+      "precision": "pass",
+      "adopted": false,
+      "rollback_reason": "copy_ x batch serial CANN op launches (15-25us each) slower than stack's 1 parallelized Pack op"
+    },
+    {
+      "attempt": "C",
+      "strategy": "torch.cat([t.view(1,-1) for t in list], dim=0)",
+      "candidate_perf_avg_speedup": 0.2337,
+      "improvement_pct": -3.82,
+      "precision": "pass",
+      "adopted": false,
+      "rollback_reason": "cat ~= stack (both call aclnn cat internally); differences within noise"
+    }
+  ],
+  "final_state": "rolled_back_to_baseline (torch.stack retained)",
+  "consecutive_no_improvement": 1
+}
