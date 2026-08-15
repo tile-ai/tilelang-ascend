@@ -249,10 +249,26 @@ could not be declared this way.
   ragged batches and `cu_seqlens` are not handled.  The reference layer does
   handle a tail, by zero-padding on the host — that route is not open to the
   kernels, because doing the padding host-side is exactly the hidden cost the
-  acceptance gate forbids.  The official PyPTO trick (`valid_shape` + `fillpad`)
-  cannot be copied either: it relies on a run-time loop bound, while a TileLang
-  `T.Kernel` grid is a compile-time constant.  What is left is a separate tail
-  kernel or a `[C]` validity mask, and that is the next round.
+  acceptance gate forbids.
+
+  The route that *is* open, and is the next round, is to opt into the tail-block
+  support the framework already provides.  `compute_valid_extent`
+  (`src/op/ascend.cc:410`) clamps `validRow` / `validCol` on every GM copy to
+  `shape - offset`, and `T.copy(..., pad_value=)`
+  (`tilelang/language/copy_op.py:262`) fills the unused part of the destination
+  — the same `valid_shape` + `fillpad` pair the official PyPTO implementation
+  uses, already wired up and covered by
+  `testing/python/language/test_tilelang_ascend_language_tail_block.py`.
+  `examples/gemm/example_gemm_tail_block_developer.py` is a working example:
+  a `T.ceildiv` grid, full-size tiles, ordinary `bx * block_M` indexing, and no
+  special-casing anywhere.
+
+  So the change here is `SEQ // C` → `ceildiv(SEQ, C)` plus explicit handling at
+  the three places the framework does *not* cover: single-row reads whose token
+  index sits on a unit-extent axis (`find_active_dim_indices` only bounds-checks
+  the last two *active* dims, so those are unguarded), UB tail rows that reach
+  `exp()` before being consumed by the cube, and the chunk decay in stage 5,
+  which must be read at the last *valid* token rather than at row `C - 1`.
 * **Zero-length sequences are supported**, and are worth calling out separately
   because they are *not* covered by the rule above: `0 % C == 0`, so `SEQ == 0`
   passes every divisibility guard.  Left alone it would launch a zero-block grid
