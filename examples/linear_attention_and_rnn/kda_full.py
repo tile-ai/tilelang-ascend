@@ -1,10 +1,11 @@
-"""KDA L1: the six chunkwise stages chained into one prefill forward pass.
+"""KDA: the six chunkwise stages chained into one prefill forward pass.
 
-This is the L1 milestone deliverable.  It calls the six stage kernels in order
-and checks the result against two independent goldens:
+Mirrors gdn_full.py: the stage kernels live in kda/, this driver sits one level
+up and chains them.  It calls the six stages in order and checks the result
+against two independent goldens:
 
-    1. kda_l1_ref.kda_chunk_ref   the chunkwise reference (same decomposition)
-    2. kda_ref.kda_ref            the L0 token-by-token recurrence
+    1. kda_chunk_ref.kda_chunk_ref  the chunkwise reference (same decomposition)
+    2. kda_ref.kda_ref              the token-by-token recurrence
 
 Agreement with (2) is the real acceptance criterion.  The two implementations
 share no code path: one walks tokens one at a time carrying a [K, V] state, the
@@ -47,27 +48,23 @@ import sys
 import torch
 import tilelang  # noqa: F401  (imported for its torch_npu side effect)
 
-import kda_l1_ref as R
-from kda_chunk_cumsum import chunk_cumsum
-from kda_chunk_scaled_dot_kkt import chunk_scaled_dot_kkt
-from kda_solve_tril import kda_solve_tril
-from kda_wy_fast import wy_fast
-from kda_chunk_h import chunk_h
-from kda_chunk_o import chunk_o
+# kda/ goes on sys.path before the stage modules are imported.  Each stage file
+# has to be runnable on its own -- CI executes every .py in the example tree as
+# a standalone script -- so they import the reference layer flat, as
+# ``import kda_chunk_ref``.  Putting kda/ on the path here means this file picks
+# up the *same* module object they do; importing it as ``kda.kda_chunk_ref``
+# instead would create a second, independent copy of the reference layer.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "kda"))
 
+from kda.kda_chunk_cumsum import chunk_cumsum  # noqa: E402
+from kda.kda_chunk_scaled_dot_kkt import chunk_scaled_dot_kkt  # noqa: E402
+from kda.kda_solve_tril import kda_solve_tril  # noqa: E402
+from kda.kda_wy_fast import wy_fast  # noqa: E402
+from kda.kda_chunk_h import chunk_h  # noqa: E402
+from kda.kda_chunk_o import chunk_o  # noqa: E402
 
-def _l0_ref():
-    here = os.path.dirname(os.path.abspath(__file__))
-    for cand in (os.path.join(here, "..", "kda"), os.path.join(here, "..", "..", "examples", "kda")):
-        if os.path.isfile(os.path.join(cand, "kda_ref.py")):
-            sys.path.insert(0, os.path.abspath(cand))
-            break
-    import kda_ref
-
-    return kda_ref
-
-
-_L0 = _l0_ref()
+import kda_chunk_ref as R  # noqa: E402
+import kda_ref as _L0  # noqa: E402
 
 
 # ----------------------------------------------------------------- pipeline

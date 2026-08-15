@@ -13,7 +13,7 @@ Two forward paths ship here and they are deliberately ordered:
 
 The recurrent path was written, validated on hardware and frozen *first*, and
 the chunkwise pipeline then uses it as its acceptance golden
-(`kda_l1_full.py` compares against `kda_ref.kda_ref`, the CPU twin of the
+(`kda_full.py` compares against `kda_ref.kda_ref`, the CPU twin of the
 recurrent kernel).  That ordering is a requirement, not a preference: a
 chunkwise decomposition checked only against another chunkwise implementation
 can be consistently wrong.

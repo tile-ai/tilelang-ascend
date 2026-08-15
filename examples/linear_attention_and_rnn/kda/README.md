@@ -26,7 +26,7 @@ the gate is already baked into $L$ before it runs.
 
 The sequence is cut into chunks of $C$ tokens. Stages 1–4 are chunk-parallel,
 stage 5 carries the state serially across chunks, stage 6 reads it back.
-`kda_l1_full.py` chains all six.
+`kda_full.py` chains all six.
 
 | # | Stage | File | Computes | Engine |
 |:-:|---|---|---|:-:|
@@ -124,26 +124,38 @@ load-bearing, since the kernels recover lane 0 as the row sum.
 
 ## Directory contents
 
+The layout mirrors the GDN example next door: the stage kernels live in a
+subdirectory, the driver that chains them sits one level up.
+
 ```
-kda/
-├── __init__.py                   # empty; marks the package and keeps CI from executing it
-├── kda_chunk_cumsum.py           # stage 1  + self-test
-├── kda_chunk_scaled_dot_kkt.py   # stage 2  + self-test
-├── kda_solve_tril.py             # stage 3  + self-test
-├── kda_wy_fast.py                # stage 4  + self-test
-├── kda_chunk_h.py                # stage 5  + self-test
-├── kda_chunk_o.py                # stage 6  + self-test
-├── kda_l1_ref.py                 # pure-PyTorch chunkwise reference + per-stage goldens
-├── kda_l1_full.py                # the six stages chained, checked against two goldens
-│
-├── kda_recurrent.py              # the recurrent decode kernel  + self-test
-├── test_kda_recurrent.py         # decode acceptance test (incl. the FLA cross-check)
-├── kda_ref.py                    # pure-PyTorch token-by-token recurrence + make_inputs
-│
-├── bench.sh                      # msprof harness -- provided, never run (see "Not yet done")
-├── design.md                     # why each stage partitions and moves data the way it does
-└── README.md
+linear_attention_and_rnn/
+├── gdn_full.py                    # upstream, for reference
+├── kda_full.py                    # the six stages chained, checked against two goldens
+└── kda/
+    ├── __init__.py                # empty; makes kda_full.py's imports a package import
+    ├── kda_chunk_cumsum.py        # stage 1  + self-test
+    ├── kda_chunk_scaled_dot_kkt.py# stage 2  + self-test
+    ├── kda_solve_tril.py          # stage 3  + self-test
+    ├── kda_wy_fast.py             # stage 4  + self-test
+    ├── kda_chunk_h.py             # stage 5  + self-test
+    ├── kda_chunk_o.py             # stage 6  + self-test
+    ├── kda_chunk_ref.py           # pure-PyTorch chunkwise reference + per-stage goldens
+    │
+    ├── kda_recurrent.py           # the recurrent decode kernel  + self-test
+    ├── test_kda_recurrent.py      # decode acceptance test (incl. the FLA cross-check)
+    ├── kda_ref.py                 # pure-PyTorch token-by-token recurrence + make_inputs
+    │
+    ├── bench.sh                   # msprof harness -- provided, never run (see "Not yet done")
+    ├── design.md                  # why each kernel partitions and moves data the way it does
+    └── README.md                  # this file
 ```
+
+`kda_full.py` imports the stages as `from kda.kda_chunk_h import chunk_h`, which
+is what `__init__.py` is for. The stage files themselves import each other and
+the reference layer **flat** (`import kda_chunk_ref`), because CI executes every
+`.py` in the tree as a standalone script and a package-relative import would not
+resolve that way. `kda_full.py` puts `kda/` on `sys.path` before importing them
+so both styles resolve to the same module objects.
 
 Two forward paths ship here. `kda_recurrent.py` is the **decode** path: one
 token at a time, carrying the `[K, V]` state, grid `B * HV`, entirely on the
@@ -154,11 +166,10 @@ acceptance golden for the chunkwise pipeline — the decode path was frozen
 first, and the chunkwise decomposition is checked against it rather than only
 against another chunkwise implementation.
 
-`kda_l1_ref.py` and `kda_l1_full.py` both use the token-by-token L0 recurrence in
+`kda_chunk_ref.py` and `kda_full.py` both use the token-by-token recurrence in
 `kda_ref.py` as their ground truth, and take `make_inputs` from it. It ships in
-this directory, so nothing outside the directory has to be present for the tests
-to run. (The loader still falls back to `../kda`, `../../examples/kda` and
-`../../kda` for a tree that keeps L0 as a separate example.)
+this directory, so nothing outside `linear_attention_and_rnn/` has to be present
+for the tests to run.
 
 ---
 
@@ -167,7 +178,7 @@ to run. (The loader still falls back to `../kda`, `../../examples/kda` and
 ### Full pipeline
 
 ```python
-from kda_l1_full import kda_chunk_fwd
+from kda_full import kda_chunk_fwd
 
 o, final_state = kda_chunk_fwd(q, k, v, g, beta, C=64, BC=16,
                                scale=None,            # defaults to K ** -0.5
@@ -183,25 +194,32 @@ host would be a full copy of every input hidden behind the kernel.
 ### Running the tests
 
 Every file is executable and prints `Kernel Output Match!` on success, or exits
-non-zero. Stages 1–6 and `kda_l1_full.py` require an Ascend NPU;
-`kda_l1_ref.py` is pure PyTorch and runs on CPU alone.
+non-zero. Stages 1–6 and `kda_full.py` require an Ascend NPU;
+`kda_chunk_ref.py` is pure PyTorch and runs on CPU alone.
 
 ```bash
-# reference layer only, no NPU needed:
-#   chunkwise vs L0 recurrence, state relay, and a demonstration that the
-#   naive one-shot exponent fold produces non-finite values
-python kda_l1_ref.py
+cd examples/linear_attention_and_rnn
 
-# per-stage self-tests, each against its golden from kda_l1_ref.stage_tensors()
-python kda_chunk_cumsum.py
-python kda_chunk_scaled_dot_kkt.py
-python kda_solve_tril.py
-python kda_wy_fast.py
-python kda_chunk_h.py
-python kda_chunk_o.py
+# reference layers only, no NPU needed:
+#   chunkwise vs the recurrence, state relay, zero-length sequences, and a
+#   demonstration that the naive one-shot exponent fold goes non-finite
+python kda/kda_chunk_ref.py
+python kda/kda_ref.py
 
-# the six stages chained, vs both goldens, plus the two bit-exactness invariants
-python kda_l1_full.py
+# the decode path
+python kda/kda_recurrent.py
+python kda/test_kda_recurrent.py     # also cross-checks FLA, if it is installed
+
+# per-stage self-tests, each against its golden from kda_chunk_ref.stage_tensors()
+python kda/kda_chunk_cumsum.py
+python kda/kda_chunk_scaled_dot_kkt.py
+python kda/kda_solve_tril.py
+python kda/kda_wy_fast.py
+python kda/kda_chunk_h.py
+python kda/kda_chunk_o.py
+
+# the six stages chained, vs both goldens, plus the bit-exactness invariants
+python kda_full.py
 ```
 
 Goldens are always computed on CPU in fp32. On device, `einsum` dispatches to a
@@ -209,7 +227,7 @@ matmul with reduced-precision accumulation and drifts two references that should
 be bit-identical by roughly `3e-4` — the same order as the quantity being
 measured.
 
-`kda_l1_ref.make_inputs(B, SEQ, H, HV, K, V, device=..., dtype=..., gate=...)`
+`kda_chunk_ref.make_inputs(B, SEQ, H, HV, K, V, device=..., dtype=..., gate=...)`
 builds test inputs at four gate settings: `keep` ($\alpha\to1$), `normal`
 (logsigmoid), `forget` (bounded, $\min\Gamma_C\approx-209$) and `extreme`
 (unbounded, $\min\Gamma_C\approx-841$).
@@ -296,7 +314,7 @@ divisibility guard and would otherwise launch zero-block grids over unwritten
 memory.
 
 **Per-stage self-tests**, each fed the golden inputs from
-`kda_l1_ref.stage_tensors()` and compared against the matching entry:
+`kda_chunk_ref.stage_tensors()` and compared against the matching entry:
 
 | Stage | Golden | Threshold | Cases |
 |---|---|---|:-:|
@@ -331,7 +349,7 @@ is exact, $e_{\text{sens}}=0$, and the criterion tightens to `1e-5` on its own.
   such number would have to be measured first.
 * **No tail block, no varlen / `cu_seqlens` support.** All six host wrappers
   assert `SEQ % C == 0`, so ragged tails are rejected rather than padded. The
-  pure-PyTorch `kda_l1_ref.kda_chunk_ref` does pad the token axis and is tested
+  pure-PyTorch `kda_chunk_ref.kda_chunk_ref` does pad the token axis and is tested
   at `SEQ = 70` and `SEQ = 33`, but `stage_tensors()` and the kernels do not.
   Host-side padding is not an option for the kernels: it is exactly the hidden
   cost the acceptance gate rules out.

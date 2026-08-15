@@ -11,7 +11,7 @@ the cross-core flag -- is structurally the same as the GDN kernel.
 
 Only W and U are produced here.  kg = K . e^{G_C - G}, qg and Aqk are computed
 in place by the downstream chunk_h / chunk_o kernels, which saves three GM
-round trips; ``kda_l1_ref.ref_wy_fast`` returns them as well, but this stage is
+round trips; ``kda_chunk_ref.ref_wy_fast`` returns them as well, but this stage is
 only checked against its ``["W"]`` / ``["U"]`` entries.
 
 What changed against the earlier chunkwise port (interface only, math intact)
@@ -55,7 +55,7 @@ import tilelang
 from tilelang import language as T
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import kda_l1_ref  # noqa: E402
+import kda_chunk_ref  # noqa: E402
 
 # One pass config only, the same one all six GDN kernels use.  MEMORY_PLANNING
 # is deliberately off: on the backward bwd_dot kernel it aliased a reduction
@@ -245,8 +245,8 @@ def _relerr(x, r):
 
 
 def _case(B, SEQ, H, HV, K, V, C, gate, dtype):
-    q, k, v, g, beta, _ = kda_l1_ref.make_inputs(B, SEQ, H, HV, K, V, device="npu", dtype=dtype, gate=gate)
-    ref = kda_l1_ref.stage_tensors(q, k, v, g, beta, C=C)
+    q, k, v, g, beta, _ = kda_chunk_ref.make_inputs(B, SEQ, H, HV, K, V, device="npu", dtype=dtype, gate=gate)
+    ref = kda_chunk_ref.stage_tensors(q, k, v, g, beta, C=C)
 
     # stage_tensors hands everything back in external layout, but through a
     # transpose, so the views are not contiguous.  contiguous() here is a

@@ -18,7 +18,7 @@ Anchored blocking (the reason this stage is not a one-liner)
 -----------------------------------------------------------
 Folding e^{+G_i} into q and e^{-G_j} into k would make Aqk a single matmul, but
 e^{-G_j} grows without bound down the chunk.  So the chunk is cut into blocks of
-BC rows, exactly like ``kda_l1_ref._decayed_dot``:
+BC rows, exactly like ``kda_chunk_ref._decayed_dot``:
 
     row block a = [a*BC, (a+1)*BC), anchor row ar = a*BC
 
@@ -115,7 +115,7 @@ import tilelang
 from tilelang import language as T
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import kda_l1_ref  # noqa: E402
+import kda_chunk_ref  # noqa: E402
 
 # Only AUTO_SYNC, same as the six GDN kernels.  MEMORY_PLANNING is deliberately
 # off: on the backward bwd_dot kernel it aliased a reduction target with a live
@@ -413,8 +413,8 @@ def _relerr(x, r):
 
 
 def _case(B, SEQ, H, HV, K, V, C, gate, dtype=torch.float16, BC=16):
-    q, k, v, g, beta, _ = kda_l1_ref.make_inputs(B, SEQ, H, HV, K, V, dtype=dtype, gate=gate)
-    st = kda_l1_ref.stage_tensors(q, k, v, g, beta, C=C, BC=BC)
+    q, k, v, g, beta, _ = kda_chunk_ref.make_inputs(B, SEQ, H, HV, K, V, dtype=dtype, gate=gate)
+    st = kda_chunk_ref.stage_tensors(q, k, v, g, beta, C=C, BC=BC)
 
     # stage_tensors works in the internal [B, HV, T, *] layout and transposes on
     # the way out, so its tensors are views; the kernel adapter needs contiguous

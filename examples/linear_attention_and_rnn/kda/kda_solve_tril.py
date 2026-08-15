@@ -12,7 +12,7 @@ Algorithm (row-by-row forward substitution, on the vector core)
 
 The kernel keeps the GDN sign convention: it holds X' = -X in ``x_ub``,
 recurses ``x_ub[i] <- L[i] - sum_j x_ub[j] * x_ub[i, j]``, and finishes with
-A = I - X'.  Substituting X' = -X reproduces ``kda_l1_ref.ref_solve_tril``
+A = I - X'.  Substituting X' = -X reproduces ``kda_chunk_ref.ref_solve_tril``
 line for line, so the two are the same computation, not merely equivalent ones.
 
 Forward substitution, not ``linalg.inv``: there is no NPU implementation of
@@ -53,7 +53,7 @@ kernel, so the zeros are true zeros rather than underflowed ones.
 Known limitation
 ----------------
 First pass requires ``SEQ % C == 0``.  Tail blocks are deliberately left to the
-next round (task spec: fixed length first, varlen later); ``kda_l1_ref`` already
+next round (task spec: fixed length first, varlen later); ``kda_chunk_ref`` already
 pads for them, and the padding is neutral, so nothing here has to change when
 that support lands -- only the grid bound does.
 
@@ -74,7 +74,7 @@ from tilelang import language as T
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import kda_l1_ref  # noqa: E402
+import kda_chunk_ref  # noqa: E402
 
 # Only AUTO_SYNC, same as the six GDN kernels.  MEMORY_PLANNING is deliberately
 # left off: on the backward dot it aliased a reduction target with a temporary
@@ -214,8 +214,8 @@ def _case(B, SEQ, H, HV, K, V, C, gate, dtype):
     Inputs are built on CPU in fp32 so the reference is computed exactly; only
     the tensor the kernel actually consumes goes to the device.
     """
-    q, k, v, g, beta, _ = kda_l1_ref.make_inputs(B, SEQ, H, HV, K, V, device="cpu", dtype=torch.float32, gate=gate)
-    st = kda_l1_ref.stage_tensors(q, k, v, g, beta, C=C)
+    q, k, v, g, beta, _ = kda_chunk_ref.make_inputs(B, SEQ, H, HV, K, V, device="cpu", dtype=torch.float32, gate=gate)
+    st = kda_chunk_ref.stage_tensors(q, k, v, g, beta, C=C)
 
     # stage_tensors returns external layout as a transposed view.  .contiguous()
     # is a test-side materialisation, not part of the kernel path: in the real
@@ -231,7 +231,7 @@ def _case(B, SEQ, H, HV, K, V, C, gate, dtype):
     # which e_sens measures on the reference itself -- hence the adaptive bound
     # instead of a hand-picked loose constant.  For fp32 the input is exact,
     # e_sens is 0, and the golden check tightens to _TOL.
-    a_same = kda_l1_ref.ref_solve_tril(l_in.float().cpu().transpose(1, 2)).transpose(1, 2)
+    a_same = kda_chunk_ref.ref_solve_tril(l_in.float().cpu().transpose(1, 2)).transpose(1, 2)
     e_kern = _relerr(got, a_same)
     e_gold = _relerr(got, st["A"])
     e_sens = _relerr(a_same, st["A"])

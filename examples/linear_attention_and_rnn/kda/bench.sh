@@ -85,7 +85,9 @@ TARGETS=(
     "chunk_h|kda_chunk_h.py|stage 5/6  per-chunk entry states and V'"
     "chunk_o|kda_chunk_o.py|stage 6/6  output O"
 )
-PIPELINE_TARGET="pipeline|kda_l1_full.py|full six-stage forward pass"
+# kda_full.py sits one level up, next to gdn_full.py, mirroring the upstream
+# layout: the stage kernels live in this directory, the driver above it.
+PIPELINE_TARGET="pipeline|../kda_full.py|full six-stage forward pass"
 
 # ======================== paths ========================
 
@@ -185,7 +187,7 @@ fi
 for entry in "${selected[@]}"; do
     rest="${entry#*|}"; script="${rest%%|*}"
     if [ ! -f "$SCRIPT_DIR/$script" ]; then
-        echo "Error: expected kernel script '$script' next to bench.sh, but it is missing." >&2
+        echo "Error: expected script '$script' relative to bench.sh, but it is missing." >&2
         exit 1
     fi
 done
@@ -424,7 +426,7 @@ run_msprof_op() {
 # ======================== main ========================
 
 mkdir -p "$OUTPUT_DIR"
-SUMMARY_CSV="$OUTPUT_DIR/kda_l1_bench.csv"
+SUMMARY_CSV="$OUTPUT_DIR/kda_bench.csv"
 echo "target,script,mean_us,min_us,max_us,samples,source,status" > "$SUMMARY_CSV"
 
 echo "================================================================"

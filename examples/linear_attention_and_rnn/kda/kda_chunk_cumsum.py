@@ -3,7 +3,7 @@
     in   G  [B, SEQ, HV, K]  fp32, log-domain, g <= 0
     out  G  [B, SEQ, HV, K]  fp32, inclusive prefix sum restarted every C tokens
 
-golden = kda_l1_ref.stage_tensors(q, k, v, g, beta, C=C)["G"]
+golden = kda_chunk_ref.stage_tensors(q, k, v, g, beta, C=C)["G"]
 
 GDN carries one scalar gate per token, so its cumsum is a C-step scalar chain.
 KDA carries K of them, so every step here is a K-wide vector add and the chain
@@ -12,7 +12,7 @@ moves K times as much data -- the gate tensor grows from [B,H,L] to [B,T,HV,K].
 Restarting the sum at every chunk boundary is deliberate, not an optimisation:
 it caps how far the exponents can travel inside a chunk, which is what keeps
 every exp() in the five later stages in range.  See the numerical rules in
-kda_l1_ref.py.
+kda_chunk_ref.py.
 
 What changed vs the earlier chunkwise port (the math is untouched)
 -----------------------------------------------------------------
@@ -48,7 +48,7 @@ What changed vs the earlier chunkwise port (the math is untouched)
 Known limitations (first pass, on purpose)
 ------------------------------------------
 * ``SEQ % C == 0``.  Tail blocks are the next round (task spec: fixed length
-  first, varlen later).  kda_l1_ref.kda_chunk_ref pads on the host, but
+  first, varlen later).  kda_chunk_ref.kda_chunk_ref pads on the host, but
   stage_tensors -- the golden for this file -- refuses a partial tail too.
 * ``K % 16 == 0`` so that BK * 4 bytes is a multiple of 32: the UB row pitch of
   the tile has to stay 32B aligned or the per-row VEC instructions are
@@ -68,7 +68,7 @@ from tilelang import language as T
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import kda_l1_ref  # noqa: E402
+import kda_chunk_ref  # noqa: E402
 
 # Only AUTO_SYNC, same as the six GDN kernels in the repo.  MEMORY_PLANNING is
 # deliberately left off: it aliased a reduction target with a scratch tile in
@@ -161,11 +161,11 @@ def _relerr(got, ref):
 def _case(B, SEQ, H, HV, K, V, C, gate, note=""):
     # Inputs are built on the host and the golden is taken on the host in fp32:
     # the reference pipeline is exact there, while an NPU einsum would drift the
-    # two fp32 references apart by ~3e-4 (see kda_l1_ref.py).  Only g crosses to
+    # two fp32 references apart by ~3e-4 (see kda_chunk_ref.py).  Only g crosses to
     # the device, and only as a plain contiguous copy.
-    q, k, v, g, beta, _ = kda_l1_ref.make_inputs(B, SEQ, H, HV, K, V, device="cpu", dtype=torch.float16, gate=gate)
+    q, k, v, g, beta, _ = kda_chunk_ref.make_inputs(B, SEQ, H, HV, K, V, device="cpu", dtype=torch.float16, gate=gate)
 
-    ref = kda_l1_ref.stage_tensors(q, k, v, g, beta, C=C)["G"]
+    ref = kda_chunk_ref.stage_tensors(q, k, v, g, beta, C=C)["G"]
     got = chunk_cumsum(g.npu(), C)
 
     e = _relerr(got, ref)

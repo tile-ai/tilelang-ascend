@@ -73,12 +73,12 @@ and would silently read C consecutive heads.  1-D reads of a single row need no
 slice, which is why glast/gexp use the plain form.
 
 beta and scale do not appear in this stage: kg carries no beta (see
-kda_l1_ref.ref_wy_fast) and scale rides on q, which chunk_o consumes.
+kda_chunk_ref.ref_wy_fast) and scale rides on q, which chunk_o consumes.
 
 Known limitations (first pass)
 ------------------------------
   * requires SEQ % C == 0.  Tail blocks are handled by the reference
-    (kda_l1_ref.kda_chunk_ref pads the token axis) but not yet by this kernel;
+    (kda_chunk_ref.kda_chunk_ref pads the token axis) but not yet by this kernel;
     fixed length first, varlen later, per the task spec.
   * the two gemm operands that carry the state (S into `W S`, and V' into
     `kg^T V'`) are `dtype`, because that is what the Cube takes.  The
@@ -102,7 +102,7 @@ import tilelang
 from tilelang import language as T
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import kda_l1_ref  # noqa: E402
+import kda_chunk_ref  # noqa: E402
 
 # Only AUTO_SYNC, matching the six GDN kernels in the repo.  MEMORY_PLANNING is
 # deliberately off: on the backward bwd_dot kernel it aliased a reduction target
@@ -283,7 +283,7 @@ _DTYPE_STR = {torch.float16: "float16", torch.bfloat16: "bfloat16"}
 
 
 def chunk_h(kt, w, u, g_cumsum, C=64, BV=None, initial_state=None):
-    """Host wrapper.  Semantics match kda_l1_ref.ref_chunk_h.
+    """Host wrapper.  Semantics match kda_chunk_ref.ref_chunk_h.
 
     Only zero-filling the absent initial state, a dtype table lookup and the
     block-size choice happen here.  No transpose, no reshape, no staging copy:
@@ -342,9 +342,9 @@ def _relerr(x, r):
 
 
 def _case(B, SEQ, H, HV, K, V, C, gate, with_state, dtype):
-    q, k, v, g, beta, s0 = kda_l1_ref.make_inputs(B, SEQ, H, HV, K, V, dtype=dtype, gate=gate, with_state=with_state)
+    q, k, v, g, beta, s0 = kda_chunk_ref.make_inputs(B, SEQ, H, HV, K, V, dtype=dtype, gate=gate, with_state=with_state)
 
-    gold = kda_l1_ref.stage_tensors(q, k, v, g, beta, C=C, initial_state=s0)
+    gold = kda_chunk_ref.stage_tensors(q, k, v, g, beta, C=C, initial_state=s0)
     # stage_tensors returns external [B, SEQ, HV, *] views produced by a
     # transpose, so they are not contiguous; the kernels that will feed this
     # stage in the real pipeline emit contiguous tensors, hence .contiguous()

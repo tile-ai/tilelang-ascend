@@ -15,7 +15,7 @@ two operands, which keeps the whole thing a single matmul.  Numerically that is
 a trap: G is a cumulative sum of non-positive gates, so e^{-G_j} grows without
 bound down the chunk.  Measured on CPU with the reference layer, the naive fold
 produces 2624 non-finite entries at the "forget" gate (min Gamma_C = -209) and
-3840 at "extreme" (-841).  ``kda_l1_ref.test_naive_fold_blows_up`` demonstrates
+3840 at "extreme" (-841).  ``kda_chunk_ref.test_naive_fold_blows_up`` demonstrates
 it rather than merely asserting it.
 
 What this kernel does instead
@@ -37,7 +37,7 @@ Two properties make this safe by construction, and both are load-bearing:
     then 0 * inf = NaN poisons the half that is kept.
 
 This is strictly safer than the BC=16 anchored blocking used by
-``kda_l1_ref._decayed_dot`` (and by fla): the anchored form still bounds both
+``kda_chunk_ref._decayed_dot`` (and by fla): the anchored form still bounds both
 folded factors by 1, but this form never forms a positive exponent at all.  The
 two agree to fp32 rounding, so the anchored golden validates this kernel
 directly.  The reason to prefer anchoring is *speed*, not numerics -- it is what
@@ -75,7 +75,7 @@ across cores, so there is no cross-core communication and no workspace.
 Known limitations
 -----------------
   * ``SEQ % C == 0`` only.  Tail blocks are a later pass (fixed length first,
-    varlen later); ``kda_l1_ref.kda_chunk_ref`` already pads for them on host,
+    varlen later); ``kda_chunk_ref.kda_chunk_ref`` already pads for them on host,
     but this kernel does not accept a ragged chunk.
   * Runs entirely on the vector unit, cube idle -- the slowest stage by a wide
     margin.  The follow-up is the anchored BC=16 decomposition: anchor each row
@@ -97,7 +97,7 @@ from tilelang import language as T
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import kda_l1_ref  # noqa: E402
+import kda_chunk_ref  # noqa: E402
 
 # Only AUTO_SYNC, matching all six GDN kernels.  MEMORY_PLANNING is deliberately
 # left off: on the backward bwd_dot it aliased a reduction target with a scratch
@@ -302,8 +302,8 @@ def _case(B, SEQ, H, HV, K, V, C, gate, dtype):
     # dispatches einsum to matmul with reduced-precision accumulation and drifts
     # two identical fp32 references by ~3e-4, which would blur the comparison.
     # The tensors handed to the kernel are bit-identical copies of these.
-    q, k, v, g, beta, _ = kda_l1_ref.make_inputs(B, SEQ, H, HV, K, V, device="cpu", dtype=dtype, gate=gate)
-    st = kda_l1_ref.stage_tensors(q, k, v, g, beta, C=C)
+    q, k, v, g, beta, _ = kda_chunk_ref.make_inputs(B, SEQ, H, HV, K, V, device="cpu", dtype=dtype, gate=gate)
+    st = kda_chunk_ref.stage_tensors(q, k, v, g, beta, C=C)
     G, ref = st["G"], st["L"]
 
     got = chunk_scaled_dot_kkt(k.npu(), G.npu(), beta.npu(), C=C)
