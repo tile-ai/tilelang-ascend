@@ -5271,6 +5271,181 @@ def test_sigmoid_and_float_round_implicit_workspace_runtime():
     torch.testing.assert_close(round_out, torch.round(a), rtol=0, atol=0)
 
 
+_ROUND_INPUT_PATTERN = [
+    -4.5,
+    -3.5,
+    -2.5,
+    -1.5,
+    -0.5,
+    0.5,
+    1.5,
+    2.5,
+    3.5,
+    4.5,
+    -3.4,
+    -2.6,
+    -1.1,
+    0.0,
+    1.1,
+    2.6,
+]
+
+
+def tile_round_kernel(shape, dtype, count, explicit_tmp=False):
+    @T.prim_func
+    def main(
+        A: T.Tensor(shape, dtype),  # type: ignore
+        B: T.Tensor(shape, dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            src_ub = T.alloc_ub(shape, dtype)
+            dst_ub = T.alloc_ub(shape, dtype)
+            if explicit_tmp:
+                arena_ub = T.alloc_ub((256,), "uint8")
+                if vid == 0:
+                    T.copy(A, src_ub)
+                    T.tile.fill(dst_ub, -99.0)
+                    T.tile.round(dst_ub, src_ub, count, tmp=arena_ub)
+                    T.copy(dst_ub, B)
+            else:
+                if vid == 0:
+                    T.copy(A, src_ub)
+                    T.tile.fill(dst_ub, -99.0)
+                    T.tile.round(dst_ub, src_ub, count)
+                    T.copy(dst_ub, B)
+
+    return main
+
+
+def run_test_tile_round(shape, dtype, target, count=None, explicit_tmp=False):
+    numel = 1
+    for extent in shape:
+        numel *= extent
+    if count is None:
+        count = numel
+
+    kernel = tilelang.compile(
+        tile_round_kernel(shape, dtype, count, explicit_tmp),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
+    )
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    repeat = (numel + len(_ROUND_INPUT_PATTERN) - 1) // len(_ROUND_INPUT_PATTERN)
+    input_host = torch.tensor(_ROUND_INPUT_PATTERN, dtype=torch_dtype).repeat(repeat)[:numel]
+    input_host = input_host.reshape(shape)
+    expected_host = torch.full_like(input_host, -99.0)
+    expected_host.reshape(-1)[:count] = torch.round(input_host.reshape(-1)[:count])
+
+    output = kernel(input_host.npu())
+    torch.npu.synchronize()
+    torch.testing.assert_close(output, expected_host.npu(), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "target"),
+    [
+        ("float", "ascendc"),
+        ("float16", "ascendc"),
+        ("float", "pto"),
+    ],
+)
+@pytest.mark.parametrize("shape", [(64,), (4, 16)])
+def test_tile_round_ties_to_even(dtype, target, shape):
+    run_test_tile_round(shape, dtype, target)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("count", [17, 32])
+def test_tile_round_ascendc_respects_partial_count(dtype, count):
+    run_test_tile_round((64,), dtype, "ascendc", count=count)
+
+
+def test_tile_round_float16_explicit_tmp_runtime():
+    run_test_tile_round((64,), "float16", "ascendc", explicit_tmp=True)
+
+
+def tile_round_inplace_kernel(dtype):
+    @T.prim_func
+    def main(
+        A: T.Tensor((64,), dtype),  # type: ignore
+        B: T.Tensor((64,), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            data_ub = T.alloc_ub((64,), dtype)
+            if vid == 0:
+                T.copy(A, data_ub)
+                T.tile.round(data_ub, data_ub, 64)
+                T.copy(data_ub, B)
+
+    return main
+
+
+@pytest.mark.parametrize(
+    ("dtype", "target"),
+    [
+        ("float", "ascendc"),
+        ("float16", "ascendc"),
+        ("float", "pto"),
+    ],
+)
+def test_tile_round_inplace(dtype, target):
+    kernel = tilelang.compile(
+        tile_round_inplace_kernel(dtype),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
+    )
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    input_host = torch.tensor(_ROUND_INPUT_PATTERN, dtype=torch_dtype).repeat(4)
+    output = kernel(input_host.npu())
+    torch.npu.synchronize()
+    torch.testing.assert_close(output, torch.round(input_host).npu(), rtol=0, atol=0)
+
+
+def tile_round_slice_kernel(dtype):
+    @T.prim_func
+    def main(
+        A: T.Tensor((2, 64), dtype),  # type: ignore
+        B: T.Tensor((2, 64), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            src_ub = T.alloc_ub((2, 64), dtype)
+            dst_ub = T.alloc_ub((2, 64), dtype)
+            if vid == 0:
+                T.copy(A, src_ub)
+                T.tile.fill(dst_ub, -99.0)
+                T.tile.round(dst_ub[1, :], src_ub[0, :], 64)
+                T.copy(dst_ub, B)
+
+    return main
+
+
+@pytest.mark.parametrize(
+    ("dtype", "target"),
+    [
+        ("float", "ascendc"),
+        ("float16", "ascendc"),
+        ("float", "pto"),
+    ],
+)
+def test_tile_round_buffer_region(dtype, target):
+    kernel = tilelang.compile(
+        tile_round_slice_kernel(dtype),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
+    )
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    input_host = torch.tensor(_ROUND_INPUT_PATTERN, dtype=torch_dtype).repeat(8).reshape(2, 64)
+    expected_host = torch.full_like(input_host, -99.0)
+    expected_host[1, :] = torch.round(input_host[0, :])
+    output = kernel(input_host.npu())
+    torch.npu.synchronize()
+    torch.testing.assert_close(output, expected_host.npu(), rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("op", ["sum", "max", "min"])
 @pytest.mark.parametrize("axis", [2, -3], ids=lambda axis: f"axis{axis}")
 def test_reduce_invalid_axis_raises_value_error(op, axis):
