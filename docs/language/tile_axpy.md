@@ -2,7 +2,7 @@
 
 ## 1. 功能说明
 
-将源 buffer 与标量相乘后逐元素加到目标 buffer 上：`dst[i] = scalar * src[i] + dst[i]`
+将源 buffer `src0` 与标量 `scalar_value` 相乘后逐元素加到目标 buffer `dst` 上：`dst[i] = scalar_value * src0[i] + dst[i]`
 
 dst 同时作为输入和输出，原地更新 dst 的内容。
 
