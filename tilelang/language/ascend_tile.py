@@ -2283,10 +2283,29 @@ def round(
     *,
     tmp: Buffer | BufferRegion | None = None,
 ):  # noqa: F821
-    """Round elements, optionally using explicit UB scratch storage.
+    """Round floating-point elements to integral values using ties-to-even.
 
-    ``tmp`` may use any fixed-width scalar dtype; lowering reinterprets its
-    storage for the selected backend.
+    ``out`` and ``buffer`` may be UB buffers or contiguous buffer regions and
+    may alias for an in-place operation. They must have matching shapes and
+    dtypes. AscendC supports float16 and float32; PTO currently supports
+    float32 only. AscendC honors ``count`` as the number of leading elements to
+    process, while PTO requires ``count`` to equal the selected tile extent.
+
+    Args:
+        out: Destination UB buffer or buffer region.
+        buffer: Source UB buffer or buffer region.
+        count: Number of leading elements to round. This must not exceed the
+            number of accessible source or destination elements.
+        tmp: Optional explicit UB scratch storage for the AscendC float16 path.
+            It must be a one-dimensional, static, contiguous fixed-width scalar
+            buffer in ``shared.ub``, or an equivalent 32-byte-aligned buffer
+            region. Its dtype is ignored and its storage is reinterpreted by
+            byte address. When omitted, lowering allocates
+            ``max(source access bytes, 256)`` bytes. AscendC float32 and PTO use
+            no workspace and elide this operand.
+
+    Returns:
+        tvm.tir.Call: Intrinsic call for the selected Ascend backend.
     """
     if isinstance(out, BufferRegion):
         out_ptr, _ = _handle_buffer_region(out, "w")
