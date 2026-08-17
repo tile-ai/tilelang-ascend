@@ -34,8 +34,8 @@ def createvecindex(
 |------|:---:|:----------:|
 | Ascend A2 / A3 | float32, int16, int32 | 同 dst |
 
-- float16 仅 ascendc 后端支持（pto 后端编译失败）
-- uint16、uint32 仅 pto 后端支持（ascendc 后端编译失败）
+- float16 仅 ascendc 后端支持
+- uint16、uint32 仅 pto 后端支持
 
 #### 2.3.2 Shape 支持
 
