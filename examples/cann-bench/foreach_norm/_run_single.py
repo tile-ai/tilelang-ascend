@@ -4,11 +4,14 @@
 从 CPU 生成数据再 .npu() 搬到 NPU（避免 simulator 模式下 aclnnInplaceNormal 错误）。
 选择 p=1（L1 范数，最简单的 abs + reduce_sum 组合）。
 """
+
 import sys
+
 sys.path.insert(0, "/mnt/workspace/gitCode/cann/tilelang-ascend/examples/cann-bench/foreach_norm")
 
 import torch
 import tilelang
+
 tilelang.disable_cache()
 
 from foreach_norm import l1_norm_kernel
