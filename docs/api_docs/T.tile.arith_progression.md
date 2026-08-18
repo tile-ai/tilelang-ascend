@@ -13,7 +13,7 @@ def arith_progression(
     buffer: Buffer,
     first_value: PrimExpr,
     diff_value: PrimExpr,
-    count: PrimExpr,
+    count: PrimExpr | None = None,
 )
 ```
 
@@ -24,7 +24,7 @@ def arith_progression(
 | buffer | 输出 | 存放等差数列 | 张量（tensor） | 必填 |
 | first_value | 输入 | 等差数列的首个元素值，须与 buffer 的 dtype 一致 | 标量（scalar） | 必填 |
 | diff_value | 输入 | 等差数列元素之间的差值（须 ≥ 0），须与 buffer 的 dtype 一致 | 标量（scalar） | 必填 |
-| count | 输入 | 等差数列的长度（元素个数），须 > 0 | 整数 | 必填 |
+| count | 输入 | 等差数列的长度（元素个数），须 > 0。省略时由 `math.prod(buffer.shape)` 自动推导 | 整数 | 可选 |
 
 > **类型说明**：
 > - **tensor**：通过 `T.alloc_ub`、`T.alloc_shared` 等分配的缓冲区（Buffer），或其切片（BufferRegion）

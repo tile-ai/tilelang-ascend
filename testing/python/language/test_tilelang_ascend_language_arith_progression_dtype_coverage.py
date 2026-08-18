@@ -8,14 +8,19 @@ Existing coverage in test_tilelang_ascend_language_elementwise.py:
 - test_generate_arithmetic_progression: int32, shape=1024, step=1 (low_priority)
 
 This file supplements with:
-1. Supported dtype coverage (float16/float32/int16/int32 x ascendc/pto, uint16/uint32 x pto)
+1. Supported dtype coverage (float32/int32 x ascendc/pto, float16 x ascendc)
 2. Parameter combinations on ascendc (first_value/diff_value variations)
 3. Partial buffer writes on ascendc (count < buffer size)
-4. Unsupported dtype compilation errors (uint16/uint32 x ascendc, float16 x pto)
+4. Unsupported dtype compilation errors (uint16 x ascendc, float16 x pto)
+5. Count parameter omission (auto-derivation via math.prod(buffer.shape))
 
 Note: pto parameter combinations and partial writes are not tested here because
 pto codegen has known bugs (does not pass diff_value/count to TCI).
 See docs/api_docs/T.tile.arith_progression.md section 2.4.1 for details.
+
+Test suite follows the simplification principle for direct-intrinsic APIs
+(mentor z00520135 review on PR4 atomic_add): since arith_progression has no
+type-specific processing logic, only representative dtypes are tested.
 """
 
 import pytest
@@ -23,7 +28,13 @@ import tilelang
 import tilelang.language as T
 import torch
 
-tilelang.disable_cache()
+
+@pytest.fixture(scope="module", autouse=True)
+def _disable_cache():
+    tilelang.disable_cache()
+    yield
+    tilelang.enable_cache()
+
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
@@ -114,7 +125,6 @@ def _run_partial_write(dtype, target, buf_size=256, write_count=100, first_value
     [
         "float32",
         pytest.param("int32", marks=pytest.mark.low_priority),
-        pytest.param("int16", marks=pytest.mark.low_priority),
     ],
 )
 @pytest.mark.parametrize(
@@ -142,21 +152,8 @@ def test_arith_progression_dtype_float16_ascendc(dtype, target):
 @pytest.mark.parametrize(
     "dtype",
     [
-        pytest.param("uint16", marks=pytest.mark.low_priority),
-        pytest.param("uint32", marks=pytest.mark.low_priority),
-    ],
-)
-@pytest.mark.parametrize("target", ["pto"])
-def test_arith_progression_dtype_uint_pto(dtype, target):
-    _run_one(dtype, target)
-
-
-@pytest.mark.parametrize(
-    "dtype",
-    [
         "float32",
-        "int32",
-        pytest.param("int16", marks=pytest.mark.low_priority),
+        pytest.param("int32", marks=pytest.mark.low_priority),
     ],
 )
 @pytest.mark.parametrize("target", ["ascendc"])
@@ -165,7 +162,6 @@ def test_arith_progression_dtype_uint_pto(dtype, target):
     [
         pytest.param(10, 2, marks=pytest.mark.low_priority),
         pytest.param(0, 0, marks=pytest.mark.low_priority),
-        pytest.param(100, 5, marks=pytest.mark.low_priority),
     ],
 )
 def test_arith_progression_param_combinations(dtype, target, first_value, diff_value):
@@ -173,7 +169,7 @@ def test_arith_progression_param_combinations(dtype, target, first_value, diff_v
 
 
 @pytest.mark.low_priority
-@pytest.mark.parametrize("dtype", ["float32", "int32"])
+@pytest.mark.parametrize("dtype", ["float32"])
 @pytest.mark.parametrize("target", ["ascendc"])
 def test_arith_progression_partial_write(dtype, target):
     _run_partial_write(dtype, target, buf_size=256, write_count=100, first_value=5, diff_value=2)
@@ -183,7 +179,6 @@ def test_arith_progression_partial_write(dtype, target):
     "dtype,target",
     [
         ("uint16", "ascendc"),
-        pytest.param("uint32", "ascendc", marks=pytest.mark.low_priority),
         pytest.param("float16", "pto", marks=pytest.mark.low_priority),
     ],
 )
@@ -197,6 +192,34 @@ def test_arith_progression_unsupported_dtype_raises(dtype, target):
 
     with pytest.raises(RuntimeError, match="Compilation Failed"):  # noqa: B017
         tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+
+def test_arith_progression_count_omitted():
+    """Verify that omitting count auto-derives math.prod(buffer.shape).
+
+    The result should match the equivalent call with explicit count.
+    """
+    dtype = "float32"
+    target = "ascendc"
+    torch_dtype = DTYPE_TORCH_MAP[dtype]
+    buf_size = 64
+    first_value = 10
+    diff_value = 1
+
+    @T.prim_func
+    def main(output: T.Tensor((buf_size,), dtype)):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            seq_ub = T.alloc_shared((buf_size,), dtype)
+            T.tile.arith_progression(seq_ub, first_value, diff_value)
+            T.copy(seq_ub, output[0])
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    output = torch.zeros(buf_size, dtype=torch_dtype).npu()
+    torch.npu.synchronize()
+    result = func(output)
+
+    ref = _build_seq(first_value, diff_value, buf_size, torch_dtype)
+    torch.testing.assert_close(result.cpu(), ref, rtol=0, atol=0)
 
 
 if __name__ == "__main__":
