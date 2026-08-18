@@ -38,20 +38,9 @@ def arith_progression(
 |------|:------:|:-----------:|:----------:|
 | Ascend A2 / A3 | float16, float32, int16, int32 | 同 buffer | 同 buffer |
 
-> uint16、uint32 在 static_assert 中列出，但 ascendc 后端编译失败（硬件指令不支持），仅 pto 后端可用，故不列入主表。
+> uint16、uint32 仅 pto 后端支持
 >
-> float16 在 pto 后端编译失败（"half precision operation is not allowed in aicore function"），仅 ascendc 后端可用。
-
-**dtype × backend 支持矩阵：**
-
-| dtype | ascendc | pto |
-|-------|:---:|:---:|
-| float16 | ✅ | ❌ |
-| float32 | ✅ | ✅ |
-| int16 | ✅ | ✅ |
-| int32 | ✅ | ✅ |
-| uint16 | ❌ | ✅ |
-| uint32 | ❌ | ✅ |
+> float16 仅 ascendc 后端支持
 
 #### 2.3.2 Shape 支持
 
