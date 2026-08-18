@@ -287,13 +287,20 @@ GetOperationConfig() {
        {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
       {"tl.ascend_exp_experiment", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
 
-      // Internal tail-aware ops (AscendTailMaskPropagation). arg0 is the
-      // AscendC op-tag string, hence buffer indices start at 1.
+      // Internal tail-aware ops produced by AscendTailMaskPropagation.
       {"tl.ascend_tail_unary", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_tail_binary",
        {{{1, "write"}, {2, "read"}, {3, "read"}}, "PIPE_V"}},
       {"tl.ascend_tail_scalar", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_tail_reduce", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_tail_compare",
+       {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_tail_compare_scalar",
+       {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
+      {"tl.ascend_tail_select",
+       {{{1, "write"}, {2, "read"}, {3, "read"}, {4, "read"}, {6, "read"}},
+        "PIPE_V"}},
+      {"tl.ascend_tail_broadcast", {{{1, "write"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_copy_cv_experiment",
        {{{0, "read"}, {1, "write"}}, "PIPE_FIX"}},
       {"tl.ascend_copy_vc_experiment",

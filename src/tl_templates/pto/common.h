@@ -326,8 +326,14 @@ AICORE PTO_INLINE void copy_gm_to_ub_dynamic(
     // TFILLPAD_INPLACE: fill outside valid region with PadVal (only for tail
     // blocks with valid PadVal)
     if constexpr (PadVal != pto::PadValue::Null) {
-      if (valid_row != static_cast<int32_t>(ub_shape1) ||
-          valid_col != static_cast<int32_t>(ub_shape2)) {
+      // A saved narrow physical tile may be flattened to [1, aligned_cols]
+      // while TLOAD still carries multiple logical rows.  That case already
+      // receives per-row MTE padding and cannot be represented by this static
+      // DstTile; only invoke TFILLPAD when the dynamic rectangle fits it.
+      if ((valid_row != static_cast<int32_t>(ub_shape1) ||
+           valid_col != static_cast<int32_t>(ub_shape2)) &&
+          valid_row <= static_cast<int32_t>(ub_shape1) &&
+          valid_col <= static_cast<int32_t>(ub_shape2)) {
         using DstTile = pto::Tile<pto::TileType::Vec, T2, ub_shape1, ub_shape2,
                                   pto::BLayout::RowMajor, ub_shape1, ub_shape2,
                                   pto::SLayout::NoneBox, 512, PadVal>;
@@ -1358,6 +1364,23 @@ AICORE PTO_INLINE void compare_scalar(
   auto &dst_uint8 = reinterpret_cast<
       TileUbDataND<uint8_t, DstRows, DstCols, DstRowValid, DstColValid> &>(dst);
   pto::TCMPS(dst_uint8, src, scalar, mode);
+}
+
+template <typename T, int32_t Rows, int32_t Cols, int32_t RowValid,
+          int32_t ColValid>
+AICORE PTO_INLINE void
+clear_compare_tail_bits(TileUbDataND<T, Rows, Cols, RowValid, ColValid> &dst,
+                        uint32_t valid_row, uint32_t logical_valid_col) {
+  if ((logical_valid_col & 7U) == 0)
+    return;
+  TL_PIPE_V_BARRIER();
+  uint8_t keep = static_cast<uint8_t>((1U << (logical_valid_col & 7U)) - 1U);
+  uint32_t last = logical_valid_col >> 3;
+  for (uint32_t r = 0; r < valid_row; ++r) {
+    dst.data()[r * Cols + last] = static_cast<T>(
+        static_cast<uint8_t>(dst.data()[r * Cols + last]) & keep);
+  }
+  TL_PIPE_V_BARRIER();
 }
 
 template <typename T, int32_t Rows, int32_t Cols, int32_t RowValid,

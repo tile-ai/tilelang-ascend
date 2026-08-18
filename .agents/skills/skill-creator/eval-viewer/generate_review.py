@@ -12,8 +12,11 @@ Usage:
 No dependencies beyond the Python stdlib are required.
 """
 
+from __future__ import annotations
+
 import argparse
 import base64
+import contextlib
 import json
 import mimetypes
 import os
@@ -32,9 +35,32 @@ METADATA_FILES = {"transcript.md", "user_notes.md", "metrics.json"}
 
 # Extensions we render as inline text
 TEXT_EXTENSIONS = {
-    ".txt", ".md", ".json", ".csv", ".py", ".js", ".ts", ".tsx", ".jsx",
-    ".yaml", ".yml", ".xml", ".html", ".css", ".sh", ".rb", ".go", ".rs",
-    ".java", ".c", ".cpp", ".h", ".hpp", ".sql", ".r", ".toml",
+    ".txt",
+    ".md",
+    ".json",
+    ".csv",
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".yaml",
+    ".yml",
+    ".xml",
+    ".html",
+    ".css",
+    ".sh",
+    ".rb",
+    ".go",
+    ".rs",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".sql",
+    ".r",
+    ".toml",
 }
 
 # Extensions we render as inline images
@@ -130,10 +156,8 @@ def build_run(root: Path, run_dir: Path) -> dict | None:
     grading = None
     for candidate in [run_dir / "grading.json", run_dir.parent / "grading.json"]:
         if candidate.exists():
-            try:
+            with contextlib.suppress(json.JSONDecodeError, OSError):
                 grading = json.loads(candidate.read_text())
-            except (json.JSONDecodeError, OSError):
-                pass
             if grading:
                 break
 
@@ -223,11 +247,7 @@ def load_previous_iteration(workspace: Path) -> dict[str, dict]:
     if feedback_path.exists():
         try:
             data = json.loads(feedback_path.read_text())
-            feedback_map = {
-                r["run_id"]: r["feedback"]
-                for r in data.get("reviews", [])
-                if r.get("feedback", "").strip()
-            }
+            feedback_map = {r["run_id"]: r["feedback"] for r in data.get("reviews", []) if r.get("feedback", "").strip()}
         except (json.JSONDecodeError, OSError, KeyError):
             pass
 
@@ -285,25 +305,27 @@ def generate_html(
 # HTTP server (stdlib only, zero dependencies)
 # ---------------------------------------------------------------------------
 
+
 def _kill_port(port: int) -> None:
     """Kill any process listening on the given port."""
     try:
         result = subprocess.run(
             ["lsof", "-ti", f":{port}"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         for pid_str in result.stdout.strip().split("\n"):
             if pid_str.strip():
-                try:
+                with contextlib.suppress(ProcessLookupError, ValueError):
                     os.kill(int(pid_str.strip()), signal.SIGTERM)
-                except (ProcessLookupError, ValueError):
-                    pass
         if result.stdout.strip():
             time.sleep(0.5)
     except subprocess.TimeoutExpired:
         pass
     except FileNotFoundError:
         print("Note: lsof not found, cannot check if port is in use", file=sys.stderr)
+
 
 class ReviewHandler(BaseHTTPRequestHandler):
     """Serves the review HTML and handles feedback saves.
@@ -335,10 +357,8 @@ class ReviewHandler(BaseHTTPRequestHandler):
             runs = find_runs(self.workspace)
             benchmark = None
             if self.benchmark_path and self.benchmark_path.exists():
-                try:
+                with contextlib.suppress(json.JSONDecodeError, OSError):
                     benchmark = json.loads(self.benchmark_path.read_text())
-                except (json.JSONDecodeError, OSError):
-                    pass
             html = generate_html(runs, self.skill_name, self.previous, benchmark)
             content = html.encode("utf-8")
             self.send_response(200)
@@ -390,15 +410,22 @@ def main() -> None:
     parser.add_argument("--port", "-p", type=int, default=3117, help="Server port (default: 3117)")
     parser.add_argument("--skill-name", "-n", type=str, default=None, help="Skill name for header")
     parser.add_argument(
-        "--previous-workspace", type=Path, default=None,
+        "--previous-workspace",
+        type=Path,
+        default=None,
         help="Path to previous iteration's workspace (shows old outputs and feedback as context)",
     )
     parser.add_argument(
-        "--benchmark", type=Path, default=None,
+        "--benchmark",
+        type=Path,
+        default=None,
         help="Path to benchmark.json to show in the Benchmark tab",
     )
     parser.add_argument(
-        "--static", "-s", type=Path, default=None,
+        "--static",
+        "-s",
+        type=Path,
+        default=None,
         help="Write standalone HTML to this path instead of starting a server",
     )
     args = parser.parse_args()
@@ -423,10 +450,8 @@ def main() -> None:
     benchmark_path = args.benchmark.resolve() if args.benchmark else None
     benchmark = None
     if benchmark_path and benchmark_path.exists():
-        try:
+        with contextlib.suppress(json.JSONDecodeError, OSError):
             benchmark = json.loads(benchmark_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
 
     if args.static:
         html = generate_html(runs, skill_name, previous, benchmark)
@@ -447,8 +472,8 @@ def main() -> None:
         port = server.server_address[1]
 
     url = f"http://localhost:{port}"
-    print(f"\n  Eval Viewer")
-    print(f"  ─────────────────────────────────")
+    print("\n  Eval Viewer")
+    print("  ─────────────────────────────────")
     print(f"  URL:       {url}")
     print(f"  Workspace: {workspace}")
     print(f"  Feedback:  {feedback_path}")
@@ -456,7 +481,7 @@ def main() -> None:
         print(f"  Previous:  {args.previous_workspace} ({len(previous)} runs)")
     if benchmark_path:
         print(f"  Benchmark: {benchmark_path}")
-    print(f"\n  Press Ctrl+C to stop.\n")
+    print("\n  Press Ctrl+C to stop.\n")
 
     webbrowser.open(url)
 

@@ -36,7 +36,7 @@ enum class TailMaskKind {
   kFull = 0,
   /*! \brief A regular 2D rectangle [valid_row, valid_col] inside the tile. */
   kTail = 1,
-  /*! \brief Packed comparison mask (Batch 2: compare/select). */
+  /*! \brief Packed comparison mask consumed by tail-aware select. */
   kPackedCmp = 2,
 };
 
@@ -48,7 +48,8 @@ enum class TailMaskKind {
  * the rewrite produces a *runtime* tail helper instead of a compile-time shape.
  *  - `physical_row` / `physical_col` are the allocated UB tile dims;
  * `physical_col` is the row pitch used to derive repeat strides.
- *  - `storage_col` is reserved for packed comparison masks (Batch 2).
+ *  - `storage_col` is the byte pitch for packed comparison masks; for regular
+ *    data it equals `physical_col`.
  */
 struct TailMaskInfo {
   TailMaskKind kind = TailMaskKind::kFull;
@@ -59,6 +60,7 @@ struct TailMaskInfo {
   PrimExpr storage_col;
 
   bool is_tail() const { return kind == TailMaskKind::kTail; }
+  bool is_packed_cmp() const { return kind == TailMaskKind::kPackedCmp; }
 };
 
 /*! \brief A fully-valid mask for a tile of the given physical dims. */
@@ -106,6 +108,15 @@ inline TailMaskInfo MakeCopyMask(PrimExpr valid_row, PrimExpr valid_col,
   m.physical_row = physical_row;
   m.physical_col = physical_col;
   m.storage_col = physical_col;
+  return m;
+}
+
+/*! \brief Build the packed uint8 mask produced by a tail comparison. */
+inline TailMaskInfo MakePackedCmpMask(const TailMaskInfo &data,
+                                      PrimExpr storage_col) {
+  TailMaskInfo m = data;
+  m.kind = TailMaskKind::kPackedCmp;
+  m.storage_col = storage_col;
   return m;
 }
 

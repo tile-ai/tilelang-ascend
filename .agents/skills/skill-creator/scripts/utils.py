@@ -1,7 +1,27 @@
 """Shared utilities for skill-creator scripts."""
 
+from __future__ import annotations
+
 from pathlib import Path
 
+
+def load_anthropic():
+    """Import the optional `anthropic` SDK, or exit with a prerequisite error.
+
+    The SDK is only needed by description-optimization commands, so it is
+    imported lazily. Help text, validation, packaging and report generation
+    all work without it. Nothing is installed automatically.
+    """
+    try:
+        import anthropic
+    except ImportError as exc:  # pragma: no cover - depends on the environment
+        raise SystemExit(
+            "This command requires the optional `anthropic` SDK, which is not installed.\n"
+            "Install it manually, for example:\n"
+            "    pip install anthropic\n"
+            "skill-creator never installs dependencies on your behalf."
+        ) from exc
+    return anthropic
 
 
 def parse_skill_md(skill_path: Path) -> tuple[str, str, str]:
@@ -28,9 +48,9 @@ def parse_skill_md(skill_path: Path) -> tuple[str, str, str]:
     while i < len(frontmatter_lines):
         line = frontmatter_lines[i]
         if line.startswith("name:"):
-            name = line[len("name:"):].strip().strip('"').strip("'")
+            name = line[len("name:") :].strip().strip('"').strip("'")
         elif line.startswith("description:"):
-            value = line[len("description:"):].strip()
+            value = line[len("description:") :].strip()
             # Handle YAML multiline indicators (>, |, >-, |-)
             if value in (">", "|", ">-", "|-"):
                 continuation_lines: list[str] = []

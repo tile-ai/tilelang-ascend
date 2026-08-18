@@ -150,6 +150,12 @@ private:
 
   void TailReduceOpCodegen(const CallNode *op);
 
+  void TailCompareOpCodegen(const CallNode *op, bool scalar);
+
+  void TailSelectOpCodegen(const CallNode *op);
+
+  void TailBroadcastOpCodegen(const CallNode *op);
+
   void RowExpandMulCodegen(const CallNode *op);
 
   void RowExpandMulExperimentCodegen(const CallNode *op);

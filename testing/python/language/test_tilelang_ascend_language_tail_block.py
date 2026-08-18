@@ -78,6 +78,11 @@ TAIL_REDUCE_PASS_CONFIGS = {
     tilelang.PassConfigKey.TL_ASCEND_TAIL_MASK: True,
 }
 
+EXPERT_TAIL_PASS_CONFIGS = {
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    tilelang.PassConfigKey.TL_ASCEND_TAIL_MASK: True,
+}
+
 
 def _vec_configs(tail_mask):
     """Vector pass configs, optionally enabling the opt-in tail-block scheme.
@@ -479,6 +484,347 @@ def test_reduce_axis0_special_values_ascendc(kind):
 
     finite_zero = (ref == 0) & ~torch.isnan(ref)
     torch.testing.assert_close(torch.signbit(out[finite_zero]), torch.signbit(ref[finite_zero]))
+
+
+# =============================================================================
+# Group 2e - compare/select/broadcast valid-region tails   [risk: high]
+# Compare writes its packed predicate back to GM so the final byte's unused
+# high bits are checked in addition to select's data result.
+# =============================================================================
+def compare_select_tail(
+    M,
+    N,
+    block_M,
+    block_N,
+    dtype="float",
+    scalar_compare=False,
+    scalar_select=False,
+):
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+    mask_cols = T.ceildiv(N, 8)
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+        MaskOut: T.Tensor((M, mask_cols), "uint8"),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+            b_ub = T.alloc_ub((block_M, block_N), dtype)
+            mask_ub = T.alloc_ub((block_M, block_N // 8), "uint8")
+            out_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+            T.copy(B[bx * block_M, by * block_N], b_ub)
+            if scalar_compare:
+                T.tile.compare(mask_ub, a_ub, 0.0, "LT")
+            else:
+                T.tile.compare(mask_ub, a_ub, b_ub, "LT")
+            if scalar_select:
+                T.tile.select(out_ub, mask_ub, a_ub, 1.0, "VSEL_TENSOR_SCALAR_MODE")
+            else:
+                T.tile.select(out_ub, mask_ub, a_ub, b_ub, "VSEL_TENSOR_TENSOR_MODE")
+            T.copy(out_ub, C[bx * block_M, by * block_N])
+            T.copy(mask_ub, MaskOut[bx * block_M, by * (block_N // 8)])
+
+    return main
+
+
+def _pack_compare_mask(mask):
+    rows, cols = mask.shape
+    packed_cols = (cols + 7) // 8
+    padded = torch.zeros((rows, packed_cols * 8), dtype=torch.bool)
+    padded[:, :cols] = mask.cpu()
+    bits = padded.reshape(rows, packed_cols, 8).to(torch.uint8)
+    packed = torch.zeros((rows, packed_cols), dtype=torch.uint8)
+    for bit in range(8):
+        packed |= bits[:, :, bit] << bit
+    return packed
+
+
+def compare_select_tail_expert(M, N, block_M, block_N):
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), "float"),  # type: ignore
+        B: T.Tensor((M, N), "float"),  # type: ignore
+        C: T.Tensor((M, N), "float"),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M, block_N), "float")
+            b_ub = T.alloc_ub((block_M, block_N), "float")
+            mask_ub = T.alloc_ub((block_M, block_N // 8), "uint8")
+            out_ub = T.alloc_ub((block_M, block_N), "float")
+
+            with T.Scope("V"):
+                T.copy(A[bx * block_M, by * block_N], a_ub)
+                T.copy(B[bx * block_M, by * block_N], b_ub)
+                # PTO tail GM->UB copies are issued on MTE2.  In expert mode
+                # auto-sync is deliberately disabled, so use an explicit
+                # cross-pipeline event instead of relying on PIPE_ALL to order
+                # the following vector compare.
+                T.set_flag("MTE2", "V", 0)
+                T.wait_flag("MTE2", "V", 0)
+                T.tile.compare(mask_ub, a_ub, b_ub, "LT")
+                T.tile.select(out_ub, mask_ub, a_ub, b_ub, "VSEL_TENSOR_TENSOR_MODE")
+                # Likewise, make the vector result visible to the MTE3 store.
+                T.set_flag("V", "MTE3", 1)
+                T.wait_flag("V", "MTE3", 1)
+                T.copy(out_ub, C[bx * block_M, by * block_N])
+
+    return main
+
+
+@pytest.mark.parametrize("scalar_compare,scalar_select", [(False, False), (True, True)])
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_compare_select_tail(target, dtype, scalar_compare, scalar_select):
+    M, N, block_M, block_N = 5, 69, 4, 64
+    func = compare_select_tail(
+        M,
+        N,
+        block_M,
+        block_N,
+        dtype=dtype,
+        scalar_compare=scalar_compare,
+        scalar_select=scalar_select,
+    )
+    func = tilelang.compile(
+        func,
+        out_idx=[-2, -1],
+        pass_configs=_vec_configs(True),
+        target=target,
+    )
+
+    torch.manual_seed(0)
+    td = _torch_dtype(dtype)
+    a = torch.randn(M, N, dtype=td).npu()
+    b = torch.randn(M, N, dtype=td).npu()
+    out, packed = func(a, b)
+
+    condition = a < (0 if scalar_compare else b)
+    other = torch.ones_like(a) if scalar_select else b
+    ref = torch.where(condition, a, other)
+    torch.testing.assert_close(out, ref, rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(packed, _pack_compare_mask(condition).npu(), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_compare_select_tail_expert(target):
+    M, N, block_M, block_N = 5, 69, 4, 64
+    func = tilelang.compile(
+        compare_select_tail_expert(M, N, block_M, block_N),
+        out_idx=[-1],
+        pass_configs=EXPERT_TAIL_PASS_CONFIGS,
+        target=target,
+    )
+    torch.manual_seed(0)
+    a = torch.randn(M, N, dtype=torch.float32).npu()
+    b = torch.randn(M, N, dtype=torch.float32).npu()
+    out = func(a, b)
+    torch.testing.assert_close(out, torch.minimum(a, b), rtol=1e-3, atol=1e-3)
+
+
+def broadcast_axis1_tail(M, N, block_M, block_N, dtype="float"):
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+
+    @T.prim_func
+    def main(A: T.Tensor((M, n_num), dtype), C: T.Tensor((M, N), dtype)):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            src_ub = T.alloc_ub((block_M, 1), dtype)
+            dst_ub = T.alloc_ub((block_M, block_N), dtype)
+            T.copy(A[bx * block_M, by], src_ub)
+            T.tile.broadcast(dst_ub, src_ub, axis=1)
+            T.copy(dst_ub, C[bx * block_M, by * block_N])
+
+    return main
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+def test_broadcast_axis1_tail(target, dtype):
+    M, N, block_M, block_N = 5, 69, 4, 64
+    n_num = (N + block_N - 1) // block_N
+    func = tilelang.compile(
+        broadcast_axis1_tail(M, N, block_M, block_N, dtype),
+        out_idx=[-1],
+        pass_configs=_vec_configs(True),
+        target=target,
+    )
+    torch.manual_seed(0)
+    a = torch.randn(M, n_num, dtype=_torch_dtype(dtype)).npu()
+    out = func(a)
+    ref = torch.empty((M, N), dtype=a.dtype, device=a.device)
+    for by in range(n_num):
+        start = by * block_N
+        ref[:, start : min(start + block_N, N)] = a[:, by : by + 1]
+    torch.testing.assert_close(out, ref, rtol=0, atol=0)
+
+
+def broadcast_axis0_tail(M, N, block_M, block_N, dtype="float"):
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+
+    @T.prim_func
+    def main(A: T.Tensor((m_num, N), dtype), C: T.Tensor((M, N), dtype)):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            src_ub = T.alloc_ub((1, block_N), dtype)
+            dst_ub = T.alloc_ub((block_M, block_N), dtype)
+            T.copy(A[bx, by * block_N], src_ub)
+            T.tile.broadcast(dst_ub, src_ub, axis=0)
+            T.copy(dst_ub, C[bx * block_M, by * block_N])
+
+    return main
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+def test_broadcast_axis0_tail(target, dtype):
+    M, N, block_M, block_N = 5, 69, 4, 64
+    m_num = (M + block_M - 1) // block_M
+    func = tilelang.compile(
+        broadcast_axis0_tail(M, N, block_M, block_N, dtype),
+        out_idx=[-1],
+        pass_configs=_vec_configs(True),
+        target=target,
+    )
+    torch.manual_seed(0)
+    a = torch.randn(m_num, N, dtype=_torch_dtype(dtype)).npu()
+    out = func(a)
+    ref = torch.empty((M, N), dtype=a.dtype, device=a.device)
+    for bx in range(m_num):
+        start = bx * block_M
+        ref[start : min(start + block_M, M), :] = a[bx : bx + 1, :]
+    torch.testing.assert_close(out, ref, rtol=0, atol=0)
+
+
+# =============================================================================
+# Group 2f - mixed vector tail pipelines                         [risk: high]
+# Exercise valid-region state across operator-family boundaries rather than
+# testing compare/select/broadcast only in isolation.
+# =============================================================================
+def mixed_broadcast_compare_select_tail(M, N, block_M, block_N, dtype="float"):
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        Row: T.Tensor((M, n_num), dtype),  # type: ignore
+        Col: T.Tensor((m_num, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+            row_ub = T.alloc_ub((block_M, 1), dtype)
+            col_ub = T.alloc_ub((1, block_N), dtype)
+            row_full_ub = T.alloc_ub((block_M, block_N), dtype)
+            col_full_ub = T.alloc_ub((block_M, block_N), dtype)
+            sum_ub = T.alloc_ub((block_M, block_N), dtype)
+            abs_ub = T.alloc_ub((block_M, block_N), dtype)
+            mask_ub = T.alloc_ub((block_M, block_N // 8), "uint8")
+            out_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+            T.copy(Row[bx * block_M, by], row_ub)
+            T.copy(Col[bx, by * block_N], col_ub)
+            T.tile.broadcast(row_full_ub, row_ub, axis=1)
+            T.tile.broadcast(col_full_ub, col_ub, axis=0)
+            T.tile.add(sum_ub, row_full_ub, col_full_ub)
+            T.tile.abs(abs_ub, a_ub)
+            T.tile.compare(mask_ub, abs_ub, sum_ub, "LT")
+            T.tile.select(out_ub, mask_ub, abs_ub, sum_ub, "VSEL_TENSOR_TENSOR_MODE")
+            T.copy(out_ub, C[bx * block_M, by * block_N])
+
+    return main
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+def test_mixed_broadcast_compare_select_tail(target, dtype):
+    M, N, block_M, block_N = 5, 69, 4, 64
+    m_num = (M + block_M - 1) // block_M
+    n_num = (N + block_N - 1) // block_N
+    func = tilelang.compile(
+        mixed_broadcast_compare_select_tail(M, N, block_M, block_N, dtype),
+        out_idx=[-1],
+        pass_configs=_vec_configs(True),
+        target=target,
+    )
+    torch.manual_seed(0)
+    td = _torch_dtype(dtype)
+    a = torch.randn(M, N, dtype=td).npu()
+    row = (torch.rand(M, n_num, dtype=td) + 0.25).npu()
+    col = (torch.rand(m_num, N, dtype=td) + 0.25).npu()
+    out = func(a, row, col)
+    threshold = torch.empty_like(a)
+    for bx in range(m_num):
+        row_start = bx * block_M
+        row_end = min(row_start + block_M, M)
+        for by in range(n_num):
+            col_start = by * block_N
+            col_end = min(col_start + block_N, N)
+            threshold[row_start:row_end, col_start:col_end] = row[row_start:row_end, by : by + 1] + col[bx : bx + 1, col_start:col_end]
+    ref = torch.minimum(torch.abs(a), threshold)
+    torch.testing.assert_close(out, ref, rtol=1e-3, atol=1e-3)
+
+
+def mixed_unary_scalar_select_tail(M, N, block_M, block_N, dtype="float"):
+    m_num = T.ceildiv(M, block_M)
+    n_num = T.ceildiv(N, block_N)
+
+    @T.prim_func
+    def main(A: T.Tensor((M, N), dtype), C: T.Tensor((M, N), dtype)):  # type: ignore
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+            abs_ub = T.alloc_ub((block_M, block_N), dtype)
+            shifted_ub = T.alloc_ub((block_M, block_N), dtype)
+            mask_ub = T.alloc_ub((block_M, block_N // 8), "uint8")
+            out_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+            T.tile.abs(abs_ub, a_ub)
+            T.tile.add(shifted_ub, abs_ub, 0.5)
+            T.tile.compare(mask_ub, shifted_ub, 1.0, "LT")
+            T.tile.select(out_ub, mask_ub, shifted_ub, 1.0, "VSEL_TENSOR_SCALAR_MODE")
+            T.copy(out_ub, C[bx * block_M, by * block_N])
+
+    return main
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+def test_mixed_unary_scalar_select_tail(target, dtype):
+    M, N, block_M, block_N = 5, 69, 4, 64
+    func = tilelang.compile(
+        mixed_unary_scalar_select_tail(M, N, block_M, block_N, dtype),
+        out_idx=[-1],
+        pass_configs=_vec_configs(True),
+        target=target,
+    )
+    torch.manual_seed(0)
+    a = torch.randn(M, N, dtype=_torch_dtype(dtype)).npu()
+    out = func(a)
+    ref = torch.minimum(torch.abs(a) + 0.5, torch.ones_like(a))
+    torch.testing.assert_close(out, ref, rtol=1e-3, atol=1e-3)
 
 
 # =============================================================================

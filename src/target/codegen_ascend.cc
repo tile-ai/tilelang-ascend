@@ -641,6 +641,14 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     TailScalarOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_tail_reduce())) {
     TailReduceOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_tail_compare())) {
+    TailCompareOpCodegen(op, false);
+  } else if (op->op.same_as(tl::ascend_tail_compare_scalar())) {
+    TailCompareOpCodegen(op, true);
+  } else if (op->op.same_as(tl::ascend_tail_select())) {
+    TailSelectOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_tail_broadcast())) {
+    TailBroadcastOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_row_expand_mul())) {
     RowExpandMulCodegen(op);
   } else if (op->op.same_as(tl::ascend_row_expand_mul_experiment())) {
@@ -1357,6 +1365,11 @@ CodeGenTileLangAscend::PrintBufferOffset(const CallNode *call_arg_node,
   if (_var_name == "") {
     _var_name = _var->name_hint;
   }
+  // AscendStorageRewrite is allowed to reuse UB storage across buffers with
+  // different element types.  The access_ptr retains the consumer's logical
+  // dtype, while the single emitted LocalTensor has the allocation's dtype.
+  // Reinterpret before indexing so both the C++ type and offset units follow
+  // the access_ptr contract (not the aliased allocation's element type).
   const DataType access_dtype = GetAccessPtrDtype(call_arg_node);
   auto dtype_it = buffer_dtypes_.find(_var);
   if (dtype_it != buffer_dtypes_.end() && dtype_it->second != access_dtype) {
@@ -2515,6 +2528,81 @@ void CodeGenTileLangAscend::TailReduceOpCodegen(const CallNode *op) {
                << ", " << pcol << ", " << clear_str << ");\n";
 }
 
+void CodeGenTileLangAscend::TailCompareOpCodegen(const CallNode *op,
+                                                 bool scalar) {
+  // args: dst(0) src0(1) src1/scalar(2) mode(3) validRow(4) validCol(5)
+  //       physRow(6) physCol(7) storageCol(8)
+  ICHECK_EQ(op->args.size(), 9U);
+  std::string dtype = getType(GetAccessPtrDtype(op->args[1].as<CallNode>()));
+  std::string dst = PrintBufferOffset(op->args[0].as<CallNode>());
+  std::string src0 = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string src1 = scalar ? dtype + "(" + PrintExpr(op->args[2]) + ")"
+                            : PrintBufferOffset(op->args[2].as<CallNode>());
+  std::string mode = Downcast<StringImm>(op->args[3])->value;
+  std::string vrow = PrintExpr(op->args[4]);
+  std::string vcol = PrintExpr(op->args[5]);
+  std::string prow = PrintExpr(op->args[6]);
+  std::string pcol = PrintExpr(op->args[7]);
+  std::string scol = PrintExpr(op->args[8]);
+  this->PrintIndent();
+  this->stream << "tl::ascend::tail_compare" << (scalar ? "_scalar" : "") << "<"
+               << dtype << ">(" << dst << ", " << src0 << ", " << src1
+               << ", AscendC::CMPMODE::" << mode << ", " << vrow << ", " << vcol
+               << ", " << prow << ", " << pcol << ", " << scol << ");\n";
+}
+
+void CodeGenTileLangAscend::TailSelectOpCodegen(const CallNode *op) {
+  // args: kind(0) dst(1) mask(2) src0(3) tmp(4) src1Type(5) src1(6)
+  //       mode(7) validRow(8) validCol(9) physRow(10) physCol(11)
+  //       storageCol(12)
+  ICHECK_EQ(op->args.size(), 13U);
+  std::string kind = Downcast<StringImm>(op->args[0])->value;
+  std::string dtype = getType(GetAccessPtrDtype(op->args[1].as<CallNode>()));
+  std::string dst = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string mask = PrintBufferOffset(op->args[2].as<CallNode>());
+  std::string src0 = PrintBufferOffset(op->args[3].as<CallNode>());
+  std::string src1 = kind == "Scalar"
+                         ? dtype + "(" + PrintExpr(op->args[6]) + ")"
+                         : PrintBufferOffset(op->args[6].as<CallNode>());
+  std::string mode = Downcast<StringImm>(op->args[7])->value;
+  std::string vrow = PrintExpr(op->args[8]);
+  std::string vcol = PrintExpr(op->args[9]);
+  std::string prow = PrintExpr(op->args[10]);
+  std::string pcol = PrintExpr(op->args[11]);
+  std::string scol = PrintExpr(op->args[12]);
+  this->PrintIndent();
+  this->stream << "tl::ascend::tail_select"
+               << (kind == "Scalar" ? "_scalar" : "") << "<" << dtype << ">("
+               << dst << ", " << mask << ", " << src0 << ", " << src1
+               << ", AscendC::SELMODE::" << mode << ", " << vrow << ", " << vcol
+               << ", " << prow << ", " << pcol << ", " << scol << ");\n";
+}
+
+void CodeGenTileLangAscend::TailBroadcastOpCodegen(const CallNode *op) {
+  // Original 2D broadcast args (with optional tmp), followed by four
+  // output/input valid-rectangle expressions.
+  ICHECK(op->args.size() == 12U || op->args.size() == 13U);
+  const bool has_tmp = op->args[3].as<CallNode>() != nullptr;
+  const size_t dim_index = has_tmp ? 4 : 3;
+  const size_t shape_index = dim_index + 1;
+  const size_t tail_index = op->args.size() - 4;
+  int axis = is_one(op->args[shape_index + 3]) ? 1 : 0;
+  std::string dtype = getType(GetAccessPtrDtype(op->args[1].as<CallNode>()));
+  std::string dst = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string src = PrintBufferOffset(op->args[2].as<CallNode>());
+  std::string vrow = PrintExpr(op->args[tail_index]);
+  std::string vcol = PrintExpr(op->args[tail_index + 1]);
+  std::string src_vrow = PrintExpr(op->args[tail_index + 2]);
+  std::string src_vcol = PrintExpr(op->args[tail_index + 3]);
+  std::string dst_pcol = PrintExpr(op->args[shape_index + 1]);
+  std::string src_pcol = PrintExpr(op->args[shape_index + 3]);
+  this->PrintIndent();
+  this->stream << "tl::ascend::tail_broadcast<" << dtype << ">(" << dst << ", "
+               << src << ", " << axis << ", " << vrow << ", " << vcol << ", "
+               << src_vrow << ", " << src_vcol << ", " << dst_pcol << ", "
+               << src_pcol << ");\n";
+}
+
 void CodeGenTileLangAscend::SetCrossFlagCodegen(const CallNode *op) {
   std::string pipe = Downcast<StringImm>(op->args[0])->value;
   int mode = op->args[2].as<IntImmNode>()->value;
@@ -2748,17 +2836,8 @@ void CodeGenTileLangAscend::MmaCodegen(const CallNode *op) {
 
 void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
   std::string op_name = Downcast<StringImm>(op->args[0])->value;
-  auto src_var = op->args[1].as<CallNode>()->args[1].as<VarNode>();
-  auto dst_var = op->args[2].as<CallNode>()->args[1].as<VarNode>();
-
-  auto src_var_id = var_idmap_[src_var];
-  auto dst_var_id = var_idmap_[dst_var];
-  if (src_var_id == "") {
-    src_var_id = src_var->name_hint;
-  }
-  if (dst_var_id == "") {
-    dst_var_id = dst_var->name_hint;
-  }
+  auto src_var_id = PrintBufferOffset(op->args[1].as<CallNode>(), false);
+  auto dst_var_id = PrintBufferOffset(op->args[2].as<CallNode>(), false);
 
   auto src_offset_expr = op->args[1].as<CallNode>()->args[2];
   auto dst_offset_expr = op->args[2].as<CallNode>()->args[2];
@@ -2773,9 +2852,6 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
   }
   auto src_offset = PrintExpr(src_offset_expr);
   auto dst_offset = PrintExpr(dst_offset_expr);
-
-  auto src_type = GetAccessPtrDtype(op->args[1].as<CallNode>());
-  auto dst_type = GetAccessPtrDtype(op->args[2].as<CallNode>());
 
   static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
       {"copy_l0c_to_gm", 3},      {"copy_gm_to_l1", 3},

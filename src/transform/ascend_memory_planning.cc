@@ -27,6 +27,7 @@
 #include <tvm/tir/transform.h>
 #include <tvm/tir/utils.h>
 
+#include "../op/ascend.h"
 #include "../op/builtin.h"
 #include "./common/attr.h"
 #include "./common/collector.h"
@@ -937,6 +938,63 @@ private:
 
       size_t size_bytes =
           size_elements * alloc->dtype.bytes() * alloc->dtype.lanes();
+      // A packed compare Buffer is logically [rows, ceil(cols/8)], but the
+      // AscendC vector/MTE contracts consume one 32-byte UB data block per
+      // predicate row.  Preserve the logical shape used by access_ptr and GM
+      // copies while reserving the larger physical backing store.
+      if (alloc->dtype == DataType::UInt(8)) {
+        size_t aligned_cmp_bytes = 0;
+        PostOrderVisit(alloc->body, [&](const ObjectRef &node) {
+          const auto *call = node.as<CallNode>();
+          if (call == nullptr ||
+              (!call->op.same_as(ascend_tail_compare()) &&
+               !call->op.same_as(ascend_tail_compare_scalar())) ||
+              call->args.size() != 9) {
+            return;
+          }
+          const auto *ptr = call->args[0].as<CallNode>();
+          if (ptr == nullptr || !ptr->op.same_as(builtin::tvm_access_ptr()) ||
+              ptr->args.size() < 2 ||
+              ptr->args[1].as<VarNode>() != alloc->buffer_var.get()) {
+            return;
+          }
+          const auto *rows = call->args[6].as<IntImmNode>();
+          ICHECK(rows) << "tail compare physical rows must be static";
+          aligned_cmp_bytes = std::max(aligned_cmp_bytes,
+                                       static_cast<size_t>(rows->value) * 32);
+        });
+        size_bytes = std::max(size_bytes, aligned_cmp_bytes);
+      }
+      // A tail row-broadcast source such as [rows, 1] has one 32-byte UB block
+      // per GM->UB burst. Preserve the logical shape used by access_ptr while
+      // reserving the complete physical row-padded backing store.
+      size_t padded_broadcast_bytes = 0;
+      PostOrderVisit(alloc->body, [&](const ObjectRef &node) {
+        const auto *call = node.as<CallNode>();
+        if (call == nullptr || !call->op.same_as(ascend_tail_broadcast()) ||
+            (call->args.size() != 12 && call->args.size() != 13)) {
+          return;
+        }
+        const auto *ptr = call->args[2].as<CallNode>();
+        if (ptr == nullptr || !ptr->op.same_as(builtin::tvm_access_ptr()) ||
+            ptr->args.size() < 2 ||
+            ptr->args[1].as<VarNode>() != alloc->buffer_var.get()) {
+          return;
+        }
+        const bool has_tmp = call->args[3].as<CallNode>() != nullptr;
+        const size_t dim_index = has_tmp ? 4 : 3;
+        const size_t shape_index = dim_index + 1;
+        const auto *rows = call->args[shape_index + 2].as<IntImmNode>();
+        const auto *cols = call->args[shape_index + 3].as<IntImmNode>();
+        ICHECK(rows && cols) << "tail broadcast source shape must be static";
+        const size_t row_bytes = static_cast<size_t>(cols->value) *
+                                 alloc->dtype.bytes() * alloc->dtype.lanes();
+        if (rows->value > 0 && row_bytes < 32) {
+          padded_broadcast_bytes = std::max(
+              padded_broadcast_bytes, static_cast<size_t>(rows->value) * 32);
+        }
+      });
+      size_bytes = std::max(size_bytes, padded_broadcast_bytes);
       return AlignUp(size_bytes, 32);
     }
 

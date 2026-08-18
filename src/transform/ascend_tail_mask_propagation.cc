@@ -4,7 +4,7 @@
 /*!
  * \file src/transform/ascend_tail_mask_propagation.cc
  * \brief Propagate UB tail valid-regions and rewrite vector ops to tail-aware
- *        variants for the AscendC backend.
+ *        variants for the AscendC and PTO backends.
  *
  * After LowerTileOp, a GM->UB copy is lowered to
  *   call_extern("tl::ascend::copy_gm_to_ub<...>", src_ptr, dst_ptr,
@@ -18,10 +18,9 @@
  * valid_row/valid_col/physical_col) so the codegen emits a tl::ascend::tail_*
  * helper that computes only over the valid region.
  *
- * Rewrites: unary / binary / scalar(immediate), plus a conservative allow-list
- * of 2D reduce contracts. Propagates-but-does-not-rewrite: cast / broadcast /
- * copy_ub_to_ub (they are per-lane or shape-only, so the full-tile path stays
- * numerically correct; the mask still flows through to a downstream reduce).
+ * Rewrites: unary / binary / scalar(immediate), compare / select / broadcast,
+ * plus a conservative allow-list of 2D reduce contracts. Cast and UB-to-UB
+ * copy only propagate the rectangle.
  */
 
 #include "arith/ir_mutator_with_analyzer.h"
@@ -124,6 +123,7 @@ public:
   static PrimFunc Substitute(PrimFunc f, bool rewrite_reduce) {
     arith::Analyzer analyzer;
     AscendTailMaskPropagator m(&analyzer, rewrite_reduce);
+    m.CollectOutputHints(f->body);
     f.CopyOnWrite()->body = m.VisitStmt(f->body);
     return f;
   }
@@ -135,6 +135,9 @@ public:
 private:
   // Per UB data Var -> current valid region. Absent => full (untracked).
   std::unordered_map<const VarNode *, TailMaskInfo> state_;
+  // Direct UB->GM sinks provide the target valid rectangle needed when a
+  // broadcast expands a dimension that is already full in its source.
+  std::unordered_map<const VarNode *, TailMaskInfo> output_hints_;
   // Whether reduce ops may be rewritten to tail_reduce. The caller enables
   // this only for backends with a dedicated tail-reduce lowering.
   bool rewrite_reduce_ = true;
@@ -169,6 +172,12 @@ private:
   static bool SupportedTailDtype(DataType dt) {
     return dt.is_float() || dt.is_bfloat16();
   }
+  static bool SupportedCmpSelDtype(DataType dt) {
+    return dt == DataType::Float(16) || dt == DataType::Float(32);
+  }
+  static bool SupportedPackedDtype(DataType dt) {
+    return dt == DataType::UInt(8);
+  }
   // Element dtype behind an access_ptr (mirrors GetAccessPtrDtype in codegen).
   static DataType PtrDtype(const PrimExpr &e) {
     const auto *ap = e.as<CallNode>();
@@ -192,6 +201,61 @@ private:
     return m.is_tail() && m.physical_row.defined() &&
            m.physical_col.defined() && count.defined() &&
            analyzer_->CanProveEqual(count, m.physical_row * m.physical_col);
+  }
+
+  bool SamePhysicalShape(const TailMaskInfo &a, const TailMaskInfo &b) {
+    return a.physical_row.defined() && a.physical_col.defined() &&
+           b.physical_row.defined() && b.physical_col.defined() &&
+           analyzer_->CanProveEqual(a.physical_row, b.physical_row) &&
+           analyzer_->CanProveEqual(a.physical_col, b.physical_col);
+  }
+
+  bool CompareWidthSupported(const TailMaskInfo &m, DataType dtype) {
+    if (!m.physical_col.defined() || !dtype.bytes())
+      return false;
+    PrimExpr eight = IntImm(DataType::Int(32), 8);
+    PrimExpr vector_lanes = IntImm(DataType::Int(32), 256 / dtype.bytes());
+    return analyzer_->CanProve(m.physical_col <= vector_lanes) &&
+           analyzer_->CanProve(indexmod(m.physical_col, eight) == 0);
+  }
+
+  PrimExpr PackedStorageCol(const PrimExpr &ptr, const TailMaskInfo &data) {
+    PrimExpr extent = PtrExtent(ptr);
+    if (!extent.defined() || !data.physical_row.defined())
+      return PrimExpr();
+    return analyzer_->Simplify(indexdiv(extent, data.physical_row));
+  }
+
+  TailMaskInfo IntersectDataMask(const TailMaskInfo &packed,
+                                 const TailMaskInfo &data) {
+    TailMaskInfo out = packed;
+    out.kind = TailMaskKind::kTail;
+    out.storage_col = out.physical_col;
+    if (!data.valid_row.defined() || !data.valid_col.defined())
+      return out;
+    out.valid_row = analyzer_->CanProveEqual(out.valid_row, data.valid_row)
+                        ? out.valid_row
+                        : Min(out.valid_row, data.valid_row);
+    out.valid_col = analyzer_->CanProveEqual(out.valid_col, data.valid_col)
+                        ? out.valid_col
+                        : Min(out.valid_col, data.valid_col);
+    return out;
+  }
+
+  void CollectOutputHints(const Stmt &body) {
+    PostOrderVisit(body, [&](const ObjectRef &node) {
+      const auto *call = node.as<CallNode>();
+      if (call == nullptr ||
+          ExternName(call).find("copy_ub_to_gm") == std::string::npos ||
+          call->args.size() < 8)
+        return;
+      const VarNode *src_v = GetPtrVar(call->args[1]);
+      if (src_v == nullptr)
+        return;
+      output_hints_[src_v] =
+          MakeCopyMask(call->args[4], call->args[5], call->args[6],
+                       call->args[7], analyzer_);
+    });
   }
 
   // Detect a broadcast-scalar tail mask: valid_col is a compile-time constant 1
@@ -302,6 +366,14 @@ private:
     // Reduce: name(0) out(1) src(2) tmp(3) clear(4)
     if (call->op.same_as(ascend_reduce()))
       return RewriteReduce(call);
+    // Compare: tensor/tensor or immediate scalar -> packed uint8 mask.
+    if (call->op.same_as(ascend_compare()))
+      return RewriteCompare(call, false);
+    if (call->op.same_as(ascend_compare_scalar()))
+      return RewriteCompare(call, true);
+    // Select accepts only a packed mask produced by a tracked compare.
+    if (call->op.same_as(ascend_select()))
+      return RewriteSelect(call);
     // Cast: dst(0) src(1) roundmode(2) count(3) -- propagate only.
     if (call->op.same_as(ascend_cast())) {
       PropagateUnaryShape(call->args[0], call->args[1]);
@@ -309,8 +381,7 @@ private:
     }
     // Broadcast: name(0) dst(1) src(2) tmp(3) dim(4) dstShape... srcShape...
     if (call->op.same_as(ascend_broadcast())) {
-      PropagateBroadcast(call);
-      return Stmt();
+      return RewriteBroadcast(call);
     }
     return Stmt();
   }
@@ -383,6 +454,157 @@ private:
                          call->args[2],  in.valid_row,  in.valid_col,
                          in.physical_col};
     return Evaluate(Call(DataType::Handle(), ascend_tail_scalar(), a));
+  }
+
+  Stmt RewriteCompare(const CallNode *call, bool scalar) {
+    const VarNode *dst_v =
+        call->args.empty() ? nullptr : GetPtrVar(call->args[0]);
+    if (call->args.size() != 5) {
+      // Unsupported forms (notably BufferLoad scalar compare) overwrite dst
+      // through the native path. Drop packed provenance left by an earlier
+      // compare on the same UB buffer before a later select can consume it.
+      if (dst_v != nullptr)
+        state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
+    TailMaskInfo lhs = GetMask(GetPtrVar(call->args[1]));
+    TailMaskInfo data = lhs;
+    if (!scalar) {
+      TailMaskInfo rhs = GetMask(GetPtrVar(call->args[2]));
+      data = IntersectMasks(lhs, rhs, analyzer_);
+      if (!SamePhysicalShape(lhs, rhs)) {
+        if (dst_v != nullptr)
+          state_[dst_v] = TailMaskInfo{};
+        return Stmt();
+      }
+    } else if (GetPtrVar(call->args[2]) != nullptr) {
+      if (dst_v != nullptr)
+        state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
+    if (!data.valid_row.defined() || !data.valid_col.defined() ||
+        !data.physical_row.defined() || !data.physical_col.defined()) {
+      if (dst_v != nullptr)
+        state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
+
+    DataType src_dtype = PtrDtype(call->args[1]);
+    PrimExpr storage_col = PackedStorageCol(call->args[0], data);
+    PrimExpr packed_min = indexdiv(data.physical_col + 7, 8);
+    PrimExpr dst_extent = PtrExtent(call->args[0]);
+    bool ok =
+        CleanTail(call->args[4], data) && SupportedCmpSelDtype(src_dtype) &&
+        PtrDtype(call->args[scalar ? 1 : 2]) == src_dtype &&
+        SupportedPackedDtype(PtrDtype(call->args[0])) &&
+        CompareWidthSupported(data, src_dtype) && storage_col.defined() &&
+        dst_extent.defined() &&
+        analyzer_->CanProveEqual(dst_extent, data.physical_row * storage_col) &&
+        analyzer_->CanProve(storage_col >= packed_min) &&
+        call->args[3].as<StringImmNode>() != nullptr &&
+        !HasOutOfScopeLoopVar(data.valid_row) &&
+        !HasOutOfScopeLoopVar(data.valid_col) && !IsBroadcastScalarMask(data);
+    if (dst_v != nullptr)
+      state_[dst_v] =
+          ok ? MakePackedCmpMask(data, storage_col) : TailMaskInfo{};
+    if (!ok)
+      return Stmt();
+
+    Array<PrimExpr> a = {call->args[0], call->args[1], call->args[2]};
+    a.push_back(call->args[3]);
+    a.push_back(data.valid_row);
+    a.push_back(data.valid_col);
+    a.push_back(data.physical_row);
+    a.push_back(data.physical_col);
+    a.push_back(storage_col);
+    return Evaluate(
+        Call(DataType::Handle(),
+             scalar ? ascend_tail_compare_scalar() : ascend_tail_compare(), a));
+  }
+
+  Stmt RewriteSelect(const CallNode *call) {
+    const VarNode *dst_v =
+        call->args.empty() ? nullptr : GetPtrVar(call->args[0]);
+    if (call->args.size() < 7) {
+      if (dst_v != nullptr)
+        state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
+    TailMaskInfo packed = GetMask(GetPtrVar(call->args[1]));
+    int type_idx = call->args[3].as<IntImmNode>() != nullptr ? 3 : 4;
+    if (type_idx >= static_cast<int>(call->args.size())) {
+      if (dst_v != nullptr)
+        state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
+    const auto *type_imm = call->args[type_idx].as<IntImmNode>();
+    if (!packed.is_packed_cmp() || type_imm == nullptr ||
+        (type_imm->value != 1 && type_imm->value != 2)) {
+      if (dst_v != nullptr)
+        state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
+
+    int src1_idx = type_idx + 1;
+    int mode_idx = type_idx + 2;
+    int size_idx = type_idx + 3;
+    if (size_idx >= static_cast<int>(call->args.size())) {
+      if (dst_v != nullptr)
+        state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
+    TailMaskInfo out =
+        IntersectDataMask(packed, GetMask(GetPtrVar(call->args[2])));
+    if (type_imm->value == 2) {
+      TailMaskInfo src1 = GetMask(GetPtrVar(call->args[src1_idx]));
+      if (!SamePhysicalShape(out, src1)) {
+        if (dst_v != nullptr)
+          state_[dst_v] = TailMaskInfo{};
+        return Stmt();
+      }
+      out = IntersectDataMask(out, src1);
+    }
+
+    DataType data_dtype = PtrDtype(call->args[0]);
+    const auto *mode_imm = call->args[mode_idx].as<StringImmNode>();
+    bool supported_mode = mode_imm != nullptr &&
+                          ((type_imm->value == 1 &&
+                            mode_imm->value == "VSEL_TENSOR_SCALAR_MODE") ||
+                           (type_imm->value == 2 &&
+                            mode_imm->value == "VSEL_TENSOR_TENSOR_MODE"));
+    bool ok =
+        CleanTail(call->args[size_idx], out) &&
+        SupportedCmpSelDtype(data_dtype) &&
+        PtrDtype(call->args[2]) == data_dtype &&
+        (type_imm->value == 1 ||
+         PtrDtype(call->args[src1_idx]) == data_dtype) &&
+        (type_imm->value == 2 || GetPtrVar(call->args[src1_idx]) == nullptr) &&
+        SupportedPackedDtype(PtrDtype(call->args[1])) &&
+        CompareWidthSupported(out, data_dtype) && supported_mode &&
+        !HasOutOfScopeLoopVar(out.valid_row) &&
+        !HasOutOfScopeLoopVar(out.valid_col);
+    if (dst_v != nullptr)
+      state_[dst_v] = ok ? out : TailMaskInfo{};
+    if (!ok)
+      return Stmt();
+
+    // Normalize the backend-specific tmp insertion. AscendC does not consume
+    // a select tmp, so its mask pointer is a harmless placeholder at arg 4.
+    PrimExpr tmp = type_idx == 4 ? call->args[3] : call->args[1];
+    Array<PrimExpr> a = {StringImm(type_imm->value == 1 ? "Scalar" : "Tensor"),
+                         call->args[0],
+                         call->args[1],
+                         call->args[2],
+                         tmp,
+                         call->args[type_idx],
+                         call->args[src1_idx],
+                         call->args[mode_idx],
+                         out.valid_row,
+                         out.valid_col,
+                         out.physical_row,
+                         out.physical_col,
+                         packed.storage_col};
+    return Evaluate(Call(DataType::Handle(), ascend_tail_select(), a));
   }
 
   Stmt RewriteReduce(const CallNode *call) {
@@ -458,47 +680,110 @@ private:
     return Evaluate(Call(DataType::Handle(), ascend_tail_reduce(), a));
   }
 
-  void PropagateBroadcast(const CallNode *call) {
+  Stmt RewriteBroadcast(const CallNode *call) {
     // name(0) dst(1) src(2) [tmp(3)] dim(3/4) dstShape... srcShape...
-    if (call->args.size() < 4)
-      return;
+    if (call->args.size() < 2)
+      return Stmt();
     const VarNode *dst_v = GetPtrVar(call->args[1]);
     if (dst_v == nullptr)
-      return;
+      return Stmt();
+    if (call->args.size() < 4) {
+      state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
     TailMaskInfo in = GetMask(GetPtrVar(call->args[2]));
     const bool has_tmp = GetPtrVar(call->args[3]) != nullptr;
     const size_t dim_index = has_tmp ? 4 : 3;
+    if (call->args.size() <= dim_index) {
+      state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
     const auto *dim_imm = call->args[dim_index].as<IntImmNode>();
-    if (!in.is_tail() || dim_imm == nullptr || dim_imm->value != 2) {
-      state_[dst_v] = in; // 1D / untracked: pass through
-      return;
+    if (!in.valid_row.defined() || !in.valid_col.defined() ||
+        dim_imm == nullptr || dim_imm->value != 2) {
+      state_[dst_v] = TailMaskInfo{};
+      return Stmt();
     }
     const size_t shape_index = dim_index + 1;
     if (call->args.size() < shape_index + 4) {
-      state_[dst_v] = in;
-      return;
+      state_[dst_v] = TailMaskInfo{};
+      return Stmt();
     }
     PrimExpr dst_rows = call->args[shape_index];
     PrimExpr dst_cols = call->args[shape_index + 1];
     PrimExpr src_rows = call->args[shape_index + 2];
     PrimExpr src_cols = call->args[shape_index + 3];
-    TailMaskInfo out;
-    out.kind = TailMaskKind::kTail;
+    if (!analyzer_->CanProveEqual(in.physical_row, src_rows) ||
+        !analyzer_->CanProveEqual(in.physical_col, src_cols)) {
+      state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
+    PrimExpr dst_extent = PtrExtent(call->args[1]);
+    PrimExpr src_extent = PtrExtent(call->args[2]);
+    if (!dst_extent.defined() || !src_extent.defined() ||
+        !analyzer_->CanProveEqual(dst_extent, dst_rows * dst_cols) ||
+        !analyzer_->CanProveEqual(src_extent, src_rows * src_cols)) {
+      state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
+    // Same-shape broadcast is a shape-preserving native copy. It needs no
+    // tail helper, but its valid rectangle remains valid for downstream ops.
+    if (analyzer_->CanProveEqual(dst_rows, src_rows) &&
+        analyzer_->CanProveEqual(dst_cols, src_cols)) {
+      state_[dst_v] = in;
+      return Stmt();
+    }
+    // [1, 1] makes both axes look like the broadcast axis. The current tail
+    // ABI does not carry the explicit frontend axis, so retain the native op
+    // rather than silently choosing axis 1 for an axis-0 broadcast.
+    if (is_one(src_rows) && is_one(src_cols)) {
+      state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
+    TailMaskInfo out = MakeFullMask(dst_rows, dst_cols);
+    auto hint_it = output_hints_.find(dst_v);
+    bool has_hint = hint_it != output_hints_.end() &&
+                    SamePhysicalShape(hint_it->second, out);
+    if (has_hint)
+      out = hint_it->second;
+    if (is_one(src_cols)) {
+      // [M,1] -> [M,N]: row tail carries, all columns become valid.
+      out.valid_row =
+          has_hint ? Min(out.valid_row, in.valid_row) : in.valid_row;
+      if (!has_hint)
+        out.valid_col = dst_cols;
+    } else if (is_one(src_rows)) {
+      // [1,N] -> [M,N]: column tail carries, all rows become valid.
+      if (!has_hint)
+        out.valid_row = dst_rows;
+      out.valid_col =
+          has_hint ? Min(out.valid_col, in.valid_col) : in.valid_col;
+    } else {
+      state_[dst_v] = TailMaskInfo{};
+      return Stmt();
+    }
+    out.kind = IsStaticallyFull(out.valid_row, out.valid_col, dst_rows,
+                                dst_cols, analyzer_)
+                   ? TailMaskKind::kFull
+                   : TailMaskKind::kTail;
     out.physical_row = dst_rows;
     out.physical_col = dst_cols;
     out.storage_col = dst_cols;
-    if (is_one(src_cols)) {
-      // [M,1] -> [M,N]: row tail carries, all columns become valid.
-      out.valid_row = in.valid_row;
-      out.valid_col = dst_cols;
-    } else if (is_one(src_rows)) {
-      // [1,N] -> [M,N]: column tail carries, all rows become valid.
-      out.valid_row = dst_rows;
-      out.valid_col = in.valid_col;
-    } else {
-      out = in;
-    }
-    state_[dst_v] = out;
+    bool ok = out.is_tail() && SupportedCmpSelDtype(PtrDtype(call->args[1])) &&
+              PtrDtype(call->args[2]) == PtrDtype(call->args[1]) &&
+              !HasOutOfScopeLoopVar(out.valid_row) &&
+              !HasOutOfScopeLoopVar(out.valid_col) &&
+              !HasOutOfScopeLoopVar(in.valid_row) &&
+              !HasOutOfScopeLoopVar(in.valid_col);
+    state_[dst_v] = ok ? out : TailMaskInfo{};
+    if (!ok)
+      return Stmt();
+    Array<PrimExpr> a(call->args.begin(), call->args.end());
+    a.push_back(out.valid_row);
+    a.push_back(out.valid_col);
+    a.push_back(in.valid_row);
+    a.push_back(in.valid_col);
+    return Evaluate(Call(DataType::Handle(), ascend_tail_broadcast(), a));
   }
 
   static int ParseReduceDim(const std::string &tag) {

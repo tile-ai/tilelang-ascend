@@ -71,13 +71,23 @@ def _validate_relative_path(value: str, field: str) -> PurePosixPath:
     return path
 
 
-def load_mappings(repo_root: Path, manifest_path: Path) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-    """Return the mappings that are live, and those still waiting on their test.
+def load_mappings(repo_root: Path, manifest_path: Path) -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
+    """Return the mappings that are live, those waiting on their test, and those
+    whose operator is gone.
 
     Registering a source excludes it from the legacy runner, so a mapping whose
     test has not landed yet must not take effect: it is a plan, not a migration.
     Holding it back keeps the example running and keeps Pytest from being
     pointed at a file that does not exist.
+
+    An entry whose source no longer exists is reported rather than raised on.
+    It is out of date, not malformed, and the two want different handling: the
+    checks below are about a manifest that cannot be read the way it claims, and
+    stopping on those is what keeps a half-built skip list from letting every
+    migrated operator run twice. A moved operator costs nothing to skip - there
+    is no file at that path for the runner to find, so no run to suppress - and
+    raising on it stopped every unrelated pull request in the repository until
+    somebody noticed the entry, which is not where the cost belongs.
     """
     if not manifest_path.is_absolute():
         manifest_path = repo_root / manifest_path
@@ -89,6 +99,7 @@ def load_mappings(repo_root: Path, manifest_path: Path) -> tuple[list[tuple[str,
     seen_tests: set[str] = set()
     active: list[tuple[str, str]] = []
     pending: list[tuple[str, str]] = []
+    stale: list[tuple[str, str]] = []
 
     for source, test in mappings:
         source_path = _validate_relative_path(source, "source")
@@ -104,17 +115,17 @@ def load_mappings(repo_root: Path, manifest_path: Path) -> tuple[list[tuple[str,
             raise ManifestError(f"source must be a Python file: {source}")
         if test_path.suffix != ".py" or not test_path.name.startswith("test_"):
             raise ManifestError(f"test must be named test_*.py: {test}")
-        if not (repo_root / Path(*source_path.parts)).is_file():
-            raise ManifestError(f"source does not exist: {source}")
         seen_sources.add(source)
         seen_tests.add(test)
 
-        if (repo_root / Path(*test_path.parts)).is_file():
+        if not (repo_root / Path(*source_path.parts)).is_file():
+            stale.append((source, test))
+        elif (repo_root / Path(*test_path.parts)).is_file():
             active.append((source, test))
         else:
             pending.append((source, test))
 
-    return active, pending
+    return active, pending, stale
 
 
 def _shell_invoked_tests(repo_root: Path) -> set[str]:
@@ -242,13 +253,21 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
-        mappings, pending = load_mappings(args.repo_root.resolve(), args.manifest)
+        mappings, pending, stale = load_mappings(args.repo_root.resolve(), args.manifest)
     except (ManifestError, OSError) as error:
         print(f"operator test manifest error: {error}", file=sys.stderr)
         return 1
 
     if args.command == "validate":
         print(f"Validated {len(mappings)} operator test mapping(s)")
+        if stale:
+            print(
+                f"{len(stale)} mapping(s) whose operator no longer exists at the "
+                "registered path; each one is inert and its operator runs in the "
+                "legacy runner until the entry is repointed or removed:"
+            )
+            for source, test in stale:
+                print(f"  {source} -> {test}")
         if pending:
             print(
                 f"{len(pending)} mapping(s) reserved but not migrated yet; the "
@@ -264,7 +283,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif args.command == "list-sources":
         _print_lines(source for source, _ in mappings)
     elif args.command == "check-orphans":
-        unregistered = find_unregistered_tests(args.repo_root.resolve(), mappings, pending)
+        # A stale entry still names its test, so the test is not unclaimed; it is
+        # claimed by an entry that has nothing left to run. Reporting it here as
+        # well would say the same thing twice, in the place that is about tests
+        # nobody registered.
+        unregistered = find_unregistered_tests(args.repo_root.resolve(), mappings, pending + stale)
         if unregistered:
             print(f"{len(unregistered)} operator test(s) matching no manifest entry:")
             for item in unregistered:
