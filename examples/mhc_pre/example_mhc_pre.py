@@ -403,13 +403,6 @@ def _pad_2d(t, target_rows, target_cols):
     return result
 
 
-def _pad_1d(t, target_size):
-    """[rows] -> [target], padded with zeros."""
-    result = torch.zeros(target_size, dtype=t.dtype, device=t.device)
-    result[: t.shape[0]] = t
-    return result
-
-
 def _pad_3d(t, target_dim1, target_dim2):
     """[n, d1, d2] -> [n, target1, target2], padded with zeros."""
     n = t.shape[0]
