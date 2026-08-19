@@ -21,7 +21,7 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 
 ## 3. Optimization Path (V0 -> V6)
 
-| Version | Change | Kernel (n=4096, h=2560) | vs CANN | Key Breakthrough |
+| Version | Change | Kernel-only (n=4096, h=2560) | vs CANN | Key Breakthrough |
 |---------|--------|------------------------|---------|------------------|
 | V0 | Cube dual-kernel | 4.63 ms | 0.49x | Baseline |
 | V1 | AIV single V-core | 13.37 ms | 0.17x | Pure Vector |
@@ -37,6 +37,10 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 - hc=4 padded to 16 wastes 93.75% Cube MACs
 - CV sync bug prevents single-kernel fusion
 - Pure Vector avoids both issues
+- But V1 is 3x *slower* than Cube: it uses only one V-core, and simulates the
+  `[4,4]@[4,h]` matmul with `broadcast + mul + reduce_sum`, which is far less
+  efficient than dedicated Cube hardware. This motivates V2 (dual V-core) and
+  V4 (AXPY replacing broadcast+reduce).
 
 **V1 -> V2: Dual V-core**
 - `bid = cid * 2 + vid` — two Vector units process different tokens
@@ -57,13 +61,20 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 - Golden reference synchronized (removed ref's bfloat16() quantization)
 - max_diff improved: 0.125 -> 0.0625
 
-## 4. Final Performance (do_bench, warmup=20, rep=100)
+## 4. Final Performance (E2E, do_bench, warmup=20, rep=100)
 
 | n | h | hc | TileLang (AIV) | PyTorch (CANN) | Speedup |
 |---|---|---|-----------------|----------------|---------|
 | 512 | 2560 | 4 | 0.40 ms | 0.25 ms | 0.63x |
 | 4096 | 2560 | 4 | 1.00 ms | 2.27 ms | 2.28x |
 | 4096 | 7168 | 4 | 1.96 ms | 6.08 ms | 3.10x |
+
+> **E2E vs kernel-only**: §3/§5/§6 report **kernel-only** latency (pure NPU
+> execution); this section reports **E2E** latency including host-side tensor
+> preprocessing (`_pad_3d` + `comb.mT.contiguous()`). For n=4096,h=2560 the gap
+> is 0.65ms (kernel-only) → 1.00ms (E2E), i.e. ~0.35ms host overhead from the
+> 134MB pad + transpose-contiguous. This host preprocessing is the main
+> remaining E2E bottleneck (see §9).
 
 Note: n=512 E2E includes ~0.17ms Python dispatch overhead. Kernel-only latency is 0.23ms (1.08x CANN).
 
@@ -78,7 +89,7 @@ Note: n=512 E2E includes ~0.17ms Python dispatch overhead. Kernel-only latency i
 
 h_blk=2048 is optimal across all shapes. AXPY's small UB footprint enables large tile size.
 
-## 6. Pipeline Ablation (n=4096, h=7168)
+## 6. Pipeline Ablation (n=4096, h=7168, kernel-only)
 
 | Schedule | Latency | vs CANN | vs serial |
 |----------|---------|---------|-----------|
@@ -93,13 +104,17 @@ stage=2 captures most pipeline benefit. stage=3 adds only 0.6% — not worth the
 | Metric | Value |
 |--------|-------|
 | Task Duration | 1,194 us |
-| Block count | 6,144 |
+| Block count | 6,144 (msprof-reported; logical dual-V-core blocks = n/2 = 2048, TODO verify) |
 | Vector compute | 21,701 us (1818%) |
 | MTE2 (GM->UB load) | 8,348 us (699%) |
 | MTE3 (UB->GM store) | 9,980 us (836%) |
 | Scalar | 6,921 us (580%) |
 | Parallelism | 37.6x |
 | Effective BW | 443 GB/s |
+
+> Percentages = per-core accumulated time / Task Duration. Values >100% mean
+> multiple cores are active concurrently (e.g. Vector compute 1818% ≈ 18 vector
+> units working in parallel across all blocks).
 
 ### Bottleneck: Compute-bound
 
