@@ -17,6 +17,7 @@ tl.cache.clear_cache()
         tl.PassConfigKey.TIR_MERGE_STATIC_SMEM: True,
         tl.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
         tl.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+        tl.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     },
 )
 def cross_entropy(
@@ -74,49 +75,48 @@ def cross_entropy(
                 l_n_32 = T.alloc_ub([block_N_2], CAL_DTYPE)
                 l_n = T.alloc_ub([block_N_2], x_dtype)
 
-                with T.Scope("V"):
-                    T.tile.fill(prev_max, -T.infinity(CAL_DTYPE))
-                    T.tile.fill(prev_sum, 0.0)
+                T.tile.fill(prev_max, -T.infinity(CAL_DTYPE))
+                T.tile.fill(prev_sum, 0.0)
 
-                    for bc in T.serial(c_num):
-                        T.copy(x[bn * block_N_2, bc * block_C], x_ub, pad_value=-T.infinity(CAL_DTYPE))
-                        cast_or_copy(x_32, x_ub, CAST_MODE_LOW2HIGH, block_N_2 * block_C)
+                for bc in T.serial(c_num):
+                    T.copy(x[bn * block_N_2, bc * block_C], x_ub, pad_value=-T.infinity(CAL_DTYPE))
+                    cast_or_copy(x_32, x_ub, CAST_MODE_LOW2HIGH, block_N_2 * block_C)
 
-                        T.reduce_max(x_32, tile_max, dim=-1)
-                        T.tile.max(tile_max, prev_max, tile_max)
-                        T.tile.sub(temp_exp, prev_max, tile_max)
-                        T.tile.exp(temp_exp, temp_exp)
-                        T.tile.mul(temp_exp, prev_sum, temp_exp)
-                        T.tile.broadcast(max_2d, tile_max, axis=1)
-                        T.tile.sub(x_32, x_32, max_2d)
-                        T.tile.exp(x_32, x_32)
-                        T.reduce_sum(x_32, tile_sum, dim=-1)
-                        T.tile.add(prev_sum, tile_sum, temp_exp)
-                        T.copy(tile_max, prev_max)
+                    T.reduce_max(x_32, tile_max, dim=-1)
+                    T.tile.max(tile_max, prev_max, tile_max)
+                    T.tile.sub(temp_exp, prev_max, tile_max)
+                    T.tile.exp(temp_exp, temp_exp)
+                    T.tile.mul(temp_exp, prev_sum, temp_exp)
+                    T.tile.broadcast(max_2d, tile_max, axis=1)
+                    T.tile.sub(x_32, x_32, max_2d)
+                    T.tile.exp(x_32, x_32)
+                    T.reduce_sum(x_32, tile_sum, dim=-1)
+                    T.tile.add(prev_sum, tile_sum, temp_exp)
+                    T.copy(tile_max, prev_max)
 
-                    T.copy(y[bn * block_N_2], y_ub)
-                    T.tile.ln(prev_sum, prev_sum)
+                T.copy(y[bn * block_N_2], y_ub)
+                T.tile.ln(prev_sum, prev_sum)
 
-                    T.tile.broadcast(max_2d, prev_max, axis=1)
-                    T.tile.broadcast(logsum_2d, prev_sum, axis=1)
+                T.tile.broadcast(max_2d, prev_max, axis=1)
+                T.tile.broadcast(logsum_2d, prev_sum, axis=1)
 
-                    for bc in T.serial(c_num):
-                        T.copy(x[bn * block_N_2, bc * block_C], x_ub, pad_value=-T.infinity(CAL_DTYPE))
-                        cast_or_copy(x_32, x_ub, CAST_MODE_LOW2HIGH, block_N_2 * block_C)
+                for bc in T.serial(c_num):
+                    T.copy(x[bn * block_N_2, bc * block_C], x_ub, pad_value=-T.infinity(CAL_DTYPE))
+                    cast_or_copy(x_32, x_ub, CAST_MODE_LOW2HIGH, block_N_2 * block_C)
 
-                        T.tile.sub(x_32, x_32, max_2d)
-                        T.tile.sub(x_32, x_32, logsum_2d)
+                    T.tile.sub(x_32, x_32, max_2d)
+                    T.tile.sub(x_32, x_32, logsum_2d)
 
-                        cast_or_copy(x_ub, x_32, CAST_MODE_HIGH2LOW, block_N_2 * block_C)
-                        T.copy(x_ub, log_prob[bn * block_N_2, bc * block_C])
+                    cast_or_copy(x_ub, x_32, CAST_MODE_HIGH2LOW, block_N_2 * block_C)
+                    T.copy(x_ub, log_prob[bn * block_N_2, bc * block_C])
 
-                        for n_idx in T.serial(block_N_2):
-                            if y_ub[n_idx] >= 0 and y_ub[n_idx] < block_C:
-                                l_n_32[n_idx] = -x_32[n_idx, y_ub[n_idx]]
-                        T.tile.sub(y_ub, y_ub, block_C)
+                    for n_idx in T.serial(block_N_2):
+                        if y_ub[n_idx] >= 0 and y_ub[n_idx] < block_C:
+                            l_n_32[n_idx] = -x_32[n_idx, y_ub[n_idx]]
+                    T.tile.sub(y_ub, y_ub, block_C)
 
-                    cast_or_copy(l_n, l_n_32, CAST_MODE_HIGH2LOW, block_N_2)
-                    T.copy(l_n, loss[bn * block_N_2])
+                cast_or_copy(l_n, l_n_32, CAST_MODE_HIGH2LOW, block_N_2)
+                T.copy(l_n, loss[bn * block_N_2])
 
     return main
 
@@ -127,6 +127,7 @@ def cross_entropy(
         tl.PassConfigKey.TIR_MERGE_STATIC_SMEM: True,
         tl.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
         tl.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+        tl.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     },
 )
 def cross_entropy_fp32(
@@ -167,44 +168,43 @@ def cross_entropy_fp32(
                 y_ub = T.alloc_ub([block_N_2], y_dtype)
                 l_n_32 = T.alloc_ub([block_N_2], CAL_DTYPE)
 
-                with T.Scope("V"):
-                    T.tile.fill(prev_max, -T.infinity(CAL_DTYPE))
-                    T.tile.fill(prev_sum, 0.0)
+                T.tile.fill(prev_max, -T.infinity(CAL_DTYPE))
+                T.tile.fill(prev_sum, 0.0)
 
-                    for bc in T.serial(c_num):
-                        T.copy(x[bn * block_N_2, bc * block_C], x_32, pad_value=-T.infinity(CAL_DTYPE))
+                for bc in T.serial(c_num):
+                    T.copy(x[bn * block_N_2, bc * block_C], x_32, pad_value=-T.infinity(CAL_DTYPE))
 
-                        T.reduce_max(x_32, tile_max, dim=-1)
-                        T.tile.max(tile_max, prev_max, tile_max)
-                        T.tile.sub(temp_exp, prev_max, tile_max)
-                        T.tile.exp(temp_exp, temp_exp)
-                        T.tile.mul(temp_exp, prev_sum, temp_exp)
-                        T.tile.broadcast(max_2d, tile_max, axis=1)
-                        T.tile.sub(x_32, x_32, max_2d)
-                        T.tile.exp(x_32, x_32)
-                        T.reduce_sum(x_32, tile_sum, dim=-1)
-                        T.tile.add(prev_sum, tile_sum, temp_exp)
-                        T.copy(tile_max, prev_max)
+                    T.reduce_max(x_32, tile_max, dim=-1)
+                    T.tile.max(tile_max, prev_max, tile_max)
+                    T.tile.sub(temp_exp, prev_max, tile_max)
+                    T.tile.exp(temp_exp, temp_exp)
+                    T.tile.mul(temp_exp, prev_sum, temp_exp)
+                    T.tile.broadcast(max_2d, tile_max, axis=1)
+                    T.tile.sub(x_32, x_32, max_2d)
+                    T.tile.exp(x_32, x_32)
+                    T.reduce_sum(x_32, tile_sum, dim=-1)
+                    T.tile.add(prev_sum, tile_sum, temp_exp)
+                    T.copy(tile_max, prev_max)
 
-                    T.copy(y[bn * block_N_2], y_ub)
-                    T.tile.ln(prev_sum, prev_sum)
+                T.copy(y[bn * block_N_2], y_ub)
+                T.tile.ln(prev_sum, prev_sum)
 
-                    for bc in T.serial(c_num):
-                        T.copy(x[bn * block_N_2, bc * block_C], x_32, pad_value=-T.infinity(CAL_DTYPE))
+                for bc in T.serial(c_num):
+                    T.copy(x[bn * block_N_2, bc * block_C], x_32, pad_value=-T.infinity(CAL_DTYPE))
 
-                        T.tile.broadcast(max_2d, prev_max, axis=1)
-                        T.tile.sub(x_32, x_32, max_2d)
-                        T.tile.broadcast(max_2d, prev_sum, axis=1)
-                        T.tile.sub(x_32, x_32, max_2d)
+                    T.tile.broadcast(max_2d, prev_max, axis=1)
+                    T.tile.sub(x_32, x_32, max_2d)
+                    T.tile.broadcast(max_2d, prev_sum, axis=1)
+                    T.tile.sub(x_32, x_32, max_2d)
 
-                        T.copy(x_32, log_prob[bn * block_N_2, bc * block_C])
+                    T.copy(x_32, log_prob[bn * block_N_2, bc * block_C])
 
-                        for n_idx in T.serial(block_N_2):
-                            if y_ub[n_idx] >= 0 and y_ub[n_idx] < block_C:
-                                l_n_32[n_idx] = -x_32[n_idx, y_ub[n_idx]]
-                        T.tile.sub(y_ub, y_ub, block_C)
+                    for n_idx in T.serial(block_N_2):
+                        if y_ub[n_idx] >= 0 and y_ub[n_idx] < block_C:
+                            l_n_32[n_idx] = -x_32[n_idx, y_ub[n_idx]]
+                    T.tile.sub(y_ub, y_ub, block_C)
 
-                    T.copy(l_n_32, loss[bn * block_N_2])
+                T.copy(l_n_32, loss[bn * block_N_2])
 
     return main
 
@@ -270,44 +270,35 @@ def main(custom_args=None):
 
     torch.manual_seed(0)
 
-    # 小词表基础测试
     check_case(N, C, 128, 128)
     check_case(N, C, 128, 128, x_dtype="float32")
     check_case(N, C, 128, 128, x_dtype="bfloat16")
 
-    # 方形 block（测 broadcast axis 正确性）
     check_case(64, 64, 32, 32)
     check_case(64, 64, 32, 32, x_dtype="float32")
     check_case(64, 64, 16, 16)
     check_case(128, 128, 64, 64)
 
-    # c_num=1（C <= block_C）
     check_case(64, 64, 128, 128)
 
-    # 大词表不同 batch
     check_case(4, 131072, 128, 128)
     check_case(64, 131072, 128, 128)
     check_case(256, 131072, 128, 128)
 
-    # 大词表不同 dtype
     check_case(4, 131072, 128, 128, x_dtype="float32")
     check_case(4, 131072, 128, 128, x_dtype="bfloat16")
 
-    # 大词表不同 block_C
     check_case(4, 131072, 128, 64)
     check_case(4, 131072, 128, 192, x_dtype="float32")
 
-    # 不同词表大小
     check_case(64, 32768, 128, 128)
     check_case(128, 65536, 128, 128)
     check_case(64, 262144, 128, 128)
 
-    # 尾数处理（C 不整除 block_C）
     check_case(64, 131073, 128, 128)
     check_case(64, 130000, 128, 128)
     check_case(64, 131073, 128, 128, x_dtype="float32")
 
-    # 不同 block_N
     check_case(128, 131072, 64, 128)
     check_case(128, 131072, 64, 128, x_dtype="float32")
 
