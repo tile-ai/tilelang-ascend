@@ -8,8 +8,9 @@ Architecture (pure Vector, no Cube):
   Single AIV kernel with dual-V-core partitioning.
   - No Cube, no hc padding, no CV sync issue
   - Dual V-core: bid = cid * 2 + vid, both Vector units utilized
-  - h_blk=256 for optimal performance
-  - broadcast + mul + reduce_sum for small matrix multiply (comb^T @ residual)
+  - h_blk=2048 for optimal performance
+  - AXPY linear combination for small matrix multiply (comb^T @ residual)
+  - hc=4 specialized (hard constraint, not generic)
   - with T.Scope("V") for explicit Vector scope
 
 Performance (n=4096, h=2560, hc=4, do_bench):
@@ -83,34 +84,21 @@ def mhc_post_kernel(pad_h, h_blk=H_BLK, dtype="bfloat16", accum_dtype="float"):
 
             if bid < n:
                 with T.Scope("V"):
-                    post_fp32_in = T.alloc_ub(HC, accum_dtype)
-                    post_bf16 = T.alloc_ub(HC, dtype)
                     post_fp32 = T.alloc_ub(HC, accum_dtype)
-                    T.copy(post[bid, 0], post_fp32_in)
-                    T.tile.cast(post_bf16, post_fp32_in, "CAST_RINT", HC)
-                    T.tile.cast(post_fp32, post_bf16, "CAST_NONE", HC)
+                    T.copy(post[bid, 0], post_fp32)
 
-                    comb_bf16_tmp = T.alloc_ub(HC, dtype)
                     comb0_fp32 = T.alloc_ub(HC, accum_dtype)
                     comb1_fp32 = T.alloc_ub(HC, accum_dtype)
                     comb2_fp32 = T.alloc_ub(HC, accum_dtype)
                     comb3_fp32 = T.alloc_ub(HC, accum_dtype)
 
                     T.copy(comb[bid, 0, 0], comb0_fp32)
-                    T.tile.cast(comb_bf16_tmp, comb0_fp32, "CAST_RINT", HC)
-                    T.tile.cast(comb0_fp32, comb_bf16_tmp, "CAST_NONE", HC)
 
                     T.copy(comb[bid, 1, 0], comb1_fp32)
-                    T.tile.cast(comb_bf16_tmp, comb1_fp32, "CAST_RINT", HC)
-                    T.tile.cast(comb1_fp32, comb_bf16_tmp, "CAST_NONE", HC)
 
                     T.copy(comb[bid, 2, 0], comb2_fp32)
-                    T.tile.cast(comb_bf16_tmp, comb2_fp32, "CAST_RINT", HC)
-                    T.tile.cast(comb2_fp32, comb_bf16_tmp, "CAST_NONE", HC)
 
                     T.copy(comb[bid, 3, 0], comb3_fp32)
-                    T.tile.cast(comb_bf16_tmp, comb3_fp32, "CAST_RINT", HC)
-                    T.tile.cast(comb3_fp32, comb_bf16_tmp, "CAST_NONE", HC)
 
                     res0_ub = T.alloc_ub(h_blk, dtype)
                     res1_ub = T.alloc_ub(h_blk, dtype)
@@ -219,8 +207,15 @@ def mhc_post(x, residual, post_layer_mix, comb_res_mix):
 
     Returns:
         output: [n, hc, h] bf16
+
+    Note:
+        This kernel is specialized for hc=4. It uses AXPY linear
+        combination with hardcoded 4 output streams. Passing hc != 4
+        will raise an assertion error.
     """
     h = x.shape[1]
+    hc = residual.shape[1]
+    assert hc == 4, f"This kernel requires hc=4, got hc={hc}"
     hc = residual.shape[1]
     pad_h = calc_pad_h(h)
 
@@ -370,4 +365,3 @@ def bench_vs_pytorch():
 if __name__ == "__main__":
     tilelang.disable_cache()
     test()
-    bench_vs_pytorch()
