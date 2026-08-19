@@ -1507,14 +1507,8 @@ def _tile_clamp_numel(shape):
 
 def _tile_clamp_input(shape, dtype):
     numel = _tile_clamp_numel(shape)
-    repeat = (numel + len(_TILE_CLAMP_INPUT_PATTERN) - 1) // len(
-        _TILE_CLAMP_INPUT_PATTERN
-    )
-    return (
-        torch.tensor(_TILE_CLAMP_INPUT_PATTERN, dtype=_TILE_CLAMP_TORCH_DTYPES[dtype])
-        .repeat(repeat)[:numel]
-        .reshape(shape)
-    )
+    repeat = (numel + len(_TILE_CLAMP_INPUT_PATTERN) - 1) // len(_TILE_CLAMP_INPUT_PATTERN)
+    return torch.tensor(_TILE_CLAMP_INPUT_PATTERN, dtype=_TILE_CLAMP_TORCH_DTYPES[dtype]).repeat(repeat)[:numel].reshape(shape)
 
 
 def tile_clamp_kernel(shape, dtype, count, inplace=False):
@@ -1549,9 +1543,7 @@ def run_test_tile_clamp(shape, dtype, target, count=None, inplace=False):
 
     input_host = _tile_clamp_input(shape, dtype)
     expected_host = torch.full_like(input_host, -99)
-    expected_host.reshape(-1)[:count] = torch.clamp(
-        input_host.reshape(-1)[:count], -2, 3
-    )
+    expected_host.reshape(-1)[:count] = torch.clamp(input_host.reshape(-1)[:count], -2, 3)
     output = kernel(input_host.npu())
     torch.npu.synchronize()
     torch.testing.assert_close(output, expected_host.npu(), rtol=0, atol=0)
