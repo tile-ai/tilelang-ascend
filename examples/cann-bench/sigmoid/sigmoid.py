@@ -50,32 +50,33 @@ def _sigmoid_expert_exp_div(M, N, block_M, block_N, dtype="float16"):
     @T.prim_func
     def main(A: T.Tensor((M, N), dtype), B: T.Tensor((M, N), dtype)):
         with T.Kernel(launch_cores, is_npu=True) as (cid, vid), T.Scope("V"):
-                a_ub = T.alloc_ub((STAGES, rows_per_vec, block_N), dtype)
-                b_ub = T.alloc_ub((STAGES, rows_per_vec, block_N), dtype)
-                T.set_flag("mte3", "mte2", 0)
-                T.set_flag("mte3", "mte2", 1)
-                T.wait_flag("mte3", "mte2", 0)
-                T.copy(A[(cid // n_num) * block_M + vid * rows_per_vec, (cid % n_num) * block_N], a_ub[0, :, :])
-                T.set_flag("mte2", "v", 0)
-                for bi in T.serial(single_core_load):
-                    cur = bi % STAGES
-                    nxt = (bi + 1) % STAGES
-                    lc = bi * launch_cores + cid
-                    if bi < single_core_load - 1:
-                        T.wait_flag("mte3", "mte2", nxt)
-                        lc_nxt = (bi + 1) * launch_cores + cid
-                        T.copy(A[(lc_nxt // n_num) * block_M + vid * rows_per_vec, (lc_nxt % n_num) * block_N], a_ub[nxt, :, :])
-                        T.set_flag("mte2", "v", nxt)
-                    T.wait_flag("mte2", "v", cur)
-                    T.tile.exp(a_ub[cur, :, :], a_ub[cur, :, :])
-                    T.tile.add(b_ub[cur, :, :], a_ub[cur, :, :], 1.0)
-                    T.tile.div(a_ub[cur, :, :], a_ub[cur, :, :], b_ub[cur, :, :])
-                    T.set_flag("v", "mte3", cur)
-                    T.wait_flag("v", "mte3", cur)
-                    T.copy(a_ub[cur, :, :], B[(lc // n_num) * block_M + vid * rows_per_vec, (lc % n_num) * block_N])
-                    T.set_flag("mte3", "mte2", cur)
-                T.wait_flag("mte3", "mte2", 0)
-                T.wait_flag("mte3", "mte2", 1)
+            a_ub = T.alloc_ub((STAGES, rows_per_vec, block_N), dtype)
+            b_ub = T.alloc_ub((STAGES, rows_per_vec, block_N), dtype)
+            T.set_flag("mte3", "mte2", 0)
+            T.set_flag("mte3", "mte2", 1)
+            T.wait_flag("mte3", "mte2", 0)
+            T.copy(A[(cid // n_num) * block_M + vid * rows_per_vec, (cid % n_num) * block_N], a_ub[0, :, :])
+            T.set_flag("mte2", "v", 0)
+            for bi in T.serial(single_core_load):
+                cur = bi % STAGES
+                nxt = (bi + 1) % STAGES
+                lc = bi * launch_cores + cid
+                if bi < single_core_load - 1:
+                    T.wait_flag("mte3", "mte2", nxt)
+                    lc_nxt = (bi + 1) * launch_cores + cid
+                    T.copy(A[(lc_nxt // n_num) * block_M + vid * rows_per_vec, (lc_nxt % n_num) * block_N], a_ub[nxt, :, :])
+                    T.set_flag("mte2", "v", nxt)
+                T.wait_flag("mte2", "v", cur)
+                T.tile.exp(a_ub[cur, :, :], a_ub[cur, :, :])
+                T.tile.add(b_ub[cur, :, :], a_ub[cur, :, :], 1.0)
+                T.tile.div(a_ub[cur, :, :], a_ub[cur, :, :], b_ub[cur, :, :])
+                T.set_flag("v", "mte3", cur)
+                T.wait_flag("v", "mte3", cur)
+                T.copy(a_ub[cur, :, :], B[(lc // n_num) * block_M + vid * rows_per_vec, (lc % n_num) * block_N])
+                T.set_flag("mte3", "mte2", cur)
+            T.wait_flag("mte3", "mte2", 0)
+            T.wait_flag("mte3", "mte2", 1)
+
     return main
 
 
@@ -102,6 +103,7 @@ def _sigmoid_developer(M, N, block_M, block_N, dtype="float16"):
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a)
                 T.tile.sigmoid(b, a)
                 T.copy(b, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
     return main
 
 
@@ -137,6 +139,7 @@ def _sigmoid_bf16_recip_3buf(M, N, block_M, block_N, dtype="bfloat16"):
                 T.tile.reciprocal(a_ub, a_ub)
                 T.tile.cast(tmp_out, a_ub, CAST_MODE_HIGH2LOW, elem_num)
                 T.copy(tmp_out, B[bx * block_M + vid * rows_per_vec, by * block_N])
+
     return main
 
 
@@ -169,6 +172,7 @@ def _sigmoid_bf16(M, N, block_M, block_N, dtype="bfloat16"):
                 T.tile.sigmoid(a_ub, a_ub)
                 T.tile.cast(tmp_out, a_ub, CAST_MODE_HIGH2LOW, elem_num)
                 T.copy(tmp_out, B[bx * block_M + vid * rows_per_vec, by * block_N])
+
     return main
 
 
@@ -212,13 +216,11 @@ def _select_tiling(tl_dtype, M, N):
 
 
 # Shapes safe for exp_div (exp(x) won't overflow)
-_EXP_DIV_SHAPES = {
-    ("float16", frozenset()) | ("float", frozenset()) | ("bfloat16", frozenset())
-}
+_EXP_DIV_SHAPES = {("float16", frozenset()) | ("float", frozenset()) | ("bfloat16", frozenset())}
 # Populate at import time based on known cann-bench value ranges
 _EXP_DIV_SAFE = {
-    "float16": True,   # safe if |x| <= 10
-    "float": True,     # safe if |x| <= 88
+    "float16": True,  # safe if |x| <= 10
+    "float": True,  # safe if |x| <= 88
     "bfloat16": True,  # via fp32 cast, safe if |x| <= 87
 }
 
