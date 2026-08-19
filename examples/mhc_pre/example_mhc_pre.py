@@ -519,8 +519,13 @@ def mhc_pre(residual, fn, hc_scale, hc_base, rms_eps, hc_pre_eps, hc_sinkhorn_ep
         post_mix:     [n, hc, 1]   fp32
         comb_mix:     [n, hc, hc]  fp32
         layer_input:  [n, hidden]  bf16
+
+    Note:
+        Kernel B3 (apply_mix) is specialized for hc=4 using AXPY.
+        Passing hc != 4 will raise an assertion error.
     """
     hc_mult = residual.shape[1]
+    assert hc_mult == 4, f"Kernel B3 requires hc=4, got hc={hc_mult}"
     hidden = residual.shape[2]
     n = residual.shape[0]
     hc_mult3 = hc_mult * (2 + hc_mult)
