@@ -343,12 +343,24 @@ def atomic_add(
 def fill(buffer: Buffer | BufferRegion, value: PrimExpr):
     """Fill a buffer or buffer region with a specified value.
 
+    The generated hardware instruction is ``AscendC::Duplicate`` on the
+    AscendC backend and ``TEXPANDS`` on the PTO backend.
+
     Args:
-        buffer: Either a TVM buffer or buffer region to be filled
-        value: The value to fill the buffer with
+        buffer: Either a TVM buffer or buffer region to be filled.
+                Supports UB and shared (L1) memory scopes.
+        value: The value to fill the buffer with.  Can be a Python scalar
+               or PrimExpr.  When the value dtype differs from the buffer
+               dtype, the frontend automatically casts it.
 
     Returns:
-        A TVM intrinsic call that performs the fill operation
+        A TVM intrinsic call that performs the fill operation.
+
+    Note:
+        On AscendC, dtype support follows ``AscendC::Duplicate``:
+        float16, float32, bfloat16, int16, uint16, int32, uint32.
+        int8/uint8 are not supported on AscendC.
+        On PTO, ``TEXPANDS`` additionally supports int8 and uint8.
     """
     if isinstance(buffer, BufferRegion):
         buffer_ptr, buffer_extent = _handle_buffer_region(buffer, "w")
