@@ -236,7 +236,7 @@ def sinkhorn_bwd_ref(out, dout, n_stream, tilesize=8):
         p1 = r1.clone()
         p2 = r2.clone()
 
-        r_normsq = (r1 * r2).sum(-1)
+        r_normsq = (r1 * r1 + r2 * r2).sum(-1)
 
         for _ in range(2 * n_stream):
             Ap1, Ap2 = matvec(p1, p2)
@@ -247,7 +247,7 @@ def sinkhorn_bwd_ref(out, dout, n_stream, tilesize=8):
             r1 -= alpha.unsqueeze(-1) * Ap1
             r2 -= alpha.unsqueeze(-1) * Ap2
 
-            r_new_normsq = (r1 * r2).sum(-1)
+            r_new_normsq = (r1 * r1 + r2 * r2).sum(-1)
             beta = r_new_normsq / (r_normsq + EPS)
             p1 = r1 + beta.unsqueeze(-1) * p1
             p2 = r2 + beta.unsqueeze(-1) * p2
@@ -294,6 +294,10 @@ def test():
     kernel = sinkhorn_bwd_implicit_cg(n_stream, tilesize)
     grad_M_implicit = kernel(R.detach(), grad_R)
 
+    grad_M_ref = sinkhorn_bwd_ref(R.detach().cpu(), grad_R.cpu(), n_stream, tilesize)
+    ref_diff = (grad_M_ref - grad_M_implicit.cpu()).abs()
+    ref_max_diff = ref_diff.max().item()
+
     abs_diff = (grad_M_autograd.cpu() - grad_M_implicit.cpu()).abs()
     rel_diff = abs_diff / (torch.maximum(grad_M_autograd.cpu().abs(), grad_M_implicit.cpu().abs()) + 1e-8)
 
@@ -305,6 +309,7 @@ def test():
     print(f"  max_abs_diff = {max_abs_diff:.6e}")
     print(f"  mean_abs_diff = {mean_abs_diff:.6e}")
     print(f"  max_rel_diff = {max_rel_diff:.6e}")
+    print(f"  kernel vs manual-CG ref max_diff = {ref_max_diff:.6e}")
 
     print(f"\n  Grad (autograd) sample:\n{grad_M_autograd[0, :3, :3]}")
     print(f"\n  Grad (implicit) sample:\n{grad_M_implicit[0, :3, :3]}")
