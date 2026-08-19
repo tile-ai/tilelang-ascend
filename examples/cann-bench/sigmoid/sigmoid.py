@@ -49,8 +49,7 @@ def _sigmoid_expert_exp_div(M, N, block_M, block_N, dtype="float16"):
 
     @T.prim_func
     def main(A: T.Tensor((M, N), dtype), B: T.Tensor((M, N), dtype)):
-        with T.Kernel(launch_cores, is_npu=True) as (cid, vid):
-            with T.Scope("V"):
+        with T.Kernel(launch_cores, is_npu=True) as (cid, vid), T.Scope("V"):
                 a_ub = T.alloc_ub((STAGES, rows_per_vec, block_N), dtype)
                 b_ub = T.alloc_ub((STAGES, rows_per_vec, block_N), dtype)
                 T.set_flag("mte3", "mte2", 0)
@@ -164,7 +163,6 @@ def _sigmoid_bf16(M, N, block_M, block_N, dtype="bfloat16"):
                 by = lc % n_num
                 tmp_in = T.alloc_shared((rows_per_vec, block_N), dtype)
                 a_ub = T.alloc_shared((rows_per_vec, block_N), ACC)
-                b_ub = T.alloc_shared((rows_per_vec, block_N), ACC)
                 tmp_out = T.alloc_shared((rows_per_vec, block_N), dtype)
                 T.copy(A[bx * block_M + vid * rows_per_vec, by * block_N], tmp_in)
                 T.tile.cast(a_ub, tmp_in, CAST_MODE_LOW2HIGH, elem_num)
@@ -185,7 +183,7 @@ def _select_tiling(tl_dtype, M, N):
     for bn_cap in (128, 256, 512, 1024, 2048, 4096):
         bn = min(N, bn_cap)
         bn = (bn // align) * align
-        bn = max(min(N, align), bn) if N < align else bn
+        bn = max(min(N, align), bn) if align > N else bn
         bn = min(bn, N, bn_cap)
         if bn <= 0:
             continue
@@ -243,7 +241,7 @@ def sigmoid(x: torch.Tensor) -> torch.Tensor:
         else:
             sqrt_n = int(math.isqrt(total))
             M = 1
-            while M * 2 <= sqrt_n:
+            while sqrt_n >= M * 2:
                 M *= 2
             M = max(2, min(M, 8192))
             while total % M != 0 and M > 1:
