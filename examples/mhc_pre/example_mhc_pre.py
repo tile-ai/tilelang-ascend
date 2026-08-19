@@ -757,5 +757,4 @@ def test_full():
 
 if __name__ == "__main__":
     tilelang.disable_cache()
-    test_kernel_a()
     test_full()
