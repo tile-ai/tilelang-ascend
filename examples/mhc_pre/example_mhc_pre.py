@@ -1,33 +1,43 @@
 """MHC Pre operator for Ascend NPU.
 
 Implements the full mHC pre block:
-  1. out = x @ fn.T, sqrsum = x^2.sum(-1)   (Kernel A)
-  2. mixes = out * rsqrt(sqrsum/h + eps)      (Kernel B1: RMSNorm)
+  1. out = x @ fn.T, sqrsum = x^2.sum(-1)   (Kernel A1+A2)
+  2. mixes = out * rsqrt(sqrsum / (hc * hidden) + rms_eps)  (Kernel B1: RMSNorm)
   3. pre/post/comb = split(mixes) + Sinkhorn  (Kernel B2: split + sinkhorn)
   4. layer_input = sum(residual * pre_mix)    (Kernel B3: apply pre_mix)
 
 Reference: tilelang main repo CUDA version examples/deepseek_mhc/example_mhc_pre.py
 
-Architecture (multi-kernel, same pattern as mhc_post):
-  Kernel A1 (Cube):   out = x @ fn.T  (K-tiled GEMM with accumulation)
-  Kernel A2 (Vector): sqrsum = sum(x^2)  (tiled reduction)
+Architecture (5-kernel pipeline, all dual-V-core):
+  Kernel A1 (Cube):   out = x @ fn.T  (K-tiled GEMM, token_block=128, h_blk=512)
+  Kernel A2 (Vector): sqrsum = sum(x^2)  (tiled reduction, h_blk=4096)
   Kernel B1 (Vector): mixes = out * rsqrt(sqrsum/(hc*h) + rms_eps)  (RMSNorm)
   Kernel B2 (Vector): mixes -> pre/post/comb + Sinkhorn normalization
                       (adapted from examples/deepseek_v4/hc_split_sinkhorn.py)
-  Kernel B3 (Vector): layer_input = sum over hc of (residual * pre_mix)  (apply pre_mix)
+  Kernel B3 (Vector): layer_input = sum over hc of (residual * pre_mix)
+                      (AXPY linear combination, hc=4 specialized, h_blk=2048)
 
-  Each kernel launched separately from host. Avoids CV synchronization issues.
+  Each kernel launched separately from host. Dual-V-core: bid = cid * 2 + vid.
+  fn prepack/cache supported for inference (prepare_fn + fn_packed param).
+
+Known limitation:
+  B2 (Sinkhorn) is the largest Vector hotspot (28-41% of kernel time).
+  A static 1D-buffer specialization was evaluated, but the current Ascend
+  backend encounters an AICore failure for the required 2D-to-1D T.copy
+  slice pattern. The generic verified Sinkhorn path is retained.
 
 Migration from CUDA:
   1. pass_configs: TL_ASCEND_AUTO_SYNC / MEMORY_PLANNING / AUTO_CV_COMBINE
   2. T.gemm_v0: bf16 input + fp32 accumulate (CUDA used TF32 T.gemm)
-  3. fn cast to bf16 on host (CUDA used tfloat32)
-  4. token_block=16 (Cube minimum, CUDA used 32)
-  5. T.clear -> T.tile.fill(buf, 0.0) or gemm_v0 init=(k==0) (T.clear not on Ascend)
-  6. sqrsum: separate Vector kernel (CUDA fused sqrsum into GEMM kernel)
-  7. T.Pipelined for K-loop (num_stages=2)
-  8. CUDA thread-binding warp split -> separate kernels on Ascend
-  9. Sinkhorn adapted from examples/deepseek_v4/hc_split_sinkhorn.py (Ascend-verified)
+  3. fn cast to bf16 on host or via prepare_fn prepack
+  4. token_block=128, GEMM h_blk=512 (optimized via sweep)
+  5. sqrsum h_blk=4096 (optimized via sweep)
+  6. T.clear -> T.tile.fill(buf, 0.0) or gemm_v0 init=(k==0) (T.clear not on Ascend)
+  7. sqrsum: separate Vector kernel (CUDA fused sqrsum into GEMM kernel)
+  8. T.Pipelined for K-loop (num_stages=2)
+  9. CUDA thread-binding warp split -> separate kernels on Ascend
+  10. B3: AXPY linear combination (hc=4 specialized, from mhc_post experience)
+  11. Sinkhorn adapted from examples/deepseek_v4/hc_split_sinkhorn.py
 """
 
 import tilelang
@@ -191,7 +201,7 @@ def mhc_pre_rmsnorm(pad_hc_mult3, hc_mult, hidden_size, rms_eps, dtype="float"):
 
 
 @tilelang.jit(out_idx=[4, 5, 6], workspace_idx=[3], pass_configs=pass_configs)
-def mhc_pre_split_sinkhorn(hc, sinkhorn_iters, eps, hc_post_mult_value=2.0, dtype="float"):
+def mhc_pre_split_sinkhorn(hc, sinkhorn_iters, pre_eps, sinkhorn_eps, hc_post_mult_value=2.0, dtype="float"):
     """Kernel B2: mixes -> pre/post/comb + Sinkhorn normalization.
 
     Adapted from examples/deepseek_v4/hc_split_sinkhorn.py.
@@ -263,7 +273,7 @@ def mhc_pre_split_sinkhorn(hc, sinkhorn_iters, eps, hc_post_mult_value=2.0, dtyp
                 # pre
                 T.copy(workspace[bid, :hc], tmp_shared)
                 T.tile.sigmoid(pre_shared, tmp_shared)
-                T.tile.add(pre_shared, pre_shared, eps)
+                T.tile.add(pre_shared, pre_shared, pre_eps)
                 T.copy(pre_shared[:hc], pre[bid, :hc])
 
                 # post
@@ -289,24 +299,24 @@ def mhc_pre_split_sinkhorn(hc, sinkhorn_iters, eps, hc_post_mult_value=2.0, dtyp
                 for i in T.serial(hc):
                     T.tile.fill(row_div[i, :], row_sum[i])
                 T.tile.div(comb_shared, comb_shared, row_div)
-                T.tile.add(comb_shared, comb_shared, eps)
+                T.tile.add(comb_shared, comb_shared, sinkhorn_eps)
 
                 # comb = comb / (comb.sum(-2) + eps)
                 T.reduce_sum(comb_shared, col_sum, dim=0, real_shape=[hc, hc_pad])
-                T.tile.add(col_sum, col_sum, eps)
+                T.tile.add(col_sum, col_sum, sinkhorn_eps)
                 T.tile.broadcast(col_broadcast, col_sum)
                 T.tile.div(comb_shared, comb_shared, col_broadcast)
 
                 for _ in T.serial(sinkhorn_iters - 1):
                     # comb = comb / (comb.sum(-1) + eps)
                     T.reduce_sum(comb_shared, row_sum, dim=-1, real_shape=[hc, hc])
-                    T.tile.add(row_sum, row_sum, eps)
+                    T.tile.add(row_sum, row_sum, sinkhorn_eps)
                     for i in T.serial(hc):
                         T.tile.fill(row_div[i, :], row_sum[i])
                     T.tile.div(comb_shared, comb_shared, row_div)
                     # comb = comb / (comb.sum(-2) + eps)
                     T.reduce_sum(comb_shared, col_sum, dim=0, real_shape=[hc, hc_pad])
-                    T.tile.add(col_sum, col_sum, eps)
+                    T.tile.add(col_sum, col_sum, sinkhorn_eps)
                     T.tile.broadcast(col_broadcast, col_sum)
                     T.tile.div(comb_shared, comb_shared, col_broadcast)
 
@@ -527,7 +537,7 @@ def mhc_pre(residual, fn, hc_scale, hc_base, rms_eps, hc_pre_eps, hc_sinkhorn_ep
     mixes = mixes_padded[:n, :hc_mult3].contiguous()
 
     # Kernel B2: split + sinkhorn
-    sinkhorn_kernel = _get_kernel("sinkhorn", hc_mult, sinkhorn_repeat, hc_pre_eps, hc_post_mult_value)
+    sinkhorn_kernel = _get_kernel("sinkhorn", hc_mult, sinkhorn_repeat, hc_pre_eps, hc_sinkhorn_eps, hc_post_mult_value)
     pre_mix, post_mix, comb_mix = sinkhorn_kernel(mixes, hc_scale, hc_base)
 
     # Kernel B3: apply pre_mix
@@ -668,6 +678,9 @@ def test_kernel_a():
 
         out_tl, sqrsum_tl = mhc_pre_gemm_sqrsum(**data)
         out_ref, sqrsum_ref = mhc_pre_gemm_sqrsum_ref(**data)
+
+        hc_mult3 = hc_mult * (2 + hc_mult)
+        out_tl = out_tl[:n, :hc_mult3]
 
         print(f"  out shape={out_tl.shape}, sqrsum shape={sqrsum_tl.shape}")
 
