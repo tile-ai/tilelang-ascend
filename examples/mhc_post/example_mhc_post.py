@@ -10,21 +10,22 @@ Architecture (pure Vector, no Cube):
   - Dual V-core: bid = cid * 2 + vid, both Vector units utilized
   - h_blk=2048 for optimal performance
   - AXPY linear combination for small matrix multiply (comb^T @ residual)
-  - hc=4 specialized (hard constraint, not generic)
+  - hc=4 specialized (hard constraint, assert enforced)
   - with T.Scope("V") for explicit Vector scope
+  - FP32 inputs for post/comb used directly (no BF16 quantization)
 
-Performance (n=4096, h=2560, hc=4, do_bench):
-  AIV kernel:   2.56 ms
-  PyTorch CANN: 2.27 ms
-  Achieved:     89.5% of CANN
+Performance (n=4096, h=7168, hc=4, do_bench):
+  AIV kernel:   1.96 ms
+  PyTorch CANN: 6.08 ms
+  Speedup:      3.10x CANN
 
 Migration from CUDA:
   1. pass_configs: TL_ASCEND_AUTO_SYNC / MEMORY_PLANNING / AUTO_CV_COMBINE
-  2. No Cube GEMM — uses broadcast + mul + reduce_sum on Vector cores
+  2. No Cube GEMM — uses AXPY linear combination on Vector cores
   3. No hc padding — hc=4 used directly (Cube's 16-block minimum not applicable)
-  4. h_blk=256, h padded to multiple of 256
+  4. h_blk=2048, h padded to multiple of 2048
   5. Dual-V-core: cid * VEC_NUM + vid partitioning
-  6. Golden follows the same bf16 computation path as the kernel
+  6. Golden reference uses FP32 path (same as kernel, no BF16 quantization)
 """
 
 import tilelang
@@ -242,7 +243,7 @@ def mhc_post(x, residual, post_layer_mix, comb_res_mix):
 
 
 def mhc_post_ref(x, residual, post_layer_mix, comb_res_mix):
-    """PyTorch golden, following the same bf16 computation path as the kernel."""
+    """PyTorch golden, using FP32 path (same as kernel, no BF16 quantization)."""
     h = x.shape[1]
     hc = residual.shape[1]
     pad_h = calc_pad_h(h)
