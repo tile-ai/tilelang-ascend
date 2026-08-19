@@ -60,8 +60,7 @@ def mhc_post_kernel(pad_h, h_blk=H_BLK, dtype="bfloat16", accum_dtype="float"):
       out_i = post_i * x + comb_i0 * res0 + comb_i1 * res1 + comb_i2 * res2 + comb_i3 * res3
 
     No broadcast, no reduce_sum — direct scalar-vector AXPY.
-    FP32 inputs for post/comb — cast to BF16 then back to FP32 inside kernel
-    to maintain numerical equivalence with the reference path.
+    FP32 inputs for post/comb used directly (no BF16 quantization).
 
     Each AI Core has 2 Vector units — both are utilized via vid partitioning.
     Reference: PR #1567 (cross_entropy dual-V-core pattern)
@@ -216,7 +215,6 @@ def mhc_post(x, residual, post_layer_mix, comb_res_mix):
     h = x.shape[1]
     hc = residual.shape[1]
     assert hc == 4, f"This kernel requires hc=4, got hc={hc}"
-    hc = residual.shape[1]
     pad_h = calc_pad_h(h)
 
     post_sq = post_layer_mix.squeeze(-1)
@@ -249,21 +247,18 @@ def mhc_post_ref(x, residual, post_layer_mix, comb_res_mix):
     hc = residual.shape[1]
     pad_h = calc_pad_h(h)
 
-    comb_bf16 = comb_res_mix.bfloat16()
-    comb_t = comb_bf16.mT.contiguous()
+    comb_t = comb_res_mix.mT.contiguous()
     residual_padded = _pad_3d(residual, hc, pad_h)
 
-    term2_bf16 = torch.bmm(comb_t, residual_padded)
-    term2_fp32 = term2_bf16.float()
+    term2 = torch.bmm(comb_t.float(), residual_padded.float())
 
-    post_bf16 = post_layer_mix.squeeze(-1).bfloat16()
-    post_fp32 = post_bf16.float()
+    post_fp32 = post_layer_mix.squeeze(-1)
 
     x_fp32 = x.float()
     x_padded = _pad_2d_1d(x_fp32, pad_h)
 
     term1 = post_fp32.unsqueeze(-1) * x_padded.unsqueeze(-2)
-    output_padded = (term1 + term2_fp32).bfloat16()
+    output_padded = (term1 + term2).bfloat16()
     output = output_padded[:, :hc, :h]
     return output
 
