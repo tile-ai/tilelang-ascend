@@ -103,7 +103,9 @@ def flashattn(
     Iter 2: CV pipeline rewrite following fa_opt/flash_attn_bhsd_expert_h16_d128.py.
     - num_stages=14 multi-stage pipeline (batch KV iterations)
     - T.mma + L0A/L0B/L0C double buffering (replaces T.gemm_v0)
-    - T.set_flag/wait_flag fine-grained intra-core sync (replaces T.barrier_all)
+    - T.set_flag/wait_flag fine-grained intra-core ownership (replaces T.barrier_all)
+    - Persistent q_l1 and the reused fp16 store buffer use complete bidirectional
+      ownership lifecycles across logical tasks.
     - T.tile.broadcast + T.tile.axpy vectorized softmax (replaces per-row loop)
     - T.annotate_layout ZN/NZ layout optimization
     - Mask integration: mask applied after exp via T.tile.mul, synced with barrier_all
@@ -182,19 +184,27 @@ def flashattn(
     SEM_WS3_C2V = 4  # workspace_3 (PV output) ready: Cube -> Vector
     SEM_WS3_V2C = 5  # workspace_3 consumed: Vector -> Cube
 
-    # Intra-core signal IDs (C Scope)
+    # Local event IDs are allocated per directed pipe pair. Different meanings keep
+    # distinct names even when their directed pairs allow the same numeric ID.
+    # MTE2 <-> MTE1
     SIG_K_L1 = 0
     SIG_P_L1 = 1
     SIG_V_L1 = 2
-    SIG_L0AB = 3  # double-buffer base: slot 0 = SIG_L0AB, slot 1 = SIG_L0AB + 1
-    SIG_L0C = 5  # double-buffer base: slot 0 = SIG_L0C,  slot 1 = SIG_L0C + 1
+    SIG_Q_L1 = 3
 
-    # Intra-core signal IDs (V Scope)
-    # io_buf double-buffered: slot 0 = SIG_IO_UB, slot 1 = SIG_IO_UB + 1
+    # MTE1 <-> M
+    SIG_L0AB = 0  # double-buffer slots 0 and 1
+
+    # M <-> FIX
+    SIG_L0C = 0  # double-buffer slots 0 and 1
+
+    # MTE2 <-> V
     SIG_IO_UB = 0
-    SIG_S_HALF = 2
-    SIG_MASK_FREE = 3  # V -> MTE2: buf_2d released after exp (mask can overwrite)
-    SIG_MASK_READY = 4  # MTE2 -> V: mask loaded into buf_2d (mul can proceed)
+    SIG_MASK_FREE = 2  # V -> MTE2: buf_2d released after exp
+    SIG_MASK_READY = 2  # MTE2 -> V: mask loaded into buf_2d
+
+    # V <-> MTE3
+    SIG_S_HALF = 0
 
     @T.prim_func
     def main(
@@ -263,6 +273,7 @@ def flashattn(
                 T.set_flag("MTE1", "MTE2", SIG_K_L1)
                 T.set_flag("MTE1", "MTE2", SIG_P_L1)
                 T.set_flag("MTE1", "MTE2", SIG_V_L1)
+                T.set_flag("MTE1", "MTE2", SIG_Q_L1)
                 T.set_flag("M", "MTE1", SIG_L0AB)
                 T.set_flag("M", "MTE1", SIG_L0AB + 1)
                 T.set_flag("FIX", "M", SIG_L0C)
@@ -275,8 +286,10 @@ def flashattn(
                     bz = task_id // (num_q_blocks * heads)
                     kv_head_idx = by // groups  # GQA
 
+                    T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
                     T.copy(Q[bz, by, bx * block_M : (bx + 1) * block_M, :], q_l1)
-                    T.barrier_all()
+                    T.set_flag("MTE2", "MTE1", SIG_Q_L1)
+                    T.wait_flag("MTE2", "MTE1", SIG_Q_L1)
 
                     for k in T.serial(num_outer):
                         _remaining = max_kv_iters - k * num_stages
@@ -364,10 +377,14 @@ def flashattn(
 
                         T.set_cross_flag("MTE2", SEM_WS2_C2V)
 
+                    # MTE1 no longer reads q_l1; return it before the next task reloads Q.
+                    T.set_flag("MTE1", "MTE2", SIG_Q_L1)
+
                 # destroy: consume outstanding init-direction flags
                 T.wait_flag("MTE1", "MTE2", SIG_K_L1)
                 T.wait_flag("MTE1", "MTE2", SIG_P_L1)
                 T.wait_flag("MTE1", "MTE2", SIG_V_L1)
+                T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
                 T.wait_flag("M", "MTE1", SIG_L0AB)
                 T.wait_flag("M", "MTE1", SIG_L0AB + 1)
                 T.wait_flag("FIX", "M", SIG_L0C)
@@ -503,8 +520,10 @@ def flashattn(
                     T.tile.div(acc_o, acc_o, buf_2d)
 
                     # Write back (vid half)
+                    T.wait_flag("MTE3", "V", SIG_S_HALF)
                     T.copy(acc_o, acc_s_half)  # fp32 -> fp16
-                    T.barrier_all()
+                    T.set_flag("V", "MTE3", SIG_S_HALF)
+                    T.wait_flag("V", "MTE3", SIG_S_HALF)
                     T.copy(
                         acc_s_half,
                         Output[
@@ -514,6 +533,7 @@ def flashattn(
                             :,
                         ],
                     )
+                    T.set_flag("MTE3", "V", SIG_S_HALF)
 
                 # destroy: consume outstanding init-direction flags
                 T.wait_flag("V", "MTE2", SIG_IO_UB)

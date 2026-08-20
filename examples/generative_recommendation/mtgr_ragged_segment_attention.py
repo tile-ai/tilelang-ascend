@@ -57,16 +57,27 @@ def mtgr_ragged_segment_attention_kernel(
     SEM_WS3_C2V = 4
     SEM_WS3_V2C = 5
 
+    # Local event IDs are allocated per directed pipe pair. Different meanings keep
+    # distinct names even when their directed pairs allow the same numeric ID.
+    # MTE2 <-> MTE1
     SIG_K_L1 = 0
     SIG_P_L1 = 1
     SIG_V_L1 = 2
-    SIG_L0AB = 3
-    SIG_L0C = 5
-    SIG_Q_L1 = 7
+    SIG_Q_L1 = 3
 
+    # MTE1 <-> M
+    SIG_L0AB = 0  # double-buffer slots 0 and 1
+
+    # M <-> FIX
+    SIG_L0C = 0  # double-buffer slots 0 and 1
+
+    # MTE2 <-> V
     SIG_IO_UB = 0
-    SIG_S_HALF = 1
-    SIG_O_READY = 3
+
+    # V <-> MTE3
+    # acc_s_half and o_acc_half alias one physical UB region, so every access
+    # shares one ownership token even when the O store is issued in row slices.
+    SIG_STORE_UB = 0
 
     @T.prim_func
     def main(
@@ -212,6 +223,7 @@ def mtgr_ragged_segment_attention_kernel(
                 T.set_flag("MTE1", "MTE2", SIG_K_L1)
                 T.set_flag("MTE1", "MTE2", SIG_P_L1)
                 T.set_flag("MTE1", "MTE2", SIG_V_L1)
+                T.set_flag("MTE1", "MTE2", SIG_Q_L1)
                 T.set_flag("M", "MTE1", SIG_L0AB)
                 T.set_flag("M", "MTE1", SIG_L0AB + 1)
                 T.set_flag("FIX", "M", SIG_L0C)
@@ -256,7 +268,8 @@ def mtgr_ragged_segment_attention_kernel(
                     gap_size = T.if_then_else((q_start >= last_seg_start) & (gap_k_end > gap_k_start), gap_k_end - gap_k_start, 0)
                     num_effective_k = num_k_tiles - gap_size
 
-                    # 载入 Q
+                    # 载入 Q，并在所有 KV batch 完成前保持 MTE1 ownership。
+                    T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
                     T.copy(Q[q_packed_start : q_packed_start + q_tile_size_live, h_i, :], q_l1[:, :])
                     T.set_flag("MTE2", "MTE1", SIG_Q_L1)
                     T.wait_flag("MTE2", "MTE1", SIG_Q_L1)
@@ -388,10 +401,14 @@ def mtgr_ragged_segment_attention_kernel(
                                 T.set_cross_flag("FIX", SEM_WS3_C2V)
                         T.set_cross_flag("MTE2", SEM_WS2_C2V)
 
+                    # MTE1 不再读取 q_l1；归还 ownership 后，下一个 task 才能重载 Q。
+                    T.set_flag("MTE1", "MTE2", SIG_Q_L1)
+
                 # 回收初始化的 Signal
                 T.wait_flag("MTE1", "MTE2", SIG_K_L1)
                 T.wait_flag("MTE1", "MTE2", SIG_P_L1)
                 T.wait_flag("MTE1", "MTE2", SIG_V_L1)
+                T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
                 T.wait_flag("M", "MTE1", SIG_L0AB)
                 T.wait_flag("M", "MTE1", SIG_L0AB + 1)
                 T.wait_flag("FIX", "M", SIG_L0C)
@@ -404,7 +421,7 @@ def mtgr_ragged_segment_attention_kernel(
                 T.set_cross_flag("MTE2", SEM_WS1_V2C)
                 T.set_cross_flag("MTE2", SEM_WS3_V2C)
                 T.set_flag("V", "MTE2", SIG_IO_UB)
-                T.set_flag("MTE3", "V", SIG_S_HALF)
+                T.set_flag("MTE3", "V", SIG_STORE_UB)
 
                 for core_index in T.serial(my_iters):
                     pid = cid + core_index * core_num
@@ -555,13 +572,13 @@ def mtgr_ragged_segment_attention_kernel(
                             T.tile.axpy(buf_2d, work_ub, sm_scale)
                             T.tile.exp(work_ub, buf_2d)
 
-                            T.wait_flag("MTE3", "V", SIG_S_HALF)
+                            T.wait_flag("MTE3", "V", SIG_STORE_UB)
                             T.copy(work_ub, acc_s_half)
-                            T.set_flag("V", "MTE3", SIG_S_HALF)
+                            T.set_flag("V", "MTE3", SIG_STORE_UB)
 
-                            T.wait_flag("V", "MTE3", SIG_S_HALF)
+                            T.wait_flag("V", "MTE3", SIG_STORE_UB)
                             T.copy(acc_s_half, workspace_2[cid, i, vid * half_M : vid * half_M + half_M, :])
-                            T.set_flag("MTE3", "V", SIG_S_HALF)
+                            T.set_flag("MTE3", "V", SIG_STORE_UB)
 
                             if (i + 1) % cross_interval == 0 or i == batch_iters - 1:
                                 T.set_cross_flag("MTE3", SEM_WS2_V2C)
@@ -600,13 +617,14 @@ def mtgr_ragged_segment_attention_kernel(
                             acc_o[row_start : row_start + sub_M, :],
                             bcast_buf[row_start : row_start + sub_M, :],
                         )
+                        T.wait_flag("MTE3", "V", SIG_STORE_UB)
                         T.copy(
                             acc_o[row_start : row_start + sub_M, :],
                             o_acc_half[row_start : row_start + sub_M, :],
                         )
-                        T.set_flag("V", "MTE3", SIG_O_READY + sub)
+                        T.set_flag("V", "MTE3", SIG_STORE_UB)
 
-                        T.wait_flag("V", "MTE3", SIG_O_READY + sub)
+                        T.wait_flag("V", "MTE3", SIG_STORE_UB)
                         valid_rows_sub = T.if_then_else(
                             q_tile_size_live >= vid * half_M + row_start + sub_M,
                             sub_M,
@@ -628,9 +646,10 @@ def mtgr_ragged_segment_attention_kernel(
                                     :,
                                 ],
                             )
+                        T.set_flag("MTE3", "V", SIG_STORE_UB)
 
                 T.wait_flag("V", "MTE2", SIG_IO_UB)
-                T.wait_flag("MTE3", "V", SIG_S_HALF)
+                T.wait_flag("MTE3", "V", SIG_STORE_UB)
 
     return main
 

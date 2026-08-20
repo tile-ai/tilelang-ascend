@@ -571,19 +571,42 @@ Scope("V") only:
 - Vector 核写 GM: 使用 `"MTE3"` 通路（UB → GM）
 - Vector 核通知 Cube: 使用 `"V"` 或 `"MTE3"` 通路
 
-### 8.2 核内同步 (Barrier)
+### 8.2 核内同步与缓冲区 Ownership
 
-Expert 模式下，每次 `T.copy` 和 `T.gemm_v0` 前后都需要 `T.barrier_all()`:
+Expert 模式不能简单地在每次 `T.copy` / `T.mma` 前后插入 `T.barrier_all()`。
+可复用物理缓冲必须按实际 producer/consumer 建立双向 ownership：正向通知数据就绪，
+反向通知缓冲可被下一轮覆盖。
+
+Forward v4 的 `q_l1` 由 MTE2 写入，并由 MTE1 在多个 KV batch 中持续读取，因此
+ownership 区间覆盖整个 task：
+
+Forward v4 中的本地 event ID 按有向 pipe pair 独立编号：MTE2↔MTE1 的
+K/P/V/Q ownership 使用 0..3，MTE1↔M 的 L0AB 双缓冲和 M↔FIX 的 L0C
+双缓冲都在各自 pair 内使用 0..1。反向 pair 使用相同数字表示同一 ownership
+slot，但两个方向仍是独立 event，必须分别完成 `set_flag` / `wait_flag` 配对。
 
 ```python
-# 典型 Cube 核操作序列
-T.copy(GM_src, L1_dst)
-T.barrier_all()                    # 等待搬运完成
-T.gemm_v0(L1_A, L1_B, L0C_C, init=True)
-T.barrier_all()                    # 等待 GEMM 完成
-T.copy(L0C_C, GM_dst)
-T.barrier_all()                    # 等待写出完成
+# init: q_l1 初始可由 MTE2 写入
+T.set_flag("MTE1", "MTE2", SIG_Q_L1)
+
+for task in T.serial(my_count):
+    T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
+    T.copy(Q[...], q_l1)
+    T.set_flag("MTE2", "MTE1", SIG_Q_L1)
+
+    T.wait_flag("MTE2", "MTE1", SIG_Q_L1)
+    for k in T.serial(task_outer):
+        # 本 task 的所有 q_l1 → L0A 读取
+        ...
+    T.set_flag("MTE1", "MTE2", SIG_Q_L1)
+
+# destroy: 消费最后一次归还的 token
+T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
 ```
+
+`T.barrier_all()` 只等待它之前发出的本地异步操作。它不能保护 barrier 之后的 store，
+也不能替代跨流水线的 ownership handoff。只有确实需要一次性排空多个本地流水线时，
+才应使用全流水屏障。
 
 ### 8.3 Backward Kernel 同步协议
 

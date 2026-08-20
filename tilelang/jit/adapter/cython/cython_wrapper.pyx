@@ -96,7 +96,7 @@ cdef class CythonKernelWrapper:
         sym_val_by_name = {}
         for key, (ref_tensor_idx, ref_shape_idx) in self.dynamic_symbolic_map.items():
             val = int(inputs[ref_tensor_idx].shape[ref_shape_idx])
-            sym_val_by_name[key] = val
+            sym_val_by_name[str(key)] = val
 
         # Prepare input and output tensors
         for i in range(len(self.params)):
@@ -113,9 +113,9 @@ cdef class CythonKernelWrapper:
                     elif isinstance(s, tir.PrimExpr):
                         vmap = {}
                         for v in tir.analysis.undefined_vars(s):
-                            if v not in sym_val_by_name:
+                            if str(v) not in sym_val_by_name:
                                 raise KeyError(f"Unfounded symbolic var: {str(v)}")
-                            vmap[v] = tir.IntImm(v.dtype, sym_val_by_name[v])
+                            vmap[v] = tir.IntImm(v.dtype, sym_val_by_name[str(v)])
                         ss = stmt_functor.substitute(s, vmap)
                         ss = analyzer.simplify(ss)
                         if isinstance(ss, tir.IntImm):

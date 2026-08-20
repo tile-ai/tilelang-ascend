@@ -276,6 +276,7 @@ def flashattn_fwd_v4(
     - L0 double buffering with [2, ...] syntax for GEMM1 and GEMM2
     - Batched iterations (num_stages per batch)
     - Fine-grained flag sync (set_flag/wait_flag) within C and V scopes
+    - Persistent q_l1 ownership spans all KV batches in one logical task
     - Batched softmax (r_factors + sumexp_is, decoupled from O accumulation)
     """
     assert heads % groups == 0
@@ -310,16 +311,25 @@ def flashattn_fwd_v4(
     SEM_WS3_C2V = 4
     SEM_WS3_V2C = 5
 
-    # Intra-core signal IDs (C Scope)
+    # Local event IDs are allocated per directed pipe pair. Different meanings keep
+    # distinct names even when their directed pairs allow the same numeric ID.
+    # MTE2 <-> MTE1
     SIG_K_L1 = 0
     SIG_P_L1 = 1
     SIG_V_L1 = 2
-    SIG_L0AB = 3  # double-buffer base: slot 0 = SIG_L0AB, slot 1 = SIG_L0AB+1
-    SIG_L0C = 5  # double-buffer base: slot 0 = SIG_L0C,  slot 1 = SIG_L0C+1
+    SIG_Q_L1 = 3
 
-    # Intra-core signal IDs (V Scope)
+    # MTE1 <-> M
+    SIG_L0AB = 0  # double-buffer slots 0 and 1
+
+    # M <-> FIX
+    SIG_L0C = 0  # double-buffer slots 0 and 1
+
+    # MTE2 <-> V
     SIG_IO_UB = 0
-    SIG_S_HALF = 1
+
+    # V <-> MTE3
+    SIG_S_HALF = 0
 
     def task_range(cid_val):
         start = cid_val * q_tasks + T.if_then_else(cid_val < r_tasks, cid_val, r_tasks)
@@ -417,6 +427,7 @@ def flashattn_fwd_v4(
                 T.set_flag("MTE1", "MTE2", SIG_K_L1)
                 T.set_flag("MTE1", "MTE2", SIG_P_L1)
                 T.set_flag("MTE1", "MTE2", SIG_V_L1)
+                T.set_flag("MTE1", "MTE2", SIG_Q_L1)
                 T.set_flag("M", "MTE1", SIG_L0AB)
                 T.set_flag("M", "MTE1", SIG_L0AB + 1)
                 T.set_flag("FIX", "M", SIG_L0C)
@@ -429,8 +440,10 @@ def flashattn_fwd_v4(
                     bz = task_id // (num_seq_blocks * heads)
                     kv_by = by // groups
 
+                    T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
                     T.copy(Q[bz, by, bx * block_M : (bx + 1) * block_M, :], q_l1)
-                    T.barrier_all()
+                    T.set_flag("MTE2", "MTE1", SIG_Q_L1)
+                    T.wait_flag("MTE2", "MTE1", SIG_Q_L1)
 
                     _task_iters = T.ceildiv((bx + 1) * block_M, block_N) if is_causal else num_iters
                     _task_outer = T.ceildiv(_task_iters, num_stages)
@@ -520,10 +533,14 @@ def flashattn_fwd_v4(
 
                         T.set_cross_flag("MTE2", SEM_WS2_C2V)
 
+                    # MTE1 no longer reads q_l1; return it before the next task reloads Q.
+                    T.set_flag("MTE1", "MTE2", SIG_Q_L1)
+
                 # Destroy: consume outstanding init-direction flags
                 T.wait_flag("MTE1", "MTE2", SIG_K_L1)
                 T.wait_flag("MTE1", "MTE2", SIG_P_L1)
                 T.wait_flag("MTE1", "MTE2", SIG_V_L1)
+                T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
                 T.wait_flag("M", "MTE1", SIG_L0AB)
                 T.wait_flag("M", "MTE1", SIG_L0AB + 1)
                 T.wait_flag("FIX", "M", SIG_L0C)

@@ -64,6 +64,8 @@ def flashattn(
 
     Expert CV pipeline directly ported from gqa_fwd_varlen (verified 17.78ms).
     Differences: MHA (no GQA), 2D mask (no batch dim), attention sink integration.
+    Persistent q_l1 and reused UB buffers use bidirectional ownership lifecycles
+    across logical tasks.
 
     Args:
         batch: batch size (compile-time).
@@ -146,19 +148,29 @@ def flashattn(
     SEM_WS3_C2V = 4  # workspace_3 (PV output) ready: Cube -> Vector
     SEM_WS3_V2C = 5  # workspace_3 consumed: Vector -> Cube
 
-    # Intra-core signal IDs (C Scope) — identical to gqa_fwd_varlen
+    # Local event IDs are allocated per directed pipe pair. Different meanings keep
+    # distinct names even when their directed pairs allow the same numeric ID.
+    # MTE2 <-> MTE1
     SIG_K_L1 = 0
     SIG_P_L1 = 1
     SIG_V_L1 = 2
-    SIG_L0AB = 3  # double-buffer base: slot 0 = SIG_L0AB, slot 1 = SIG_L0AB + 1
-    SIG_L0C = 5  # double-buffer base: slot 0 = SIG_L0C,  slot 1 = SIG_L0C + 1
+    SIG_Q_L1 = 3
 
-    # Intra-core signal IDs (V Scope) — identical to gqa_fwd_varlen + sink sync
-    SIG_IO_UB = 0  # io_buf double-buffer: slot 0 = SIG_IO_UB, slot 1 = SIG_IO_UB + 1
-    SIG_S_HALF = 2
-    SIG_MASK_FREE = 3  # V -> MTE2: buf_2d released after exp (mask can overwrite)
-    SIG_MASK_READY = 4  # MTE2 -> V: mask loaded into buf_2d (mul can proceed)
-    SIG_SINK_READY = 5  # MTE2 -> V: sinks_half_ub loaded from GM (sink load sync)
+    # MTE1 <-> M
+    SIG_L0AB = 0  # double-buffer slots 0 and 1
+
+    # M <-> FIX
+    SIG_L0C = 0  # double-buffer slots 0 and 1
+
+    # MTE2 <-> V
+    SIG_IO_UB = 0  # double-buffer slots 0 and 1
+    SIG_MASK_FREE = 2  # V -> MTE2: buf_2d released after exp
+    SIG_MASK_READY = 2  # MTE2 -> V: mask loaded into buf_2d
+    SIG_SINK_FREE = 3  # V -> MTE2: sinks_half_ub is reusable
+    SIG_SINK_READY = 3  # MTE2 -> V: sinks_half_ub contains the current sink
+
+    # V <-> MTE3
+    SIG_S_HALF = 0
 
     @T.prim_func
     def main(
@@ -231,6 +243,7 @@ def flashattn(
                 T.set_flag("MTE1", "MTE2", SIG_K_L1)
                 T.set_flag("MTE1", "MTE2", SIG_P_L1)
                 T.set_flag("MTE1", "MTE2", SIG_V_L1)
+                T.set_flag("MTE1", "MTE2", SIG_Q_L1)
                 T.set_flag("M", "MTE1", SIG_L0AB)
                 T.set_flag("M", "MTE1", SIG_L0AB + 1)
                 T.set_flag("FIX", "M", SIG_L0C)
@@ -257,8 +270,10 @@ def flashattn(
                     eff_kv_iters = T.floordiv(_last_vis, block_N) + 1
                     eff_num_outer = T.ceildiv(eff_kv_iters, num_stages)
 
+                    T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
                     T.copy(Q[bz, by, bx * block_M : (bx + 1) * block_M, :], q_l1)
-                    T.barrier_all()
+                    T.set_flag("MTE2", "MTE1", SIG_Q_L1)
+                    T.wait_flag("MTE2", "MTE1", SIG_Q_L1)
 
                     for k in T.serial(eff_num_outer):
                         _remaining = eff_kv_iters - k * num_stages
@@ -346,10 +361,14 @@ def flashattn(
 
                         T.set_cross_flag("MTE2", SEM_WS2_C2V)
 
+                    # MTE1 no longer reads q_l1; return it before the next task reloads Q.
+                    T.set_flag("MTE1", "MTE2", SIG_Q_L1)
+
                 # destroy: consume outstanding init-direction flags
                 T.wait_flag("MTE1", "MTE2", SIG_K_L1)
                 T.wait_flag("MTE1", "MTE2", SIG_P_L1)
                 T.wait_flag("MTE1", "MTE2", SIG_V_L1)
+                T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
                 T.wait_flag("M", "MTE1", SIG_L0AB)
                 T.wait_flag("M", "MTE1", SIG_L0AB + 1)
                 T.wait_flag("FIX", "M", SIG_L0C)
@@ -363,6 +382,7 @@ def flashattn(
                 # init: pretend both io_buf slots are free (consumer already released)
                 T.set_flag("V", "MTE2", SIG_IO_UB)
                 T.set_flag("V", "MTE2", SIG_IO_UB + 1)
+                T.set_flag("V", "MTE2", SIG_SINK_FREE)
                 T.set_flag("MTE3", "V", SIG_S_HALF)
 
                 for t in T.serial(my_count):
@@ -396,6 +416,9 @@ def flashattn(
                     # otherwise V may read sinks_half_ub before MTE2 finishes loading
                     # (race condition → non-deterministic output). Same pattern as gqa's
                     # mask load (SIG_MASK_READY). wait_flag(src="MTE2", dst="V") = V waits.
+                    # The reverse V→MTE2 edge keeps the next task from overwriting the buffer
+                    # before the current Vector copy has finished reading it.
+                    T.wait_flag("V", "MTE2", SIG_SINK_FREE)
                     T.copy(
                         Sinks[by, bx * block_M + vid * half_M : bx * block_M + vid * half_M + half_M],
                         sinks_half_ub,
@@ -403,6 +426,7 @@ def flashattn(
                     T.set_flag("MTE2", "V", SIG_SINK_READY)  # MTE2: signal load done
                     T.wait_flag("MTE2", "V", SIG_SINK_READY)  # V: wait for MTE2 load
                     T.copy(sinks_half_ub, sinks_fp32_1d)  # fp16 -> fp32 (1D, V pipeline)
+                    T.set_flag("V", "MTE2", SIG_SINK_FREE)
                     # broadcast 1D [half_M] -> 2D [half_M, 1] (ascend_tile.py:2066-2073, axis=1)
                     T.tile.broadcast(sinks_ub, sinks_fp32_1d)
 
@@ -583,8 +607,10 @@ def flashattn(
                     T.tile.div(acc_o, acc_o, buf_2d)
 
                     # Write back (vid half)
+                    T.wait_flag("MTE3", "V", SIG_S_HALF)
                     T.copy(acc_o, acc_s_half)  # fp32 -> fp16
-                    T.barrier_all()
+                    T.set_flag("V", "MTE3", SIG_S_HALF)
+                    T.wait_flag("V", "MTE3", SIG_S_HALF)
                     T.copy(
                         acc_s_half,
                         Output[
@@ -594,10 +620,12 @@ def flashattn(
                             :,
                         ],
                     )
+                    T.set_flag("MTE3", "V", SIG_S_HALF)
 
                 # destroy: consume outstanding init-direction flags
                 T.wait_flag("V", "MTE2", SIG_IO_UB)
                 T.wait_flag("V", "MTE2", SIG_IO_UB + 1)
+                T.wait_flag("V", "MTE2", SIG_SINK_FREE)
                 T.wait_flag("MTE3", "V", SIG_S_HALF)
 
     return main
