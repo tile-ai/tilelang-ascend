@@ -55,6 +55,10 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
   (manual fill + scalar read works; T.copy roundtrip works; only T.copy + slice
   read fails). AICore exception 507015 when using 2D row slice as T.copy source.
   Workaround: 4 separate 1D buffers
+- A single flat 1D comb buffer `[16]` with one `T.copy(comb[bid,0,0], comb_fp32)`
+  was also evaluated to consolidate the 4 short copies; it reads wrong data
+  (single 16-element copy from a 3D scalar offset does not span rows correctly),
+  so the 4 separate 1D buffers are retained.
 
 **V4: AXPY (biggest breakthrough)**
 - Replaced `broadcast + mul + reduce_sum` with `T.tile.mul(dst, src, scalar)` + `T.tile.axpy(dst, src, scalar)`
@@ -104,6 +108,10 @@ h=2560 -> h_blk=2560 (no-pad); h=7168 -> h_blk=3584 (no-pad).
 
 ## 6. Pipeline Ablation (n=4096, h=7168, kernel-only)
 
+> NOTE: This table is V6 data (h_blk=2048, h_num=4). V7 uses h_blk=3584
+> (h_num=2), so the pipeline benefit must be re-measured before this
+> conclusion carries over.
+
 | Schedule | Latency | vs CANN | vs serial |
 |----------|---------|---------|-----------|
 | T.serial | 1.216 ms | 4.99x | baseline |
@@ -113,6 +121,10 @@ h=2560 -> h_blk=2560 (no-pad); h=7168 -> h_blk=3584 (no-pad).
 stage=2 captures most pipeline benefit. stage=3 adds only 0.6% — not worth the extra UB pressure.
 
 ## 7. msprof Analysis (n=4096, h=7168)
+
+> NOTE: This table is V6 data (h_blk=2048, kernel 1.18 ms). V7 uses h_blk=3584
+> (kernel 0.84 ms), which changes the tile count and may migrate the
+> bottleneck. Needs re-profiling.
 
 | Metric | Value |
 |--------|-------|
@@ -152,10 +164,10 @@ The current implementation is primarily Vector-compute constrained according to 
 |-----------|--------|
 | Kernel > CANN | Yes (1.08x - 7.25x) |
 | E2E > CANN (large shape) | Yes (5.26x - 7.06x) |
-| Compute-bound confirmed | Yes (Vector 1818% > MTE 1535%) |
-| Pipeline optimized | Yes (stage=2 optimal) |
+| Compute-bound confirmed | V6 data (Vector 1818% > MTE 1535%); re-verify after V7 msprof |
+| Pipeline optimized | Yes (stage=2 optimal; V6 ablation, re-verify for V7) |
 | h_blk optimized | Yes (adaptive: largest divisor of h) |
-| Effective BW high | Yes (449 GB/s) |
+| Effective BW high | V6 data (449 GB/s); re-verify |
 
 Optimization stopped: adaptive h_blk eliminates padding waste for common shapes,
 E2E ≈ kernel-only. Further gains require 2D UB contiguous copy (blocked by compiler)

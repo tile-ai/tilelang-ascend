@@ -12,7 +12,7 @@ Architecture (pure Vector, no Cube):
   - FP32 inputs for post/comb used directly (no BF16 quantization)
   - out_fp32 reuse across the 4 output rows (smaller UB footprint)
 
-Performance: see examples/mhc_post/benchmark.md (needs re-measurement after adaptive h_blk).
+Performance: see examples/mhc_post/benchmark.md.
 """
 
 import tilelang
@@ -33,7 +33,7 @@ _H_BLK_CANDIDATES = [4096, 3584, 3072, 2560, 2048, 1024, 512]
 
 
 def _select_h_blk(h):
-    """Select h_blk that minimizes padding waste and tile count."""
+    """Choose the largest tested candidate that exactly divides h; fall back to H_BLK."""
     for blk in _H_BLK_CANDIDATES:
         if h % blk == 0:
             return blk
@@ -105,26 +105,10 @@ def mhc_post_kernel(pad_h, h_blk=H_BLK, dtype="bfloat16", accum_dtype="float"):
 
                         for out_idx in T.unroll(HC):
                             T.tile.mul(out_fp32, x_fp32, post_fp32[out_idx])
-                            if out_idx == 0:
-                                T.tile.axpy(out_fp32, res0_fp32, comb0_fp32[0])
-                                T.tile.axpy(out_fp32, res1_fp32, comb0_fp32[1])
-                                T.tile.axpy(out_fp32, res2_fp32, comb0_fp32[2])
-                                T.tile.axpy(out_fp32, res3_fp32, comb0_fp32[3])
-                            elif out_idx == 1:
-                                T.tile.axpy(out_fp32, res0_fp32, comb1_fp32[0])
-                                T.tile.axpy(out_fp32, res1_fp32, comb1_fp32[1])
-                                T.tile.axpy(out_fp32, res2_fp32, comb1_fp32[2])
-                                T.tile.axpy(out_fp32, res3_fp32, comb1_fp32[3])
-                            elif out_idx == 2:
-                                T.tile.axpy(out_fp32, res0_fp32, comb2_fp32[0])
-                                T.tile.axpy(out_fp32, res1_fp32, comb2_fp32[1])
-                                T.tile.axpy(out_fp32, res2_fp32, comb2_fp32[2])
-                                T.tile.axpy(out_fp32, res3_fp32, comb2_fp32[3])
-                            else:
-                                T.tile.axpy(out_fp32, res0_fp32, comb3_fp32[0])
-                                T.tile.axpy(out_fp32, res1_fp32, comb3_fp32[1])
-                                T.tile.axpy(out_fp32, res2_fp32, comb3_fp32[2])
-                                T.tile.axpy(out_fp32, res3_fp32, comb3_fp32[3])
+                            T.tile.axpy(out_fp32, res0_fp32, comb0_fp32[out_idx])
+                            T.tile.axpy(out_fp32, res1_fp32, comb1_fp32[out_idx])
+                            T.tile.axpy(out_fp32, res2_fp32, comb2_fp32[out_idx])
+                            T.tile.axpy(out_fp32, res3_fp32, comb3_fp32[out_idx])
                             T.tile.cast(out_bf16, out_fp32, "CAST_RINT", h_blk)
                             T.copy(out_bf16, output[bid, out_idx, i_h * h_blk])
 
@@ -168,14 +152,14 @@ def mhc_post(x, residual, post_layer_mix, comb_res_mix):
     pad_h = calc_pad_h(h, h_blk)
 
     post_sq = post_layer_mix.squeeze(-1)
-    comb_t = comb_res_mix.mT.contiguous()
+    comb_c = comb_res_mix.contiguous()
 
     if pad_h != h:
         x = F.pad(x, (0, pad_h - h))
         residual = F.pad(residual, (0, pad_h - h))
 
     kernel = _get_kernel(pad_h, h_blk)
-    output = kernel(x, post_sq, comb_t, residual)
+    output = kernel(x, post_sq, comb_c, residual)
 
     if pad_h != h:
         output = output[:, :hc, :h]
