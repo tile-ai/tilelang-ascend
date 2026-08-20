@@ -6,12 +6,9 @@ Reference: tilelang main repo CUDA version examples/deepseek_mhc/example_mhc_pos
 
 Architecture (pure Vector, no Cube):
   Single AIV kernel with dual-V-core partitioning.
-  - No Cube, no hc padding, no CV sync issue
-  - Dual V-core: bid = cid * 2 + vid, both Vector units utilized
-  - h_blk=2048 for optimal performance
-  - AXPY linear combination for small matrix multiply (comb^T @ residual)
   - hc=4 specialized (hard constraint, assert enforced)
-  - with T.Scope("V") for explicit Vector scope
+  - AXPY linear combination for small matrix multiply (comb^T @ residual)
+  - h_blk=2048, h padded to multiple of 2048 via F.pad
   - FP32 inputs for post/comb used directly (no BF16 quantization)
 
 Performance (n=4096, h=7168, hc=4):
@@ -19,19 +16,12 @@ Performance (n=4096, h=7168, hc=4):
   TileLang E2E: 1.96 ms
   PyTorch CANN: 6.08 ms
   E2E speedup:  3.10x
-
-Migration from CUDA:
-  1. pass_configs: TL_ASCEND_AUTO_SYNC / MEMORY_PLANNING / AUTO_CV_COMBINE
-  2. No Cube GEMM — uses AXPY linear combination on Vector cores
-  3. No hc padding — hc=4 used directly (Cube's 16-block minimum not applicable)
-  4. h_blk=2048, h padded to multiple of 2048
-  5. Dual-V-core: cid * VEC_NUM + vid partitioning
-  6. Golden reference uses FP32 path (same as kernel, no BF16 quantization)
 """
 
 import tilelang
 import tilelang.language as T
 import torch
+import torch.nn.functional as F
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
@@ -40,6 +30,7 @@ pass_configs = {
 }
 
 H_BLK = 2048
+HC = 4
 
 
 def calc_pad_h(h, h_blk=H_BLK):
@@ -47,30 +38,12 @@ def calc_pad_h(h, h_blk=H_BLK):
     return max(h_blk, ((h + h_blk - 1) // h_blk) * h_blk)
 
 
-# ============================================================
-# Kernel: Pure AIV single kernel (dual-V-core, no Cube)
-# ============================================================
-
-
 @tilelang.jit(out_idx=[4], pass_configs=pass_configs)
 def mhc_post_kernel(pad_h, h_blk=H_BLK, dtype="bfloat16", accum_dtype="float"):
-    """Pure AIV single kernel with dual-V-core and AXPY linear combination.
-
-    output = x * post_layer_mix + comb_res_mix^T @ residual
-
-    For hc=4, the matrix multiply becomes 4 vector AXPY operations:
-      out_i = post_i * x + comb_i0 * res0 + comb_i1 * res1 + comb_i2 * res2 + comb_i3 * res3
-
-    No broadcast, no reduce_sum — direct scalar-vector AXPY.
-    FP32 inputs for post/comb used directly (no BF16 quantization).
-
-    Each AI Core has 2 Vector units — both are utilized via vid partitioning.
-    Reference: PR #1567 (cross_entropy dual-V-core pattern)
-    """
+    """Pure AIV kernel: dual-V-core + AXPY, hc=4 specialized."""
     n = T.symbolic("n")
     h_num = T.ceildiv(pad_h, h_blk)
     VEC_NUM = 2
-    HC = 4
 
     @T.prim_func
     def main(
@@ -92,13 +65,9 @@ def mhc_post_kernel(pad_h, h_blk=H_BLK, dtype="bfloat16", accum_dtype="float"):
                     comb1_fp32 = T.alloc_ub(HC, accum_dtype)
                     comb2_fp32 = T.alloc_ub(HC, accum_dtype)
                     comb3_fp32 = T.alloc_ub(HC, accum_dtype)
-
                     T.copy(comb[bid, 0, 0], comb0_fp32)
-
                     T.copy(comb[bid, 1, 0], comb1_fp32)
-
                     T.copy(comb[bid, 2, 0], comb2_fp32)
-
                     T.copy(comb[bid, 3, 0], comb3_fp32)
 
                     res0_ub = T.alloc_ub(h_blk, dtype)
@@ -170,28 +139,10 @@ def mhc_post_kernel(pad_h, h_blk=H_BLK, dtype="bfloat16", accum_dtype="float"):
 # Host-side adapter
 # ============================================================
 
-
-def _pad_3d(t, target_dim1, target_dim2):
-    """[n, d1, d2] -> [n, target1, target2], padded with zeros."""
-    n = t.shape[0]
-    result = torch.zeros(n, target_dim1, target_dim2, dtype=t.dtype, device=t.device)
-    result[:, : t.shape[1], : t.shape[2]] = t
-    return result
-
-
-def _pad_2d_1d(t, target_h):
-    """[n, h] -> [n, target_h], padded with zeros."""
-    n = t.shape[0]
-    result = torch.zeros(n, target_h, dtype=t.dtype, device=t.device)
-    result[:, : t.shape[1]] = t
-    return result
-
-
 _kernel_cache = {}
 
 
 def _get_kernel(pad_h):
-    """Cache compiled kernel to avoid repeated JIT lookup."""
     if pad_h not in _kernel_cache:
         _kernel_cache[pad_h] = mhc_post_kernel(pad_h)
     return _kernel_cache[pad_h]
@@ -209,37 +160,26 @@ def mhc_post(x, residual, post_layer_mix, comb_res_mix):
     Returns:
         output: [n, hc, h] bf16
 
-    Note:
-        This kernel is specialized for hc=4. It uses AXPY linear
-        combination with hardcoded 4 output streams. Passing hc != 4
-        will raise an assertion error.
+    Note: hc=4 hard constraint (AXPY specialized).
     """
     h = x.shape[1]
     hc = residual.shape[1]
-    assert hc == 4, f"This kernel requires hc=4, got residual hc={hc}"
-    assert post_layer_mix.shape[1] == 4, f"This kernel requires hc=4, got post_layer_mix hc={post_layer_mix.shape[1]}"
-    assert comb_res_mix.shape[1] == 4 and comb_res_mix.shape[2] == 4, (
-        f"This kernel requires hc=4, got comb_res_mix shape={comb_res_mix.shape[1:]}"
-    )
+    assert hc == 4 and post_layer_mix.shape[1] == 4 and comb_res_mix.shape[1] == 4
     pad_h = calc_pad_h(h)
 
     post_sq = post_layer_mix.squeeze(-1)
     comb_t = comb_res_mix.mT.contiguous()
 
-    if pad_h == h:
-        residual_padded = residual
-        x_padded = x
-    else:
-        residual_padded = _pad_3d(residual, hc, pad_h)
-        x_padded = _pad_2d_1d(x, pad_h)
+    if pad_h != h:
+        x = F.pad(x, (0, pad_h - h))
+        residual = F.pad(residual, (0, pad_h - h))
 
     kernel = _get_kernel(pad_h)
-    output_padded = kernel(x_padded, post_sq, comb_t, residual_padded)
+    output = kernel(x, post_sq, comb_t, residual)
 
-    if pad_h == h:
-        return output_padded
-    else:
-        return output_padded[:, :hc, :h]
+    if pad_h != h:
+        output = output[:, :hc, :h]
+    return output
 
 
 # ============================================================
@@ -248,24 +188,19 @@ def mhc_post(x, residual, post_layer_mix, comb_res_mix):
 
 
 def mhc_post_ref(x, residual, post_layer_mix, comb_res_mix):
-    """PyTorch golden, using FP32 path (same as kernel, no BF16 quantization)."""
+    """PyTorch golden, FP32 path (same as kernel, no BF16 quantization)."""
     h = x.shape[1]
     hc = residual.shape[1]
     pad_h = calc_pad_h(h)
 
     comb_t = comb_res_mix.mT.contiguous()
-    residual_padded = _pad_3d(residual, hc, pad_h)
-
+    residual_padded = F.pad(residual, (0, pad_h - h))
     term2 = torch.bmm(comb_t.float(), residual_padded.float())
 
     post_fp32 = post_layer_mix.squeeze(-1)
-
-    x_fp32 = x.float()
-    x_padded = _pad_2d_1d(x_fp32, pad_h)
-
+    x_padded = F.pad(x.float(), (0, pad_h - h))
     term1 = post_fp32.unsqueeze(-1) * x_padded.unsqueeze(-2)
-    output_padded = (term1 + term2).bfloat16()
-    output = output_padded[:, :hc, :h]
+    output = (term1 + term2).bfloat16()[:, :hc, :h]
     return output
 
 
