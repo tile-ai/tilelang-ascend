@@ -29,7 +29,7 @@ pass_configs = {
 H_BLK = 2048
 HC = 4
 
-_H_BLK_CANDIDATES = [4096, 3584, 3072, 2560, 2048, 1024, 512]
+_H_BLK_CANDIDATES = [3584, 3072, 2560, 2048, 1024, 512]
 
 
 def _select_h_blk(h):
@@ -50,6 +50,7 @@ def mhc_post_kernel(pad_h, h_blk=H_BLK, dtype="bfloat16", accum_dtype="float"):
     """Pure AIV kernel: dual-V-core + AXPY, hc=4 specialized."""
     n = T.symbolic("n")
     h_num = T.ceildiv(pad_h, h_blk)
+    h_num_int = (pad_h + h_blk - 1) // h_blk
     VEC_NUM = 2
 
     @T.prim_func
@@ -90,27 +91,50 @@ def mhc_post_kernel(pad_h, h_blk=H_BLK, dtype="bfloat16", accum_dtype="float"):
                     out_fp32 = T.alloc_ub(h_blk, accum_dtype)
                     out_bf16 = T.alloc_ub(h_blk, dtype)
 
-                    for i_h in T.Pipelined(h_num, num_stages=2):
-                        T.copy(residual[bid, 0, i_h * h_blk], res0_ub)
-                        T.copy(residual[bid, 1, i_h * h_blk], res1_ub)
-                        T.copy(residual[bid, 2, i_h * h_blk], res2_ub)
-                        T.copy(residual[bid, 3, i_h * h_blk], res3_ub)
-                        T.tile.cast(res0_fp32, res0_ub, "CAST_NONE", h_blk)
-                        T.tile.cast(res1_fp32, res1_ub, "CAST_NONE", h_blk)
-                        T.tile.cast(res2_fp32, res2_ub, "CAST_NONE", h_blk)
-                        T.tile.cast(res3_fp32, res3_ub, "CAST_NONE", h_blk)
+                    if h_num_int > 1:
+                        for i_h in T.Pipelined(h_num, num_stages=2):
+                            T.copy(residual[bid, 0, i_h * h_blk], res0_ub)
+                            T.copy(residual[bid, 1, i_h * h_blk], res1_ub)
+                            T.copy(residual[bid, 2, i_h * h_blk], res2_ub)
+                            T.copy(residual[bid, 3, i_h * h_blk], res3_ub)
+                            T.tile.cast(res0_fp32, res0_ub, "CAST_NONE", h_blk)
+                            T.tile.cast(res1_fp32, res1_ub, "CAST_NONE", h_blk)
+                            T.tile.cast(res2_fp32, res2_ub, "CAST_NONE", h_blk)
+                            T.tile.cast(res3_fp32, res3_ub, "CAST_NONE", h_blk)
 
-                        T.copy(x[bid, i_h * h_blk], x_ub)
-                        T.tile.cast(x_fp32, x_ub, "CAST_NONE", h_blk)
+                            T.copy(x[bid, i_h * h_blk], x_ub)
+                            T.tile.cast(x_fp32, x_ub, "CAST_NONE", h_blk)
 
-                        for out_idx in T.unroll(HC):
-                            T.tile.mul(out_fp32, x_fp32, post_fp32[out_idx])
-                            T.tile.axpy(out_fp32, res0_fp32, comb0_fp32[out_idx])
-                            T.tile.axpy(out_fp32, res1_fp32, comb1_fp32[out_idx])
-                            T.tile.axpy(out_fp32, res2_fp32, comb2_fp32[out_idx])
-                            T.tile.axpy(out_fp32, res3_fp32, comb3_fp32[out_idx])
-                            T.tile.cast(out_bf16, out_fp32, "CAST_RINT", h_blk)
-                            T.copy(out_bf16, output[bid, out_idx, i_h * h_blk])
+                            for out_idx in T.unroll(HC):
+                                T.tile.mul(out_fp32, x_fp32, post_fp32[out_idx])
+                                T.tile.axpy(out_fp32, res0_fp32, comb0_fp32[out_idx])
+                                T.tile.axpy(out_fp32, res1_fp32, comb1_fp32[out_idx])
+                                T.tile.axpy(out_fp32, res2_fp32, comb2_fp32[out_idx])
+                                T.tile.axpy(out_fp32, res3_fp32, comb3_fp32[out_idx])
+                                T.tile.cast(out_bf16, out_fp32, "CAST_RINT", h_blk)
+                                T.copy(out_bf16, output[bid, out_idx, i_h * h_blk])
+                    else:
+                        for i_h in T.serial(h_num):
+                            T.copy(residual[bid, 0, i_h * h_blk], res0_ub)
+                            T.copy(residual[bid, 1, i_h * h_blk], res1_ub)
+                            T.copy(residual[bid, 2, i_h * h_blk], res2_ub)
+                            T.copy(residual[bid, 3, i_h * h_blk], res3_ub)
+                            T.tile.cast(res0_fp32, res0_ub, "CAST_NONE", h_blk)
+                            T.tile.cast(res1_fp32, res1_ub, "CAST_NONE", h_blk)
+                            T.tile.cast(res2_fp32, res2_ub, "CAST_NONE", h_blk)
+                            T.tile.cast(res3_fp32, res3_ub, "CAST_NONE", h_blk)
+
+                            T.copy(x[bid, i_h * h_blk], x_ub)
+                            T.tile.cast(x_fp32, x_ub, "CAST_NONE", h_blk)
+
+                            for out_idx in T.unroll(HC):
+                                T.tile.mul(out_fp32, x_fp32, post_fp32[out_idx])
+                                T.tile.axpy(out_fp32, res0_fp32, comb0_fp32[out_idx])
+                                T.tile.axpy(out_fp32, res1_fp32, comb1_fp32[out_idx])
+                                T.tile.axpy(out_fp32, res2_fp32, comb2_fp32[out_idx])
+                                T.tile.axpy(out_fp32, res3_fp32, comb3_fp32[out_idx])
+                                T.tile.cast(out_bf16, out_fp32, "CAST_RINT", h_blk)
+                                T.copy(out_bf16, output[bid, out_idx, i_h * h_blk])
 
     return main
 
@@ -212,8 +236,12 @@ def test():
         (4, 128, 4),
         (8, 256, 4),
         (16, 512, 4),
+        (4, 1024, 4),
         (4, 1280, 4),
+        (4, 2048, 4),
         (4, 2560, 4),
+        (4, 3072, 4),
+        (4, 4096, 4),
         (4, 7168, 4),
         (4096, 2560, 4),
         (4, 100, 4),

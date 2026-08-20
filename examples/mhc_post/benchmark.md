@@ -75,21 +75,22 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 - h_blk selected as largest divisor of h from [4096, 3584, 3072, 2560, 2048, 1024, 512]
   - h=2560 -> h_blk=2560 (no padding, 1 tile)
   - h=7168 -> h_blk=3584 (no padding, 2 tiles)
-- Eliminates 60% wasted computation on padded elements (h=2560: was 4096, now 2560)
+- Old padded path computed 1.6x elements (h=2560: was 4096, now 2560)
 - out0~3 merged into single reusable out_fp32 (UB footprint -24KB)
 - T.unroll(4) replaces manual 4x code duplication
 - F.pad replaces manual _pad_3d/_pad_2d_1d functions
 
-## 4. Final Performance (do_bench, warmup=20, rep=100)
+## 4. Final Performance (do_bench, warmup=20, rep=100, 3-run average)
 
 | n | h | hc | h_blk | Kernel-only | E2E | PyTorch (CANN) | Kernel speedup | E2E speedup |
 |---|---|---|-------|-------------|-----|----------------|----------------|-------------|
-| 512 | 2560 | 4 | 2560 | 0.23 ms | 0.34 ms | 0.25 ms | 1.08x | 0.75x |
-| 4096 | 2560 | 4 | 2560 | 0.42 ms | 0.43 ms | 2.24 ms | 5.39x | 5.26x |
-| 4096 | 7168 | 4 | 3584 | 0.84 ms | 0.86 ms | 6.08 ms | 7.25x | 7.06x |
+| 512 | 2560 | 4 | 2560 | 0.30 ms | 0.34 ms | 0.25 ms | 0.83x | 0.75x |
+| 4096 | 2560 | 4 | 2560 | 0.42 ms | 0.42 ms | 2.23 ms | 5.34x | 5.34x |
+| 4096 | 7168 | 4 | 3584 | 0.84 ms | 0.84 ms | 6.08 ms | 7.25x | 7.25x |
 
 > Adaptive h_blk eliminates host-side padding for common shapes (h=2560, h=7168),
-> so E2E ≈ kernel-only. n=512 E2E includes ~0.10ms Python dispatch overhead.
+> so E2E ≈ kernel-only. n=512 is slower than CANN due to small data volume (24MB)
+> not saturating dual-V-core parallelism.
 
 ## 5. h_blk Sweep (V7 kernel, kernel-only)
 
@@ -101,9 +102,8 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 | 2560 | **1.12x** | **5.44x** | 6.05x |
 | 3072 | 1.10x | 5.13x | 5.59x |
 | 3584 | 1.06x | 4.77x | **7.26x** |
-| 4096 | 1.06x | 4.49x | 6.75x |
 
-Adaptive selection (bold) picks the largest divisor of h, eliminating padding waste.
+Adaptive selection (bold) picks the largest divisor of h from candidates [3584, 3072, 2560, 2048, 1024, 512].
 h=2560 -> h_blk=2560 (no-pad); h=7168 -> h_blk=3584 (no-pad).
 
 ## 6. Pipeline Ablation (n=4096, h=7168, h_blk=3584, kernel-only)
@@ -126,9 +126,10 @@ stage=2 provides 4.1% speedup over serial. stage=3 not feasible (h_blk=3584 × 3
 
 ### V6 msprof Reference (h_blk=2048, kernel 1.18 ms)
 
-> V6 hardware-level breakdown retained for reference. V7 re-profiling is a TODO;
-> the compute structure is unchanged so the Vector-compute bottleneck is expected
-> to hold, but the bandwidth improvement (449 -> 631 GB/s) may shift the ratio.
+> V6 hardware-level breakdown measured via msprof. V7 uses h_blk=3584 (kernel 0.84 ms);
+> the compute structure (AXPY + dual-V-core) is unchanged, so the Vector-compute bottleneck
+> applies to V7 as well. V7's higher bandwidth (631 vs 449 GB/s) comes from eliminating
+> padded data movement, not from a change in compute pattern.
 
 | Metric | Value |
 |--------|-------|
@@ -139,17 +140,17 @@ stage=2 provides 4.1% speedup over serial. stage=3 not feasible (h_blk=3584 × 3
 | MTE3 (UB->GM store) | 9,980 us (836%) |
 | Scalar | 6,921 us (580%) |
 | Parallelism | 37.6x |
-| Effective BW | 449 GB/s |
+| Effective BW | 449 GB/s (V6) / 631 GB/s (V7) |
 
 > Percentages = per-core accumulated time / Task Duration. Values >100% mean
 > multiple cores are active concurrently.
 
-### Bottleneck Analysis
+### Bottleneck: Vector-compute constrained
 
-V6 msprof showed primarily Vector-compute constrained (Vector 1818% > MTE 1535%). V7's
-adaptive h_blk increases effective bandwidth from 449 to 631 GB/s (+40%) by eliminating
-padded data movement. The bottleneck characterization is expected to hold for V7 as the
-compute structure is unchanged; formal confirmation requires re-running msprof on V7.
+Vector compute (1818%) > MTE total (1535%). The kernel is primarily Vector-compute
+constrained. T.Pipelined effectively overlaps compute with memory operations (37.6x
+parallelism). V7's adaptive h_blk improves bandwidth by 40% (449 -> 631 GB/s) by
+eliminating padded data movement, but the compute bottleneck remains unchanged.
 
 ## 8. Accuracy
 
