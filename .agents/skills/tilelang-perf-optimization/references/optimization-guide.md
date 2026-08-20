@@ -777,108 +777,6 @@ if partial > 0:
 - [ ] fill 在 copy 之前（K5）？循环用 `n_full`（K6）？
 - [ ] 优化后精度与优化前一致？
 
----
-
-#### 子模式：chunk/split + contiguous 合并为单输入 Kernel
-
-> **子模式**：本节为 §2.12 的扩展，针对 `chunk/split + contiguous` 这一高频反模式。如需回退只需删除本节（至下方 `<!-- END 2.12 子模式 -->`）即可。
-
-**适用场景**：Host 中使用 `torch.chunk` / `torch.split` 将输入沿某一维拆分为多个子张量，分别调用 `.contiguous()` 后传给多输入 kernel。
-
-**性能问题**：每次 `.contiguous()` 都是一次完整的 host 内存拷贝（遍历整个 tensor）。N 个子张量 = N 次 host 拷贝。大 shape 下 host 拷贝耗时可接近甚至超过 kernel 本身。
-
-**核心思路**：传单个完整输入 tensor 给 kernel，kernel 内部通过列/行偏移读取各子张量数据。
-
-##### Host 端改造
-
-```python
-# 反模式（N 次 host 拷贝）
-x0, x1 = input.chunk(2, dim=-1)
-x0 = x0.contiguous()    # 拷贝 1：遍历 tensor.shape[:-1] * half_k 个元素
-x1 = x1.contiguous()    # 拷贝 2：同上
-output = kernel(x0, x1)
-
-# 正模式（0 次 host 拷贝）
-output = kernel(input)  # kernel 内部读 input[:, :K/2] 和 input[:, K/2:]
-```
-
-##### Kernel 端改造
-
-单输入 kernel：用列偏移 `half_k + col` 代替第二个 GM 读取。
-
-```python
-# 反模式（双输入 kernel）
-@tilelang.jit(out_idx=[2])
-def kernel_dual(block_M, block_K, dtype):
-    @T.prim_func
-    def main(
-        X: T.Tensor((M, K), dtype),
-        G: T.Tensor((M, K), dtype),
-        Y: T.Tensor((M, K), dtype),
-    ):
-        T.copy(X[row, col], x0_ub)        # 从 X 读 x0
-        T.copy(G[row, col], x1_ub)        # 从 G 读 x1
-
-# 正模式（单输入 + 列偏移）
-@tilelang.jit(out_idx=[1])
-def kernel_single(block_M, block_K, K, dtype):
-    half_k = K // 2
-    @T.prim_func
-    def main(
-        X: T.Tensor((M, K), dtype),
-        Y: T.Tensor((M, half_k), dtype),
-    ):
-        T.copy(X[row, col], x0_ub)              # x0 = X[:, :half_k]
-        T.copy(X[row, half_k + col], x1_ub)     # x1 = X[:, half_k:]
-```
-
-> 注：`half_k + col` 是 JIT 编译期的符号表达式（`half_k = K // 2`，K 是 closure 参数），TileLang 编译器正确展开为符号地址偏移。
-
-##### Host 端适配层（dim=-1 快路径 vs dim≠-1 慢路径）
-
-```python
-def swi_glu(input, dim=-1):
-    half_k = input.shape[dim] // 2
-    ndim = input.ndim
-    dim = dim % ndim
-
-    # 快路径（dim==-1）：仅 reshape，0 次 contiguous / chunk 拷贝
-    if dim == ndim - 1:
-        outer = math.prod(input.shape[:-1])
-        x_2d = input.reshape(outer, input.shape[-1])
-        out_2d = kernel(x_2d)
-        return out_2d.reshape(input.shape[:-1] + (half_k,))
-
-    # 慢路径（dim≠-1）：1 次 permute+contiguous，0 次 chunk 拷贝
-    perm = [i for i in range(ndim) if i != dim] + [dim]
-    x_perm = input.permute(perm).contiguous()       # 唯一 1 次拷贝
-    outer = math.prod(x_perm.shape[:-1])
-    x_2d = x_perm.reshape(outer, input.shape[dim])
-    out_2d = kernel(x_2d)
-    # inverse permute ...
-```
-
-##### 适用条件
-
-| 条件 | 满足 | 不满足时的表现 |
-|------|------|--------------|
-| 子张量计算为纯 element-wise（无归约） | ✅ 单输入 kernel 可行 | 归约 kernel 仍需分张量处理 |
-| 输入沿末维等分（或可 permute 到末维） | ✅ `half_k + col` 偏移即可 | 需要 stride-aware kernel |
-| `T.copy` 支持符号列偏移 | ✅ TileLang 支持 | 仅老版本可能不支持 |
-
-##### 检查清单
-
-- [ ] host 端 `chunk()/split()` + `.contiguous() × N` 已替换为直接传原始 tensor？
-- [ ] kernel 签名从多输入改为单输入（`out_idx` 相应调整）？
-- [ ] kernel 内 `T.copy` 用列偏移（`half_k + col`）读取第二子张量？
-- [ ] dim=-1 fastpath 已实现（避免不必要的 permute/contiguous）？
-- [ ] dim≠-1 slowpath 仅保留 1 次 permute+contiguous（无 chunk 拷贝）？
-- [ ] 优化后精度与优化前一致？
-
-<!-- END 2.12 子模式 -->
-
----
-
 #### 减少 transpose 优化
 
 **适用场景**：kernel 要求数据按特定轴序排列（如 scan 维在前、并行轴在后），host 侧用 `transpose` + `.contiguous()` 物理重排数据。大 shape 下全量转置是主要瓶颈之一。
@@ -1720,8 +1618,6 @@ kernel 的以下形态：
 
 ---
 
-
-
 ### 2.18 数学等价变形减少 V pipe 步数（Mathematical Rewriting for Fewer V Ops）
 
 **适用场景**：
@@ -1818,6 +1714,10 @@ total_ub = sum(每个buffer的bytes_per_elem) * rows_per_vec * block_N
 - [ ] 已在目标硬件（而非仅本地）上验证更大 tile 确实更快？
 
 ---
+
+
+
+
 
 ## 三、核间优化
 

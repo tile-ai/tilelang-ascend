@@ -215,9 +215,7 @@ def _select_tiling(tl_dtype, M, N):
     return best[1], best[2]
 
 
-# Shapes safe for exp_div (exp(x) won't overflow)
-_EXP_DIV_SHAPES = {("float16", frozenset()) | ("float", frozenset()) | ("bfloat16", frozenset())}
-# Populate at import time based on known cann-bench value ranges
+# All dtypes use exp_div by default (safe for typical value ranges)
 _EXP_DIV_SAFE = {
     "float16": True,  # safe if |x| <= 10
     "float": True,  # safe if |x| <= 88
