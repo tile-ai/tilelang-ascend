@@ -14,10 +14,11 @@ Architecture (pure Vector, no Cube):
   - with T.Scope("V") for explicit Vector scope
   - FP32 inputs for post/comb used directly (no BF16 quantization)
 
-Performance (n=4096, h=7168, hc=4, do_bench):
-  AIV kernel:   1.96 ms
+Performance (n=4096, h=7168, hc=4):
+  Kernel-only:  1.18 ms
+  TileLang E2E: 1.96 ms
   PyTorch CANN: 6.08 ms
-  Speedup:      3.10x CANN
+  E2E speedup:  3.10x
 
 Migration from CUDA:
   1. pass_configs: TL_ASCEND_AUTO_SYNC / MEMORY_PLANNING / AUTO_CV_COMBINE
@@ -351,11 +352,9 @@ def bench_vs_pytorch():
         t_tl = do_bench(lambda d=data: mhc_post(**d), warmup=20, rep=100)
         t_pt = do_bench(lambda d=data: mhc_post_pytorch_baseline(**d), warmup=20, rep=100)
 
-        ratio = t_pt / t_tl * 100
-
         print(f"  TileLang (AIV):  {t_tl:.4f} ms")
         print(f"  PyTorch (CANN):  {t_pt:.4f} ms")
-        print(f"  CANN ratio:      {ratio:.1f}%")
+        print(f"  Speedup:         {t_pt / t_tl:.2f}x")
 
 
 if __name__ == "__main__":

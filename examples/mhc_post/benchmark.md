@@ -48,7 +48,10 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 
 **V3: Loop-invariant hoisting**
 - comb coefficients loaded once outside h-loop (4 independent 1D UB buffers)
-- 2D UB slice `comb_fp32[i, :]` triggers AICore exception — workaround: 4 separate 1D buffers
+- 2D UB layout evaluated per reviewer suggestion; 2D T.copy and 2D cast work
+  correctly, but 2D UB row/scalar slices used as src operands in T.tile.axpy
+  produce incorrect results (max_diff > 12), and 2D UB row slice as T.copy
+  source triggers AICore exception 507015. Workaround: 4 separate 1D buffers
 
 **V4: AXPY (biggest breakthrough)**
 - Replaced `broadcast + mul + reduce_sum` with `T.tile.mul(dst, src, scalar)` + `T.tile.axpy(dst, src, scalar)`
@@ -104,7 +107,7 @@ stage=2 captures most pipeline benefit. stage=3 adds only 0.6% — not worth the
 | Metric | Value |
 |--------|-------|
 | Task Duration | 1,194 us |
-| Block count | 6,144 (msprof-reported; logical dual-V-core blocks = n/2 = 2048, TODO verify) |
+| Block count | 6,144 (msprof-reported; logical dual-V-core blocks = n/2 = 2048) |
 | Vector compute | 21,701 us (1818%) |
 | MTE2 (GM->UB load) | 8,348 us (699%) |
 | MTE3 (UB->GM store) | 9,980 us (836%) |
@@ -122,7 +125,7 @@ stage=2 captures most pipeline benefit. stage=3 adds only 0.6% — not worth the
 Vector compute (1818%) > MTE total (1535%)
 ```
 
-Vector throughput is the primary limit. T.Pipelined effectively overlaps compute with memory operations (37.6x parallelism). Further UB layout optimization would not improve Vector compute capacity.
+The current implementation is primarily Vector-compute constrained according to the measured profiler breakdown (Vector 1818% > MTE 1535%). T.Pipelined effectively overlaps compute with memory operations (37.6x parallelism). Remaining optimization opportunities are mainly in data-movement/layout efficiency; see the reviewer discussion on 2D UB contiguous copy in the PR thread.
 
 ## 8. Accuracy
 
@@ -144,4 +147,4 @@ Vector throughput is the primary limit. T.Pipelined effectively overlaps compute
 | h_blk optimized | Yes (2048 via sweep) |
 | Effective BW high | Yes (443 GB/s) |
 
-Optimization stopped: kernel is compute-bound, Vector throughput is the hardware limit.
+Optimization stopped: the kernel is primarily Vector-compute constrained per profiler breakdown. Further arithmetic-side optimization has diminishing returns; remaining opportunities are mainly in data-movement/layout efficiency.
