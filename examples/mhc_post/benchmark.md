@@ -142,7 +142,7 @@ The current implementation is primarily Vector-compute constrained according to 
 
 | Condition | Status |
 |-----------|--------|
-| Kernel > CANN | Yes (1.08x - 5.03x) |
+| Kernel > CANN | Yes (1.08x - 5.17x) |
 | E2E > CANN (large shape) | Yes (2.28x - 3.10x) |
 | Compute-bound confirmed | Yes (Vector 1818% > MTE 1535%) |
 | Pipeline optimized | Yes (stage=2 optimal) |
