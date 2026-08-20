@@ -72,7 +72,7 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 - max_diff improved: 0.125 -> 0.0625
 
 **V7: Adaptive h_blk + out reuse + T.unroll**
-- h_blk selected as largest divisor of h from [4096, 3584, 3072, 2560, 2048, 1024, 512]
+- h_blk selected as largest divisor of h from [3584, 3072, 2560, 2048, 1024, 512]
   - h=2560 -> h_blk=2560 (no padding, 1 tile)
   - h=7168 -> h_blk=3584 (no padding, 2 tiles)
 - Old padded path computed 1.6x elements (h=2560: was 4096, now 2560)
@@ -156,7 +156,7 @@ eliminating padded data movement, but the compute bottleneck remains unchanged.
 
 | Metric | Value |
 |--------|-------|
-| Test cases | 11/11 passed |
+| Test cases | 15/15 passed |
 | Tolerance | rtol=1e-2, atol=0.2 |
 | Max diff | 0.0625 |
 | Source of diff | BF16 output rounding + accumulation order |
@@ -165,8 +165,8 @@ eliminating padded data movement, but the compute bottleneck remains unchanged.
 
 | Condition | Status |
 |-----------|--------|
-| Kernel > CANN | Yes (1.13x - 7.26x) |
-| E2E > CANN (large shape) | Yes (5.35x - 7.25x) |
+| Kernel > CANN | Yes (0.83x - 7.25x; small shape slower, large shape 5-7x) |
+| E2E > CANN (large shape) | Yes (5.34x - 7.25x) |
 | Compute-bound confirmed | Yes (V6 msprof: Vector 1818% > MTE 1535%; V7 structure unchanged) |
 | Pipeline optimized | Yes (stage=2, +4.1% over serial; stage=3 UB-limited) |
 | h_blk optimized | Yes (adaptive: largest divisor of h, no-pad for common shapes) |
