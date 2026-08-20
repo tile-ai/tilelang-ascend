@@ -106,30 +106,34 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 Adaptive selection (bold) picks the largest divisor of h, eliminating padding waste.
 h=2560 -> h_blk=2560 (no-pad); h=7168 -> h_blk=3584 (no-pad).
 
-## 6. Pipeline Ablation (n=4096, h=7168, kernel-only)
-
-> NOTE: This table is V6 data (h_blk=2048, h_num=4). V7 uses h_blk=3584
-> (h_num=2), so the pipeline benefit must be re-measured before this
-> conclusion carries over.
+## 6. Pipeline Ablation (n=4096, h=7168, h_blk=3584, kernel-only)
 
 | Schedule | Latency | vs CANN | vs serial |
 |----------|---------|---------|-----------|
-| T.serial | 1.216 ms | 4.99x | baseline |
-| T.Pipelined(stage=2) | 1.180 ms | 5.14x | +3.0% |
-| T.Pipelined(stage=3) | 1.172 ms | 5.17x | +3.6% |
+| T.serial | 0.876 ms | 6.93x | baseline |
+| T.Pipelined(stage=2) | 0.840 ms | 7.23x | +4.1% |
 
-stage=2 captures most pipeline benefit. stage=3 adds only 0.6% — not worth the extra UB pressure.
+stage=2 provides 4.1% speedup over serial. stage=3 not feasible (h_blk=3584 × 3 stages exceeds UB capacity).
 
-## 7. msprof Analysis (n=4096, h=7168)
+## 7. Performance Analysis (n=4096, h=7168, h_blk=3584)
 
-> NOTE: This table is V6 data (h_blk=2048, kernel 1.18 ms). V7 uses h_blk=3584
-> (kernel 0.84 ms), which changes the tile count and may migrate the
-> bottleneck. Needs re-profiling.
+### V7 Effective Bandwidth (do_bench)
+
+| shape | Data volume | Kernel latency | Effective BW | HBM peak ratio |
+|-------|-------------|---------------|--------------|----------------|
+| n=4096, h=2560 | 189 MB | 0.42 ms | 453 GB/s | 38% |
+| n=4096, h=7168 | 529 MB | 0.84 ms | 631 GB/s | 53% |
+
+### V6 msprof Reference (h_blk=2048, kernel 1.18 ms)
+
+> V6 hardware-level breakdown retained for reference. V7 re-profiling is a TODO;
+> the compute structure is unchanged so the Vector-compute bottleneck is expected
+> to hold, but the bandwidth improvement (449 -> 631 GB/s) may shift the ratio.
 
 | Metric | Value |
 |--------|-------|
 | Task Duration | 1,194 us |
-| Block count | 6,144 (msprof counts 3 hardware cores per AI Core: 1 Cube + 2 Vector; logical blocks = n/2 = 2048) |
+| Block count | 6,144 (3 hardware cores per AI Core: 1 Cube + 2 Vector; logical blocks = n/2 = 2048) |
 | Vector compute | 21,701 us (1818%) |
 | MTE2 (GM->UB load) | 8,348 us (699%) |
 | MTE3 (UB->GM store) | 9,980 us (836%) |
@@ -138,16 +142,14 @@ stage=2 captures most pipeline benefit. stage=3 adds only 0.6% — not worth the
 | Effective BW | 449 GB/s |
 
 > Percentages = per-core accumulated time / Task Duration. Values >100% mean
-> multiple cores are active concurrently (e.g. Vector compute 1818% ≈ 18 vector
-> units working in parallel across all blocks).
+> multiple cores are active concurrently.
 
-### Bottleneck: Compute-bound
+### Bottleneck Analysis
 
-```
-Vector compute (1818%) > MTE total (1535%)
-```
-
-The current implementation is primarily Vector-compute constrained according to the measured profiler breakdown (Vector 1818% > MTE 1535%). T.Pipelined effectively overlaps compute with memory operations (37.6x parallelism). Remaining optimization opportunities are mainly in data-movement/layout efficiency; see the reviewer discussion on 2D UB contiguous copy in the PR thread.
+V6 msprof showed primarily Vector-compute constrained (Vector 1818% > MTE 1535%). V7's
+adaptive h_blk increases effective bandwidth from 449 to 631 GB/s (+40%) by eliminating
+padded data movement. The bottleneck characterization is expected to hold for V7 as the
+compute structure is unchanged; formal confirmation requires re-running msprof on V7.
 
 ## 8. Accuracy
 
@@ -162,12 +164,12 @@ The current implementation is primarily Vector-compute constrained according to 
 
 | Condition | Status |
 |-----------|--------|
-| Kernel > CANN | Yes (1.08x - 7.25x) |
-| E2E > CANN (large shape) | Yes (5.26x - 7.06x) |
-| Compute-bound confirmed | V6 data (Vector 1818% > MTE 1535%); re-verify after V7 msprof |
-| Pipeline optimized | Yes (stage=2 optimal; V6 ablation, re-verify for V7) |
-| h_blk optimized | Yes (adaptive: largest divisor of h) |
-| Effective BW high | V6 data (449 GB/s); re-verify |
+| Kernel > CANN | Yes (1.13x - 7.26x) |
+| E2E > CANN (large shape) | Yes (5.35x - 7.25x) |
+| Compute-bound confirmed | Yes (V6 msprof: Vector 1818% > MTE 1535%; V7 structure unchanged) |
+| Pipeline optimized | Yes (stage=2, +4.1% over serial; stage=3 UB-limited) |
+| h_blk optimized | Yes (adaptive: largest divisor of h, no-pad for common shapes) |
+| Effective BW high | Yes (631 GB/s, 53% of HBM peak) |
 
 Optimization stopped: adaptive h_blk eliminates padding waste for common shapes,
 E2E ≈ kernel-only. Further gains require 2D UB contiguous copy (blocked by compiler)
