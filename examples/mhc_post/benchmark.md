@@ -49,9 +49,11 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 **V3: Loop-invariant hoisting**
 - comb coefficients loaded once outside h-loop (4 independent 1D UB buffers)
 - 2D UB layout evaluated per reviewer suggestion; 2D T.copy and 2D cast work
-  correctly, but 2D UB row/scalar slices used as src operands in T.tile.axpy
-  produce incorrect results (max_diff > 12), and 2D UB row slice as T.copy
-  source triggers AICore exception 507015. Workaround: 4 separate 1D buffers
+  correctly, but after T.copy from GM to a 2D UB buffer, reading data via
+  scalar indexing (buf[i,j]) or row slicing (buf[i,:]) accesses wrong addresses
+  (manual fill + scalar read works; T.copy roundtrip works; only T.copy + slice
+  read fails). AICore exception 507015 when using 2D row slice as T.copy source.
+  Workaround: 4 separate 1D buffers
 
 **V4: AXPY (biggest breakthrough)**
 - Replaced `broadcast + mul + reduce_sum` with `T.tile.mul(dst, src, scalar)` + `T.tile.axpy(dst, src, scalar)`
@@ -81,16 +83,16 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 
 Note: n=512 E2E includes ~0.17ms Python dispatch overhead. Kernel-only latency is 0.23ms (1.08x CANN).
 
-## 5. h_blk Sweep (AXPY version, kernel-only)
+## 5. h_blk Sweep (final V6 kernel, kernel-only)
 
 | h_blk | n=512 | n=4096, h=2560 | n=4096, h=7168 |
 |-------|-------|-----------------|------------------|
-| 256 | 1.09x | 1.29x | 1.32x |
-| 512 | 1.05x | 2.19x | 2.32x |
-| 1024 | 1.12x | 2.90x | 3.81x |
-| 2048 | 1.11x | 3.17x | 5.03x |
+| 256 | 1.04x | 1.32x | 1.36x |
+| 512 | 1.06x | 2.25x | 2.41x |
+| 1024 | 1.03x | 3.03x | 3.94x |
+| 2048 | 1.11x | 3.44x | 5.17x |
 
-h_blk=2048 is optimal across all shapes. AXPY's small UB footprint enables large tile size.
+h_blk=2048 is optimal for large shapes. AXPY's small UB footprint enables large tile size.
 
 ## 6. Pipeline Ablation (n=4096, h=7168, kernel-only)
 
@@ -107,7 +109,7 @@ stage=2 captures most pipeline benefit. stage=3 adds only 0.6% — not worth the
 | Metric | Value |
 |--------|-------|
 | Task Duration | 1,194 us |
-| Block count | 6,144 (msprof-reported; logical dual-V-core blocks = n/2 = 2048) |
+| Block count | 6,144 (msprof counts 3 hardware cores per AI Core: 1 Cube + 2 Vector; logical blocks = n/2 = 2048) |
 | Vector compute | 21,701 us (1818%) |
 | MTE2 (GM->UB load) | 8,348 us (699%) |
 | MTE3 (UB->GM store) | 9,980 us (836%) |

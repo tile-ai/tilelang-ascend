@@ -216,7 +216,11 @@ def mhc_post(x, residual, post_layer_mix, comb_res_mix):
     """
     h = x.shape[1]
     hc = residual.shape[1]
-    assert hc == 4, f"This kernel requires hc=4, got hc={hc}"
+    assert hc == 4, f"This kernel requires hc=4, got residual hc={hc}"
+    assert post_layer_mix.shape[1] == 4, f"This kernel requires hc=4, got post_layer_mix hc={post_layer_mix.shape[1]}"
+    assert comb_res_mix.shape[1] == 4 and comb_res_mix.shape[2] == 4, (
+        f"This kernel requires hc=4, got comb_res_mix shape={comb_res_mix.shape[1:]}"
+    )
     pad_h = calc_pad_h(h)
 
     post_sq = post_layer_mix.squeeze(-1)
@@ -270,12 +274,12 @@ def mhc_post_ref(x, residual, post_layer_mix, comb_res_mix):
 # ============================================================
 
 
-def generate_test_data(n, h, hc_mult, device="npu"):
+def generate_test_data(n, h, hc, device="npu"):
     torch.random.manual_seed(42)
     x = torch.randn((n, h), dtype=torch.bfloat16, device=device)
-    residual = torch.randn((n, hc_mult, h), dtype=torch.bfloat16, device=device)
-    post_layer_mix = torch.randn((n, hc_mult, 1), dtype=torch.float32, device=device)
-    comb_res_mix = torch.randn((n, hc_mult, hc_mult), dtype=torch.float32, device=device)
+    residual = torch.randn((n, hc, h), dtype=torch.bfloat16, device=device)
+    post_layer_mix = torch.randn((n, hc, 1), dtype=torch.float32, device=device)
+    comb_res_mix = torch.randn((n, hc, hc), dtype=torch.float32, device=device)
     return {"x": x, "residual": residual, "post_layer_mix": post_layer_mix, "comb_res_mix": comb_res_mix}
 
 
