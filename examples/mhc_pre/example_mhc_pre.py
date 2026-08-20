@@ -8,7 +8,7 @@ Implements the full mHC pre block:
 
 Reference: tilelang main repo CUDA version examples/deepseek_mhc/example_mhc_pre.py
 
-Architecture (5-kernel pipeline, all dual-V-core):
+Architecture (5-kernel pipeline; A1 uses Cube, A2/B1/B2/B3 use dual-V-core):
   Kernel A1 (Cube):   out = x @ fn.T  (K-tiled GEMM, token_block=128, h_blk=512)
   Kernel A2 (Vector): sqrsum = sum(x^2)  (tiled reduction, h_blk=4096)
   Kernel B1 (Vector): mixes = out * rsqrt(sqrsum/(hc*h) + rms_eps)  (RMSNorm)
@@ -70,7 +70,7 @@ def calc_pad(dim, block):
 def mhc_pre_gemm(pad_hc_hidden, pad_hc_mult3, h_blk=H_BLK, token_block=TOKEN_BLOCK, dtype="bfloat16", accum_dtype="float"):
     """Kernel A1: out = x @ fn.T (K-tiled GEMM with accumulation).
 
-    M = token_block (16, Cube minimum)
+    M = token_block (128 in tuned config; Cube alignment >= 16)
     K = pad_hc_hidden (tiled over h_blk)
     N = pad_hc_mult3 (hc_mult3 padded to 32)
     """
@@ -238,7 +238,7 @@ def mhc_pre_split_sinkhorn(hc, sinkhorn_iters, pre_eps, sinkhorn_eps, hc_post_mu
             if bid < n:
                 mixes_shared = T.alloc_shared(mix_hc, dtype)
                 hc_base_shared = T.alloc_shared(mix_hc, dtype)
-                hc_scale_shared = T.alloc_ub(mix_hc, dtype)
+                hc_scale_ub = T.alloc_ub(mix_hc, dtype)
 
                 comb_shared = T.alloc_shared((hc, hc_pad), dtype)
                 pre_shared = T.alloc_shared(hc_pad, dtype)
@@ -258,15 +258,15 @@ def mhc_pre_split_sinkhorn(hc, sinkhorn_iters, pre_eps, sinkhorn_eps, hc_post_mu
                 alpha_2 = hc_scale[2]
 
                 for i in T.serial(hc):
-                    hc_scale_shared[i] = alpha_0
+                    hc_scale_ub[i] = alpha_0
                 for i in T.serial(hc):
-                    hc_scale_shared[hc + i] = alpha_1
+                    hc_scale_ub[hc + i] = alpha_1
                 for i in T.serial(hc * hc):
-                    hc_scale_shared[2 * hc + i] = alpha_2
+                    hc_scale_ub[2 * hc + i] = alpha_2
                 T.copy(hc_base, hc_base_shared)
                 T.copy(mixes[bid, :], mixes_shared)
 
-                T.tile.mul(mixes_shared, mixes_shared, hc_scale_shared)
+                T.tile.mul(mixes_shared, mixes_shared, hc_scale_ub)
                 T.tile.add(mixes_shared, mixes_shared, hc_base_shared)
                 T.copy(mixes_shared, workspace[bid, :])
 
@@ -491,7 +491,7 @@ def mhc_pre_gemm_sqrsum(x, fn, hc_mult, fn_packed=None):
     else:
         x_padded_sqr = _pad_2d(x, n, pad_hc_hidden_sqr)
         sqrsum_kernel = _get_kernel("sqrsum", pad_hc_hidden_sqr)
-        sqrsum = sqrsum_kernel(x_padded_sqr[:n])
+        sqrsum = sqrsum_kernel(x_padded_sqr)
 
     return out_padded, sqrsum
 
@@ -525,13 +525,14 @@ def mhc_pre(residual, fn, hc_scale, hc_base, rms_eps, hc_pre_eps, hc_sinkhorn_ep
 
     x_flat = residual.view(n, hc_mult * hidden)
 
-    # Kernel A: gemm + sqrsum (returns padded [n, pad_hc_mult3])
+    # Kernel A: gemm + sqrsum (returns padded [pad_n, pad_hc_mult3])
     gemm_out_padded, sqrsum = mhc_pre_gemm_sqrsum(x_flat, fn, hc_mult, fn_packed)
 
-    # Kernel B1: RMSNorm (directly uses padded gemm output)
+    # Kernel B1: RMSNorm (slice to [n, pad_hc_mult3] to match sqrsum [n])
     pad_hc_mult3 = calc_pad(hc_mult3, MIN_BLOCK)
+    gemm_out = gemm_out_padded[:n, :pad_hc_mult3].contiguous()
     rmsnorm_kernel = _get_kernel("rmsnorm", pad_hc_mult3, hc_mult, hidden, rms_eps)
-    mixes_padded = rmsnorm_kernel(gemm_out_padded, sqrsum)
+    mixes_padded = rmsnorm_kernel(gemm_out, sqrsum)
     mixes = mixes_padded[:n, :hc_mult3].contiguous()
 
     # Kernel B2: split + sinkhorn
@@ -615,15 +616,6 @@ def mhc_pre_ref(residual, fn, hc_scale, hc_base, rms_eps, hc_pre_eps, hc_sinkhor
 # ============================================================
 
 
-def generate_test_data(n, h, hc_mult, device="npu"):
-    torch.random.manual_seed(42)
-    hc_hidden = hc_mult * h
-    hc_mult3 = hc_mult * (2 + hc_mult)
-    x = torch.randn((n, hc_hidden), dtype=torch.bfloat16, device=device)
-    fn = torch.randn((hc_mult3, hc_hidden), dtype=torch.float32, device=device)
-    return {"x": x, "fn": fn, "hc_mult": hc_mult}
-
-
 def generate_full_test_data(
     n, h, hc_mult, device="npu", rms_eps=1e-6, hc_pre_eps=1e-6, hc_sinkhorn_eps=1e-6, hc_post_mult_value=1.0, sinkhorn_repeat=10
 ):
@@ -656,58 +648,6 @@ def generate_full_test_data(
     }
 
 
-def test_kernel_a():
-    print("=" * 60)
-    print("MHC Pre Kernel A (gemm_sqrsum) test (Ascend NPU)")
-    print("=" * 60)
-
-    test_cases = [
-        (4, 128, 4),
-        (16, 256, 4),
-        (4, 1280, 4),
-        (512, 2560, 4),
-        (4, 100, 4),
-    ]
-
-    all_passed = True
-    for n, h, hc_mult in test_cases:
-        print(f"\n--- n={n}, h={h}, hc_mult={hc_mult} ---")
-        data = generate_test_data(n, h, hc_mult)
-
-        out_tl, sqrsum_tl = mhc_pre_gemm_sqrsum(**data)
-        out_ref, sqrsum_ref = mhc_pre_gemm_sqrsum_ref(**data)
-
-        hc_mult3 = hc_mult * (2 + hc_mult)
-        out_tl = out_tl[:n, :hc_mult3]
-
-        print(f"  out shape={out_tl.shape}, sqrsum shape={sqrsum_tl.shape}")
-
-        try:
-            torch.testing.assert_close(out_tl.cpu(), out_ref.cpu(), rtol=1e-2, atol=1e-2)
-            out_diff = (out_tl.cpu().float() - out_ref.cpu().float()).abs()
-            print(f"  out PASSED (max_diff={out_diff.max().item():.6f})")
-        except AssertionError:
-            out_diff = (out_tl.cpu().float() - out_ref.cpu().float()).abs()
-            print(f"  out FAILED (max_diff={out_diff.max().item():.6f})")
-            all_passed = False
-
-        try:
-            torch.testing.assert_close(sqrsum_tl.cpu(), sqrsum_ref.cpu(), rtol=1e-2, atol=1e-2)
-            sqrsum_diff = (sqrsum_tl.cpu().float() - sqrsum_ref.cpu().float()).abs()
-            print(f"  sqrsum PASSED (max_diff={sqrsum_diff.max().item():.6f})")
-        except AssertionError:
-            sqrsum_diff = (sqrsum_tl.cpu().float() - sqrsum_ref.cpu().float()).abs()
-            print(f"  sqrsum FAILED (max_diff={sqrsum_diff.max().item():.6f})")
-            all_passed = False
-
-    print("\n" + "=" * 60)
-    if all_passed:
-        print("Kernel Output Match!")
-    else:
-        print("Some tests failed.")
-    print("=" * 60)
-
-
 def test_full():
     print("=" * 60)
     print("MHC Pre full pipeline test (Ascend NPU)")
@@ -718,6 +658,7 @@ def test_full():
         (16, 256, 4),
         (4, 1280, 4),
         (512, 2560, 4),
+        (4096, 2560, 4),
         (4, 100, 4),
     ]
 
@@ -757,6 +698,47 @@ def test_full():
             diff = (layer_tl.cpu().float() - layer_ref.cpu().float()).abs()
             print(f"  layer_input FAILED (max_diff={diff.max().item():.6f})")
             all_passed = False
+
+    # Distinct parameter routing test (pre_eps != sinkhorn_eps, post_mult != 1.0/2.0)
+    print("\n--- distinct params: hc_pre_eps=1e-4, hc_sinkhorn_eps=3e-3, hc_post_mult_value=1.7 ---")
+    data = generate_full_test_data(
+        4,
+        128,
+        4,
+        hc_pre_eps=1e-4,
+        hc_sinkhorn_eps=3e-3,
+        hc_post_mult_value=1.7,
+        sinkhorn_repeat=3,
+    )
+    post_tl, comb_tl, layer_tl = mhc_pre(**data)
+    post_ref, comb_ref, layer_ref = mhc_pre_ref(**data)
+
+    try:
+        torch.testing.assert_close(post_tl.cpu(), post_ref.cpu(), rtol=1e-2, atol=1e-2)
+        diff = (post_tl.cpu().float() - post_ref.cpu().float()).abs()
+        print(f"  post_mix PASSED (max_diff={diff.max().item():.6f})")
+    except AssertionError:
+        diff = (post_tl.cpu().float() - post_ref.cpu().float()).abs()
+        print(f"  post_mix FAILED (max_diff={diff.max().item():.6f})")
+        all_passed = False
+
+    try:
+        torch.testing.assert_close(comb_tl.cpu(), comb_ref.cpu(), rtol=1e-2, atol=1e-2)
+        diff = (comb_tl.cpu().float() - comb_ref.cpu().float()).abs()
+        print(f"  comb_mix PASSED (max_diff={diff.max().item():.6f})")
+    except AssertionError:
+        diff = (comb_tl.cpu().float() - comb_ref.cpu().float()).abs()
+        print(f"  comb_mix FAILED (max_diff={diff.max().item():.6f})")
+        all_passed = False
+
+    try:
+        torch.testing.assert_close(layer_tl.cpu(), layer_ref.cpu(), rtol=1e-2, atol=1e-2)
+        diff = (layer_tl.cpu().float() - layer_ref.cpu().float()).abs()
+        print(f"  layer_input PASSED (max_diff={diff.max().item():.6f})")
+    except AssertionError:
+        diff = (layer_tl.cpu().float() - layer_ref.cpu().float()).abs()
+        print(f"  layer_input FAILED (max_diff={diff.max().item():.6f})")
+        all_passed = False
 
     print("\n" + "=" * 60)
     if all_passed:
