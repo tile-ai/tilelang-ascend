@@ -1622,6 +1622,10 @@ def createvecindex(dst: Buffer, firstValue: PrimExpr):
     )
 
 
+# snake_case alias for createvecindex
+create_vec_index = createvecindex
+
+
 def transpose(dst: Buffer, src: Buffer):
     """Performs a matrix transposition operation.
 
