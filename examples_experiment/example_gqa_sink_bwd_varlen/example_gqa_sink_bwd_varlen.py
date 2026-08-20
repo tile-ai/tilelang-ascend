@@ -579,7 +579,10 @@ def bwd_k3c_p_delta(
     """k3c: p_delta_fp16 = cast_fp16(ws_p_fp32 - cast_fp32(cast_fp16(ws_p_fp32))).
 
     Pure Vector kernel. Compensated GEMM residual computation for dV.
-    Reads ws_p (fp32 GM), writes ws_p_delta (fp16 GM, same block shape).
+    Reads ws_p (fp32 GM), writes ws_p_fp16 (fp16 GM) + ws_p_delta (fp16 GM).
+    ws_p_fp16 is the fp16 cast of ws_p, consumed by k3's main GEMM via direct
+    GM→L1 load (avoids UB→L1 virtual-channel transfer that breaks transpose_A
+    under AUTO_CV_COMBINE).
     """
     dtype = "float16"
     accum_dtype = "float"
@@ -591,6 +594,7 @@ def bwd_k3c_p_delta(
     @T.prim_func
     def main(
         ws_p: T.Tensor(ws_shape, accum_dtype),  # type: ignore
+        ws_p_fp16: T.Tensor(ws_shape, dtype),  # type: ignore
         ws_p_delta: T.Tensor(ws_shape, dtype),  # type: ignore
         cu_seqlens_q: T.Tensor([batch + 1], "int32"),  # type: ignore
         cu_seqlens_k: T.Tensor([batch + 1], "int32"),  # type: ignore
@@ -630,6 +634,9 @@ def bwd_k3c_p_delta(
 
                         # P_fp16 = cast(ws_p_fp32, fp16, CAST_RINT) — same cast as k3
                         T.tile.cast(p_half_ub, p_ub, "CAST_RINT", hm * block_N)
+
+                        # Write fp16 P to GM for k3's direct GM→L1 load
+                        T.copy(p_half_ub, ws_p_fp16[cid, v_row : v_row + hm, :])
 
                         # P_fp16_as_fp32 = cast(P_fp16, fp32) — exact via T.copy auto-cast
                         T.copy(p_half_ub, p_rec_ub)
@@ -677,7 +684,7 @@ def bwd_k3_dv_dp(
 
     @T.prim_func
     def main(
-        ws_p: T.Tensor(ws_shape, accum_dtype),  # type: ignore
+        ws_p_fp16: T.Tensor(ws_shape, dtype),  # type: ignore
         dO: T.Tensor(do_shape, dtype),  # type: ignore
         V: T.Tensor(v_shape, dtype),  # type: ignore
         dV: T.Tensor(dv_shape, accum_dtype),  # type: ignore
@@ -709,14 +716,12 @@ def bwd_k3_dv_dp(
             if bx * block_M < q_current_seqlen:  # noqa: SIM102
                 if (k_iter >= loop_st) and (k_iter < loop_ed):
                     p_l1 = T.alloc_L1([block_M, block_N], dtype)
-                    p_ub = T.alloc_ub([block_M, block_N], accum_dtype)
-                    p_half_ub = T.alloc_ub([block_M, block_N], dtype)
                     do_l1 = T.alloc_L1([block_M, dim_v], dtype)
                     v_l1 = T.alloc_L1([block_N, dim_v], dtype)
 
-                    T.copy(ws_p[cid, :, :], p_ub)
-                    T.tile.cast(p_half_ub, p_ub, "CAST_RINT", block_M * block_N)
-                    T.copy(p_half_ub, p_l1)
+                    # Direct GM(fp16)→L1 load — avoids UB→L1 virtual-channel
+                    # transfer that corrupts transpose_A GEMM under AUTO_CV_COMBINE.
+                    T.copy(ws_p_fp16[cid, :, :], p_l1)
 
                     T.copy(
                         dO[q_start_idx + bx * block_M : q_start_idx + (bx + 1) * block_M, by, :dim_v],
@@ -813,7 +818,7 @@ def bwd_k3b_dv_correction(
                     )
 
                     l0c_dv = T.alloc_L0C([block_N, dim_v], accum_dtype)
-                    T.gemm_v0(p_delta_l1, do_l1, l0c_dv, transpose_A=True, init=True)
+                    T.gemm_v0(p_delta_l1, do_l1, l0c_dv, transpose_A=True, init=True, kL0Size=32)
                     T.tile.atomic_add(
                         dV[kv_start_idx + k_iter * block_N : kv_start_idx + (k_iter + 1) * block_N, kv_by, :dim_v],
                         l0c_dv,
@@ -930,7 +935,10 @@ def bwd_k5c_ds_delta(
     """k5c: ds_delta_fp16 = cast_fp16(ws_ds_fp32 - cast_fp32(cast_fp16(ws_ds_fp32))).
 
     Pure Vector kernel. Compensated GEMM residual computation.
-    Reads ws_ds (fp32 GM), writes ws_ds_delta (fp16 GM, same block shape).
+    Reads ws_ds (fp32 GM), writes ws_ds_fp16 (fp16 GM) + ws_ds_delta (fp16 GM).
+    ws_ds_fp16 is the fp16 cast of ws_ds, consumed by k5a's main GEMM via direct
+    GM→L1 load (avoids UB→L1 virtual-channel transfer that breaks transpose_A
+    under AUTO_CV_COMBINE).
     Pattern matches bhsd k4 (lines 718-726): dS_fp16=cast(dS_fp32,CAST_RINT),
     ds_delta=dS_fp32-cast(dS_fp16,fp32), ds_delta_fp16=cast(ds_delta,CAST_RINT).
     """
@@ -944,6 +952,7 @@ def bwd_k5c_ds_delta(
     @T.prim_func
     def main(
         ws_ds: T.Tensor(ws_shape, accum_dtype),  # type: ignore
+        ws_ds_fp16: T.Tensor(ws_shape, dtype),  # type: ignore
         ws_ds_delta: T.Tensor(ws_shape, dtype),  # type: ignore
         cu_seqlens_q: T.Tensor([batch + 1], "int32"),  # type: ignore
         cu_seqlens_k: T.Tensor([batch + 1], "int32"),  # type: ignore
@@ -983,6 +992,9 @@ def bwd_k5c_ds_delta(
 
                         # dS_fp16 = cast(ws_ds_fp32, fp16, CAST_RINT) — same cast as k5a
                         T.tile.cast(ds_half_ub, ds_ub, "CAST_RINT", hm * block_N)
+
+                        # Write fp16 dS to GM for k5a's direct GM→L1 load
+                        T.copy(ds_half_ub, ws_ds_fp16[cid, v_row : v_row + hm, :])
 
                         # dS_fp16_as_fp32 = cast(dS_fp16, fp32) — exact via T.copy auto-cast
                         T.copy(ds_half_ub, ds_rec_ub)
@@ -1030,7 +1042,7 @@ def bwd_k5_dk_dq(
 
     @T.prim_func
     def main(
-        ws_ds: T.Tensor(ws_shape, accum_dtype),  # type: ignore
+        ws_ds_fp16: T.Tensor(ws_shape, dtype),  # type: ignore
         Q: T.Tensor(q_shape, dtype),  # type: ignore
         K: T.Tensor(k_shape, dtype),  # type: ignore
         dK_per_head: T.Tensor(dk_per_head_shape, accum_dtype),  # type: ignore
@@ -1062,8 +1074,6 @@ def bwd_k5_dk_dq(
             if bx * block_M < q_current_seqlen:  # noqa: SIM102
                 if (k_iter >= loop_st) and (k_iter < loop_ed):
                     ds_l1 = T.alloc_L1([block_M, block_N], dtype)
-                    ds_ub = T.alloc_ub([block_M, block_N], accum_dtype)
-                    ds_half_ub = T.alloc_ub([block_M, block_N], dtype)
                     q_l1 = T.alloc_L1([block_M, dim_qk_padded], dtype)
                     k_l1 = T.alloc_L1([block_N, dim_qk_padded], dtype)
 
@@ -1072,9 +1082,9 @@ def bwd_k5_dk_dq(
                         q_l1,
                     )
 
-                    T.copy(ws_ds[cid, :, :], ds_ub)
-                    T.tile.cast(ds_half_ub, ds_ub, "CAST_RINT", block_M * block_N)
-                    T.copy(ds_half_ub, ds_l1)
+                    # Direct GM(fp16)→L1 load — avoids UB→L1 virtual-channel
+                    # transfer that corrupts transpose_A GEMM under AUTO_CV_COMBINE.
+                    T.copy(ws_ds_fp16[cid, :, :], ds_l1)
 
                     l0c_dk = T.alloc_L0C([block_N, dim_qk_padded], accum_dtype)
                     T.gemm_v0(ds_l1, q_l1, l0c_dk, transpose_A=True, init=True, kL0Size=32)
@@ -1307,10 +1317,15 @@ def run_bwd_pipeline(
 
     ws_s = torch.empty(bwd_block_num, block_M, block_N, dtype=torch.float32, device="npu")
     ws_p = torch.empty(bwd_block_num, block_M, block_N, dtype=torch.float32, device="npu")
+    # fp16 P for k3's direct GM→L1 load (written by k3c, read by k3).
+    # Avoids UB→L1 virtual-channel transfer that breaks transpose_A under AUTO_CV_COMBINE.
+    ws_p_fp16 = torch.empty(bwd_block_num, block_M, block_N, dtype=torch.float16, device="npu")
     # Compensated GEMM (attempt 3): p_delta workspace for k3b dV correction GEMM.
     ws_p_delta = torch.empty(bwd_block_num, block_M, block_N, dtype=torch.float16, device="npu")
     ws_dp = torch.empty(bwd_block_num, block_M, block_N, dtype=torch.float32, device="npu")
     ws_ds = torch.empty(bwd_block_num, block_M, block_N, dtype=torch.float32, device="npu")
+    # fp16 dS for k5a's direct GM→L1 load (written by k5c, read by k5a).
+    ws_ds_fp16 = torch.empty(bwd_block_num, block_M, block_N, dtype=torch.float16, device="npu")
     # Compensated GEMM (attempt 3, Option B): ds_delta workspace for k5b correction GEMM.
     # ds_delta_fp16 = cast_fp16(ws_ds_fp32 - cast_fp32(cast_fp16(ws_ds_fp32)))
     ws_ds_delta = torch.empty(bwd_block_num, block_M, block_N, dtype=torch.float16, device="npu")
@@ -1346,24 +1361,24 @@ def run_bwd_pipeline(
         torch.npu.synchronize()
         k2_mod(ws_s, lse, O, dO, ws_p, Delta, cu_seqlens_q, cu_seqlens_k, k)
         torch.npu.synchronize()
-        # Compensated GEMM (attempt 3): k3c computes p_delta, k3 does main dV GEMM
-        # + dP, k3b adds dV correction GEMM.
+        # Compensated GEMM (attempt 3): k3c computes p_delta + ws_p_fp16, k3 does
+        # main dV GEMM + dP, k3b adds dV correction GEMM.
         # iter6 O6: removed 2 syncs between k3c->k3->k3b. NPU executes kernel launches
-        # in FIFO order; data deps (ws_p_delta k3c->k3b, dV atomic_add k3->k3b) are
-        # respected by in-order execution. Sync after k3b (C->V transition to k4) kept.
-        k3c_mod(ws_p, ws_p_delta, cu_seqlens_q, cu_seqlens_k, k)
-        k3_mod(ws_p, dO, V, dV, ws_dp, cu_seqlens_q, cu_seqlens_k, k)
+        # in FIFO order; data deps (ws_p_fp16 + ws_p_delta k3c->k3/k3b, dV atomic_add
+        # k3->k3b) are respected by in-order execution. Sync after k3b (C->V to k4) kept.
+        k3c_mod(ws_p, ws_p_fp16, ws_p_delta, cu_seqlens_q, cu_seqlens_k, k)
+        k3_mod(ws_p_fp16, dO, V, dV, ws_dp, cu_seqlens_q, cu_seqlens_k, k)
         k3b_mod(ws_p_delta, dO, dV, cu_seqlens_q, cu_seqlens_k, k)
         torch.npu.synchronize()
         k4_mod(ws_dp, ws_p, Delta, ws_ds, cu_seqlens_q, cu_seqlens_k, k)
         torch.npu.synchronize()
-        # Compensated GEMM (attempt 3, Option B): k5c computes ds_delta,
+        # Compensated GEMM (attempt 3, Option B): k5c computes ds_delta + ws_ds_fp16,
         # k5a (k5_mod) does main GEMM (dK + dQ), k5b adds correction GEMM (dK only).
         # iter6 O6: removed 2 syncs between k5c->k5->k5b. NPU in-order execution
-        # handles data deps (ws_ds_delta k5c->k5b, dK_per_head atomic_add k5->k5b).
-        # Sync after k5b (C->V transition to next iter k1) kept.
-        k5c_mod(ws_ds, ws_ds_delta, cu_seqlens_q, cu_seqlens_k, k)
-        k5_mod(ws_ds, Q, K, dK_per_head, dQ, cu_seqlens_q, cu_seqlens_k, k)
+        # handles data deps (ws_ds_fp16 + ws_ds_delta k5c->k5/k5b, dK_per_head
+        # atomic_add k5->k5b). Sync after k5b (C->V to next iter k1) kept.
+        k5c_mod(ws_ds, ws_ds_fp16, ws_ds_delta, cu_seqlens_q, cu_seqlens_k, k)
+        k5_mod(ws_ds_fp16, Q, K, dK_per_head, dQ, cu_seqlens_q, cu_seqlens_k, k)
         k5b_mod(ws_ds_delta, Q, dK_per_head, cu_seqlens_q, cu_seqlens_k, k)
         torch.npu.synchronize()
 
