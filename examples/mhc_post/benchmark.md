@@ -84,9 +84,9 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 
 | n | h | hc | h_blk | Kernel-only | E2E | PyTorch (CANN) | Kernel speedup | E2E speedup |
 |---|---|---|-------|-------------|-----|----------------|----------------|-------------|
-| 512 | 2560 | 4 | 2560 | 0.30 ms | 0.34 ms | 0.25 ms | 0.83x | 0.75x |
+| 512 | 2560 | 4 | 2560 | 0.31 ms | 0.32 ms | 0.25 ms | 0.82x | 0.79x |
 | 4096 | 2560 | 4 | 2560 | 0.42 ms | 0.42 ms | 2.23 ms | 5.34x | 5.34x |
-| 4096 | 7168 | 4 | 3584 | 0.84 ms | 0.84 ms | 6.08 ms | 7.25x | 7.25x |
+| 4096 | 7168 | 4 | 3584 | 0.84 ms | 0.84 ms | 6.10 ms | 7.27x | 7.27x |
 
 > Adaptive h_blk eliminates host-side padding for common shapes (h=2560, h=7168),
 > so E2E ≈ kernel-only. n=512 is slower than CANN due to small data volume (24MB)
@@ -122,14 +122,14 @@ stage=2 provides 4.1% speedup over serial. stage=3 not feasible (h_blk=3584 × 3
 
 | shape | Data volume | Kernel latency | Effective BW | HBM peak ratio |
 |-------|-------------|---------------|--------------|----------------|
-| n=4096, h=2560 | 189 MB | 0.42 ms | 453 GB/s | 38% |
-| n=4096, h=7168 | 529 MB | 0.84 ms | 631 GB/s | 53% |
+| n=4096, h=2560 | 189 MB | 0.42 ms | 451 GB/s | 38% |
+| n=4096, h=7168 | 529 MB | 0.84 ms | 629 GB/s | 53% |
 
 ### V6 msprof Reference (h_blk=2048, kernel 1.18 ms)
 
 > V6 hardware-level breakdown measured via msprof. V7 uses h_blk=3584 (kernel 0.84 ms);
 > the compute structure (AXPY + dual-V-core) is unchanged, so the Vector-compute bottleneck
-> applies to V7 as well. V7's higher bandwidth (631 vs 449 GB/s) comes from eliminating
+> applies to V7 as well. V7's higher bandwidth (629 vs 449 GB/s) comes from eliminating
 > padded data movement, not from a change in compute pattern.
 
 | Metric | Value |
@@ -150,7 +150,7 @@ stage=2 provides 4.1% speedup over serial. stage=3 not feasible (h_blk=3584 × 3
 
 Vector compute (1818%) > MTE total (1535%). The kernel is primarily Vector-compute
 constrained. T.Pipelined effectively overlaps compute with memory operations (37.6x
-parallelism). V7's adaptive h_blk improves bandwidth by 40% (449 -> 631 GB/s) by
+parallelism). V7's adaptive h_blk improves bandwidth by 40% (449 -> 629 GB/s) by
 eliminating padded data movement, but the compute bottleneck remains unchanged.
 
 ## 8. Accuracy
@@ -166,12 +166,12 @@ eliminating padded data movement, but the compute bottleneck remains unchanged.
 
 | Condition | Status |
 |-----------|--------|
-| Kernel > CANN | Yes (0.83x - 7.25x; small shape slower, large shape 5-7x) |
-| E2E > CANN (large shape) | Yes (5.34x - 7.25x) |
+| Kernel > CANN | Yes (0.82x - 7.27x; small shape slower, large shape 5-7x) |
+| E2E > CANN (large shape) | Yes (5.34x - 7.27x) |
 | Compute-bound confirmed | Yes (V6 msprof: Vector 1818% > MTE 1535%; V7 structure unchanged) |
 | Pipeline optimized | Yes (stage=2, +4.1% over serial; stage=3 UB-limited) |
 | h_blk optimized | Yes (adaptive: largest divisor of h, no-pad for common shapes) |
-| Effective BW high | Yes (631 GB/s, 53% of HBM peak) |
+| Effective BW high | Yes (629 GB/s, 53% of HBM peak) |
 
 Optimization stopped: adaptive h_blk eliminates padding waste for common shapes,
 E2E ≈ kernel-only. Further gains require 2D UB contiguous copy (blocked by compiler)
