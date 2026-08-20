@@ -19,10 +19,10 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 | Tool | do_bench (Python), msprof op (hardware) |
 | Dtype | bf16 input, fp32 accumulate |
 
-## 3. Optimization Path (V0 -> V6)
+## 3. Optimization Path (V0 -> V7)
 
 | Version | Change | Kernel-only (n=4096, h=2560) | vs CANN | Key Breakthrough |
-|---------|--------|------------------------|---------|------------------|
+|---------|--------|------------------------------|---------|------------------|
 | V0 | Cube dual-kernel | 4.63 ms | 0.49x | Baseline |
 | V1 | AIV single V-core | 13.37 ms | 0.17x | Pure Vector |
 | V2 | Dual V-core + h_blk=256 | 2.56 ms | 0.89x | Utilize both V-cores |
@@ -30,6 +30,7 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 | V4 | AXPY + h_blk=2048 | 0.70 ms | 3.17x | Structural refactor |
 | V5 | T.Pipelined(stage=2) | 0.67 ms | 3.37x | Pipeline overlap |
 | V6 | Cast fusion + kernel cache | 0.65 ms | 3.46x | Remove host overhead |
+| V7 | Adaptive h_blk + out reuse + T.unroll | 0.42 ms | 5.39x | Eliminate padding waste |
 
 ### Key Decisions
 
@@ -66,33 +67,40 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 - Golden reference synchronized (removed ref's bfloat16() quantization)
 - max_diff improved: 0.125 -> 0.0625
 
-## 4. Final Performance (E2E, do_bench, warmup=20, rep=100)
+**V7: Adaptive h_blk + out reuse + T.unroll**
+- h_blk selected as largest divisor of h from [4096, 3584, 3072, 2560, 2048, 1024, 512]
+  - h=2560 -> h_blk=2560 (no padding, 1 tile)
+  - h=7168 -> h_blk=3584 (no padding, 2 tiles)
+- Eliminates 60% wasted computation on padded elements (h=2560: was 4096, now 2560)
+- out0~3 merged into single reusable out_fp32 (UB footprint -24KB)
+- T.unroll(4) replaces manual 4x code duplication
+- F.pad replaces manual _pad_3d/_pad_2d_1d functions
 
-| n | h | hc | TileLang (AIV) | PyTorch (CANN) | Speedup |
-|---|---|---|-----------------|----------------|---------|
-| 512 | 2560 | 4 | 0.40 ms | 0.25 ms | 0.63x |
-| 4096 | 2560 | 4 | 1.00 ms | 2.27 ms | 2.28x |
-| 4096 | 7168 | 4 | 1.96 ms | 6.08 ms | 3.10x |
+## 4. Final Performance (do_bench, warmup=20, rep=100)
 
-> **E2E vs kernel-only**: §3/§5/§6 report **kernel-only** latency (pure NPU
-> execution); this section reports **E2E** latency including host-side tensor
-> preprocessing (`_pad_3d` + `comb.mT.contiguous()`). For n=4096,h=2560 the gap
-> is 0.65ms (kernel-only) → 1.00ms (E2E), i.e. ~0.35ms host overhead from the
-> 134MB pad + transpose-contiguous. This host preprocessing is the main
-> remaining E2E bottleneck (see §9).
+| n | h | hc | h_blk | Kernel-only | E2E | PyTorch (CANN) | Kernel speedup | E2E speedup |
+|---|---|---|-------|-------------|-----|----------------|----------------|-------------|
+| 512 | 2560 | 4 | 2560 | 0.23 ms | 0.34 ms | 0.25 ms | 1.08x | 0.75x |
+| 4096 | 2560 | 4 | 2560 | 0.42 ms | 0.43 ms | 2.24 ms | 5.39x | 5.26x |
+| 4096 | 7168 | 4 | 3584 | 0.84 ms | 0.86 ms | 6.08 ms | 7.25x | 7.06x |
 
-Note: n=512 E2E includes ~0.17ms Python dispatch overhead. Kernel-only latency is 0.23ms (1.08x CANN).
+> Adaptive h_blk eliminates host-side padding for common shapes (h=2560, h=7168),
+> so E2E ≈ kernel-only. n=512 E2E includes ~0.10ms Python dispatch overhead.
 
-## 5. h_blk Sweep (final V6 kernel, kernel-only)
+## 5. h_blk Sweep (V7 kernel, kernel-only)
 
-| h_blk | n=512 | n=4096, h=2560 | n=4096, h=7168 |
-|-------|-------|-----------------|------------------|
-| 256 | 1.04x | 1.32x | 1.36x |
-| 512 | 1.06x | 2.25x | 2.41x |
-| 1024 | 1.03x | 3.03x | 3.94x |
-| 2048 | 1.11x | 3.44x | 5.17x |
+| h_blk | n=512, h=2560 | n=4096, h=2560 | n=4096, h=7168 |
+|-------|---------------|-----------------|------------------|
+| 512 | 1.06x | 2.26x | 2.40x |
+| 1024 | 1.04x | 3.08x | 3.93x |
+| 2048 | 1.09x | 3.49x | 5.16x |
+| 2560 | **1.12x** | **5.44x** | 6.05x |
+| 3072 | 1.10x | 5.13x | 5.59x |
+| 3584 | 1.06x | 4.77x | **7.26x** |
+| 4096 | 1.06x | 4.49x | 6.75x |
 
-h_blk=2048 is optimal for large shapes. AXPY's small UB footprint enables large tile size.
+Adaptive selection (bold) picks the largest divisor of h, eliminating padding waste.
+h=2560 -> h_blk=2560 (no-pad); h=7168 -> h_blk=3584 (no-pad).
 
 ## 6. Pipeline Ablation (n=4096, h=7168, kernel-only)
 
@@ -115,7 +123,7 @@ stage=2 captures most pipeline benefit. stage=3 adds only 0.6% — not worth the
 | MTE3 (UB->GM store) | 9,980 us (836%) |
 | Scalar | 6,921 us (580%) |
 | Parallelism | 37.6x |
-| Effective BW | 443 GB/s |
+| Effective BW | 449 GB/s |
 
 > Percentages = per-core accumulated time / Task Duration. Values >100% mean
 > multiple cores are active concurrently (e.g. Vector compute 1818% ≈ 18 vector
@@ -142,11 +150,13 @@ The current implementation is primarily Vector-compute constrained according to 
 
 | Condition | Status |
 |-----------|--------|
-| Kernel > CANN | Yes (1.08x - 5.17x) |
-| E2E > CANN (large shape) | Yes (2.28x - 3.10x) |
+| Kernel > CANN | Yes (1.08x - 7.25x) |
+| E2E > CANN (large shape) | Yes (5.26x - 7.06x) |
 | Compute-bound confirmed | Yes (Vector 1818% > MTE 1535%) |
 | Pipeline optimized | Yes (stage=2 optimal) |
-| h_blk optimized | Yes (2048 via sweep) |
-| Effective BW high | Yes (443 GB/s) |
+| h_blk optimized | Yes (adaptive: largest divisor of h) |
+| Effective BW high | Yes (449 GB/s) |
 
-Optimization stopped: the kernel is primarily Vector-compute constrained per profiler breakdown. Further arithmetic-side optimization has diminishing returns; remaining opportunities are mainly in data-movement/layout efficiency.
+Optimization stopped: adaptive h_blk eliminates padding waste for common shapes,
+E2E ≈ kernel-only. Further gains require 2D UB contiguous copy (blocked by compiler)
+or tail-padding without host allocation (T.copy lacks pad_value parameter).

@@ -8,14 +8,11 @@ Architecture (pure Vector, no Cube):
   Single AIV kernel with dual-V-core partitioning.
   - hc=4 specialized (hard constraint, assert enforced)
   - AXPY linear combination for small matrix multiply (comb^T @ residual)
-  - h_blk=2048, h padded to multiple of 2048 via F.pad
+  - adaptive h_blk (largest candidate divisor of h), F.pad only when needed
   - FP32 inputs for post/comb used directly (no BF16 quantization)
+  - out_fp32 reuse across the 4 output rows (smaller UB footprint)
 
-Performance (n=4096, h=7168, hc=4):
-  Kernel-only:  1.18 ms
-  TileLang E2E: 1.96 ms
-  PyTorch CANN: 6.08 ms
-  E2E speedup:  3.10x
+Performance: see examples/mhc_post/benchmark.md (needs re-measurement after adaptive h_blk).
 """
 
 import tilelang
@@ -31,6 +28,16 @@ pass_configs = {
 
 H_BLK = 2048
 HC = 4
+
+_H_BLK_CANDIDATES = [4096, 3584, 3072, 2560, 2048, 1024, 512]
+
+
+def _select_h_blk(h):
+    """Select h_blk that minimizes padding waste and tile count."""
+    for blk in _H_BLK_CANDIDATES:
+        if h % blk == 0:
+            return blk
+    return H_BLK
 
 
 def calc_pad_h(h, h_blk=H_BLK):
@@ -80,10 +87,7 @@ def mhc_post_kernel(pad_h, h_blk=H_BLK, dtype="bfloat16", accum_dtype="float"):
                     res3_fp32 = T.alloc_ub(h_blk, accum_dtype)
                     x_ub = T.alloc_ub(h_blk, dtype)
                     x_fp32 = T.alloc_ub(h_blk, accum_dtype)
-                    out0 = T.alloc_ub(h_blk, accum_dtype)
-                    out1 = T.alloc_ub(h_blk, accum_dtype)
-                    out2 = T.alloc_ub(h_blk, accum_dtype)
-                    out3 = T.alloc_ub(h_blk, accum_dtype)
+                    out_fp32 = T.alloc_ub(h_blk, accum_dtype)
                     out_bf16 = T.alloc_ub(h_blk, dtype)
 
                     for i_h in T.Pipelined(h_num, num_stages=2):
@@ -99,38 +103,30 @@ def mhc_post_kernel(pad_h, h_blk=H_BLK, dtype="bfloat16", accum_dtype="float"):
                         T.copy(x[bid, i_h * h_blk], x_ub)
                         T.tile.cast(x_fp32, x_ub, "CAST_NONE", h_blk)
 
-                        T.tile.mul(out0, x_fp32, post_fp32[0])
-                        T.tile.axpy(out0, res0_fp32, comb0_fp32[0])
-                        T.tile.axpy(out0, res1_fp32, comb0_fp32[1])
-                        T.tile.axpy(out0, res2_fp32, comb0_fp32[2])
-                        T.tile.axpy(out0, res3_fp32, comb0_fp32[3])
-
-                        T.tile.mul(out1, x_fp32, post_fp32[1])
-                        T.tile.axpy(out1, res0_fp32, comb1_fp32[0])
-                        T.tile.axpy(out1, res1_fp32, comb1_fp32[1])
-                        T.tile.axpy(out1, res2_fp32, comb1_fp32[2])
-                        T.tile.axpy(out1, res3_fp32, comb1_fp32[3])
-
-                        T.tile.mul(out2, x_fp32, post_fp32[2])
-                        T.tile.axpy(out2, res0_fp32, comb2_fp32[0])
-                        T.tile.axpy(out2, res1_fp32, comb2_fp32[1])
-                        T.tile.axpy(out2, res2_fp32, comb2_fp32[2])
-                        T.tile.axpy(out2, res3_fp32, comb2_fp32[3])
-
-                        T.tile.mul(out3, x_fp32, post_fp32[3])
-                        T.tile.axpy(out3, res0_fp32, comb3_fp32[0])
-                        T.tile.axpy(out3, res1_fp32, comb3_fp32[1])
-                        T.tile.axpy(out3, res2_fp32, comb3_fp32[2])
-                        T.tile.axpy(out3, res3_fp32, comb3_fp32[3])
-
-                        T.tile.cast(out_bf16, out0, "CAST_RINT", h_blk)
-                        T.copy(out_bf16, output[bid, 0, i_h * h_blk])
-                        T.tile.cast(out_bf16, out1, "CAST_RINT", h_blk)
-                        T.copy(out_bf16, output[bid, 1, i_h * h_blk])
-                        T.tile.cast(out_bf16, out2, "CAST_RINT", h_blk)
-                        T.copy(out_bf16, output[bid, 2, i_h * h_blk])
-                        T.tile.cast(out_bf16, out3, "CAST_RINT", h_blk)
-                        T.copy(out_bf16, output[bid, 3, i_h * h_blk])
+                        for out_idx in T.unroll(HC):
+                            T.tile.mul(out_fp32, x_fp32, post_fp32[out_idx])
+                            if out_idx == 0:
+                                T.tile.axpy(out_fp32, res0_fp32, comb0_fp32[0])
+                                T.tile.axpy(out_fp32, res1_fp32, comb0_fp32[1])
+                                T.tile.axpy(out_fp32, res2_fp32, comb0_fp32[2])
+                                T.tile.axpy(out_fp32, res3_fp32, comb0_fp32[3])
+                            elif out_idx == 1:
+                                T.tile.axpy(out_fp32, res0_fp32, comb1_fp32[0])
+                                T.tile.axpy(out_fp32, res1_fp32, comb1_fp32[1])
+                                T.tile.axpy(out_fp32, res2_fp32, comb1_fp32[2])
+                                T.tile.axpy(out_fp32, res3_fp32, comb1_fp32[3])
+                            elif out_idx == 2:
+                                T.tile.axpy(out_fp32, res0_fp32, comb2_fp32[0])
+                                T.tile.axpy(out_fp32, res1_fp32, comb2_fp32[1])
+                                T.tile.axpy(out_fp32, res2_fp32, comb2_fp32[2])
+                                T.tile.axpy(out_fp32, res3_fp32, comb2_fp32[3])
+                            else:
+                                T.tile.axpy(out_fp32, res0_fp32, comb3_fp32[0])
+                                T.tile.axpy(out_fp32, res1_fp32, comb3_fp32[1])
+                                T.tile.axpy(out_fp32, res2_fp32, comb3_fp32[2])
+                                T.tile.axpy(out_fp32, res3_fp32, comb3_fp32[3])
+                            T.tile.cast(out_bf16, out_fp32, "CAST_RINT", h_blk)
+                            T.copy(out_bf16, output[bid, out_idx, i_h * h_blk])
 
     return main
 
@@ -142,10 +138,11 @@ def mhc_post_kernel(pad_h, h_blk=H_BLK, dtype="bfloat16", accum_dtype="float"):
 _kernel_cache = {}
 
 
-def _get_kernel(pad_h):
-    if pad_h not in _kernel_cache:
-        _kernel_cache[pad_h] = mhc_post_kernel(pad_h)
-    return _kernel_cache[pad_h]
+def _get_kernel(pad_h, h_blk):
+    key = (pad_h, h_blk)
+    if key not in _kernel_cache:
+        _kernel_cache[key] = mhc_post_kernel(pad_h, h_blk=h_blk)
+    return _kernel_cache[key]
 
 
 def mhc_post(x, residual, post_layer_mix, comb_res_mix):
@@ -164,8 +161,11 @@ def mhc_post(x, residual, post_layer_mix, comb_res_mix):
     """
     h = x.shape[1]
     hc = residual.shape[1]
-    assert hc == 4 and post_layer_mix.shape[1] == 4 and comb_res_mix.shape[1] == 4
-    pad_h = calc_pad_h(h)
+    assert hc == 4, f"This kernel requires hc=4, got residual hc={hc}"
+    assert post_layer_mix.shape[1] == 4, f"post_layer_mix requires hc=4, got {post_layer_mix.shape[1]}"
+    assert comb_res_mix.shape[1] == 4 and comb_res_mix.shape[2] == 4, f"comb_res_mix requires [hc, hc]=[4, 4], got {comb_res_mix.shape[1:]}"
+    h_blk = _select_h_blk(h)
+    pad_h = calc_pad_h(h, h_blk)
 
     post_sq = post_layer_mix.squeeze(-1)
     comb_t = comb_res_mix.mT.contiguous()
@@ -174,7 +174,7 @@ def mhc_post(x, residual, post_layer_mix, comb_res_mix):
         x = F.pad(x, (0, pad_h - h))
         residual = F.pad(residual, (0, pad_h - h))
 
-    kernel = _get_kernel(pad_h)
+    kernel = _get_kernel(pad_h, h_blk)
     output = kernel(x, post_sq, comb_t, residual)
 
     if pad_h != h:
@@ -191,7 +191,8 @@ def mhc_post_ref(x, residual, post_layer_mix, comb_res_mix):
     """PyTorch golden, FP32 path (same as kernel, no BF16 quantization)."""
     h = x.shape[1]
     hc = residual.shape[1]
-    pad_h = calc_pad_h(h)
+    h_blk = _select_h_blk(h)
+    pad_h = calc_pad_h(h, h_blk)
 
     comb_t = comb_res_mix.mT.contiguous()
     residual_padded = F.pad(residual, (0, pad_h - h))
