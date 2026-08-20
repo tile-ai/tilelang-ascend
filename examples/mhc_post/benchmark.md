@@ -96,15 +96,16 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 
 | h_blk | n=512, h=2560 | n=4096, h=2560 | n=4096, h=7168 |
 |-------|---------------|-----------------|------------------|
-| 512 | 1.06x | 2.26x | 2.40x |
-| 1024 | 1.04x | 3.08x | 3.93x |
-| 2048 | 1.09x | 3.49x | 5.16x |
-| 2560 | **1.12x** | **5.44x** | 6.05x |
-| 3072 | 1.10x | 5.13x | 5.59x |
-| 3584 | 1.06x | 4.77x | **7.26x** |
+| 512 | 0.84x | 2.26x | 2.40x |
+| 1024 | 0.81x | 3.08x | 3.93x |
+| 2048 | 0.84x | 3.49x | 5.16x |
+| 2560 | 0.75x | 5.44x | 6.05x |
+| 3072 | 0.79x | 5.13x | 5.59x |
+| 3584 | 0.87x | 4.77x | **7.26x** |
 
-Adaptive selection (bold) picks the largest divisor of h from candidates [3584, 3072, 2560, 2048, 1024, 512].
-h=2560 -> h_blk=2560 (no-pad); h=7168 -> h_blk=3584 (no-pad).
+Adaptive selection picks the largest divisor of h from candidates [3584, 3072, 2560, 2048, 1024, 512].
+h=2560 -> h_blk=2560 (no-pad); h=7168 -> h_blk=3584 (no-pad). n=512 is slower than CANN
+across all h_blk (small data volume, ~24MB, does not saturate dual-V-core parallelism).
 
 ## 6. Pipeline Ablation (n=4096, h=7168, h_blk=3584, kernel-only)
 
@@ -140,7 +141,7 @@ stage=2 provides 4.1% speedup over serial. stage=3 not feasible (h_blk=3584 × 3
 | MTE3 (UB->GM store) | 9,980 us (836%) |
 | Scalar | 6,921 us (580%) |
 | Parallelism | 37.6x |
-| Effective BW | 449 GB/s (V6) / 631 GB/s (V7) |
+| Effective BW | 449 GB/s |
 
 > Percentages = per-core accumulated time / Task Duration. Values >100% mean
 > multiple cores are active concurrently.
