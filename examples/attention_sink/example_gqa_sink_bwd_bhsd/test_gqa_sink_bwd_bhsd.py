@@ -737,7 +737,6 @@ def test_gqa_sink_bwd_bhsd_l2():
         K = torch.randn(B, H_kv, N, D, dtype=torch.float16, device="npu")
         V = torch.randn_like(K)
         sinks = torch.randn(H, dtype=torch.float16, device="npu")
-        dO = torch.randn_like(Q)
         fwd_mod = flashattn_fwd(B, H, N, D, groups, None, 64, 64)
         O_npu, lse_npu = fwd_mod(Q, K, V, sinks)
         torch.npu.synchronize()
@@ -747,7 +746,7 @@ def test_gqa_sink_bwd_bhsd_l2():
     # N=192 is now valid → use _run_valid instead of _run_exception
     try:
         case_shape_n192()
-        print(f"[BOUNDARY_PASS] l2 l2_shape_n192: N=192 now valid after merge (preprocess blk=32, 192%32==0)")
+        print("[BOUNDARY_PASS] l2 l2_shape_n192: N=192 now valid after merge (preprocess blk=32, 192%32==0)")
     except Exception as e:
         print(f"[BOUNDARY_WARN] l2 l2_shape_n192: unexpectedly rejected ({type(e).__name__}: {e})")
 
