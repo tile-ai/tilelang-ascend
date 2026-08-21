@@ -1995,22 +1995,22 @@ void CodeGenTileLangAscend::EmitSelectedRawExpExperiment(
   // slice is a 64-col chunk.
   DataType dtype = GetAccessPtrDtype(args[1].as<CallNode>());
   std::string type_str = getType(dtype);
-  int elems_per_block = 256 / dtype.bits();
+  int64_t elems_per_block = 256 / dtype.bits();
 
   auto *dst_access = args[1].as<CallNode>();
   Var dst_var = Downcast<Var>(dst_access->args[1]);
-  int cols = 0;
+  int64_t cols = 0;
   if (buffer_shapes_.count(dst_var)) {
     auto shape = buffer_shapes_.at(dst_var);
     if (shape.size() >= 1 && shape[shape.size() - 1].as<IntImmNode>()) {
-      cols = static_cast<int>(shape[shape.size() - 1].as<IntImmNode>()->value);
+      cols = shape[shape.size() - 1].as<IntImmNode>()->value;
     }
   }
-  int rep_stride = cols / elems_per_block;
-  int repeat_time = 0;
+  int64_t rep_stride = cols / elems_per_block;
+  int64_t repeat_time = 0;
   if (auto *extent_imm = dst_access->args[3].as<IntImmNode>()) {
-    int extent = static_cast<int>(extent_imm->value);
-    int elems_per_repeat = 8 * elems_per_block;
+    int64_t extent = extent_imm->value;
+    int64_t elems_per_repeat = 8 * elems_per_block;
     ICHECK(extent > 0 && extent % elems_per_repeat == 0)
         << "Selected exp-experiment terminal: extent=" << extent
         << " must be a positive multiple of " << elems_per_repeat;
@@ -2024,6 +2024,12 @@ void CodeGenTileLangAscend::EmitSelectedRawExpExperiment(
   ICHECK(cols % elems_per_block == 0)
       << "Selected exp-experiment terminal: physical columns " << cols
       << " must be a multiple of elems_per_block " << elems_per_block;
+  ICHECK_LE(repeat_time, 255)
+      << "Selected exp-experiment terminal: repeat_time=" << repeat_time
+      << " must fit uint8_t";
+  ICHECK(rep_stride > 0 && rep_stride <= 255)
+      << "Selected exp-experiment terminal: repeat stride=" << rep_stride
+      << " must fit uint8_t";
 
   uint64_t mask1 = (dtype.bits() == 16) ? 0xFFFFFFFFFFFFFFFF : 0;
 

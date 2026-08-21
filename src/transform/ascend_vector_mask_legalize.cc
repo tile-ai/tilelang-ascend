@@ -81,6 +81,24 @@ PrimExpr FullPayload() {
 
 PrimExpr ZeroPayload() { return make_zero(DataType::UInt(64)); }
 
+std::string ExternCallee(const Call &call) {
+  if (!call->op.same_as(tir::builtin::call_extern()) || call->args.empty()) {
+    return "";
+  }
+  const auto *name = call->args[0].as<StringImmNode>();
+  if (name == nullptr) {
+    return "";
+  }
+  std::string value = name->value;
+  size_t templated = value.find('<');
+  value = value.substr(0, templated);
+  constexpr const char *kTileLangAscendPrefix = "tl::ascend::";
+  if (value.rfind(kTileLangAscendPrefix, 0) == 0) {
+    value = value.substr(std::char_traits<char>::length(kTileLangAscendPrefix));
+  }
+  return value;
+}
+
 bool UsesHighWord(DataType dtype) {
   return !dtype.is_void() && dtype.bits() < 32;
 }
@@ -308,22 +326,20 @@ bool CallMayAffectVectorMask(const Call &call) {
     return selected.variant().helper_contract != ContractRecipe::kNeutral;
   }
   if (call->op.same_as(tir::builtin::call_extern())) {
-    const auto *name =
-        call->args.empty() ? nullptr : call->args[0].as<StringImmNode>();
-    if (name == nullptr) {
+    std::string callee = ExternCallee(call);
+    if (callee.empty()) {
       return true;
     }
-    std::string value = name->value;
     // GM-to-UB copies may fill a runtime tail with AscendC::Duplicate.  The
     // full-tile path is MTE2-only, while the padding path leaves NORMAL/full
     // mask state, so the call is not unconditionally mask-neutral.
-    if (value.find("copy_gm_to_ub") != std::string::npos) {
+    if (callee == "copy_gm_to_ub") {
       return true;
     }
-    if (value.find("copy_") != std::string::npos ||
-        value.find("atomic_add_") != std::string::npos ||
-        value.find("mma") != std::string::npos) {
-      return false;
+    const auto &operation_config = GetOperationConfig();
+    auto configured = operation_config.find(callee);
+    if (configured != operation_config.end()) {
+      return configured->second.default_pipeline == "PIPE_V";
     }
     // Unknown external helpers are opaque. They may contain count-form
     // Vector APIs that rewrite mode/payload, so preserve facts only for the
@@ -378,6 +394,14 @@ private:
       return StmtExprMutator::VisitStmt_(op);
     }
     Call call = GetRef<Call>(node);
+    for (const PrimExpr &arg : call->args) {
+      MaskEffectDetector detector;
+      detector(arg);
+      ICHECK(!detector.found)
+          << "Mask-affecting calls must be top-level Evaluate statements; "
+             "nested call found in "
+          << call;
+    }
     ICHECK(!IsVectorMaskSetter(call))
         << "Vector-mask setter appeared before legalization: " << call;
     if (IsSelectedVectorTerminal(call)) {
@@ -436,6 +460,14 @@ private:
     MaskFacts else_out = facts_;
     facts_ = Meet(then_out, else_out);
     return IfThenElse(condition, then_case, else_case, op->span);
+  }
+
+  PrimExpr VisitExpr_(const CallNode *op) final {
+    Call call = GetRef<Call>(op);
+    ICHECK(vector_scope_depth_ == 0 || !CallMayAffectVectorMask(call))
+        << "Mask-affecting calls must be top-level Evaluate statements: "
+        << call;
+    return StmtExprMutator::VisitExpr_(op);
   }
 
   template <typename LoopNode> Stmt VisitEffectfulLoop(const LoopNode *op) {
@@ -500,15 +532,7 @@ private:
   }
 
   bool IsGmToUbCopy(const Call &call) const {
-    if (!call->op.same_as(tir::builtin::call_extern()) || call->args.empty()) {
-      return false;
-    }
-    const auto *name = call->args[0].as<StringImmNode>();
-    if (name == nullptr) {
-      return false;
-    }
-    std::string value = name->value;
-    return value.find("copy_gm_to_ub") != std::string::npos;
+    return ExternCallee(call) == "copy_gm_to_ub";
   }
 
   bool ModeEqual(const std::optional<AscendMaskMode> &known,

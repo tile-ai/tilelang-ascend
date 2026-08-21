@@ -47,6 +47,34 @@ bool IsAccessPtr(const PrimExpr &expr) {
   return call && call->op.same_as(tir::builtin::tvm_access_ptr());
 }
 
+void ValidateCounterConstant(const PrimExpr &value, const std::string &name) {
+  arith::Analyzer analyzer;
+  PrimExpr simplified = analyzer.Simplify(value);
+  const auto *constant = simplified.as<IntImmNode>();
+  if (constant == nullptr) {
+    return;
+  }
+  ICHECK_GE(constant->value, 0)
+      << name << " must not be a negative constant, got " << simplified;
+  ICHECK_LE(static_cast<uint64_t>(constant->value),
+            static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()))
+      << name << " must fit the dav-c220 32-bit COUNTER payload, got "
+      << simplified;
+}
+
+void ValidateRepeatConstant(const PrimExpr &value, const std::string &name) {
+  arith::Analyzer analyzer;
+  PrimExpr simplified = analyzer.Simplify(value);
+  const auto *constant = simplified.as<IntImmNode>();
+  ICHECK(constant != nullptr)
+      << name << " must be a compile-time constant in [0, 255], got "
+      << simplified;
+  ICHECK_GE(constant->value, 0)
+      << name << " must be in [0, 255], got " << simplified;
+  ICHECK_LE(constant->value, 255)
+      << name << " must be in [0, 255], got " << simplified;
+}
+
 bool IsCopyUbToUb(const CallNode *call) {
   if (!call->op.same_as(builtin::call_extern()) || call->args.empty()) {
     return false;
@@ -424,6 +452,17 @@ void ValidateSelectedDType(const ResolvedSemanticCall &resolved,
         << "Unsupported AscendC Gather dtype " << dtype
         << "; dav-c220 Gather supports only 16-bit and 32-bit element "
            "families.";
+    arith::Analyzer analyzer;
+    PrimExpr count = analyzer.Simplify(args.back());
+    const auto *constant = count.as<IntImmNode>();
+    int64_t lanes_per_repeat = dtype.bits() == 16 ? 128 : 64;
+    int64_t max_count = 256 * lanes_per_repeat - 1;
+    ICHECK(constant != nullptr && constant->value >= 0 &&
+           constant->value <= max_count)
+        << "AscendC Gather count must be a compile-time constant in [0, "
+        << max_count << "] for " << dtype
+        << "; dav-c220 narrows count / lanes to uint8_t and would silently "
+           "truncate a larger or unbounded count.";
   }
   if (resolved.variant->operands == OperandRecipe::kAxpy) {
     ICHECK_GE(args.size(), 2U);
@@ -473,6 +512,8 @@ ResolveSemanticCall(const Call &call,
         << semantic.base->name
         << "; compiler-managed mask selection has no fallback codegen.";
     PrimExpr length = analyzer->Simplify(call->args.back());
+    ValidateCounterConstant(length,
+                            std::string(semantic.base->name) + " length");
     const auto *constant = length.as<IntImmNode>();
     int64_t repeat = 1;
     int64_t lanes = 0;
@@ -536,8 +577,15 @@ ResolveSemanticCall(const Call &call,
             : 2;
     PrimExpr mask = analyzer->Simplify(call->args[mask_index]);
     const auto *constant = mask.as<IntImmNode>();
-    ICHECK(constant && constant->value >= 0 && constant->value <= 128)
-        << "NORMAL mask length must be a constant in [0, 128]";
+    DataType dtype = VectorDType(call->args);
+    ICHECK(!dtype.is_void());
+    int64_t max_lanes = 256 / dtype.bytes();
+    ICHECK(constant && constant->value >= 0 && constant->value <= max_lanes)
+        << "NORMAL mask length for " << dtype << " must be a constant in [0, "
+        << max_lanes << "]";
+    size_t repeat_index = mask_index == 3 ? 2 : 3;
+    ValidateRepeatConstant(call->args[repeat_index],
+                           std::string(semantic.base->name) + " repeat");
     variant = FindVariant(semantic, SelectorRecipe::kNormalMaskArg);
     auto [lo, hi] = NormalMaskBits(constant->value);
     payload = {lo, hi};
@@ -577,6 +625,11 @@ ResolveSemanticCall(const Call &call,
   ICHECK(variant != nullptr) << "No selector recipe for " << call;
   if (variant->payload == PayloadLayout::kCount && payload.empty()) {
     payload = {analyzer->Simplify(call->args.back())};
+  }
+  if (variant->payload == PayloadLayout::kCount) {
+    ICHECK_EQ(payload.size(), 1U);
+    ValidateCounterConstant(payload[0],
+                            std::string(semantic.base->name) + " count");
   }
   return ResolvedSemanticCall{&semantic, variant, std::move(payload)};
 }
