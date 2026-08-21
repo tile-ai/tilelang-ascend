@@ -72,11 +72,30 @@ vector cores split the *rows* of the C x C output between them; both need every
 key of the chunk, so both load the whole resident tile.  Nothing is contracted
 across cores, so there is no cross-core communication and no workspace.
 
+Ragged tail
+-----------
+``SEQ % C != 0`` is supported.  Two things are needed and they differ in kind:
+
+  * The two resident [C, K] tiles are loaded by a clamped copy, so their rows
+    R..C-1 hold stale UB.  Those rows are not inert -- ``gfull_ub`` is fed to
+    ``exp()``, and the mask multiply that should discard the result computes
+    0 * inf = NaN instead, landing in the reduction of a *valid* row.  Both
+    tiles are therefore zeroed first on the ragged chunk.
+  * The per-row store is a SINGLE-ROW copy, region [1, 1, 1, C].
+    ``find_active_dim_indices`` keeps only the last two *active* dims, so the
+    token axis is folded into the base address and never bounds-checked.
+    Clamping the row index would be worse than useless -- it would write every
+    pad row on top of ``L[SEQ-1]``.  The fix is to shorten the loop's trip count
+    so no pad row is produced at all.  The two vector cores may then run
+    different counts, which is safe here specifically because this kernel has no
+    cross-core flag to deadlock on.
+
+The mask-before-exp discipline that exists for the numerical-range reason above
+also makes every pad *column* exactly 0 for free: a pad column j satisfies
+j >= R > i for every valid row i, so the causal mask already kills it.
+
 Known limitations
 -----------------
-  * ``SEQ % C == 0`` only.  Tail blocks are a later pass (fixed length first,
-    varlen later); ``kda_chunk_ref.kda_chunk_ref`` already pads for them on host,
-    but this kernel does not accept a ragged chunk.
   * Runs entirely on the vector unit, cube idle -- the slowest stage by a wide
     margin.  The follow-up is the anchored BC=16 decomposition: anchor each row
     sub-block at its first row, hand the off-diagonal strips to ``T.gemm_v0``
@@ -119,11 +138,14 @@ def _ub_bytes(C, K, elem):
 
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def kkt_ker(B, SEQ, H, HV, K, C, dtype="float16", accum_dtype="float"):
-    assert SEQ % C == 0, "first pass supports whole chunks only"
     assert HV % H == 0, "HV must be divisible by H (GVA)"
     assert C % 2 == 0, "two vector cores split the C rows"
 
-    chunk_num = SEQ // C
+    # ceil, not floor: the last chunk may be ragged.  SEQ is a Python int at
+    # trace time, so this stays a compile-time constant.
+    chunk_num = -(-SEQ // C)
+    R = SEQ % C  # 0 when aligned; else the valid row count of the last chunk
+    RAGGED = R != 0
     VEC_NUM = 2
     CV = C // VEC_NUM
     GRP = HV // H  # GRP value heads share one qk head
@@ -178,12 +200,41 @@ def kkt_ker(B, SEQ, H, HV, K, C, dtype="float16", accum_dtype="float"):
                 # base + tj, which carry no stride at all -- C launches per tile
                 # instead of one, but nothing left for the region inference to
                 # get wrong.
+                # Python `and` short-circuits: with RAGGED False the whole block is
+                # dropped at trace time, so the aligned path emits identical IR.
+                # Both loads below are clamped to the R valid rows on the
+                # last chunk, leaving rows R..C-1 as whatever UB held.  They
+                # are NOT harmless here: gfull_ub feeds
+                #     prod = grow[d] - gfull[j,d]   ->   exp(prod)
+                # so a garbage gate row becomes +inf, and the mask multiply
+                # that is supposed to discard it computes 0 * inf = NaN,
+                # which then lands in the reduction for a *valid* row.
+                # Zero is also the right value semantically: g = 0 is
+                # alpha = 1, and k = 0 contributes nothing to k_i . k_j.
+                if RAGGED and bx == chunk_num - 1:
+                    T.tile.fill(kfull_half, 0)
+                    T.tile.fill(gfull_ub, 0.0)
+
                 T.copy(Kt[bz, base : base + C, hq, 0:K], kfull_half)
                 T.copy(G[bz, base : base + C, hv, 0:K], gfull_ub)
                 T.copy(kfull_half, kfull_ub)  # cast dtype -> fp32
 
-                for r in T.serial(CV):
-                    ri = vid * CV + r  # this core's output row
+                # How many of this core's CV rows actually exist.  The store at
+                # the bottom of the loop is a SINGLE-ROW copy, region extents
+                # [1, 1, 1, C]; find_active_dim_indices keeps only the last two
+                # *active* dims (HV and C), so the token axis is folded into the
+                # base address and is never bounds-checked.  Clamping the index
+                # would therefore not protect anything -- it would write every
+                # pad row on top of L[SEQ-1] and destroy a valid one.  Shorten
+                # the trip count instead.  Safe to let the two cores run
+                # different counts because this kernel has no cross-core flag to
+                # deadlock on (verified: zero set_cross_flag / wait_cross_flag).
+                valid = T.if_then_else(SEQ - base < C, SEQ - base, C)
+                left = T.if_then_else(valid > vid * CV, valid - vid * CV, 0)
+                my_rows = T.if_then_else(left < CV, left, CV)
+
+                for r in T.serial(my_rows):
+                    ri = vid * CV + r  # this core's output row, always < R
 
                     # Row ri is re-read from global memory rather than sliced
                     # out of the resident tile: a UB->UB copy at a runtime row
@@ -256,7 +307,6 @@ def chunk_scaled_dot_kkt(k, G, beta, C=64):
     HV = G.shape[2]
     assert G.shape == (B, SEQ, HV, K), f"G must be [B, SEQ, HV, K], got {tuple(G.shape)}"
     assert HV % H == 0, "HV must be divisible by H (GVA)"
-    assert SEQ % C == 0, f"this kernel needs SEQ % C == 0, got SEQ={SEQ} C={C}"
     assert C % 2 == 0 and C % 16 == 0, "C must be even and 32B-aligned in dtype"
     assert K % 16 == 0, "K must be 32B-aligned in dtype"
 
@@ -340,6 +390,12 @@ def main():
     ok &= _case(1, 64, 1, 1, 64, 64, 64, "normal", torch.float16)
     for gate in ("keep", "extreme"):
         ok &= _case(2, 128, 2, 2, 64, 64, 64, gate, torch.float16)
+
+    print("== ragged tail (SEQ % C != 0) ==")
+    ok &= _case(2, 70, 1, 2, 64, 64, 64, "normal", torch.float16)  # 70 = 64 + 6, tail rows in core 0 only
+    ok &= _case(1, 33, 1, 1, 64, 64, 32, "forget", torch.float16)  # 33 = 32 + 1
+    ok &= _case(1, 65, 1, 1, 128, 128, 64, "forget", torch.float16)  # one valid tail row; core 1 gets zero rows
+    ok &= _case(2, 100, 2, 4, 64, 64, 32, "extreme", torch.float16)  # GVA + extreme gate on the tail
 
     print("== K3 spec: K = V = 128 ==")
     ok &= _case(1, 256, 2, 2, 128, 128, 64, "forget", torch.float16)

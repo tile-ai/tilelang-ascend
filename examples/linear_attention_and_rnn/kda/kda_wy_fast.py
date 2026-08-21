@@ -40,11 +40,29 @@ the right answer: that token's contribution really has decayed away.  Nothing
 here computes a ratio of two exponentials, and no mask is applied after an
 exp -- both traps live in stage 2 (kkt), not here.
 
-Known limitation
-----------------
-This first pass requires ``SEQ % C == 0``.  Tail blocks are deliberately left
-to the next round (task spec: fixed length first, varlen later), so the host
-wrapper asserts it rather than silently padding.
+Ragged tail
+-----------
+``SEQ % C != 0`` is supported.  The grid uses ``ceildiv(SEQ, C)``; every GM copy
+on the token axis -- the four vector-side loads, the A load into L1 and the two
+L0C stores of W and U -- is clamped to the R valid rows by ``compute_valid_extent``
+(src/op/ascend.cc:410), and ``copy_gm_to_l1`` additionally zeroes the tail rows
+of the A tile.  So A's pad rows are exact zeros, the pad rows of W and U come out
+zero, and the clamped fixpipe never writes them.
+
+Two things the framework does not do for us, both handled in the V scope:
+
+  * The UB tail rows are stale, and ``g_ub`` is exponentiated and published to
+    ``ws_k``, which the cube reads as a FULL [C, BK] operand -- a garbage row
+    becomes inf and NaN-poisons every valid row of W.  The four tiles are
+    pre-filled with zero before the clamped loads overwrite the valid part.
+  * When a core's whole CV window starts past SEQ the clamp gives validRow == 0,
+    i.e. ``DataCopyExtParams`` with blockCount 0.  That is outside the documented
+    [1, 4095] range and is not exercised anywhere in this repo, so the DMA is
+    skipped instead of being issued with a zero count.
+
+★ The skip covers the DMAs ONLY.  ``set_cross_flag`` / ``wait_cross_flag`` are
+never put inside a branch: if one vector core skipped its flag, the cube would
+wait on it forever.
 """
 
 import os
@@ -68,7 +86,12 @@ BETA_PAD = 8  # beta's padded last dim: 8 fp32 = 32B, the minimum UB alignment
 
 @tilelang.jit(out_idx=[-2, -1], workspace_idx=[-4, -3], pass_configs=pass_configs)
 def wy_fast_ker(B, SEQ, H, HV, K, V, C, BK, BV, dtype="float16", accum_dtype="float"):
-    chunk_num = SEQ // C
+    # ceil, not floor: the last chunk may be ragged.  SEQ is a Python int at
+    # trace time, so this stays a compile-time constant, and grid / ws_k / ws_v
+    # first dims all follow from it.
+    chunk_num = -(-SEQ // C)
+    R = SEQ % C  # 0 when aligned; else the valid row count of the last chunk
+    RAGGED = R != 0
     bk_num = K // BK
     bv_num = V // BV
     GRP = HV // H  # value heads per qk head (GVA)
@@ -127,10 +150,37 @@ def wy_fast_ker(B, SEQ, H, HV, K, V, C, BK, BV, dtype="float16", accum_dtype="fl
                 # slice the region extents are [1, CV, 1, K], from which the
                 # backend derives row pitch = HV*K (it folds every trailing
                 # unit-extent axis into the stride) and one 2-D DMA of CV rows.
-                T.copy(Kt[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hq, :], k_half)
-                T.copy(Vt[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hv, :], v_half)
-                T.copy(G[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hv, :], g_ub)
-                T.copy(Beta[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hv, :], beta8_ub)
+                # Ragged tail, and there are two distinct hazards here.
+                #
+                # (1) g_ub goes through T.exp below and the result is published
+                #     to ws_k, which the cube then reads as a FULL [C, BK]
+                #     operand.  A stale UB tail row becomes exp(garbage) = inf
+                #     and NaN-poisons every valid row of W.  So pre-fill: the
+                #     clamped DMA overwrites only the rows that exist, and the
+                #     rest stay the zeros we put there.  Zero is also correct
+                #     semantically -- g = 0 is alpha = 1, and beta = 0 writes
+                #     nothing through the delta rule.
+                #
+                # (2) when this core's whole CV window starts past SEQ the
+                #     clamp yields validRow == 0, i.e. DataCopyExtParams with
+                #     blockCount 0.  That is outside the documented [1, 4095]
+                #     and is not exercised anywhere in this repo, so the DMA is
+                #     skipped rather than issued with a zero count.
+                #
+                # ONLY the DMAs are skipped.  The cross-core flag below is NOT
+                # inside any branch: one core failing to set it deadlocks the
+                # cube on wait_cross_flag(1) forever.
+                if RAGGED and bx == chunk_num - 1:
+                    T.tile.fill(k_half, 0)
+                    T.tile.fill(v_half, 0)
+                    T.tile.fill(g_ub, 0.0)
+                    T.tile.fill(beta8_ub, 0.0)
+
+                if (not RAGGED) or t0 + vid * CV < SEQ:
+                    T.copy(Kt[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hq, :], k_half)
+                    T.copy(Vt[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hv, :], v_half)
+                    T.copy(G[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hv, :], g_ub)
+                    T.copy(Beta[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hv, :], beta8_ub)
                 T.copy(k_half, kg_ub)  # dtype -> fp32
                 T.copy(v_half, v_ub)
 
@@ -207,7 +257,6 @@ def wy_fast(k, v, beta, G, A, C, BK=None, BV=None):
     B, SEQ, H, K = k.shape
     HV, V = v.shape[2], v.shape[-1]
     assert HV % H == 0, "HV must be divisible by H (GVA)"
-    assert SEQ % C == 0, f"first pass needs SEQ % C == 0, got SEQ={SEQ} C={C}"
     assert C % (VEC_NUM * 16) == 0, f"C must be a multiple of {VEC_NUM * 16}, got {C}"
     assert G.shape == (B, SEQ, HV, K) and G.dtype == torch.float, "G must be fp32 [B, SEQ, HV, K]"
     assert A.shape == (B, SEQ, HV, C) and A.dtype == k.dtype, "A must be dtype [B, SEQ, HV, C]"
@@ -287,6 +336,13 @@ def main():
         (1, 128, 2, 4, 128, 128, 32, "normal"),  # K3 head dim + GVA
     ]:
         ok &= _case(B, SEQ, H, HV, K, V, C, gate, torch.float16)
+
+    print("== ragged tail (SEQ % C != 0) ==")
+    ok &= _case(2, 70, 1, 2, 64, 64, 64, "normal", torch.float16)  # R=6: core 0 partly valid, core 1 entirely empty
+    ok &= _case(1, 33, 1, 1, 64, 64, 32, "forget", torch.float16)  # R=1, core 1 gets validRow==0
+    ok &= _case(1, 65, 1, 1, 128, 128, 64, "forget", torch.float16)  # K3 dim, R=1
+    ok &= _case(2, 100, 2, 4, 64, 64, 32, "extreme", torch.float16)  # R=4, GVA, extreme gate
+    ok &= _case(1, 96, 1, 1, 64, 64, 64, "normal", torch.float16)  # R=32 == CV, exact core boundary
 
     print("== bf16 (dtype must be threaded through, not hardcoded) ==")
     for gate in ("normal", "forget"):

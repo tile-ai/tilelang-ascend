@@ -26,17 +26,32 @@ Note the kernels fold differently from the reference: kg is computed inside
 chunk_h and qg / Aqk inside chunk_o, rather than being materialised by wy_fast.
 That saves three GM round trips and is why wy_fast only emits W and U.
 
+Ragged tail
+-----------
+SEQ need not be a multiple of C.  Every stage runs a ceildiv(SEQ, C) grid and
+the last chunk simply moves fewer rows: compute_valid_extent (src/op/ascend.cc)
+clamps validRow on each GM transfer to SEQ - t0.  No tile shape changes, so
+every alignment constraint is untouched, and nothing is padded on the host --
+which is what the acceptance gate rules out.
+
+Three things the framework does not cover, handled per stage:
+  * single-row reads put the token axis on a unit-extent dim, which
+    find_active_dim_indices never bounds-checks (stages 2, 5, 6);
+  * UB tail rows reach exp() and then the cube as full-width operands, so they
+    are zero-filled first (stages 1-6);
+  * chunk_h must read the chunk decay at the last *valid* token, not at row
+    C - 1 -- the one genuine off-by-one of the change.
+
 Known limitations of this first pass
 ------------------------------------
-    * SEQ % C == 0 required.  Tail blocks and varlen / cu_seqlens are the next
-      round -- the task spec says fixed length first.
+    * varlen / cu_seqlens is not implemented.
     * No performance claim is made here; no msprof data has been collected.
 
 Zero-length sequences
 ---------------------
-SEQ == 0 is supported and is *not* covered by the SEQ % C == 0 rule above:
-0 % C == 0, so a zero-length input would pass every guard, launch six
-zero-block grids and return allocated-but-never-written memory.  Every host
+SEQ == 0 is supported, and it is worth calling out separately from the ragged
+tail above: ceildiv(0, C) is 0, so a zero-length input passes every guard and
+would launch six zero-block grids, returning allocated-but-never-written memory.  Every host
 wrapper therefore tests it explicitly and returns without touching the device.
 The contract is that no token was consumed, so all token-axis outputs are empty
 and the final state equals the initial state (zeros when none was supplied).
@@ -78,7 +93,6 @@ def kda_chunk_fwd(q, k, v, g, beta, C=64, BC=16, scale=None, initial_state=None,
     B, SEQ, H, K = q.shape
     HV = v.shape[2]
     assert HV % H == 0, "HV must be divisible by H (GVA)"
-    assert SEQ % C == 0, f"first pass needs SEQ % C == 0, got SEQ={SEQ} C={C}"
     if scale is None:
         scale = K**-0.5
 
@@ -98,9 +112,9 @@ def kda_chunk_fwd(q, k, v, g, beta, C=64, BC=16, scale=None, initial_state=None,
         )
 
     # A zero-length sequence is legal input: it is what a varlen batch with an
-    # empty entry produces, and FLA's fused_recurrent returns early on it.  It
-    # must be handled explicitly rather than left to the assert above, because
-    # 0 % C == 0 passes -- every one of the six kernels would then launch a
+    # empty entry produces, and FLA's fused_recurrent returns early on it.  The
+    # ceil grid does not save us here -- ceildiv(0, C) is 0, so every one of the
+    # six kernels would launch a
     # zero-block grid and the output would be allocated but never written, so
     # the caller would silently receive uninitialised device memory.  No token
     # is consumed, so the state passes through untouched: the final state IS
@@ -184,6 +198,14 @@ def test_vs_both_goldens():
     # is where an off-by-one in the cross-chunk carry would hide.
     ok &= _case(1, 64, 1, 1, 64, 64, 64, "normal", torch.float16, note="SEQ == C, one chunk")
     ok &= _case(2, 64, 2, 4, 64, 64, 64, "forget", torch.float16, note="SEQ == C + GVA")
+    print("  -- ragged tail (SEQ % C != 0) --")
+    ok &= _case(2, 70, 1, 2, 64, 64, 64, "normal", torch.float16, note="70 = 64 + 6")
+    ok &= _case(1, 33, 1, 1, 64, 64, 32, "forget", torch.float16, note="33 = 32 + 1, one valid tail row")
+    ok &= _case(1, 65, 1, 1, 128, 128, 64, "forget", torch.float16, note="K3 dim, one valid tail row")
+    ok &= _case(2, 100, 2, 4, 64, 64, 32, "extreme", torch.float16, note="GVA + extreme gate on the tail")
+    ok &= _case(1, 96, 1, 1, 64, 64, 64, "normal", torch.float16, note="R = 32, exact core boundary")
+    ok &= _case(2, 130, 2, 2, 64, 64, 64, "forget", torch.float16, with_state=True, note="tail + non-zero initial state")
+
     print("  -- gate extremes (the NaN traps) --")
     ok &= _case(1, 128, 1, 1, 64, 64, 64, "keep", torch.float16, note="alpha->1")
     ok &= _case(1, 128, 1, 2, 64, 64, 64, "extreme", torch.float16, note="state dies at once")

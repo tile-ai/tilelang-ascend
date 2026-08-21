@@ -75,10 +75,30 @@ alternating, so there is no cycle to deadlock on: V sets 0 then waits 1; C waits
 waits once, exactly as in gdn_chunk_o where the cube also consumes a [C, C] tile
 written half by each core.
 
+Ragged tail
+-----------
+``SEQ % C != 0`` is supported.  This stage has the most index sites of the six,
+but no new maths -- everything is either clamped for free or clamped by hand.
+
+  * The two chunk-resident [C, K] loads and the final ``O`` store are multi-row
+    on the token axis and are clamped by ``compute_valid_extent``.  Because the
+    ``O`` store is a clamped l0c2gm, ``O`` stays [B, SEQ, HV, V] and needs no
+    padded allocation.
+  * Four single-row reads (the two anchor gates, and the Q / G rows of the
+    diagonal patch) are NOT bounds-checked -- their region has the token axis on
+    a unit-extent dim -- so they are index-clamped to the last valid row by
+    ``tok()``.  Clamping is the right fix *here* and would be wrong in stage 2:
+    everything these rows produce lands in UB or in ``ws_*`` rows >= R and is
+    discarded by the clamped store, so nothing is ever written to GM at a
+    clamped index.
+  * Three BC-row block loads can start past ``SEQ`` entirely, which would clamp
+    ``validRow`` to 0.  They are zero-filled and then skipped rather than issued
+    with ``blockCount = 0``.
+
+The cross-core flags are never skipped -- only DMAs are.
+
 Known limitations of this first pass
 ------------------------------------
-  * ``SEQ % C == 0`` is required.  Tail blocks are handled by the reference but
-    not here (task spec: fixed length first, varlen later).
   * ``C % (BC * 2) == 0`` is required, i.e. C >= 32 for BC = 16: the two vector
     cores split the anchor blocks, and each core's row half must be a whole
     number of anchor blocks.
@@ -150,16 +170,37 @@ def ub_bytes(C, K, V, BC, elem):
 
 @tilelang.jit(out_idx=[-1], workspace_idx=[-6, -5, -4, -3, -2], pass_configs=pass_configs)
 def chunk_o_ker(B, SEQ, H, HV, K, V, C, scale, BC=16, dtype="float16", accum_dtype="float"):
-    assert SEQ % C == 0, f"first pass needs SEQ % C == 0, got SEQ={SEQ} C={C}"
     assert C % (BC * VEC_NUM) == 0, f"need C % {BC * VEC_NUM} == 0, got C={C}"
     assert HV % H == 0, "HV must be divisible by H (GVA)"
 
-    N = SEQ // C  # chunks per sequence
+    # ceil, not floor: the last chunk may be ragged.  SEQ is a Python int at
+    # trace time, so this stays a compile-time constant, and all five
+    # workspace first dims follow from N.
+    N = -(-SEQ // C)  # chunks per sequence
+    R = SEQ % C  # 0 when aligned; else the valid row count of the last chunk
+    RAGGED = R != 0
+    # Every token index below is clamped to the last valid row on a ragged
+    # chunk.  Clamping is SAFE in this stage and would NOT be in stage 2: what
+    # these rows produce lands in ah_ub (UB) or in ws_* rows >= R, and the only
+    # GM store is the final l0c2gm of O, which is itself clamped -- so nothing
+    # is ever written to GM at a clamped index.
     CV = C // VEC_NUM  # rows per vector core
     NB = C // BC  # anchor blocks per chunk
     NBV = NB // VEC_NUM  # anchor blocks built by each vector core
     NAB = CV // BC  # anchor blocks inside one core's rows
     GRP = HV // H  # value heads sharing one qk head
+
+    def tok(idx):
+        """Clamp a single-row token index to the last row that exists.
+
+        Single-row reads have region extents [1, 1, 1, *]; find_active_dim_indices
+        keeps only the last two *active* dims, so the token axis is folded into
+        the base address and is never bounds-checked.  Unlike stage 2, clamping
+        (rather than shortening a loop) is the right fix here: every value these
+        rows produce ends up in UB or in ws_* rows >= R, and the only GM store is
+        the final clamped l0c2gm of O.  Nothing is written at a clamped index.
+        """
+        return T.if_then_else(idx < SEQ, idx, SEQ - 1) if RAGGED else idx
 
     @T.prim_func
     def main(
@@ -221,6 +262,15 @@ def chunk_o_ker(B, SEQ, H, HV, K, V, C, scale, BC=16, dtype="float16", accum_dty
                 # Chunk-resident G and K.  [C, *] over the token axis is a
                 # strided move: the row length is K, the row pitch is HV*K
                 # (H*K for the qk-head tensors).
+                if RAGGED and n == N - 1:
+                    # Both loads are clamped to the R valid rows, so the tail
+                    # rows keep stale UB -- and g_ub is exponentiated while
+                    # kh_ub becomes a cube operand, so a garbage row turns into
+                    # inf and then NaN.  Zero is also the right filler: g = 0
+                    # leaves the decay at 1 and k = 0 contributes nothing.
+                    T.tile.fill(g_ub, 0.0)
+                    T.tile.fill(kh_ub, 0)
+
                 T.copy(G[bz, t0 : t0 + C, hv, 0:K], g_ub)
                 T.copy(Kt[bz, t0 : t0 + C, hq, 0:K], kh_ub)
                 T.copy(kh_ub, k_ub)
@@ -228,7 +278,16 @@ def chunk_o_ker(B, SEQ, H, HV, K, V, C, scale, BC=16, dtype="float16", accum_dty
                 for ab in range(NAB):
                     row = r0 + ab * BC  # chunk-local first row of the block
 
-                    T.copy(Q[bz, t0 + row : t0 + row + BC, hq, 0:K], qb_half)
+                    # Ragged tail: this BC-row block can start past SEQ, which
+                    # would clamp validRow to 0, i.e. DataCopyExtParams with
+                    # blockCount 0 -- outside the documented [1, 4095].  Fill
+                    # first, then issue the DMA only if the block has any real
+                    # row; the tile is exponentiated below, so a stale row
+                    # would become inf.
+                    if RAGGED and n == N - 1:
+                        T.tile.fill(qb_half, 0)
+                    if (not RAGGED) or t0 + row < SEQ:
+                        T.copy(Q[bz, t0 + row : t0 + row + BC, hq, 0:K], qb_half)
                     T.copy(qb_half, qb_ub)
                     for i, d in T.Parallel(BC, K):
                         qb_ub[i, d] = qb_ub[i, d] * scale
@@ -241,7 +300,10 @@ def chunk_o_ker(B, SEQ, H, HV, K, V, C, scale, BC=16, dtype="float16", accum_dty
                     # what it looks like, and no kernel in this repo or in the
                     # GDN reference uses it.  A strided GM read at a runtime
                     # offset is proven -- it is what the Q load above does.
-                    T.copy(G[bz, t0 + row : t0 + row + BC, hv, 0:K], pb_ub)
+                    if RAGGED and n == N - 1:
+                        T.tile.fill(pb_ub, 0.0)
+                    if (not RAGGED) or t0 + row < SEQ:
+                        T.copy(G[bz, t0 + row : t0 + row + BC, hv, 0:K], pb_ub)
                     for i, d in T.Parallel(BC, K):
                         pb_ub[i, d] = T.exp(pb_ub[i, d])
                     for i, d in T.Parallel(BC, K):
@@ -253,8 +315,11 @@ def chunk_o_ker(B, SEQ, H, HV, K, V, C, scale, BC=16, dtype="float16", accum_dty
                     # the block are at or below the anchor, so the exponent is
                     # <= 0; qg cannot be reused for this (dividing it by
                     # e^{G_anchor} is exactly the overflow we are avoiding).
-                    T.copy(G[bz, t0 + row, hv, 0], grow_ub)
-                    T.copy(G[bz, t0 + row : t0 + row + BC, hv, 0:K], pb_ub)
+                    T.copy(G[bz, tok(t0 + row), hv, 0], grow_ub)
+                    if RAGGED and n == N - 1:
+                        T.tile.fill(pb_ub, 0.0)
+                    if (not RAGGED) or t0 + row < SEQ:
+                        T.copy(G[bz, t0 + row : t0 + row + BC, hv, 0:K], pb_ub)
                     for i, d in T.Parallel(BC, K):
                         pb_ub[i, d] = pb_ub[i, d] - grow_ub[d]
                     for i, d in T.Parallel(BC, K):
@@ -270,7 +335,7 @@ def chunk_o_ker(B, SEQ, H, HV, K, V, C, scale, BC=16, dtype="float16", accum_dty
                     a = vid + ai * VEC_NUM
                     ar = a * BC  # anchor row of this block
 
-                    T.copy(G[bz, t0 + ar, hv, 0], grow_ub)
+                    T.copy(G[bz, tok(t0 + ar), hv, 0], grow_ub)
                     # strictly-lower row ar is the indicator of j < ar; for
                     # ar == 0 it is all zeros, so that block's matmul yields
                     # exact zeros instead of reading dirty workspace memory.
@@ -299,11 +364,11 @@ def chunk_o_ker(B, SEQ, H, HV, K, V, C, scale, BC=16, dtype="float16", accum_dty
                     for rr in range(BC):
                         i_loc = a0 + rr  # chunk-local row being fixed
 
-                        T.copy(Q[bz, t0 + i_loc, hq, 0], qrow_half)
+                        T.copy(Q[bz, tok(t0 + i_loc), hq, 0], qrow_half)
                         T.copy(qrow_half, qrow_ub)
                         for d in T.Parallel(K):
                             qrow_ub[d] = qrow_ub[d] * scale
-                        T.copy(G[bz, t0 + i_loc, hv, 0], grow_ub)
+                        T.copy(G[bz, tok(t0 + i_loc), hv, 0], grow_ub)
                         # inclusive row i_loc restricted to this block's columns
                         T.copy(MskInc[i_loc, a0], mrow_ub)
 
@@ -372,7 +437,6 @@ def chunk_o(q, k, vnew, states, G, C=64, BC=16, scale=None):
     """
     B, SEQ, H, K = q.shape
     HV, V = vnew.shape[2], vnew.shape[-1]
-    assert SEQ % C == 0, f"first pass needs SEQ % C == 0, got SEQ={SEQ} C={C}"
     assert C % (BC * VEC_NUM) == 0, f"need C % {BC * VEC_NUM} == 0, got C={C}"
     assert K % 16 == 0 and V % 16 == 0, "K and V must be multiples of 16"
     # The dtype is threaded into the kernel as a compile-time constant, so all
@@ -382,7 +446,8 @@ def chunk_o(q, k, vnew, states, G, C=64, BC=16, scale=None):
     # under the 140-column limit is the only form both leave alone.
     assert k.dtype == q.dtype and vnew.dtype == q.dtype and states.dtype == q.dtype, "Q / Kt / V' / S must share one dtype"
     assert G.shape == (B, SEQ, HV, K), f"G must be [B, SEQ, HV, K], got {tuple(G.shape)}"
-    assert states.shape == (B, HV, SEQ // C, K, V), f"states must be [B, HV, SEQ//C, K, V], got {tuple(states.shape)}"
+    _N = -(-SEQ // C)  # ceil: must match chunk_h's N_CHUNK exactly
+    assert states.shape == (B, HV, _N, K, V), f"states must be [B, HV, ceil(SEQ/C), K, V], got {tuple(states.shape)}"
 
     elem = torch.finfo(q.dtype).bits // 8
     need = ub_bytes(C, K, V, BC, elem)
@@ -452,6 +517,13 @@ def main():
     ok &= _case(1, 256, 1, 1, 128, 128, 64, "forget")
     ok &= _case(1, 128, 1, 2, 128, 128, 64, "normal")  # K3 + GVA
     ok &= _case(1, 128, 1, 1, 128, 128, 32, "forget")
+
+    print("== ragged tail (SEQ % C != 0) ==")
+    ok &= _case(2, 70, 1, 2, 64, 64, 64, "normal")  # R=6, one anchor block partly valid
+    ok &= _case(1, 33, 1, 1, 64, 64, 32, "forget")  # R=1
+    ok &= _case(1, 65, 1, 1, 128, 128, 64, "forget")  # K3 dim, R=1
+    ok &= _case(2, 100, 2, 4, 64, 64, 32, "extreme")  # GVA + extreme gate on the tail
+    ok &= _case(1, 96, 1, 1, 64, 64, 64, "normal")  # R=32, exact core boundary
 
     print("== gates that underflow inside a chunk (the NaN trap) ==")
     ok &= _case(1, 128, 1, 2, 64, 64, 64, "extreme")

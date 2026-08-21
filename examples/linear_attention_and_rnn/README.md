@@ -120,7 +120,10 @@ The pipeline issues exactly seven `T.gemm_v0` calls — two in `wy_fast`, two in
 
 ### Correctness
 
-Both paths are verified on Ascend 910B against goldens that share no code path with them.
+Both paths are verified against goldens that share no code path with them, on an Ascend 910
+development device reporting `Ascend910_9362` (20 Cube / 40 Vector cores), which
+`tilelang/utils/target.py` classifies as **A3**. Nothing here has been run on an A2-class
+910B1/B2 (24 Cube / 48 Vector); the claim is scoped to what was actually executed.
 
 **Decode** (`test_kda_recurrent.py`), over 6 shapes $\times$ 4 gate regimes $\times$ {zero, non-zero initial state}:
 
@@ -134,7 +137,7 @@ Both paths are verified on Ascend 910B against goldens that share no code path w
 
 The FLA comparison runs whenever `flash-linear-attention` is importable and skips cleanly when it is not, so the example carries no third-party dependency.
 
-**Prefill** (`kda_l1_full.py`), 18 configurations checked against both the chunkwise reference in `kda/kda_l1_ref.py` and the token-by-token recurrence in `kda/kda_ref.py`:
+**Prefill** (`kda_full.py`), 18 configurations checked against both the chunkwise reference in `kda/kda_chunk_ref.py` and the token-by-token recurrence in `kda/kda_ref.py`:
 
 | Check | Result |
 |---|---|

@@ -340,11 +340,22 @@ def stage_tensors(q, k, v, g, beta, C=64, BC=16, scale=None, initial_state=None)
     conversion in one place is deliberate -- six separate tests each doing their
     own transpose is how the head axis ends up swapped in exactly one of them.
 
-    Requires ``SEQ % C == 0``.  Tail blocks are handled by ``kda_chunk_ref`` but
-    not exposed here, because the first pass of the kernels only supports whole
-    chunks (task spec: fixed length first, varlen later).
+    A ragged tail is supported.  When ``SEQ % C != 0`` the token axis is padded
+    up to a whole number of chunks with ``_pad_to_chunk`` -- neutral by
+    construction, since the padded tokens carry ``beta = 0`` (the delta rule
+    writes nothing) and ``g = 0`` (``alpha = 1``, the state is not decayed) --
+    and every token-axis output is sliced back to ``SEQ`` on the way out.
 
-    Returned dict, with N = SEQ // C:
+    Padding here is on the host and that is fine: this is the golden, not the
+    kernel path.  The acceptance gate rules out host-side padding because it
+    would hide kernel cost, which is not a concern for a CPU reference.
+
+    ``states`` is *not* sliced.  It legitimately gains a chunk, because the tail
+    is a real chunk with a real entry state, and the kernels index it the same
+    way.  ``SF`` is unaffected -- the padded tokens leave the state untouched,
+    so the final state after them is the final state after the real ones.
+
+    Returned dict, with N = ceil(SEQ / C):
 
         G       [B, T, HV, K]     stage 1 out: chunk-local cumulative log gate
         L       [B, T, HV, C]     stage 2 out: strictly-lower Diag(beta).KK^T
@@ -362,7 +373,6 @@ def stage_tensors(q, k, v, g, beta, C=64, BC=16, scale=None, initial_state=None)
     B, SEQ, H, K = q.shape
     HV, _V = v.shape[2], v.shape[-1]
     assert HV % H == 0, "HV must be divisible by H (GVA)"
-    assert SEQ % C == 0, f"stage_tensors needs SEQ % C == 0, got SEQ={SEQ} C={C}"
     grp = HV // H
     if scale is None:
         scale = K**-0.5
@@ -371,6 +381,10 @@ def stage_tensors(q, k, v, g, beta, C=64, BC=16, scale=None, initial_state=None)
     ki = _expand_qk(_in(k.float()), grp)
     vi, gi, bi = _in(v.float()), _in(g.float()), _in(beta.float())
 
+    # pad == 0 short-circuits inside _pad_to_chunk, so the aligned path is
+    # bit-for-bit what it was before the tail was supported.
+    qi, ki, vi, gi, bi, pad = _pad_to_chunk(qi, ki, vi, gi, bi, C)
+
     G = ref_chunk_cumsum(gi, C)
     L = ref_kkt(ki, bi, G, C, BC)
     A = ref_solve_tril(L)
@@ -378,19 +392,24 @@ def stage_tensors(q, k, v, g, beta, C=64, BC=16, scale=None, initial_state=None)
     states, Vt, SF = ref_chunk_h(W, U, kg, G, C, initial_state=initial_state)
     o = ref_chunk_o(qg, Aqk, Vt, states, C)
 
+    # Internal layout is [B, HV, T, *]: the token axis is dim 2.  states and SF
+    # have no token axis and are returned whole.
+    def _cut(x):
+        return x if pad == 0 else x[:, :, :SEQ]
+
     return {
-        "G": _out(G),
-        "L": _out(L),
-        "A": _out(A),
-        "W": _out(W),
-        "U": _out(U),
-        "kg": _out(kg),
-        "qg": _out(qg),
-        "Aqk": _out(Aqk),
+        "G": _out(_cut(G)),
+        "L": _out(_cut(L)),
+        "A": _out(_cut(A)),
+        "W": _out(_cut(W)),
+        "U": _out(_cut(U)),
+        "kg": _out(_cut(kg)),
+        "qg": _out(_cut(qg)),
+        "Aqk": _out(_cut(Aqk)),
         "states": states,
-        "Vt": _out(Vt),
+        "Vt": _out(_cut(Vt)),
         "SF": SF,
-        "o": _out(o),
+        "o": _out(_cut(o)),
     }
 
 

@@ -45,11 +45,25 @@ What changed vs the earlier chunkwise port (the math is untouched)
        instruction, so the split costs nothing there.  At K = 64 each step is a
        half-width vector op.
 
+Ragged tail
+-----------
+``SEQ % C != 0`` is supported.  The grid is ``ceildiv(SEQ, C)`` and the last
+chunk simply transfers fewer rows: ``compute_valid_extent``
+(src/op/ascend.cc:410) clamps ``validRow`` on both the load and the store to
+``SEQ - t0``.  Nothing about the tile shape changes -- ``C`` is still ``C``, so
+every alignment constraint below is untouched; only the row count of a transfer
+shrinks.
+
+The prefix chain is causal in the row index, so rows ``< R`` are correct no
+matter what the rows above them hold.  The tail rows are zero-filled anyway
+(``g = 0`` is ``alpha = 1``, the identity for this stage) rather than left as
+whatever UB held, so a NaN cannot ride along in a live accumulator.
+
+★ What this means for the stages downstream is in the ``chunk_cumsum`` docstring
+and it matters: rows ``R..C-1`` of the last chunk are **not written to GM**.
+
 Known limitations (first pass, on purpose)
 ------------------------------------------
-* ``SEQ % C == 0``.  Tail blocks are the next round (task spec: fixed length
-  first, varlen later).  kda_chunk_ref.kda_chunk_ref pads on the host, but
-  stage_tensors -- the golden for this file -- refuses a partial tail too.
 * ``K % 16 == 0`` so that BK * 4 bytes is a multiple of 32: the UB row pitch of
   the tile has to stay 32B aligned or the per-row VEC instructions are
   misaligned.  K in {64, 128} passes.
@@ -80,7 +94,14 @@ VEC_NUM = 2
 
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def cumsum_ker(B, SEQ, HV, K, C, accum_dtype="float"):
-    chunk_num = SEQ // C  # SEQ % C == 0 is asserted on the host
+    # ceil, not floor: the last chunk may be ragged.  SEQ is a Python int at
+    # trace time, so this stays a compile-time constant -- a tail needs a *ceil*
+    # grid, not a runtime one.  Every GM copy below is then clamped to
+    # shape - offset rows by compute_valid_extent (src/op/ascend.cc:410), the
+    # same valid_shape mechanism the framework applies to any tail block.
+    chunk_num = -(-SEQ // C)
+    R = SEQ % C  # 0 when aligned; otherwise the valid row count of the last chunk
+    RAGGED = R != 0
     BK = K // VEC_NUM  # channels per vector core
 
     @T.prim_func
@@ -104,7 +125,21 @@ def cumsum_ker(B, SEQ, HV, K, C, accum_dtype="float"):
             s_ub = T.alloc_ub([C, BK], accum_dtype)
 
             with T.Scope("V"):
+                # Python `and` short-circuits: with RAGGED False the whole block is
+                # dropped at trace time, so the aligned path emits identical IR.
+                # Last chunk only, and only when there is a tail: the load
+                # below is clamped to the R valid rows, which leaves rows
+                # R..C-1 of g_ub holding whatever was in UB.  Nothing here
+                # exponentiates them and the store is clamped too, so they
+                # cannot reach GM -- but they do feed s_ub, and leaving NaN
+                # to propagate through a live accumulator is not worth the
+                # cycles saved.  Zero is also the semantically right filler:
+                # g is a log-domain gate, so 0 means alpha = 1, no decay.
+                if RAGGED and i_c == chunk_num - 1:
+                    T.tile.fill(g_ub, 0.0)
+
                 # Strided load: C rows of BK fp32, row pitch HV * K fp32.
+                # On the tail chunk this transfers R rows, not C.
                 T.copy(G[bz, t0 : t0 + C, hv, ko : ko + BK], g_ub)
 
                 # Inclusive prefix sum down the token axis, one vector add per
@@ -123,6 +158,7 @@ def cumsum_ker(B, SEQ, HV, K, C, accum_dtype="float"):
                         s_ub[i, j] = s_ub[i - 1, j] + g_ub[i, j]
 
                 # Strided store back into the same [B, SEQ, HV, K] window.
+                # Clamped on the tail chunk, so rows R..C-1 are never written.
                 T.copy(s_ub, Gsum[bz, t0 : t0 + C, hv, ko : ko + BK])
 
     return main
@@ -133,18 +169,32 @@ def chunk_cumsum(g, C=64):
 
     g is the external [B, SEQ, HV, K] fp32 log gate; the result has the same
     shape and layout and is what stages 2/4/5 consume as ``G``.
+
+    A ragged last chunk is supported: ``SEQ`` need not be a multiple of ``C``.
+
+    ★ Contract for the downstream stages, and the one thing a tail changes about
+    the *meaning* of this output:
+
+        ``Gsum`` has exactly ``SEQ`` rows.  On a ragged last chunk, rows
+        ``R .. C-1`` of that chunk (``R = SEQ % C``) DO NOT EXIST IN GM -- the
+        store is clamped and never writes them.
+
+    So a stage that wants "the cumulative gate at the end of this chunk" must
+    read row ``min(t0 + C, SEQ) - 1``, not ``t0 + C - 1``.  Reading ``C-1``
+    unconditionally is both an out-of-bounds access and semantically wrong: the
+    chunk decay would be taken at a token that is not in the sequence.  Stage 5
+    (``chunk_h``) is the stage this bites.
     """
     B, SEQ, HV, K = g.shape
     assert g.dtype == torch.float32, f"G is fp32 in the frozen contract (log-domain gate), got {g.dtype}"
-    assert SEQ % C == 0, f"first pass needs SEQ % C == 0 (no tail block yet), got SEQ={SEQ} C={C}"
     assert K % (VEC_NUM * 8) == 0, f"K/{VEC_NUM} fp32 must be a multiple of 32B for the UB row pitch, got K={K}"
 
-    # SEQ == 0 has to be caught here, not left to the assert above: 0 % C == 0
-    # passes, chunk_num would come out 0, and the kernel would launch a
-    # zero-block grid and hand back an allocated-but-never-written buffer.  A
-    # zero-length sequence is legal input -- it is what a varlen batch with an
-    # empty entry produces, and FLA's fused_recurrent returns early on it too.
-    # Nothing to accumulate, so the result is empty along the token axis.
+    # SEQ == 0 still has to be caught here, and the ceil grid does not save us:
+    # ceildiv(0, C) is 0, so the kernel would launch a zero-block grid and hand
+    # back an allocated-but-never-written buffer.  A zero-length sequence is
+    # legal input -- it is what a varlen batch with an empty entry produces, and
+    # FLA's fused_recurrent returns early on it too.  Nothing to accumulate, so
+    # the result is empty along the token axis.
     if SEQ == 0:
         return torch.empty((B, 0, HV, K), device=g.device, dtype=torch.float32)
 
@@ -198,6 +248,12 @@ def main():
     print("== odd HV / magnitude stress ==")
     ok &= _case(1, 64, 1, 3, 64, 64, 32, "normal", "HV=3, needs the K split")
     ok &= _case(1, 128, 1, 1, 64, 64, 64, "extreme", "exponents die at once")
+
+    print("== ragged tail (SEQ % C != 0) ==")
+    ok &= _case(2, 70, 1, 2, 64, 64, 64, "normal", "70 = 64 + 6")
+    ok &= _case(1, 33, 1, 1, 64, 64, 32, "forget", "33 = 32 + 1, one valid tail row")
+    ok &= _case(1, 65, 1, 1, 128, 128, 64, "forget", "K3 dim, one valid tail row")
+    ok &= _case(2, 100, 2, 4, 64, 64, 32, "extreme", "GVA + extreme gate on the tail")
 
     if ok:
         print("Kernel Output Match!")

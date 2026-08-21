@@ -75,11 +75,41 @@ slice, which is why glast/gexp use the plain form.
 beta and scale do not appear in this stage: kg carries no beta (see
 kda_chunk_ref.ref_wy_fast) and scale rides on q, which chunk_o consumes.
 
+Ragged tail
+-----------
+``SEQ % C != 0`` is supported, and this is the stage where it costs real thought
+rather than a clamp.
+
+Everything on the token axis is a multi-row copy and is clamped for free: the
+K / G / U loads shrink to the R valid rows, the ``Vt`` store never writes the pad
+rows, and the cube's ``Vt`` read is both clamped and zero-initialised by
+``copy_gm_to_l1`` -- which is exactly what makes ``kg^T V'`` sum over the R real
+tokens with no change to the math.
+
+Two things are NOT free:
+
+  * **The chunk decay index.** ``G_C`` must be read at the last token that
+    exists, ``min(t0 + C, SEQ) - 1``.  The old ``t0 + C - 1`` is out of bounds on
+    a ragged chunk *and* semantically wrong, and nothing catches it: single-row
+    reads put the token axis on a unit-extent dim, which
+    ``find_active_dim_indices`` never bounds-checks.  A wrong index here does not
+    show up as a small error -- the final state comes out scaled by a spurious
+    e^Gamma, which under the `forget` gate is orders of magnitude.
+  * **Stale UB feeding the cube.** ``g_ub`` is exponentiated and ``k_ub`` is
+    published to ``ws_kg`` as a full [C, K] operand, so the tail rows are
+    zero-filled before the clamped loads overwrite the valid part.
+
+★ Nothing here base-clamps a tile index.  Unlike stage 6, clamping a *base* in
+this stage would pull the previous chunk's real V' rows into ``kv_l0`` and
+corrupt the state carry.  Only the single-row G_C index is clamped, and only to
+the last valid token.
+
+★ This kernel has four cross-core flag ids and is the easiest in the pipeline to
+deadlock.  Tail handling fills buffers; it never skips a ``set_cross_flag`` or a
+``wait_cross_flag``.
+
 Known limitations (first pass)
 ------------------------------
-  * requires SEQ % C == 0.  Tail blocks are handled by the reference
-    (kda_chunk_ref.kda_chunk_ref pads the token axis) but not yet by this kernel;
-    fixed length first, varlen later, per the task spec.
   * the two gemm operands that carry the state (S into `W S`, and V' into
     `kg^T V'`) are `dtype`, because that is what the Cube takes.  The
     recurrence itself is fp32 in UB, and the two L0C->GM workspaces are fp32,
@@ -132,7 +162,12 @@ def ub_bytes(C, K, BV, itemsize):
 
 @tilelang.jit(out_idx=[-3, -2, -1], workspace_idx=[-7, -6, -5, -4], pass_configs=pass_configs)
 def chunk_h_ker(B, SEQ, H, HV, K, V, C, BV, dtype="float16", accum_dtype="float"):
-    N_CHUNK = SEQ // C  # this pass requires SEQ % C == 0
+    # ceil, not floor: the last chunk may be ragged.  SEQ is a Python int at
+    # trace time, so this stays a compile-time constant, and the `states`
+    # tensor simply gains one chunk -- which stage 6 must agree on.
+    N_CHUNK = -(-SEQ // C)
+    R = SEQ % C  # 0 when aligned; else the valid row count of the last chunk
+    RAGGED = R != 0
     BV_NUM = V // BV
     VEC_NUM = 2  # 910B: one Cube core, two Vector cores
     CV = C // VEC_NUM  # token rows per vector core
@@ -234,11 +269,40 @@ def chunk_h_ker(B, SEQ, H, HV, K, V, C, BV, dtype="float16", accum_dtype="float"
 
                     # kg = K . e^{G_C - G}.  GDN broadcasts one scalar per row
                     # here; KDA needs the whole [CV, K] tile.
+                    # ★ The one genuine off-by-one of the whole tail-block change.
+                    #
+                    # G_C is the chunk's cumulative gate, and it has to be read
+                    # at the LAST TOKEN THAT EXISTS.  On a ragged chunk row
+                    # t0 + C - 1 is (a) past SEQ, and (b) not the right token
+                    # even if it were in range.  Neither is caught for us: these
+                    # are single-row reads, so the region extents are
+                    # [1, 1, 1, *], find_active_dim_indices keeps only the last
+                    # two *active* dims, and the token axis is folded into the
+                    # base address without a bounds check.
+                    #
+                    # Getting this wrong does not produce a tolerance failure --
+                    # the final state comes out scaled by a spurious e^Gamma,
+                    # which under the `forget` gate is orders of magnitude.
+                    #
+                    # Runtime address, compile-time extent: exactly the pattern
+                    # the varlen kernels in this repo already rely on.
+                    glast_row = T.if_then_else(t0 + C <= SEQ, t0 + C - 1, SEQ - 1)
+
+                    if RAGGED and ci == N_CHUNK - 1:
+                        # The two tile loads below are clamped, so their tail
+                        # rows keep stale UB.  g_ub feeds exp() and k_ub feeds
+                        # the cube through ws_kg as a full [C, K] operand, so a
+                        # garbage row becomes inf and then NaN.  Zero is also
+                        # the right filler: k = 0 contributes nothing to
+                        # kg^T V', and g = 0 leaves the coefficient at e^{G_C}.
+                        T.tile.fill(k_half, 0)
+                        T.tile.fill(g_ub, 0.0)
+
                     T.copy(Kt[bz, tv : tv + CV, hq, :], k_half)
                     T.copy(k_half, k_ub)
                     T.copy(G[bz, tv : tv + CV, hv, :], g_ub)
-                    T.copy(G[bz, t0 + C - 1, hv, 0], glast_ub)  # G_C, all K
-                    T.copy(G[bz, t0 + C - 1, hv, ko], gexp_ub)  # G_C, my rows
+                    T.copy(G[bz, glast_row, hv, 0], glast_ub)  # G_C, all K
+                    T.copy(G[bz, glast_row, hv, ko], gexp_ub)  # G_C, my rows
                     for a, b in T.Parallel(CV, K):
                         coeff_ub[a, b] = glast_ub[b] - g_ub[a, b]  # <= 0
                     for a, b in T.Parallel(CV, K):
@@ -293,7 +357,6 @@ def chunk_h(kt, w, u, g_cumsum, C=64, BV=None, initial_state=None):
     B, SEQ, H, K = kt.shape
     HV, V = u.shape[2], u.shape[-1]
 
-    assert SEQ % C == 0, f"first pass needs SEQ % C == 0, got SEQ={SEQ} C={C}"
     assert HV % H == 0, "HV must be divisible by H (GVA)"
     assert C % 2 == 0 and K % 2 == 0, "the two vector cores split C and K"
     assert w.dtype == u.dtype == kt.dtype, "Kt / W / U must share one dtype"
@@ -392,6 +455,16 @@ def main():
         (1, 128, 1, 1, 128, 128, 64, "normal", True),
         (1, 128, 2, 4, 128, 128, 64, "forget", True),  # + GVA
         (1, 128, 1, 1, 128, 128, 32, "forget", False),
+    ]:
+        ok &= _case(B, SEQ, H, HV, K, V, C, gate, ws, torch.float16)
+
+    print("== ragged tail (SEQ % C != 0) ==")
+    for B, SEQ, H, HV, K, V, C, gate, ws in [
+        (2, 70, 1, 2, 64, 64, 64, "normal", False),  # R=6
+        (1, 33, 1, 1, 64, 64, 32, "forget", False),  # R=1, core 1 empty
+        (1, 65, 1, 1, 128, 128, 64, "forget", True),  # K3 dim, R=1, with initial state
+        (2, 100, 2, 4, 64, 64, 32, "extreme", True),  # GVA + extreme gate + state
+        (1, 96, 1, 1, 64, 64, 64, "normal", False),  # R=32 == CV, exact core boundary
     ]:
         ok &= _case(B, SEQ, H, HV, K, V, C, gate, ws, torch.float16)
 

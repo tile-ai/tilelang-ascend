@@ -50,12 +50,20 @@ terms with j >= i vanish only because x_ub[i, j] is exactly 0 there.  The
 reference masks explicitly, and the mask is folded into the exponent in the kkt
 kernel, so the zeros are true zeros rather than underflowed ones.
 
-Known limitation
-----------------
-First pass requires ``SEQ % C == 0``.  Tail blocks are deliberately left to the
-next round (task spec: fixed length first, varlen later); ``kda_chunk_ref`` already
-pads for them, and the padding is neutral, so nothing here has to change when
-that support lands -- only the grid bound does.
+Ragged tail
+-----------
+``SEQ % C != 0`` is supported.  The grid uses ``ceildiv(SEQ, C)`` chunks and the
+load and store of the last chunk matrix are clamped to its R valid rows by
+``compute_valid_extent`` (src/op/ascend.cc:410).  The tile stays [C, C], so
+``C % 16 == 0`` and the 32B row alignment are untouched.
+
+The math needs no change: (I + L) for a ragged chunk is block lower triangular
+with the pad block absent, so forward substitution over the leading R rows is
+exactly the length-R answer.  One thing *is* needed though, and it is not
+obvious -- see the fill in the kernel.  The recurrence sums over every j, so a
+valid row i < R picks up terms ``x[j,k] * x[i,j]`` with j >= R.  The second
+factor is 0 by strict lower triangularity, but 0 * inf is NaN, so the tail rows
+have to be genuine zeros rather than leftover UB.
 
 UB budget (limit 196352 B)
 --------------------------
@@ -86,7 +94,11 @@ VEC_NUM = 2
 
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def kda_solve_tril_ker(B, SEQ, HV, C, dtype="float16", accum_dtype="float"):
-    N = SEQ // C  # chunks per sequence
+    # ceil, not floor: the last chunk may be ragged.  SEQ is a Python int at
+    # trace time, so this stays a compile-time constant.
+    N = -(-SEQ // C)  # chunks per sequence
+    R = SEQ % C  # 0 when aligned; else the valid row count of the last chunk
+    RAGGED = R != 0
     total = B * HV * N  # one [C, C] chunk matrix per task
     blocks = (total + VEC_NUM - 1) // VEC_NUM
 
@@ -119,7 +131,22 @@ def kda_solve_tril_ker(B, SEQ, HV, C, dtype="float16", accum_dtype="float"):
             x_io = T.alloc_ub([C, C], dtype)  # GM staging, dtype side
 
             with T.Scope("V"):
+                # Python `and` short-circuits: with RAGGED False the whole block is
+                # dropped at trace time, so the aligned path emits identical IR.
+                # The load below is clamped to R rows on the last chunk, so
+                # rows R..C-1 keep whatever UB held.  Those rows are NOT
+                # inert here: the reduction
+                #     red[k] = sum_j x[j,k] * x[i,j]
+                # runs over every j, so for a *valid* row i < R the j >= R
+                # terms contribute x[j,k] * x[i,j].  The second factor is 0
+                # (L is strictly lower triangular and j >= R > i), but
+                # inf * 0 is NaN -- one non-finite tail row would poison
+                # every valid row.  Zeroing makes those terms exactly 0.
+                if RAGGED and n == N - 1:
+                    T.tile.fill(x_io, 0)
+
                 # Strided load of one chunk matrix; see the module docstring.
+                # On the tail chunk this transfers R rows, not C.
                 T.copy(Ltri[bz, t0 : t0 + C, hv, :], x_io)
                 T.copy(x_io, x_ub)
                 T.copy(Idt[0, 0], i_ub)
@@ -138,6 +165,8 @@ def kda_solve_tril_ker(B, SEQ, HV, C, dtype="float16", accum_dtype="float"):
                     x_ub[i, j] = i_ub[i, j] - x_ub[i, j]
 
                 T.copy(x_ub, x_io)
+                # Clamped on the tail chunk: rows R..C-1 are never written, so
+                # the identity rows the loop leaves there stay out of GM.
                 T.copy(x_io, A[bz, t0 : t0 + C, hv, :])
 
     return main
@@ -180,7 +209,6 @@ def kda_solve_tril(Ltri):
     # The kernel derives its GM strides from the declared shape, so a transposed
     # or sliced view would be read with the wrong row stride.  Fail loudly.
     assert Ltri.is_contiguous(), "Ltri must be contiguous in [B, SEQ, HV, C]"
-    assert SEQ % C == 0, f"first pass needs SEQ % C == 0, got SEQ={SEQ} C={C}"
     assert C % 16 == 0, f"C must be a multiple of 16 to keep rows 32B aligned, got {C}"
     # 3 fp32 [C, C] tiles plus the dtype staging tile must fit in 196352 B.
     assert C <= 64, f"C={C} needs {3 * C * C * 4 + C * C * 4} B of UB, over budget"
@@ -231,7 +259,18 @@ def _case(B, SEQ, H, HV, K, V, C, gate, dtype):
     # which e_sens measures on the reference itself -- hence the adaptive bound
     # instead of a hand-picked loose constant.  For fp32 the input is exact,
     # e_sens is 0, and the golden check tightens to _TOL.
-    a_same = kda_chunk_ref.ref_solve_tril(l_in.float().cpu().transpose(1, 2)).transpose(1, 2)
+    li = l_in.float().cpu().transpose(1, 2)  # [B, HV, SEQ, C], the layout ref_solve_tril wants
+    pad = (-SEQ) % C
+    if pad:
+        # ref_solve_tril chunks the token axis, so it needs a whole number of
+        # chunks.  Padding L with zero rows is neutral for exactly the reason
+        # the kernel's zeroed tail rows are: a zero row of L yields an identity
+        # row of A and contributes nothing to the substitution for any row above
+        # it.  The padded rows are sliced off again below.
+        li = torch.cat([li, li.new_zeros(li.shape[0], li.shape[1], pad, li.shape[3])], dim=2)
+    a_same = kda_chunk_ref.ref_solve_tril(li).transpose(1, 2)
+    if pad:
+        a_same = a_same[:, :SEQ].contiguous()
     e_kern = _relerr(got, a_same)
     e_gold = _relerr(got, st["A"])
     e_sens = _relerr(a_same, st["A"])
@@ -267,6 +306,12 @@ def main():
     ok &= _case(1, 32, 1, 1, 64, 64, 32, "normal", torch.float16)
     # HV == 3 * H and HV not a power of two
     ok &= _case(1, 128, 2, 6, 64, 64, 64, "forget", torch.float16)
+
+    print("== ragged tail (SEQ % C != 0) ==")
+    ok &= _case(2, 70, 1, 2, 64, 64, 64, "normal", torch.float16)  # 70 = 64 + 6
+    ok &= _case(1, 33, 1, 1, 64, 64, 32, "forget", torch.float16)  # 33 = 32 + 1, one valid tail row
+    ok &= _case(1, 65, 1, 1, 128, 128, 64, "forget", torch.float16)  # K3 dim, one valid tail row
+    ok &= _case(2, 100, 2, 4, 64, 64, 32, "extreme", torch.float32)  # fp32, tight 1e-5 bound
 
     print("== dtype passthrough ==")
     ok &= _case(2, 256, 2, 2, 64, 64, 64, "normal", torch.bfloat16)
