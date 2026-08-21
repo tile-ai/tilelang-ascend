@@ -185,6 +185,7 @@ TVM_DLL const Op &ascend_pow();
 TVM_DLL const Op &ascend_bitwise_xor();
 
 TVM_DLL const Op &ascend_broadcast();
+TVM_DLL const Op &ascend_im2col();
 
 TVM_DLL const Op &ascend_row_expand_mul();
 
