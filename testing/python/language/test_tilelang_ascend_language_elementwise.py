@@ -349,6 +349,206 @@ def test_bitwise_and(dtype, target, shape):
     run_test_bitwise_and(M, N, 128, 256, dtype, target=target)
 
 
+# ---- Factcheck: bitwise_or tests ----
+
+_TORCH_INT_DTYPE_OR = {
+    "int8": torch.int8,
+    "uint8": torch.uint8,
+    "int16": torch.int16,
+    "uint16": torch.uint16,
+    "int32": torch.int32,
+    "uint32": torch.uint32,
+}
+
+_BITWISE_OR_BLOCK_M = {
+    "int8": 128,
+    "uint8": 128,
+    "int16": 128,
+    "uint16": 128,
+    "int32": 64,
+    "uint32": 64,
+}
+
+
+def bitwise_or(M, N, block_M, block_N, dtype="int16"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    VEC_NUM = 2
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
+            T.tile.bitwise_or(c_ub, a_ub, b_ub)
+            T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    return main
+
+
+def run_test_bitwise_or(M, N, block_M, block_N, dtype, target):
+    func = bitwise_or(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.int16 if dtype == "int16" else torch.uint16
+    a = torch.randint(0, 10, (M, N), dtype=torch_dtype).npu()
+    b = torch.randint(0, 10, (M, N), dtype=torch_dtype).npu()
+
+    torch.npu.synchronize()
+
+    c = func(a, b)
+    ref_c = a | b
+    assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("shape", [(1024, 1024)])
+def test_bitwise_or(dtype, target, shape):
+    M, N = shape
+    run_test_bitwise_or(M, N, 128, 256, dtype, target=target)
+
+
+def run_test_bitwise_or_ext(dtype, target):
+    """Extended bitwise_or test supporting int8/uint8/int32/uint32."""
+    M, N = 1024, 1024
+    block_M = _BITWISE_OR_BLOCK_M[dtype]
+    block_N = 256
+    VEC_NUM = 2
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
+            T.tile.bitwise_or(c_ub, a_ub, b_ub)
+            T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    td = _TORCH_INT_DTYPE_OR[dtype]
+    a = torch.randint(0, 100, (M, N), dtype=td).npu()
+    b = torch.randint(0, 100, (M, N), dtype=td).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    ref_c = a | b
+    assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("dtype", ["int8", "uint8"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_or_int8_uint8(dtype, target):
+    """int8/uint8 are supported on A2/A3 for both backends."""
+    run_test_bitwise_or_ext(dtype, target)
+
+
+@pytest.mark.xfail(
+    reason="int32 on ascendc produces 50% wrong results: CANN OrImpl count-mode "
+    "reinterprets int32 as int16 but sets mask to int32 count, processing only "
+    "half the data. PTO rejects int32 via static_assert(sizeof(T)==2||1)."
+)
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_or_int32(target):
+    run_test_bitwise_or_ext("int32", target)
+
+
+def run_test_bitwise_or_scalar(target):
+    """Scalar src1 path generates tl.ascend_bitwise_ors which is not registered."""
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    VEC_NUM = 2
+    m_num = M // block_M
+    n_num = N // block_N
+    dtype = "int16"
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.tile.bitwise_or(c_ub, a_ub, 0xFF)
+            T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+
+@pytest.mark.xfail(
+    raises=Exception,
+    reason="Scalar src1 path uses tl.ascend_bitwise_ors which is not registered "
+    "in C++ (no TIR_DEFINE_TL_BUILTIN(ascend_bitwise_ors) in src/op/ascend.cc).",
+)
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_or_scalar_not_registered(target):
+    run_test_bitwise_or_scalar(target)
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_or_buffer_region(target):
+    """BufferRegion slices are supported as operands."""
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    VEC_NUM = 2
+    m_num = M // block_M
+    n_num = N // block_N
+    dtype = "int16"
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
+            T.tile.bitwise_or(
+                c_ub[0 : block_M // VEC_NUM, 0:block_N],
+                a_ub[0 : block_M // VEC_NUM, 0:block_N],
+                b_ub[0 : block_M // VEC_NUM, 0:block_N],
+            )
+            T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    a = torch.randint(0, 100, (M, N), dtype=torch.int16).npu()
+    b = torch.randint(0, 100, (M, N), dtype=torch.int16).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    ref_c = a | b
+    assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
+
+
 def axpy(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
