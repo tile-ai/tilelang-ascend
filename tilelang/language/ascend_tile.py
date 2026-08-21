@@ -987,13 +987,16 @@ def binary_op(
     if isinstance(src1, BufferLoad):
         buffer_1 = src1.buffer
         indices_1 = src1.indices
+        # Account for every index, explicit strides, and the element offset.
+        # Using only the first index would lower n[i, j] to GetValue(i).
+        scalar_offset = buffer_1.offset_of(indices_1)[0]
         return T.call_intrin(
             "handle",
             tir.op.Op.get(f"tl.ascend_{op}s"),
             dst_ptr,
             src0_ptr,
             buffer_1.access_ptr("r"),
-            indices_1[0],
+            scalar_offset,
             size_0,
         )
 
