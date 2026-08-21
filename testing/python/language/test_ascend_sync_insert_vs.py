@@ -1680,10 +1680,10 @@ def test_preexisting_barrier_recognition(target):
 
 @pytest.mark.ci_skip
 def test_vs_with_cv_combine_off():
-    """VS ON + CV combine OFF -> V->V barrier still inserted (no resource_scope).
+    """VS ON + CV combine OFF -> V->V barrier works in an explicit V scope.
 
-    Without CV combine, there are no resource_scope AttrStmt boundaries.
-    VS should still insert V->V barriers based on name matching.
+    Without CV combine, the source must assign hardware work explicitly.
+    VS should still insert V->V barriers inside that resource scope.
 
     Note: PTO backend has a known compilation issue with CV combine OFF
     (unrelated to VS pass), so this test only runs on ascendc.
@@ -1697,10 +1697,11 @@ def test_vs_with_cv_combine_off():
         with T.Kernel(1, is_npu=True) as (cid, vid):
             a_ub = T.alloc_ub((64, 128), "float32")
             b_ub = T.alloc_ub((64, 128), "float32")
-            T.copy(A[:, :], a_ub)
-            T.tile.exp(b_ub, a_ub)
-            T.tile.exp(b_ub, b_ub)
-            T.copy(b_ub, B[:, :])
+            with T.Scope("V"):
+                T.copy(A[:, :], a_ub)
+                T.tile.exp(b_ub, a_ub)
+                T.tile.exp(b_ub, b_ub)
+                T.copy(b_ub, B[:, :])
 
     src, _ = _compile_and_get_source(main, PASS_VS_NO_CV, target="ascendc", out_idx=[1])
     _assert_has_sync(src, "ascendc", "barrier_v")

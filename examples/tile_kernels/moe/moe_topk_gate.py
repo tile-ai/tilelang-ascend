@@ -172,7 +172,7 @@ def topk_gate(scores: torch.Tensor, num_topk: int) -> torch.Tensor:
     return topk_idx
 
 
-@tilelang.jit()
+@tilelang.jit(pass_configs=pass_configs)
 def get_topk_gate_backward_kernel(num_experts: int, num_topk: int):
     num_tokens = T.symbolic("num_tokens")
     num_threads = 32

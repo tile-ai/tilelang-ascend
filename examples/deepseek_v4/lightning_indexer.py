@@ -1098,98 +1098,98 @@ def make_lightning_indexer_kernel(
                     T.barrier_all()
                     T.sync_all()
 
-                _num_output_rows_p15 = B * S1 * N2
-                _rows_per_core_p15 = (_num_output_rows_p15 + core_num - 1) // core_num
-                for _row_off_p15 in T.serial(_rows_per_core_p15):
-                    _out_row_p15 = cid * _rows_per_core_p15 + _row_off_p15
-                    if _out_row_p15 < _num_output_rows_p15:
-                        _b_p15 = _out_row_p15 // (S1 * N2)
-                        _s1_p15 = (_out_row_p15 // N2) % S1
-                        _n2_p15 = _out_row_p15 % N2
-                        _qlen_p15 = actual_q_len[_b_p15]
-                        if _s1_p15 >= _qlen_p15:
-                            T.tile.fill(output_ub, -1)
-                            T.pipe_barrier("V")
-                            T.copy(output_ub, Out[_b_p15, _s1_p15, _n2_p15, 0:TOP_K])
+                    _num_output_rows_p15 = B * S1 * N2
+                    _rows_per_core_p15 = (_num_output_rows_p15 + core_num - 1) // core_num
+                    for _row_off_p15 in T.serial(_rows_per_core_p15):
+                        _out_row_p15 = cid * _rows_per_core_p15 + _row_off_p15
+                        if _out_row_p15 < _num_output_rows_p15:
+                            _b_p15 = _out_row_p15 // (S1 * N2)
+                            _s1_p15 = (_out_row_p15 // N2) % S1
+                            _n2_p15 = _out_row_p15 % N2
+                            _qlen_p15 = actual_q_len[_b_p15]
+                            if _s1_p15 >= _qlen_p15:
+                                T.tile.fill(output_ub, -1)
+                                T.pipe_barrier("V")
+                                T.copy(output_ub, Out[_b_p15, _s1_p15, _n2_p15, 0:TOP_K])
 
-                # =========================================================
-                # Phase 2: Dispersed cross-core merge + output
-                # Each core handles ceil(num_bsns*S1_BLOCK/core_num) rows.
-                # workspace dim is S1_BLOCK (not S1), iterate per-core rows.
-                # =========================================================
-                num_output_rows = num_bsns * S1_BLOCK
-                rows_per_core_p2 = (num_output_rows + core_num - 1) // core_num
-                for row_off in T.serial(rows_per_core_p2):
-                    out_row = cid * rows_per_core_p2 + row_off
-                    if out_row < num_output_rows:
-                        out_bsn = out_row // S1_BLOCK
-                        out_s1_local = out_row % S1_BLOCK
-                        b_idx_p2 = out_bsn // (s1_blocks * N2)
-                        s1_blk_idx_p2 = (out_bsn // N2) % s1_blocks
-                        n2_idx_p2 = out_bsn % N2
-                        s1_start_p2 = s1_blk_idx_p2 * S1_BLOCK
-                        s1_idx_p2 = s1_start_p2 + out_s1_local
-                        _q_len_p2 = actual_q_len[b_idx_p2]
-                        # li_v2: removed _q_off_p2 = QOffset[b_idx_p2] (BSND-only kernel uses [b, s, ...] indexing)
-                        if s1_idx_p2 < _q_len_p2 and out_s1_local < S1_BLOCK:
-                            # P2-3: Read precomputed BSN task range from GM (eliminates while-loop)
-                            _bsn_rf_v = BsnRf[out_bsn]
-                            _bsn_rl_v = BsnRl[out_bsn]
-                            _tpc_safe_p2 = T.max(_tpc_real, T.cast(1, "int32"))
-                            _rc_first = _bsn_rf_v // _tpc_safe_p2
-                            _rc_last = _bsn_rl_v // _tpc_safe_p2
-                            if _rc_first != _rc_last:
-                                # Cross-core BSN: workspace read + merge + extract + cast + copyout
-                                # P4-2: Align AscendC head/tail — first core saved at slot 1 (tail),
-                                # middle/last cores saved at slot 0 (head). Read slot 0 uniformly.
-                                T.copy(TopK_Workspace[_rc_first, 1, out_s1_local, 0:_TA2], p2_acc_ub)
-                                T.set_flag("MTE2", "V", EVT_P2_WS)
-                                T.wait_flag("MTE2", "V", EVT_P2_WS)
-                                if NEED_CROSS_CORE:
-                                    num_merge_p2 = _rc_last - _rc_first
-                                    for m in T.serial(num_merge_p2):
-                                        other_cid = _rc_first + 1 + m
-                                        # V->MTE2 flag 6 for the topk_a_ub cross-iter RAW (merge_sort
-                                        # reads topk_a; next iter's copy overwrites it). pipe_barrier("V")
-                                        # covers the in-pipe p2_acc/merged RAW. Workspace is read-only
-                                        # (sync_all after Phase 1), so no cross-core sync in the merge loop.
-                                        if m > 0:
-                                            T.wait_flag("V", "MTE2", EVT_P2_MERGE_RAW)
-                                        T.copy(TopK_Workspace[other_cid, 0, out_s1_local, 0:_TA2], topk_a_ub[0, :])
-                                        T.set_flag("MTE2", "V", EVT_P2_WS + 1)
-                                        T.wait_flag("MTE2", "V", EVT_P2_WS + 1)
-                                        T.tile.merge_sort(merged_ub, p2_acc_ub, topk_a_ub[0, :])
-                                        T.pipe_barrier("V")
-                                        T.set_flag("V", "MTE2", EVT_P2_MERGE_RAW)
-                                        T.copy(merged_ub[0:_TA2], p2_acc_ub)
-                                        T.pipe_barrier("V")
-                                    # Balance flag 6 (consume last set) so per-row leftovers don't race
-                                    # with later cross-core rows' merge loops.
-                                    T.wait_flag("V", "MTE2", EVT_P2_MERGE_RAW)
-                                # Output: extract indices
-                                # V-pipe in-order execution guarantees ordering here
-                                # internal RAW (gather_mask→fill→gather_mask→compare→select→cast),
-                                # V-pipe in-order execution already guarantees ordering.
-                                T.tile.gather_mask(topk_index_ub, p2_acc_ub, "P1010")
-                                T.tile.fill(score_topk_ub, 0)
-                                T.tile.gather_mask(score_topk_ub, p2_acc_ub, "P0101")
-                                T.tile.compare(mask_topk_ub, score_topk_ub, T.cast(-1e30, calc_dtype), "GT")
-                                if return_value:
-                                    T.tile.cast(output_val_ub, score_topk_ub, "CAST_RINT", TOP_K)
-                                T.tile.select(
-                                    topk_index_ub, mask_topk_ub, topk_index_ub, T.cast(-1.0, calc_dtype), "VSEL_TENSOR_SCALAR_MODE"
-                                )
-                                T.tile.cast(output_ub, topk_index_ub, "CAST_ROUND", TOP_K)
+                    # =========================================================
+                    # Phase 2: Dispersed cross-core merge + output
+                    # Each core handles ceil(num_bsns*S1_BLOCK/core_num) rows.
+                    # workspace dim is S1_BLOCK (not S1), iterate per-core rows.
+                    # =========================================================
+                    num_output_rows = num_bsns * S1_BLOCK
+                    rows_per_core_p2 = (num_output_rows + core_num - 1) // core_num
+                    for row_off in T.serial(rows_per_core_p2):
+                        out_row = cid * rows_per_core_p2 + row_off
+                        if out_row < num_output_rows:
+                            out_bsn = out_row // S1_BLOCK
+                            out_s1_local = out_row % S1_BLOCK
+                            b_idx_p2 = out_bsn // (s1_blocks * N2)
+                            s1_blk_idx_p2 = (out_bsn // N2) % s1_blocks
+                            n2_idx_p2 = out_bsn % N2
+                            s1_start_p2 = s1_blk_idx_p2 * S1_BLOCK
+                            s1_idx_p2 = s1_start_p2 + out_s1_local
+                            _q_len_p2 = actual_q_len[b_idx_p2]
+                            # li_v2: removed _q_off_p2 = QOffset[b_idx_p2] (BSND-only kernel uses [b, s, ...] indexing)
+                            if s1_idx_p2 < _q_len_p2 and out_s1_local < S1_BLOCK:
+                                # P2-3: Read precomputed BSN task range from GM (eliminates while-loop)
+                                _bsn_rf_v = BsnRf[out_bsn]
+                                _bsn_rl_v = BsnRl[out_bsn]
+                                _tpc_safe_p2 = T.max(_tpc_real, T.cast(1, "int32"))
+                                _rc_first = _bsn_rf_v // _tpc_safe_p2
+                                _rc_last = _bsn_rl_v // _tpc_safe_p2
+                                if _rc_first != _rc_last:
+                                    # Cross-core BSN: workspace read + merge + extract + cast + copyout
+                                    # P4-2: Align AscendC head/tail — first core saved at slot 1 (tail),
+                                    # middle/last cores saved at slot 0 (head). Read slot 0 uniformly.
+                                    T.copy(TopK_Workspace[_rc_first, 1, out_s1_local, 0:_TA2], p2_acc_ub)
+                                    T.set_flag("MTE2", "V", EVT_P2_WS)
+                                    T.wait_flag("MTE2", "V", EVT_P2_WS)
+                                    if NEED_CROSS_CORE:
+                                        num_merge_p2 = _rc_last - _rc_first
+                                        for m in T.serial(num_merge_p2):
+                                            other_cid = _rc_first + 1 + m
+                                            # V->MTE2 flag 6 for the topk_a_ub cross-iter RAW (merge_sort
+                                            # reads topk_a; next iter's copy overwrites it). pipe_barrier("V")
+                                            # covers the in-pipe p2_acc/merged RAW. Workspace is read-only
+                                            # (sync_all after Phase 1), so no cross-core sync in the merge loop.
+                                            if m > 0:
+                                                T.wait_flag("V", "MTE2", EVT_P2_MERGE_RAW)
+                                            T.copy(TopK_Workspace[other_cid, 0, out_s1_local, 0:_TA2], topk_a_ub[0, :])
+                                            T.set_flag("MTE2", "V", EVT_P2_WS + 1)
+                                            T.wait_flag("MTE2", "V", EVT_P2_WS + 1)
+                                            T.tile.merge_sort(merged_ub, p2_acc_ub, topk_a_ub[0, :])
+                                            T.pipe_barrier("V")
+                                            T.set_flag("V", "MTE2", EVT_P2_MERGE_RAW)
+                                            T.copy(merged_ub[0:_TA2], p2_acc_ub)
+                                            T.pipe_barrier("V")
+                                        # Balance flag 6 (consume last set) so per-row leftovers don't race
+                                        # with later cross-core rows' merge loops.
+                                        T.wait_flag("V", "MTE2", EVT_P2_MERGE_RAW)
+                                    # Output: extract indices
+                                    # V-pipe in-order execution guarantees ordering here
+                                    # internal RAW (gather_mask→fill→gather_mask→compare→select→cast),
+                                    # V-pipe in-order execution already guarantees ordering.
+                                    T.tile.gather_mask(topk_index_ub, p2_acc_ub, "P1010")
+                                    T.tile.fill(score_topk_ub, 0)
+                                    T.tile.gather_mask(score_topk_ub, p2_acc_ub, "P0101")
+                                    T.tile.compare(mask_topk_ub, score_topk_ub, T.cast(-1e30, calc_dtype), "GT")
+                                    if return_value:
+                                        T.tile.cast(output_val_ub, score_topk_ub, "CAST_RINT", TOP_K)
+                                    T.tile.select(
+                                        topk_index_ub, mask_topk_ub, topk_index_ub, T.cast(-1.0, calc_dtype), "VSEL_TENSOR_SCALAR_MODE"
+                                    )
+                                    T.tile.cast(output_ub, topk_index_ub, "CAST_ROUND", TOP_K)
 
-                                T.set_flag("V", "MTE3", EVT_OUT_ROW)
-                                T.wait_flag("V", "MTE3", EVT_OUT_ROW)
-                                T.copy(output_ub, Out[b_idx_p2, s1_idx_p2, n2_idx_p2, 0:TOP_K])
-                                if return_value:
-                                    T.set_flag("MTE3", "V", EVT_OUT_VAL_DONE)
-                                    T.wait_flag("MTE3", "V", EVT_OUT_VAL_DONE)
-                                    T.set_flag("V", "MTE3", EVT_OUT_VAL)
-                                    T.wait_flag("V", "MTE3", EVT_OUT_VAL)
-                                    T.copy(output_val_ub, OutVal[b_idx_p2, s1_idx_p2, n2_idx_p2, 0:TOP_K])
+                                    T.set_flag("V", "MTE3", EVT_OUT_ROW)
+                                    T.wait_flag("V", "MTE3", EVT_OUT_ROW)
+                                    T.copy(output_ub, Out[b_idx_p2, s1_idx_p2, n2_idx_p2, 0:TOP_K])
+                                    if return_value:
+                                        T.set_flag("MTE3", "V", EVT_OUT_VAL_DONE)
+                                        T.wait_flag("MTE3", "V", EVT_OUT_VAL_DONE)
+                                        T.set_flag("V", "MTE3", EVT_OUT_VAL)
+                                        T.wait_flag("V", "MTE3", EVT_OUT_VAL)
+                                        T.copy(output_val_ub, OutVal[b_idx_p2, s1_idx_p2, n2_idx_p2, 0:TOP_K])
 
         return main
 
