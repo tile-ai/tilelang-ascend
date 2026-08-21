@@ -2898,14 +2898,39 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
     }
 
     // copy_gm_to_l1: append a `need_clear` flag so the helper only zero-inits
-    // the full L1 tile for the primary copy (dst offset 0). Sub-region copies
-    // (non-zero dst offset, e.g. the second DMA of a splice / vertical-merge
+    // the full L1 tile for the primary copy. Sub-region copies (dst offset not
+    // aligned to a whole tile, e.g. the second DMA of a splice / vertical-merge
     // pattern) must skip the clear, otherwise they clobber data already written
     // into the same NZ tile. dst_offset_expr is the scalar start offset of the
     // destination tile; when it is 0 this DMA targets the tile base and is the
-    // natural owner of the tail-padding clear.
+    // natural owner of the tail-padding clear. A ring-slot base (double-buffer
+    // prefetch writing slot (k+1)%S1) also starts a fresh tile, but at a flat
+    // offset that is a multiple of the tile size -- treat those as primary too,
+    // otherwise a partial (tail) chunk would keep stale data from the previous
+    // tenant of the slot. Tile extents are the last two template args of
+    // "copy_gm_to_l1<T, M, N>".
     if (op_name.find("copy_gm_to_l1") != std::string::npos) {
-      this->stream << ", " << (is_zero(dst_offset_expr) ? "true" : "false");
+      bool need_clear = is_zero(dst_offset_expr);
+      if (!need_clear) {
+        auto lt = op_name.find('<');
+        auto gt = op_name.rfind('>');
+        if (lt != std::string::npos && gt != std::string::npos && gt > lt) {
+          std::string targs = op_name.substr(lt + 1, gt - lt - 1);
+          std::replace(targs.begin(), targs.end(), ',', ' ');
+          std::istringstream iss(targs);
+          std::string dtype_tok;
+          int64_t tile_m = 0, tile_n = 0;
+          if (iss >> dtype_tok >> tile_m >> tile_n && tile_m > 0 &&
+              tile_n > 0) {
+            arith::Analyzer analyzer;
+            if (analyzer.CanProve(floormod(dst_offset_expr, tile_m * tile_n) ==
+                                  0)) {
+              need_clear = true;
+            }
+          }
+        }
+      }
+      this->stream << ", " << (need_clear ? "true" : "false");
     }
 
     // copy_l0c_to_gm's unitFlag rides at the end of the argument list rather
