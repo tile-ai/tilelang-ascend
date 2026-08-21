@@ -511,51 +511,33 @@ void CodeGenTileLangAscend::VisitStmt_(const BufferStoreNode *op) {
 void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
   if (op->op.same_as(tl::ascend_set_mask_mode()) ||
       op->op.same_as(tl::ascend_set_mask_payload())) {
-    ICHECK(in_managed_vector_region_)
-        << "Compiler-managed Vector-mask setter appeared outside its AIV "
-           "resource scope";
+    ICHECK(current_resource_scope_ == 1)
+        << "Compiler-managed Vector-mask setter appeared outside an explicit "
+           "AIV resource scope";
     ICHECK(platform_ == "A2" || platform_ == "A3")
         << "Compiler-managed Vector-mask setters are only valid for the A2/A3 "
            "AscendC path";
-    bool guard_aiv = current_resource_scope_ < 0;
-    int guard_scope = -1;
-    if (guard_aiv) {
-      this->PrintIndent();
-      this->stream << "if ASCEND_IS_AIV {\n";
-      guard_scope = this->BeginScope();
-    }
     MaskSetterCodegen(op);
-    if (guard_aiv) {
-      this->EndScope(guard_scope);
-      this->PrintIndent();
-      this->stream << "}\n";
-    }
   } else if (tl::IsSelectedVectorTerminal(GetRef<Call>(op))) {
-    ICHECK(in_managed_vector_region_)
-        << "Selected Vector terminal appeared outside its legalization scope: "
+    ICHECK(current_resource_scope_ == 1)
+        << "Selected Vector terminal appeared outside an explicit AIV "
+           "legalization scope: "
         << GetRef<Call>(op);
     ICHECK(platform_ == "A2" || platform_ == "A3")
         << "Selected Vector terminals are only valid for the A2/A3 AscendC "
            "path";
-    bool guard_aiv = current_resource_scope_ < 0;
-    int guard_scope = -1;
-    if (guard_aiv) {
-      this->PrintIndent();
-      this->stream << "if ASCEND_IS_AIV {\n";
-      guard_scope = this->BeginScope();
-    }
     Call selected = GetRef<Call>(op);
     EmitSelectedVectorTerminal(tl::SelectedCallView(selected));
-    if (guard_aiv) {
-      this->EndScope(guard_scope);
-      this->PrintIndent();
-      this->stream << "}\n";
-    }
-  } else if (in_managed_vector_region_ &&
-             (platform_ == "A2" || platform_ == "A3") &&
+  } else if ((platform_ == "A2" || platform_ == "A3") &&
              tl::RequiresSelectedVectorTerminal(GetRef<Call>(op))) {
-    LOG(FATAL) << "Unselected compiler-managed Vector operation reached "
-                  "AscendC codegen: "
+    if (current_resource_scope_ == 1) {
+      LOG(FATAL) << "Unselected compiler-managed Vector operation reached "
+                    "AscendC codegen: "
+                 << GetRef<Call>(op);
+    }
+    LOG(FATAL) << "Compiler-managed Vector operation must be inside an "
+                  "explicit T.Scope(\"V\"); enable "
+                  "tl.ascend_auto_cv_combine or scope it explicitly: "
                << GetRef<Call>(op);
   } else if (op->op.same_as(builtin::call_extern())) {
     std::string op_name = Downcast<StringImm>(op->args[0])->value;
@@ -670,10 +652,8 @@ void CodeGenTileLangAscend::VisitStmt_(const AttrStmtNode *op) {
   } else if (op->attr_key == "resource_scope") {
     auto resource_id = Downcast<IntImm>(op->value)->value;
     auto resource_name = resource_id == 0 ? "AIC" : "AIV";
-    bool saved_managed_vector_region = in_managed_vector_region_;
     int saved_resource_scope = current_resource_scope_;
     current_resource_scope_ = static_cast<int>(resource_id);
-    in_managed_vector_region_ = saved_managed_vector_region && resource_id == 1;
 
     this->PrintIndent();
     stream << "if ASCEND_IS_" << resource_name << " {\n";
@@ -682,7 +662,6 @@ void CodeGenTileLangAscend::VisitStmt_(const AttrStmtNode *op) {
     this->EndScope(func_scope);
     this->PrintIndent();
     stream << "}\n";
-    in_managed_vector_region_ = saved_managed_vector_region;
     current_resource_scope_ = saved_resource_scope;
     return;
   }
@@ -1122,7 +1101,6 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
   CodeGenC::DeclareFunction(gvar, f);
   // clear previous generated state.
   this->InitFuncState(f);
-  in_managed_vector_region_ = true;
   current_resource_scope_ = -1;
   buffer_dtypes_.clear();
   for (const auto &entry : f->buffer_map) {

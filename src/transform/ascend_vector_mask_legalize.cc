@@ -28,6 +28,11 @@ namespace tl {
 using namespace tir;
 using namespace tir::transform;
 
+static constexpr const char *ascendVectorMaskReuse =
+    "tl.ascend_vector_mask_reuse";
+
+TVM_REGISTER_PASS_CONFIG_OPTION(ascendVectorMaskReuse, Bool);
+
 namespace {
 
 enum class AscendMaskMode : int32_t { kNormal = 0, kCounter = 1 };
@@ -352,26 +357,33 @@ public:
 
 class AscendVectorMaskLegalizer final : public StmtExprMutator {
 public:
-  static PrimFunc Rewrite(PrimFunc func, Target target, std::string platform) {
+  static PrimFunc Rewrite(PrimFunc func, Target target, std::string platform,
+                          bool reuse_mask) {
     if (!UseCompilerManagedVectorMask(target, platform)) {
       return func;
     }
-    AscendVectorMaskLegalizer legalizer;
+    AscendVectorMaskLegalizer legalizer(reuse_mask);
     PrimFuncNode *copy = func.CopyOnWrite();
     copy->body = legalizer.VisitStmt(func->body);
     return func;
   }
 
 private:
+  explicit AscendVectorMaskLegalizer(bool reuse_mask)
+      : reuse_mask_(reuse_mask) {}
+
   Stmt VisitStmt_(const EvaluateNode *op) final {
     const auto *node = op->value.as<CallNode>();
-    if (node == nullptr || !in_vector_region_) {
+    if (node == nullptr || vector_scope_depth_ == 0) {
       return StmtExprMutator::VisitStmt_(op);
     }
     Call call = GetRef<Call>(node);
     ICHECK(!IsVectorMaskSetter(call))
         << "Vector-mask setter appeared before legalization: " << call;
     if (IsSelectedVectorTerminal(call)) {
+      if (!reuse_mask_) {
+        facts_ = {};
+      }
       SelectedCallView selected(call);
       RuntimeStridedCopyEffect copy_effect =
           ClassifyRuntimeStridedCopy(selected, &analyzer_);
@@ -379,7 +391,9 @@ private:
       std::vector<Stmt> sequence;
       Repair(contract, &sequence);
       sequence.push_back(GetRef<Stmt>(op));
-      if (copy_effect == RuntimeStridedCopyEffect::kPathDependent) {
+      if (!reuse_mask_) {
+        facts_ = {};
+      } else if (copy_effect == RuntimeStridedCopyEffect::kPathDependent) {
         // The runtime-strided helper either executes at least one count-form
         // Cast and leaves NORMAL/full, or executes zero loop iterations and
         // preserves the incoming state. Keep only facts true on both paths.
@@ -461,18 +475,17 @@ private:
     }
     const auto *scope = op->value.as<IntImmNode>();
     ICHECK(scope && (scope->value == 0 || scope->value == 1));
-    bool saved_region = in_vector_region_;
-    MaskFacts saved_facts = facts_;
-    in_vector_region_ = saved_region && scope->value == 1;
-    if (in_vector_region_) {
+    if (scope->value == 0) {
+      return GetRef<Stmt>(op);
+    }
+    bool outermost = vector_scope_depth_++ == 0;
+    if (outermost) {
       facts_ = {};
     }
     Stmt body = VisitStmt(op->body);
-    in_vector_region_ = saved_region;
-    if (scope->value == 0 || !saved_region) {
-      // The AIV skips an AIC scope, so its incoming mask state is preserved.
-      // A nested AIV scope under an AIC scope is unreachable on AIV as well.
-      facts_ = saved_facts;
+    --vector_scope_depth_;
+    if (outermost) {
+      facts_ = {};
     }
     return AttrStmt(op->node, op->attr_key, op->value, body, op->span);
   }
@@ -588,16 +601,19 @@ private:
     }
   }
 
-  bool in_vector_region_{true};
+  const bool reuse_mask_;
+  int vector_scope_depth_{0};
   MaskFacts facts_;
   arith::Analyzer analyzer_;
 };
 
 tvm::transform::Pass AscendVectorMaskLegalize(Target target,
                                               std::string platform) {
-  auto pass_func = [=](PrimFunc func, IRModule, PassContext) {
-    return AscendVectorMaskLegalizer::Rewrite(std::move(func), target,
-                                              platform);
+  auto pass_func = [=](PrimFunc func, IRModule, PassContext ctx) {
+    bool reuse_mask =
+        ctx->GetConfig<Bool>(ascendVectorMaskReuse, Bool(true)).value();
+    return AscendVectorMaskLegalizer::Rewrite(std::move(func), target, platform,
+                                              reuse_mask);
   };
   return CreatePrimFuncPass(pass_func, 0, "tl.AscendVectorMaskLegalize", {});
 }

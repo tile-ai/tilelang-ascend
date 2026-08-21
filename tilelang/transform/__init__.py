@@ -402,6 +402,11 @@ def AscendVectorMaskLegalize(target: Target, platform: str):
     return _ffi_api.AscendVectorMaskLegalize(target, platform)  # type: ignore
 
 
+def AscendResourceScopeVerify():
+    """Verify that resource-specific Ascend operations have a C/V owner."""
+    return _ffi_api.AscendResourceScopeVerify()  # type: ignore
+
+
 def CombineCV():
     """CombineCV
 

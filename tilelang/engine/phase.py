@@ -126,6 +126,11 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
         # rewrite pass has completed. No TIR-transforming pass may run after
         # mask legalization.
         mod = tir.transform.Simplify()(mod)
+    # CombineCV or explicit T.Scope annotations must assign every
+    # resource-specific Ascend operation to C or V. Verify after automatic
+    # synchronization has materialized its final hardware calls.
+    mod = tilelang.transform.AscendResourceScopeVerify()(mod)
+    if managed_vector_mask:
         mod = tilelang.transform.AscendVectorInstructionSelection(target, platform)(mod)
         mod = tilelang.transform.AscendVectorMaskLegalize(target, platform)(mod)
     # print(mod)

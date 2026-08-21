@@ -644,7 +644,7 @@ public:
 private:
   Stmt VisitStmt_(const EvaluateNode *op) final {
     const auto *call = op->value.as<CallNode>();
-    if (call == nullptr || !in_vector_region_) {
+    if (call == nullptr || vector_scope_depth_ == 0) {
       return StmtExprMutator::VisitStmt_(op);
     }
     Call semantic = GetRef<Call>(call);
@@ -674,15 +674,17 @@ private:
     }
     const auto *scope = op->value.as<IntImmNode>();
     ICHECK(scope && (scope->value == 0 || scope->value == 1));
-    bool saved_region = in_vector_region_;
-    in_vector_region_ = saved_region && scope->value == 1;
+    if (scope->value == 0) {
+      return GetRef<Stmt>(op);
+    }
+    ++vector_scope_depth_;
     Stmt body = VisitStmt(op->body);
-    in_vector_region_ = saved_region;
+    --vector_scope_depth_;
     return AttrStmt(op->node, op->attr_key, op->value, body, op->span);
   }
 
   arith::Analyzer analyzer_;
-  bool in_vector_region_{true};
+  int vector_scope_depth_{0};
 };
 
 tvm::transform::Pass AscendVectorInstructionSelection(Target target,

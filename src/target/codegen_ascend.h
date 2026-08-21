@@ -286,10 +286,8 @@ private:
 
   std::unordered_map<const VarNode *, DataType> buffer_dtypes_;
 
-  // Managed Vector operations are legal in the mixed outer region and in an
-  // explicit AIV scope, but never in an explicit AIC scope. Setters and
-  // terminals emitted in the mixed outer region need an ASCEND_IS_AIV guard.
-  bool in_managed_vector_region_{true};
+  // The resource-scope verifier guarantees that selected Vector terminals
+  // and mask setters only occur in an explicit AIV scope.
   int current_resource_scope_{-1};
 };
 
