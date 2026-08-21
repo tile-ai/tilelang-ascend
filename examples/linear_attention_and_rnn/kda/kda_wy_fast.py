@@ -105,7 +105,12 @@ def wy_fast_ker(B, SEQ, H, HV, K, V, C, BK, BV, dtype="float16", accum_dtype="fl
         # beta is one fp32 per (token, head), padded to 8 so each row is a whole
         # 32B block: a [.., 1] tile would be a 4B UB row and the DMA would land
         # the rows 32B apart anyway, walking over whatever follows.
-        Beta: T.Tensor([B, SEQ, HV, BETA_PAD], accum_dtype),  # type: ignore
+        # beta as the frozen contract has it -- one value per (token, head) --
+        # seen through a free unsqueeze(-1).  The 32B UB alignment that used to
+        # be bought by materialising a zero-padded [.., 8] tensor on the host is
+        # now handled where it belongs, inside the kernel: the UB tile stays
+        # BETA_PAD wide and the DMA pads the columns it does not read.
+        Beta: T.Tensor([B, SEQ, HV, 1], accum_dtype),  # type: ignore
         G: T.Tensor([B, SEQ, HV, K], accum_dtype),  # type: ignore  chunk-local cumsum
         A: T.Tensor([B, SEQ, HV, C], dtype),  # type: ignore  (I + L)^{-1}
         # Workspaces: the vector cores publish the scaled operands here for the
@@ -180,7 +185,7 @@ def wy_fast_ker(B, SEQ, H, HV, K, V, C, BK, BV, dtype="float16", accum_dtype="fl
                     T.copy(Kt[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hq, :], k_half)
                     T.copy(Vt[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hv, :], v_half)
                     T.copy(G[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hv, :], g_ub)
-                    T.copy(Beta[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hv, :], beta8_ub)
+                    T.copy(Beta[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hv, 0:1], beta8_ub, pad_value=0)
                 T.copy(k_half, kg_ub)  # dtype -> fp32
                 T.copy(v_half, v_ub)
 
@@ -275,12 +280,11 @@ def wy_fast(k, v, beta, G, A, C, BK=None, BV=None):
             torch.empty((B, 0, HV, V), device=k.device, dtype=k.dtype),
         )
 
-    # beta: one fp32 per (token, head) in column 0, the other 7 slots zero.
-    # The zeros are load-bearing -- the kernel recovers column 0 as the row sum
-    # of the padded row.  Padding to [B, SEQ, HV, 8] and not [B, SEQ, HV + 8]:
-    # the latter starts head hv at byte offset 4*hv, which is not 32B aligned.
-    beta_p = torch.zeros((B, SEQ, HV, BETA_PAD), device=k.device, dtype=torch.float)
-    beta_p[..., 0] = beta.float()
+    # beta goes in as the contract has it.  unsqueeze(-1) is a view -- no
+    # allocation, no copy, same data_ptr -- so the host does no bulk work.  The
+    # 32B UB alignment is a property of the hardware, not of the operator's
+    # interface, so it is dealt with inside the kernel.
+    beta_p = beta.float().unsqueeze(-1)
 
     dt = _DTYPES[k.dtype]
     ker = wy_fast_ker(B, SEQ, H, HV, K, V, C, BK, BV, dtype=dt)

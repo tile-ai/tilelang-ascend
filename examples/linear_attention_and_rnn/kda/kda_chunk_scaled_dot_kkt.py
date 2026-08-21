@@ -157,7 +157,9 @@ def kkt_ker(B, SEQ, H, HV, K, C, dtype="float16", accum_dtype="float"):
         # beta gets a whole 32B slot per token: a [1] fp32 buffer is 4B and
         # skews every later allocation ("The UB address accessed by the VEC
         # instruction is not aligned").  Padded on host, only [0] is read.
-        Beta: T.Tensor([B, SEQ, HV, 8], accum_dtype),  # type: ignore
+        # beta as the contract has it, through a free unsqueeze(-1); the wide
+        # UB row it lands in is padded by the DMA, not by the host.
+        Beta: T.Tensor([B, SEQ, HV, 1], accum_dtype),  # type: ignore
         Msk: T.Tensor([C, C], accum_dtype),  # type: ignore  strictly lower
         L: T.Tensor([B, SEQ, HV, C], dtype),  # type: ignore
     ):
@@ -244,7 +246,7 @@ def kkt_ker(B, SEQ, H, HV, K, C, dtype="float16", accum_dtype="float"):
                     T.copy(krow_half, krow_ub)
                     T.copy(G[bz, base + ri, hv, 0], grow_ub)
                     T.copy(Msk[ri, 0], mrow_ub)
-                    T.copy(Beta[bz, base + ri, hv, 0], beta_ub)
+                    T.copy(Beta[bz, base + ri, hv, 0:1], beta_ub, pad_value=0)
 
                     # One operation per T.Parallel, as the GDN kernels do:
                     # a compound expression allocates a scratch tile each.
@@ -323,12 +325,8 @@ def chunk_scaled_dot_kkt(k, G, beta, C=64):
     # beta: one 32B slot per token, only lane 0 carries a value.  Padding the
     # last axis to 8 rather than the head axis to HV + 8 is deliberate: the
     # latter starts head hv at byte 4 * hv, which is not a multiple of 32.
-    if beta.dim() == 3:
-        beta_p = torch.zeros((B, SEQ, HV, 8), device=beta.device, dtype=torch.float)
-        beta_p[..., 0] = beta.float()
-    else:
-        assert beta.shape == (B, SEQ, HV, 8), f"padded beta must be [B,SEQ,HV,8], got {tuple(beta.shape)}"
-        beta_p = beta.float()
+    assert beta.shape == (B, SEQ, HV), f"beta must be the contract shape [B, SEQ, HV], got {tuple(beta.shape)}"
+    beta_p = beta.float().unsqueeze(-1)  # a view: no allocation, no copy
 
     msk = torch.tril(torch.ones((C, C), device=k.device, dtype=torch.float), diagonal=-1)
 

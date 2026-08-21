@@ -170,6 +170,15 @@ def kda_recurrent(q, k, v, g, beta, scale=None, initial_state=None, output_final
     # kernel comment on Beta.  Padding to [B,SEQ,HV,8] and not [B,SEQ,HV+8]:
     # the latter starts head hv at byte offset 4*hv, which is not a multiple of
     # 32, so it would be misaligned all the same.
+    #
+    # The chunkwise stages do NOT do this any more: they take beta through a
+    # free unsqueeze(-1) and let the DMA pad the UB tile.  That trick needs a
+    # tile of consecutive tokens to pad into, and this kernel has none -- it
+    # consumes one scalar per token inside a serial scan.  Building a tile here
+    # would mean either an out-of-range window at the end of the sequence or a
+    # UB buffer sized by SEQ, i.e. a new length limit on the decode path.  The
+    # padding stays, and it is cheap where it stays: decode runs on short
+    # sequences, so this is kilobytes, not the megabytes it was in prefill.
     beta_p = torch.zeros((B, SEQ, HV, 8), device=q.device, dtype=torch.float)
     beta_p[..., 0] = beta.float()
 
