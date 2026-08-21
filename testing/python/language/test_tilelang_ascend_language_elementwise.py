@@ -1016,8 +1016,7 @@ def test_bitwise_lshift_int8_xfail(dtype, target):
 
 
 @pytest.mark.xfail(
-    reason="float16/float32 are not supported: bitwise shift is integer-only. "
-    "Both AscendC and PTO lack float specializations."
+    reason="float16/float32 are not supported: bitwise shift is integer-only. Both AscendC and PTO lack float specializations."
 )
 @pytest.mark.parametrize("dtype", ["float16", "float32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
