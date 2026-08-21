@@ -73,8 +73,12 @@ TL_ASCEND_NATURAL_BINARY(ascend_min, ascend_min, kFloat16Float32Int16Int32,
                          "AscendC::Min")
 TL_ASCEND_NATURAL_BINARY(ascend_bitwise_and, ascend_bitwise_and, kInt16UInt16,
                          "AscendC::And")
+TL_ASCEND_HELPER(ascend_bitwise_and_uint8_legacy_count, kLegacyUInt8,
+                 kSelfContainedNormalFull)
 TL_ASCEND_NATURAL_BINARY(ascend_bitwise_or, ascend_bitwise_or, kInt16UInt16,
                          "AscendC::Or")
+TL_ASCEND_HELPER(ascend_bitwise_or_uint8_legacy_count, kLegacyUInt8,
+                 kSelfContainedNormalFull)
 
 TL_ASCEND_NATURAL_UNARY(ascend_exp, ascend_exp, kFloat16Float32, "AscendC::Exp")
 TL_ASCEND_NATURAL_UNARY(ascend_ln, ascend_ln, kFloat16Float32, "AscendC::Ln")

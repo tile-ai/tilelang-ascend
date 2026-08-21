@@ -148,10 +148,35 @@ def _add_program(length: int, dtype: str = "float32", add_count: int = 1):
     return main
 
 
+def _uint8_bitwise_program(operation: str):
+    @T.prim_func
+    def main(
+        a: T.Tensor((8,), "uint8"),
+        b: T.Tensor((8,), "uint8"),
+        c: T.Tensor((8,), "uint8"),
+    ):
+        with T.Kernel(1, threads=1, is_npu=True):
+            a_ub = T.alloc_ub((8,), "uint8")
+            b_ub = T.alloc_ub((8,), "uint8")
+            c_ub = T.alloc_ub((8,), "uint8")
+            with T.Scope("V"):
+                T.copy(a, a_ub)
+                T.copy(b, b_ub)
+                if operation == "and":
+                    T.tile.bitwise_and(c_ub, a_ub, b_ub)
+                else:
+                    T.tile.bitwise_or(c_ub, a_ub, b_ub)
+                T.copy(c_ub, c)
+
+    return main
+
+
 _add_fp32 = _add_program(128)
 _add_uint32 = _add_program(64, "uint32")
 _two_adds = _add_program(64, add_count=2)
 _counter_add = _add_program(96)
+_bitwise_and_uint8 = _uint8_bitwise_program("and")
+_bitwise_or_uint8 = _uint8_bitwise_program("or")
 
 
 @T.prim_func
@@ -216,15 +241,22 @@ def test_selection_uses_normal_and_counter_without_dtype_fallback():
     with pytest.raises(Exception, match="Unsupported AscendC Vector dtype uint32.*no fallback"):
         OptimizeForTarget(lowered, ASCENDC, "A2")
 
-    uint8_and = _call(
-        "tl.ascend_bitwise_and",
-        _access("uint8", "u8_dst", 8, 2),
-        _access("uint8", "u8_src0", 8, 1),
-        _access("uint8", "u8_src1", 8, 1),
-        _int(8),
-    )
-    with pytest.raises(Exception, match="Unsupported AscendC Vector dtype uint8.*no fallback"):
-        _selected_call(uint8_and, "tl.ascend_bitwise_and_raw")
+
+@pytest.mark.parametrize(
+    ("program", "terminal", "intrinsic"),
+    [
+        (_bitwise_and_uint8, "tl.ascend_bitwise_and_uint8_legacy_count", "And"),
+        (_bitwise_or_uint8, "tl.ascend_bitwise_or_uint8_legacy_count", "Or"),
+    ],
+)
+def test_uint8_bitwise_preserves_legacy_count_form(program, terminal, intrinsic):
+    selected = _select(program)
+    assert _names(selected.body).count(terminal) == 1
+
+    tilelang.disable_cache()
+    source = tilelang.compile(program, target="ascendc", platform="A2", out_idx=[2]).get_kernel_source()
+    assert f"AscendC::{intrinsic}(c_ub[0], a_ub[0], b_ub[0], 8);" in source
+    assert f"AscendC::{intrinsic}<uint8_t, false>" not in source
 
 
 def test_effect_only_variants_share_terminals_and_compute_contextual_contracts():

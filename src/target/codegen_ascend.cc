@@ -2641,6 +2641,10 @@ bool CodeGenTileLangAscend::EmitVectorHelper(const ObjectRef &semantic_op,
     CompareCodegen(op, "AscendC::Compare");
   } else if (semantic_op.same_as(tl::ascend_compare_scalar())) {
     CompareScalarCodegen(op, "AscendC::CompareScalar");
+  } else if (semantic_op.same_as(tl::ascend_bitwise_and())) {
+    PrintOpCall(op, "AscendC::And", {0, 3}, {3, 4});
+  } else if (semantic_op.same_as(tl::ascend_bitwise_or())) {
+    PrintOpCall(op, "AscendC::Or", {0, 3}, {3, 4});
   } else if (semantic_op.same_as(tl::ascend_gather())) {
     GatherCodegen(op, "AscendC::Gather");
   } else if (semantic_op.same_as(tl::ascend_reduce())) {

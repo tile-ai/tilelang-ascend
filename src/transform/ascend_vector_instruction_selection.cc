@@ -507,6 +507,12 @@ ResolveSemanticCall(const Call &call,
     ICHECK(!dtype.is_void())
         << "Vector operation has no typed buffer operand: " << call;
     variant = FindVariant(semantic, SelectorRecipe::kNaturalNormal, dtype);
+    if (variant == nullptr && dtype == DataType::UInt(8)) {
+      variant = FindVariant(semantic, SelectorRecipe::kLegacyUInt8);
+      if (variant != nullptr) {
+        break;
+      }
+    }
     ICHECK(variant != nullptr)
         << "Unsupported AscendC Vector dtype " << dtype << " for "
         << semantic.base->name

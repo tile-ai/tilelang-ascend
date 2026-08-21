@@ -60,6 +60,12 @@ same bit width is not accepted merely because its storage size matches. If the o
 shape, or ABI is unsupported, compilation reports an error; it does not fall back to a count-form
 call whose behavior has not been validated.
 
+There is one temporary compatibility exception: `uint8` And/Or keeps the pre-PR count-form call
+with the original logical byte count. On dav-c220 that unsupported form executes 16-bit lanes, so
+count `N` may access `2N` bytes. It is deliberately isolated from raw mask reuse and should be
+removed when the follow-up typed-view lowering expresses the physical `uint16` view and count.
+Managed raw And/Or remains limited to `int16` and `uint16`.
+
 Operations with a different physical ABI, such as reductions, casts, broadcast, clamp, and
 workspace-backed helpers, have their own selection recipes in the same catalog.
 
