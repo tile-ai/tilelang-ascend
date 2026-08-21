@@ -1,38 +1,41 @@
-"""GQA Sink Attention (BHSD) for Ascend NPU — no-scope Developer mode (5-kernel bwd split).
+"""GQA Sink Attention (BHSD) for Ascend NPU — combineCV 6-kernel bwd merge.
 
 Layout: BHSD (Batch, Heads, SeqLen, Dim). Supports GQA (grouped-query attention),
 an attention sink token, and an optional sliding window mask. fp16, Developer mode.
 
-Architecture (ref: examples/deepseek_nsa/example_tilelang_nsa_bwd/):
-  k1 (Cube):   S = Q @ K^T                     -> ws_s          [fp32]
-  k2 (Vector): P = exp(S*scale - lse) + mask    -> ws_p, ws_p_delta, ws_p_fp32
-  k3 (Cube):   dV = P^T @ dO (Comp GEMM) + dP   -> dV[atomic], ws_dp
-  k4 (Vector): dS = P*(dP-Delta)*scale + mask   -> ws_ds, ws_ds_delta
-  k5 (Cube):   dK = dS^T @ Q (Comp GEMM) + dQ   -> dK[atomic], dQ[L0C accumulate]
+Architecture (ref: DESIGN.md §5.3 — combineCV merge A+B+E+F'):
+  Merged kernel 2 (preprocess, Vector):   Delta = sum(O*dO) + dSink = -exp(sink-lse)*Delta
+  Merged kernel 3 (qk_softmax, Hybrid):        S = Q@K^T (Cube) → P = softmax(S) (Vector)
+  Merged kernel 4 (dv_dp_ds, Hybrid):        dV+dP (Cube) → dS (Vector)
+  Kernel 5 (k5, Hybrid, unchanged):       dK + dQ (Compensated GEMM)
+  Merged kernel 6 (postprocess, Vector):  dK+dV fp32→fp16 dual-output cast
 
-9 kernels total:
-  1. flashattn_fwd:                Forward (online softmax + sink + window) -> O, lse
-  2. flashattn_bwd_preprocess:     Delta = sum(O * dO, dim=-1)
-  3. flashattn_bwd_k1_qk_recompute: S = Q @ K^T (recompute) -> ws_s
-  4. flashattn_bwd_k2_softmax_p:    P = softmax(S) + mask + p_delta
-  5. flashattn_bwd_k3_dv_dp:        dV (Compensated GEMM) + dP -> ws_dp
-  6. flashattn_bwd_k4_ds_compute:   dS = P*(dP-Delta)*scale + mask + ds_delta
-  7. flashattn_bwd_k5_dk_dq:        dK (Compensated GEMM) + dQ (L0C accumulate)
-  8. flashattn_bwd_postprocess:     dK/dV fp32 -> fp16 (dQ direct fp16 from k5)
-  9. flashattn_bwd_dsink:           dSink = -exp(sink - lse) * Delta
+6 kernels total (down from 9):
+  1. flashattn_fwd:                     Forward (online softmax + sink + window) -> O, lse
+  2. flashattn_bwd_preprocess:          Delta = sum(O*dO) + dSink = -exp(sink-lse)*Delta
+  3. flashattn_bwd_qk_softmax:    S = Q@K^T (Cube) → P=softmax(S)+mask (Vector)
+  4. flashattn_bwd_dv_dp_ds:      dV(CompGEMM)+dP (Cube) → dS (Vector)
+  5. flashattn_bwd_dk_dq:            dK (Compensated GEMM) + dQ (L0C accumulate)
+  6. flashattn_bwd_postprocess:  dK+dV fp32 -> fp16 (dual-output, dQ direct fp16 from k5)
 
-Key design decisions:
+combineCV sync mechanism (DESIGN.md §5.1):
+  - intra-kernel CV transfer buffers named ``workspace_s`` / ``workspace_dp`` (contain
+    "workspace" substring) → combineCV FetchWorkspaceName collects sync points →
+    auto set_flag/wait_flag insertion (ascend_combinecv.cc:190-202).
+  - inter-kernel GM workspace named ``ws_*`` (no "workspace" substring) → combineCV
+    skips sync → host ``torch.npu.synchronize()`` guarantees ordering.
+  - Compensated GEMM: p_delta/ds_delta loaded from GM ws_* directly to L1 (copy_gm_to_l1,
+    Cube side) — NOT UB→L1 transfer (would trigger combineCV V→C sync mismatch).
+
+Key design decisions (preserved from baseline):
   - No T.Scope, no set_flag/wait_flag, no cross_flag, no barrier_all — pure
     AUTO_CV_SYNC + AUTO_SYNC automatic synchronization (Developer mode).
   - Compensated GEMM: fp16 GEMM result corrected by a second GEMM on the fp16
-    quantization residual (p_delta in k3, ds_delta in k5). Recovers fp32-equivalent
-    accuracy while keeping the main GEMM in fp16 throughput path.
-  - Split-loop mask skip in k2/k4: when a KV block is fully above the causal
+    quantization residual (p_delta in k3, ds_delta in k5).
+  - Split-loop mask skip in qk_softmax: when a KV block is fully above the causal
     diagonal (all positions pass the mask), the mask computation is skipped via a
-    Python-level split into two T.serial loops. TIR if/else inside T.serial is
-    avoided because Ascend codegen handles branches inside loops poorly.
-  - dQ written as fp16 directly from k5 (L0C fp32 -> GM fp16 auto-cast), skipping
-    the postprocess cast that dK/dV still need (they stay fp32 in GM for atomic_add).
+    Python-level split into two T.serial loops.
+  - dQ written as fp16 directly from k5 (L0C fp32 -> GM fp16 auto-cast).
   - Precision: 169-line standard (atol=6.10e-5, rtol=1.95e-3 for fp16).
 """
 
@@ -46,8 +49,8 @@ from tilelang import language as T
 # pass_configs (D11: 4 explicit keys per config)
 # ============================================================================
 
-# Hybrid mode for fwd + Cube kernels (k1, k3, k5) — AUTO_CV_COMBINE/SYNC needed
-# for L0C->GM->UB two-hop accumulation pattern.
+# Hybrid mode for fwd + merged C+V kernels (qk_softmax, dv_dp_ds, dk_dq) — AUTO_CV_COMBINE/SYNC
+# needed for L0C->GM->UB two-hop accumulation pattern and intra-kernel CV transfer.
 _hybrid_pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
@@ -55,7 +58,7 @@ _hybrid_pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
-# Vector mode for preprocess/k2/k4/postprocess/dsink (pure element-wise, no GEMM).
+# Vector mode for preprocess / postprocess (pure element-wise, no GEMM).
 _vector_pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: False,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: False,
@@ -65,7 +68,7 @@ _vector_pass_configs = {
 
 
 # ============================================================================
-# Kernel 1: Forward (online softmax + attention sink + sliding window)
+# Kernel 1: Forward (online softmax + attention sink + sliding window) — unchanged
 # ============================================================================
 
 
@@ -133,9 +136,6 @@ def flashattn_fwd(batch, heads, seq_len, dim, groups, window_size, block_M=64, b
             acc_o_ub = T.alloc_ub([hm, dim], accum_dtype)
             acc_o_half = T.alloc_ub([hm, dim], dtype)
             col_pos = T.alloc_ub([block_N], accum_dtype)
-            # 2D mask buffers: row_pos [hm] broadcast to row_pos_2d [hm, block_N],
-            # col_pos broadcast to [hm, block_N] via acc_s_ub_ reuse. mask_2d holds
-            # the final per-element mask; causal_mask_2d is the window-case intermediate.
             row_pos = T.alloc_ub([hm], accum_dtype)
             row_pos_2d = T.alloc_ub([hm, block_N], accum_dtype)
             mask_2d = T.alloc_ub([hm, block_N], accum_dtype)
@@ -159,7 +159,6 @@ def flashattn_fwd(batch, heads, seq_len, dim, groups, window_size, block_M=64, b
 
             T.copy(Q[bz, by, q_row : q_row + block_M, :], q_l1)
 
-            # Loop-invariant: Q token positions depend only on q_row and v_row.
             T.tile.arith_progression(row_pos, q_row + v_row, 1, hm)
 
             for k in T.serial(loop_st, loop_ed):
@@ -174,11 +173,8 @@ def flashattn_fwd(batch, heads, seq_len, dim, groups, window_size, block_M=64, b
                 T.tile.fill(acc_s_ub, 0.0)
                 T.copy(m_i, m_i_prev)
                 T.copy(workspace_1[cid, v_row : v_row + hm, :], acc_s_ub_)
-                # axpy(dst, src, scalar) = scalar*src + dst; with dst=0 yields sm_scale * S.
                 T.tile.axpy(acc_s_ub, acc_s_ub_, sm_scale)
 
-                # 2D mask via broadcast + compare + select (replaces per-row Python loop).
-                # acc_s_ub_ reused as col_pos_2d (free after the axpy above).
                 T.tile.arith_progression(col_pos, kv, 1, block_N)
                 T.tile.broadcast(acc_s_ub_, col_pos, axis=0)
                 T.tile.broadcast(row_pos_2d, row_pos, axis=1)
@@ -201,14 +197,12 @@ def flashattn_fwd(batch, heads, seq_len, dim, groups, window_size, block_M=64, b
                 T.tile.max(m_i, m_i, m_i_prev)
                 T.tile.sub(m_i_prev, m_i_prev, m_i)
                 T.tile.exp(m_i_prev, m_i_prev)
-                # Broadcast m_i to 2D and subtract (replaces per-row loop).
                 T.tile.broadcast(acc_s_ub_, m_i, axis=1)
                 T.tile.sub(acc_s_ub, acc_s_ub, acc_s_ub_)
                 T.tile.exp(acc_s_ub, acc_s_ub)
                 T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
                 T.tile.mul(sumexp, sumexp, m_i_prev)
                 T.tile.add(sumexp, sumexp, sumexp_i_ub)
-                # Broadcast m_i_prev to 2D and rescale acc_o (replaces per-row loop).
                 T.tile.broadcast(acc_o_ub, m_i_prev, axis=1)
                 T.tile.mul(acc_o, acc_o, acc_o_ub)
 
@@ -230,7 +224,6 @@ def flashattn_fwd(batch, heads, seq_len, dim, groups, window_size, block_M=64, b
             T.tile.exp(sink_exp_ub, sink_exp_ub)
             T.tile.add(sumexp, sumexp, sink_exp_ub)
 
-            # Normalize: O /= sumexp (broadcast sumexp to 2D, replaces per-row loop).
             T.tile.broadcast(acc_o_ub, sumexp, axis=1)
             T.tile.div(acc_o, acc_o, acc_o_ub)
 
@@ -245,23 +238,41 @@ def flashattn_fwd(batch, heads, seq_len, dim, groups, window_size, block_M=64, b
 
 
 # ============================================================================
-# Kernel 2: Backward Preprocess — Delta = sum(O * dO, dim=-1)
+# Kernel 2 (merged): flashattn_bwd_preprocess
+#   Delta = sum(O * dO, dim=-1)  +  dSink = -exp(sink - lse) * Delta
+#   Pure Vector. Merges baseline preprocess + dsink (方案 E).
+#   Delta computed in UB, used directly for dSink (no GM read-back), then written
+#   to GM for merged_dv_dp_ds consumer.
 # ============================================================================
 
 
-@tilelang.jit(out_idx=[2], pass_configs=_vector_pass_configs)
+@tilelang.jit(out_idx=[2, 3], pass_configs=_vector_pass_configs)
 def flashattn_bwd_preprocess(batch, heads, seq_len, dim, blk=32):
+    """Merged preprocess + dsink: Delta = sum(O*dO) and dSink = -exp(sink-lse)*Delta.
+
+    Pure Vector kernel. Each block handles ``blk // 2`` rows of one (batch, head).
+    Delta is computed in UB and used directly for dSink (no inter-kernel GM
+    read-back). Both Delta and dSinks are written to GM as outputs.
+
+    Outputs:
+      Delta [B, H, N] fp32 — consumed by merged_dv_dp_ds
+      dsinks [B, H, N] fp32 — host sums to [H] for final dSinks
+    """
     assert seq_len % blk == 0
     dtype = "float16"
     accum_dtype = "float"
     shape = [batch, heads, seq_len, dim]
+    delta_shape = [batch, heads, seq_len]
     block_num = heads * (seq_len // blk) * batch
 
     @T.prim_func
     def main(
         O: T.Tensor(shape, dtype),  # type: ignore
         dO: T.Tensor(shape, dtype),  # type: ignore
-        Delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
+        Delta: T.Tensor(delta_shape, accum_dtype),  # type: ignore
+        dsinks: T.Tensor(delta_shape, accum_dtype),  # type: ignore
+        Sinks: T.Tensor([heads], dtype),  # type: ignore
+        lse: T.Tensor(delta_shape, accum_dtype),  # type: ignore
     ):
         with T.Kernel(block_num, is_npu=True) as (cid, vid):
             by = cid % (seq_len // blk)
@@ -274,33 +285,60 @@ def flashattn_bwd_preprocess(batch, heads, seq_len, dim, blk=32):
             prod_ub = T.alloc_ub([blk // 2, dim], accum_dtype)
             do_fp32 = T.alloc_ub([blk // 2, dim], accum_dtype)
             delta_ub = T.alloc_ub([blk // 2], accum_dtype)
+            lse_ub = T.alloc_ub([blk // 2], accum_dtype)
+            sink_exp_ub = T.alloc_ub([blk // 2], accum_dtype)
+            sink_val_ub = T.alloc_ub([blk // 2], accum_dtype)
+            sink_scalar = T.alloc_ub([1], dtype)
 
-            T.copy(O[bz, bx, by * blk + vid * blk // 2 : by * blk + vid * blk // 2 + blk // 2, :], o_ub)
-            T.copy(dO[bz, bx, by * blk + vid * blk // 2 : by * blk + vid * blk // 2 + blk // 2, :], do_ub)
+            row_st = by * blk + vid * blk // 2
+            row_ed = row_st + blk // 2
+
+            # --- Delta = sum(O * dO, dim=-1) ---
+            T.copy(O[bz, bx, row_st:row_ed, :], o_ub)
+            T.copy(dO[bz, bx, row_st:row_ed, :], do_ub)
             T.copy(o_ub, prod_ub)
             T.copy(do_ub, do_fp32)
             T.tile.mul(sum_ub, prod_ub, do_fp32)
             T.reduce_sum(sum_ub, delta_ub, dim=-1)
-            T.copy(delta_ub, Delta[bz, bx, by * blk + vid * blk // 2 : by * blk + vid * blk // 2 + blk // 2])
+            T.copy(delta_ub, Delta[bz, bx, row_st:row_ed])
+
+            # --- dSink = -exp(sink - lse) * Delta (uses delta_ub directly) ---
+            T.copy(Sinks[bx : bx + 1], sink_scalar)
+            T.tile.fill(sink_val_ub, sink_scalar[0])
+            T.copy(lse[bz, bx, row_st:row_ed], lse_ub)
+            T.tile.sub(sink_exp_ub, sink_val_ub, lse_ub)
+            T.tile.exp(sink_exp_ub, sink_exp_ub)
+            T.tile.mul(sink_exp_ub, sink_exp_ub, delta_ub)
+            T.tile.mul(sink_exp_ub, sink_exp_ub, -1.0)
+            T.copy(sink_exp_ub, dsinks[bz, bx, row_st:row_ed])
 
     return main
 
 
 # ============================================================================
-# Kernel 3 (k1): flashattn_bwd_k1_qk_recompute — S = Q @ K^T (pure Cube)
+# Kernel 3 (merged): flashattn_bwd_qk_softmax
+#   Cube:  S = Q @ K^T  -> workspace_s (intra-kernel CV transfer)
+#   Vector: P = exp(S*scale - lse) + mask -> ws_p, ws_p_delta, ws_p_fp32 (inter-kernel)
+#   Hybrid (Cube GEMM + Vector softmax). Merges baseline k1 + k2 (方案 A).
+#   workspace_s named with "workspace" substring → combineCV FetchWorkspaceName
+#   collects sync point → auto set_flag (Cube write) / wait_flag (Vector read).
 # ============================================================================
 
 
 @tilelang.jit(pass_configs=_hybrid_pass_configs)
-def flashattn_bwd_k1_qk_recompute(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, block_N, groups=1):
-    """k1: S = Q @ K^T (recompute) -> ws_s [fp32].
+def flashattn_bwd_qk_softmax(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, block_N, groups=1):
+    """Merged k1+k2: S = Q@K^T (Cube) → P = softmax(S)+mask (Vector).
 
-    Pure Cube kernel. Each block handles one Q block, loops over KV blocks within
-    the window. Output: ws_s[bwd_block_num, max_kv_per_q, block_M, block_N] fp32
-    (unscaled — scale is applied in k2 UB).
+    intra-kernel CV transfer via ``workspace_s`` (combineCV auto-sync).
+    inter-kernel outputs via ``ws_p``/``ws_p_delta``/``ws_p_fp32`` (host sync).
+
+    Split-loop mask skip preserved from baseline k2: for non-window case, KV
+    blocks fully above the causal diagonal skip mask computation.
     """
     assert seq_len % block_M == 0
     assert seq_len % block_N == 0
+    assert dim_qk % 128 == 0, f"dim_qk must be multiple of 128 (got {dim_qk}); otherwise dim_qk_padded != dim_qk causes shape mismatch"
+    sm_scale = (1.0 / dim_qk) ** 0.5
     head_kv = heads // groups
     dtype = "float16"
     accum_dtype = "float"
@@ -308,6 +346,7 @@ def flashattn_bwd_k1_qk_recompute(batch, heads, seq_len, dim_qk, dim_v, window_s
 
     q_shape = [batch, heads, seq_len, dim_qk_padded]
     k_shape = [batch, head_kv, seq_len, dim_qk_padded]
+    lse_shape = [batch, heads, seq_len]
     bwd_block_num = (seq_len // block_M) * heads * batch
 
     if window_size is not None:
@@ -324,7 +363,11 @@ def flashattn_bwd_k1_qk_recompute(batch, heads, seq_len, dim_qk, dim_v, window_s
     def main(
         Q: T.Tensor(q_shape, dtype),  # type: ignore
         K: T.Tensor(k_shape, dtype),  # type: ignore
-        ws_s: T.Tensor(ws_shape, accum_dtype),  # type: ignore
+        lse: T.Tensor(lse_shape, accum_dtype),  # type: ignore
+        ws_p: T.Tensor(ws_shape, dtype),  # type: ignore
+        ws_p_delta: T.Tensor(ws_shape, dtype),  # type: ignore
+        ws_p_fp32: T.Tensor(ws_shape, accum_dtype),  # type: ignore
+        workspace_s: T.Tensor(ws_shape, accum_dtype),  # type: ignore
     ):
         with T.Kernel(bwd_block_num, is_npu=True) as (cid, vid):
             bx = cid % (seq_len // block_M)
@@ -335,85 +378,14 @@ def flashattn_bwd_k1_qk_recompute(batch, heads, seq_len, dim_qk, dim_v, window_s
             loop_st = T.max(0, (bx * block_M - window_eff) // block_N)
             loop_ed = T.min(T.ceildiv((bx + 1) * block_M, block_N), T.ceildiv(seq_len, block_N))
 
+            q_row = bx * block_M
+
+            # Cube side buffers (L1, L0C)
             q_l1 = T.alloc_L1([block_M, dim_qk_padded], dtype)
             k_l1 = T.alloc_L1([block_N, dim_qk_padded], dtype)
             l0c_s = T.alloc_L0C([block_M, block_N], accum_dtype)
 
-            # Load loop-invariant Q block
-            T.copy(Q[bz, by, bx * block_M : bx * block_M + block_M, :], q_l1)
-
-            for k in T.serial(loop_st, loop_ed):
-                kv = k * block_N
-
-                T.copy(K[bz, kv_by, kv : kv + block_N, :], k_l1)
-                # S = Q @ K^T -> l0c_s (unscaled — scale applied in k2 UB)
-                T.gemm_v0(q_l1, k_l1, l0c_s, transpose_B=True, init=True)
-
-                kv_iter = k - loop_st
-                T.copy(l0c_s, ws_s[cid, kv_iter, :, :])
-
-    return main
-
-
-# ============================================================================
-# Kernel 4 (k2): flashattn_bwd_k2_softmax_p — P = softmax(S) + mask + p_delta
-# ============================================================================
-
-
-@tilelang.jit(pass_configs=_vector_pass_configs)
-def flashattn_bwd_k2_softmax_p(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, block_N, groups=1):
-    """k2: P = exp(S*scale - lse) + causal/window mask -> ws_p + ws_p_delta + ws_p_fp32.
-
-    Pure Vector kernel. Reads ws_s (fp32, raw S from k1) and lse (fp32, from fwd).
-    Writes ws_p (fp16), ws_p_delta (fp16), ws_p_fp32 (fp32).
-
-    Compensated GEMM: p_delta = P_fp32 - cast(P_fp16, fp32) captures the fp16
-    storage loss. k3 uses main GEMM (P_fp16) + correction GEMM (p_delta).
-
-    Split-loop mask skip: for non-window (causal only) case, KV blocks fully
-    above the causal diagonal (all positions pass) skip the mask computation.
-    Implemented as two T.serial loops at Python level — TIR if/else inside
-    T.serial causes Ascend codegen issues. Window case uses a single loop
-    (window mask is bidirectional, cannot prove all-pass).
-    """
-    assert seq_len % block_M == 0
-    assert seq_len % block_N == 0
-    sm_scale = (1.0 / dim_qk) ** 0.5
-    dtype = "float16"
-    accum_dtype = "float"
-
-    lse_shape = [batch, heads, seq_len]
-    bwd_block_num = (seq_len // block_M) * heads * batch
-
-    if window_size is not None:
-        assert window_size % block_N == 0
-    window_eff = window_size if window_size is not None else seq_len * 2
-    if window_size is not None:
-        max_kv_per_q = min(window_size // block_N + 1, seq_len // block_N)
-    else:
-        max_kv_per_q = seq_len // block_N
-
-    ws_shape = [bwd_block_num, max_kv_per_q, block_M, block_N]
-
-    @T.prim_func
-    def main(
-        ws_s: T.Tensor(ws_shape, accum_dtype),  # type: ignore
-        lse: T.Tensor(lse_shape, accum_dtype),  # type: ignore
-        ws_p: T.Tensor(ws_shape, dtype),  # type: ignore
-        ws_p_delta: T.Tensor(ws_shape, dtype),  # type: ignore
-        ws_p_fp32: T.Tensor(ws_shape, accum_dtype),  # type: ignore
-    ):
-        with T.Kernel(bwd_block_num, is_npu=True) as (cid, vid):
-            bx = cid % (seq_len // block_M)
-            by = cid // (seq_len // block_M) % heads
-            bz = cid // (seq_len // block_M) // heads % batch
-
-            loop_st = T.max(0, (bx * block_M - window_eff) // block_N)
-            loop_ed = T.min(T.ceildiv((bx + 1) * block_M, block_N), T.ceildiv(seq_len, block_N))
-
-            q_row = bx * block_M
-
-            # UB buffers
+            # Vector side buffers (UB)
             s_ub = T.alloc_ub([block_M, block_N], accum_dtype)
             lse_ub = T.alloc_ub([block_M], accum_dtype)
             lse_2d = T.alloc_ub([block_M, block_N], accum_dtype)
@@ -425,14 +397,13 @@ def flashattn_bwd_k2_softmax_p(batch, heads, seq_len, dim_qk, dim_v, window_size
             p_delta_half = T.alloc_ub([block_M, block_N], dtype)
             p_delta_ub = T.alloc_ub([block_M, block_N], accum_dtype)
 
-            # Loop-invariant: Q token positions + lse
+            # Loop-invariant loads
+            T.copy(Q[bz, by, bx * block_M : bx * block_M + block_M, :], q_l1)
             T.tile.arith_progression(row_1d, q_row, 1, block_M)
             T.copy(lse[bz, by, q_row : q_row + block_M], lse_ub)
 
             if window_size is None:
                 # Split-loop: first k where mask IS needed is mask_k_start.
-                # Blocks before mask_k_start are fully above the causal diagonal
-                # (all positions pass) — mask computation skipped.
                 mask_k_start = (bx * block_M + 1) // block_N
 
                 # --- Loop 1: no mask (all elements pass causal) ---
@@ -440,21 +411,22 @@ def flashattn_bwd_k2_softmax_p(batch, heads, seq_len, dim_qk, dim_v, window_size
                     kv = k * block_N
                     kv_iter = k - loop_st
 
-                    T.copy(ws_s[cid, kv_iter, :, :], s_ub)
-                    # S_scaled = S * scale (axpy: fill 0 + axpy sm_scale)
+                    # Cube: S = Q @ K^T -> workspace_s
+                    T.copy(K[bz, kv_by, kv : kv + block_N, :], k_l1)
+                    T.gemm_v0(q_l1, k_l1, l0c_s, transpose_B=True, init=True)
+                    T.copy(l0c_s, workspace_s[cid, kv_iter, :, :])
+
+                    # Vector: P = exp(S*scale - lse)
+                    T.copy(workspace_s[cid, kv_iter, :, :], s_ub)
                     T.tile.fill(lse_2d, 0.0)
                     T.tile.axpy(lse_2d, s_ub, sm_scale)
-                    # P_fp32 = exp(S_scaled - lse)
                     T.tile.broadcast(s_ub, lse_ub, axis=1)
                     T.tile.sub(lse_2d, lse_2d, s_ub)
                     T.tile.exp(s_ub, lse_2d)
 
-                    # Write P_fp32 (exact, for k4 dS compute)
                     T.copy(s_ub, ws_p_fp32[cid, kv_iter, :, :])
-                    # Write P_fp16 (lossy fp32->fp16 cast, for k3 GEMM)
                     T.copy(s_ub, p_half)
                     T.copy(p_half, ws_p[cid, kv_iter, :, :])
-                    # Compensated GEMM: p_delta = P_fp32 - cast(P_fp16, fp32)
                     T.copy(p_half, p_delta_ub)
                     T.tile.sub(p_delta_ub, s_ub, p_delta_ub)
                     T.copy(p_delta_ub, p_delta_half)
@@ -465,7 +437,11 @@ def flashattn_bwd_k2_softmax_p(batch, heads, seq_len, dim_qk, dim_v, window_size
                     kv = k * block_N
                     kv_iter = k - loop_st
 
-                    T.copy(ws_s[cid, kv_iter, :, :], s_ub)
+                    T.copy(K[bz, kv_by, kv : kv + block_N, :], k_l1)
+                    T.gemm_v0(q_l1, k_l1, l0c_s, transpose_B=True, init=True)
+                    T.copy(l0c_s, workspace_s[cid, kv_iter, :, :])
+
+                    T.copy(workspace_s[cid, kv_iter, :, :], s_ub)
                     T.tile.fill(lse_2d, 0.0)
                     T.tile.axpy(lse_2d, s_ub, sm_scale)
                     T.tile.broadcast(s_ub, lse_ub, axis=1)
@@ -493,14 +469,17 @@ def flashattn_bwd_k2_softmax_p(batch, heads, seq_len, dim_qk, dim_v, window_size
                     kv = k * block_N
                     kv_iter = k - loop_st
 
-                    T.copy(ws_s[cid, kv_iter, :, :], s_ub)
+                    T.copy(K[bz, kv_by, kv : kv + block_N, :], k_l1)
+                    T.gemm_v0(q_l1, k_l1, l0c_s, transpose_B=True, init=True)
+                    T.copy(l0c_s, workspace_s[cid, kv_iter, :, :])
+
+                    T.copy(workspace_s[cid, kv_iter, :, :], s_ub)
                     T.tile.fill(lse_2d, 0.0)
                     T.tile.axpy(lse_2d, s_ub, sm_scale)
                     T.tile.broadcast(s_ub, lse_ub, axis=1)
                     T.tile.sub(lse_2d, lse_2d, s_ub)
                     T.tile.exp(s_ub, lse_2d)
 
-                    # Causal + window mask
                     T.tile.arith_progression(col_pos, kv, 1, block_N)
                     T.tile.broadcast(lse_2d, col_pos, axis=0)
                     T.tile.broadcast(row_2d, row_1d, axis=1)
@@ -522,22 +501,30 @@ def flashattn_bwd_k2_softmax_p(batch, heads, seq_len, dim_qk, dim_v, window_size
 
 
 # ============================================================================
-# Kernel 5 (k3): flashattn_bwd_k3_dv_dp — dV (Compensated GEMM) + dP
+# Kernel 4 (merged): flashattn_bwd_dv_dp_ds
+#   Cube:  dV = P^T @ dO (CompGEMM, atomic_add) + dP = dO @ V^T -> workspace_dp
+#   Vector: dS = P*(dP-Delta)*scale + mask -> ws_ds, ws_ds_delta
+#   Hybrid (Cube GEMM + Vector dS). Merges baseline k3 + k4 (方案 B).
+#   workspace_dp named with "workspace" substring → combineCV auto-sync.
+#   Compensated GEMM preserved: p_delta loaded from GM ws_p_delta → L1 (Cube side).
 # ============================================================================
 
 
 @tilelang.jit(pass_configs=_hybrid_pass_configs)
-def flashattn_bwd_k3_dv_dp(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, block_N, groups=1):
-    """k3: dV = P^T @ dO (Compensated GEMM) + dP = dO @ V^T -> ws_dp.
+def flashattn_bwd_dv_dp_ds(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, block_N, groups=1):
+    """Merged k3+k4: dV+dP (Cube) → dS (Vector).
 
-    Hybrid kernel. Per (Q block, KV block):
-      GEMM2 main:  dV = P_fp16^T @ dO  (init=True, fresh)
-      GEMM2 corr:  dV += p_delta^T @ dO (init=False, Compensated GEMM)
-      atomic_add:  dV[kv] += l0c_dv (L0C -> GM atomic, fp32)
-      GEMM3:       dP = dO @ V^T -> ws_dp (init=True, fresh)
+    intra-kernel CV transfer via ``workspace_dp`` (combineCV auto-sync).
+    inter-kernel inputs: ws_p, ws_p_delta, ws_p_fp32, Delta (host sync).
+    inter-kernel outputs: dV (atomic_add), ws_ds, ws_ds_delta (host sync).
+
+    Compensated GEMM: p_delta loaded from GM ws_p_delta → L1 (copy_gm_to_l1,
+    Cube side). NOT UB→L1 transfer — would trigger combineCV V→C sync mismatch.
     """
     assert seq_len % block_M == 0
     assert seq_len % block_N == 0
+    assert dim_qk % 128 == 0, f"dim_qk must be multiple of 128 (got {dim_qk}); otherwise dim_qk_padded != dim_qk causes shape mismatch"
+    sm_scale = (1.0 / dim_qk) ** 0.5
     head_kv = heads // groups
     dtype = "float16"
     accum_dtype = "float"
@@ -545,6 +532,7 @@ def flashattn_bwd_k3_dv_dp(batch, heads, seq_len, dim_qk, dim_v, window_size, bl
     do_shape = [batch, heads, seq_len, dim_v]
     v_shape = [batch, head_kv, seq_len, dim_v]
     dv_shape = [batch, head_kv, seq_len, dim_v]
+    delta_shape = [batch, heads, seq_len]
     bwd_block_num = (seq_len // block_M) * heads * batch
 
     if window_size is not None:
@@ -561,10 +549,14 @@ def flashattn_bwd_k3_dv_dp(batch, heads, seq_len, dim_qk, dim_v, window_size, bl
     def main(
         ws_p: T.Tensor(ws_shape, dtype),  # type: ignore
         ws_p_delta: T.Tensor(ws_shape, dtype),  # type: ignore
+        ws_p_fp32: T.Tensor(ws_shape, accum_dtype),  # type: ignore
         dO: T.Tensor(do_shape, dtype),  # type: ignore
         V: T.Tensor(v_shape, dtype),  # type: ignore
+        Delta: T.Tensor(delta_shape, accum_dtype),  # type: ignore
         dV: T.Tensor(dv_shape, accum_dtype),  # type: ignore
-        ws_dp: T.Tensor(ws_shape, accum_dtype),  # type: ignore
+        ws_ds: T.Tensor(ws_shape, dtype),  # type: ignore
+        ws_ds_delta: T.Tensor(ws_shape, dtype),  # type: ignore
+        workspace_dp: T.Tensor(ws_shape, accum_dtype),  # type: ignore
     ):
         with T.Kernel(bwd_block_num, is_npu=True) as (cid, vid):
             bx = cid % (seq_len // block_M)
@@ -577,99 +569,17 @@ def flashattn_bwd_k3_dv_dp(batch, heads, seq_len, dim_qk, dim_v, window_size, bl
 
             q_row = bx * block_M
 
-            # L1 buffers (Cube scope) — fp16
+            # Cube side buffers (L1, L0C) — fp16
             p_l1 = T.alloc_L1([block_M, block_N], dtype)
             p_delta_l1 = T.alloc_L1([block_M, block_N], dtype)
             do_l1 = T.alloc_L1([block_M, dim_v], dtype)
             v_l1 = T.alloc_L1([block_N, dim_v], dtype)
 
-            # L0C buffers (Cube scope) — fp32
+            # L0C buffers — fp32
             l0c_dv = T.alloc_L0C([block_N, dim_v], accum_dtype)
             l0c_dp = T.alloc_L0C([block_M, block_N], accum_dtype)
 
-            # Load loop-invariant dO block
-            T.copy(dO[bz, by, q_row : q_row + block_M, :], do_l1)
-
-            for k in T.serial(loop_st, loop_ed):
-                kv = k * block_N
-                kv_iter = k - loop_st
-
-                # Load P_fp16 from GM workspace
-                T.copy(ws_p[cid, kv_iter, :, :], p_l1)
-
-                # GEMM2 main: dV = P_fp16^T @ dO -> l0c_dv (init=True, fresh)
-                T.gemm_v0(p_l1, do_l1, l0c_dv, transpose_A=True, init=True)
-
-                # GEMM2 correction: dV += p_delta^T @ dO (Compensated GEMM)
-                T.copy(ws_p_delta[cid, kv_iter, :, :], p_delta_l1)
-                T.gemm_v0(p_delta_l1, do_l1, l0c_dv, transpose_A=True, init=False)
-
-                # atomic_add dV contribution to GM (L0C -> GM, fp32)
-                T.tile.atomic_add(dV[bz, kv_by, kv : kv + block_N, :], l0c_dv)
-
-                # GEMM3: dP = dO @ V^T -> l0c_dp (init=True, fresh)
-                T.copy(V[bz, kv_by, kv : kv + block_N, :], v_l1)
-                T.gemm_v0(do_l1, v_l1, l0c_dp, transpose_B=True, init=True)
-
-                # Write dP to GM workspace (fp32)
-                T.copy(l0c_dp, ws_dp[cid, kv_iter, :, :])
-
-    return main
-
-
-# ============================================================================
-# Kernel 6 (k4): flashattn_bwd_k4_ds_compute — dS = P*(dP-Delta)*scale + mask
-# ============================================================================
-
-
-@tilelang.jit(pass_configs=_vector_pass_configs)
-def flashattn_bwd_k4_ds_compute(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, block_N, groups=1):
-    """k4: dS = P_fp32 * (dP - Delta) * scale + mask -> ws_ds + ws_ds_delta.
-
-    Pure Vector kernel. Reads ws_p_fp32 (P, fp32), ws_dp (dP, fp32), Delta (fp32,
-    from preprocess). Writes ws_ds (fp16), ws_ds_delta (fp16).
-
-    Compensated GEMM: ds_delta = dS_fp32 - cast(dS_fp16, fp32) captures the fp16
-    storage loss. k5 uses main GEMM (dS_fp16) + correction GEMM (ds_delta).
-    """
-    assert seq_len % block_M == 0
-    assert seq_len % block_N == 0
-    sm_scale = (1.0 / dim_qk) ** 0.5
-    dtype = "float16"
-    accum_dtype = "float"
-
-    delta_shape = [batch, heads, seq_len]
-    bwd_block_num = (seq_len // block_M) * heads * batch
-
-    if window_size is not None:
-        assert window_size % block_N == 0
-    window_eff = window_size if window_size is not None else seq_len * 2
-    if window_size is not None:
-        max_kv_per_q = min(window_size // block_N + 1, seq_len // block_N)
-    else:
-        max_kv_per_q = seq_len // block_N
-
-    ws_shape = [bwd_block_num, max_kv_per_q, block_M, block_N]
-
-    @T.prim_func
-    def main(
-        ws_p_fp32: T.Tensor(ws_shape, accum_dtype),  # type: ignore
-        ws_dp: T.Tensor(ws_shape, accum_dtype),  # type: ignore
-        Delta: T.Tensor(delta_shape, accum_dtype),  # type: ignore
-        ws_ds: T.Tensor(ws_shape, dtype),  # type: ignore
-        ws_ds_delta: T.Tensor(ws_shape, dtype),  # type: ignore
-    ):
-        with T.Kernel(bwd_block_num, is_npu=True) as (cid, vid):
-            bx = cid % (seq_len // block_M)
-            by = cid // (seq_len // block_M) % heads
-            bz = cid // (seq_len // block_M) // heads % batch
-
-            loop_st = T.max(0, (bx * block_M - window_eff) // block_N)
-            loop_ed = T.min(T.ceildiv((bx + 1) * block_M, block_N), T.ceildiv(seq_len, block_N))
-
-            q_row = bx * block_M
-
-            # UB buffers
+            # Vector side buffers (UB)
             p_ub = T.alloc_ub([block_M, block_N], accum_dtype)
             dp_ub = T.alloc_ub([block_M, block_N], accum_dtype)
             delta_ub = T.alloc_ub([block_M], accum_dtype)
@@ -683,7 +593,8 @@ def flashattn_bwd_k4_ds_compute(batch, heads, seq_len, dim_qk, dim_v, window_siz
             ds_delta_ub = T.alloc_ub([block_M, block_N], accum_dtype)
             ds_rec_ub = T.alloc_ub([block_M, block_N], accum_dtype)
 
-            # Loop-invariant: Q token positions + Delta
+            # Loop-invariant loads
+            T.copy(dO[bz, by, q_row : q_row + block_M, :], do_l1)
             T.tile.arith_progression(row_1d, q_row, 1, block_M)
             T.copy(Delta[bz, by, q_row : q_row + block_M], delta_ub)
 
@@ -691,17 +602,25 @@ def flashattn_bwd_k4_ds_compute(batch, heads, seq_len, dim_qk, dim_v, window_siz
                 kv = k * block_N
                 kv_iter = k - loop_st
 
-                # Read P_fp32 (exact, no fp16 quantization) and dP from GM workspace
-                T.copy(ws_p_fp32[cid, kv_iter, :, :], p_ub)
-                T.copy(ws_dp[cid, kv_iter, :, :], dp_ub)
+                # --- Cube side (k3): dV (Compensated GEMM) + dP ---
+                T.copy(ws_p[cid, kv_iter, :, :], p_l1)
+                T.gemm_v0(p_l1, do_l1, l0c_dv, transpose_A=True, init=True)
+                T.copy(ws_p_delta[cid, kv_iter, :, :], p_delta_l1)
+                T.gemm_v0(p_delta_l1, do_l1, l0c_dv, transpose_A=True, init=False)
+                T.tile.atomic_add(dV[bz, kv_by, kv : kv + block_N, :], l0c_dv)
+                T.copy(V[bz, kv_by, kv : kv + block_N, :], v_l1)
+                T.gemm_v0(do_l1, v_l1, l0c_dp, transpose_B=True, init=True)
+                T.copy(l0c_dp, workspace_dp[cid, kv_iter, :, :])
 
-                # dS = P * (dP - Delta) * scale
+                # --- Vector side (k4): dS = P*(dP-Delta)*scale + mask ---
+                T.copy(workspace_dp[cid, kv_iter, :, :], dp_ub)
+                T.copy(ws_p_fp32[cid, kv_iter, :, :], p_ub)
+
                 T.tile.broadcast(delta_2d, delta_ub, axis=1)
                 T.tile.sub(dp_ub, dp_ub, delta_2d)
                 T.tile.mul(p_ub, p_ub, dp_ub)
-                T.tile.mul(p_ub, p_ub, sm_scale)  # p_ub = dS_fp32
+                T.tile.mul(p_ub, p_ub, sm_scale)
 
-                # Apply mask (causal, optionally + window)
                 T.tile.arith_progression(col_pos, kv, 1, block_N)
                 T.tile.broadcast(delta_2d, col_pos, axis=0)
                 T.tile.broadcast(row_2d, row_1d, axis=1)
@@ -713,13 +632,9 @@ def flashattn_bwd_k4_ds_compute(batch, heads, seq_len, dim_qk, dim_v, window_siz
                 else:
                     T.tile.compare(mask_2d, delta_2d, row_2d, "LE")
                 T.tile.select(p_ub, mask_2d, p_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
-                # p_ub = dS_fp32 (masked)
 
-                # Write dS_fp16 (lossy fp32->fp16 cast)
                 T.copy(p_ub, ds_half)
                 T.copy(ds_half, ws_ds[cid, kv_iter, :, :])
-
-                # Compensated GEMM: ds_delta = dS_fp32 - cast(dS_fp16, fp32)
                 T.copy(ds_half, ds_rec_ub)
                 T.tile.sub(ds_delta_ub, p_ub, ds_rec_ub)
                 T.copy(ds_delta_ub, ds_delta_half)
@@ -729,12 +644,13 @@ def flashattn_bwd_k4_ds_compute(batch, heads, seq_len, dim_qk, dim_v, window_siz
 
 
 # ============================================================================
-# Kernel 7 (k5): flashattn_bwd_k5_dk_dq — dK (Compensated GEMM) + dQ (accumulate)
+# Kernel 5 (k5): flashattn_bwd_dk_dq — dK (Compensated GEMM) + dQ (accumulate)
+#   Unchanged from baseline. Pure Cube (Hybrid pass_configs for L0C->GM auto-cast).
 # ============================================================================
 
 
 @tilelang.jit(pass_configs=_hybrid_pass_configs)
-def flashattn_bwd_k5_dk_dq(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, block_N, groups=1):
+def flashattn_bwd_dk_dq(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, block_N, groups=1):
     """k5: dK = dS^T @ Q (Compensated GEMM, atomic_add) + dQ = dS @ K (Comp GEMM, L0C accumulate).
 
     Hybrid kernel. Per (Q block, KV block):
@@ -747,6 +663,7 @@ def flashattn_bwd_k5_dk_dq(batch, heads, seq_len, dim_qk, dim_v, window_size, bl
     """
     assert seq_len % block_M == 0
     assert seq_len % block_N == 0
+    assert dim_qk % 128 == 0, f"dim_qk must be multiple of 128 (got {dim_qk}); otherwise dim_qk_padded != dim_qk causes shape mismatch"
     head_kv = heads // groups
     dtype = "float16"
     accum_dtype = "float"
@@ -834,92 +751,64 @@ def flashattn_bwd_k5_dk_dq(batch, heads, seq_len, dim_qk, dim_v, window_size, bl
 
 
 # ============================================================================
-# Kernel 8: Backward Postprocess — fp32 -> fp16 cast (for dK/dV)
+# Kernel 6 (merged): flashattn_bwd_postprocess
+#   dK fp32 -> fp16  +  dV fp32 -> fp16  (dual-output, single kernel)
+#   Pure Vector. Merges baseline 2× postprocess calls (方案 F').
+#   dQ does not need this — k5 writes dQ as fp16 directly.
 # ============================================================================
 
 
-@tilelang.jit(out_idx=[1], pass_configs=_vector_pass_configs)
-def flashattn_bwd_postprocess(batch, heads, seq_len, dim_qk, blk=64):
-    """Cast dK or dV from fp32 GM to fp16 GM. dQ does not need this — k5 writes
-    dQ as fp16 directly (L0C fp32 -> GM fp16 auto-cast). dK/dV stay fp32 in GM
-    because they receive atomic_add from multiple Q blocks.
+@tilelang.jit(out_idx=[2, 3], pass_configs=_vector_pass_configs)
+def flashattn_bwd_postprocess(batch, heads, seq_len, dim_k, dim_v, blk=64):
+    """Merged postprocess: cast dK and dV from fp32 GM to fp16 GM in one kernel.
+
+    dQ does not need this — k5 writes dQ as fp16 directly (L0C fp32 -> GM fp16
+    auto-cast). dK/dV stay fp32 in GM because they receive atomic_add from
+    multiple Q blocks.
+
+    Supports different dims for dK (dim_k, e.g. dim_qk_padded) and dV (dim_v, e.g. D).
     """
     assert seq_len % blk == 0
     dtype = "float16"
     accum_dtype = "float"
-    shape = [batch, heads, seq_len, dim_qk]
+    dk_shape = [batch, heads, seq_len, dim_k]
+    dv_shape = [batch, heads, seq_len, dim_v]
     block_num = (seq_len // blk) * heads * batch
 
     @T.prim_func
     def main(
-        dQ: T.Tensor(shape, accum_dtype),  # type: ignore
-        dQ_out: T.Tensor(shape, dtype),  # type: ignore
+        dK: T.Tensor(dk_shape, accum_dtype),  # type: ignore
+        dV: T.Tensor(dv_shape, accum_dtype),  # type: ignore
+        dK_out: T.Tensor(dk_shape, dtype),  # type: ignore
+        dV_out: T.Tensor(dv_shape, dtype),  # type: ignore
     ):
         with T.Kernel(block_num, is_npu=True) as (cid, vid):
             bx = cid % (seq_len // blk)
             by = cid // (seq_len // blk) % heads
             bz = cid // (seq_len // blk) // heads % batch
 
-            dq_ub = T.alloc_ub([blk // 2, dim_qk], accum_dtype)
-            dq_half = T.alloc_ub([blk // 2, dim_qk], dtype)
+            row_st = bx * blk + vid * blk // 2
+            row_ed = row_st + blk // 2
 
-            T.copy(dQ[bz, by, bx * blk + vid * blk // 2 : bx * blk + vid * blk // 2 + blk // 2, :], dq_ub)
-            T.copy(dq_ub, dq_half)
-            T.copy(dq_half, dQ_out[bz, by, bx * blk + vid * blk // 2 : bx * blk + vid * blk // 2 + blk // 2, :])
+            # Cast dK fp32 -> fp16
+            dk_ub = T.alloc_ub([blk // 2, dim_k], accum_dtype)
+            dk_half = T.alloc_ub([blk // 2, dim_k], dtype)
+            T.copy(dK[bz, by, row_st:row_ed, :], dk_ub)
+            T.copy(dk_ub, dk_half)
+            T.copy(dk_half, dK_out[bz, by, row_st:row_ed, :])
 
-    return main
-
-
-# ============================================================================
-# Kernel 9: Dsink — dSink = -exp(sink - lse) * Delta, fp32 output
-# ============================================================================
-
-
-@tilelang.jit(out_idx=-1, pass_configs=_vector_pass_configs)
-def flashattn_bwd_dsink(batch, heads, seq_len, block=128):
-    """dSink = -exp(sink - lse) * Delta. Output is fp32 (matches golden)."""
-    assert seq_len % block == 0
-    dtype = "float16"
-    accum_dtype = "float"
-    shape = [batch, heads, seq_len]
-    block_num = heads * (seq_len // block) * batch
-
-    @T.prim_func
-    def main(
-        Sinks: T.Tensor([heads], dtype),  # type: ignore
-        Delta: T.Tensor(shape, accum_dtype),  # type: ignore
-        lse: T.Tensor(shape, accum_dtype),  # type: ignore
-        dsinks: T.Tensor(shape, accum_dtype),  # type: ignore
-    ):
-        with T.Kernel(block_num, is_npu=True) as (cid, vid):
-            bx = cid % heads
-            by = cid // heads % (seq_len // block)
-            bz = cid // heads // (seq_len // block) % batch
-
-            lse_ub = T.alloc_ub([block // 2], accum_dtype)
-            delta_ub = T.alloc_ub([block // 2], accum_dtype)
-            sink_exp_ub = T.alloc_ub([block // 2], accum_dtype)
-            sink_val_ub = T.alloc_ub([block // 2], accum_dtype)
-            sink_scalar = T.alloc_ub([1], dtype)
-
-            T.copy(Sinks[bx : bx + 1], sink_scalar)
-            T.tile.fill(sink_val_ub, sink_scalar[0])
-
-            T.copy(lse[bz, bx, by * block + vid * block // 2 : by * block + vid * block // 2 + block // 2], lse_ub)
-            T.copy(Delta[bz, bx, by * block + vid * block // 2 : by * block + vid * block // 2 + block // 2], delta_ub)
-
-            T.tile.sub(sink_exp_ub, sink_val_ub, lse_ub)
-            T.tile.exp(sink_exp_ub, sink_exp_ub)
-            T.tile.mul(sink_exp_ub, sink_exp_ub, delta_ub)
-            T.tile.mul(sink_exp_ub, sink_exp_ub, -1.0)
-
-            T.copy(sink_exp_ub, dsinks[bz, bx, by * block + vid * block // 2 : by * block + vid * block // 2 + block // 2])
+            # Cast dV fp32 -> fp16
+            dv_ub = T.alloc_ub([blk // 2, dim_v], accum_dtype)
+            dv_half = T.alloc_ub([blk // 2, dim_v], dtype)
+            T.copy(dV[bz, by, row_st:row_ed, :], dv_ub)
+            T.copy(dv_ub, dv_half)
+            T.copy(dv_half, dV_out[bz, by, row_st:row_ed, :])
 
     return main
 
 
 # ============================================================================
-# Golden Reference (PyTorch CPU)
+# Golden Reference (PyTorch CPU) — unchanged from baseline
 # ============================================================================
 
 
@@ -996,7 +885,7 @@ def ref_bwd(Q, K, V, Sinks, dO, window_size=None, groups=1):
 
 
 # ============================================================================
-# Autograd Function (end-to-end wrapper)
+# Autograd Function (end-to-end wrapper) — 6-kernel call chain
 # ============================================================================
 
 
@@ -1028,8 +917,9 @@ class _attention(torch.autograd.Function):
         block_M, block_N = 64, 64
         dim_qk_padded = ((D + 127) // 128) * 128
 
-        prep_mod = flashattn_bwd_preprocess(B, H, N, D, blk=32)
-        delta = prep_mod(o, do)
+        # Kernel 2: merged_preprocess — Delta + dSink
+        preprocess_mod = flashattn_bwd_preprocess(B, H, N, D, blk=32)
+        delta, dsinks = preprocess_mod(o, do, sinks, lse)
         torch.npu.synchronize()
 
         # Output tensors
@@ -1037,59 +927,48 @@ class _attention(torch.autograd.Function):
         dK = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float32, device=q.device)
         dV = torch.zeros(B, H_kv, N, D, dtype=torch.float32, device=q.device)
 
-        # GM workspace tensors (inter-kernel communication)
+        # Inter-kernel GM workspace (host-allocated, host-sync between kernels)
         bwd_block_num = H * (N // block_M) * B
         if window_size is not None:
             max_kv_per_q = min(window_size // block_N + 1, N // block_N)
         else:
             max_kv_per_q = N // block_N
-        ws_s = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float32, device=q.device)
         ws_p = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device=q.device)
         ws_p_delta = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device=q.device)
         ws_p_fp32 = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float32, device=q.device)
-        ws_dp = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float32, device=q.device)
         ws_ds = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device=q.device)
         ws_ds_delta = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device=q.device)
+        # Intra-kernel CV transfer workspace (combineCV auto-sync manages visibility)
+        workspace_s = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float32, device=q.device)
+        workspace_dp = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float32, device=q.device)
 
         bwd_args = (B, H, N, D, D, window_size, block_M, block_N, groups)
 
-        # k1: S = Q @ K^T -> ws_s
-        k1_mod = flashattn_bwd_k1_qk_recompute(*bwd_args)
-        k1_mod(q, k, ws_s)
+        # Kernel 3: merged_qk_softmax — S = Q@K^T (Cube) → P = softmax(S) (Vector)
+        qk_softmax_mod = flashattn_bwd_qk_softmax(*bwd_args)
+        qk_softmax_mod(q, k, lse, ws_p, ws_p_delta, ws_p_fp32, workspace_s)
         torch.npu.synchronize()
 
-        # k2: P = softmax(S) + mask + p_delta -> ws_p, ws_p_delta, ws_p_fp32
-        k2_mod = flashattn_bwd_k2_softmax_p(*bwd_args)
-        k2_mod(ws_s, lse, ws_p, ws_p_delta, ws_p_fp32)
+        # Kernel 4: merged_dv_dp_ds — dV+dP (Cube) → dS (Vector)
+        dv_dp_ds_mod = flashattn_bwd_dv_dp_ds(*bwd_args)
+        dv_dp_ds_mod(ws_p, ws_p_delta, ws_p_fp32, do, v, delta, dV, ws_ds, ws_ds_delta, workspace_dp)
         torch.npu.synchronize()
 
-        # k3: dV (Compensated GEMM, atomic_add) + dP -> ws_dp
-        k3_mod = flashattn_bwd_k3_dv_dp(*bwd_args)
-        k3_mod(ws_p, ws_p_delta, do, v, dV, ws_dp)
+        # Kernel 5: k5 — dK (Compensated GEMM, atomic_add) + dQ (L0C accumulate)
+        dk_dq_mod = flashattn_bwd_dk_dq(*bwd_args)
+        dk_dq_mod(ws_ds, ws_ds_delta, q, k, dK, dQ)
         torch.npu.synchronize()
 
-        # k4: dS = P*(dP-Delta)*scale + mask + ds_delta -> ws_ds, ws_ds_delta
-        k4_mod = flashattn_bwd_k4_ds_compute(*bwd_args)
-        k4_mod(ws_p_fp32, ws_dp, delta, ws_ds, ws_ds_delta)
-        torch.npu.synchronize()
-
-        # k5: dK (Compensated GEMM, atomic_add) + dQ (L0C accumulate)
-        k5_mod = flashattn_bwd_k5_dk_dq(*bwd_args)
-        k5_mod(ws_ds, ws_ds_delta, q, k, dK, dQ)
-        torch.npu.synchronize()
-
-        # Postprocess: fp32 -> fp16 for dK, dV (dQ already fp16 from k5)
-        post_dk = flashattn_bwd_postprocess(B, H_kv, N, dim_qk_padded, blk=64)
-        dK = post_dk(dK)[..., :D]
-        post_dv = flashattn_bwd_postprocess(B, H_kv, N, D, blk=64)
-        dV = post_dv(dV)
+        # Kernel 6: merged_postprocess — dK+dV fp32 -> fp16 (dQ already fp16 from k5)
+        postprocess_mod = flashattn_bwd_postprocess(B, H_kv, N, dim_qk_padded, D, blk=64)
+        dK, dV = postprocess_mod(dK, dV)
         dQ = dQ[..., :D]
+        dK = dK[..., :D]
 
-        # Dsink (fp32 output, sum on CPU after D2H)
-        dsink_mod = flashattn_bwd_dsink(B, H, N, block=128)
-        dsinks = dsink_mod(sinks, delta, lse).sum(0).sum(1)
+        # dSinks: host sum over B and N → [H] fp32
+        dsinks_sum = dsinks.cpu().sum(0).sum(1)
 
-        return dQ, dK, dV, dsinks, None, None
+        return dQ, dK, dV, dsinks_sum, None, None
 
 
 attention = _attention.apply
