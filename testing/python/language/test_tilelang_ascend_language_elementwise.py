@@ -1008,6 +1008,276 @@ def test_bitwise_rshift_slice(dtype, target, shape):
     run_test_bitwise_rshift_slice(M, N, 128, 256, scalarvalue=scalarvalue, dtype=dtype, target=target)
 
 
+# ---------------------------------------------------------------------------
+# Factcheck tests for T.tile.bitwise_rshift
+# ---------------------------------------------------------------------------
+
+_TORCH_INT_DTYPE_RSHIFT = {
+    "int16": torch.int16,
+    "uint16": torch.uint16,
+    "int32": torch.int32,
+    "uint32": torch.uint32,
+}
+
+
+def _rshift_ref(a_cpu, scalarvalue, dtype):
+    """Compute reference right shift on CPU, handling dtype overflow correctly."""
+    if dtype == "uint16":
+        return torch.bitwise_right_shift(a_cpu.to(torch.int32), scalarvalue).to(torch.uint16)
+    elif dtype == "uint32":
+        return torch.bitwise_right_shift(a_cpu.to(torch.int64), scalarvalue).to(torch.uint32)
+    return torch.bitwise_right_shift(a_cpu, scalarvalue)
+
+
+def _make_rshift_kernel_2d(M, N, block_M, block_N, dtype, scalarvalue):
+    """Create a 2D bitwise_rshift kernel."""
+    m_num = M // block_M
+    n_num = N // block_N
+    VEC_NUM = 2
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.tile.bitwise_rshift(b_ub, a_ub, scalarvalue)
+            T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    return main
+
+
+def run_test_bitwise_rshift_signed_semantics(dtype, target, scalarvalue):
+    """Verify arithmetic right shift for signed types (sign bit preserved).
+
+    Tests with negative values to confirm sign extension behavior.
+    """
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    func = tilelang.compile(
+        _make_rshift_kernel_2d(M, N, block_M, block_N, dtype, scalarvalue),
+        out_idx=[-1], pass_configs=pass_configs, target=target,
+    )
+    td = _TORCH_INT_DTYPE_RSHIFT[dtype]
+    a = torch.randint(low=-100, high=100, size=(M, N), dtype=td).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    ref_b = _rshift_ref(a.cpu(), scalarvalue, dtype).npu()
+    assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("scalarvalue", [1, 2, 4])
+@pytest.mark.parametrize("dtype", ["int16", "int32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_rshift_signed_semantics(dtype, target, scalarvalue):
+    run_test_bitwise_rshift_signed_semantics(dtype, target, scalarvalue)
+
+
+def run_test_bitwise_rshift_unsigned_high_bits(dtype, target, scalarvalue):
+    """Verify logical right shift for unsigned types with high bits set.
+
+    Tests with values >= 2^(bit_width-1) to confirm zero-fill behavior.
+    If the hardware incorrectly did arithmetic shift, high-bit values
+    would be sign-extended (filled with 1s) instead of zero-extended.
+    """
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    func = tilelang.compile(
+        _make_rshift_kernel_2d(M, N, block_M, block_N, dtype, scalarvalue),
+        out_idx=[-1], pass_configs=pass_configs, target=target,
+    )
+    if dtype == "uint16":
+        a = torch.randint(0, 65536, (M, N), dtype=torch.int32).to(torch.uint16).npu()
+    elif dtype == "uint32":
+        a = torch.randint(0, 2**32, (M, N), dtype=torch.int64).to(torch.uint32).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    ref_b = _rshift_ref(a.cpu(), scalarvalue, dtype).npu()
+    assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("scalarvalue", [1, 4])
+@pytest.mark.parametrize("dtype", ["uint16", "uint32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_rshift_unsigned_high_bits(dtype, target, scalarvalue):
+    run_test_bitwise_rshift_unsigned_high_bits(dtype, target, scalarvalue)
+
+
+def run_test_bitwise_rshift_1d(dtype, target, scalarvalue):
+    """Test 1D buffer shape support."""
+    N = 1024
+    block_N = 1024
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((N,), dtype),  # type: ignore
+        B: T.Tensor((N,), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((block_N,), dtype)
+            b_ub = T.alloc_ub((block_N,), dtype)
+            T.copy(A[0:], a_ub)
+            T.tile.bitwise_rshift(b_ub, a_ub, scalarvalue)
+            T.copy(b_ub, B[0:])
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    td = _TORCH_INT_DTYPE_RSHIFT[dtype]
+    a = torch.randint(1, 100, size=(N,), dtype=td).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    ref_b = _rshift_ref(a.cpu(), scalarvalue, dtype).npu()
+    assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("scalarvalue", [1, 4, 8])
+@pytest.mark.parametrize("dtype", ["int16", "uint16", "int32", "uint32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_rshift_1d(dtype, target, scalarvalue):
+    run_test_bitwise_rshift_1d(dtype, target, scalarvalue)
+
+
+def run_test_bitwise_rshift_boundary(dtype, target, scalarvalue):
+    """Test boundary shift values: 0, max-bit-width, and over-width."""
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    func = tilelang.compile(
+        _make_rshift_kernel_2d(M, N, block_M, block_N, dtype, scalarvalue),
+        out_idx=[-1], pass_configs=pass_configs, target=target,
+    )
+    td = _TORCH_INT_DTYPE_RSHIFT[dtype]
+    if "int" in dtype and "uint" not in dtype:
+        a = torch.randint(low=-100, high=100, size=(M, N), dtype=td).npu()
+    else:
+        a = torch.randint(1, 100, size=(M, N), dtype=td).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    ref_b = _rshift_ref(a.cpu(), scalarvalue, dtype).npu()
+    assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("scalarvalue", [0, 1, 15, 16])
+@pytest.mark.parametrize("dtype", ["int16", "uint16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_rshift_boundary_int16(dtype, target, scalarvalue):
+    run_test_bitwise_rshift_boundary(dtype, target, scalarvalue)
+
+
+@pytest.mark.parametrize("scalarvalue", [0, 1, 31, 32])
+@pytest.mark.parametrize("dtype", ["int32", "uint32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_rshift_boundary_int32(dtype, target, scalarvalue):
+    run_test_bitwise_rshift_boundary(dtype, target, scalarvalue)
+
+
+def run_test_bitwise_rshift_non_aligned(dtype, target, scalarvalue):
+    """Test non-32-byte-aligned shapes for precision issues."""
+    M, N = 1024, 100
+    block_M, block_N = 128, 100
+    func = tilelang.compile(
+        _make_rshift_kernel_2d(M, N, block_M, block_N, dtype, scalarvalue),
+        out_idx=[-1], pass_configs=pass_configs, target=target,
+    )
+    td = _TORCH_INT_DTYPE_RSHIFT[dtype]
+    a = torch.randint(1, 100, size=(M, N), dtype=td).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    ref_b = _rshift_ref(a.cpu(), scalarvalue, dtype).npu()
+    assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("scalarvalue", [1, 4])
+@pytest.mark.parametrize("dtype", ["int16", "uint16", "int32", "uint32"])
+@pytest.mark.parametrize("target", ["pto"])
+def test_bitwise_rshift_non_aligned(dtype, target, scalarvalue):
+    run_test_bitwise_rshift_non_aligned(dtype, target, scalarvalue)
+
+
+@pytest.mark.xfail(
+    reason="Ascend C backend produces precision errors when tile element count "
+    "is not 32-byte aligned (e.g. shape=(1024,100)). PTO backend is unaffected."
+)
+@pytest.mark.parametrize("scalarvalue", [1, 4])
+@pytest.mark.parametrize("dtype", ["int16", "uint16", "int32", "uint32"])
+@pytest.mark.parametrize("target", ["ascendc"])
+def test_bitwise_rshift_non_aligned_ascendc_xfail(dtype, target, scalarvalue):
+    run_test_bitwise_rshift_non_aligned(dtype, target, scalarvalue)
+
+
+@pytest.mark.xfail(
+    reason="int8/uint8 are not supported on A2/A3 for bitwise_rshift: "
+    "AscendC ShiftRight has no int8/uint8 specialization, "
+    "PTO TShiftCheck static_assert only allows int16/uint16/int32/uint32."
+)
+@pytest.mark.parametrize("dtype", ["int8", "uint8"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_rshift_int8_xfail(dtype, target):
+    """int8/uint8 should fail at compile time on A2/A3."""
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    kernel = _make_rshift_kernel_2d(M, N, block_M, block_N, dtype, 1)
+    tilelang.compile(kernel, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+
+@pytest.mark.skip(
+    reason="int64/uint64 cause a segmentation fault in the TVM compiler on A2/A3, "
+    "which kills the pytest process. Skipping to avoid crash. "
+    "Original doc claims A5 supports them; A2/A3 does not."
+)
+@pytest.mark.parametrize("dtype", ["int64", "uint64"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_rshift_int64_skip(dtype, target):
+    """int64/uint64 segfault the compiler on A2/A3."""
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    kernel = _make_rshift_kernel_2d(M, N, block_M, block_N, dtype, 1)
+    tilelang.compile(kernel, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+
+@pytest.mark.xfail(
+    reason="float16/float32 are not supported: bitwise shift is integer-only. "
+    "Both AscendC and PTO lack float specializations."
+)
+@pytest.mark.parametrize("dtype", ["float16", "float32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_rshift_float_xfail(dtype, target):
+    """float16/float32 should fail at compile time."""
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    kernel = _make_rshift_kernel_2d(M, N, block_M, block_N, dtype, 1)
+    tilelang.compile(kernel, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+
+def run_test_bitwise_rshift_scalar_dtype_mismatch(dtype, target):
+    """Verify that scalarValue with different dtype works (codegen auto-casts).
+
+    The original doc claims 'scalarValue dtype must match dst'. The codegen
+    actually auto-casts scalarValue to src0's dtype when they differ.
+    """
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    func = tilelang.compile(
+        _make_rshift_kernel_2d(M, N, block_M, block_N, dtype, 3),
+        out_idx=[-1], pass_configs=pass_configs, target=target,
+    )
+    td = _TORCH_INT_DTYPE_RSHIFT[dtype]
+    a = torch.randint(1, 100, size=(M, N), dtype=td).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    ref_b = _rshift_ref(a.cpu(), 3, dtype).npu()
+    assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("dtype", ["int16", "uint16", "int32", "uint32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_rshift_scalar_dtype_mismatch(dtype, target):
+    run_test_bitwise_rshift_scalar_dtype_mismatch(dtype, target)
+
+
 def bitwise_xor(M, N, block_M, block_N, dtype="int16"):
     m_num = M // block_M
     n_num = N // block_N

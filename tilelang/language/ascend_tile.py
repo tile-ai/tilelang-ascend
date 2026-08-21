@@ -1432,10 +1432,20 @@ def bitwise_lshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scal
 def bitwise_rshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalarValue: PrimExpr):  # noqa: F821
     """Performs element-wise bitwise right shift: dst = src0 >> scalarValue.
 
+    The shift is **arithmetic** for signed types (sign bit preserved) and
+    **logical** for unsigned types (high bits filled with 0).
+
+    Supported dtypes (A2/A3):
+      - Ascend C: int16, uint16, int32, uint32
+      - PTO:      int16, uint16, int32, uint32
+
+    int8/uint8/int64/uint64/float are not supported and fail at compile time.
+
     Args:
-        dst: The destination buffer.
-        src0: The source buffer.
-        scalarValue: The number of bits to shift (scalar).
+        dst: The destination buffer (UB).
+        src0: The source buffer (UB), must have the same size and dtype as dst.
+        scalarValue: The number of bits to shift (scalar). The codegen
+            automatically casts scalarValue to src0's dtype if they differ.
     """
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
