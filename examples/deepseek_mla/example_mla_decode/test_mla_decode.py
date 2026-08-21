@@ -307,14 +307,14 @@ def test_boundary():
 # ========== Bench: do_bench performance ==========
 
 PERF_CONFIG = {
-    "batch": 128,
+    "batch": 132,
     "heads": 128,
     "kv_head_num": 1,
     "seqlen_kv": 8192,
     "dim": 512,
     "pe_dim": 64,
 }
-TARGET_LATENCY_US = 3036.0
+TARGET_LATENCY_US = 3131.0
 # A2/A3 Cube theoretical peak (fp16)
 THEORETICAL_PEAK_TFLOPS = 364.0
 
