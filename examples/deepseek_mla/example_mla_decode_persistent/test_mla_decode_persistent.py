@@ -92,11 +92,9 @@ COVERAGE_CATEGORY = "Fusion"
 
 # Dimensions that are inapplicable to this kernel (with reasons).
 # D-SHAPE-TAIL-1/TAIL-MID: kernel requires exact divisibility (seqlen_kv %
-#   block_N == 0 for num_split=1), so true partial-block tails cannot be tested.
+#   block_N == 0), so true partial-block tails cannot be tested.
 # D-PARAM-dim/pe_dim: dim=512 and pe_dim=64 are algorithmic constants for
 #   DeepSeek MLA. Testing different values would be a different algorithm.
-# D-PARAM-num_split: all L0/L1 configs use num_split=1 (single-kernel path).
-#   num_split>1 fallback path is covered by the two-phase kernel.
 COVERAGE_NA = {}
 
 
@@ -163,56 +161,44 @@ def _run_ref(q, q_pe, kv, k_pe):
 # L0 Test Suite (threshold tests — rule-based shapes for precision convergence)
 # ============================================================================
 
-# L0 configs: all use num_split=1 (single-kernel path).
-# num_split=1 is mathematically equivalent (same attention, no split-K reduction).
+# L0 configs: single-kernel path (num_split=1, fp32 workspace_3).
 L0_CONFIGS = [
     {
         "name": "l0_small_basic",
-        "shape": (1, 64, 128, 512, 64, 1),
+        "shape": (1, 64, 128, 512, 64),
         "tags": ["D-DTYPE-fp16", "D-SHAPE-ALIGNED", "D-VALRANGE-S"],
     },
     {
         "name": "l0_small_multibatch",
-        "shape": (2, 128, 256, 512, 64, 1),
+        "shape": (2, 128, 256, 512, 64),
         "tags": ["D-DTYPE-fp16", "D-SHAPE-ALIGNED", "D-VALRANGE-M"],
     },
     {
         "name": "l0_num_split_1",
-        "shape": (1, 64, 128, 512, 64, 1),
+        "shape": (1, 64, 128, 512, 64),
         "tags": ["D-DTYPE-fp16", "D-SHAPE-ALIGNED", "D-PARAM-num_split"],
     },
     {
         "name": "l0_medium",
-        "shape": (4, 128, 512, 512, 64, 1),
+        "shape": (4, 128, 512, 512, 64),
         "tags": ["D-DTYPE-fp16", "D-SHAPE-ALIGNED", "D-VALRANGE-M"],
     },
     {
         "name": "l0_golden",
-        "shape": (128, 128, 8192, 512, 64, 1),
+        "shape": (128, 128, 8192, 512, 64),
         "block_N": 128,
         "tags": ["D-DTYPE-fp16", "D-SHAPE-ALIGNED", "D-VALRANGE-L"],
-    },
-    {
-        "name": "l0_num_split_2",
-        "shape": (1, 64, 128, 512, 64, 2),  # num_split=2, seqlen_kv=128 (128 % (64*2) == 0)
-        "tags": ["D-DTYPE-fp16", "D-SHAPE-ALIGNED", "D-PARAM-num_split"],
-    },
-    {
-        "name": "l0_num_split_2_golden",
-        "shape": (4, 128, 256, 512, 64, 2),  # num_split=2, seqlen_kv=256 (256 % (64*2) == 0)
-        "block_N": 64,
-        "tags": ["D-DTYPE-fp16", "D-SHAPE-ALIGNED", "D-PARAM-num_split", "D-VALRANGE-M"],
     },
 ]
 
 
-def _run_precision_case(name, batch, heads, kv_ctx, dim, pe_dim, num_split, block_N=64, block_H=64, input_gen="randn", level="l0"):
+def _run_precision_case(name, batch, heads, kv_ctx, dim, pe_dim, block_N=64, block_H=64, input_gen="randn", level="l0"):
     """Run a single precision test case. Returns (passed, ratio, max_abs)."""
     core_num = _get_core_num()
     torch.manual_seed(42)
     q, q_pe, kv, k_pe = _gen_inputs(batch, heads, kv_ctx, dim, pe_dim, input_gen)
 
-    output = run_mla_decode(q, q_pe, kv, k_pe, num_split, block_N, block_H, core_num)
+    output = run_mla_decode(q, q_pe, kv, k_pe, block_N, block_H, core_num)
     torch.npu.synchronize()
 
     ref = _run_ref(q, q_pe, kv, k_pe)
@@ -221,7 +207,7 @@ def _run_precision_case(name, batch, heads, kv_ctx, dim, pe_dim, num_split, bloc
     marker = "[PRECISION_" + tag + "]" if level in ("l0", "l1") else "[BOUNDARY_" + tag + "]"
     print(
         f"{marker} {level} {name} "
-        f"B={batch} H={heads} S={kv_ctx} dim={dim} pe={pe_dim} split={num_split} "
+        f"B={batch} H={heads} S={kv_ctx} dim={dim} pe={pe_dim} "
         f"gen={input_gen} matched_ratio={ratio:.4f} max_abs={max_abs:.3e}"
     )
     return passed, ratio, max_abs
@@ -232,10 +218,10 @@ def test_mla_decode_persistent_l0():
     ok = True
     for cfg in L0_CONFIGS:
         name = cfg["name"]
-        batch, heads, kv_ctx, dim, pe_dim, num_split = cfg["shape"]
+        batch, heads, kv_ctx, dim, pe_dim = cfg["shape"]
         block_N = cfg.get("block_N", 64)
         try:
-            passed, _, _ = _run_precision_case(name, batch, heads, kv_ctx, dim, pe_dim, num_split, block_N=block_N, level="l0")
+            passed, _, _ = _run_precision_case(name, batch, heads, kv_ctx, dim, pe_dim, block_N=block_N, level="l0")
             ok &= passed
         except Exception as e:
             import traceback
@@ -250,63 +236,63 @@ def test_mla_decode_persistent_l0():
 # L1 Functional Tests (irregular shapes, parameter variations)
 # ============================================================================
 
-# L1 configs: all use num_split=1 (single-kernel path).
+# L1 configs: single-kernel path (num_split=1, fp32 workspace_3).
 L1_CONFIGS = [
     {
         "name": "l1_edge_minimal",
-        "shape": (1, 64, 64, 512, 64, 1),
+        "shape": (1, 64, 64, 512, 64),
         "tags": ["D-DTYPE-fp16", "D-SHAPE-EDGE", "D-SHAPE-TAIL-1", "D-VALRANGE-S"],
     },
     {
         "name": "l1_prime_seqlen",
-        "shape": (2, 64, 448, 512, 64, 1),
+        "shape": (2, 64, 448, 512, 64),
         "tags": ["D-DTYPE-fp16", "D-SHAPE-PRIME"],
     },
     {
         "name": "l1_tail_mid",
-        "shape": (1, 64, 128, 512, 64, 1),
+        "shape": (1, 64, 128, 512, 64),
         "tags": ["D-DTYPE-fp16", "D-SHAPE-TAIL-MID"],
     },
     {
         "name": "l1_large_batch",
-        "shape": (8, 128, 128, 512, 64, 1),
+        "shape": (8, 128, 128, 512, 64),
         "tags": ["D-DTYPE-fp16", "D-VALRANGE-L"],
     },
     {
         "name": "l1_asym_positive",
-        "shape": (1, 64, 128, 512, 64, 1),
+        "shape": (1, 64, 128, 512, 64),
         "input_gen": "positive",
         "tags": ["D-DTYPE-fp16", "D-VALRANGE-ASYM"],
     },
     {
         "name": "l1_small_values",
-        "shape": (1, 64, 128, 512, 64, 1),
+        "shape": (1, 64, 128, 512, 64),
         "input_gen": "small",
         "tags": ["D-DTYPE-fp16", "D-VALRANGE-S"],
     },
     {
         "name": "l1_large_values",
-        "shape": (1, 64, 128, 512, 64, 1),
+        "shape": (1, 64, 128, 512, 64),
         "input_gen": "large",
         "tags": ["D-DTYPE-fp16", "D-VALRANGE-L"],
     },
     {
         "name": "l1_param_block_n32",
-        "shape": (1, 64, 128, 512, 64, 1),
+        "shape": (1, 64, 128, 512, 64),
         "block_N": 32,
         "block_H": 64,
         "tags": ["D-DTYPE-fp16", "D-PARAM-block_N"],
     },
     {
         "name": "l1_param_block_h32",
-        "shape": (1, 64, 128, 512, 64, 1),
+        "shape": (1, 64, 128, 512, 64),
         "block_N": 64,
         "block_H": 32,
         "tags": ["D-DTYPE-fp16", "D-PARAM-block_H"],
     },
     {
         "name": "l1_param_dim256",
-        "shape": (1, 64, 128, 256, 32, 1),
+        "shape": (1, 64, 128, 256, 32),
         "tags": ["D-DTYPE-fp16", "D-PARAM-dim", "D-PARAM-pe_dim"],
     },
 ]
@@ -317,7 +303,7 @@ def test_mla_decode_persistent_l1():
     ok = True
     for cfg in L1_CONFIGS:
         name = cfg["name"]
-        batch, heads, kv_ctx, dim, pe_dim, num_split = cfg["shape"]
+        batch, heads, kv_ctx, dim, pe_dim = cfg["shape"]
         block_N = cfg.get("block_N", 64)
         block_H = cfg.get("block_H", 64)
         input_gen = cfg.get("input_gen", "randn")
@@ -329,7 +315,6 @@ def test_mla_decode_persistent_l1():
                 kv_ctx,
                 dim,
                 pe_dim,
-                num_split,
                 block_N=block_N,
                 block_H=block_H,
                 input_gen=input_gen,
@@ -356,12 +341,12 @@ def test_mla_decode_persistent_l2():
 
     # L2-1: Wrong dtype (fp32 instead of fp16) — D-EXC-DTYPE
     try:
-        batch, heads, kv_ctx, dim, pe_dim, num_split = 1, 64, 128, 512, 64, 1
+        batch, heads, kv_ctx, dim, pe_dim = 1, 64, 128, 512, 64
         q = torch.randn(batch, heads, dim, dtype=torch.float32, device="cpu").npu()
         q_pe = torch.randn(batch, heads, pe_dim, dtype=torch.float32, device="cpu").npu()
         kv = torch.randn(batch, kv_ctx, 1, dim, dtype=torch.float32, device="cpu").npu()
         k_pe = torch.randn(batch, kv_ctx, 1, pe_dim, dtype=torch.float32, device="cpu").npu()
-        run_mla_decode(q, q_pe, kv, k_pe, num_split, 64, 64, core_num)
+        run_mla_decode(q, q_pe, kv, k_pe, 64, 64, core_num)
         print("[BOUNDARY_WARN] l2 l2_wrong_dtype: fp32 input silently accepted (expected rejection)")
     except (TypeError, ValueError, RuntimeError, AssertionError):
         print("[BOUNDARY_PASS] l2 l2_wrong_dtype: fp32 input correctly rejected")
@@ -370,9 +355,9 @@ def test_mla_decode_persistent_l2():
 
     # L2-2: Non-divisible seqlen_kv — D-EXC-SHAPE
     try:
-        batch, heads, kv_ctx, dim, pe_dim, num_split = 1, 64, 65, 512, 64, 1
+        batch, heads, kv_ctx, dim, pe_dim = 1, 64, 65, 512, 64
         q, q_pe, kv, k_pe = _gen_inputs(batch, heads, kv_ctx, dim, pe_dim)
-        run_mla_decode(q, q_pe, kv, k_pe, num_split, 64, 64, core_num)
+        run_mla_decode(q, q_pe, kv, k_pe, 64, 64, core_num)
         print("[BOUNDARY_WARN] l2 l2_bad_shape: non-divisible seqlen silently accepted (expected rejection)")
     except (TypeError, ValueError, RuntimeError, AssertionError, ZeroDivisionError):
         print("[BOUNDARY_PASS] l2 l2_bad_shape: non-divisible seqlen correctly rejected")
@@ -387,23 +372,21 @@ def test_mla_decode_persistent_l2():
 
 def test_mla_decode_persistent_boundary():
     """Boundary tests: special values (INF/NAN/Zero/Denormalized). Non-blocking."""
-    core_num = _get_core_num()
-
     # Boundary-1: All zeros — D-SPECIAL-ZERO
     try:
-        _run_precision_case("boundary_zeros", 1, 64, 128, 512, 64, 1, input_gen="zeros", level="boundary")
+        _run_precision_case("boundary_zeros", 1, 64, 128, 512, 64, input_gen="zeros", level="boundary")
     except Exception as e:
         print(f"[BOUNDARY_WARN] boundary boundary_zeros: exception: {e}")
 
     # Boundary-2: NaN in inputs — D-SPECIAL-NAN
     try:
         torch.manual_seed(42)
-        batch, heads, kv_ctx, dim, pe_dim, num_split = 1, 64, 128, 512, 64, 1
+        batch, heads, kv_ctx, dim, pe_dim = 1, 64, 128, 512, 64
         q, q_pe, kv, k_pe = _gen_inputs(batch, heads, kv_ctx, dim, pe_dim)
         q_cpu = q.cpu()
         q_cpu[0, 0, 0] = float("nan")
         q = q_cpu.npu()
-        output = run_mla_decode(q, q_pe, kv, k_pe, num_split, 64, 64, core_num)
+        output = run_mla_decode(q, q_pe, kv, k_pe, 64, 64, _get_core_num())
         torch.npu.synchronize()
         out_cpu = output.cpu().float()
         has_nan = torch.isnan(out_cpu).any().item()
@@ -417,11 +400,12 @@ def test_mla_decode_persistent_boundary():
     # Boundary-3: Inf in inputs — D-SPECIAL-INF
     try:
         torch.manual_seed(42)
+        batch, heads, kv_ctx, dim, pe_dim = 1, 64, 128, 512, 64
         q, q_pe, kv, k_pe = _gen_inputs(batch, heads, kv_ctx, dim, pe_dim)
         q_cpu = q.cpu()
         q_cpu[0, 0, 0] = float("inf")
         q = q_cpu.npu()
-        output = run_mla_decode(q, q_pe, kv, k_pe, num_split, 64, 64, core_num)
+        output = run_mla_decode(q, q_pe, kv, k_pe, 64, 64, _get_core_num())
         torch.npu.synchronize()
         out_cpu = output.cpu().float()
         has_inf_or_nan = torch.isinf(out_cpu).any().item() or torch.isnan(out_cpu).any().item()
@@ -435,12 +419,13 @@ def test_mla_decode_persistent_boundary():
     # Boundary-4: Denormalized values — D-SPECIAL-DBOUND
     try:
         torch.manual_seed(42)
+        batch, heads, kv_ctx, dim, pe_dim = 1, 64, 128, 512, 64
         q, q_pe, kv, k_pe = _gen_inputs(batch, heads, kv_ctx, dim, pe_dim)
         q = (q.cpu() * 1e-7).npu()
         q_pe = (q_pe.cpu() * 1e-7).npu()
         kv = (kv.cpu() * 1e-7).npu()
         k_pe = (k_pe.cpu() * 1e-7).npu()
-        output = run_mla_decode(q, q_pe, kv, k_pe, num_split, 64, 64, core_num)
+        output = run_mla_decode(q, q_pe, kv, k_pe, 64, 64, _get_core_num())
         torch.npu.synchronize()
         ref = _run_ref(q, q_pe, kv, k_pe)
         passed, ratio, max_abs = check_precision(output, ref, "float16")
@@ -471,7 +456,7 @@ def run_bench():
     # for fallback robustness and style parity with _run_precision_case / test_*.
     core_num = _get_core_num()
     lat_ms = do_bench(
-        lambda: run_mla_decode(q, q_pe, kv, k_pe, 1, 128, 64, core_num),
+        lambda: run_mla_decode(q, q_pe, kv, k_pe, 128, 64, core_num),
         _n_warmup=5,
         _n_repeat=5,
         return_mode="mean",
@@ -495,11 +480,11 @@ import torch
 import tilelang
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from example_mla_decode_persistent import flashattn_phase1_num_split1_ws3_fp16_kvreuse
+from example_mla_decode_persistent import flashattn_mla_decode
 
 torch.set_default_device("npu")
 
-# Golden config — matches run_bench() and host dispatch (dim>=512, block_N>=128)
+# Golden config — matches run_bench() and host dispatch
 batch, heads, kv_ctx, dim, pe_dim = 128, 128, 8192, 512, 64
 block_N, block_H = 128, 64
 core_num = int(torch.npu.get_device_properties("npu").cube_core_num)
@@ -512,8 +497,8 @@ k_pe = torch.randn(batch, kv_ctx, 1, pe_dim, dtype=torch.float16, device="cpu").
 KV_3d = kv.view(batch, kv_ctx, dim)
 K_pe_3d = k_pe.view(batch, kv_ctx, pe_dim)
 
-# ws3_fp16 + kvreuse kernel (num_split=1 path, workspace_3 dtype=fp16, num_stages=1)
-p1 = flashattn_phase1_num_split1_ws3_fp16_kvreuse(
+# unified kernel (num_split=1, fp32 workspace_3, num_stages=1, KV reuse)
+p1 = flashattn_mla_decode(
     batch, heads, kv_ctx, dim, pe_dim, block_N, block_H, core_num
 )
 
@@ -526,12 +511,12 @@ torch.npu.synchronize()
 for _ in range(10):
     p1(q, q_pe, KV_3d, K_pe_3d)
 torch.npu.synchronize()
-print("phase1 ws3_fp16_kvreuse runs done")
+print("flashattn_mla_decode runs done")
 '''
 
 
 def run_msprof():
-    """Run msprof hardware-level profiling on Phase 1 kernel.
+    """Run msprof hardware-level profiling on the unified MLA decode kernel.
 
     Captures 8 metric categories: ArithmeticUtilization, MemoryUB, Memory,
     MemoryL0, L2Cache, PipeUtilization, ResourceConflictRatio, BasicInfo.
