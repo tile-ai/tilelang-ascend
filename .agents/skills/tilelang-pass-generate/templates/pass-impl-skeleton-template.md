@@ -3,7 +3,7 @@
 > 本文件是「**代码层面的最后一次结构化对齐**」。比 `pass-design.md` 更落地，但比真实代码更轻量。
 > 在用户确认本骨架前，**禁止生成任何 .cc / .py 代码**。
 >
-> ⚠️ 本骨架**只覆盖实现侧**（C++ / Python wrapper / pass_config / phase.py）。
+> 本骨架覆盖四个基础接入点及设计证明必需的 catalog / public header / OperationConfig。
 > UT/ST 测试不在本骨架范围内，由后续独立 skill 处理。
 
 ---
@@ -19,7 +19,7 @@
 
 ---
 
-## 1. 改动文件清单（实现侧，仅 4 类）
+## 1. 改动文件清单
 
 | 序号 | 文件 | 状态 | 说明 |
 |------|------|------|------|
@@ -27,7 +27,7 @@
 | 2 | `tilelang/transform/__init__.py` | 修改 | Python 封装 |
 | 3 | `tilelang/transform/pass_config.py` | {修改 / 不动} | 配置键定义（可选） |
 | 4 | `tilelang/engine/phase.py` | 修改 | Pipeline 接入 |
-| 5 | （可选）`src/transform/common/{helper}.h` | 新建 | 公共辅助类 |
+| 5 | （按设计）catalog / public header / `OperationConfig` | {修改 / 不动} | Supporting contract |
 
 > 测试文件（`testing/python/...`）**不在本骨架范围内**，由 Pass 测试生成 skill 处理。
 
@@ -112,7 +112,7 @@ PrimFunc Substitute(PrimFunc f, PassContext ctx):
 
 ---
 
-## 4. Attr 读写表
+## 4. Attr 与结构事实表
 
 ### 4.1 输入 attrs
 
@@ -126,6 +126,12 @@ PrimFunc Substitute(PrimFunc f, PassContext ctx):
 | 键名 | 类型 | 下游消费 Pass |
 |------|------|----------------|
 | `{out_key1}` | `{Type}` | `{消费 Pass}` |
+
+### 4.3 结构事实
+
+| Fact | Consumed / produced / invalidated | 来源与消费者 |
+|------|-----------------------------------|--------------|
+| `{buffer access / resource_scope / lowered call / selected ABI}` | `{...}` | `{PassA -> 本 Pass -> PassB}` |
 
 ---
 
@@ -151,7 +157,7 @@ static constexpr const char *k{PassName}Config = "tl.{pass_name_lower}";
 TVM_REGISTER_PASS_CONFIG_OPTION(k{PassName}Config, Bool);
 ```
 
-> 默认值：`Bool(false)`。Ascend 特定 Pass 默认不开启，由 `pass_configs` 显式启用。
+> 默认值必须从 C++ `GetConfig`、target defaults 和设计语义确认；不要推断为 `Bool(false)`。
 
 ---
 
@@ -200,7 +206,7 @@ def {PassName}({可选参数: target=None / is_npu=False}):
 
 class PassConfigKey(str, Enum):
     TL_{PASS_NAME_UPPER} = "tl.{pass_name_lower}"
-    """Enable/disable {PassName}. Default: False."""
+    """Enable/disable {PassName}. Default: {verified_default}."""
 ```
 
 ---
@@ -209,20 +215,20 @@ class PassConfigKey(str, Enum):
 
 按顺序执行，遇到第一个失败就停下来定位：
 
-1. **导入冒烟**：
+1. **命名与导入冒烟**：
    ```bash
    python -c "import tilelang; from tilelang.transform import {PassName}; print({PassName}())"
    ```
-2. **跨文件命名一致性 grep**：
+2. **C++ 重建**（修改编入 shared library 的 C++ 时必跑）：{仓库构建脚本}
+3. **跨文件命名一致性 grep**：
    ```bash
    grep -n "{PassName}" src/transform/{pass_name}.cc tilelang/transform/__init__.py tilelang/engine/phase.py
    grep -n "tl.{pass_name_lower}" src/transform/{pass_name}.cc tilelang/transform/pass_config.py
    ```
-3. **最小 example 跑通**（已有 example，不新建）：
+4. **现有聚焦编译/行为回归**（必须经过新行为，不新建测试）：
    ```bash
    python {仓库已有的最小 example，例如 examples/elementwise/...}
    ```
-4. **构建冒烟**（如果本机能跑）：{按仓库脚本}
 
 ---
 

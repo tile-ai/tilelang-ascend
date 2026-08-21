@@ -9,16 +9,20 @@
 | Pass 名称 | 注册名 | Python 函数 | C++ 文件 | 配置键 |
 |-----------|--------|-------------|---------|--------|
 | AscendSyncInsert | tl.transform.AscendSyncInsert | `AscendSyncInsert(target, platform)` | `ascend_sync_insert.cc` | `tl.ascend_auto_sync` |
-| AscendMemoryPlanning | tl.transform.AscendMemoryPlanning | `AscendMemoryPlanning()` | `ascend_memory_planning.cc` | `tl.ascend_memory_planning` |
-| CombineCV | tl.transform.CombineCV | `CombineCV()` | `ascend_combinecv.cc` | `tl.ascend_auto_cv_combine` |
-| CrossCorePipeline | tl.transform.CrossCorePipeline | `CrossCorePipeline()` | `cross_core_pipeline.cc` | `tl.ascend_auto_cross_core_sync` |
+| AscendSyncInsertVS | tl.transform.AscendSyncInsertVS | `AscendSyncInsertVS(target, platform)` | `ascend_sync_insert_vs.cc` | `tl.ascend_auto_sync_vs` |
+| AscendMemoryPlanning | tl.transform.AscendMemoryPlanning | `AscendMemoryPlanning()` | `ascend_memory_planning.cc` | `tl.ascend_memory_planning` controls automatic strategy; pass always publishes maps |
+| CombineCV | tl.transform.CombineCV | `CombineCV()` | `ascend_combinecv.cc` | `tl.ascend_auto_cv_combine`; `tl.ascend_auto_cross_core_sync` controls its optional sync insertion |
+| AscendResourceScopeVerify | tl.transform.AscendResourceScopeVerify | `AscendResourceScopeVerify()` | `ascend_combinecv.cc` | - |
+| AscendVectorInstructionSelection | tl.transform.AscendVectorInstructionSelection | `AscendVectorInstructionSelection(target, platform)` | `ascend_vector_instruction_selection.cc` | A2/A3 AscendC/auto pipeline gate |
+| AscendVectorMaskLegalize | tl.transform.AscendVectorMaskLegalize | `AscendVectorMaskLegalize(target, platform)` | `ascend_vector_mask_legalize.cc` | `tl.ascend_vector_mask_reuse` (default `true`) |
+| CrossCorePipeline | tl.transform.CrossCorePipeline | `CrossCorePipeline()` | `cross_core_pipeline.cc` | - |
 | AscendLowerParallelToVector | tl.transform.AscendLowerParallelToVector | `AscendLowerParallelToVector()` | `ascend_lower_parallel_to_vector.cc` | - |
 | AscendStorageRewrite | tl.transform.AscendStorageRewrite | `AscendStorageRewrite(is_npu)` | `ascend_storage_rewrite.cc` | - |
 | InferAllocScope | tl.transform.InferAllocScope | `AscendInferBufferScope()` | `ascend_infer_buffer_scope.cc` | - |
 | AscendLowerOpaqueBlock | tl.transform.AscendLowerOpaqueBlock | `AscendLowerOpaqueBlock()` | `ascend_lower_opaque_block.cc` | - |
 | Flatten2DBuffer | tl.transform.Flatten2DBuffer | `Flatten2DBuffer()` | `ascend_collect_buffer_shape.cc` | - |
-| CollectBufferShapes | tl.transform.CollectBufferShapes | `CollectBufferShapes()` | `ascend_collect_buffer_shape.cc` | - |
-| BufferShapeCollector | tl.transform.BufferShapeCollector | `BufferShapeCollector()` | `ascend_pto_save_buffer_shape.cc` | - |
+| CollectBufferShapes | tl.transform.CollectBufferShapes | `CollectBufferShapes()` | `ascend_pto_save_buffer_shape.cc` | - |
+| BufferShapeCollector | tl.transform.BufferShapeCollector | `BufferShapeCollector()` | `ascend_collect_buffer_shape.cc` | - |
 | HostLegalize | tl.transform.HostLegalize | `HostProcesser()` | `ascend_host.cc` | - |
 
 ---
@@ -41,7 +45,7 @@
 **同步类型：**
 - `PipeBarrier_ALL` - 全局同步（切片操作、if 分支）
 - `PipeBarrier_MTE2/MTE1/MTE3/M/FIX/V/S` - 同 pipeline 内同步
-- `EventPair_<src>_<dst>` - 跨 pipeline 同步（共26种组合，见 operation_config.h:264-300）
+- `EventPair_<src>_<dst>` - 跨 pipeline 同步（以 `GetEventMapping()` 当前表为准）
 
 **功能简述：** 通过循环展开分析内存依赖，在 VisitStmt_(EvaluateNode) 中完成依赖检测、同步选择和插入，确保多 pipeline 异步执行的正确性。
 
@@ -62,21 +66,68 @@
 
 ### CombineCV
 
-**核心类：** `CombineCV` (继承 `IRMutatorWithAnalyzer`) + `CVCombineEmitter` (继承 `StmtMutator`)
+**核心类：** `CombineCV` + `CVCombineEmitter` + 共用 `AscendResource` classifier
 
 **核心方法：**
-- `VisitStmt_(BlockRealizeNode)` - 找到 tilelang_root，创建两个 Emitter
-- `CVCombineEmitter.VisitStmt_(EvaluateNode)` - 根据 API 名称和 buffer scope 过滤
-- `CVCombineEmitter.VisitStmt_(BufferStoreNode)` - 根据 buffer scope 过滤写入
+- `ResourceForCall()` - 按 operation contract、pipe 参数和 access pointer 分类
+- `MergeResources()` - 交叉校验 operation resource 与 local buffer resource
+- `ContextualSyncResolver` - 只给 pure region / 同 owner 双侧证据中的已知歧义 sync 补 scope
+- `VisitStmt_(BlockRealizeNode)` - 找到 tilelang_root，创建 C/V 两个 Emitter
+- `CVCombineEmitter` - common 两侧保留、C/V 单侧保留、opaque fail closed
 
 **工作流程：**
 ```
-tilelang_root → 创建两个 Emitter(is_aiv=true/false)
-             → 分别过滤 Cube/Vector 操作
-             → 包装为 AttrStmt[resource_scope=0/1]
+outer input → 保守解析已知上下文型 sync
+            → 用共用 classifier 拒绝不可分类 opaque call / 冲突 scope
+            → 创建两个 Emitter(is_aiv=true/false)
+            → common 两侧保留，resource-specific operation 只保留在 owner 分支
+            → 包装为 AttrStmt[resource_scope=0/1]
 ```
 
-**功能简述：** 分离 Cube 和 Vector 操作，将混合代码拆分为两块独立代码块（resource_scope=0/1），分别发送给 Cube 核和 Vector 核执行。
+**功能简述：** 把未显式分域的 Developer/Hybrid IR 分为 C/V 两支。copy 归属由实际
+src/dst storage scope 决定；MMA、Vector、pipe/event 等由 operation contract 或参数决定。
+无法分类的 outer Ascend hardware / opaque call fail closed；普通 resource-neutral statement
+仍保留既有分支上下文。
+
+详细分类与 verifier 设计见
+`pass-designs/design_ascend_combinecv.md`。
+
+---
+
+### AscendResourceScopeVerify
+
+**核心类：** `AscendResourceScopeVerifier`
+
+**功能简述：** 在 `AscendSyncInsert` / `AscendSyncInsertVS` 生成最终 hardware calls 后，验证
+每个 resource-specific operation、local BufferLoad/Store 和 vectorized loop 都位于正确的
+`resource_scope`。outer 只允许 common / resource-independent control；同类嵌套允许，C/V
+冲突嵌套拒绝。
+
+该 pass 与 CombineCV 调用同一个 `ResourceForCall()`，避免自动分离和最终验证使用两套规则。
+
+---
+
+### AscendVectorInstructionSelection
+
+**功能简述：** 对 A2/A3 `ascendc` / `auto`，在所有已有 TIR rewrite 和同步 pass 结束后，把
+managed `T.tile.*` semantic operation 改写为带类型化 repeat/mask 参数的内部 terminal。它同时
+校验 exact dtype、operand ABI、count/mask/repeat/stride bounds，并重验已有 selected call 的
+variant 与 payload。
+
+完整 Selection 规则由 `src/op/ascend_vector_mask_ops.inc` catalog 驱动；公共编译契约见
+`docs/ascend/compiler_managed_vector_mask.md`。
+
+---
+
+### AscendVectorMaskLegalize
+
+**功能简述：** 跟踪 NORMAL/COUNTER mode 及两个 mask words 的 must-facts，根据每条 selected
+terminal 的 `requires` / `ensures` 插入最少量 setter。`tl.ascend_vector_mask_reuse=false` 时，
+每条 terminal 前后清空 facts，从而完整重建 required mask，但仍保留 Selection 和严格 scope
+验证。
+
+它是 AscendC managed path 的最后一个 TIR-transforming pass；后面不能再添加会移动或改写
+selected terminal 的 pass。
 
 ---
 
@@ -90,7 +141,8 @@ tilelang_root → 创建两个 Emitter(is_aiv=true/false)
 - `LoopAnalyzer.Analyze()` - 分析 Cube/Vector 操作分布
 - `LoopRewriter.Rewrite()` - 重写为多 stage 流水线
 
-**功能简述：** 检测跨核流水线，将单循环拆分为多 stage，使用 set_flag/wait_flag 实现异步流水线。
+**功能简述：** 检测跨核流水线并重写多-stage loop；具体 C/V handoff 由 cross-core
+notification 协议表达。
 
 ---
 
@@ -173,9 +225,11 @@ tilelang_root → 创建两个 Emitter(is_aiv=true/false)
 | 配置键 | 默认值 | 说明 |
 |--------|--------|------|
 | `tl.ascend_auto_sync` | `false` | 启用 AscendSyncInsert |
-| `tl.ascend_memory_planning` | `false` | 启用 AscendMemoryPlanning |
+| `tl.ascend_memory_planning` | `false` | 启用自动规划策略；Pass 仍运行并发布 address/size maps |
 | `tl.ascend_auto_cv_combine` | `false` | 启用 CombineCV |
-| `tl.ascend_auto_cross_core_sync` | `false` | 启用 CrossCorePipeline |
+| `tl.ascend_auto_cross_core_sync` | `false` | 启用 CombineCV 中的 workspace cross-core sync insertion |
+| `tl.ascend_auto_sync_vs` | target-dependent | 启用 AscendSyncInsertVS |
+| `tl.ascend_vector_mask_reuse` | `true` | 跨 selected Vector terminal 复用兼容 mask facts；`false` 为保守 repair |
 
 ---
 
@@ -183,15 +237,18 @@ tilelang_root → 创建两个 Emitter(is_aiv=true/false)
 
 ```
 src/transform/
-├── ascend_sync_insert.cc          (1559 行)
-├── ascend_memory_planning.cc      (884 行)
-├── ascend_combinecv.cc            (~700 行)
-├── cross_core_pipeline.cc         (~1200 行)
-├── ascend_lower_parallel_to_vector.cc (~2000 行)
-├── ascend_storage_rewrite.cc      (~2200 行)
-├── ascend_infer_buffer_scope.cc   (~900 行)
-├── ascend_lower_opaque_block.cc   (~400 行)
-├── ascend_collect_buffer_shape.cc (~300 行)
-├── ascend_pto_save_buffer_shape.cc (~100 行)
-└── ascend_host.cc                 (~100 行)
+├── ascend_sync_insert.cc
+├── ascend_memory_planning.cc
+├── ascend_combinecv.cc
+├── ascend_vector_instruction_selection.cc
+├── ascend_vector_mask_legalize.cc
+├── common/ascend_vector_mask.{h,cc}
+├── cross_core_pipeline.cc
+├── ascend_lower_parallel_to_vector.cc
+├── ascend_storage_rewrite.cc
+├── ascend_infer_buffer_scope.cc
+├── ascend_lower_opaque_block.cc
+├── ascend_collect_buffer_shape.cc
+├── ascend_pto_save_buffer_shape.cc
+└── ascend_host.cc
 ```

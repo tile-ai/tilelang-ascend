@@ -20,6 +20,9 @@ description: TileLang-Ascend 新增 Ascend 专属 T.tile.xxx 小 API 的端到�
 5. 查看 `tilelang/language/ascend_tile.py` 中最相近的现有 API。
 6. 查看 `testing/python/language/` 中最相近的测试。
 7. 查看 `src/op/ascend.{h,cc}`、`src/target/codegen_ascend.cc`、`src/tl_templates/ascend/common.h` 中相近的 lowering、codegen 和 helper 实现。
+8. 如果 API 在 A2/A3 AscendC 上执行 Vector 工作、消费 mask 或改变 mask，阅读
+   `docs/ascend/compiler_managed_vector_mask.md`，并检查
+   `src/op/ascend_vector_mask_ops.inc` 中最相近的 managed operation。
 
 不要凭记忆推断 API 签名。已有本地模式优先于看起来更聪明的新抽象。
 
@@ -63,13 +66,30 @@ description: TileLang-Ascend 新增 Ascend 专属 T.tile.xxx 小 API 的端到�
 - 保留 region 信息，直到 lowering 可以计算访问指针、extent、stride、mask 或合法 shape。
 - 即使 Python 已经做过校验，C++ 侧也要重新检查关键约束。
 
-lowering 结果应变成后端可识别的 `call_extern` 或已有 codegen pattern。降低后的调用名要稳定且有描述性，例如 `tl::ascend::<helper_name><...>`。
+先决定操作是否属于 A2/A3 compiler-managed Vector lowering：
+
+- 受管理的公开 semantic op 应保留到既有调度、同步和内存 passes 结束后，再由
+  `AscendVectorInstructionSelection` 选择内部 terminal；不要提前把它降成 opaque helper。
+- 明确保持 self-contained、或不属于 managed catalog 的操作，才沿用现有
+  `call_extern` / helper codegen pattern。
+
+后一类 lowering 的调用名要稳定且有描述性，例如 `tl::ascend::<helper_name><...>`。
 
 ### 3. Ascend C Helper
 
 可复用的 Ascend C 片段优先放在 `src/tl_templates/ascend/common.h`，除非仓内已有更合适的模板位置。
 
-尽量把硬件状态切换封装在 helper 函数内部。比如 helper 开启了某种模式，它也应该在返回前恢复或关闭该模式。
+不要默认让 helper 自行设置并恢复 Vector mask，也不要删除 composite helper 的真实内部
+mask 行为。按三类区分：
+
+- **Managed raw terminal**：发射 `isSetMask=false`，自身不设置 mask；Legalizer 建立 entry
+  state。
+- **Managed selected helper**：保留 helper 的真实内部 mask 行为，逐条 runtime path 审计
+  mode / low / high entry 与 exit，并在 catalog 中准确表达 `requires` / `ensures`；不得假设
+  helper 总会恢复 NORMAL/full。
+- **Unmanaged / self-contained helper**：维持自己的独立合同。若它可能出现在 managed
+  terminals 之间且没有 catalog contract，Legalizer 必须把可能受影响的 facts 视为 unknown，
+  不能在无承载位置的情况下声称一个 exact post-state。
 
 如果需要兼容不同 CANN 版本：
 
@@ -84,11 +104,23 @@ lowering 结果应变成后端可识别的 `call_extern` 或已有 codegen patte
 
 - 更新 `src/target/codegen_ascend.cc`，让它打印对应 helper 调用。
 - 只有当参数顺序和指针打印逻辑完全匹配时，才复用 `CopyCodegen` 等现有 helper。
-- 如果操作读写 GM，按需更新调度或 pipeline 元数据：
+- 每个新的 Ascend hardware operation 都必须有可证明的 C/V owner。确认 CombineCV 与
+  `AscendResourceScopeVerify` 共用的分类器能够根据 operation contract、pipe 参数或
+  buffer scope 分类；unknown / opaque operation 必须 fail closed，不能继承相邻语句的归属。
+- 如果操作影响调度、同步或 GM 读写，按需更新 pipeline 元数据：
   - `src/transform/common/operation_config.h`
   - `src/transform/ascend_combinecv.cc`
   - `src/transform/cross_core_pipeline.cc`
 - pipeline 分析中，应把带副作用的 GM 写回当作写操作处理。
+
+对于 compiler-managed Vector operation，还要同时完成：
+
+1. catalog semantic group / physical variant；
+2. 精确的 source ABI、dtype/operand 关系和 payload validation；
+3. 所有 runtime path 的 mode、low word、high word `requires` / `ensures` 审计；
+4. selected terminal 的 Codegen emitter；
+5. auto CombineCV、正确显式 V scope、wrong/unscoped rejection 的 scope 测试。
+6. default reuse 与 `TL_ASCEND_VECTOR_MASK_REUSE=False` 下相同 selected terminal 的保守 repair。
 
 默认不要添加 PTO 支持。只有当任务明确要求，或已有 PTO 路径能以很小、低风险的改动接入时，才考虑补充。
 
@@ -122,10 +154,15 @@ lowering 结果应变成后端可识别的 `call_extern` 或已有 codegen patte
 PASS_CONFIGS = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
 }
 ```
 
-除非生成源码字符串、helper 名称或负例本身就是公开契约，否则不要把这些断言长期留在 CI 中。这类检查适合开发阶段，但实现稳定后容易变成噪声。
+`TL_ASCEND_AUTO_CV_SYNC` 只在真实 C/V 交互需要自动核间同步时加入。若关闭
+`TL_ASCEND_AUTO_CV_COMBINE`，测试必须显式写正确的 `T.Scope("C")` / `T.Scope("V")`。
+
+不要快照 incidental 的完整源码字符串。selected ABI、`isSetMask=false` overload、必要 setter
+数量、wrong-scope rejection 等若正是编译器契约，可以用聚焦断言长期保护。
 
 对于带副作用写回的 API，测试应在运行 kernel 前显式初始化目标 buffer。例如 accumulation API 应该先把 GM 清零，再检查累加后的值。
 
@@ -137,6 +174,8 @@ PASS_CONFIGS = {
 - `docs/TileLang-Ascend Programming Guide.md`：详细使用指南。
 - `.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-compute.md`：agent 面向的 API 用法说明。
 - `.agents/skills/tilelang-custom-skill/tilelang-programming-model-guide/SKILL.md`：仅当编程模式建议发生变化时更新。
+- `docs/ascend/compiler_managed_vector_mask.md`：仅当 managed Vector 的公开编译契约发生变化时更新；
+  不要把完整 Selection 表或 helper contract 复制进本 skill。
 - 不要为了内部 helper 去更新宽泛文档。
 
 如果旧文档里有相似但语义不同的全局 API，增加简短提醒，而不是静默改写可能属于 GPU / 主仓教程的示例。
