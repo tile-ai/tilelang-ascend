@@ -633,6 +633,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     PrintOpCall(op, "AscendC::Xor", {0, op->args.size()}, {0, 0});
   } else if (op->op.same_as(tl::ascend_broadcast())) {
     BroadcastOpCodegen(op);
+  } else if (op->op.same_as(tl::ascend_im2col())) {
+    Im2ColOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_tail_unary())) {
     TailUnaryOpCodegen(op);
   } else if (op->op.same_as(tl::ascend_tail_binary())) {
@@ -2427,6 +2429,22 @@ void CodeGenTileLangAscend::ExpExperimentCodegen(const CallNode *op) {
                << ", " << src_name << ", 0xFFFFFFFFFFFFFFFF, " << mask1 << ", "
                << repeat_time << ", 1, 1, " << rep_stride << ", " << rep_stride
                << ");\n";
+}
+
+void CodeGenTileLangAscend::Im2ColOpCodegen(const CallNode *op) {
+  // args: tag(0) src(1) dst(2) hi wi kh kw strideH strideW dilH dilW
+  //       padL padR padT padB posM posK validM validK  (3..18)
+  std::string op_name =
+      "tl::ascend::" + Downcast<StringImm>(op->args[0])->value;
+  std::string src = PrintBufferOffset(op->args[1].as<CallNode>());
+  std::string dst = PrintBufferOffset(op->args[2].as<CallNode>());
+
+  this->PrintIndent();
+  this->stream << op_name << "(" << dst << ", " << src;
+  for (size_t i = 3; i < op->args.size(); ++i) {
+    this->stream << ", " << PrintExpr(op->args[i]);
+  }
+  this->stream << ");\n";
 }
 
 void CodeGenTileLangAscend::BroadcastOpCodegen(const CallNode *op) {
