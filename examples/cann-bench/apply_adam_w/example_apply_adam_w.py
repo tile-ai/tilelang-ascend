@@ -327,12 +327,8 @@ def _adam_w_pipeline_fp32(
                     if mm < vec_proc - 1:
                         T.wait_flag("mte3", "mte2", nxt)
                         row_nxt = row_base + (mm + 1) * sub_M
-                        T.copy(
-                            Var[row_nxt, col_start], var_ub[nxt, :, :], pad_value=0.0
-                        )
-                        T.copy(
-                            Grad[row_nxt, col_start], grad_ub[nxt, :, :], pad_value=0.0
-                        )
+                        T.copy(Var[row_nxt, col_start], var_ub[nxt, :, :], pad_value=0.0)
+                        T.copy(Grad[row_nxt, col_start], grad_ub[nxt, :, :], pad_value=0.0)
                         T.copy(M_in[row_nxt, col_start], m_ub[nxt, :, :], pad_value=0.0)
                         T.copy(V_in[row_nxt, col_start], v_ub[nxt, :, :], pad_value=0.0)
                         T.set_flag("mte2", "v", nxt)
@@ -345,9 +341,7 @@ def _adam_w_pipeline_fp32(
                     T.tile.axpy(m_ub[cur, :, :], grad_ub[cur, :, :], eff_ombeta1)
 
                     # grad^2 (reuse grad_ub)
-                    T.tile.mul(
-                        grad_ub[cur, :, :], grad_ub[cur, :, :], grad_ub[cur, :, :]
-                    )
+                    T.tile.mul(grad_ub[cur, :, :], grad_ub[cur, :, :], grad_ub[cur, :, :])
 
                     # v_hat = eff_beta2 * v + eff_ombeta2 * grad^2
                     T.tile.mul(v_ub[cur, :, :], v_ub[cur, :, :], eff_beta2)
@@ -462,12 +456,8 @@ def _adam_w_pipeline_lowprec(
                     if mm < vec_proc - 1:
                         T.wait_flag("mte3", "mte2", nxt)
                         row_nxt = row_base + (mm + 1) * sub_M
-                        T.copy(
-                            Var[row_nxt, col_start], var_ub[nxt, :, :], pad_value=0.0
-                        )
-                        T.copy(
-                            Grad[row_nxt, col_start], grad_ub[nxt, :, :], pad_value=0.0
-                        )
+                        T.copy(Var[row_nxt, col_start], var_ub[nxt, :, :], pad_value=0.0)
+                        T.copy(Grad[row_nxt, col_start], grad_ub[nxt, :, :], pad_value=0.0)
                         T.copy(M_in[row_nxt, col_start], m_ub[nxt, :, :], pad_value=0.0)
                         T.copy(V_in[row_nxt, col_start], v_ub[nxt, :, :], pad_value=0.0)
                         T.set_flag("mte2", "v", nxt)
@@ -719,11 +709,7 @@ def _clamp_block_m_for_barrier(block_M, block_N, tl_dtype):
         sub_block_M = block_M // VEC_NUM
         elems = sub_block_M * block_N
         if use_fp32_compute:
-            total = (
-                _NUM_INPUTS * elems * dtype_size
-                + _NUM_INPUTS * elems * cal_size
-                + _SCALAR_PAD * cal_size
-            )
+            total = _NUM_INPUTS * elems * dtype_size + _NUM_INPUTS * elems * cal_size + _SCALAR_PAD * cal_size
         else:
             total = _NUM_INPUTS * elems * dtype_size + _SCALAR_PAD * cal_size
         if total <= _UB_LIMIT_BYTES:
@@ -741,14 +727,10 @@ def _get_barrier_kernel(M, N, block_M, block_N, tl_dtype):
     key = (M, N, block_M, block_N, tl_dtype)
     if tl_dtype in ["float16", "bfloat16"]:
         if key not in _barrier_kernel_cache:
-            _barrier_kernel_cache[key] = _adam_w_barrier_lowprec(
-                M, N, block_M, block_N, dtype=tl_dtype
-            )
+            _barrier_kernel_cache[key] = _adam_w_barrier_lowprec(M, N, block_M, block_N, dtype=tl_dtype)
     else:
         if key not in _barrier_kernel_cache:
-            _barrier_kernel_cache[key] = _adam_w_barrier_fp32(
-                M, N, block_M, block_N, dtype=tl_dtype
-            )
+            _barrier_kernel_cache[key] = _adam_w_barrier_fp32(M, N, block_M, block_N, dtype=tl_dtype)
     return _barrier_kernel_cache[key]
 
 
@@ -908,11 +890,9 @@ def _needs_barrier_path(lr, beta1, beta2, weight_decay, epsilon, step):
             return True
     if step <= 0:
         return True
-    if (1.0 - beta1 ** step) == 0.0:
+    if (1.0 - beta1**step) == 0.0:
         return True
-    if (1.0 - beta2 ** step) == 0.0:
-        return True
-    return False
+    return (1.0 - beta2**step) == 0.0
 
 
 def apply_adam_w(
@@ -973,9 +953,7 @@ def apply_adam_w(
         # Barrier kernel: scalars via scalar_ub (runtime values, no codegen
         # literal). _precompute_scalars_safe returns inf/nan per IEEE 754
         # (matching golden_apply_adam_w) instead of raising ZeroDivisionError.
-        scalars = _precompute_scalars_safe(
-            lr, beta1, beta2, weight_decay, epsilon, step, maximize
-        )
+        scalars = _precompute_scalars_safe(lr, beta1, beta2, weight_decay, epsilon, step, maximize)
         eff_beta1, eff_ombeta1, eff_beta2, eff_ombeta2, lr_signed = scalars
 
         barrier_block_M = _clamp_block_m_for_barrier(block_M, block_N, tl_dtype)
@@ -993,9 +971,7 @@ def apply_adam_w(
         y_2d = kernel(var_2d, grad_2d, m_2d, v_2d, s_tensor)
     else:
         # Pipeline kernel: scalars as compile-time params (optimal performance).
-        scalars = _precompute_scalars(
-            lr, beta1, beta2, weight_decay, epsilon, step, maximize
-        )
+        scalars = _precompute_scalars(lr, beta1, beta2, weight_decay, epsilon, step, maximize)
         eff_beta1, eff_ombeta1, eff_beta2, eff_ombeta2, lr_signed = scalars
 
         kernel = _get_pipeline_kernel(
@@ -1118,10 +1094,7 @@ def _gen_tensor(shape, torch_dtype, value_range, gen):
         if low == "inf" or high == "inf":
             flow = -10.0 if low == "-inf" else -1.0
             fhigh = 10.0 if high == "inf" else 1.0
-            t = (
-                torch.rand(shape, dtype=torch.float32, generator=gen) * (fhigh - flow)
-                + flow
-            )
+            t = torch.rand(shape, dtype=torch.float32, generator=gen) * (fhigh - flow) + flow
             mask = torch.rand(shape, dtype=torch.float32, generator=gen) < 0.05
             if bool(mask.any().item()):
                 t[mask] = float("inf") if high == "inf" else float("-inf")
@@ -1318,10 +1291,7 @@ def _run_l0_case(case, gen):
 
         ok = (mere < threshold) and (mare < 10 * threshold) and special_ok
         status = "PASS" if ok else "FAIL"
-        print(
-            f"    MERE={mere:.3e}, MARE={mare:.3e}, special_ok={special_ok} "
-            f"-> {status} (thr={threshold:.3e})"
-        )
+        print(f"    MERE={mere:.3e}, MARE={mare:.3e}, special_ok={special_ok} -> {status} (thr={threshold:.3e})")
         if ok:
             print(f"  [PRECISION_PASS] {case_id}")
         else:
@@ -1845,18 +1815,13 @@ def main():
     print()
     print("=" * 60)
     if blocking_ok:
-        print(
-            f"[PRECISION_PASS] max_MERE={overall_mere:.3e} "
-            f"max_MARE={overall_mare:.3e} passing={all_passing}"
-        )
+        print(f"[PRECISION_PASS] max_MERE={overall_mere:.3e} max_MARE={overall_mare:.3e} passing={all_passing}")
         if boundary_warnings:
             print(f"[BOUNDARY_WARNINGS] {boundary_warnings} (non-blocking)")
         print("Kernel Output Match!")
         sys.exit(0)
     else:
-        print(
-            f"[PRECISION_FAIL] max_MERE={overall_mere:.3e} max_MARE={overall_mare:.3e}"
-        )
+        print(f"[PRECISION_FAIL] max_MERE={overall_mere:.3e} max_MARE={overall_mare:.3e}")
         if boundary_warnings:
             print(f"[BOUNDARY_WARNINGS] {boundary_warnings} (non-blocking)")
         sys.exit(1)
