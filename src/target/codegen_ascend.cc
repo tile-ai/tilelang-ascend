@@ -935,6 +935,23 @@ void CodeGenTileLangAscend::VisitExpr_(const FloatImmNode *op,
   PrintConst(op, os, this);
 }
 
+void CodeGenTileLangAscend::VisitExpr_(const CastNode *op,
+                                       std::ostream &os) { // NOLINT(*)
+  // The BiSheng dav-2201 backend does not support a direct scalar BF16 cast.
+  // Use the AscendC scalar conversion helper for BF16-to-FP32 instead. This
+  // commonly arises from expressions such as T.float32(gm_bf16_scalar).
+  DataType from = op->value.dtype();
+  DataType to = op->dtype;
+  if (from.is_bfloat16() && to.is_float() && to.bits() == 32 &&
+      from.lanes() == 1 && to.lanes() == 1) {
+    os << "AscendC::ToFloat(";
+    PrintExpr(op->value, os);
+    os << ")";
+    return;
+  }
+  CodeGenC::VisitExpr_(op, os);
+}
+
 void CodeGenTileLangAscend::VisitExpr_(const MulNode *op,
                                        std::ostream &os) { // NOLINT(*)
   // Detect pattern: inf * (-1) -> -inf
