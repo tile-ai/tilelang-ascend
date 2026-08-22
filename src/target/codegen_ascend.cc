@@ -704,7 +704,7 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
   } else if (op->op.same_as(tl::ascend_sigmoid())) {
     SigmoidCodegen(op, "AscendC::Sigmoid");
   } else if (op->op.same_as(tl::ascend_silu())) {
-    SigmoidCodegen(op, "AscendC::Silu");
+    SiluCodegen(op);
   } else if (op->op.same_as(tl::ascend_reinterpretcast())) {
     ReinterpretCastCodegen(op);
   } else if (op->op.same_as(tl::ascend_clamp_max())) {
@@ -3077,6 +3077,28 @@ void CodeGenTileLangAscend::SigmoidCodegen(const CallNode *op,
     }
   }
   this->stream << ", " << PrintExpr(op->args[op->args.size() - 1]) << ");\n";
+}
+
+void CodeGenTileLangAscend::SiluCodegen(const CallNode *op) {
+  // AscendC::Silu 禁止源/目的地址重叠（见 CANN 官方约束）。前端对 in-place
+  // 调用（dst 与 src 同一 buffer）自动追加隐藏 UB tmp（arg2），这里降级为
+  // Silu(tmp, src) + DataCopy(dst, tmp)；非 in-place 保持 3 参直发。
+  auto dst = PrintBufferOffset(op->args[0].as<CallNode>());
+  auto src = PrintBufferOffset(op->args[1].as<CallNode>());
+  if (op->args.size() == 4) {
+    auto tmp = PrintBufferOffset(op->args[2].as<CallNode>());
+    auto size = PrintExpr(op->args[3]);
+    this->PrintIndent();
+    this->stream << "AscendC::Silu(" << tmp << ", " << src << ", " << size
+                 << ");\n";
+    this->PrintIndent();
+    this->stream << "AscendC::DataCopy(" << dst << ", " << tmp << ", " << size
+                 << ");\n";
+  } else {
+    this->PrintIndent();
+    this->stream << "AscendC::Silu(" << dst << ", " << src << ", "
+                 << PrintExpr(op->args[2]) << ");\n";
+  }
 }
 
 void CodeGenTileLangAscend::RoundCodegen(const CallNode *op,
