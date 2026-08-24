@@ -5292,6 +5292,8 @@ _ROUND_INPUT_PATTERN = [
 
 
 def tile_round_kernel(shape, dtype, count, explicit_tmp=False):
+    infer_count = count is None
+
     @T.prim_func
     def main(
         A: T.Tensor(shape, dtype),  # type: ignore
@@ -5305,13 +5307,19 @@ def tile_round_kernel(shape, dtype, count, explicit_tmp=False):
                 if vid == 0:
                     T.copy(A, src_ub)
                     T.tile.fill(dst_ub, -99.0)
-                    T.tile.round(dst_ub, src_ub, count, tmp=arena_ub)
+                    if infer_count:
+                        T.tile.round(dst_ub, src_ub, tmp=arena_ub)
+                    else:
+                        T.tile.round(dst_ub, src_ub, count, tmp=arena_ub)
                     T.copy(dst_ub, B)
             else:
                 if vid == 0:
                     T.copy(A, src_ub)
                     T.tile.fill(dst_ub, -99.0)
-                    T.tile.round(dst_ub, src_ub, count)
+                    if infer_count:
+                        T.tile.round(dst_ub, src_ub)
+                    else:
+                        T.tile.round(dst_ub, src_ub, count)
                     T.copy(dst_ub, B)
 
     return main
@@ -5321,8 +5329,7 @@ def run_test_tile_round(shape, dtype, target, count=None, explicit_tmp=False):
     numel = 1
     for extent in shape:
         numel *= extent
-    if count is None:
-        count = numel
+    expected_count = numel if count is None else count
 
     kernel = tilelang.compile(
         tile_round_kernel(shape, dtype, count, explicit_tmp),
@@ -5336,7 +5343,7 @@ def run_test_tile_round(shape, dtype, target, count=None, explicit_tmp=False):
     input_host = torch.tensor(_ROUND_INPUT_PATTERN, dtype=torch_dtype).repeat(repeat)[:numel]
     input_host = input_host.reshape(shape)
     expected_host = torch.full_like(input_host, -99.0)
-    expected_host.reshape(-1)[:count] = torch.round(input_host.reshape(-1)[:count])
+    expected_host.reshape(-1)[:expected_count] = torch.round(input_host.reshape(-1)[:expected_count])
 
     output = kernel(input_host.npu())
     torch.npu.synchronize()
@@ -5347,8 +5354,8 @@ def run_test_tile_round(shape, dtype, target, count=None, explicit_tmp=False):
     ("dtype", "target"),
     [
         ("float", "ascendc"),
-        ("float16", "ascendc"),
-        ("float", "pto"),
+        pytest.param("float16", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("float", "pto", marks=pytest.mark.low_priority),
     ],
 )
 @pytest.mark.parametrize("shape", [(64,), (4, 16)])
@@ -5356,12 +5363,13 @@ def test_tile_round_ties_to_even(dtype, target, shape):
     run_test_tile_round(shape, dtype, target)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("count", [17, 32])
 def test_tile_round_ascendc_respects_partial_count(dtype, count):
     run_test_tile_round((64,), dtype, "ascendc", count=count)
 
 
+@pytest.mark.low_priority
 def test_tile_round_float16_explicit_tmp_runtime():
     run_test_tile_round((64,), "float16", "ascendc", explicit_tmp=True)
 
@@ -5386,8 +5394,8 @@ def tile_round_inplace_kernel(dtype):
     ("dtype", "target"),
     [
         ("float", "ascendc"),
-        ("float16", "ascendc"),
-        ("float", "pto"),
+        pytest.param("float16", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("float", "pto", marks=pytest.mark.low_priority),
     ],
 )
 def test_tile_round_inplace(dtype, target):
@@ -5416,7 +5424,7 @@ def tile_round_slice_kernel(dtype):
             if vid == 0:
                 T.copy(A, src_ub)
                 T.tile.fill(dst_ub, -99.0)
-                T.tile.round(dst_ub[1, :], src_ub[0, :], 64)
+                T.tile.round(dst_ub[1, :], src_ub[0, :])
                 T.copy(dst_ub, B)
 
     return main
@@ -5426,8 +5434,8 @@ def tile_round_slice_kernel(dtype):
     ("dtype", "target"),
     [
         ("float", "ascendc"),
-        ("float16", "ascendc"),
-        ("float", "pto"),
+        pytest.param("float16", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("float", "pto", marks=pytest.mark.low_priority),
     ],
 )
 def test_tile_round_buffer_region(dtype, target):

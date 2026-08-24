@@ -2055,10 +2055,6 @@ def cos(
 #
 #     return max(dst, src, scalar_value)
 #
-# def round(dst: Buffer, src: Buffer, tmp: Buffer, count: PrimExpr):
-#
-#     return cast(dst, src, "CAST_ROUND", count)
-#
 def pow(
     dst: Buffer | BufferRegion,
     src0: Buffer | BufferRegion,
@@ -2279,43 +2275,57 @@ def clamp(
 def round(
     out: Buffer | BufferRegion,
     buffer: Buffer | BufferRegion,
-    count: PrimExpr,
+    count: PrimExpr | None = None,
     *,
     tmp: Buffer | BufferRegion | None = None,
-):  # noqa: F821
+):
     """Round floating-point elements to integral values using ties-to-even.
 
     ``out`` and ``buffer`` may be UB buffers or contiguous buffer regions and
     may alias for an in-place operation. They must have matching shapes and
-    dtypes. AscendC supports float16 and float32; PTO currently supports
-    float32 only. AscendC honors ``count`` as the number of leading elements to
-    process, while PTO requires ``count`` to equal the selected tile extent.
+    dtypes. When ``count`` is omitted, the selected regions must be compact and
+    contiguous, and their common element count is inferred. AscendC supports
+    float16 and float32; PTO currently supports float32 only. AscendC honors an
+    explicit ``count`` as the number of leading elements to process, while PTO
+    requires ``count`` to equal the selected tile extent.
 
     Args:
         out: Destination UB buffer or buffer region.
         buffer: Source UB buffer or buffer region.
-        count: Number of leading elements to round. This must not exceed the
-            number of accessible source or destination elements.
-        tmp: Optional explicit UB scratch storage for the AscendC float16 path.
-            It must be a one-dimensional, static, contiguous fixed-width scalar
-            buffer in ``shared.ub``, or an equivalent 32-byte-aligned buffer
-            region. Its dtype is ignored and its storage is reinterpreted by
-            byte address. When omitted, lowering allocates
-            ``max(source access bytes, 256)`` bytes. AscendC float32 and PTO use
-            no workspace and elide this operand.
+        count: Optional number of leading elements to round. When omitted, the
+            full selected extent is inferred. An explicit value must not exceed
+            the number of accessible source or destination elements.
+        tmp: Optional explicit UB scratch storage for the supported float16
+            path. It must be a one-dimensional, static, contiguous fixed-width
+            scalar buffer in ``shared.ub``, or an equivalent 32-byte-aligned
+            buffer region. Its dtype is ignored and its storage is reinterpreted
+            by byte address. When omitted, lowering allocates
+            ``max(source access bytes, 256)`` bytes. Float32 paths use no
+            workspace and elide this operand; PTO float16 is not yet supported.
 
     Returns:
         tvm.tir.Call: Intrinsic call for the selected Ascend backend.
     """
-    if isinstance(out, BufferRegion):
-        out_ptr, _ = _handle_buffer_region(out, "w")
-    else:
-        out_ptr = out.access_ptr("w")
+    infer_count = count is None
 
-    if isinstance(buffer, BufferRegion):
-        buffer_ptr, _ = _handle_buffer_region(buffer, "r")
-    else:
-        buffer_ptr = buffer.access_ptr("r")
+    def get_access_and_extent(value: Buffer | BufferRegion, mask: str):
+        underlying = value.buffer if isinstance(value, BufferRegion) else value
+        if infer_count and len(underlying.strides) != 0:
+            raise ValueError("T.tile.round cannot infer count for a buffer with explicit strides; pass count explicitly.")
+        if isinstance(value, BufferRegion):
+            if infer_count:
+                _validate_buffer_region_contiguity(value, require_flat_contiguous=True)
+            ptr, extent = _handle_buffer_region(value, mask)
+            return ptr, math.prod(extent)
+        return value.access_ptr(mask), math.prod(value.shape)
+
+    out_ptr, out_extent = get_access_and_extent(out, "w")
+    buffer_ptr, buffer_extent = get_access_and_extent(buffer, "r")
+
+    if infer_count:
+        if not _const_equal(out_extent, buffer_extent):
+            raise ValueError("T.tile.round requires matching source and destination extents when count is omitted; pass count explicitly.")
+        count = buffer_extent
 
     return _call_intrin_with_optional_tmp("round", [out_ptr, buffer_ptr, count], 2, tmp)
 
