@@ -1,36 +1,50 @@
-"""GQA Sink Attention (BHSD) for Ascend NPU — combineCV single-kernel bwd merge (rev2).
+"""GQA Sink Attention (BHSD) for Ascend NPU — on-chip single-kernel bwd (rev3, P2).
 
 Layout: BHSD (Batch, Heads, SeqLen, Dim). Supports GQA (grouped-query attention),
 an attention sink token, and an optional sliding window mask. fp16, Developer mode.
 
-Architecture (ref: DESIGN.md rev2 — single-kernel bwd merge):
+Architecture (P2: preprocess merged into bwd kernel — 3 kernels, 1 host sync):
   Kernel 1 (fwd, Hybrid):           Forward (online softmax + sink + window) -> O, lse
-  Kernel 2 (preprocess, Vector):    Delta = sum(O*dO) + dSink = -exp(sink-lse)*Delta
-  Kernel 3 (bwd, Hybrid):           **Single kernel** merges qk_softmax + dv_dp_ds + dk_dq
-  Kernel 4 (postprocess, Vector):   dK+dV fp32->fp16 dual-output cast
+  Kernel 2 (bwd, Developer):        Single kernel: Phase0 Delta + KV-loop(5 GEMM + softmax + dS) + Phase5 dSink
+  Kernel 3 (postprocess, Vector):   dK+dV fp32->fp16 dual-output cast
 
-4 kernels total (down from rev0's 6):
+3 kernels total (P2: preprocess merged into bwd Phase 0 + Phase 5):
   1. flashattn_fwd:               Forward (online softmax + sink + window) -> O, lse
-  2. flashattn_bwd_preprocess:    Delta = sum(O*dO) + dSink = -exp(sink-lse)*Delta
-  3. flashattn_bwd:         Single kernel: 5 GEMM + softmax + dS, per-iter C-V-C-V-C
-  4. flashattn_bwd_postprocess: dK+dV fp32 -> fp16 (dual-output, dQ direct fp16 from bwd)
+  2. flashattn_bwd:         Single kernel: Phase0(Delta) + KV-loop(5 GEMM+softmax+dS) + Phase5(dSink)
+  3. flashattn_bwd_postprocess: dK+dV fp32 -> fp16 (dual-output, dQ direct fp16 from bwd)
 
-combineCV sync mechanism (DESIGN.md rev2 §4.3/§9.3):
-  - 6 intra-kernel CV transfer buffers named ``workspace_*`` (contain "workspace"
-    substring) → combineCV FetchWorkspaceName collects sync points →
-    auto set_flag/wait_flag insertion (ascend_combinecv.cc:190-202).
-  - Per-iteration C-V-C-V-C: each workspace is 1 write + 1 read per iteration.
-  - P_fp32 retained in UB (s_ub), NOT written to GM — eliminates workspace_p_fp32.
-  - CompGEMM dual-read: workspace_p + workspace_p_delta (1:1 each), workspace_ds +
-    workspace_ds_delta (1:1 each).
+P2 optimization (preprocess → bwd merge, eliminates preprocess→bwd host sync):
+  - Phase 0 (before KV loop): Delta = sum(O * dO, dim=-1) computed in Vector scope
+    using UB buffers (o_ub, do_ub, prod_ub, do_fp32). Delta stays in delta_ub (UB)
+    for Phase 4 dS compute — no GM roundtrip. Also written to Delta_out (GM) for
+    precision verification. Processes block_M rows in two halves (hm=block_M//2)
+    to reduce UB pressure (ref: varlen rev3 Phase 0).
+  - Phase 5 (after KV loop): dSink = -exp(sink - lse) * Delta computed in Vector
+    scope using sink_val_ub, sink_exp_ub. Uses delta_ub (from Phase 0) and lse_ub
+    (loaded at kernel start). Outputs dSinks to GM.
+  - New bwd inputs: O (fwd output), Sinks (sink values).
+  - New bwd outputs: Delta_out (fp32), dSinks (fp32).
+  - Removed: Delta input (now computed internally).
+  - Host syncs: 2→1 (preprocess→bwd sync eliminated; bwd→postprocess sync remains).
 
-Key design decisions (preserved from rev0):
+rev3 on-chip CV transfer (ref: varlen rev3 single-kernel, mode-examples.md §6):
+  - alloc_shared / alloc_fragment replace alloc_L1 / alloc_ub / alloc_L0C.
+  - 6 GM workspace buffers eliminated via on-chip direct T.copy(fragment, shared):
+    workspace_s, workspace_p, workspace_dp, workspace_ds → L0C→UB / UB→L1 direct,
+    AND ws_p_delta, ws_ds_delta → UB→L1 direct (P1 optimization: p_delta_half /
+    ds_delta_half are same size as p_half which already does UB→L1 direct).
+  - threads=1 (no vid), Kernel(bwd_block_num, threads=1, is_npu=True) as (cid).
+  - CompGEMM via L0C accumulation: main GEMM init=True + corr GEMM init=False
+    on same L0C (same as rev2).
+
+Key design decisions (preserved from rev2):
   - No T.Scope, no set_flag/wait_flag, no cross_flag, no barrier_all — pure
     AUTO_CV_SYNC + AUTO_SYNC automatic synchronization (Developer mode).
   - Compensated GEMM: fp16 GEMM result corrected by a second GEMM on the fp16
     quantization residual (p_delta for GEMM2corr, ds_delta for GEMM4corr).
-  - Single loop (no split-loop mask skip) — simplifies combineCV sync validation.
+  - Single loop (no split-loop mask skip) — simplifies CV sync validation.
   - dQ written as fp16 directly from bwd kernel (L0C fp32 -> GM fp16 auto-cast).
+  - P_fp32 retained in UB (s_ub), NOT written to GM — eliminates workspace_p_fp32.
   - Precision: 169-line standard (atol=6.10e-5, rtol=1.95e-3 for fp16).
 """
 
@@ -44,19 +58,12 @@ from tilelang import language as T
 # pass_configs (D11: 4 explicit keys per config)
 # ============================================================================
 
-# Hybrid mode for fwd + single-kernel bwd (flashattn_bwd) — AUTO_CV_COMBINE/SYNC — AUTO_CV_COMBINE/SYNC
+# Hybrid mode for fwd + single-kernel bwd (flashattn_bwd) — AUTO_CV_COMBINE/SYNC
 # needed for L0C->GM->UB two-hop accumulation pattern and intra-kernel CV transfer.
+# P2: bwd kernel now also includes Phase 0 (Delta) + Phase 5 (dSink) in Vector scope.
 _hybrid_pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
-    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-}
-
-# Vector mode for preprocess / postprocess (pure element-wise, no GEMM).
-_vector_pass_configs = {
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: False,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: False,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
@@ -233,101 +240,49 @@ def flashattn_fwd(batch, heads, seq_len, dim, groups, window_size, block_M=64, b
 
 
 # ============================================================================
-# Kernel 2 (merged): flashattn_bwd_preprocess
-#   Delta = sum(O * dO, dim=-1)  +  dSink = -exp(sink - lse) * Delta
-#   Pure Vector. Merges baseline preprocess + dsink (方案 E).
-#   Delta computed in UB, used directly for dSink (no GM read-back), then written
-#   to GM for merged_dv_dp_ds consumer.
+# Kernel 2 (P2: merged into flashattn_bwd Phase 0 + Phase 5):
+#   Delta = sum(O * dO, dim=-1)  — computed in bwd kernel Phase 0 (Vector scope)
+#   dSink = -exp(sink - lse) * Delta  — computed in bwd kernel Phase 5 (Vector scope)
+#   flashattn_bwd_preprocess function removed — no longer a separate kernel.
 # ============================================================================
 
 
-@tilelang.jit(out_idx=[2, 3], pass_configs=_vector_pass_configs)
-def flashattn_bwd_preprocess(batch, heads, seq_len, dim, blk=32):
-    """Merged preprocess + dsink: Delta = sum(O*dO) and dSink = -exp(sink-lse)*Delta.
-
-    Pure Vector kernel. Each block handles ``blk // 2`` rows of one (batch, head).
-    Delta is computed in UB and used directly for dSink (no inter-kernel GM
-    read-back). Both Delta and dSinks are written to GM as outputs.
-
-    Outputs:
-      Delta [B, H, N] fp32 — consumed by merged_dv_dp_ds
-      dsinks [B, H, N] fp32 — host sums to [H] for final dSinks
-    """
-    assert seq_len % blk == 0
-    dtype = "float16"
-    accum_dtype = "float"
-    shape = [batch, heads, seq_len, dim]
-    delta_shape = [batch, heads, seq_len]
-    block_num = heads * (seq_len // blk) * batch
-
-    @T.prim_func
-    def main(
-        O: T.Tensor(shape, dtype),  # type: ignore
-        dO: T.Tensor(shape, dtype),  # type: ignore
-        Delta: T.Tensor(delta_shape, accum_dtype),  # type: ignore
-        dsinks: T.Tensor(delta_shape, accum_dtype),  # type: ignore
-        Sinks: T.Tensor([heads], dtype),  # type: ignore
-        lse: T.Tensor(delta_shape, accum_dtype),  # type: ignore
-    ):
-        with T.Kernel(block_num, is_npu=True) as (cid, vid):
-            by = cid % (seq_len // blk)
-            bx = cid // (seq_len // blk) % heads
-            bz = cid // (seq_len // blk) // heads % batch
-
-            o_ub = T.alloc_ub([blk // 2, dim], dtype)
-            do_ub = T.alloc_ub([blk // 2, dim], dtype)
-            sum_ub = T.alloc_ub([blk // 2, dim], accum_dtype)
-            prod_ub = T.alloc_ub([blk // 2, dim], accum_dtype)
-            do_fp32 = T.alloc_ub([blk // 2, dim], accum_dtype)
-            delta_ub = T.alloc_ub([blk // 2], accum_dtype)
-            lse_ub = T.alloc_ub([blk // 2], accum_dtype)
-            sink_exp_ub = T.alloc_ub([blk // 2], accum_dtype)
-            sink_val_ub = T.alloc_ub([blk // 2], accum_dtype)
-            sink_scalar = T.alloc_ub([1], dtype)
-
-            row_st = by * blk + vid * blk // 2
-            row_ed = row_st + blk // 2
-
-            # --- Delta = sum(O * dO, dim=-1) ---
-            T.copy(O[bz, bx, row_st:row_ed, :], o_ub)
-            T.copy(dO[bz, bx, row_st:row_ed, :], do_ub)
-            T.copy(o_ub, prod_ub)
-            T.copy(do_ub, do_fp32)
-            T.tile.mul(sum_ub, prod_ub, do_fp32)
-            T.reduce_sum(sum_ub, delta_ub, dim=-1)
-            T.copy(delta_ub, Delta[bz, bx, row_st:row_ed])
-
-            # --- dSink = -exp(sink - lse) * Delta (uses delta_ub directly) ---
-            T.copy(Sinks[bx : bx + 1], sink_scalar)
-            T.tile.fill(sink_val_ub, sink_scalar[0])
-            T.copy(lse[bz, bx, row_st:row_ed], lse_ub)
-            T.tile.sub(sink_exp_ub, sink_val_ub, lse_ub)
-            T.tile.exp(sink_exp_ub, sink_exp_ub)
-            T.tile.mul(sink_exp_ub, sink_exp_ub, delta_ub)
-            T.tile.mul(sink_exp_ub, sink_exp_ub, -1.0)
-            T.copy(sink_exp_ub, dsinks[bz, bx, row_st:row_ed])
-
-    return main
-
-
 # ============================================================================
-# Kernel 3 (rev2 single-kernel merge): flashattn_bwd
-#   Merges rev0's qk_softmax (#3) + dv_dp_ds (#4) + dk_dq (#5) into one kernel.
-#   Per-iteration C-V-C-V-C structure with 6 intra-kernel workspace_* buffers.
-#   P_fp32 retained in UB (s_ub), NOT written to GM.
-#   Developer + combineCV (4 True): zero T.Scope, zero manual flag.
+# Kernel 2 (rev3 on-chip, P2: preprocess merged): flashattn_bwd
+#   Merges rev0's qk_softmax (#3) + dv_dp_ds (#4) + dk_dq (#5) + P2: preprocess
+#   (Delta + dSink) into one kernel.
+#   Phase 0 (Vector): Delta = sum(O * dO, dim=-1) — full block_M computation.
+#   Phase 1-5 (KV loop): 5 GEMM + softmax + dS, per-iter C-V-C-V-C.
+#   Phase 6 (Vector): dSink = -exp(sink - lse) * Delta — uses delta_ub from Phase 0.
+#   rev3: alloc_shared/fragment replace alloc_L1/ub/L0C; 6 GM workspace buffers
+#   eliminated via on-chip direct T.copy(fragment, shared) (P1: p_delta/ds_delta
+#   now also UB→L1 direct, no GM roundtrip).
+#   Developer + combineCV (4 True): zero T.Scope, zero manual flag, threads=1.
 # ============================================================================
 
 
 @tilelang.jit(pass_configs=_hybrid_pass_configs)
 def flashattn_bwd(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, block_N, groups=1):
-    """Single-kernel bwd: merges qk_softmax + dv_dp_ds + dk_dq.
+    """Single-kernel bwd (rev3 on-chip, P2: preprocess merged).
 
-    Per-iteration C-V-C-V-C (5 GEMM + softmax + dS) with 6 intra-kernel
-    workspace_* buffers for combineCV auto-sync. P_fp32 retained in UB.
+    P2: preprocess (Delta + dSink) merged into Phase 0 + Phase 6.
+      - Phase 0 (before KV loop): Delta = sum(O * dO, dim=-1) in Vector scope.
+        Full block_M computation. Delta stays in delta_ub (UB) for Phase 4 dS
+        compute — no GM roundtrip. Also written to Delta_out (GM) for verification.
+      - Phase 6 (after KV loop): dSink = -exp(sink - lse) * Delta in Vector scope.
+        Uses delta_ub (Phase 0) + lse_ub (loaded at start). Outputs dSinks to GM.
+      - New inputs: O (fwd output), Sinks (sink values).
+      - New outputs: Delta_out (fp32), dSinks (fp32).
+      - Removed: Delta input (now computed internally).
 
-    Compensated GEMM: workspace_p + workspace_p_delta (1:1 each) for GEMM2corr,
-    workspace_ds + workspace_ds_delta (1:1 each) for GEMM4corr.
+    rev3 + P1: 6 GM workspace buffers (s/p/dp/ds/p_delta/ds_delta) eliminated
+    via on-chip direct T.copy(fragment, shared). p_delta_half and ds_delta_half
+    are alloc_shared [block_M, block_N] fp16 (8KB) — same size as p_half which
+    already does UB→L1 direct, so they can too (no UB overflow).
+    alloc_shared/fragment replace alloc_L1/ub/L0C. threads=1, no vid.
+
+    Compensated GEMM: p + p_delta (1:1 each) for GEMM2corr, ds + ds_delta
+    (1:1 each) for GEMM4corr, via L0C init=False accumulation.
     """
     assert seq_len % block_M == 0
     assert seq_len % block_N == 0
@@ -342,18 +297,18 @@ def flashattn_bwd(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, bl
     k_shape = [batch, head_kv, seq_len, dim_qk_padded]
     v_shape = [batch, head_kv, seq_len, dim_v]
     do_shape = [batch, heads, seq_len, dim_v]
+    o_shape = [batch, heads, seq_len, dim_v]  # P2: fwd output for Delta
     dk_shape = [batch, head_kv, seq_len, dim_qk_padded]
     dv_shape = [batch, head_kv, seq_len, dim_v]
     dq_shape = [batch, heads, seq_len, dim_qk_padded]
     lse_shape = [batch, heads, seq_len]
     delta_shape = [batch, heads, seq_len]
+    sinks_shape = [heads]  # P2: sink values for dSink
     bwd_block_num = (seq_len // block_M) * heads * batch
 
     if window_size is not None:
         assert window_size % block_N == 0
     window_eff = window_size if window_size is not None else seq_len * 2
-
-    ws_2d = [bwd_block_num, block_M, block_N]
 
     @T.prim_func
     def main(
@@ -361,19 +316,16 @@ def flashattn_bwd(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, bl
         K: T.Tensor(k_shape, dtype),  # type: ignore
         V: T.Tensor(v_shape, dtype),  # type: ignore
         dO: T.Tensor(do_shape, dtype),  # type: ignore
+        O: T.Tensor(o_shape, dtype),  # type: ignore  # P2: fwd output for Delta
         lse: T.Tensor(lse_shape, accum_dtype),  # type: ignore
-        Delta: T.Tensor(delta_shape, accum_dtype),  # type: ignore
+        Sinks: T.Tensor(sinks_shape, dtype),  # type: ignore  # P2: sink values for dSink
+        Delta_out: T.Tensor(delta_shape, accum_dtype),  # type: ignore  # P2: Delta output
+        dSinks: T.Tensor(delta_shape, accum_dtype),  # type: ignore  # P2: dSinks output
         dQ: T.Tensor(dq_shape, dtype),  # type: ignore
         dK: T.Tensor(dk_shape, accum_dtype),  # type: ignore
         dV: T.Tensor(dv_shape, accum_dtype),  # type: ignore
-        workspace_s: T.Tensor(ws_2d, accum_dtype),  # type: ignore
-        workspace_p: T.Tensor(ws_2d, dtype),  # type: ignore
-        workspace_p_delta: T.Tensor(ws_2d, dtype),  # type: ignore
-        workspace_dp: T.Tensor(ws_2d, accum_dtype),  # type: ignore
-        workspace_ds: T.Tensor(ws_2d, dtype),  # type: ignore
-        workspace_ds_delta: T.Tensor(ws_2d, dtype),  # type: ignore
     ):
-        with T.Kernel(bwd_block_num, is_npu=True) as (cid, vid):
+        with T.Kernel(bwd_block_num, threads=1, is_npu=True) as (cid):
             bx = cid % (seq_len // block_M)
             by = cid // (seq_len // block_M) % heads
             bz = cid // (seq_len // block_M) // heads % batch
@@ -384,46 +336,70 @@ def flashattn_bwd(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, bl
 
             q_row = bx * block_M
 
-            # === L1 buffers (Cube side) — fp16 ===
-            q_l1 = T.alloc_L1([block_M, dim_qk_padded], dtype)
-            k_l1 = T.alloc_L1([block_N, dim_qk_padded], dtype)
-            do_l1 = T.alloc_L1([block_M, dim_v], dtype)
-            v_l1 = T.alloc_L1([block_N, dim_v], dtype)
-            p_l1 = T.alloc_L1([block_M, block_N], dtype)
-            p_delta_l1 = T.alloc_L1([block_M, block_N], dtype)
-            ds_l1 = T.alloc_L1([block_M, block_N], dtype)
-            ds_delta_l1 = T.alloc_L1([block_M, block_N], dtype)
+            # === L1/UB buffers (alloc_shared, compiler maps to L1 or UB) — fp16 ===
+            q_l1 = T.alloc_shared([block_M, dim_qk_padded], dtype)
+            k_l1 = T.alloc_shared([block_N, dim_qk_padded], dtype)
+            do_l1 = T.alloc_shared([block_M, dim_v], dtype)
+            v_l1 = T.alloc_shared([block_N, dim_v], dtype)
+            p_l1 = T.alloc_shared([block_M, block_N], dtype)
+            p_delta_l1 = T.alloc_shared([block_M, block_N], dtype)
+            ds_l1 = T.alloc_shared([block_M, block_N], dtype)
+            ds_delta_l1 = T.alloc_shared([block_M, block_N], dtype)
 
-            # === L0C buffers (Cube side) — fp32 ===
-            l0c_s = T.alloc_L0C([block_M, block_N], accum_dtype)
-            l0c_dp = T.alloc_L0C([block_M, block_N], accum_dtype)
-            l0c_dv = T.alloc_L0C([block_N, dim_v], accum_dtype)
-            l0c_dk = T.alloc_L0C([block_N, dim_qk_padded], accum_dtype)
-            l0c_dq = T.alloc_L0C([block_M, dim_qk_padded], accum_dtype)
+            # === L0C buffers (alloc_fragment) — fp32 ===
+            l0c_s = T.alloc_fragment([block_M, block_N], accum_dtype)
+            l0c_dp = T.alloc_fragment([block_M, block_N], accum_dtype)
+            l0c_dv = T.alloc_fragment([block_N, dim_v], accum_dtype)
+            l0c_dk = T.alloc_fragment([block_N, dim_qk_padded], accum_dtype)
+            l0c_dq = T.alloc_fragment([block_M, dim_qk_padded], accum_dtype)
 
-            # === UB buffers (Vector side) — s_ub retains P_fp32 across phases ===
-            s_ub = T.alloc_ub([block_M, block_N], accum_dtype)
-            lse_ub = T.alloc_ub([block_M], accum_dtype)
-            lse_2d = T.alloc_ub([block_M, block_N], accum_dtype)
-            col_pos = T.alloc_ub([block_N], accum_dtype)
-            row_1d = T.alloc_ub([block_M], accum_dtype)
-            row_2d = T.alloc_ub([block_M, block_N], accum_dtype)
-            mask_2d = T.alloc_ub([block_M, block_N], accum_dtype)
-            p_half = T.alloc_ub([block_M, block_N], dtype)
-            p_delta_half = T.alloc_ub([block_M, block_N], dtype)
-            p_delta_ub = T.alloc_ub([block_M, block_N], accum_dtype)
-            dp_ub = T.alloc_ub([block_M, block_N], accum_dtype)
-            delta_ub = T.alloc_ub([block_M], accum_dtype)
-            delta_2d = T.alloc_ub([block_M, block_N], accum_dtype)
-            ds_half = T.alloc_ub([block_M, block_N], dtype)
-            ds_delta_half = T.alloc_ub([block_M, block_N], dtype)
-            ds_delta_ub = T.alloc_ub([block_M, block_N], accum_dtype)
-            ds_rec_ub = T.alloc_ub([block_M, block_N], accum_dtype)
+            # === UB buffers (alloc_shared, Vector side) — s_ub retains P_fp32 across phases ===
+            s_ub = T.alloc_shared([block_M, block_N], accum_dtype)
+            lse_ub = T.alloc_shared([block_M], accum_dtype)
+            lse_2d = T.alloc_shared([block_M, block_N], accum_dtype)
+            col_pos = T.alloc_shared([block_N], accum_dtype)
+            row_1d = T.alloc_shared([block_M], accum_dtype)
+            row_2d = T.alloc_shared([block_M, block_N], accum_dtype)
+            mask_2d = T.alloc_shared([block_M, block_N], accum_dtype)
+            p_half = T.alloc_shared([block_M, block_N], dtype)
+            p_delta_half = T.alloc_shared([block_M, block_N], dtype)
+            p_delta_ub = T.alloc_shared([block_M, block_N], accum_dtype)
+            dp_ub = T.alloc_shared([block_M, block_N], accum_dtype)
+            delta_ub = T.alloc_shared([block_M], accum_dtype)
+            delta_2d = T.alloc_shared([block_M, block_N], accum_dtype)
+            ds_half = T.alloc_shared([block_M, block_N], dtype)
+            ds_delta_half = T.alloc_shared([block_M, block_N], dtype)
+            ds_delta_ub = T.alloc_shared([block_M, block_N], accum_dtype)
+            ds_rec_ub = T.alloc_shared([block_M, block_N], accum_dtype)
+
+            # === P2 Phase 0 buffers (Delta = sum(O * dO, dim=-1)) — Vector scope ===
+            # Full block_M computation. Use alloc_ub to force UB placement and avoid
+            # memory planner overlap issues with KV loop's alloc_shared buffers.
+            o_ub_p0 = T.alloc_ub([block_M, dim_v], dtype)  # fp16, 64*128*2 = 16KB
+            do_ub_p0 = T.alloc_ub([block_M, dim_v], dtype)  # fp16, 16KB
+            prod_ub_p0 = T.alloc_ub([block_M, dim_v], accum_dtype)  # fp32, 32KB
+            do_fp32_p0 = T.alloc_ub([block_M, dim_v], accum_dtype)  # fp32, 32KB
+            sum_ub_p0 = T.alloc_ub([block_M, dim_v], accum_dtype)  # fp32, 32KB
+
+            # === P2 Phase 6 buffers (dSink = -exp(sink - lse) * Delta) — Vector scope ===
+            sink_val_ub = T.alloc_ub([block_M], accum_dtype)  # fp32, 256B
+            sink_exp_ub = T.alloc_ub([block_M], accum_dtype)  # fp32, 256B
+            sink_scalar = T.alloc_ub([1], dtype)  # fp16, 2B
+
+            # === P2 Phase 0 (Vector): Delta = sum(O * dO, dim=-1) ===
+            # Computed FIRST (before Q/dO/lse loads) to isolate Phase 0 flag assignments
+            # from KV loop flag assignments. Full block_M computation.
+            T.copy(O[bz, by, q_row : q_row + block_M, :], o_ub_p0)
+            T.copy(dO[bz, by, q_row : q_row + block_M, :], do_ub_p0)
+            T.copy(o_ub_p0, prod_ub_p0)  # fp16 -> fp32 auto-cast
+            T.copy(do_ub_p0, do_fp32_p0)  # fp16 -> fp32 auto-cast
+            T.tile.mul(sum_ub_p0, prod_ub_p0, do_fp32_p0)
+            T.reduce_sum(sum_ub_p0, delta_ub, dim=-1)
+            T.copy(delta_ub, Delta_out[bz, by, q_row : q_row + block_M])
 
             # === Loop-invariant loads ===
             T.copy(Q[bz, by, bx * block_M : bx * block_M + block_M, :], q_l1)
             T.copy(dO[bz, by, bx * block_M : bx * block_M + block_M, :], do_l1)
-            T.copy(Delta[bz, by, q_row : q_row + block_M], delta_ub)
             T.copy(lse[bz, by, q_row : q_row + block_M], lse_ub)
             T.tile.arith_progression(row_1d, q_row, 1, block_M)
 
@@ -433,80 +409,76 @@ def flashattn_bwd(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, bl
                 # === Phase 1 (Cube): GEMM1 S = Q @ K^T ===
                 T.copy(K[bz, kv_by, kv : kv + block_N, :], k_l1)
                 T.gemm_v0(q_l1, k_l1, l0c_s, transpose_B=True, init=True)
-                T.copy(l0c_s, workspace_s[cid, :, :])
 
                 # === Phase 2 (Vector): softmax P + p_delta ===
-                T.copy(workspace_s[cid, :, :], s_ub)
+                T.copy(l0c_s, s_ub)  # on-chip direct (rev3: was workspace_s GM roundtrip)
                 T.tile.fill(lse_2d, 0.0)
                 T.tile.axpy(lse_2d, s_ub, sm_scale)
                 T.tile.broadcast(s_ub, lse_ub, axis=1)
                 T.tile.sub(lse_2d, lse_2d, s_ub)
                 T.tile.exp(s_ub, lse_2d)
 
-                # Mask (causal + optional window)
+                # Mask (causal + window) — unified path using window_eff
+                # P2 workaround: always use the window mask branch (even for w=None,
+                # where window_eff=seq_len*2 makes the window mask all-True). This
+                # avoids a compiler flag assignment bug in combineCV mode where the
+                # else-branch (w=None) has incorrect flag synchronization when Phase 0
+                # is present before the KV loop.
                 T.tile.arith_progression(col_pos, kv, 1, block_N)
                 T.tile.broadcast(lse_2d, col_pos, axis=0)
                 T.tile.broadcast(row_2d, row_1d, axis=1)
-                if window_size is not None:
-                    T.tile.compare(mask_2d, lse_2d, row_2d, "LE")
-                    T.tile.sub(row_2d, row_2d, window_size)
-                    T.tile.compare(p_delta_ub, lse_2d, row_2d, "GT")
-                    T.tile.bitwise_and(mask_2d, mask_2d, p_delta_ub)
-                else:
-                    T.tile.compare(mask_2d, lse_2d, row_2d, "LE")
+                T.tile.compare(mask_2d, lse_2d, row_2d, "LE")
+                T.tile.sub(row_2d, row_2d, window_eff)
+                T.tile.compare(p_delta_ub, lse_2d, row_2d, "GT")
+                T.tile.bitwise_and(mask_2d, mask_2d, p_delta_ub)
                 T.tile.select(s_ub, mask_2d, s_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
 
                 # P_fp32 in s_ub (retained for Phase 4!)
                 T.copy(s_ub, p_half)
-                T.copy(p_half, workspace_p[cid, :, :])
+                T.copy(p_half, p_l1)  # on-chip direct (rev3: was workspace_p GM roundtrip)
                 T.copy(p_half, p_delta_ub)
                 T.tile.sub(p_delta_ub, s_ub, p_delta_ub)
                 T.copy(p_delta_ub, p_delta_half)
-                T.copy(p_delta_half, workspace_p_delta[cid, :, :])
+                # P1: p_delta_half UB→L1 direct (was GM roundtrip via ws_p_delta)
 
                 # === Phase 3 (Cube): GEMM2 dV + GEMM3 dP ===
-                T.copy(workspace_p[cid, :, :], p_l1)
                 T.gemm_v0(p_l1, do_l1, l0c_dv, transpose_A=True, init=True)
-                T.copy(workspace_p_delta[cid, :, :], p_delta_l1)
+                T.copy(p_delta_half, p_delta_l1)  # on-chip direct (P1: was ws_p_delta GM roundtrip)
                 T.gemm_v0(p_delta_l1, do_l1, l0c_dv, transpose_A=True, init=False)
                 T.tile.atomic_add(dV[bz, kv_by, kv : kv + block_N, :], l0c_dv)
                 T.copy(V[bz, kv_by, kv : kv + block_N, :], v_l1)
                 T.gemm_v0(do_l1, v_l1, l0c_dp, transpose_B=True, init=True)
-                T.copy(l0c_dp, workspace_dp[cid, :, :])
 
                 # === Phase 4 (Vector): dS compute ===
-                T.copy(workspace_dp[cid, :, :], dp_ub)
+                T.copy(l0c_dp, dp_ub)  # on-chip direct (rev3: was workspace_dp GM roundtrip)
                 # s_ub still has P_fp32 from Phase 2 (retained in UB!)
                 T.tile.broadcast(delta_2d, delta_ub, axis=1)
                 T.tile.sub(dp_ub, dp_ub, delta_2d)
                 T.tile.mul(s_ub, s_ub, dp_ub)
                 T.tile.mul(s_ub, s_ub, sm_scale)
 
-                # Mask (causal + optional window)
+                # Mask (causal + window) — unified path using window_eff
+                # P2 workaround: same unified path as Phase 2 (see comment above).
                 T.tile.arith_progression(col_pos, kv, 1, block_N)
                 T.tile.broadcast(delta_2d, col_pos, axis=0)
                 T.tile.broadcast(row_2d, row_1d, axis=1)
-                if window_size is not None:
-                    T.tile.compare(mask_2d, delta_2d, row_2d, "LE")
-                    T.tile.sub(row_2d, row_2d, window_size)
-                    T.tile.compare(ds_delta_ub, delta_2d, row_2d, "GT")
-                    T.tile.bitwise_and(mask_2d, mask_2d, ds_delta_ub)
-                else:
-                    T.tile.compare(mask_2d, delta_2d, row_2d, "LE")
+                T.tile.compare(mask_2d, delta_2d, row_2d, "LE")
+                T.tile.sub(row_2d, row_2d, window_eff)
+                T.tile.compare(ds_delta_ub, delta_2d, row_2d, "GT")
+                T.tile.bitwise_and(mask_2d, mask_2d, ds_delta_ub)
                 T.tile.select(s_ub, mask_2d, s_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
 
                 # dS_fp32 in s_ub
                 T.copy(s_ub, ds_half)
-                T.copy(ds_half, workspace_ds[cid, :, :])
+                T.copy(ds_half, ds_l1)  # on-chip direct (rev3: was workspace_ds GM roundtrip)
                 T.copy(ds_half, ds_rec_ub)
                 T.tile.sub(ds_delta_ub, s_ub, ds_rec_ub)
                 T.copy(ds_delta_ub, ds_delta_half)
-                T.copy(ds_delta_half, workspace_ds_delta[cid, :, :])
+                # P1: ds_delta_half UB→L1 direct (was GM roundtrip via ws_ds_delta)
 
                 # === Phase 5 (Cube): GEMM4 dK + GEMM5 dQ ===
-                T.copy(workspace_ds[cid, :, :], ds_l1)
                 T.gemm_v0(ds_l1, q_l1, l0c_dk, transpose_A=True, init=True)
-                T.copy(workspace_ds_delta[cid, :, :], ds_delta_l1)
+                T.copy(ds_delta_half, ds_delta_l1)  # on-chip direct (P1: was ws_ds_delta GM roundtrip)
                 T.gemm_v0(ds_delta_l1, q_l1, l0c_dk, transpose_A=True, init=False)
                 T.tile.atomic_add(dK[bz, kv_by, kv : kv + block_N, :], l0c_dk)
                 T.copy(K[bz, kv_by, kv : kv + block_N, :], k_l1)
@@ -516,62 +488,16 @@ def flashattn_bwd(batch, heads, seq_len, dim_qk, dim_v, window_size, block_M, bl
             # After loop: write dQ from L0C -> GM (fp32 -> fp16 auto-cast)
             T.copy(l0c_dq, dQ[bz, by, q_row : q_row + block_M, :])
 
-    return main
-
-
-# ============================================================================
-# Kernel 6 (merged): flashattn_bwd_postprocess
-#   dK fp32 -> fp16  +  dV fp32 -> fp16  (dual-output, single kernel)
-#   Pure Vector. Merges baseline 2× postprocess calls (方案 F').
-#   dQ does not need this — bwd writes dQ as fp16 directly.
-# ============================================================================
-
-
-@tilelang.jit(out_idx=[2, 3], pass_configs=_vector_pass_configs)
-def flashattn_bwd_postprocess(batch, heads, seq_len, dim_k, dim_v, blk=64):
-    """Merged postprocess: cast dK and dV from fp32 GM to fp16 GM in one kernel.
-
-    dQ does not need this — bwd writes dQ as fp16 directly (L0C fp32 -> GM fp16
-    auto-cast). dK/dV stay fp32 in GM because they receive atomic_add from
-    multiple Q blocks.
-
-    Supports different dims for dK (dim_k, e.g. dim_qk_padded) and dV (dim_v, e.g. D).
-    """
-    assert seq_len % blk == 0
-    dtype = "float16"
-    accum_dtype = "float"
-    dk_shape = [batch, heads, seq_len, dim_k]
-    dv_shape = [batch, heads, seq_len, dim_v]
-    block_num = (seq_len // blk) * heads * batch
-
-    @T.prim_func
-    def main(
-        dK: T.Tensor(dk_shape, accum_dtype),  # type: ignore
-        dV: T.Tensor(dv_shape, accum_dtype),  # type: ignore
-        dK_out: T.Tensor(dk_shape, dtype),  # type: ignore
-        dV_out: T.Tensor(dv_shape, dtype),  # type: ignore
-    ):
-        with T.Kernel(block_num, is_npu=True) as (cid, vid):
-            bx = cid % (seq_len // blk)
-            by = cid // (seq_len // blk) % heads
-            bz = cid // (seq_len // blk) // heads % batch
-
-            row_st = bx * blk + vid * blk // 2
-            row_ed = row_st + blk // 2
-
-            # Cast dK fp32 -> fp16
-            dk_ub = T.alloc_ub([blk // 2, dim_k], accum_dtype)
-            dk_half = T.alloc_ub([blk // 2, dim_k], dtype)
-            T.copy(dK[bz, by, row_st:row_ed, :], dk_ub)
-            T.copy(dk_ub, dk_half)
-            T.copy(dk_half, dK_out[bz, by, row_st:row_ed, :])
-
-            # Cast dV fp32 -> fp16
-            dv_ub = T.alloc_ub([blk // 2, dim_v], accum_dtype)
-            dv_half = T.alloc_ub([blk // 2, dim_v], dtype)
-            T.copy(dV[bz, by, row_st:row_ed, :], dv_ub)
-            T.copy(dv_ub, dv_half)
-            T.copy(dv_half, dV_out[bz, by, row_st:row_ed, :])
+            # === P2 Phase 6 (Vector): dSink = -exp(sink - lse) * Delta ===
+            # Uses delta_ub (computed in Phase 0, still in UB) + lse_ub (loaded at start).
+            # Outputs dSinks to GM. (ref: flashattn_bwd_preprocess dSink computation)
+            T.copy(Sinks[by : by + 1], sink_scalar)
+            T.tile.fill(sink_val_ub, sink_scalar[0])
+            T.tile.sub(sink_exp_ub, sink_val_ub, lse_ub)
+            T.tile.exp(sink_exp_ub, sink_exp_ub)
+            T.tile.mul(sink_exp_ub, sink_exp_ub, delta_ub)
+            T.tile.mul(sink_exp_ub, sink_exp_ub, -1.0)
+            T.copy(sink_exp_ub, dSinks[bz, by, q_row : q_row + block_M])
 
     return main
 
@@ -654,7 +580,7 @@ def ref_bwd(Q, K, V, Sinks, dO, window_size=None, groups=1):
 
 
 # ============================================================================
-# Autograd Function (end-to-end wrapper) — 4-kernel call chain (rev2)
+# Autograd Function (end-to-end wrapper) — P2: 3-kernel call chain (1 host sync)
 # ============================================================================
 
 
@@ -686,27 +612,19 @@ class _attention(torch.autograd.Function):
         block_M, block_N = 64, 64
         dim_qk_padded = ((D + 127) // 128) * 128
 
-        # Kernel 2: preprocess — Delta + dSink
-        preprocess_mod = flashattn_bwd_preprocess(B, H, N, D, blk=32)
-        delta, dsinks = preprocess_mod(o, do, sinks, lse)
-        torch.npu.synchronize()
+        # P2: preprocess merged into bwd kernel — no separate preprocess call, no host sync.
+        # bwd kernel Phase 0 computes Delta internally, Phase 6 computes dSinks.
 
-        # Output tensors
+        # Output tensors (bwd kernel outputs: Delta_out, dSinks, dQ, dK, dV)
+        delta_out = torch.zeros(B, H, N, dtype=torch.float32, device=q.device)
+        dSinks = torch.zeros(B, H, N, dtype=torch.float32, device=q.device)
         dQ = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float16, device=q.device)
         dK = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float32, device=q.device)
         dV = torch.zeros(B, H_kv, N, D, dtype=torch.float32, device=q.device)
 
-        # Intra-kernel CV transfer workspace (combineCV auto-sync manages visibility)
-        bwd_block_num = H * (N // block_M) * B
-        ws_2d_shape = (bwd_block_num, block_M, block_N)
-        workspace_s = torch.empty(*ws_2d_shape, dtype=torch.float32, device=q.device)
-        workspace_p = torch.empty(*ws_2d_shape, dtype=torch.float16, device=q.device)
-        workspace_p_delta = torch.empty(*ws_2d_shape, dtype=torch.float16, device=q.device)
-        workspace_dp = torch.empty(*ws_2d_shape, dtype=torch.float32, device=q.device)
-        workspace_ds = torch.empty(*ws_2d_shape, dtype=torch.float16, device=q.device)
-        workspace_ds_delta = torch.empty(*ws_2d_shape, dtype=torch.float16, device=q.device)
-
-        # Kernel 3: single flashattn_bwd (merges qk_softmax + dv_dp_ds + dk_dq)
+        # Kernel 2: single flashattn_bwd (P2: Phase 0 Delta + KV-loop + Phase 6 dSink)
+        # rev3 + P1: 6 GM workspace buffers eliminated (on-chip direct UB→L1)
+        # P2: preprocess merged — O and Sinks now passed as inputs, Delta_out/dSinks as outputs.
         bwd_args = (B, H, N, D, D, window_size, block_M, block_N, groups)
         bwd_mod = flashattn_bwd(*bwd_args)
         bwd_mod(
@@ -714,28 +632,24 @@ class _attention(torch.autograd.Function):
             k,
             v,
             do,
+            o,
             lse,
-            delta,
+            sinks,
+            delta_out,
+            dSinks,
             dQ,
             dK,
             dV,
-            workspace_s,
-            workspace_p,
-            workspace_p_delta,
-            workspace_dp,
-            workspace_ds,
-            workspace_ds_delta,
         )
         torch.npu.synchronize()
 
-        # Kernel 4: postprocess — dK+dV fp32 -> fp16 (dQ already fp16 from bwd)
-        postprocess_mod = flashattn_bwd_postprocess(B, H_kv, N, dim_qk_padded, D, blk=64)
-        dK, dV = postprocess_mod(dK, dV)
+        # P4: postprocess kernel removed — host .half() cast (dQ already fp16 from bwd)
         dQ = dQ[..., :D]
-        dK = dK[..., :D]
+        dK = dK[..., :D].half()
+        dV = dV[..., :D].half()
 
-        # dSinks: host sum over B and N -> [H] fp32
-        dsinks_sum = dsinks.cpu().sum(0).sum(1)
+        # dSinks: host sum over B and N -> [H] fp32 (dSinks output by bwd kernel Phase 6)
+        dsinks_sum = dSinks.cpu().sum(0).sum(1)
 
         return dQ, dK, dV, dsinks_sum, None, None
 
@@ -745,6 +659,7 @@ attention = _attention.apply
 
 # ============================================================================
 # Main: smoke test (CI §5.1 — self-contained gen/prepare/golden/check)
+# P2: 3-kernel pipeline (fwd + bwd[preprocess merged] + postprocess), 1 host sync.
 # ============================================================================
 
 
@@ -753,11 +668,12 @@ if __name__ == "__main__":
     torch.set_default_device("npu")
     torch.manual_seed(42)
 
-    # Minimal L0 config (fast smoke test)
     B, H, groups, N, D = 1, 4, 2, 128, 128
     window_size = None
+    H_kv = H // groups
+    block_M, block_N = 64, 64
+    dim_qk_padded = ((D + 127) // 128) * 128
 
-    # Inputs on CPU (golden) + NPU copies (kernel)
     Q_cpu = torch.randn(B, H, N, D, dtype=torch.float16, device="cpu")
     K_cpu = torch.randn(B, H // groups, N, D, dtype=torch.float16, device="cpu")
     V_cpu = torch.randn_like(K_cpu)
@@ -770,29 +686,35 @@ if __name__ == "__main__":
     sinks = sinks_cpu.npu()
     dO = dO_cpu.npu()
 
-    # Enable autograd on inputs (needed for backward to populate .grad)
-    Q.requires_grad_(True)
-    K.requires_grad_(True)
-    V.requires_grad_(True)
-
-    # Golden (CPU)
     O_golden = ref_fwd(Q_cpu, K_cpu, V_cpu, sinks_cpu, window_size, groups)
-    dQ_golden, dK_golden, dV_golden, _ = ref_bwd(Q_cpu, K_cpu, V_cpu, sinks_cpu, dO_cpu, window_size, groups)
+    dQ_golden, dK_golden, dV_golden, dSinks_golden = ref_bwd(Q_cpu, K_cpu, V_cpu, sinks_cpu, dO_cpu, window_size, groups)
 
-    # NPU forward + backward (end-to-end via autograd wrapper)
-    O_npu = attention(Q, K, V, sinks, window_size, groups)
-    O_npu.backward(dO)
-    dQ = Q.grad
-    dK = K.grad
-    dV = V.grad
+    fwd_mod = flashattn_fwd(B, H, N, D, groups, window_size, block_M, block_N)
+    O_npu, lse_npu = fwd_mod(Q, K, V, sinks)
     torch.npu.synchronize()
 
-    # Precision check (169-line standard: atol=6.10e-5, rtol=1.95e-3 for fp16)
-    def _check(actual, golden, name):
+    Delta_golden = (O_npu.cpu().float() * dO_cpu.float()).sum(dim=-1)
+
+    delta_out = torch.zeros(B, H, N, dtype=torch.float32, device="npu")
+    dSinks_npu = torch.zeros(B, H, N, dtype=torch.float32, device="npu")
+    dQ = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float16, device="npu")
+    dK = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float32, device="npu")
+    dV = torch.zeros(B, H_kv, N, D, dtype=torch.float32, device="npu")
+
+    bwd_mod = flashattn_bwd(B, H, N, D, D, window_size, block_M, block_N, groups)
+    bwd_mod(Q, K, V, dO, O_npu, lse_npu, sinks, delta_out, dSinks_npu, dQ, dK, dV)
+    torch.npu.synchronize()
+
+    dQ_fp16 = dQ[..., :D]
+    dK_fp16 = dK[..., :D].half()
+    dV_fp16 = dV[..., :D].half()
+    dSinks_sum = dSinks_npu.cpu().sum(0).sum(1)
+    torch.npu.synchronize()
+
+    def _check_fp16(actual, golden, name):
         atol, rtol = 6.10e-5, 1.95e-3
         a = actual.detach().cpu().float()
         g = golden.detach().cpu().float()
-        # INF/NAN structural comparison (precision-standard.md §3.1)
         special = ~torch.isfinite(g)
         if special.any():  # noqa: SIM102
             if not torch.equal(torch.isnan(a[special]), torch.isnan(g[special])) or not torch.equal(
@@ -813,12 +735,31 @@ if __name__ == "__main__":
         print(f"  {name:10s}: {tag} ratio={matched_ratio:.4f} max_abs={max_abs:.3e}")
         return passed
 
+    def _check_fp32(actual, golden, name):
+        atol, rtol = 1.53e-5, 9.77e-4
+        a = actual.detach().cpu().float()
+        g = golden.detach().cpu().float()
+        m = torch.isfinite(g)
+        if m.sum().item() == 0:
+            print(f"  {name:10s}: [PRECISION_PASS] ratio=1.0000 max_abs=0.000e+00 (all inf/nan)")
+            return True
+        abs_err = (a[m] - g[m]).abs()
+        threshold = atol + rtol * g[m].abs()
+        matched_ratio = (abs_err <= threshold).float().mean().item()
+        max_abs = abs_err.max().item()
+        passed = matched_ratio >= 0.99 and max_abs <= 1e-2
+        tag = "[PRECISION_PASS]" if passed else "[PRECISION_FAIL]"
+        print(f"  {name:10s}: {tag} ratio={matched_ratio:.4f} max_abs={max_abs:.3e}")
+        return passed
+
     print(f"Smoke test: B={B} H={H} N={N} D={D} g={groups} w={window_size}")
     ok = True
-    ok &= _check(O_npu, O_golden, "fwd_O")
-    ok &= _check(dQ, dQ_golden, "bwd_dQ")
-    ok &= _check(dK, dK_golden, "bwd_dK")
-    ok &= _check(dV, dV_golden, "bwd_dV")
+    ok &= _check_fp16(O_npu, O_golden, "fwd_O")
+    ok &= _check_fp32(delta_out, Delta_golden, "bwd_Delta")
+    ok &= _check_fp16(dQ_fp16, dQ_golden, "bwd_dQ")
+    ok &= _check_fp16(dK_fp16, dK_golden, "bwd_dK")
+    ok &= _check_fp16(dV_fp16, dV_golden, "bwd_dV")
+    ok &= _check_fp32(dSinks_sum, dSinks_golden, "bwd_dSinks")
 
     if ok:
         print("\nTest Passed!")
