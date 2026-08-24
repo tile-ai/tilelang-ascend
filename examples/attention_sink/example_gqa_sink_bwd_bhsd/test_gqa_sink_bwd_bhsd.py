@@ -30,9 +30,7 @@ import torch
 from tilelang.profiler import do_bench
 
 from example_gqa_sink_bwd_bhsd import (
-    flashattn_bwd_qk_softmax,
-    flashattn_bwd_dv_dp_ds,
-    flashattn_bwd_dk_dq,
+    flashattn_bwd,
     flashattn_bwd_postprocess,
     flashattn_bwd_preprocess,
     flashattn_fwd,
@@ -291,12 +289,12 @@ def run_l0_case(case_name, B, H, groups, N, D, window_size, scale=1.0, shift=0.0
         else:
             results["fwd_O"]["status"] = "[PRECISION_PASS]"
 
-        # --- BWD merged_preprocess: Delta + dSink ---
-        preprocess_mod = _run_with_retry(
+        # --- BWD Preprocess: Delta + dSink (merged) ---
+        prep_mod = _run_with_retry(
             lambda: flashattn_bwd_preprocess(B, H, N, D, blk=32),
             kernel_name="flashattn_bwd_preprocess",
         )
-        Delta_npu, dSinks_npu = preprocess_mod(O_npu, dO, sinks, lse_npu)
+        Delta_npu, dSinks_npu = prep_mod(O_npu, dO, sinks, lse_npu)
         torch.npu.synchronize()
 
         # Delta golden uses O_npu (same input as kernel) to isolate bwd precision from fwd
@@ -306,52 +304,46 @@ def run_l0_case(case_name, B, H, groups, N, D, window_size, scale=1.0, shift=0.0
         results["bwd_Delta"] = {"passed": passed, "ratio": ratio, "max_abs": max_abs}
         results["bwd_Delta"]["status"] = "[PRECISION_PASS]" if passed else "[PRECISION_FAIL]"
 
-        # --- BWD Main: 4-kernel merge (qk_softmax, dv_dp_ds, dk_dq, postprocess) ---
+        # --- BWD Main: single flashattn_bwd kernel (rev2 merge) ---
         dQ = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float16, device="npu")
         dK = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float32, device="npu")
         dV = torch.zeros(B, H_kv, N, D, dtype=torch.float32, device="npu")
 
+        # Intra-kernel CV transfer workspace (combineCV auto-sync, no kv_iter dim)
         bwd_block_num = H * (N // block_M) * B
-        if window_size is not None:
-            max_kv_per_q = min(window_size // block_N + 1, N // block_N)
-        else:
-            max_kv_per_q = N // block_N
-        ws_p = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device="npu")
-        ws_p_delta = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device="npu")
-        ws_p_fp32 = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float32, device="npu")
-        ws_ds = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device="npu")
-        ws_ds_delta = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device="npu")
-        # Intra-kernel CV transfer workspace (combineCV auto-sync)
-        workspace_s = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float32, device="npu")
-        workspace_dp = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float32, device="npu")
+        ws_2d_shape = (bwd_block_num, block_M, block_N)
+        workspace_s = torch.empty(*ws_2d_shape, dtype=torch.float32, device="npu")
+        workspace_p = torch.empty(*ws_2d_shape, dtype=torch.float16, device="npu")
+        workspace_p_delta = torch.empty(*ws_2d_shape, dtype=torch.float16, device="npu")
+        workspace_dp = torch.empty(*ws_2d_shape, dtype=torch.float32, device="npu")
+        workspace_ds = torch.empty(*ws_2d_shape, dtype=torch.float16, device="npu")
+        workspace_ds_delta = torch.empty(*ws_2d_shape, dtype=torch.float16, device="npu")
 
         bwd_args = (B, H, N, D, D, window_size, block_M, block_N, groups)
-
-        # merged_qk_softmax: S = Q@K^T (Cube) → P = softmax(S) (Vector)
-        qk_softmax_mod = _run_with_retry(
-            lambda: flashattn_bwd_qk_softmax(*bwd_args),
-            kernel_name="flashattn_bwd_qk_softmax",
+        bwd_mod = _run_with_retry(
+            lambda: flashattn_bwd(*bwd_args),
+            kernel_name="flashattn_bwd",
         )
-        qk_softmax_mod(Q, K, lse_npu, ws_p, ws_p_delta, ws_p_fp32, workspace_s)
+        bwd_mod(
+            Q,
+            K,
+            V,
+            dO,
+            lse_npu,
+            Delta_npu,
+            dQ,
+            dK,
+            dV,
+            workspace_s,
+            workspace_p,
+            workspace_p_delta,
+            workspace_dp,
+            workspace_ds,
+            workspace_ds_delta,
+        )
         torch.npu.synchronize()
 
-        # merged_dv_dp_ds: dV+dP (Cube) → dS (Vector)
-        dv_dp_ds_mod = _run_with_retry(
-            lambda: flashattn_bwd_dv_dp_ds(*bwd_args),
-            kernel_name="flashattn_bwd_dv_dp_ds",
-        )
-        dv_dp_ds_mod(ws_p, ws_p_delta, ws_p_fp32, dO, V, Delta_npu, dV, ws_ds, ws_ds_delta, workspace_dp)
-        torch.npu.synchronize()
-
-        # k5: dK (Compensated GEMM, atomic_add) + dQ (L0C accumulate)
-        dk_dq_mod = _run_with_retry(
-            lambda: flashattn_bwd_dk_dq(*bwd_args),
-            kernel_name="flashattn_bwd_dk_dq",
-        )
-        dk_dq_mod(ws_ds, ws_ds_delta, Q, K, dK, dQ)
-        torch.npu.synchronize()
-
-        # merged_postprocess: dK+dV fp32 -> fp16 (dQ skipped — fp16 direct from dk_dq)
+        # Postprocess: dK+dV fp32 -> fp16 (dual-output, dQ already fp16 from bwd)
         dQ_fp16 = dQ
         postprocess_mod = _run_with_retry(
             lambda: flashattn_bwd_postprocess(B, H_kv, N, dim_qk_padded, D, blk=64),
@@ -360,8 +352,8 @@ def run_l0_case(case_name, B, H, groups, N, D, window_size, scale=1.0, shift=0.0
         dK_fp16, dV_fp16 = postprocess_mod(dK, dV)
         torch.npu.synchronize()
 
-        # dSinks: host sum over B and N → [H] fp32
-        dSinks_sum = dSinks_npu.cpu().sum(0).sum(1)
+        # dSinks: host sum over B and N -> [H] fp32
+        dSinks_sum = dSinks_npu.cpu().sum(0).sum(1)  # [H] fp32 on CPU
 
         # --- Golden backward ---
         dQ_ref, dK_ref, dV_ref, dSinks_ref_autograd = ref_bwd(
@@ -501,7 +493,7 @@ L1_CASES = [
         512,
         128,
         64,
-        ["D-DTYPE-fp16", "D-SHAPE-ALIGNED", "D-PARAM-groups", "D-PARAM-window_size", "D-VALRANGE-S"],
+        ["D-DTYPE-fp16", "D-DTYPE-fp32", "D-SHAPE-ALIGNED", "D-PARAM-groups", "D-PARAM-window_size", "D-VALRANGE-S"],
         0.3,
         0.0,
     ),
@@ -599,19 +591,14 @@ L1_CASES = [
 ]
 
 # L2 cases: (name, tags) — invalid inputs that should be rejected by kernel.
-# Kernel rejects: N not multiple of 64 (fwd/bwd assert), N not multiple of 32
-#   (preprocess assert), D not multiple of 128 (bwd dim_qk assert), float32 dtype.
-# NOTE: l2_shape_n192 was [BOUNDARY_PASS] in baseline (old dsink used block=128,
-#   192%128≠0 → rejected). After combineCV merge, preprocess uses blk=32,
-#   192%32==0 AND 192%64==0 → N=192 is now a VALID shape (no longer rejected).
-#   l2_shape_n192 is moved to L1-style valid shape documentation; the L2 slot
-#   is kept but marked N/A to preserve test structure.
+# Kernel rejects: N not multiple of 64 (fwd assert), N not multiple of 128
+#   (dsink assert), D != 128 (bwd shape mismatch), float32 dtype.
 L2_CASES = [
     ("l2_dtype_f32", ["D-EXC-DTYPE"]),
     ("l2_shape_n129", ["D-EXC-SHAPE", "D-SHAPE-TAIL-1"]),
-    ("l2_shape_n192", ["D-SHAPE-NOW-VALID", "D-SHAPE-TAIL-MID"]),  # was D-EXC-SHAPE; N=192 now valid after merge
+    ("l2_shape_n192", ["D-EXC-SHAPE", "D-SHAPE-TAIL-MID"]),
     ("l2_shape_n509", ["D-EXC-SHAPE", "D-SHAPE-PRIME"]),
-    ("l2_shape_d64", ["D-EXC-SHAPE"]),  # now correctly rejected by new assert dim_qk % 128 == 0
+    ("l2_shape_d64", ["D-EXC-SHAPE"]),
 ]
 
 # Boundary cases: (name, tags) — legal special values (inf/nan/zero/extreme).
@@ -623,7 +610,7 @@ BOUNDARY_CASES = [
 ]
 
 COVERAGE_MANIFEST = {}  # Auto-derived from L1_CASES + L2_CASES + BOUNDARY_CASES tags above
-COVERAGE_NA = {}  # No exemptions — Fusion requires all dimensions
+COVERAGE_NA = {}  # D-DTYPE-fp32 covered via dSinks (fp32) in every L0/L1 case
 
 
 # ============================================================================
@@ -723,16 +710,12 @@ def test_gqa_sink_bwd_bhsd_l2():
 
     _run_exception("l2_shape_n129", case_shape_n129)
 
-    # L2-3: N=192 (multiple of 64 and 32 — now VALID for merged preprocess with blk=32)
-    # After combineCV merge: preprocess uses blk=32 (inherited from baseline),
-    #   so 192%32==0 AND 192%64==0 → N=192 is a fully valid shape.
-    # This is a behavior change from baseline (old dsink used block=128, 192%128≠0 → rejected).
-    # Test now runs the full bwd pipeline with N=192 to confirm it works, then marks
-    # [BOUNDARY_PASS] (valid shape accepted) instead of expecting rejection.
+    # L2-3: N=192 (multiple of 64 and 32 — valid for preprocess blk=32 and bwd blk=64)
+    # After rev2 merge: preprocess uses blk=32 (192%32==0), bwd uses block_M=64 (192%64==0).
+    # This is a valid shape — confirm it works, mark [BOUNDARY_PASS].
     def case_shape_n192():
         B, H, groups, N, D = 1, 4, 2, 192, 128
         H_kv = H // groups
-        # Full pipeline smoke test: fwd + preprocess + qk_softmax + dv_dp_ds + dk_dq + postprocess
         Q = torch.randn(B, H, N, D, dtype=torch.float16, device="npu")
         K = torch.randn(B, H_kv, N, D, dtype=torch.float16, device="npu")
         V = torch.randn_like(K)
@@ -740,13 +723,11 @@ def test_gqa_sink_bwd_bhsd_l2():
         fwd_mod = flashattn_fwd(B, H, N, D, groups, None, 64, 64)
         O_npu, lse_npu = fwd_mod(Q, K, V, sinks)
         torch.npu.synchronize()
-        # If we reach here, N=192 is valid → return success
         return True
 
-    # N=192 is now valid → use _run_valid instead of _run_exception
     try:
         case_shape_n192()
-        print("[BOUNDARY_PASS] l2 l2_shape_n192: N=192 now valid after merge (preprocess blk=32, 192%32==0)")
+        print("[BOUNDARY_PASS] l2 l2_shape_n192: N=192 valid after merge (preprocess blk=32, 192%32==0)")
     except Exception as e:
         print(f"[BOUNDARY_WARN] l2 l2_shape_n192: unexpectedly rejected ({type(e).__name__}: {e})")
 
@@ -757,39 +738,12 @@ def test_gqa_sink_bwd_bhsd_l2():
 
     _run_exception("l2_shape_n509", case_shape_n509)
 
-    # L2-5: D=64 (bwd pads to 128, Q shape mismatch)
+    # L2-5: D=64 (bwd assert dim_qk % 128 == 0 fails)
     def case_shape_d64():
         B, H, groups, N, D = 1, 4, 2, 128, 64
-        H_kv = H // groups
-        dim_qk_padded = ((D + 127) // 128) * 128  # = 128
-        Q = torch.randn(B, H, N, D, dtype=torch.float16, device="npu")
-        K = torch.randn(B, H_kv, N, D, dtype=torch.float16, device="npu")
-        V = torch.randn(B, H_kv, N, D, dtype=torch.float16, device="npu")
-        dO = torch.randn(B, H, N, D, dtype=torch.float16, device="npu")
-        lse = torch.randn(B, H, N, dtype=torch.float32, device="npu")
-        Delta = torch.randn(B, H, N, dtype=torch.float32, device="npu")
-        dQ = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float16, device="npu")
-        dK = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float32, device="npu")
-        dV = torch.zeros(B, H_kv, N, D, dtype=torch.float32, device="npu")
-        bwd_block_num = H * (N // 64) * B
-        max_kv_per_q = N // 64
-        ws_p = torch.empty(bwd_block_num, max_kv_per_q, 64, 64, dtype=torch.float16, device="npu")
-        ws_p_delta = torch.empty(bwd_block_num, max_kv_per_q, 64, 64, dtype=torch.float16, device="npu")
-        ws_p_fp32 = torch.empty(bwd_block_num, max_kv_per_q, 64, 64, dtype=torch.float32, device="npu")
-        ws_ds = torch.empty(bwd_block_num, max_kv_per_q, 64, 64, dtype=torch.float16, device="npu")
-        ws_ds_delta = torch.empty(bwd_block_num, max_kv_per_q, 64, 64, dtype=torch.float16, device="npu")
-        workspace_s = torch.empty(bwd_block_num, max_kv_per_q, 64, 64, dtype=torch.float32, device="npu")
-        workspace_dp = torch.empty(bwd_block_num, max_kv_per_q, 64, 64, dtype=torch.float32, device="npu")
+        # flashattn_bwd asserts dim_qk % 128 == 0 — D=64 fails
         bwd_args = (B, H, N, D, D, None, 64, 64, groups)
-        qk_softmax_mod = flashattn_bwd_qk_softmax(*bwd_args)
-        qk_softmax_mod(Q, K, lse, ws_p, ws_p_delta, ws_p_fp32, workspace_s)
-        torch.npu.synchronize()
-        dv_dp_ds_mod = flashattn_bwd_dv_dp_ds(*bwd_args)
-        dv_dp_ds_mod(ws_p, ws_p_delta, ws_p_fp32, dO, V, Delta, dV, ws_ds, ws_ds_delta, workspace_dp)
-        torch.npu.synchronize()
-        dk_dq_mod = flashattn_bwd_dk_dq(*bwd_args)
-        dk_dq_mod(ws_ds, ws_ds_delta, Q, K, dK, dQ)
-        torch.npu.synchronize()
+        _bwd_mod = flashattn_bwd(*bwd_args)
 
     _run_exception("l2_shape_d64", case_shape_d64)
 
@@ -838,41 +792,47 @@ def _run_boundary_pipeline(B, H, groups, N, D, window_size, Q_cpu, K_cpu, V_cpu,
     torch.npu.synchronize()
 
     # Preprocess + dsink (merged)
-    preprocess_mod = flashattn_bwd_preprocess(B, H, N, D, blk=32)
-    Delta_npu, _ = preprocess_mod(O_npu, dO, sinks, lse_npu)
+    prep_mod = flashattn_bwd_preprocess(B, H, N, D, blk=32)
+    Delta_npu, _ = prep_mod(O_npu, dO, sinks, lse_npu)
     torch.npu.synchronize()
 
-    # BWD main (4-kernel merge: qk_softmax, dv_dp_ds, dk_dq, postprocess)
+    # BWD main (single flashattn_bwd kernel, rev2 merge)
     dQ = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float16, device="npu")
     dK = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float32, device="npu")
     dV = torch.zeros(B, H_kv, N, D, dtype=torch.float32, device="npu")
     bwd_block_num = H * (N // block_M) * B
-    if window_size is not None:
-        max_kv_per_q = min(window_size // block_N + 1, N // block_N)
-    else:
-        max_kv_per_q = N // block_N
-    ws_p = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device="npu")
-    ws_p_delta = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device="npu")
-    ws_p_fp32 = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float32, device="npu")
-    ws_ds = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device="npu")
-    ws_ds_delta = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device="npu")
-    workspace_s = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float32, device="npu")
-    workspace_dp = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float32, device="npu")
+    ws_2d_shape = (bwd_block_num, block_M, block_N)
+    workspace_s = torch.empty(*ws_2d_shape, dtype=torch.float32, device="npu")
+    workspace_p = torch.empty(*ws_2d_shape, dtype=torch.float16, device="npu")
+    workspace_p_delta = torch.empty(*ws_2d_shape, dtype=torch.float16, device="npu")
+    workspace_dp = torch.empty(*ws_2d_shape, dtype=torch.float32, device="npu")
+    workspace_ds = torch.empty(*ws_2d_shape, dtype=torch.float16, device="npu")
+    workspace_ds_delta = torch.empty(*ws_2d_shape, dtype=torch.float16, device="npu")
     bwd_args = (B, H, N, D, D, window_size, block_M, block_N, groups)
-    qk_softmax_mod = flashattn_bwd_qk_softmax(*bwd_args)
-    qk_softmax_mod(Q, K, lse_npu, ws_p, ws_p_delta, ws_p_fp32, workspace_s)
-    torch.npu.synchronize()
-    dv_dp_ds_mod = flashattn_bwd_dv_dp_ds(*bwd_args)
-    dv_dp_ds_mod(ws_p, ws_p_delta, ws_p_fp32, dO, V, Delta_npu, dV, ws_ds, ws_ds_delta, workspace_dp)
-    torch.npu.synchronize()
-    dk_dq_mod = flashattn_bwd_dk_dq(*bwd_args)
-    dk_dq_mod(ws_ds, ws_ds_delta, Q, K, dK, dQ)
+    bwd_mod = flashattn_bwd(*bwd_args)
+    bwd_mod(
+        Q,
+        K,
+        V,
+        dO,
+        lse_npu,
+        Delta_npu,
+        dQ,
+        dK,
+        dV,
+        workspace_s,
+        workspace_p,
+        workspace_p_delta,
+        workspace_dp,
+        workspace_ds,
+        workspace_ds_delta,
+    )
     torch.npu.synchronize()
     postprocess_mod = flashattn_bwd_postprocess(B, H_kv, N, dim_qk_padded, D, blk=64)
     dK, _ = postprocess_mod(dK, dV)
     torch.npu.synchronize()
 
-    # dQ already fp16 from k5 (L0C fp32 -> GM fp16 auto-cast)
+    # dQ already fp16 from bwd (L0C fp32 -> GM fp16 auto-cast)
     dQ_fp16 = dQ
     torch.npu.synchronize()
 
@@ -977,59 +937,81 @@ def run_bench(B=1, H=64, N=4096, D=128, groups=8, window_size=128, warmup=50, re
     O, lse = fwd_mod(Q, K, V, sinks)
     torch.npu.synchronize()
 
-    # Pre-compile all JIT modules
-    preprocess_mod = flashattn_bwd_preprocess(B, H, N, D, blk=32)
+    # Pre-compile all JIT modules (rev2: 4-kernel chain)
+    prep_mod = flashattn_bwd_preprocess(B, H, N, D, blk=32)
     bwd_args = (B, H, N, D, D, window_size, block_M, block_N, groups)
-    qk_softmax_mod = flashattn_bwd_qk_softmax(*bwd_args)
-    dv_dp_ds_mod = flashattn_bwd_dv_dp_ds(*bwd_args)
-    dk_dq_mod = flashattn_bwd_dk_dq(*bwd_args)
+    bwd_mod = flashattn_bwd(*bwd_args)
     postprocess_mod = flashattn_bwd_postprocess(B, H_kv, N, dim_qk_padded, D, blk=64)
     torch.npu.synchronize()
 
     # Pre-allocate all tensors (preprocess once for bench_bwd_only)
-    delta, _ = preprocess_mod(O, dO, sinks, lse)
+    delta, _ = prep_mod(O, dO, sinks, lse)
     torch.npu.synchronize()
 
     dQ = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float16, device="npu")
     dK = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float32, device="npu")
     dV = torch.zeros(B, H_kv, N, D, dtype=torch.float32, device="npu")
 
+    # Intra-kernel workspace (rev2: 6 workspace_*, no kv_iter dim)
     bwd_block_num = H * (N // block_M) * B
-    if window_size is not None:
-        max_kv_per_q = min(window_size // block_N + 1, N // block_N)
-    else:
-        max_kv_per_q = N // block_N
-
-    ws_p = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device="npu")
-    ws_p_delta = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device="npu")
-    ws_p_fp32 = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float32, device="npu")
-    ws_ds = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device="npu")
-    ws_ds_delta = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device="npu")
-    workspace_s = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float32, device="npu")
-    workspace_dp = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float32, device="npu")
+    ws_2d_shape = (bwd_block_num, block_M, block_N)
+    workspace_s = torch.empty(*ws_2d_shape, dtype=torch.float32, device="npu")
+    workspace_p = torch.empty(*ws_2d_shape, dtype=torch.float16, device="npu")
+    workspace_p_delta = torch.empty(*ws_2d_shape, dtype=torch.float16, device="npu")
+    workspace_dp = torch.empty(*ws_2d_shape, dtype=torch.float32, device="npu")
+    workspace_ds = torch.empty(*ws_2d_shape, dtype=torch.float16, device="npu")
+    workspace_ds_delta = torch.empty(*ws_2d_shape, dtype=torch.float16, device="npu")
     torch.npu.synchronize()
 
-    # Bench 1: bwd main pipeline (qk_softmax->dv_dp_ds->dk_dq, no intermediate sync)
+    # Bench 1: bwd main pipeline (single flashattn_bwd kernel)
     def bench_bwd_us():
         dQ.zero_()
         dK.zero_()
         dV.zero_()
-        qk_softmax_mod(Q, K, lse, ws_p, ws_p_delta, ws_p_fp32, workspace_s)
-        dv_dp_ds_mod(ws_p, ws_p_delta, ws_p_fp32, dO, V, delta, dV, ws_ds, ws_ds_delta, workspace_dp)
-        dk_dq_mod(ws_ds, ws_ds_delta, Q, K, dK, dQ)
+        bwd_mod(
+            Q,
+            K,
+            V,
+            dO,
+            lse,
+            delta,
+            dQ,
+            dK,
+            dV,
+            workspace_s,
+            workspace_p,
+            workspace_p_delta,
+            workspace_dp,
+            workspace_ds,
+            workspace_ds_delta,
+        )
 
     bwd_us = do_bench(bench_bwd_us, warmup=warmup, rep=rep) * 1e3  # ms->us
     torch.npu.synchronize()
 
-    # Bench 2: total pipeline (preprocess + qk_softmax-dk_dq + postprocess)
+    # Bench 2: total pipeline (prep + bwd + postprocess)
     def bench_total_us():
         dQ.zero_()
         dK.zero_()
         dV.zero_()
-        _delta, _ = preprocess_mod(O, dO, sinks, lse)
-        qk_softmax_mod(Q, K, lse, ws_p, ws_p_delta, ws_p_fp32, workspace_s)
-        dv_dp_ds_mod(ws_p, ws_p_delta, ws_p_fp32, dO, V, _delta, dV, ws_ds, ws_ds_delta, workspace_dp)
-        dk_dq_mod(ws_ds, ws_ds_delta, Q, K, dK, dQ)
+        _delta, _ = prep_mod(O, dO, sinks, lse)
+        bwd_mod(
+            Q,
+            K,
+            V,
+            dO,
+            lse,
+            _delta,
+            dQ,
+            dK,
+            dV,
+            workspace_s,
+            workspace_p,
+            workspace_p_delta,
+            workspace_dp,
+            workspace_ds,
+            workspace_ds_delta,
+        )
         postprocess_mod(dK, dV)
 
     total_us = do_bench(bench_total_us, warmup=warmup, rep=rep) * 1e3
@@ -1045,21 +1027,38 @@ def run_bench(B=1, H=64, N=4096, D=128, groups=8, window_size=128, warmup=50, re
 
             return do_bench(run, warmup=warmup // 2 or 1, rep=rep // 2 or 10) * 1e3
 
-        def _qk_softmax():
-            qk_softmax_mod(Q, K, lse, ws_p, ws_p_delta, ws_p_fp32, workspace_s)
+        def _prep():
+            prep_mod(O, dO, sinks, lse)
 
-        def _dv_dp_ds():
-            dV.zero_()
-            dv_dp_ds_mod(ws_p, ws_p_delta, ws_p_fp32, dO, V, delta, dV, ws_ds, ws_ds_delta, workspace_dp)
-
-        def _dk_dq():
+        def _bwd():
+            dQ.zero_()
             dK.zero_()
-            dk_dq_mod(ws_ds, ws_ds_delta, Q, K, dK, dQ)
+            dV.zero_()
+            bwd_mod(
+                Q,
+                K,
+                V,
+                dO,
+                lse,
+                delta,
+                dQ,
+                dK,
+                dV,
+                workspace_s,
+                workspace_p,
+                workspace_p_delta,
+                workspace_dp,
+                workspace_ds,
+                workspace_ds_delta,
+            )
+
+        def _post():
+            postprocess_mod(dK, dV)
 
         for name, fn in [
-            ("qk_softmax", _qk_softmax),
-            ("dv_dp_ds", _dv_dp_ds),
-            ("dk_dq", _dk_dq),
+            ("preprocess", _prep),
+            ("bwd", _bwd),
+            ("postprocess", _post),
         ]:
             per_kernel_us[name] = _bench_one(fn)
             torch.npu.synchronize()
@@ -1067,12 +1066,12 @@ def run_bench(B=1, H=64, N=4096, D=128, groups=8, window_size=128, warmup=50, re
     # Report
     expert_baseline_us = 4699
     gpu_baseline_us = 14287
-    print("=== BWD Kernel Benchmark (combineCV 6-kernel merge) ===")
+    print("=== BWD Kernel Benchmark (rev2 single-kernel Developer + combineCV) ===")
     print(f"Shape: B={B} H={H} N={N} D={D} g={groups} w={window_size}")
-    print(f"max_kv_per_q={max_kv_per_q}  bwd_block_num={bwd_block_num}")
+    print(f"bwd_block_num={bwd_block_num}")
     print()
-    print(f"bwd main pipeline (qk_softmax->dv_dp_ds->dk_dq): {bwd_us:.0f} us")
-    print(f"total pipeline:             {total_us:.0f} us  (preprocess+qk_softmax-dv_dp_ds-dk_dq+postprocess)")
+    print(f"bwd main pipeline (single flashattn_bwd): {bwd_us:.0f} us")
+    print(f"total pipeline:                           {total_us:.0f} us  (prep+bwd+postprocess)")
     print()
     print(f"--- vs Expert baseline ({expert_baseline_us} us) ---")
     print(f"bwd vs Expert:   {(expert_baseline_us - bwd_us) / expert_baseline_us * 100:+.1f}%  ({bwd_us - expert_baseline_us:+.0f} us)")
@@ -1089,7 +1088,6 @@ def run_bench(B=1, H=64, N=4096, D=128, groups=8, window_size=128, warmup=50, re
         print("--- per-kernel breakdown (with syncs) ---")
         for name, us in per_kernel_us.items():
             print(f"  {name:20s}: {us:.0f} us")
-        print(f"  {'sum(qk_softmax-dk_dq)':20s}: {sum(per_kernel_us.values()):.0f} us")
 
     print("\nTest Passed!")
     return True
@@ -1100,8 +1098,8 @@ def run_bench(B=1, H=64, N=4096, D=128, groups=8, window_size=128, warmup=50, re
 # ============================================================================
 
 # Minimal runner script for msprof op — runs each kernel once, no do_bench loop.
+# rev2: 4-kernel chain (forward + preprocess + bwd + postprocess).
 # dQ fp16 direct output (L0C fp32 -> GM fp16 auto-cast), no postprocess for dQ.
-# dsink block=128 (kernel assert seq_len % 128 == 0).
 _MSPROF_RUNNER_TEMPLATE = '''\
 """Auto-generated by test_gqa_sink_bwd_bhsd.py --level msprof. Runs each kernel
 once so msprof op can capture kernel-level performance data."""
@@ -1112,8 +1110,7 @@ tilelang.disable_cache()
 torch.set_default_device("npu")
 torch.manual_seed(42)
 from example_gqa_sink_bwd_bhsd import (
-    flashattn_bwd_qk_softmax, flashattn_bwd_dv_dp_ds,
-    flashattn_bwd_dk_dq, flashattn_bwd_postprocess,
+    flashattn_bwd, flashattn_bwd_postprocess,
     flashattn_bwd_preprocess, flashattn_fwd,
 )
 B, H, groups, N, D = {B}, {H}, {groups}, {N}, {D}
@@ -1131,61 +1128,49 @@ fwd_mod = flashattn_fwd(B, H, N, D, groups, window_size, block_M, block_N)
 O_npu, lse_npu = fwd_mod(Q, K, V, sinks)
 torch.npu.synchronize()
 print("===KERNEL_LABEL:forward===")
-# merged_preprocess: Delta + dSink
-preprocess_mod = flashattn_bwd_preprocess(B, H, N, D, blk=32)
-Delta_npu, dSinks_npu = preprocess_mod(O_npu, dO, sinks, lse_npu)
+# Preprocess: Delta + dSink (merged)
+prep_mod = flashattn_bwd_preprocess(B, H, N, D, blk=32)
+Delta_npu, dSinks_npu = prep_mod(O_npu, dO, sinks, lse_npu)
 torch.npu.synchronize()
 print("===KERNEL_LABEL:preprocess===")
-# BWD main: 4-kernel merge (qk_softmax, dv_dp_ds, dk_dq, postprocess)
+# BWD main: single flashattn_bwd kernel (rev2 merge)
 dQ = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float16, device="npu")
 dK = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float32, device="npu")
 dV = torch.zeros(B, H_kv, N, D, dtype=torch.float32, device="npu")
 bwd_block_num = H * (N // block_M) * B
-if window_size is not None:
-    max_kv_per_q = min(window_size // block_N + 1, N // block_N)
-else:
-    max_kv_per_q = N // block_N
-ws_p = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device="npu")
-ws_p_delta = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device="npu")
-ws_p_fp32 = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float32, device="npu")
-ws_ds = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device="npu")
-ws_ds_delta = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float16, device="npu")
-workspace_s = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float32, device="npu")
-workspace_dp = torch.empty(bwd_block_num, max_kv_per_q, block_M, block_N, dtype=torch.float32, device="npu")
+ws_2d_shape = (bwd_block_num, block_M, block_N)
+workspace_s = torch.empty(*ws_2d_shape, dtype=torch.float32, device="npu")
+workspace_p = torch.empty(*ws_2d_shape, dtype=torch.float16, device="npu")
+workspace_p_delta = torch.empty(*ws_2d_shape, dtype=torch.float16, device="npu")
+workspace_dp = torch.empty(*ws_2d_shape, dtype=torch.float32, device="npu")
+workspace_ds = torch.empty(*ws_2d_shape, dtype=torch.float16, device="npu")
+workspace_ds_delta = torch.empty(*ws_2d_shape, dtype=torch.float16, device="npu")
 bwd_args = (B, H, N, D, D, window_size, block_M, block_N, groups)
-qk_softmax_mod = flashattn_bwd_qk_softmax(*bwd_args)
-qk_softmax_mod(Q, K, lse_npu, ws_p, ws_p_delta, ws_p_fp32, workspace_s)
+bwd_mod = flashattn_bwd(*bwd_args)
+bwd_mod(
+    Q, K, V, dO, lse_npu, Delta_npu, dQ, dK, dV,
+    workspace_s, workspace_p, workspace_p_delta,
+    workspace_dp, workspace_ds, workspace_ds_delta,
+)
 torch.npu.synchronize()
-print("===KERNEL_LABEL:qk_softmax===")
-dv_dp_ds_mod = flashattn_bwd_dv_dp_ds(*bwd_args)
-dv_dp_ds_mod(ws_p, ws_p_delta, ws_p_fp32, dO, V, Delta_npu, dV, ws_ds, ws_ds_delta, workspace_dp)
-torch.npu.synchronize()
-print("===KERNEL_LABEL:dv_dp_ds===")
-dk_dq_mod = flashattn_bwd_dk_dq(*bwd_args)
-dk_dq_mod(ws_ds, ws_ds_delta, Q, K, dK, dQ)
-torch.npu.synchronize()
-print("===KERNEL_LABEL:dk_dq===")
-# merged_postprocess: dK+dV fp32 -> fp16 (dQ skipped — fp16 direct from dk_dq)
+print("===KERNEL_LABEL:bwd===")
+# Postprocess: dK+dV fp32 -> fp16 (dual-output, dQ skipped)
 postprocess_mod = flashattn_bwd_postprocess(B, H_kv, N, dim_qk_padded, D, blk=64)
 postprocess_mod(dK, dV)
 torch.npu.synchronize()
-print("===KERNEL_LABEL:postprocess_merged===")
-# dSinks: host sum
-dSinks_sum = dSinks_npu.cpu().sum(0).sum(1)
-print("All 6 kernels executed.")
+print("===KERNEL_LABEL:postprocess===")
+print("All 4 kernels executed.")
 '''
 
 
 # Kernel labels in execution order (matches runner script above).
-# NOTE: 6 entries for 6 kernel launches — merged kernels combine what was
-# previously 10 separate launches into 6.
+# rev2: 4 kernel launches — forward, preprocess (merged dsink), bwd (single kernel),
+# postprocess (dual output dK+dV).
 _MSPROF_KERNEL_LABELS = [
     "forward",
     "preprocess",
-    "qk_softmax",
-    "dv_dp_ds",
-    "dk_dq",
-    "postprocess_merged",
+    "bwd",
+    "postprocess",
 ]
 
 # Ascend 910B3: 20 cube cores + 20 vector cores
@@ -1464,17 +1449,17 @@ def run_msprof(B=1, H=64, groups=8, N=4096, D=128, window_size=128, launch_count
             )
         print()
 
-        # --- Per BWD Kernel Bottleneck Analysis (qk_softmax->dv_dp_ds->dk_dq) ---
-        # bwd pipeline = qk_softmax->dv_dp_ds->dk_dq (launches 2-4).
+        # --- Per BWD Kernel Bottleneck Analysis ---
+        # rev2: single flashattn_bwd kernel (launch index 2).
+        # Compute Cube% / MTE2% / MTE3% / Scalar+wait% /
+        # L2 hit / bottleneck type.
         bwd_label_set = {
-            "qk_softmax",
-            "dv_dp_ds",
-            "dk_dq",
+            "bwd",
         }
         bwd_launches = [l for l in launches if l.get("label") in bwd_label_set]
 
         print("=" * 82)
-        print("  Per BWD Kernel Bottleneck Analysis (qk_softmax->dv_dp_ds->dk_dq)")
+        print("  Per BWD Kernel Bottleneck Analysis (single flashattn_bwd)")
         print("=" * 82)
         print(
             f"  {'Kernel':<20} {'TaskDur':>9} | "
@@ -1516,7 +1501,7 @@ def run_msprof(B=1, H=64, groups=8, N=4096, D=128, window_size=128, launch_count
             )
 
         print(f"  {'-' * 100}")
-        print(f"  {'sum(k1-k5)':<20} {bwd_total_td:>7.0f}us")
+        print(f"  {'bwd_total':<20} {bwd_total_td:>7.0f}us")
         print()
 
         # --- Detailed breakdown for the slowest bwd kernel ---
@@ -1618,7 +1603,7 @@ def run_msprof(B=1, H=64, groups=8, N=4096, D=128, window_size=128, launch_count
             print(f"  Optimization hint: {opt_hint}")
             print()
 
-        # --- FLOPS analysis (based on total bwd Task Duration = sum k1-k5) ---
+        # --- FLOPS analysis (based on bwd Task Duration) ---
         if window_size is not None and window_size < N:
             vr = window_size * 1.0 / N
         else:
@@ -1672,7 +1657,7 @@ def main():
     parser.add_argument("--warmup", type=float, default=50, help="bench: warmup iterations")
     parser.add_argument("--rep", type=float, default=100, help="bench: repeat iterations")
     parser.add_argument("--per-kernel", action="store_true", help="bench: also print per-kernel breakdown")
-    parser.add_argument("--launch-count", type=int, default=10, help="msprof: number of kernel launches [1,5000]")
+    parser.add_argument("--launch-count", type=int, default=4, help="msprof: number of kernel launches [1,5000]")
     parser.add_argument("--warm-up", type=int, default=3, help="msprof: warm-up times [0,500]")
     args = parser.parse_args()
 
