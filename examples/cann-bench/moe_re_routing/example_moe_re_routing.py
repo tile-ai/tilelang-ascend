@@ -138,9 +138,7 @@ def _compute_tile_a(A: int, H: int, N: int, E: int, t_dtype: str, c_dtype: str, 
     tile_no = _fit_tile(fixed_no)
     if tile_no is not None:
         return tile_no, False
-    raise ValueError(
-        "moe_re_routing: shape (A=%d,H=%d,N=%d,E=%d) does not fit the 176KB UB budget" %
-        (A, H, N, E))
+    raise ValueError("moe_re_routing: shape (A=%d,H=%d,N=%d,E=%d) does not fit the 176KB UB budget" % (A, H, N, E))
 
 
 @tilelang.jit(out_idx=[3, 4, 5, 6, 7], pass_configs=pass_configs)
@@ -228,14 +226,14 @@ def _moe_re_routing_kernel(
 
     @T.prim_func
     def kernel(
-            tokens: T.Tensor((A, H), tokens_dtype),
-            cnt_gm: T.Tensor((NE,), cnt_dtype),
-            scales_gm: T.Tensor(scale_shape, "float32"),
-            permute_tokens: T.Tensor((A, H), tokens_dtype),
-            permute_scales: T.Tensor((A,), "float32"),
-            permute_idx: T.Tensor((A,), "int32"),
-            expert_token_num: T.Tensor((E,), cnt_dtype),
-            probe_gm: T.Tensor((8,), "int64"),
+        tokens: T.Tensor((A, H), tokens_dtype),
+        cnt_gm: T.Tensor((NE,), cnt_dtype),
+        scales_gm: T.Tensor(scale_shape, "float32"),
+        permute_tokens: T.Tensor((A, H), tokens_dtype),
+        permute_scales: T.Tensor((A,), "float32"),
+        permute_idx: T.Tensor((A,), "int32"),
+        expert_token_num: T.Tensor((E,), cnt_dtype),
+        probe_gm: T.Tensor((8,), "int64"),
     ):
         T.func_attr({"enable_auto_sync": True})
         with T.Kernel(NUM_CORES, is_npu=True) as (cid, vid):
@@ -357,21 +355,21 @@ def _moe_re_routing_kernel(
                                 src0 = T.max(0, T.min(src0, A - 1))
                                 seg = T.min(seg, T.max(0, A - src0))
                                 T.copy(
-                                    tokens[src0:src0 + seg, :],
+                                    tokens[src0 : src0 + seg, :],
                                     tile_ub[0:seg, :],
                                 )
                                 T.copy(
                                     tile_ub[0:seg, :],
-                                    permute_tokens[cur:cur + seg, :],
+                                    permute_tokens[cur : cur + seg, :],
                                 )
                                 if has_scale:
                                     T.copy(
-                                        scales_gm[src0:src0 + seg],
+                                        scales_gm[src0 : src0 + seg],
                                         scales_ub[0:seg],
                                     )
                                     T.copy(
                                         scales_ub[0:seg],
-                                        permute_scales[cur:cur + seg],
+                                        permute_scales[cur : cur + seg],
                                     )
                                 T.tile.add(
                                     idx_ub[0:TILE_A],
@@ -380,12 +378,12 @@ def _moe_re_routing_kernel(
                                 )
                                 T.copy(
                                     idx_ub[0:seg],
-                                    permute_idx[cur:cur + seg],
+                                    permute_idx[cur : cur + seg],
                                 )
                                 if not has_scale:
                                     T.copy(
                                         scales_ub[0:seg],
-                                        permute_scales[cur:cur + seg],
+                                        permute_scales[cur : cur + seg],
                                     )
                                 cur = cur + seg
                                 bcur = T.if_then_else(cur >= dend, T.min(bcur + 1, NE - 1), bcur)
@@ -470,21 +468,21 @@ def _moe_re_routing_kernel(
                                         src0 = T.max(0, T.min(src0, A - 1))
                                         seg = T.min(seg, T.max(0, A - src0))
                                         T.copy(
-                                            tokens[src0:src0 + seg, :],
+                                            tokens[src0 : src0 + seg, :],
                                             tile_ub[0:seg, :],
                                         )
                                         T.copy(
                                             tile_ub[0:seg, :],
-                                            permute_tokens[cur:cur + seg, :],
+                                            permute_tokens[cur : cur + seg, :],
                                         )
                                         if has_scale:
                                             T.copy(
-                                                scales_gm[src0:src0 + seg],
+                                                scales_gm[src0 : src0 + seg],
                                                 scales_ub[0:seg],
                                             )
                                             T.copy(
                                                 scales_ub[0:seg],
-                                                permute_scales[cur:cur + seg],
+                                                permute_scales[cur : cur + seg],
                                             )
                                         T.tile.add(
                                             idx_ub[0:TILE_A],
@@ -493,12 +491,12 @@ def _moe_re_routing_kernel(
                                         )
                                         T.copy(
                                             idx_ub[0:seg],
-                                            permute_idx[cur:cur + seg],
+                                            permute_idx[cur : cur + seg],
                                         )
                                         if not has_scale:
                                             T.copy(
                                                 scales_ub[0:seg],
-                                                permute_scales[cur:cur + seg],
+                                                permute_scales[cur : cur + seg],
                                             )
                                         cur = cur + seg
                                         bcur = T.if_then_else(cur >= end_ub[bcur], bcur + 1, bcur)
@@ -529,21 +527,21 @@ def _moe_re_routing_kernel(
                                         src0 = T.max(0, T.min(src0, A - 1))
                                         seg = T.min(seg, T.max(0, A - src0))
                                         T.copy(
-                                            tokens[src0:src0 + seg, :],
+                                            tokens[src0 : src0 + seg, :],
                                             tile_ub[0:seg, :],
                                         )
                                         T.copy(
                                             tile_ub[0:seg, :],
-                                            permute_tokens[cur:cur + seg, :],
+                                            permute_tokens[cur : cur + seg, :],
                                         )
                                         if has_scale:
                                             T.copy(
-                                                scales_gm[src0:src0 + seg],
+                                                scales_gm[src0 : src0 + seg],
                                                 scales_ub[0:seg],
                                             )
                                             T.copy(
                                                 scales_ub[0:seg],
-                                                permute_scales[cur:cur + seg],
+                                                permute_scales[cur : cur + seg],
                                             )
                                         T.tile.add(
                                             idx_ub[0:TILE_A],
@@ -552,12 +550,12 @@ def _moe_re_routing_kernel(
                                         )
                                         T.copy(
                                             idx_ub[0:seg],
-                                            permute_idx[cur:cur + seg],
+                                            permute_idx[cur : cur + seg],
                                         )
                                         if not has_scale:
                                             T.copy(
                                                 scales_ub[0:seg],
-                                                permute_scales[cur:cur + seg],
+                                                permute_scales[cur : cur + seg],
                                             )
                                         cur = cur + seg
                                         bcur = T.if_then_else(cur >= end_ub[bcur], bcur + 1, bcur)
@@ -601,21 +599,21 @@ def _moe_re_routing_kernel(
                             seg = T.min(seg_hi - seg_lo, T.max(0, A - src0))
                             if seg > 0:
                                 T.copy(
-                                    tokens[src0:src0 + seg, :],
+                                    tokens[src0 : src0 + seg, :],
                                     tile_ub[0:seg, :],
                                 )
                                 T.copy(
                                     tile_ub[0:seg, :],
-                                    permute_tokens[seg_lo:seg_lo + seg, :],
+                                    permute_tokens[seg_lo : seg_lo + seg, :],
                                 )
                                 if has_scale:
                                     T.copy(
-                                        scales_gm[src0:src0 + seg],
+                                        scales_gm[src0 : src0 + seg],
                                         scales_ub[0:seg],
                                     )
                                     T.copy(
                                         scales_ub[0:seg],
-                                        permute_scales[seg_lo:seg_lo + seg],
+                                        permute_scales[seg_lo : seg_lo + seg],
                                     )
                                 T.tile.add(
                                     idx_ub[0:TILE_A],
@@ -624,12 +622,12 @@ def _moe_re_routing_kernel(
                                 )
                                 T.copy(
                                     idx_ub[0:seg],
-                                    permute_idx[seg_lo:seg_lo + seg],
+                                    permute_idx[seg_lo : seg_lo + seg],
                                 )
                                 if not has_scale:
                                     T.copy(
                                         scales_ub[0:seg],
-                                        permute_scales[seg_lo:seg_lo + seg],
+                                        permute_scales[seg_lo : seg_lo + seg],
                                     )
                         # advance to the next dst block.
                         dst_a = dst_a + cv
@@ -671,12 +669,12 @@ def moe_re_routing(tokens, expert_token_num_per_rank, per_token_scales=None):
 
     t_dtype = _TL_DTYPE.get(str(tokens.dtype).split(".")[-1])
     if t_dtype is None:
-        raise ValueError("unsupported tokens dtype: " + str(tokens.dtype) +
-                         " (supported: float16/bfloat16/int8)")
+        raise ValueError("unsupported tokens dtype: " + str(tokens.dtype) + " (supported: float16/bfloat16/int8)")
     c_dtype = _TL_DTYPE.get(str(expert_token_num_per_rank.dtype).split(".")[-1])
     if c_dtype is None or c_dtype not in ("int32", "int64"):
-        raise ValueError("unsupported expert_token_num_per_rank dtype: " +
-                         str(expert_token_num_per_rank.dtype) + " (supported: int32/int64)")
+        raise ValueError(
+            "unsupported expert_token_num_per_rank dtype: " + str(expert_token_num_per_rank.dtype) + " (supported: int32/int64)"
+        )
     has_scale = per_token_scales is not None
 
     # Metadata-only operations on the host (no host-side permutation math).
@@ -687,15 +685,13 @@ def moe_re_routing(tokens, expert_token_num_per_rank, per_token_scales=None):
 
     if has_scale:
         scales_in = per_token_scales.contiguous()
-        kern = _moe_re_routing_kernel(A, H, N, E, tile_a, num_cores, t_dtype, c_dtype, True,
-                                      use_tables)
+        kern = _moe_re_routing_kernel(A, H, N, E, tile_a, num_cores, t_dtype, c_dtype, True, use_tables)
         out = kern(tokens_c, cnt_flat, scales_in)
     else:
         # No per_token_scales -> compile variant has_scale=False.  Reuse a
         # cached dummy (never read by the kernel) to avoid per-call ZerosLike.
         scale_dummy = _get_dummy_scale(device=tokens.device)
-        kern = _moe_re_routing_kernel(A, H, N, E, tile_a, num_cores, t_dtype, c_dtype, False,
-                                      use_tables)
+        kern = _moe_re_routing_kernel(A, H, N, E, tile_a, num_cores, t_dtype, c_dtype, False, use_tables)
         out = kern(tokens_c, cnt_flat, scale_dummy)
 
     # The 5th output is the small (8,) int64 validation probe; discard it and
@@ -727,8 +723,8 @@ def golden_moe_re_routing(tokens, expert_token_num_per_rank, per_token_scales=No
 
     permute_tokens = tokens[permute_token_idx]
     permute_per_token_scales = (
-        per_token_scales[permute_token_idx] if per_token_scales is not None else torch.zeros(
-            A, dtype=torch.float32, device=tokens.device))
+        per_token_scales[permute_token_idx] if per_token_scales is not None else torch.zeros(A, dtype=torch.float32, device=tokens.device)
+    )
     expert_token_num = expert_token_num_per_rank.sum(dim=0)
     return permute_tokens, permute_per_token_scales, permute_token_idx, expert_token_num
 
@@ -746,8 +742,7 @@ if __name__ == "__main__":
     ]
 
     for level, A, H, N, E, tokens_dtype, cnt_dtype, with_scale in test_configs:
-        print(f"Testing moe_re_routing {level} with A={A}, H={H}, N={N}, E={E}, "
-              f"tokens={tokens_dtype}, cnt={cnt_dtype}, scale={with_scale}")
+        print(f"Testing moe_re_routing {level} with A={A}, H={H}, N={N}, E={E}, tokens={tokens_dtype}, cnt={cnt_dtype}, scale={with_scale}")
         torch.manual_seed(0)
         # Generate in fp32 then cast: same distribution for fp16/bf16 and cheap.
         tokens = torch.randn(A, H, dtype=torch.float32, device="npu").to(tokens_dtype)
