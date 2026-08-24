@@ -50,8 +50,16 @@ BLOCK_N_BWD = 64
 
 @tilelang.jit(out_idx=[3, 4], pass_configs=_hybrid_pass_configs)
 def flashattn_fwd(
-    batch, UQ, UKV, max_seq_len, heads, dim, groups, window_size,
-    block_M=64, block_N=64,
+    batch,
+    UQ,
+    UKV,
+    max_seq_len,
+    heads,
+    dim,
+    groups,
+    window_size,
+    block_M=64,
+    block_N=64,
 ):
     """Forward: online softmax + sink + causal/window mask (varlen)."""
     sm_scale = (1.0 / dim) ** 0.5
@@ -146,8 +154,11 @@ def flashattn_fwd(
                         else:
                             T.tile.bitwise_and(combined_mask, cmp_mask, win_mask)
                         T.tile.select(
-                            acc_s_ub[h_i, :], combined_mask, acc_s_ub[h_i, :],
-                            -T.infinity(accum_dtype), "VSEL_TENSOR_SCALAR_MODE",
+                            acc_s_ub[h_i, :],
+                            combined_mask,
+                            acc_s_ub[h_i, :],
+                            -T.infinity(accum_dtype),
+                            "VSEL_TENSOR_SCALAR_MODE",
                         )
                     T.reduce_max(acc_s_ub, m_i, dim=-1)
                     T.tile.max(m_i, m_i, m_i_prev)
@@ -179,6 +190,7 @@ def flashattn_fwd(
                 T.tile.ln(sumexp, sumexp)
                 T.tile.add(sumexp, sumexp, m_i)
                 T.copy(sumexp, lse[bz, by, bx * block_M : (bx + 1) * block_M])
+
     return main
 
 
@@ -197,9 +209,19 @@ def flashattn_fwd(
 
 @tilelang.jit(pass_configs=_hybrid_pass_configs)
 def flashattn_bwd_single(
-    batch, UQ, UKV, max_seq_len, max_kv_len, heads,
-    dim_qk, dim_qk_padded, dim_v, window_size,
-    block_M, block_N, groups,
+    batch,
+    UQ,
+    UKV,
+    max_seq_len,
+    max_kv_len,
+    heads,
+    dim_qk,
+    dim_qk_padded,
+    dim_v,
+    window_size,
+    block_M,
+    block_N,
+    groups,
 ):
     """Single-kernel backward (on-chip, no GM workspace).
 
@@ -220,7 +242,6 @@ def flashattn_bwd_single(
     accum_dtype = "float"
     window_eff = window_size if window_size is not None else max_seq_len * 2
     bwd_block_num = (max_seq_len // block_M) * heads * batch
-    cnt_mn = block_M * block_N
 
     q_shape = [UQ, heads, dim_qk_padded]
     k_shape = [UKV, head_kv, dim_qk_padded]
@@ -359,8 +380,8 @@ def flashattn_bwd_single(
                     T.tile.select(s_ub, mask_2d, s_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
 
                     # P_fp32 retained in s_ub for Phase 4 dS compute
-                    T.copy(s_ub, p_half)          # fp32 → fp16 (for GEMM2)
-                    T.copy(p_half, p_l1)          # V→C handoff #2: UB→L1 direct
+                    T.copy(s_ub, p_half)  # fp32 → fp16 (for GEMM2)
+                    T.copy(p_half, p_l1)  # V→C handoff #2: UB→L1 direct
                     # p_delta = P_fp32 - cast_fp32(P_fp16) — Compensated GEMM residual
                     T.copy(p_half, p_delta_ub)
                     T.tile.sub(p_delta_ub, s_ub, p_delta_ub)
@@ -398,8 +419,8 @@ def flashattn_bwd_single(
                     T.tile.select(s_ub, mask_2d, s_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
 
                     # dS_fp32 in s_ub; ds_delta = dS_fp32 - cast_fp32(dS_fp16)
-                    T.copy(s_ub, ds_half)         # fp32 → fp16 (for GEMM4)
-                    T.copy(ds_half, ds_l1)        # V→C handoff #4: UB→L1 direct
+                    T.copy(s_ub, ds_half)  # fp32 → fp16 (for GEMM4)
+                    T.copy(ds_half, ds_l1)  # V→C handoff #4: UB→L1 direct
                     T.copy(ds_half, ds_rec_ub)
                     T.tile.sub(ds_delta_ub, s_ub, ds_rec_ub)
                     T.copy(ds_delta_ub, ds_delta_half)  # fp16, UB→L1 direct
@@ -427,6 +448,7 @@ def flashattn_bwd_single(
                 T.tile.mul(sink_exp_ub, sink_exp_ub, delta_ub)
                 T.tile.mul(sink_exp_ub, sink_exp_ub, -1.0)
                 T.copy(sink_exp_ub, dSinks[bz, by, bx * block_M : (bx + 1) * block_M])
+
     return main
 
 
@@ -436,9 +458,27 @@ def flashattn_bwd_single(
 
 
 def run_bwd_pipeline(
-    Q, K, V, O, dO, lse, Sinks, cu_seqlens_q, cu_seqlens_k,
-    batch, UQ, UKV, max_seq_len, max_kv_len, heads,
-    dim_qk, dim_v, window_size, block_M, block_N, groups,
+    Q,
+    K,
+    V,
+    O,
+    dO,
+    lse,
+    Sinks,
+    cu_seqlens_q,
+    cu_seqlens_k,
+    batch,
+    UQ,
+    UKV,
+    max_seq_len,
+    max_kv_len,
+    heads,
+    dim_qk,
+    dim_v,
+    window_size,
+    block_M,
+    block_N,
+    groups,
 ):
     """Run single-kernel backward. Returns dQ/dK/dV (fp16), dSinks/Delta_out (fp32)."""
     head_kv = heads // groups
@@ -449,12 +489,21 @@ def run_bwd_pipeline(
     Delta_out = torch.zeros(batch, heads, max_seq_len, dtype=torch.float32, device="npu")
     dSinks = torch.zeros(batch, heads, max_seq_len, dtype=torch.float32, device="npu")
     bwd_mod = flashattn_bwd_single(
-        batch, UQ, UKV, max_seq_len, max_kv_len, heads,
-        dim_qk, dim_qk_padded, dim_v, window_size,
-        block_M, block_N, groups,
+        batch,
+        UQ,
+        UKV,
+        max_seq_len,
+        max_kv_len,
+        heads,
+        dim_qk,
+        dim_qk_padded,
+        dim_v,
+        window_size,
+        block_M,
+        block_N,
+        groups,
     )
-    bwd_mod(Q, K, V, O, dO, lse, Sinks, cu_seqlens_q, cu_seqlens_k,
-            Delta_out, dSinks, dQ, dK, dV)
+    bwd_mod(Q, K, V, O, dO, lse, Sinks, cu_seqlens_q, cu_seqlens_k, Delta_out, dSinks, dQ, dK, dV)
     torch.npu.synchronize()
     return dQ.half(), dK.half(), dV.half(), dSinks, Delta_out
 
@@ -577,10 +626,11 @@ def check_precision(actual, golden, dtype):
         return mism == 0, 1.0 - mism / max(a.numel(), 1), (0.0 if mism == 0 else float("inf"))
     a, g = a.float(), g.float()
     special = ~torch.isfinite(g)
-    if special.any():
-        if not torch.equal(torch.isnan(a[special]), torch.isnan(g[special])) or \
-           not torch.equal(torch.isinf(a[special]), torch.isinf(g[special])):
-            return False, 0.0, float("inf")
+    if special.any() and (
+        not torch.equal(torch.isnan(a[special]), torch.isnan(g[special]))
+        or not torch.equal(torch.isinf(a[special]), torch.isinf(g[special]))
+    ):
+        return False, 0.0, float("inf")
     m = torch.isfinite(g)
     if m.sum().item() == 0:
         return True, 1.0, 0.0
@@ -600,12 +650,14 @@ if __name__ == "__main__":
     torch.set_default_device("npu")
 
     parser = argparse.ArgumentParser(description="GQA Sink Bwd Varlen — Ascend NPU")
-    parser.add_argument("--level", default=None, choices=["l0", "l1", "l2", "boundary", "all"],
-                        help="Run layered tests. If omitted, runs smoke test.")
+    parser.add_argument(
+        "--level", default=None, choices=["l0", "l1", "l2", "boundary", "all"], help="Run layered tests. If omitted, runs smoke test."
+    )
     args = parser.parse_args()
 
     if args.level is not None:
         from test_gqa_sink_bwd_varlen import run_layered_tests
+
         run_layered_tests(args.level)
     else:
         B, H, G, N, D = 1, 4, 2, 128, 128
@@ -625,8 +677,27 @@ if __name__ == "__main__":
         torch.npu.synchronize()
 
         dQ, dK, dV, dSinks, Delta_out = run_bwd_pipeline(
-            Q, K, V, O, dO, lse, sinks, cu_q, cu_k,
-            B, UQ, UKV, N, N, H, D, D, None, BLOCK_M_BWD, BLOCK_N_BWD, G,
+            Q,
+            K,
+            V,
+            O,
+            dO,
+            lse,
+            sinks,
+            cu_q,
+            cu_k,
+            B,
+            UQ,
+            UKV,
+            N,
+            N,
+            H,
+            D,
+            D,
+            None,
+            BLOCK_M_BWD,
+            BLOCK_N_BWD,
+            G,
         )
 
         O_ref, _ = ref_fwd_varlen(Q, K, V, sinks, cu_q, cu_k, N, None, G)

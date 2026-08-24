@@ -19,12 +19,10 @@ if _SCRIPT_DIR not in sys.path:
 
 from example_gqa_sink_bwd_varlen import (
     flashattn_fwd,
-    flashattn_bwd_single,
     run_bwd_pipeline,
     ref_fwd_varlen,
     ref_bwd_varlen,
     check_precision,
-    get_precision,
     DTYPE_FP16,
     BLOCK_M_FWD,
     BLOCK_N_FWD,
@@ -47,8 +45,18 @@ from tilelang.profiler import do_bench
 
 
 def _run_case(
-    name, B, H, groups, q_lens, kv_lens, D, window_size, level,
-    custom_sinks=None, block_M_bwd=BLOCK_M_BWD, block_N_bwd=BLOCK_N_BWD,
+    name,
+    B,
+    H,
+    groups,
+    q_lens,
+    kv_lens,
+    D,
+    window_size,
+    level,
+    custom_sinks=None,
+    block_M_bwd=BLOCK_M_BWD,
+    block_N_bwd=BLOCK_N_BWD,
     vrange=None,
 ):
     """Run full forward + backward + dsink, compare against golden.
@@ -58,16 +66,10 @@ def _run_case(
     try:
         H_kv = H // groups
         max_seq_len = max(q_lens)
-        assert max_seq_len % block_M_bwd == 0, (
-            f"max_seq_len ({max_seq_len}) must be divisible by block_M_bwd ({block_M_bwd})"
-        )
-        assert max_seq_len > 0, (
-            f"max_seq_len ({max_seq_len}) must be > 0 (kernel grid would divide by zero)"
-        )
+        assert max_seq_len % block_M_bwd == 0, f"max_seq_len ({max_seq_len}) must be divisible by block_M_bwd ({block_M_bwd})"
+        assert max_seq_len > 0, f"max_seq_len ({max_seq_len}) must be > 0 (kernel grid would divide by zero)"
         max_kv_len = max(kv_lens)
-        assert max_kv_len % block_N_bwd == 0, (
-            f"max_kv_len ({max_kv_len}) must be divisible by block_N_bwd ({block_N_bwd})"
-        )
+        assert max_kv_len % block_N_bwd == 0, f"max_kv_len ({max_kv_len}) must be divisible by block_N_bwd ({block_N_bwd})"
         cu_seqlens_q = [0]
         for ql in q_lens:
             cu_seqlens_q.append(cu_seqlens_q[-1] + ql)
@@ -88,25 +90,61 @@ def _run_case(
             sinks = torch.randn(H, dtype=torch.float16, device="npu")
         dO = torch.randn(UQ, H, D, dtype=torch.float16, device="npu")
         if vrange == "M":
-            Q *= 3.0; K *= 3.0; V *= 3.0; dO *= 3.0
+            Q *= 3.0
+            K *= 3.0
+            V *= 3.0
+            dO *= 3.0
         elif vrange == "L":
-            Q *= 10.0; K *= 10.0; V *= 10.0; dO *= 10.0
+            Q *= 10.0
+            K *= 10.0
+            V *= 10.0
+            dO *= 10.0
         elif vrange == "ASYM":
-            Q = Q * 2.0 + 2.0; K = K * 2.0 + 2.0; V = V * 2.0 + 2.0; dO = dO * 2.0 + 2.0
+            Q = Q * 2.0 + 2.0
+            K = K * 2.0 + 2.0
+            V = V * 2.0 + 2.0
+            dO = dO * 2.0 + 2.0
         fwd_mod = flashattn_fwd(B, UQ, UKV, max_seq_len, H, D, groups, window_size, BLOCK_M_FWD, BLOCK_N_FWD)
         O_npu, lse_npu = fwd_mod(Q, K, V, sinks, cu_seqlens_q_t, cu_seqlens_k_t)
         torch.npu.synchronize()
         O_ref, lse_ref = ref_fwd_varlen(Q, K, V, sinks, cu_seqlens_q_t, cu_seqlens_k_t, max_seq_len, window_size, groups)
         dQ_fp16, dK, dV, dSinks_out, Delta_out = run_bwd_pipeline(
-            Q, K, V, O_npu, dO, lse_npu, sinks, cu_seqlens_q_t, cu_seqlens_k_t,
-            B, UQ, UKV, max_seq_len, max(kv_lens), H, D, D, window_size,
-            block_M_bwd, block_N_bwd, groups,
+            Q,
+            K,
+            V,
+            O_npu,
+            dO,
+            lse_npu,
+            sinks,
+            cu_seqlens_q_t,
+            cu_seqlens_k_t,
+            B,
+            UQ,
+            UKV,
+            max_seq_len,
+            max(kv_lens),
+            H,
+            D,
+            D,
+            window_size,
+            block_M_bwd,
+            block_N_bwd,
+            groups,
         )
         # dSinks: kernel 输出 [batch, heads, max_seq_len] fp32, host sum reduce
         dSinks_npu_fp32 = dSinks_out.cpu().float().sum(2).sum(0)  # [H] fp32
         # golden dSinks: 用 kernel 的 lse/Delta 公式重算（bhsd 方式，消除 lse 误差传播）
         dQ_ref, dK_ref, dV_ref, dSinks_ref_autograd = ref_bwd_varlen(
-            Q, K, V, sinks, dO, cu_seqlens_q_t, cu_seqlens_k_t, max_seq_len, window_size, groups,
+            Q,
+            K,
+            V,
+            sinks,
+            dO,
+            cu_seqlens_q_t,
+            cu_seqlens_k_t,
+            max_seq_len,
+            window_size,
+            groups,
         )
         # dSinks golden: recompute using kernel's lse/Delta (isolates dSinks kernel from fwd precision)
         sinks_exp = sinks.float().cpu().view(1, H, 1)  # [1, H, 1]
@@ -153,11 +191,10 @@ def _run_case(
         max_diff = max(max_diff, sm)
         all_passed &= sp
         if not sp:
-            raise AssertionError(
-                f"dSinks precision failed: matched_ratio={sr:.4f} < 0.99, "
-                f"max_abs={sm:.3e} (limit=0.01)"
-            )
-        print(f"[{tag}_PASS] {level} {name} B={B} H={H} G={groups} q={q_lens} kv={kv_lens} D={D} win={window_size} max_diff={max_diff:.6e} min_ratio={min_ratio:.4f}")
+            raise AssertionError(f"dSinks precision failed: matched_ratio={sr:.4f} < 0.99, max_abs={sm:.3e} (limit=0.01)")
+        print(
+            f"[{tag}_PASS] {level} {name} B={B} H={H} G={groups} q={q_lens} kv={kv_lens} D={D} win={window_size} max_diff={max_diff:.6e} min_ratio={min_ratio:.4f}"
+        )
         return True
     except AssertionError as e:
         # L2 输入校验失败 (assert max_seq_len%block_M==0 等) 必须 re-raise 给 _run_exception
@@ -189,15 +226,32 @@ def _run_exception(name, fn):
 # ============================================================================
 COVERAGE_CATEGORY = "Fusion"
 COVERAGE_MANIFEST = {
-    "D-DTYPE-fp16": 8, "D-DTYPE-fp32": 8, "D-DTYPE-int32": 8,
-    "D-EXC-DTYPE": 1, "D-EXC-SHAPE": 4,
-    "D-PARAM-batch": 3, "D-PARAM-block_M": 2, "D-PARAM-block_N": 2,
-    "D-PARAM-dim": 1, "D-PARAM-groups": 4, "D-PARAM-heads": 6,
-    "D-PARAM-is_causal": 1, "D-PARAM-window_size": 3,
-    "D-SHAPE-ALIGNED": 21, "D-SHAPE-EDGE": 1, "D-SHAPE-PRIME": 1,
-    "D-SHAPE-TAIL-1": 1, "D-SHAPE-TAIL-MID": 1,
-    "D-SPECIAL-DBOUND": 1, "D-SPECIAL-INF": 1, "D-SPECIAL-NAN": 1, "D-SPECIAL-ZERO": 1,
-    "D-VALRANGE-ASYM": 2, "D-VALRANGE-L": 1, "D-VALRANGE-M": 1, "D-VALRANGE-S": 8,
+    "D-DTYPE-fp16": 8,
+    "D-DTYPE-fp32": 8,
+    "D-DTYPE-int32": 8,
+    "D-EXC-DTYPE": 1,
+    "D-EXC-SHAPE": 4,
+    "D-PARAM-batch": 3,
+    "D-PARAM-block_M": 2,
+    "D-PARAM-block_N": 2,
+    "D-PARAM-dim": 1,
+    "D-PARAM-groups": 4,
+    "D-PARAM-heads": 6,
+    "D-PARAM-is_causal": 1,
+    "D-PARAM-window_size": 3,
+    "D-SHAPE-ALIGNED": 21,
+    "D-SHAPE-EDGE": 1,
+    "D-SHAPE-PRIME": 1,
+    "D-SHAPE-TAIL-1": 1,
+    "D-SHAPE-TAIL-MID": 1,
+    "D-SPECIAL-DBOUND": 1,
+    "D-SPECIAL-INF": 1,
+    "D-SPECIAL-NAN": 1,
+    "D-SPECIAL-ZERO": 1,
+    "D-VALRANGE-ASYM": 2,
+    "D-VALRANGE-L": 1,
+    "D-VALRANGE-M": 1,
+    "D-VALRANGE-S": 8,
 }
 COVERAGE_NA = {}
 
@@ -239,7 +293,7 @@ def test_gqa_sink_bwd_l0_determinism():
             print(f"  [SKIP] {name} (large shape, determinism implied)")
             continue
         max_diffs = []
-        for run_idx in range(3):
+        for _run_idx in range(3):
             H_kv = H // groups
             max_seq_len = max(q_lens)
             max_kv_len = max(kv_lens)
@@ -263,12 +317,39 @@ def test_gqa_sink_bwd_l0_determinism():
             O_npu, lse_npu = fwd_mod(Q, K, V, sinks, cu_seqlens_q_t, cu_seqlens_k_t)
             torch.npu.synchronize()
             dQ_fp16, dK, dV, dSinks_out, Delta_out = run_bwd_pipeline(
-                Q, K, V, O_npu, dO, lse_npu, sinks, cu_seqlens_q_t, cu_seqlens_k_t,
-                B, UQ, UKV, max_seq_len, max_kv_len, H, D, D, window,
-                BLOCK_M_BWD, BLOCK_N_BWD, groups,
+                Q,
+                K,
+                V,
+                O_npu,
+                dO,
+                lse_npu,
+                sinks,
+                cu_seqlens_q_t,
+                cu_seqlens_k_t,
+                B,
+                UQ,
+                UKV,
+                max_seq_len,
+                max_kv_len,
+                H,
+                D,
+                D,
+                window,
+                BLOCK_M_BWD,
+                BLOCK_N_BWD,
+                groups,
             )
             dQ_ref, dK_ref, dV_ref, dSinks_ref = ref_bwd_varlen(
-                Q, K, V, sinks, dO, cu_seqlens_q_t, cu_seqlens_k_t, max_seq_len, window, groups,
+                Q,
+                K,
+                V,
+                sinks,
+                dO,
+                cu_seqlens_q_t,
+                cu_seqlens_k_t,
+                max_seq_len,
+                window,
+                groups,
             )
             _, _, dq_max = check_precision(dQ_fp16[..., :D].cpu(), dQ_ref.cpu(), DTYPE_FP16)
             _, _, dk_max = check_precision(dK[..., :D].cpu(), dK_ref.cpu(), DTYPE_FP16)
@@ -310,8 +391,7 @@ def test_gqa_sink_bwd_l1():
         name, B, H, groups, q_lens, kv_lens, D, window = case[:8]
         bm_bwd, bn_bwd = case[8], case[9]
         vrange = case[10]
-        ok &= _run_case(name, B, H, groups, q_lens, kv_lens, D, window, "l1",
-                        block_M_bwd=bm_bwd, block_N_bwd=bn_bwd, vrange=vrange)
+        ok &= _run_case(name, B, H, groups, q_lens, kv_lens, D, window, "l1", block_M_bwd=bm_bwd, block_N_bwd=bn_bwd, vrange=vrange)
     return ok
 
 
@@ -329,13 +409,16 @@ L2_TAIL_CASES = [
 def test_gqa_sink_bwd_l2():
     """L2 negative test: non-aligned seq_len, unsupported dtype, illegal shape."""
     for name, B, H, groups, q_lens, kv_lens, D, window, bm_bwd, bn_bwd in L2_TAIL_CASES:
-        def _run_fn(name=name, B=B, H=H, groups=groups, q_lens=q_lens, kv_lens=kv_lens,
-                    D=D, window=window, bm_bwd=bm_bwd, bn_bwd=bn_bwd):
-            _run_case(name, B, H, groups, q_lens, kv_lens, D, window, "l2",
-                      block_M_bwd=bm_bwd, block_N_bwd=bn_bwd)
+
+        def _run_fn(name=name, B=B, H=H, groups=groups, q_lens=q_lens, kv_lens=kv_lens, D=D, window=window, bm_bwd=bm_bwd, bn_bwd=bn_bwd):
+            _run_case(name, B, H, groups, q_lens, kv_lens, D, window, "l2", block_M_bwd=bm_bwd, block_N_bwd=bn_bwd)
+
         _run_exception(name, _run_fn)
+
     def _run_dtype_fn():
-        H = 4; groups = 2; D = 128
+        H = 4
+        groups = 2
+        D = 128
         Q = torch.randn(128, H, D, dtype=torch.float64, device="npu")
         K = torch.randn(128, H // groups, D, dtype=torch.float64, device="npu")
         V = torch.randn(128, H // groups, D, dtype=torch.float64, device="npu")
@@ -344,9 +427,12 @@ def test_gqa_sink_bwd_l2():
         cu_k = torch.tensor([0, 128], dtype=torch.int32, device="npu")
         fwd_mod = flashattn_fwd(1, 128, 128, 128, H, D, groups, None, BLOCK_M_FWD, BLOCK_N_FWD)
         fwd_mod(Q, K, V, sinks, cu_q, cu_k)
+
     _run_exception("l2_unsupported_dtype_fp64", _run_dtype_fn)
+
     def _run_shape_fn():
         _run_case("l2_illegal_shape_empty", 1, 4, 2, [0], [128], 128, None, "l2")
+
     _run_exception("l2_illegal_shape_empty", _run_shape_fn)
     extra_configs = [
         ("l2_min_config", 1, 1, 1, [128], [128], 128, None),
@@ -384,8 +470,7 @@ def test_gqa_sink_bwd_boundary():
     for case in BOUNDARY_CASES:
         name, sinks_fn, vrange = case
         custom_sinks = sinks_fn(H) if sinks_fn else None
-        _run_case(name, 1, H, 2, [128], [128], 128, None, "boundary",
-                  custom_sinks=custom_sinks, vrange=vrange)
+        _run_case(name, 1, H, 2, [128], [128], 128, None, "boundary", custom_sinks=custom_sinks, vrange=vrange)
 
 
 # ============================================================================
@@ -408,7 +493,9 @@ def _run_one_bench(name, batch, heads, groups, q_seqlen, k_seqlen, dim, window_s
     head_kv = heads // groups
     dtype = torch.float16
     device = "npu"
-    print(f"\n[{name}] batch={batch} heads={heads} groups={groups} head_kv={head_kv} q_seqlen={q_seqlen} k_seqlen={k_seqlen} dim={dim} window={window_size} dtype=fp16")
+    print(
+        f"\n[{name}] batch={batch} heads={heads} groups={groups} head_kv={head_kv} q_seqlen={q_seqlen} k_seqlen={k_seqlen} dim={dim} window={window_size} dtype=fp16"
+    )
     cu_seqlens_q = [0]
     for _ in range(batch):
         cu_seqlens_q.append(cu_seqlens_q[-1] + q_seqlen)
@@ -434,41 +521,116 @@ def _run_one_bench(name, batch, heads, groups, q_seqlen, k_seqlen, dim, window_s
     fwd_passed, fwd_ratio, fwd_max_abs = check_precision(O.cpu(), O_ref.cpu(), DTYPE_FP16)
     print(f"  forward precision: ratio={fwd_ratio:.4f}, max_abs={fwd_max_abs:.3e}")
     if not fwd_passed:
-        print(f"  [ERROR] forward precision failed")
+        print("  [ERROR] forward precision failed")
         return False
     print("  compiling backward single kernel ...")
     dQ_fp16, dK, dV, dSinks_out, Delta_out = run_bwd_pipeline(
-        Q, K, V, O, dO, lse, sinks, cu_seqlens_q_t, cu_seqlens_k_t,
-        batch, UQ, UKV, max_seq_len, k_seqlen, heads, dim, dim, window_size,
-        BLOCK_M_BWD, BLOCK_N_BWD, groups,
+        Q,
+        K,
+        V,
+        O,
+        dO,
+        lse,
+        sinks,
+        cu_seqlens_q_t,
+        cu_seqlens_k_t,
+        batch,
+        UQ,
+        UKV,
+        max_seq_len,
+        k_seqlen,
+        heads,
+        dim,
+        dim,
+        window_size,
+        BLOCK_M_BWD,
+        BLOCK_N_BWD,
+        groups,
     )
     torch.npu.synchronize()
     dQ_ref, dK_ref, dV_ref, dSinks_ref = ref_bwd_varlen(
-        Q, K, V, sinks, dO, cu_seqlens_q_t, cu_seqlens_k_t, max_seq_len, window_size, groups,
+        Q,
+        K,
+        V,
+        sinks,
+        dO,
+        cu_seqlens_q_t,
+        cu_seqlens_k_t,
+        max_seq_len,
+        window_size,
+        groups,
     )
     dq_passed, dq_ratio, dq_max_abs = check_precision(dQ_fp16[..., :dim].cpu(), dQ_ref.cpu(), DTYPE_FP16)
     dk_passed, dk_ratio, dk_max_abs = check_precision(dK[..., :dim].half().cpu(), dK_ref.cpu(), DTYPE_FP16)
     dv_passed, dv_ratio, dv_max_abs = check_precision(dV.half().cpu(), dV_ref.cpu(), DTYPE_FP16)
-    print(f"  backward precision: dQ(ratio={dq_ratio:.4f}, max_abs={dq_max_abs:.3e}) dK(ratio={dk_ratio:.4f}, max_abs={dk_max_abs:.3e}) dV(ratio={dv_ratio:.4f}, max_abs={dv_max_abs:.3e})")
+    print(
+        f"  backward precision: dQ(ratio={dq_ratio:.4f}, max_abs={dq_max_abs:.3e}) dK(ratio={dk_ratio:.4f}, max_abs={dk_max_abs:.3e}) dV(ratio={dv_ratio:.4f}, max_abs={dv_max_abs:.3e})"
+    )
     if not (dq_passed and dk_passed and dv_passed):
         print("  [ERROR] backward precision failed (precision-standard.md dual-gate)")
         return False
     print("  benching forward ...")
+
     def run_fwd():
         fwd_mod(Q, K, V, sinks, cu_seqlens_q_t, cu_seqlens_k_t)
+
     fwd_ms = do_bench(run_fwd, _n_warmup=5, _n_repeat=5, return_mode="mean")
     print("  benching backward (single-kernel) ...")
+
     def run_bwd():
-        run_bwd_pipeline(Q, K, V, O, dO, lse, sinks, cu_seqlens_q_t, cu_seqlens_k_t,
-                         batch, UQ, UKV, max_seq_len, k_seqlen, heads, dim, dim, window_size,
-                         BLOCK_M_BWD, BLOCK_N_BWD, groups)
+        run_bwd_pipeline(
+            Q,
+            K,
+            V,
+            O,
+            dO,
+            lse,
+            sinks,
+            cu_seqlens_q_t,
+            cu_seqlens_k_t,
+            batch,
+            UQ,
+            UKV,
+            max_seq_len,
+            k_seqlen,
+            heads,
+            dim,
+            dim,
+            window_size,
+            BLOCK_M_BWD,
+            BLOCK_N_BWD,
+            groups,
+        )
+
     bwd_ms = do_bench(run_bwd, _n_warmup=5, _n_repeat=5, return_mode="mean")
     print("  benching e2e (fwd + bwd) ...")
+
     def run_e2e():
         _O, _lse = fwd_mod(Q, K, V, sinks, cu_seqlens_q_t, cu_seqlens_k_t)
-        run_bwd_pipeline(Q, K, V, _O, dO, _lse, sinks, cu_seqlens_q_t, cu_seqlens_k_t,
-                         batch, UQ, UKV, max_seq_len, k_seqlen, heads, dim, dim, window_size,
-                         BLOCK_M_BWD, BLOCK_N_BWD, groups)
+        run_bwd_pipeline(
+            Q,
+            K,
+            V,
+            _O,
+            dO,
+            _lse,
+            sinks,
+            cu_seqlens_q_t,
+            cu_seqlens_k_t,
+            batch,
+            UQ,
+            UKV,
+            max_seq_len,
+            k_seqlen,
+            heads,
+            dim,
+            dim,
+            window_size,
+            BLOCK_M_BWD,
+            BLOCK_N_BWD,
+            groups,
+        )
+
     e2e_ms = do_bench(run_e2e, _n_warmup=5, _n_repeat=5, return_mode="mean")
     fwd_flops = _compute_flops(batch, heads, q_seqlen, k_seqlen, dim, True, False)
     bwd_flops = _compute_flops(batch, heads, q_seqlen, k_seqlen, dim, True, True)
@@ -479,10 +641,14 @@ def _run_one_bench(name, batch, heads, groups, q_seqlen, k_seqlen, dim, window_s
     print()
     print("  | Kernel                      | Q seq    | Latency(ms) | TFlops   | max_abs   | min_ratio |")
     print("  |-----------------------------|----------|-------------|----------|-----------|-----------|")
-    print(f"  | TileLang Forward            | {q_seqlen:<8} | {fwd_ms:<11.2f} | {fwd_tflops:<8.2f} | {fwd_max_abs:.2e} | {fwd_ratio:.4f}    |")
-    print(f"  | TileLang Backward (single)  | {q_seqlen:<8} | {bwd_ms:<11.2f} | {bwd_tflops:<8.2f} | {dq_max_abs:.2e} | {bwd_min_ratio:.4f}    |")
+    print(
+        f"  | TileLang Forward            | {q_seqlen:<8} | {fwd_ms:<11.2f} | {fwd_tflops:<8.2f} | {fwd_max_abs:.2e} | {fwd_ratio:.4f}    |"
+    )
+    print(
+        f"  | TileLang Backward (single)  | {q_seqlen:<8} | {bwd_ms:<11.2f} | {bwd_tflops:<8.2f} | {dq_max_abs:.2e} | {bwd_min_ratio:.4f}    |"
+    )
     print(f"  | TileLang Fwd+Bwd (e2e)      | {q_seqlen:<8} | {e2e_ms:<11.2f} | {e2e_tflops:<8.2f} | -         | -         |")
-    print(f"\n  GPU baseline: 28.574 ms (backward only)")
+    print("\n  GPU baseline: 28.574 ms (backward only)")
     print(f"  vs GPU: {bwd_ms / 28.574:.2f}x slower")
     return True
 
@@ -546,23 +712,59 @@ def _run_msprof_target(preset="default", window="none", repeat=2):
     sinks = torch.randn(heads, dtype=torch.float16, device=device)
     dO = torch.randn(UQ, heads, dim, dtype=torch.float16, device=device)
     print(f"  [msprof-target] preset={preset} window={window} repeat={repeat}")
-    print(f"  [msprof-target] compiling forward + bwd kernels ...")
+    print("  [msprof-target] compiling forward + bwd kernels ...")
     fwd_mod = flashattn_fwd(batch, UQ, UKV, max_seq_len, heads, dim, groups, window_size, BLOCK_M_FWD, BLOCK_N_FWD)
     O, lse = fwd_mod(Q, K, V, sinks, cu_seqlens_q_t, cu_seqlens_k_t)
     torch.npu.synchronize()
-    print(f"  [msprof-target] pass 0 (warmup) ...")
+    print("  [msprof-target] pass 0 (warmup) ...")
     dQ_fp16, dK, dV, dSinks_out, Delta_out = run_bwd_pipeline(
-        Q, K, V, O, dO, lse, sinks, cu_seqlens_q_t, cu_seqlens_k_t,
-        batch, UQ, UKV, max_seq_len, max_kv_len, heads, dim, dim, window_size,
-        BLOCK_M_BWD, BLOCK_N_BWD, groups,
+        Q,
+        K,
+        V,
+        O,
+        dO,
+        lse,
+        sinks,
+        cu_seqlens_q_t,
+        cu_seqlens_k_t,
+        batch,
+        UQ,
+        UKV,
+        max_seq_len,
+        max_kv_len,
+        heads,
+        dim,
+        dim,
+        window_size,
+        BLOCK_M_BWD,
+        BLOCK_N_BWD,
+        groups,
     )
     torch.npu.synchronize()
     for i in range(1, repeat):
         print(f"  [msprof-target] pass {i} ...")
         dQ_fp16, dK, dV, dSinks_out, Delta_out = run_bwd_pipeline(
-            Q, K, V, O, dO, lse, sinks, cu_seqlens_q_t, cu_seqlens_k_t,
-            batch, UQ, UKV, max_seq_len, max_kv_len, heads, dim, dim, window_size,
-            BLOCK_M_BWD, BLOCK_N_BWD, groups,
+            Q,
+            K,
+            V,
+            O,
+            dO,
+            lse,
+            sinks,
+            cu_seqlens_q_t,
+            cu_seqlens_k_t,
+            batch,
+            UQ,
+            UKV,
+            max_seq_len,
+            max_kv_len,
+            heads,
+            dim,
+            dim,
+            window_size,
+            BLOCK_M_BWD,
+            BLOCK_N_BWD,
+            groups,
         )
         torch.npu.synchronize()
         print(f"  [msprof-target] pass {i} done")
@@ -588,7 +790,7 @@ def run_msprof(preset="default", window="none", launch_count=1, warm_up=1):
     )
     print(f"Command: {cmd}")
     print(f"(skip 1 forward kernel, sample {bwd_launches_per_pass} bwd kernels)")
-    result: Optional[subprocess.CompletedProcess] = None
+    result: subprocess.CompletedProcess | None = None
     try:
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=3600)
     except subprocess.TimeoutExpired:
@@ -680,11 +882,10 @@ def run_layered_tests(level):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="GQA + Attention Sink Flash Attention Backward (Varlen) - Ascend NPU (rev3 single-kernel)"
+    parser = argparse.ArgumentParser(description="GQA + Attention Sink Flash Attention Backward (Varlen) - Ascend NPU (rev3 single-kernel)")
+    parser.add_argument(
+        "--level", choices=["l0", "l1", "l2", "boundary", "all", "bench", "msprof", "msprof-target"], default="l0", help="Test level"
     )
-    parser.add_argument("--level", choices=["l0", "l1", "l2", "boundary", "all", "bench", "msprof", "msprof-target"],
-                        default="l0", help="Test level")
     parser.add_argument("--profiler", choices=["do_bench", "msprof"], default="do_bench")
     parser.add_argument("--preset", choices=["default", "small"], default="default")
     parser.add_argument("--window", choices=["none", "128", "both"], default="both")
