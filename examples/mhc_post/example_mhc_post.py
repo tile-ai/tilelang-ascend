@@ -14,8 +14,9 @@ Architecture (pure Vector, no Cube):
       divides a candidate in _H_BLK_CANDIDATES_2D (<= 3072). Faster due to
       fewer MTE2/MTE3 launch overheads.
     * 1D UB path: separate per-row res/out buffers (smaller UB footprint,
-      supports h_blk=3584). Host-side F.pad for non-dividing h. Used when h
-      requires 3584 (e.g. h=7168) or h does not divide any 2D candidate.
+      supports h_blk=3584) + aligned comb [4,8] (single copy). Host-side
+      F.pad for non-dividing h. Used when h requires 3584 (e.g. h=7168) or
+      h does not divide any 2D candidate.
   - FP32 inputs for post/comb used directly (no BF16 quantization)
   - out_fp32 reuse across the 4 output rows (smaller UB footprint)
 
@@ -107,10 +108,10 @@ def mhc_post_kernel_2d(h, h_blk=H_BLK, dtype="bfloat16", accum_dtype="float"):
 
 @tilelang.jit(out_idx=[4], pass_configs=pass_configs)
 def mhc_post_kernel_1d(pad_h, h_blk=H_BLK, dtype="bfloat16", accum_dtype="float"):
-    """1D UB kernel: separate per-row res/out buffers, smaller UB footprint.
+    """1D UB kernel: separate per-row res/out buffers, aligned comb [4,8].
 
-    Supports h_blk=3584 (2D UB overflows at this size). Host-side F.pad
-    handles non-dividing h.
+    Supports h_blk=3584 (2D res/out UB overflows at this size). Host-side
+    F.pad handles non-dividing h.
     """
     n = T.symbolic("n")
     h_num = T.ceildiv(pad_h, h_blk)
@@ -129,16 +130,10 @@ def mhc_post_kernel_1d(pad_h, h_blk=H_BLK, dtype="bfloat16", accum_dtype="float"
             if bid < n:
                 with T.Scope("V"):
                     post_fp32 = T.alloc_ub(HC, accum_dtype)
-                    T.copy(post[bid, 0], post_fp32)
+                    T.copy(post[bid, 0:HC], post_fp32)
 
-                    comb0_fp32 = T.alloc_ub(HC, accum_dtype)
-                    comb1_fp32 = T.alloc_ub(HC, accum_dtype)
-                    comb2_fp32 = T.alloc_ub(HC, accum_dtype)
-                    comb3_fp32 = T.alloc_ub(HC, accum_dtype)
-                    T.copy(comb[bid, 0, 0], comb0_fp32)
-                    T.copy(comb[bid, 1, 0], comb1_fp32)
-                    T.copy(comb[bid, 2, 0], comb2_fp32)
-                    T.copy(comb[bid, 3, 0], comb3_fp32)
+                    comb_fp32 = T.alloc_ub((HC, (HC + 7) // 8 * 8), accum_dtype)
+                    T.copy(comb[bid, 0:HC, 0:HC], comb_fp32[0:HC, 0:HC])
 
                     res0_ub = T.alloc_ub(h_blk, dtype)
                     res1_ub = T.alloc_ub(h_blk, dtype)
@@ -154,26 +149,28 @@ def mhc_post_kernel_1d(pad_h, h_blk=H_BLK, dtype="bfloat16", accum_dtype="float"
                     out_bf16 = T.alloc_ub(h_blk, dtype)
 
                     for i_h in T.Pipelined(h_num, num_stages=2):
-                        T.copy(residual[bid, 0, i_h * h_blk], res0_ub)
-                        T.copy(residual[bid, 1, i_h * h_blk], res1_ub)
-                        T.copy(residual[bid, 2, i_h * h_blk], res2_ub)
-                        T.copy(residual[bid, 3, i_h * h_blk], res3_ub)
+                        h_start = i_h * h_blk
+
+                        T.copy(residual[bid, 0, h_start], res0_ub)
+                        T.copy(residual[bid, 1, h_start], res1_ub)
+                        T.copy(residual[bid, 2, h_start], res2_ub)
+                        T.copy(residual[bid, 3, h_start], res3_ub)
                         T.tile.cast(res0_fp32, res0_ub, "CAST_NONE", h_blk)
                         T.tile.cast(res1_fp32, res1_ub, "CAST_NONE", h_blk)
                         T.tile.cast(res2_fp32, res2_ub, "CAST_NONE", h_blk)
                         T.tile.cast(res3_fp32, res3_ub, "CAST_NONE", h_blk)
 
-                        T.copy(x[bid, i_h * h_blk], x_ub)
+                        T.copy(x[bid, h_start], x_ub)
                         T.tile.cast(x_fp32, x_ub, "CAST_NONE", h_blk)
 
                         for out_idx in T.unroll(HC):
                             T.tile.mul(out_fp32, x_fp32, post_fp32[out_idx])
-                            T.tile.axpy(out_fp32, res0_fp32, comb0_fp32[out_idx])
-                            T.tile.axpy(out_fp32, res1_fp32, comb1_fp32[out_idx])
-                            T.tile.axpy(out_fp32, res2_fp32, comb2_fp32[out_idx])
-                            T.tile.axpy(out_fp32, res3_fp32, comb3_fp32[out_idx])
+                            T.tile.axpy(out_fp32, res0_fp32, comb_fp32[0, out_idx])
+                            T.tile.axpy(out_fp32, res1_fp32, comb_fp32[1, out_idx])
+                            T.tile.axpy(out_fp32, res2_fp32, comb_fp32[2, out_idx])
+                            T.tile.axpy(out_fp32, res3_fp32, comb_fp32[3, out_idx])
                             T.tile.cast(out_bf16, out_fp32, "CAST_RINT", h_blk)
-                            T.copy(out_bf16, output[bid, out_idx, i_h * h_blk])
+                            T.copy(out_bf16, output[bid, out_idx, h_start])
 
     return main
 

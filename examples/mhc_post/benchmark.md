@@ -89,8 +89,9 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
     aligned comb `comb_fp32[4, 8]` (32 bytes/row enables correct 2D scalar read
     `comb_fp32[res_idx, out_idx]`). No host-side pad (requires h % h_blk == 0).
     Faster due to fewer MTE2/MTE3 launch overheads.
-  - **1D UB path** (h_blk = 3584 or non-dividing h): V7's separate per-row
-    buffers (smaller UB footprint). Host-side F.pad for non-dividing h.
+  - **1D UB path** (h_blk = 3584 or non-dividing h): separate per-row res/out
+    buffers (smaller UB footprint) + aligned comb [4,8] (single copy, same as 2D
+    path). Host-side F.pad for non-dividing h.
 - Dispatch rule: find largest h_blk from combined candidates [3584, 3072, 2560,
   2048, 1024, 512] that divides h; if it's in the 2D list (≤ 3072) → 2D path,
   if it's 3584 → 1D path, if none divides → 1D path with pad.
@@ -100,7 +101,7 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
   addresses → max_diff=25.59).
 - Results (5-run average, do_bench warmup=20 rep=100):
   - h=4096×2560 (2D path, h_blk=2560): **5.98x** (V7: 5.34x, +12%)
-  - h=4096×7168 (1D path, h_blk=3584): **7.24x** (V7: 7.27x, parity)
+  - h=4096×7168 (1D path, h_blk=3584): **7.40x** (V7: 7.27x, +2%)
 - 2D UB with h_blk=3584 was tested and fails (UB overflow, kernel hangs). The
   hybrid avoids this by falling back to 1D UB for h_blk=3584.
 
@@ -110,7 +111,7 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 |---|---|---|------|-------|-------------|-----|----------------|----------------|-------------|
 | 512 | 2560 | 4 | 2D | 2560 | 0.33 ms | 0.33 ms | 0.25 ms | 0.76x | 0.76x |
 | 4096 | 2560 | 4 | 2D | 2560 | 0.38 ms | 0.38 ms | 2.28 ms | 5.98x | 5.98x |
-| 4096 | 7168 | 4 | 1D | 3584 | 0.84 ms | 0.84 ms | 6.10 ms | 7.24x | 7.24x |
+| 4096 | 7168 | 4 | 1D | 3584 | 0.82 ms | 0.82 ms | 6.10 ms | 7.40x | 7.40x |
 
 > 2D path: no host pad (h % h_blk == 0), E2E ≈ kernel-only.
 > 1D path for h=7168: no pad (7168 % 3584 == 0), E2E ≈ kernel-only.
@@ -148,7 +149,7 @@ stage=2 provides 4.1% speedup over serial. stage=3 not feasible (h_blk=3584 × 3
 | shape | path | Data volume | Kernel latency | Effective BW | HBM peak ratio |
 |-------|------|-------------|---------------|--------------|----------------|
 | n=4096, h=2560 | 2D | 189 MB | 0.38 ms | 496 GB/s | 42% |
-| n=4096, h=7168 | 1D | 529 MB | 0.84 ms | 630 GB/s | 53% |
+| n=4096, h=7168 | 1D | 529 MB | 0.82 ms | 643 GB/s | 54% |
 
 > 2D path improves h=2560 bandwidth from 451 GB/s (V7) to 496 GB/s (+10%),
 > from merged res/out copy reducing MTE2/MTE3 launch overhead.
@@ -156,9 +157,9 @@ stage=2 provides 4.1% speedup over serial. stage=3 not feasible (h_blk=3584 × 3
 ### V6 msprof Reference (h_blk=2048, kernel 1.18 ms)
 
 > V6 hardware-level breakdown measured via msprof. V8 Hybrid 1D path uses h_blk=3584
-> (kernel 0.84 ms); the compute structure (AXPY + dual-V-core) is unchanged, so the
+> (kernel 0.82 ms); the compute structure (AXPY + dual-V-core) is unchanged, so the
 > Vector-compute bottleneck applies to V8 Hybrid as well. The 1D path's bandwidth
-> (630 GB/s) comes from eliminating padded data movement, same as V7. The 2D path
+> (643 GB/s) comes from eliminating padded data movement, same as V7. The 2D path
 > further improves h=2560 bandwidth to 496 GB/s via merged copy.
 
 | Metric | Value |
@@ -195,13 +196,13 @@ via merged copy, but the compute bottleneck remains unchanged.
 
 | Condition | Status |
 |-----------|--------|
-| Kernel > CANN | Yes (0.76x - 7.24x; small shape slower, large shape 6-7x) |
-| E2E > CANN (large shape) | Yes (5.98x - 7.24x) |
+| Kernel > CANN | Yes (0.76x - 7.40x; small shape slower, large shape 6-7x) |
+| E2E > CANN (large shape) | Yes (5.98x - 7.40x) |
 | Compute-bound confirmed | Yes (V6 msprof: Vector 1818% > MTE 1535%; V8 structure unchanged) |
 | Pipeline optimized | Yes (stage=2, +4.1% over serial; stage=3 UB-limited) |
 | h_blk optimized | Yes (adaptive: largest divisor of h, hybrid 2D/1D dispatch) |
 | 2D UB utilized | Yes (2D path for h_blk ≤ 3072, merged copy +10% over V7 at h=2560) |
-| Effective BW high | Yes (496-630 GB/s, 42-53% of HBM peak) |
+| Effective BW high | Yes (496-643 GB/s, 42-54% of HBM peak) |
 
 Optimization stopped: hybrid 2D/1D dispatch achieves best of both paths —
 2D UB merged copy for h_blk ≤ 3072 (faster MTE2/MTE3), 1D UB for h_blk=3584
