@@ -1185,8 +1185,7 @@ def test_bitwise_xor_ext_basic(dtype, target):
 
 @pytest.mark.xfail(
     raises=Exception,
-    reason="AscendC::Xor has static_assert requiring int16_t/uint16_t only; "
-    "int8/uint8 fail at compile time on ascendc.",
+    reason="AscendC::Xor has static_assert requiring int16_t/uint16_t only; int8/uint8 fail at compile time on ascendc.",
 )
 @pytest.mark.parametrize("dtype", ["int8", "uint8"])
 def test_bitwise_xor_int8_ascendc_fails(dtype):
