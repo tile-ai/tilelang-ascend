@@ -31,7 +31,7 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 | V5 | T.Pipelined(stage=2) | 0.67 ms | 3.37x | Pipeline overlap |
 | V6 | Cast fusion + kernel cache | 0.65 ms | 3.46x | Remove host overhead |
 | V7 | Adaptive h_blk + out reuse + T.unroll | 0.42 ms | 5.39x | Eliminate padding waste |
-| V8 Hybrid | 2D UB fast path + 1D UB fallback | 0.37 ms | 6.18x | Merged copy for 2D path, 3584 preserved via 1D fallback |
+| V8 Hybrid | 2D UB fast path + 1D UB fallback | 0.38 ms | 5.98x | Merged copy for 2D path, 3584 preserved via 1D fallback |
 
 ### Key Decisions
 
@@ -98,18 +98,18 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
   [4, 8] aligns each row to 32 bytes, matching AlignInnerDim's padding. This
   makes 2D scalar reads work correctly (previous [4, 4] was unaligned → wrong
   addresses → max_diff=25.59).
-- Results (3-run average, do_bench warmup=20 rep=100):
-  - h=4096×2560 (2D path, h_blk=2560): **6.18x** (V7: 5.34x, +16%)
+- Results (5-run average, do_bench warmup=20 rep=100):
+  - h=4096×2560 (2D path, h_blk=2560): **5.98x** (V7: 5.34x, +12%)
   - h=4096×7168 (1D path, h_blk=3584): **7.24x** (V7: 7.27x, parity)
 - 2D UB with h_blk=3584 was tested and fails (UB overflow, kernel hangs). The
   hybrid avoids this by falling back to 1D UB for h_blk=3584.
 
-## 4. Final Performance (V8 Hybrid, do_bench, warmup=20, rep=100, 3-run average)
+## 4. Final Performance (V8 Hybrid, do_bench, warmup=20, rep=100, 5-run average)
 
 | n | h | hc | path | h_blk | Kernel-only | E2E | PyTorch (CANN) | Kernel speedup | E2E speedup |
 |---|---|---|------|-------|-------------|-----|----------------|----------------|-------------|
 | 512 | 2560 | 4 | 2D | 2560 | 0.33 ms | 0.33 ms | 0.25 ms | 0.76x | 0.76x |
-| 4096 | 2560 | 4 | 2D | 2560 | 0.37 ms | 0.37 ms | 2.28 ms | 6.18x | 6.18x |
+| 4096 | 2560 | 4 | 2D | 2560 | 0.38 ms | 0.38 ms | 2.28 ms | 5.98x | 5.98x |
 | 4096 | 7168 | 4 | 1D | 3584 | 0.84 ms | 0.84 ms | 6.10 ms | 7.24x | 7.24x |
 
 > 2D path: no host pad (h % h_blk == 0), E2E ≈ kernel-only.
@@ -129,7 +129,7 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 
 > Sweep measured with V7's 1D UB kernel. V8 Hybrid dispatches h_blk ≤ 3072 via
 > the faster 2D UB path (merged copy), and h_blk=3584 via the 1D UB path.
-> At h_blk=2560, the 2D path achieves 6.18x vs V7's 5.44x (+14%).
+> At h_blk=2560, the 2D path achieves 5.98x vs V7's 5.44x (+10%).
 > h_blk=3584 is excluded from the 2D path (UB overflow at this size).
 
 ## 6. Pipeline Ablation (1D path, n=4096, h=7168, h_blk=3584, kernel-only)
@@ -147,10 +147,10 @@ stage=2 provides 4.1% speedup over serial. stage=3 not feasible (h_blk=3584 × 3
 
 | shape | path | Data volume | Kernel latency | Effective BW | HBM peak ratio |
 |-------|------|-------------|---------------|--------------|----------------|
-| n=4096, h=2560 | 2D | 189 MB | 0.37 ms | 511 GB/s | 43% |
+| n=4096, h=2560 | 2D | 189 MB | 0.38 ms | 496 GB/s | 42% |
 | n=4096, h=7168 | 1D | 529 MB | 0.84 ms | 630 GB/s | 53% |
 
-> 2D path improves h=2560 bandwidth from 451 GB/s (V7) to 511 GB/s (+13%),
+> 2D path improves h=2560 bandwidth from 451 GB/s (V7) to 496 GB/s (+10%),
 > from merged res/out copy reducing MTE2/MTE3 launch overhead.
 
 ### V6 msprof Reference (h_blk=2048, kernel 1.18 ms)
@@ -159,7 +159,7 @@ stage=2 provides 4.1% speedup over serial. stage=3 not feasible (h_blk=3584 × 3
 > (kernel 0.84 ms); the compute structure (AXPY + dual-V-core) is unchanged, so the
 > Vector-compute bottleneck applies to V8 Hybrid as well. The 1D path's bandwidth
 > (630 GB/s) comes from eliminating padded data movement, same as V7. The 2D path
-> further improves h=2560 bandwidth to 511 GB/s via merged copy.
+> further improves h=2560 bandwidth to 496 GB/s via merged copy.
 
 | Metric | Value |
 |--------|-------|
@@ -179,7 +179,7 @@ stage=2 provides 4.1% speedup over serial. stage=3 not feasible (h_blk=3584 × 3
 
 Vector compute (1818%) > MTE total (1535%). The kernel is primarily Vector-compute
 constrained. T.Pipelined effectively overlaps compute with memory operations (37.6x
-parallelism). V8 Hybrid's 2D path improves h=2560 bandwidth by 14% (451 → 511 GB/s)
+parallelism). V8 Hybrid's 2D path improves h=2560 bandwidth by 10% (451 → 496 GB/s)
 via merged copy, but the compute bottleneck remains unchanged.
 
 ## 8. Accuracy
@@ -196,12 +196,12 @@ via merged copy, but the compute bottleneck remains unchanged.
 | Condition | Status |
 |-----------|--------|
 | Kernel > CANN | Yes (0.76x - 7.24x; small shape slower, large shape 6-7x) |
-| E2E > CANN (large shape) | Yes (6.18x - 7.24x) |
+| E2E > CANN (large shape) | Yes (5.98x - 7.24x) |
 | Compute-bound confirmed | Yes (V6 msprof: Vector 1818% > MTE 1535%; V8 structure unchanged) |
 | Pipeline optimized | Yes (stage=2, +4.1% over serial; stage=3 UB-limited) |
 | h_blk optimized | Yes (adaptive: largest divisor of h, hybrid 2D/1D dispatch) |
-| 2D UB utilized | Yes (2D path for h_blk ≤ 3072, merged copy +14% over V7 at h=2560) |
-| Effective BW high | Yes (511-630 GB/s, 43-53% of HBM peak) |
+| 2D UB utilized | Yes (2D path for h_blk ≤ 3072, merged copy +10% over V7 at h=2560) |
+| Effective BW high | Yes (496-630 GB/s, 42-53% of HBM peak) |
 
 Optimization stopped: hybrid 2D/1D dispatch achieves best of both paths —
 2D UB merged copy for h_blk ≤ 3072 (faster MTE2/MTE3), 1D UB for h_blk=3584
