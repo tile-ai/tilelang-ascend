@@ -19,7 +19,7 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 | Tool | do_bench (Python), msprof op (hardware) |
 | Dtype | bf16 input, fp32 accumulate |
 
-## 3. Optimization Path (V0 -> V8 Hybrid)
+## 3. Optimization Path (V0 -> V9 Unified)
 
 | Version | Change | Kernel-only (n=4096, h=2560) | vs CANN | Key Breakthrough |
 |---------|--------|------------------------------|---------|------------------|
@@ -32,6 +32,7 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 | V6 | Cast fusion + kernel cache | 0.65 ms | 3.46x | Remove host overhead |
 | V7 | Adaptive h_blk + out reuse + T.unroll | 0.42 ms | 5.39x | Eliminate padding waste |
 | V8 Hybrid | 2D UB fast path + 1D UB fallback | 0.38 ms | 5.98x | Merged copy for 2D path, 3584 preserved via 1D fallback |
+| V9 Unified | single kernel: 2D res + 1D out | 0.38 ms | 5.88x | One kernel covers all h_blk incl 3584 |
 
 ### Key Decisions
 
@@ -105,16 +106,26 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 - 2D UB with h_blk=3584 was tested and fails (UB overflow, kernel hangs). The
   hybrid avoids this by falling back to 1D UB for h_blk=3584.
 
-## 4. Final Performance (V8 Hybrid, do_bench, warmup=20, rep=100, 5-run average)
+**V9 Unified: single kernel (2D res + 1D out)**
+- Merged V8's two paths into one kernel: 2D res (1 T.copy for all 4 rows) +
+  1D out (streaming write-back, out buffer reused across out_idx).
+- 2D res keeps MTE efficiency (1 copy vs 4); 1D out keeps UB footprint low
+  (~126KB) so h_blk=3584 fits — V8's 2D path overflowed because it kept a 2D
+  `out_fp32`/`out_bf16` (`[4, h_blk]`, ~189KB footprint).
+- Removes `_select_path` dispatch; host only picks the largest dividing h_blk
+  and pads otherwise. Code: 2 kernels + dispatch → 1 kernel (~-97 lines).
+- Correctness 15/15. Perf: h=7168 7.42x (parity/slightly faster), h=2560 5.88x.
 
-| n | h | hc | path | h_blk | Kernel-only | E2E | PyTorch (CANN) | Kernel speedup | E2E speedup |
-|---|---|---|------|-------|-------------|-----|----------------|----------------|-------------|
-| 512 | 2560 | 4 | 2D | 2560 | 0.33 ms | 0.33 ms | 0.25 ms | 0.76x | 0.76x |
-| 4096 | 2560 | 4 | 2D | 2560 | 0.38 ms | 0.38 ms | 2.28 ms | 5.98x | 5.98x |
-| 4096 | 7168 | 4 | 1D | 3584 | 0.82 ms | 0.82 ms | 6.10 ms | 7.40x | 7.40x |
+## 4. Final Performance (V9 Unified, do_bench, warmup=20, rep=100, 5-run average)
 
-> 2D path: no host pad (h % h_blk == 0), E2E ≈ kernel-only.
-> 1D path for h=7168: no pad (7168 % 3584 == 0), E2E ≈ kernel-only.
+| n | h | hc | h_blk | Kernel-only | E2E | PyTorch (CANN) | Kernel speedup | E2E speedup |
+|---|---|---|-------|-------------|-----|----------------|----------------|-------------|
+| 512 | 2560 | 4 | 2560 | 0.33 ms | 0.33 ms | 0.25 ms | 0.76x | 0.76x |
+| 4096 | 2560 | 4 | 2560 | 0.38 ms | 0.38 ms | 2.28 ms | 5.88x | 5.88x |
+| 4096 | 7168 | 4 | 3584 | 0.82 ms | 0.82 ms | 6.10 ms | 7.42x | 7.42x |
+
+> Single unified kernel. h=2560/7168 divide h_blk exactly (no host pad), so
+> E2E ≈ kernel-only.
 > n=512 is slower than CANN due to small data volume (24MB) not saturating dual-V-core parallelism.
 
 ## 5. h_blk Sweep (V7 1D kernel, kernel-only)
@@ -128,12 +139,11 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 | 3072 | 0.79x | 5.13x | 5.59x |
 | 3584 | 0.87x | 4.77x | **7.26x** |
 
-> Sweep measured with V7's 1D UB kernel. V8 Hybrid dispatches h_blk ≤ 3072 via
-> the faster 2D UB path (merged copy), and h_blk=3584 via the 1D UB path.
-> At h_blk=2560, the 2D path achieves 5.98x vs V7's 5.44x (+10%).
-> h_blk=3584 is excluded from the 2D path (UB overflow at this size).
+> Sweep measured with V7's 1D UB kernel. V9 Unified uses a single kernel
+> (2D res merged copy + 1D out) covering all h_blk including 3584.
+> At h_blk=2560, unified achieves 5.88x vs V7's 5.44x (+8%).
 
-## 6. Pipeline Ablation (1D path, n=4096, h=7168, h_blk=3584, kernel-only)
+## 6. Pipeline Ablation (n=4096, h=7168, h_blk=3584, kernel-only)
 
 | Schedule | Latency | vs CANN | vs serial |
 |----------|---------|---------|-----------|
@@ -144,23 +154,23 @@ stage=2 provides 4.1% speedup over serial. stage=3 not feasible (h_blk=3584 × 3
 
 ## 7. Performance Analysis (n=4096, h=7168, h_blk=3584)
 
-### V8 Hybrid Effective Bandwidth (do_bench)
+### V9 Unified Effective Bandwidth (do_bench)
 
-| shape | path | Data volume | Kernel latency | Effective BW | HBM peak ratio |
-|-------|------|-------------|---------------|--------------|----------------|
-| n=4096, h=2560 | 2D | 189 MB | 0.38 ms | 496 GB/s | 42% |
-| n=4096, h=7168 | 1D | 529 MB | 0.82 ms | 643 GB/s | 54% |
+| shape | Data volume | Kernel latency | Effective BW | HBM peak ratio |
+|-------|-------------|---------------|--------------|----------------|
+| n=4096, h=2560 | 189 MB | 0.38 ms | 496 GB/s | 42% |
+| n=4096, h=7168 | 529 MB | 0.82 ms | 647 GB/s | 54% |
 
-> 2D path improves h=2560 bandwidth from 451 GB/s (V7) to 496 GB/s (+10%),
-> from merged res/out copy reducing MTE2/MTE3 launch overhead.
+> Unified 2D-res merged copy improves h=2560 bandwidth from 451 GB/s (V7) to
+> 496 GB/s (+10%) by reducing MTE2/MTE3 launch overhead.
 
 ### V6 msprof Reference (h_blk=2048, kernel 1.18 ms)
 
-> V6 hardware-level breakdown measured via msprof. V8 Hybrid 1D path uses h_blk=3584
+> V6 hardware-level breakdown measured via msprof. V9 Unified uses h_blk=3584
 > (kernel 0.82 ms); the compute structure (AXPY + dual-V-core) is unchanged, so the
-> Vector-compute bottleneck applies to V8 Hybrid as well. The 1D path's bandwidth
-> (643 GB/s) comes from eliminating padded data movement, same as V7. The 2D path
-> further improves h=2560 bandwidth to 496 GB/s via merged copy.
+> Vector-compute bottleneck applies to V9 as well. The h=7168 bandwidth
+> (647 GB/s) comes from eliminating padded data movement, same as V7. The
+> merged 2D-res copy improves h=2560 bandwidth to 496 GB/s.
 
 | Metric | Value |
 |--------|-------|
@@ -180,7 +190,7 @@ stage=2 provides 4.1% speedup over serial. stage=3 not feasible (h_blk=3584 × 3
 
 Vector compute (1818%) > MTE total (1535%). The kernel is primarily Vector-compute
 constrained. T.Pipelined effectively overlaps compute with memory operations (37.6x
-parallelism). V8 Hybrid's 2D path improves h=2560 bandwidth by 10% (451 → 496 GB/s)
+parallelism). V9 Unified's merged 2D-res copy improves h=2560 bandwidth by 10% (451 → 496 GB/s)
 via merged copy, but the compute bottleneck remains unchanged.
 
 ## 8. Accuracy
@@ -196,16 +206,16 @@ via merged copy, but the compute bottleneck remains unchanged.
 
 | Condition | Status |
 |-----------|--------|
-| Kernel > CANN | Yes (0.76x - 7.40x; small shape slower, large shape 6-7x) |
-| E2E > CANN (large shape) | Yes (5.98x - 7.40x) |
-| Compute-bound confirmed | Yes (V6 msprof: Vector 1818% > MTE 1535%; V8 structure unchanged) |
+| Kernel > CANN | Yes (0.76x - 7.42x; small shape slower, large shape 6-7x) |
+| E2E > CANN (large shape) | Yes (5.88x - 7.42x) |
+| Compute-bound confirmed | Yes (V6 msprof: Vector 1818% > MTE 1535%; V9 structure unchanged) |
 | Pipeline optimized | Yes (stage=2, +4.1% over serial; stage=3 UB-limited) |
-| h_blk optimized | Yes (adaptive: largest divisor of h, hybrid 2D/1D dispatch) |
-| 2D UB utilized | Yes (2D path for h_blk ≤ 3072, merged copy +10% over V7 at h=2560) |
-| Effective BW high | Yes (496-643 GB/s, 42-54% of HBM peak) |
+| h_blk optimized | Yes (adaptive: largest divisor of h, single kernel) |
+| 2D res merged copy | Yes (2D res merged copy +10% over V7 at h=2560) |
+| Effective BW high | Yes (496-647 GB/s, 42-54% of HBM peak) |
 
-Optimization stopped: hybrid 2D/1D dispatch achieves best of both paths —
-2D UB merged copy for h_blk ≤ 3072 (faster MTE2/MTE3), 1D UB for h_blk=3584
-(preserves large tile count for h=7168). Non-dividing h handled safely via
-host F.pad on 1D path. Further gains require reducing Vector compute (AXPY
-loop unroll is already at T.unroll(4) for hc=4).
+Optimization stopped: a single unified kernel (2D res merged copy + 1D out
+streaming) covers all h_blk including 3584, combining the MTE efficiency of
+merged copy with the low UB footprint of streaming write-back. Non-dividing h
+handled safely via host F.pad. Further gains require reducing Vector compute
+(AXPY loop unroll is already at T.unroll(4) for hc=4).
