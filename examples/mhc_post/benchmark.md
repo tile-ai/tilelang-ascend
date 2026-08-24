@@ -115,6 +115,13 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 - Removes `_select_path` dispatch; host only picks the largest dividing h_blk
   and pads otherwise. Code: 2 kernels + dispatch → 1 kernel (~-97 lines).
 - Correctness 15/15. Perf: h=7168 7.42x (parity/slightly faster), h=2560 5.88x.
+- Engineering trade-off vs V8: h=2560 is ~1.7% slower (5.88x vs 5.98x) but the
+  single-kernel structure removes one kernel variant and the dispatch logic
+  (~-97 lines); h=7168 is slightly faster. Accepted for the code simplification.
+- T.Persistent (reviewer-suggested) was evaluated but NOT adopted: single-shape
+  runs show +4%~17%, but full-shape testing triggers vector-core exceptions
+  (unaligned UUB addresses, err 0x10) on small-n / padded / single-tile shapes
+  and multi-shape runs. Left as a known future direction pending backend fix.
 
 ## 4. Final Performance (V9 Unified, do_bench, warmup=20, rep=100, 5-run average)
 
@@ -166,11 +173,13 @@ stage=2 provides 4.1% speedup over serial. stage=3 not feasible (h_blk=3584 × 3
 
 ### V6 msprof Reference (h_blk=2048, kernel 1.18 ms)
 
-> V6 hardware-level breakdown measured via msprof. V9 Unified uses h_blk=3584
-> (kernel 0.82 ms); the compute structure (AXPY + dual-V-core) is unchanged, so the
-> Vector-compute bottleneck applies to V9 as well. The h=7168 bandwidth
-> (647 GB/s) comes from eliminating padded data movement, same as V7. The
-> merged 2D-res copy improves h=2560 bandwidth to 496 GB/s.
+> V6 hardware-level breakdown measured via msprof (h_blk=2048, kernel 1.18 ms).
+> V9 Unified uses h_blk=3584 (kernel 0.82 ms) with a different data-movement
+> layout (2D-res merged copy); a fresh V9 msprof profile has not been collected,
+> so the V6 result is retained as historical reference rather than a definitive
+> V9 bottleneck characterization. The h=7168 bandwidth (647 GB/s) comes from
+> eliminating padded data movement, same as V7; the merged 2D-res copy improves
+> h=2560 bandwidth to 496 GB/s.
 
 | Metric | Value |
 |--------|-------|
@@ -186,12 +195,15 @@ stage=2 provides 4.1% speedup over serial. stage=3 not feasible (h_blk=3584 × 3
 > Percentages = per-core accumulated time / Task Duration. Values >100% mean
 > multiple cores are active concurrently.
 
-### Bottleneck: Vector-compute constrained
+### Bottleneck: Vector-compute constrained (V6 historical)
 
-Vector compute (1818%) > MTE total (1535%). The kernel is primarily Vector-compute
-constrained. T.Pipelined effectively overlaps compute with memory operations (37.6x
-parallelism). V9 Unified's merged 2D-res copy improves h=2560 bandwidth by 10% (451 → 496 GB/s)
-via merged copy, but the compute bottleneck remains unchanged.
+V6 msprof (h_blk=2048) shows Vector compute (1818%) > MTE total (1535%), i.e.
+the earlier AXPY implementation was primarily Vector-compute constrained, with
+T.Pipelined overlapping compute and memory (37.6x parallelism). V9 retains the
+same arithmetic structure while improving the data-movement layout (2D-res
+merged copy: h=2560 bandwidth +10%, 451 → 496 GB/s). V9 itself has not been
+re-profiled, so the Vector-compute bottleneck is treated as historical
+evidence, not a definitive V9 characterization.
 
 ## 8. Accuracy
 
@@ -208,7 +220,7 @@ via merged copy, but the compute bottleneck remains unchanged.
 |-----------|--------|
 | Kernel > CANN | Yes (0.76x - 7.42x; small shape slower, large shape 6-7x) |
 | E2E > CANN (large shape) | Yes (5.88x - 7.42x) |
-| Compute-bound confirmed | Yes (V6 msprof: Vector 1818% > MTE 1535%; V9 structure unchanged) |
+| Compute-bound evidence | V6 msprof (historical): Vector 1818% > MTE 1535%; V9 not re-profiled |
 | Pipeline optimized | Yes (stage=2, +4.1% over serial; stage=3 UB-limited) |
 | h_blk optimized | Yes (adaptive: largest divisor of h, single kernel) |
 | 2D res merged copy | Yes (2D res merged copy +10% over V7 at h=2560) |

@@ -25,6 +25,7 @@ import torch.nn.functional as F
 VEC_NUM = 2
 HC = 4
 H_BLK = 2048
+COMB_ROW_STRIDE = 8  # 8 fp32 = 32 bytes/row, required for correct 2D scalar read
 
 _H_BLK_CANDIDATES = [3584, 3072, 2560, 2048, 1024, 512]
 
@@ -67,7 +68,7 @@ def mhc_post_kernel(pad_h, h_blk=H_BLK, dtype="bfloat16", accum_dtype="float"):
                     post_fp32 = T.alloc_ub(HC, accum_dtype)
                     T.copy(post[bid, 0:HC], post_fp32)
 
-                    comb_fp32 = T.alloc_ub((HC, (HC + 7) // 8 * 8), accum_dtype)
+                    comb_fp32 = T.alloc_ub((HC, COMB_ROW_STRIDE), accum_dtype)
                     T.copy(comb[bid, 0:HC, 0:HC], comb_fp32[0:HC, 0:HC])
 
                     res_ub = T.alloc_ub((HC, h_blk), dtype)
@@ -137,6 +138,8 @@ def mhc_post(x, residual, post_layer_mix, comb_res_mix):
     assert hc == 4, f"This kernel requires hc=4, got residual hc={hc}"
     assert post_layer_mix.shape[1] == 4, f"post_layer_mix requires hc=4, got {post_layer_mix.shape[1]}"
     assert comb_res_mix.shape[1] == 4 and comb_res_mix.shape[2] == 4, f"comb_res_mix requires [hc, hc]=[4, 4], got {comb_res_mix.shape[1:]}"
+    assert residual.shape[0] == x.shape[0] and residual.shape[2] == x.shape[1]
+    assert post_layer_mix.shape[0] == x.shape[0] and comb_res_mix.shape[0] == x.shape[0]
 
     h_blk = _select_h_blk(h)
     pad_h = ((h + h_blk - 1) // h_blk) * h_blk
