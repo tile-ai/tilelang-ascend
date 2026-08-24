@@ -1061,7 +1061,9 @@ def run_test_bitwise_rshift_signed_semantics(dtype, target, scalarvalue):
     block_M, block_N = 128, 256
     func = tilelang.compile(
         _make_rshift_kernel_2d(M, N, block_M, block_N, dtype, scalarvalue),
-        out_idx=[-1], pass_configs=pass_configs, target=target,
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
     )
     td = _TORCH_INT_DTYPE_RSHIFT[dtype]
     a = torch.randint(low=-100, high=100, size=(M, N), dtype=td).npu()
@@ -1089,7 +1091,9 @@ def run_test_bitwise_rshift_unsigned_high_bits(dtype, target, scalarvalue):
     block_M, block_N = 128, 256
     func = tilelang.compile(
         _make_rshift_kernel_2d(M, N, block_M, block_N, dtype, scalarvalue),
-        out_idx=[-1], pass_configs=pass_configs, target=target,
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
     )
     if dtype == "uint16":
         a = torch.randint(0, 65536, (M, N), dtype=torch.int32).to(torch.uint16).npu()
@@ -1147,7 +1151,9 @@ def run_test_bitwise_rshift_boundary(dtype, target, scalarvalue):
     block_M, block_N = 128, 256
     func = tilelang.compile(
         _make_rshift_kernel_2d(M, N, block_M, block_N, dtype, scalarvalue),
-        out_idx=[-1], pass_configs=pass_configs, target=target,
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
     )
     td = _TORCH_INT_DTYPE_RSHIFT[dtype]
     if "int" in dtype and "uint" not in dtype:
@@ -1180,7 +1186,9 @@ def run_test_bitwise_rshift_non_aligned(dtype, target, scalarvalue):
     block_M, block_N = 128, 100
     func = tilelang.compile(
         _make_rshift_kernel_2d(M, N, block_M, block_N, dtype, scalarvalue),
-        out_idx=[-1], pass_configs=pass_configs, target=target,
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
     )
     td = _TORCH_INT_DTYPE_RSHIFT[dtype]
     a = torch.randint(1, 100, size=(M, N), dtype=td).npu()
@@ -1239,8 +1247,7 @@ def test_bitwise_rshift_int64_skip(dtype, target):
 
 
 @pytest.mark.xfail(
-    reason="float16/float32 are not supported: bitwise shift is integer-only. "
-    "Both AscendC and PTO lack float specializations."
+    reason="float16/float32 are not supported: bitwise shift is integer-only. Both AscendC and PTO lack float specializations."
 )
 @pytest.mark.parametrize("dtype", ["float16", "float32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
@@ -1262,7 +1269,9 @@ def run_test_bitwise_rshift_scalar_dtype_mismatch(dtype, target):
     block_M, block_N = 128, 256
     func = tilelang.compile(
         _make_rshift_kernel_2d(M, N, block_M, block_N, dtype, 3),
-        out_idx=[-1], pass_configs=pass_configs, target=target,
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
     )
     td = _TORCH_INT_DTYPE_RSHIFT[dtype]
     a = torch.randint(1, 100, size=(M, N), dtype=td).npu()
