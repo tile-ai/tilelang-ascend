@@ -1138,6 +1138,7 @@ def run_test_bitwise_rshift_1d(dtype, target, scalarvalue):
     assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
 
 
+@pytest.mark.low_priority
 @pytest.mark.parametrize("scalarvalue", [1, 4, 8])
 @pytest.mark.parametrize("dtype", ["int16", "uint16", "int32", "uint32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
@@ -1166,6 +1167,7 @@ def run_test_bitwise_rshift_boundary(dtype, target, scalarvalue):
     assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
 
 
+@pytest.mark.low_priority
 @pytest.mark.parametrize("scalarvalue", [0, 1, 15, 16])
 @pytest.mark.parametrize("dtype", ["int16", "uint16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
@@ -1173,6 +1175,7 @@ def test_bitwise_rshift_boundary_int16(dtype, target, scalarvalue):
     run_test_bitwise_rshift_boundary(dtype, target, scalarvalue)
 
 
+@pytest.mark.low_priority
 @pytest.mark.parametrize("scalarvalue", [0, 1, 31, 32])
 @pytest.mark.parametrize("dtype", ["int32", "uint32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
@@ -1198,6 +1201,7 @@ def run_test_bitwise_rshift_non_aligned(dtype, target, scalarvalue):
     assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
 
 
+@pytest.mark.low_priority
 @pytest.mark.parametrize("scalarvalue", [1, 4])
 @pytest.mark.parametrize("dtype", ["int16", "uint16", "int32", "uint32"])
 @pytest.mark.parametrize("target", ["pto"])
@@ -1205,6 +1209,7 @@ def test_bitwise_rshift_non_aligned(dtype, target, scalarvalue):
     run_test_bitwise_rshift_non_aligned(dtype, target, scalarvalue)
 
 
+@pytest.mark.low_priority
 @pytest.mark.xfail(
     reason="Ascend C backend produces precision errors when tile element count "
     "is not 32-byte aligned (e.g. shape=(1024,100)). PTO backend is unaffected."
@@ -1216,6 +1221,7 @@ def test_bitwise_rshift_non_aligned_ascendc_xfail(dtype, target, scalarvalue):
     run_test_bitwise_rshift_non_aligned(dtype, target, scalarvalue)
 
 
+@pytest.mark.low_priority
 @pytest.mark.xfail(
     reason="int8/uint8 are not supported on A2/A3 for bitwise_rshift: "
     "AscendC ShiftRight has no int8/uint8 specialization, "
@@ -1231,6 +1237,7 @@ def test_bitwise_rshift_int8_xfail(dtype, target):
     tilelang.compile(kernel, out_idx=[-1], pass_configs=pass_configs, target=target)
 
 
+@pytest.mark.low_priority
 @pytest.mark.skip(
     reason="int64/uint64 cause a segmentation fault in the TVM compiler on A2/A3, "
     "which kills the pytest process. Skipping to avoid crash. "
@@ -1246,6 +1253,7 @@ def test_bitwise_rshift_int64_skip(dtype, target):
     tilelang.compile(kernel, out_idx=[-1], pass_configs=pass_configs, target=target)
 
 
+@pytest.mark.low_priority
 @pytest.mark.xfail(
     reason="float16/float32 are not supported: bitwise shift is integer-only. Both AscendC and PTO lack float specializations."
 )
@@ -1281,6 +1289,7 @@ def run_test_bitwise_rshift_scalar_dtype_mismatch(dtype, target):
     assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
 
 
+@pytest.mark.low_priority
 @pytest.mark.parametrize("dtype", ["int16", "uint16", "int32", "uint32"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_bitwise_rshift_scalar_dtype_mismatch(dtype, target):
