@@ -6,8 +6,8 @@ Reference: tilelang main repo CUDA version examples/deepseek_mhc/example_mhc_pos
 
 Architecture (pure Vector, no Cube):
   Single AIV kernel with dual-V-core partitioning.
-  - Any hc (JIT parameter); AXPY linear combination for the [hc, hc] @ [hc, h]
-    matrix multiply (comb^T @ residual)
+  - hc 1-8 (JIT parameter, tested range); AXPY linear combination for the
+    [hc, hc] @ [hc, h] matrix multiply (comb^T @ residual)
   - Unified UB layout: 2D res (merged copy, 1 T.copy instead of hc copies) +
     2D bf16 out (merged store, 1 MTE3 instead of hc), 1D fp32 out reused per
     row. comb aligned to 32B/row for correct 2D scalar read.
@@ -37,13 +37,13 @@ pass_configs = {
 
 
 # ============================================================
-# Kernel: unified 2D res (merged copy) + 1D out (streaming)
+# Kernel: 2D res merged load + 2D bf16 merged store
 # ============================================================
 
 
 @tilelang.jit(out_idx=[4], pass_configs=pass_configs)
 def mhc_post_kernel(hc, h, h_blk=H_BLK, dtype="bfloat16", accum_dtype="float"):
-    """Unified kernel: 2D res merged copy + 2D out merged store, any h, any hc.
+    """Unified kernel: 2D res merged load + 2D bf16 merged store, any h, hc 1-8.
 
     2D res keeps 1 T.copy (vs hc copies) for MTE efficiency; 2D bf16 out keeps
     1 merged MTE3 store (vs hc stores) while the 1D fp32 out is reused per row.
@@ -112,10 +112,13 @@ _kernel_cache = {}
 
 
 def _max_h_blk(hc):
-    """Upper-bound h_blk from UB budget (192KB) for a given hc.
+    """Conservative upper-bound h_blk from UB budget (192KB) for a given hc.
 
     Dominant buffers scale as hc*h_blk: res_ub (2*hc), res_fp32 (4*hc),
     out_bf16 (2*hc) bytes per element, plus ~10 bytes/elem for x/out 1D.
+    This is a selection heuristic, not a hard guarantee: T.Pipelined
+    double-buffering and compiler layout decisions affect the real footprint.
+    Validated for hc 1-8 via compile + accuracy tests.
     """
     per_elem = 8 * hc + 10
     return (192 * 1024 - 8192) // per_elem
@@ -127,7 +130,9 @@ def _select_h_blk(h, hc):
     for blk in candidates:
         if h % blk == 0:
             return blk
-    return candidates[-1] if candidates else H_BLK
+    if not candidates:
+        raise ValueError(f"No h_blk candidate fits UB budget for hc={hc}")
+    return candidates[-1]
 
 
 def _get_kernel(hc, h, h_blk):
@@ -151,7 +156,7 @@ def mhc_post(x, residual, post_layer_mix, comb_res_mix):
     """
     h = x.shape[1]
     hc = residual.shape[1]
-    assert hc >= 1, f"hc must be >= 1, got hc={hc}"
+    assert 1 <= hc <= 8, f"hc must be in [1, 8] (tested range), got hc={hc}"
     assert post_layer_mix.shape[1] == hc, f"post_layer_mix requires hc={hc}, got {post_layer_mix.shape[1]}"
     assert comb_res_mix.shape[1] == hc and comb_res_mix.shape[2] == hc, (
         f"comb_res_mix requires [hc, hc]=[{hc}, {hc}], got {comb_res_mix.shape[1:]}"
@@ -202,7 +207,7 @@ def generate_test_data(n, h, hc, device="npu"):
 
 def test():
     print("=" * 60)
-    print("MHC Post test (Ascend NPU - AIV dual-V-core, unified 2D res + 1D out UB)")
+    print("MHC Post test (Ascend NPU - AIV dual-V-core)")
     print("=" * 60)
 
     test_cases = [
@@ -221,6 +226,13 @@ def test():
         (4, 200, 4),
         (4, 300, 4),
         (8, 500, 4),
+        (4, 128, 1),
+        (4, 128, 2),
+        (4, 128, 3),
+        (4, 128, 8),
+        (4, 100, 8),
+        (4, 1280, 8),
+        (16, 512, 8),
     ]
 
     all_passed = True

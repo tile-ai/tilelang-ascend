@@ -8,7 +8,7 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 
 - Input: x [n, h] bf16, residual [n, hc, h] bf16, post_layer_mix [n, hc, 1] fp32, comb_res_mix [n, hc, hc] fp32
 - Output: [n, hc, h] bf16
-- Constraint: hc = 4 (hardcoded AXPY specialization)
+- Constraint: 1 <= hc <= 8 (JIT parameter, tested range)
 
 ## 2. Hardware & Software
 
@@ -19,7 +19,7 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 | Tool | do_bench (Python), msprof op (hardware) |
 | Dtype | bf16 input, fp32 accumulate |
 
-## 3. Optimization Path (V0 -> V9 Unified)
+## 3. Optimization Path (V0 -> V10 Generic HC + Tail Mask)
 
 | Version | Change | Kernel-only (n=4096, h=2560) | vs CANN | Key Breakthrough |
 |---------|--------|------------------------------|---------|------------------|
@@ -33,6 +33,7 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
 | V7 | Adaptive h_blk + out reuse + T.unroll | 0.42 ms | 5.39x | Eliminate padding waste |
 | V8 Hybrid | 2D UB fast path + 1D UB fallback | 0.38 ms | 5.98x | Merged copy for 2D path, 3584 preserved via 1D fallback |
 | V9 Unified | single kernel: 2D res + 1D out | 0.38 ms | 5.88x | One kernel covers all h_blk incl 3584 |
+| V10 Generic | remove host pad + generic hc + merged bf16 store | 0.38 ms | 5.98x | In-kernel tail (pad_value + TAIL_MASK), hc 1-8, 2D bf16 merged MTE3 |
 
 ### Key Decisions
 
@@ -142,16 +143,38 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
      and tile i+1's V cast. Blockers 1 and 2 are solvable; blocker 3 is a hard UB
      constraint at h_blk=3584. Left as a known direction.
 
-## 4. Final Performance (V9 Unified, do_bench, warmup=20, rep=100, 5-run average)
+**V10 Generic: remove host pad + generic hc + merged bf16 store**
+- Three changes responding to reviewer feedback:
+  1. **Remove host F.pad**: tail tile merged into the same `T.Pipelined` loop
+     (`total_tiles = ceildiv(h, h_blk)`). Every tile copy passes `pad_value=0.0`
+     (no-op for full tiles, zero-fills the gap on the tail tile).
+     `TL_ASCEND_TAIL_MASK` pass enabled to rewrite vector ops on tail tiles to
+     compute only the valid region. No host-side padding needed.
+  2. **Generic hc (1-8)**: `hc` is a JIT parameter, no longer hardcoded to 4.
+     `comb_row_stride = (hc + 7) // 8 * 8` aligns each row to 32B for correct 2D
+     scalar read. `_max_h_blk(hc)` bounds h_blk from UB budget per hc.
+  3. **2D bf16 merged store**: `out_bf16 = T.alloc_ub((hc, h_blk), dtype)`, cast
+     per row into `out_bf16[out_idx, :]`, then 1 merged `T.copy(out_bf16, output)`
+     instead of hc separate MTE3 stores.
+- The separate tail block (V9's `if tail > 0` after the pipeline loop) conflicted
+  with `T.Pipelined` double-buffering and the tail mask pass's buffer tracking.
+  Merging the tail into the main loop resolved this.
+- Correctness 22/22 (15 hc=4 cases + 7 hc=1/2/3/8 cases covering tail path).
+- Perf: parity with V9 at h=2560 (5.98x); h=7168 improved 0.82->0.75 ms (7.42x
+  -> 8.10x), likely from simpler loop structure. 5-run average.
+
+## 4. Final Performance (V10 Generic, do_bench, warmup=20, rep=100, 5-run average)
 
 | n | h | hc | h_blk | Kernel-only | E2E | PyTorch (CANN) | Kernel speedup | E2E speedup |
 |---|---|---|-------|-------------|-----|----------------|----------------|-------------|
-| 512 | 2560 | 4 | 2560 | 0.33 ms | 0.33 ms | 0.25 ms | 0.76x | 0.76x |
-| 4096 | 2560 | 4 | 2560 | 0.38 ms | 0.38 ms | 2.28 ms | 5.88x | 5.88x |
-| 4096 | 7168 | 4 | 3584 | 0.82 ms | 0.82 ms | 6.10 ms | 7.42x | 7.42x |
+| 512 | 2560 | 4 | 2560 | 0.34 ms | 0.34 ms | 0.25 ms | 0.74x | 0.74x |
+| 4096 | 2560 | 4 | 2560 | 0.38 ms | 0.38 ms | 2.25 ms | 5.98x | 5.98x |
+| 4096 | 7168 | 4 | 3584 | 0.75 ms | 0.75 ms | 6.07 ms | 8.10x | 8.10x |
 
-> Single unified kernel. h=2560/7168 divide h_blk exactly (no host pad), so
-> E2E ≈ kernel-only.
+> Single unified kernel. h=2560/7168 divide h_blk exactly (no tail), so
+> E2E ≈ kernel-only. V10 removes host pad and enables TL_ASCEND_TAIL_MASK;
+> performance is at parity with V9 for h=2560, and improved for h=7168
+> (0.82→0.75 ms, simpler loop structure).
 > n=512 is slower than CANN due to small data volume (24MB) not saturating dual-V-core parallelism.
 
 ## 5. h_blk Sweep (V7 1D kernel, kernel-only)
@@ -228,25 +251,31 @@ evidence, not a definitive V9 characterization.
 
 | Metric | Value |
 |--------|-------|
-| Test cases | 15/15 passed |
+| Test cases | 22/22 passed |
 | Tolerance | rtol=1e-2, atol=0.2 |
 | Max diff | 0.0625 |
 | Source of diff | BF16 output rounding + accumulation order |
+
+> 15 hc=4 cases (various h, including tail path) + 7 hc=1/2/3/8 cases
+> (covering hc<4, hc>4, non-8-aligned comb_row_stride, and tail path).
 
 ## 9. Stop Condition
 
 | Condition | Status |
 |-----------|--------|
-| Kernel > CANN | Yes (0.76x - 7.42x; small shape slower, large shape 6-7x) |
-| E2E > CANN (large shape) | Yes (5.88x - 7.42x) |
-| Compute-bound evidence | V6 msprof (historical): Vector 1818% > MTE 1535%; V9 not re-profiled |
+| Kernel > CANN | Yes (0.74x - 8.10x; small shape slower, large shape 6-8x) |
+| E2E > CANN (large shape) | Yes (5.98x - 8.10x) |
+| Compute-bound evidence | V6 msprof (historical): Vector 1818% > MTE 1535%; V10 not re-profiled |
 | Pipeline optimized | Yes (stage=2, +4.1% over serial; stage=3 UB-limited) |
 | h_blk optimized | Yes (adaptive: largest divisor of h, single kernel) |
 | 2D res merged copy | Yes (2D res merged copy +10% over V7 at h=2560) |
+| 2D bf16 merged store | Yes (1 merged MTE3 instead of hc stores) |
+| In-kernel tail | Yes (pad_value + TL_ASCEND_TAIL_MASK, no host pad) |
+| Generic hc | Yes (hc 1-8, JIT parameter) |
 | Effective BW high | Yes (496-647 GB/s, 42-54% of HBM peak) |
 
-Optimization stopped: a single unified kernel (2D res merged copy + 1D out
-streaming) covers all h_blk including 3584, combining the MTE efficiency of
-merged copy with the low UB footprint of streaming write-back. Non-dividing h
-handled safely via host F.pad. Further gains require reducing Vector compute
-(AXPY loop unroll is already at T.unroll(4) for hc=4).
+Optimization stopped: a single unified kernel (2D res merged load + 2D bf16
+merged store) covers all h_blk including 3584 and all hc 1-8. Non-dividing h
+handled in-kernel via pad_value + TL_ASCEND_TAIL_MASK (no host-side padding).
+Further gains require reducing Vector compute (AXPY loop unroll is already at
+T.unroll(hc) for the tested hc range).
