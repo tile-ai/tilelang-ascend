@@ -1,15 +1,13 @@
-"""Layered test suite for MLA Decode Paged Attention (L0/L1/L2/Boundary + bench + msprof).
+"""Layered test suite for MLA Decode Paged Attention (L0/L1/L2/Boundary).
 
-This file imports the kernel and golden reference from ``example_mla_decode_paged.py``
-and provides the full CI-compliant test harness:
+This file imports the kernel from ``example_mla_decode_paged.py`` and provides
+the full CI-compliant precision test harness:
 
 - ``--level l0``      : L0 blocking precision tests (aligned shapes)
 - ``--level l1``      : L1 blocking precision tests (tail blocks, params, value ranges)
 - ``--level l2``      : L2 non-blocking exception tests (wrong dtype/shape)
 - ``--level boundary``: Boundary non-blocking tests (zero/inf/nan/dbound)
 - ``--level all``     : Run all of the above
-- ``--level bench``   : Performance benchmark using ``tilelang.profiler.do_bench``
-- ``--level msprof``  : Hardware-level profiling via ``msprof op``
 
 Precision standard (fp16 mixed tolerance, per precision-standard.md):
     atol = 2^-14 (6.10e-5), rtol = 2^-9 (1.95e-3),
@@ -27,10 +25,66 @@ import torch
 # Ensure we can import the sibling kernel module.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from example_mla_decode_paged import (  # noqa: E402
-    golden_mla_decode_paged,
-    mla_decode_tilelang,
-)
+from example_mla_decode_paged import mla_decode_tilelang  # noqa: E402
+
+# ============================================================================
+# Golden reference (CPU, fp32 computation)
+# ============================================================================
+
+
+def golden_mla_decode_paged(
+    Q,
+    Q_pe,
+    KV,
+    K_pe,
+    block_table,
+    cache_seqlens,
+    batch,
+    h_q,
+    h_kv,
+    dv,
+    dpe,
+    block_size,
+    max_seqlen_pad,
+    softmax_scale=None,
+):
+    """PyTorch reference implementation (CPU, fp32).
+
+    Gathers paged KV per batch, computes scaled dot-product attention with
+    Q_nope @ KV^T + Q_pe @ K_pe^T, softmax, then P @ KV.
+    """
+    if softmax_scale is None:
+        scale = (dv + dpe) ** -0.5
+    else:
+        scale = float(softmax_scale)
+    output = torch.zeros(batch, h_q, dv, dtype=torch.float32)
+
+    for b in range(batch):
+        seq_len = int(cache_seqlens[b])
+        num_blocks = (seq_len + block_size - 1) // block_size
+
+        # Gather KV blocks for this batch's sequence.
+        kv_seq = torch.zeros(seq_len, dv, dtype=torch.float32)
+        kpe_seq = torch.zeros(seq_len, dpe, dtype=torch.float32)
+        for blk in range(num_blocks):
+            phys_block = int(block_table[b, blk])
+            kv_start = phys_block * block_size
+            valid_n = min(block_size, seq_len - blk * block_size)
+            kv_seq[blk * block_size : blk * block_size + valid_n] = KV[kv_start : kv_start + valid_n, 0, :].float()
+            kpe_seq[blk * block_size : blk * block_size + valid_n] = K_pe[kv_start : kv_start + valid_n, 0, :].float()
+
+        for h in range(h_q):
+            q_nope = Q[b, h, :].float()
+            q_pe = Q_pe[b, h, :].float()
+
+            # Attention scores: Q @ KV^T + Q_pe @ K_pe^T.
+            s = q_nope @ kv_seq.T + q_pe @ kpe_seq.T
+            s = s * scale
+            p = torch.softmax(s, dim=-1)
+            output[b, h, :] = p @ kv_seq
+
+    return output.to(torch.float16)
+
 
 # ============================================================================
 # Constants
@@ -123,7 +177,7 @@ COVERAGE_NA = {
 # Test case definitions
 # ============================================================================
 
-# ---- L0 门槛用例 (blocking) ----
+# ---- L0 threshold cases (blocking) ----
 L0_CASES = [
     ("l0_small_b1", 1, 128, 1, 128, 576, 512, 256, ["D-DTYPE-fp16", "D-DTYPE-int32", "D-SHAPE-ALIGNED", "D-VALRANGE-M"]),
     ("l0_small_b2", 2, 128, 1, 256, 576, 512, 256, ["D-DTYPE-fp16", "D-SHAPE-ALIGNED", "D-VALRANGE-M"]),
@@ -132,7 +186,7 @@ L0_CASES = [
     ("l0_golden", 128, 128, 1, 8192, 576, 512, 256, ["D-DTYPE-fp16", "D-SHAPE-ALIGNED", "D-VALRANGE-M"]),
 ]
 
-# ---- L1 功能用例 (blocking) ----
+# ---- L1 functional cases (blocking) ----
 L1_CASES = [
     ("l1_tail_1", 1, 128, 1, 65, 576, 512, 256, None, None, ["D-DTYPE-fp16", "D-SHAPE-TAIL-1", "D-VALRANGE-M"]),
     ("l1_tail_mid", 2, 128, 1, 160, 576, 512, 256, None, None, ["D-DTYPE-fp16", "D-SHAPE-TAIL-MID", "D-VALRANGE-M"]),
@@ -219,13 +273,13 @@ L1_CASES = [
     ),
 ]
 
-# ---- L2 异常用例 (non-blocking, should be rejected) ----
+# ---- L2 exception cases (non-blocking, should be rejected) ----
 L2_CASES = [
     ("l2_wrong_dtype", "wrong_dtype", ["D-EXC-DTYPE"]),
     ("l2_wrong_shape", "wrong_shape", ["D-EXC-SHAPE"]),
 ]
 
-# ---- Boundary 特殊值用例 (non-blocking) ----
+# ---- Boundary special-value cases (non-blocking) ----
 BOUNDARY_CASES = [
     (
         "b_zero",
@@ -529,7 +583,7 @@ def run_boundary_case(
 def test_mla_decode_paged_l0():
     """L0 blocking precision tests: 5 aligned-shape cases."""
     print("\n" + "=" * 60)
-    print("L0 门槛测试 (aligned cache_seqlens, multiples of 256)")
+    print("L0 threshold tests (aligned cache_seqlens, multiples of 256)")
     print("=" * 60)
     results = []
     for case in L0_CASES:
@@ -571,7 +625,7 @@ def test_mla_decode_paged_l0():
 def test_mla_decode_paged_l1():
     """L1 blocking precision tests: irregular shapes, tail blocks, params, value ranges."""
     print("\n" + "=" * 60)
-    print("L1 功能测试 (tail blocks, params, value ranges)")
+    print("L1 functional tests (tail blocks, params, value ranges)")
     print("=" * 60)
     results = []
     for case in L1_CASES:
@@ -618,7 +672,7 @@ def test_mla_decode_paged_l1():
 def test_mla_decode_paged_l2():
     """L2 non-blocking exception tests: invalid inputs should be rejected."""
     print("\n" + "=" * 60)
-    print("L2 异常测试 (invalid inputs should be rejected)")
+    print("L2 exception tests (invalid inputs should be rejected)")
     print("=" * 60)
     results = []
     for name, case_type, tags in L2_CASES:
@@ -634,7 +688,7 @@ def test_mla_decode_paged_l2():
 def test_mla_decode_paged_boundary():
     """Boundary non-blocking tests: zero/inf/nan/dbound/single-token."""
     print("\n" + "=" * 60)
-    print("Boundary 特殊值测试 (zero/inf/nan/dbound/single-token)")
+    print("Boundary special-value tests (zero/inf/nan/dbound/single-token)")
     print("=" * 60)
     results = []
     for case in BOUNDARY_CASES:
@@ -661,160 +715,6 @@ def test_mla_decode_paged_boundary():
 
 
 # ============================================================================
-# Performance benchmark (do_bench) — per CI_CHECKLIST §6.2
-# ============================================================================
-
-
-def _prepare_bench_inputs(
-    batch=128,
-    h_q=128,
-    h_kv=1,
-    cache_seqlen=8192,
-    d=576,
-    dv=512,
-    block_size=256,
-):
-    """Prepare NPU inputs for benchmarking the golden config."""
-    dpe = d - dv
-    max_seqlen_pad = cache_seqlen
-    num_blocks_per_batch = max_seqlen_pad // block_size
-
-    torch.manual_seed(42)
-    Q_full = torch.randn(batch, h_q, d, dtype=torch.float16)
-    Q = Q_full[..., :dv].contiguous()
-    Q_pe = Q_full[..., dv:].contiguous()
-
-    pre_scale = d**-0.5
-    Q = (Q * pre_scale).contiguous()
-    Q_pe = (Q_pe * pre_scale).contiguous()
-
-    blocked_k = torch.randn(batch * num_blocks_per_batch, block_size, h_kv, d, dtype=torch.float16)
-    KV = blocked_k[..., :dv].reshape(-1, h_kv, dv).contiguous()
-    K_pe = blocked_k[..., dv:].reshape(-1, h_kv, dpe).contiguous()
-    block_table = torch.arange(batch * num_blocks_per_batch, dtype=torch.int32).reshape(batch, num_blocks_per_batch)
-
-    # Sort block_table (no-op for arange data, but reflects production usage).
-    block_table, KV, K_pe = _sort_block_table(block_table, KV, K_pe, block_size)
-
-    return (Q.npu(), Q_pe.npu(), KV.npu(), K_pe.npu(), block_table.npu()), (
-        batch,
-        h_q,
-        h_kv,
-        max_seqlen_pad,
-        dv,
-        dpe,
-        block_size,
-        cache_seqlen,
-    )
-
-
-def run_bench():
-    """Performance benchmark using tilelang.profiler.do_bench.
-
-    Reference: CI_CHECKLIST §6.2 — must use do_bench, not hand-written loops.
-    """
-    from tilelang.profiler import do_bench
-
-    print("\n" + "=" * 60)
-    print("Performance Benchmark (do_bench, golden config B=128 S=8192)")
-    print("=" * 60)
-
-    (Q, Q_pe, KV, K_pe, block_table), params = _prepare_bench_inputs()
-    batch, h_q, h_kv, max_seqlen_pad, dv, dpe, block_size, cache_seqlen = params
-
-    softmax_scale = (dv + dpe) ** -0.5
-    kernel = mla_decode_tilelang(
-        batch,
-        h_q,
-        h_kv,
-        max_seqlen_pad,
-        dv,
-        dpe,
-        BLOCK_N,
-        BLOCK_H,
-        block_size,
-        cache_seqlen,
-        CORE_NUM,
-        softmax_scale,
-    )
-
-    # Warm-up + correctness check.
-    kernel(Q, Q_pe, KV, K_pe, block_table)
-    torch.npu.synchronize()
-
-    # do_bench (5 warmup + 5 repeat, per CI_CHECKLIST §6.2). Returns milliseconds.
-    latency_ms = do_bench(
-        lambda: kernel(Q, Q_pe, KV, K_pe, block_table),
-        _n_warmup=5,
-        _n_repeat=5,
-        return_mode="mean",
-    )
-    latency_us = latency_ms * 1e3
-
-    print("\n  Kernel: mla_decode_paged (Developer no-scope + U-2 grid, batch GEMM1+GEMM3, num_stages=4)")
-    print(f"  Shape:  batch={batch}, h_q={h_q}, h_kv={h_kv}, cache_seqlen={cache_seqlen}")
-    print(f"  Config: block_N={BLOCK_N}, block_H={BLOCK_H}, core_num={CORE_NUM}")
-    print(f"  Latency: {latency_us:.2f} us (avg, do_bench 5+5)")
-    print(f"  GPU target: 3036 us (gap {latency_us / 3036:.2f}x)")
-    print("\nTest Passed!")
-    return {"latency_us": latency_us, "shape": params}
-
-
-# ============================================================================
-# Hardware profiling (msprof) — per CI_CHECKLIST §10.4
-# ============================================================================
-
-
-def run_msprof():
-    """Hardware-level profiling via msprof op (Cube/MTE2/L2 hit/Scalar stall).
-
-    Reference: CI_CHECKLIST §10.4 — test file should support --level msprof.
-    Generates a temporary script file to avoid shell quoting issues with msprof op.
-    """
-    print("\n" + "=" * 60)
-    print("Hardware Profiling (msprof op, golden config B=128 S=8192)")
-    print("=" * 60)
-
-    # Generate a temporary script file for msprof op to execute.
-    # msprof op's --application mode doesn't handle python -c quoting well,
-    # so we write the kernel launch code to a temp file and pass that instead.
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    output_dir = os.path.join(script_dir, "msprof_out")
-    script_content = f'''import sys
-sys.path.insert(0, "{script_dir}")
-from example_mla_decode_paged import mla_decode_tilelang
-import torch
-Q = torch.randn(128, 128, 512, dtype=torch.float16).npu()
-Q_pe = torch.randn(128, 128, 64, dtype=torch.float16).npu()
-KV = torch.randn(128 * 8192, 1, 512, dtype=torch.float16).npu()
-K_pe = torch.randn(128 * 8192, 1, 64, dtype=torch.float16).npu()
-bt = torch.arange(128 * 32, dtype=torch.int32).reshape(128, 32).npu()
-k = mla_decode_tilelang(128, 128, 1, 8192, 512, 64, 256, 32, 256, 8192, 20, (576) ** -0.5)
-k(Q, Q_pe, KV, K_pe, bt)
-torch.npu.synchronize()
-'''
-    script_path = os.path.join(script_dir, "_msprof_app.py")
-    with open(script_path, "w") as f:
-        f.write(script_content)
-
-    cmd = (
-        "msprof op --kernel-name=main "
-        "--aic-metrics=ArithmeticUtilization,MemoryUB,Memory,MemoryL0,"
-        "L2Cache,PipeUtilization,ResourceConflictRatio,BasicInfo,Default "
-        "--launch-count=10 --warm-up=3 "
-        f"--output={output_dir} "
-        f"python {script_path}"
-    )
-
-    print(f"\n  Command: {cmd}")
-    print(f"  Script: {script_path}")
-    print("  Output will be saved to msprof_out/ directory.")
-    print("  Run the command manually for full profiling data.")
-    print("\n  (msprof requires manual execution — this is a CI entry point)")
-    print("\nTest Passed!")
-
-
-# ============================================================================
 # Main entry (argparse --level)
 # ============================================================================
 
@@ -823,7 +723,7 @@ def main():
     parser = argparse.ArgumentParser(description="MLA Decode Paged Attention Test")
     parser.add_argument(
         "--level",
-        choices=["l0", "l1", "l2", "boundary", "all", "bench", "msprof"],
+        choices=["l0", "l1", "l2", "boundary", "all"],
         default="l0",
         help="Test level to run",
     )
@@ -831,14 +731,6 @@ def main():
     print(f"Running test level: {args.level}")
 
     exit_code = 0
-
-    if args.level == "bench":
-        run_bench()
-        return 0
-
-    if args.level == "msprof":
-        run_msprof()
-        return 0
 
     l0_results = l1_results = l2_results = b_results = None
     l0_all_pass = l1_all_pass = True

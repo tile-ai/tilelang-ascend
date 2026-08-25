@@ -18,7 +18,7 @@ Key optimizations (cumulative -68.3% from 16528us baseline):
 Performance: ~5240 us (gap 1.73x vs GPU target 3036 us).
 Precision: fp16 mixed tolerance (atol=2^-14, rtol=2^-9, max_abs=0.1, ratio>=0.99).
 
-For the layered test suite (L0/L1/L2/Boundary + bench + msprof), see
+For the layered test suite (L0/L1/L2/Boundary), see
 ``test_mla_decode_paged.py`` in the same directory.
 """
 
@@ -373,65 +373,6 @@ def mla_decode_tilelang(
 
 
 # ---------------------------------------------------------------------------
-# Golden reference (CPU, fp32 computation)
-# ---------------------------------------------------------------------------
-
-
-def golden_mla_decode_paged(
-    Q,
-    Q_pe,
-    KV,
-    K_pe,
-    block_table,
-    cache_seqlens,
-    batch,
-    h_q,
-    h_kv,
-    dv,
-    dpe,
-    block_size,
-    max_seqlen_pad,
-    softmax_scale=None,
-):
-    """PyTorch reference implementation (CPU, fp32).
-
-    Gathers paged KV per batch, computes scaled dot-product attention with
-    Q_nope @ KV^T + Q_pe @ K_pe^T, softmax, then P @ KV.
-    """
-    if softmax_scale is None:
-        scale = (dv + dpe) ** -0.5
-    else:
-        scale = float(softmax_scale)
-    output = torch.zeros(batch, h_q, dv, dtype=torch.float32)
-
-    for b in range(batch):
-        seq_len = int(cache_seqlens[b])
-        num_blocks = (seq_len + block_size - 1) // block_size
-
-        # Gather KV blocks for this batch's sequence.
-        kv_seq = torch.zeros(seq_len, dv, dtype=torch.float32)
-        kpe_seq = torch.zeros(seq_len, dpe, dtype=torch.float32)
-        for blk in range(num_blocks):
-            phys_block = int(block_table[b, blk])
-            kv_start = phys_block * block_size
-            valid_n = min(block_size, seq_len - blk * block_size)
-            kv_seq[blk * block_size : blk * block_size + valid_n] = KV[kv_start : kv_start + valid_n, 0, :].float()
-            kpe_seq[blk * block_size : blk * block_size + valid_n] = K_pe[kv_start : kv_start + valid_n, 0, :].float()
-
-        for h in range(h_q):
-            q_nope = Q[b, h, :].float()
-            q_pe = Q_pe[b, h, :].float()
-
-            # Attention scores: Q @ KV^T + Q_pe @ K_pe^T.
-            s = q_nope @ kv_seq.T + q_pe @ kpe_seq.T
-            s = s * scale
-            p = torch.softmax(s, dim=-1)
-            output[b, h, :] = p @ kv_seq
-
-    return output.to(torch.float16)
-
-
-# ---------------------------------------------------------------------------
 # Smoke test (CI entry — prints "Test Passed!")
 # ---------------------------------------------------------------------------
 
@@ -440,7 +381,11 @@ def _smoke_test():
     """Minimal L0 smoke test for CI bench_test.sh entry.
 
     Runs the kernel on a small aligned configuration and checks precision
-    against the PyTorch golden. Prints "Test Passed!" on success.
+    against an inline PyTorch golden. Prints "Test Passed!" on success.
+
+    The golden is computed inline (no paged gather) because the smoke test
+    uses ``block_table = arange(...)`` (identity paged mapping), so KV/K_pe
+    are already contiguous in sequence order.
     """
     BLOCK_N = 256
     BLOCK_H = 32
@@ -473,24 +418,20 @@ def _smoke_test():
         f"block_table max {int(block_table.max())} exceeds KV pool size {batch * num_blocks_per_batch} blocks"
     )
 
-    # Golden (CPU, fp32) — Q is pre-scaled, so golden must NOT apply scale again.
-    cache_seqlens = torch.tensor([cache_seqlen] * batch, dtype=torch.int32)
-    golden_out = golden_mla_decode_paged(
-        Q,
-        Q_pe,
-        KV,
-        K_pe,
-        block_table,
-        cache_seqlens,
-        batch,
-        h_q,
-        h_kv,
-        dv,
-        dpe,
-        block_size,
-        max_seqlen_pad,
-        softmax_scale=1.0,
-    )
+    # Inline golden (CPU, fp32) — block_table is arange (identity paged mapping),
+    # so KV/K_pe are already contiguous in sequence order.
+    # Q is pre-scaled, so scale=1.0 (no additional scale applied here).
+    kv_seq = KV[:cache_seqlen, 0, :].float()  # (cache_seqlen, dv)
+    kpe_seq = K_pe[:cache_seqlen, 0, :].float()  # (cache_seqlen, dpe)
+    golden_out = torch.zeros(batch, h_q, dv, dtype=torch.float32)
+    for h in range(h_q):
+        q_nope = Q[0, h, :].float()
+        q_pe = Q_pe[0, h, :].float()
+        # Attention scores: Q @ KV^T + Q_pe @ K_pe^T (scale=1.0, Q pre-scaled).
+        s = q_nope @ kv_seq.T + q_pe @ kpe_seq.T
+        p = torch.softmax(s, dim=-1)
+        golden_out[0, h, :] = p @ kv_seq
+    golden_out = golden_out.to(torch.float16)
 
     # Move to NPU and run kernel.
     Q_npu = Q.npu()
