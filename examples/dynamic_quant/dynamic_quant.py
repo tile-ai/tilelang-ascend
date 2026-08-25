@@ -62,9 +62,13 @@ def _dynamic_quant_tiny(M, N, block_M, block_N, core_num, dtype="float16"):
                     T.tile.fill(row_max, 0.0)
                     for n_chunk in T.serial(n_num):
                         T.copy(
-                            x[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M,
-                              n_chunk * block_N : (n_chunk + 1) * block_N],
-                            a_ub, pad_value=0.0)
+                            x[
+                                bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M,
+                                n_chunk * block_N : (n_chunk + 1) * block_N,
+                            ],
+                            a_ub,
+                            pad_value=0.0,
+                        )
                         T.tile.cast(a_cal, a_ub, CAST_MODE_LOW2HIGH, sub_block_M * block_N)
                         T.tile.abs(a_cal, a_cal)
                         T.reduce_max(a_cal, chunk_max, dim=-1)
@@ -74,9 +78,13 @@ def _dynamic_quant_tiny(M, N, block_M, block_N, core_num, dtype="float16"):
                     # === Pass 2: Quantize Pass ===
                     for n_chunk in T.serial(n_num):
                         T.copy(
-                            x[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M,
-                              n_chunk * block_N : (n_chunk + 1) * block_N],
-                            a_ub, pad_value=0.0)
+                            x[
+                                bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M,
+                                n_chunk * block_N : (n_chunk + 1) * block_N,
+                            ],
+                            a_ub,
+                            pad_value=0.0,
+                        )
                         T.tile.cast(a_cal, a_ub, CAST_MODE_LOW2HIGH, sub_block_M * block_N)
                         for i, j in T.Parallel(sub_block_M, block_N):
                             a_cal[i, j] = a_cal[i, j] / scale[i, 0]
@@ -84,11 +92,15 @@ def _dynamic_quant_tiny(M, N, block_M, block_N, core_num, dtype="float16"):
                         a_fp16 = T.alloc_ub([sub_block_M, block_N], "float16")
                         T.tile.cast(a_fp16, a_cal, CAST_MODE_HIGH2LOW, sub_block_M * block_N)
                         T.tile.cast(y_int8, a_fp16, CAST_MODE_LOW2HIGH, sub_block_M * block_N)
-                        T.copy(y_int8,
-                            y_out[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M,
-                                  n_chunk * block_N : (n_chunk + 1) * block_N])
-                    T.copy(scale,
-                        scale_out[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M])
+                        T.copy(
+                            y_int8,
+                            y_out[
+                                bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M,
+                                n_chunk * block_N : (n_chunk + 1) * block_N,
+                            ],
+                        )
+                    T.copy(scale, scale_out[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M])
+
     return main
 
 
@@ -126,9 +138,13 @@ def _dynamic_quant_small(M, N, block_M, block_N, core_num, dtype="float16"):
                     T.tile.fill(row_max, 0.0)
                     for n_chunk in T.serial(n_num):
                         T.copy(
-                            x[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M,
-                              n_chunk * block_N : (n_chunk + 1) * block_N],
-                            a_ub, pad_value=0.0)
+                            x[
+                                bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M,
+                                n_chunk * block_N : (n_chunk + 1) * block_N,
+                            ],
+                            a_ub,
+                            pad_value=0.0,
+                        )
                         T.tile.cast(a_cal, a_ub, CAST_MODE_LOW2HIGH, sub_block_M * block_N)
                         T.tile.abs(a_cal, a_cal)
                         T.reduce_max(a_cal, chunk_max, dim=-1)
@@ -138,9 +154,13 @@ def _dynamic_quant_small(M, N, block_M, block_N, core_num, dtype="float16"):
                     # === Pass 2: Quantize Pass ===
                     for n_chunk in T.serial(n_num):
                         T.copy(
-                            x[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M,
-                              n_chunk * block_N : (n_chunk + 1) * block_N],
-                            a_ub, pad_value=0.0)
+                            x[
+                                bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M,
+                                n_chunk * block_N : (n_chunk + 1) * block_N,
+                            ],
+                            a_ub,
+                            pad_value=0.0,
+                        )
                         T.tile.cast(a_cal, a_ub, CAST_MODE_LOW2HIGH, sub_block_M * block_N)
                         for i, j in T.Parallel(sub_block_M, block_N):
                             a_cal[i, j] = a_cal[i, j] / scale[i, 0]
@@ -148,11 +168,15 @@ def _dynamic_quant_small(M, N, block_M, block_N, core_num, dtype="float16"):
                         a_fp16 = T.alloc_ub([sub_block_M, block_N], "float16")
                         T.tile.cast(a_fp16, a_cal, CAST_MODE_HIGH2LOW, sub_block_M * block_N)
                         T.tile.cast(y_int8, a_fp16, CAST_MODE_LOW2HIGH, sub_block_M * block_N)
-                        T.copy(y_int8,
-                            y_out[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M,
-                                  n_chunk * block_N : (n_chunk + 1) * block_N])
-                    T.copy(scale,
-                        scale_out[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M])
+                        T.copy(
+                            y_int8,
+                            y_out[
+                                bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M,
+                                n_chunk * block_N : (n_chunk + 1) * block_N,
+                            ],
+                        )
+                    T.copy(scale, scale_out[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M])
+
     return main
 
 
@@ -191,9 +215,13 @@ def _dynamic_quant_large(M, N, block_M, block_N, core_num, dtype="float16"):
                     T.tile.fill(row_max, 0.0)
                     for n_chunk in T.serial(n_num):
                         T.copy(
-                            x[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M,
-                              n_chunk * block_N : (n_chunk + 1) * block_N],
-                            a_ub, pad_value=0.0)
+                            x[
+                                bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M,
+                                n_chunk * block_N : (n_chunk + 1) * block_N,
+                            ],
+                            a_ub,
+                            pad_value=0.0,
+                        )
                         T.tile.cast(a_cal, a_ub, CAST_MODE_LOW2HIGH, sub_block_M * block_N)
                         T.tile.abs(a_cal, a_cal)
                         T.reduce_max(a_cal, chunk_max, dim=-1)
@@ -203,9 +231,13 @@ def _dynamic_quant_large(M, N, block_M, block_N, core_num, dtype="float16"):
                     # === Pass 2: Quantize Pass ===
                     for n_chunk in T.serial(n_num):
                         T.copy(
-                            x[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M,
-                              n_chunk * block_N : (n_chunk + 1) * block_N],
-                            a_ub, pad_value=0.0)
+                            x[
+                                bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M,
+                                n_chunk * block_N : (n_chunk + 1) * block_N,
+                            ],
+                            a_ub,
+                            pad_value=0.0,
+                        )
                         T.tile.cast(a_cal, a_ub, CAST_MODE_LOW2HIGH, sub_block_M * block_N)
                         for i, j in T.Parallel(sub_block_M, block_N):
                             a_cal[i, j] = a_cal[i, j] / scale[i, 0]
@@ -213,11 +245,15 @@ def _dynamic_quant_large(M, N, block_M, block_N, core_num, dtype="float16"):
                         a_fp16 = T.alloc_ub([sub_block_M, block_N], "float16")
                         T.tile.cast(a_fp16, a_cal, CAST_MODE_HIGH2LOW, sub_block_M * block_N)
                         T.tile.cast(y_int8, a_fp16, CAST_MODE_LOW2HIGH, sub_block_M * block_N)
-                        T.copy(y_int8,
-                            y_out[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M,
-                                  n_chunk * block_N : (n_chunk + 1) * block_N])
-                    T.copy(scale,
-                        scale_out[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M])
+                        T.copy(
+                            y_int8,
+                            y_out[
+                                bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M,
+                                n_chunk * block_N : (n_chunk + 1) * block_N,
+                            ],
+                        )
+                    T.copy(scale, scale_out[bx * block_M + vid * sub_block_M : bx * block_M + (vid + 1) * sub_block_M])
+
     return main
 
 
@@ -232,13 +268,13 @@ BLOCK_M_SMALL = 64
 BLOCK_N_SMALL = 512
 N_THRESHOLD_SMALL = 512
 
-BLOCK_M_LARGE = 16   # Reduced from 32 to fit block_N=1024 in UB budget
-BLOCK_N_LARGE = 1024 # Increased from 768 to reduce N-chunks overhead
+BLOCK_M_LARGE = 16  # Reduced from 32 to fit block_N=1024 in UB budget
+BLOCK_N_LARGE = 1024  # Increased from 768 to reduce N-chunks overhead
 
 
 def dynamic_quant(M, N, block_M, block_N, core_num, dtype="float16", has_smooth_scales=False):
     """Dispatch to tiny/small/large-N kernel based on N.
-    
+
     Parallel strategy:
     - m_num ≤ 24: Fixed Core (core_num = m_num)
     - m_num > 24: Full parallel (core_num = m_num) to eliminate serial bottleneck
