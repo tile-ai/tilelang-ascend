@@ -1,10 +1,11 @@
-"""MLA Decode test suite: layered precision tests + do_bench + msprof.
+"""MLA Decode test suite: layered precision tests only.
 
 Usage:
   python test_mla_decode.py --level l0        # blocking precision (smoke)
-  python test_mla_decode.py --level all       # all precision tests
-  python test_mla_decode.py --level bench     # do_bench performance
-  python test_mla_decode.py --level msprof    # msprof capture target
+  python test_mla_decode.py --level all       # all precision tests (L0+L1+L2+Boundary)
+  python test_mla_decode.py --level l1        # functional (irregular shapes)
+  python test_mla_decode.py --level l2        # exception (invalid input rejection)
+  python test_mla_decode.py --level boundary  # special values (non-blocking)
 """
 
 import argparse
@@ -15,13 +16,15 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import torch
+import torch.nn.functional as F
 
 import tilelang
-from example_mla_decode import BLOCK_N, mla_decode, ref_mla_decode
+from example_mla_decode import BLOCK_N, mla_decode
 
 tilelang.disable_cache()
 
-# ========== Retry wrapper for intermittent compile failures (P2-3) ==========
+
+# ========== Retry wrapper for intermittent compile failures ==========
 
 
 def with_compile_retry(max_retries=3):
@@ -29,8 +32,7 @@ def with_compile_retry(max_retries=3):
 
     The bisheng compiler has an intermittent ~10% failure rate reading
     /tmp/tmp*.cpp temp files (race condition). Retrying the JIT compilation
-    succeeds on the 2nd attempt in 100% of observed cases. This is a test
-    framework workaround, not a kernel fix.
+    succeeds on the 2nd attempt in 100% of observed cases.
     """
 
     def decorator(func):
@@ -51,7 +53,36 @@ def with_compile_retry(max_retries=3):
     return decorator
 
 
-# ========== Precision standard (mixed tolerance, ref precision-standard.md) ==========
+# ========== Golden reference (PyTorch) ==========
+
+
+def ref_mla_decode(q, q_pe, kv, k_pe):
+    """PyTorch golden reference (kv_head_num=1).
+
+    Inputs: q [B,H,D], q_pe [B,H,pe], kv [B,N,1,D], k_pe [B,N,1,pe]
+    Output: [B, H, D]
+    """
+    assert kv.shape[2] == 1, f"golden expects kv_head_num=1, got kv.shape={kv.shape}"
+    # Detect dim/shape mismatch between tensors early.
+    assert q.shape[-1] == kv.shape[-1], f"dim mismatch: q.shape[-1]={q.shape[-1]} != kv.shape[-1]={kv.shape[-1]}"
+    assert q_pe.shape[-1] == k_pe.shape[-1], f"pe_dim mismatch: q_pe.shape[-1]={q_pe.shape[-1]} != k_pe.shape[-1]={k_pe.shape[-1]}"
+    assert q.shape[0] == kv.shape[0], f"batch mismatch: q.shape[0]={q.shape[0]} != kv.shape[0]={kv.shape[0]}"
+    assert q.shape[1] == q_pe.shape[1], f"heads mismatch: q.shape[1]={q.shape[1]} != q_pe.shape[1]={q_pe.shape[1]}"
+    dim = q.shape[-1]
+    pe_dim = q_pe.shape[-1]
+    scale = (dim + pe_dim) ** 0.5
+
+    kv_2d = kv.squeeze(2)
+    k_pe_2d = k_pe.squeeze(2)
+    scores = torch.matmul(q.float(), kv_2d.float().transpose(1, 2))
+    scores = scores + torch.matmul(q_pe.float(), k_pe_2d.float().transpose(1, 2))
+    scores = scores / scale
+    attention = F.softmax(scores, dim=-1)
+    out = torch.matmul(attention, kv_2d.float())
+    return out.to(q.dtype)
+
+
+# ========== Precision standard (mixed tolerance) ==========
 
 _FP_TABLE = {
     "float16": (2**-14, 2**-9, 1e-1, 0.99),  # atol 6.10e-5, rtol 1.95e-3
@@ -67,7 +98,7 @@ def get_precision(dtype):
 
 
 def check_precision(actual, golden, dtype):
-    """Dual-gate precision check (ref precision-standard.md §4.1).
+    """Dual-gate precision check.
 
     Returns (passed, matched_ratio, max_abs_error).
     Float: matched_ratio >= required AND max_abs_error <= max_abs_limit.
@@ -290,9 +321,8 @@ def test_boundary():
 
     _run("dbound", gen_dbound, ["D-SPECIAL-DBOUND"])
 
-    # P1-3: Mixed ±65504 (fp16 max) at stride=100 causes Q@KV^T intermediate to
-    # overflow fp16 range (65504^2 ≈ 4.3e9 >> 65504). This is an inherent fp16
-    # attention limitation documented in the kernel docstring, NOT a kernel bug.
+    # Mixed +-65504 (fp16 max) causes Q@KV^T intermediate overflow. This is an
+    # inherent fp16 attention limitation, NOT a kernel bug.
     # Marked KNOWN-LIMITATION; expected [BOUNDARY_WARN], non-blocking.
     def gen_extreme_mix(s):
         x = torch.randn(s, dtype=torch.float16, device="cpu")
@@ -304,114 +334,12 @@ def test_boundary():
     _run("extreme_mix_65504", gen_extreme_mix, ["D-SPECIAL-EXTREME-MIX", "KNOWN-LIMITATION"])
 
 
-# ========== Bench: do_bench performance ==========
-
-PERF_CONFIG = {
-    "batch": 132,
-    "heads": 128,
-    "kv_head_num": 1,
-    "seqlen_kv": 8192,
-    "dim": 512,
-    "pe_dim": 64,
-}
-TARGET_LATENCY_US = 3131.0
-# A2/A3 Cube theoretical peak (fp16)
-THEORETICAL_PEAK_TFLOPS = 364.0
-
-
-def _gen_bench_inputs(cfg):
-    """Generate bench inputs on CPU then H2D (avoids NPU Cast helper kernels)."""
-    q = torch.randn(cfg["batch"], cfg["heads"], cfg["dim"], dtype=torch.float16, device="cpu").npu()
-    q_pe = torch.randn(cfg["batch"], cfg["heads"], cfg["pe_dim"], dtype=torch.float16, device="cpu").npu()
-    kv = torch.randn(cfg["batch"], cfg["seqlen_kv"], cfg["kv_head_num"], cfg["dim"], dtype=torch.float16, device="cpu").npu()
-    k_pe = torch.randn(cfg["batch"], cfg["seqlen_kv"], cfg["kv_head_num"], cfg["pe_dim"], dtype=torch.float16, device="cpu").npu()
-    col_indices = torch.arange(BLOCK_N, dtype=torch.float32, device="cpu").npu()
-    return (q, q_pe, kv, k_pe, col_indices)
-
-
-@with_compile_retry()
-def run_bench():
-    from tilelang.profiler import do_bench
-
-    torch.manual_seed(0)
-    cfg = PERF_CONFIG
-    kernel = mla_decode(**cfg)
-    inputs = _gen_bench_inputs(cfg)
-
-    # Precision check (dual-gate, ref precision-standard.md)
-    torch.npu.synchronize()
-    out = kernel(*inputs)
-    torch.npu.synchronize()
-    ref = ref_mla_decode(*inputs[:4])
-    precision_pass, matched, max_diff = check_precision(out, ref, "float16")
-
-    # do_bench (CI stable, 5 warmup + 5 repeat)
-    latency_ms = do_bench(lambda: kernel(*inputs), _n_warmup=5, _n_repeat=5, return_mode="mean")
-    latency_us = latency_ms * 1000  # ms -> us
-
-    # TFLOPS = (QK + PV) FLOPS / latency
-    qk_flops = 2 * cfg["batch"] * cfg["heads"] * cfg["seqlen_kv"] * (cfg["dim"] + cfg["pe_dim"])
-    pv_flops = 2 * cfg["batch"] * cfg["heads"] * cfg["seqlen_kv"] * cfg["dim"]
-    tflops = (qk_flops + pv_flops) / (latency_us * 1e-6) / 1e12
-    utilization_pct = tflops / THEORETICAL_PEAK_TFLOPS * 100
-
-    # Bottleneck (from latest msprof analysis, block 0 representative):
-    # sync-bound (MTE1 stall 81.83% + Vector wait_id0 56.97% + wait_id2 39.32%)
-    # + memory-bound (L2 read_hit 49.49%, KV 1GB >> L2 192MB)
-    bottleneck = "sync-bound (MTE1 stall 81.83% + V wait 96.29%) + memory-bound (L2 read_hit 49.49%)"
-
-    print(f"\n{'=' * 70}")
-    print(f"Config: batch={cfg['batch']} heads={cfg['heads']} kv_ctx={cfg['seqlen_kv']} dim={cfg['dim']}")
-    print(f"  Precision: max_diff={max_diff:.3e} matched_ratio={matched:.4f} [{'PASS' if precision_pass else 'FAIL'}]")
-    print(f"  Latency: {latency_us:.2f} us ({latency_us / 1000:.3f} ms)")
-    print(f"  Target: {TARGET_LATENCY_US:.1f} us")
-    print(f"  Gap: {latency_us / TARGET_LATENCY_US:.2f}x")
-    print(f"  TFLOPS: {tflops:.3f} / {THEORETICAL_PEAK_TFLOPS:.0f} (utilization: {utilization_pct:.2f}%)")
-    print(f"  Bottleneck: {bottleneck}")
-    print(f"{'=' * 70}")
-    print("\nTest Passed!")
-    return precision_pass
-
-
-# ========== msprof: hardware-level profiling target ==========
-
-
-def run_msprof():
-    """Run kernel N_ITERS times for msprof capture.
-
-    Usage:
-      msprof op python test_mla_decode.py --level msprof \\
-        --output=<dir> \\
-        --aic-metrics=ArithmeticUtilization,Memory,MemoryL0,L2Cache,PipeUtilization,ResourceConflictRatio,BasicInfo \\
-        --launch-count=10 --warm-up=3 --kernel-name=main_kernel
-    """
-    cfg = PERF_CONFIG
-    kernel = mla_decode(**cfg)
-    inputs = _gen_bench_inputs(cfg)
-    torch.npu.synchronize()
-
-    print("[msprof] warmup...", flush=True)
-    for _ in range(5):
-        kernel(*inputs)
-    torch.npu.synchronize()
-
-    n_iters = 20
-    print(f"[msprof] running {n_iters} iterations...", flush=True)
-    for i in range(n_iters):
-        kernel(*inputs)
-        if (i + 1) % 5 == 0:
-            print(f"[msprof] iter {i + 1}/{n_iters}", flush=True)
-    torch.npu.synchronize()
-    print("[msprof] DONE")
-    print("\nTest Passed!")
-
-
 # ========== Main: --level dispatch ==========
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--level", default="l0", choices=["l0", "l1", "l2", "boundary", "all", "bench", "msprof"])
+    parser.add_argument("--level", default="l0", choices=["l0", "l1", "l2", "boundary", "all"])
     args = parser.parse_args()
 
     torch.manual_seed(0)
@@ -425,12 +353,6 @@ def main():
         test_l2()
     if args.level in ("boundary", "all"):
         test_boundary()
-    if args.level == "bench":
-        run_bench()
-        return
-    if args.level == "msprof":
-        run_msprof()
-        return
 
     if blocking_ok:
         print("\nTest Passed!")
