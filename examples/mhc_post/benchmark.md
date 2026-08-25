@@ -122,6 +122,25 @@ output = x * post_layer_mix + comb_res_mix^T @ residual
   runs show +4%~17%, but full-shape testing triggers vector-core exceptions
   (unaligned UUB addresses, err 0x10) on small-n / padded / single-tile shapes
   and multi-shape runs. Left as a known future direction pending backend fix.
+- AUTO_SYNC=False manual pipeline was also evaluated but NOT adopted. As a pure
+  AIV kernel, setting `AUTO_SYNC=False` alone gives +13%~21% (7168: 7.44x→8.98x)
+  because `AUTO_SYNC=True` inserts redundant sync that suppresses MTE2/V/MTE3
+  overlap. Realizing that gain requires hand-written `set_flag`/`wait_flag`, which
+  hit three blockers:
+  1. `set_flag` event id must be a compile-time constant. Passing the `T.serial`
+     loop var `i % 2` makes codegen drop the `% 2`, producing a runtime event id
+     (`i` = 0,1,2,...) that never pairs up → deadlock. Fix: use a `stages` variable
+     + `T.serial(0, h_num - 1)` + an explicit epilogue so the loop unrolls to
+     constant 0/1.
+  2. `T.tile.mul`'s scalar read (`post_fp32[out_idx]`) emits `PipeBarrier<PIPE_ALL>`,
+     and the global barrier forms a deadlock cycle with the flag ring. Fix: replace
+     `mul` with `T.tile.fill(dst, 0.0)` + `T.tile.axpy(dst, src, scalar)`, whose
+     scalar read inlines without a barrier.
+  3. A full pipeline needs a double-buffered output (`out_bf16[2, 4, h_blk]`) to
+     avoid tile-to-tile races, but that overflows UB (~210KB > 192KB) at
+     h_blk=3584; a single buffer (`[4, h_blk]`) races between tile i's MTE3 write
+     and tile i+1's V cast. Blockers 1 and 2 are solvable; blocker 3 is a hard UB
+     constraint at h_blk=3584. Left as a known direction.
 
 ## 4. Final Performance (V9 Unified, do_bench, warmup=20, rep=100, 5-run average)
 
