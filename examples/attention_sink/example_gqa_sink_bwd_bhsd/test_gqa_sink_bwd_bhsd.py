@@ -1,13 +1,11 @@
 """Test suite for GQA Sink Attention Backward (BHSD).
 
-P2: 3-kernel pipeline (fwd + bwd[preprocess merged] + postprocess), 1 host sync.
+3-kernel pipeline (fwd + bwd[preprocess merged] + postprocess), 1 host sync.
 
 L0: 7 cases (rule shapes, block-aligned) — blocking
 L1: 8 cases (varying params + value ranges) — blocking
 L2: 5 cases (invalid inputs, should reject) — non-blocking
 Boundary: 4 cases (special values: inf/nan/zero) — non-blocking
-Bench: do_bench performance (bwd main + total pipeline)
-msprof: hardware-level kernel profiling (Cube/MTE2/MTE3/L2/Scalar)
 
 Precision standard: 169-line standard.
   float16: atol=6.10e-5, rtol=1.95e-3, max_abs_limit=0.1, required_ratio=0.99
@@ -19,24 +17,96 @@ NPU outputs .cpu() for comparison — avoids 4GB fp32 attention OOM on NPU.
 
 import argparse
 import ast
-import csv
 import glob
 import os
 import subprocess
 import sys
-import tempfile
 import time
 
 import tilelang
 import torch
-from tilelang.profiler import do_bench
 
 from example_gqa_sink_bwd_bhsd import (
     flashattn_bwd,
     flashattn_fwd,
-    ref_bwd,
-    ref_fwd,
 )
+
+# ============================================================================
+# Golden Reference (PyTorch CPU)
+# ============================================================================
+
+
+def ref_fwd(Q, K, V, Sinks, window_size=None, groups=1):
+    """Forward golden (CPU): GQA + Attention Sink + optional sliding window."""
+    B, H, N, D = Q.shape
+    sm_scale = 1.0 / D**0.5
+
+    K_rep = K.float().repeat_interleave(groups, dim=1)
+    V_rep = V.float().repeat_interleave(groups, dim=1)
+
+    S = torch.matmul(Q.float(), K_rep.transpose(-2, -1)) * sm_scale
+
+    pos_q = torch.arange(N, device=Q.device).float()
+    pos_k = torch.arange(N, device=Q.device).float()
+    causal_mask = pos_k[None, :] <= pos_q[:, None]
+    if window_size is not None:
+        window_mask = pos_k[None, :] > (pos_q[:, None] - window_size)
+        mask = causal_mask & window_mask
+    else:
+        mask = causal_mask
+    S = S.masked_fill(~mask.unsqueeze(0).unsqueeze(0), float("-inf"))
+
+    m = S.max(dim=-1, keepdim=True).values
+    sinks_b = Sinks.view(1, H, 1, 1).float()
+    m_with_sink = torch.maximum(sinks_b, m)
+
+    P = torch.exp(S - m_with_sink)
+    sinks_exp = torch.exp(sinks_b - m_with_sink)
+    normalizer = P.sum(dim=-1, keepdim=True) + sinks_exp
+    P = P / normalizer
+
+    O = torch.matmul(P, V_rep)
+    return O.half()
+
+
+def ref_bwd(Q, K, V, Sinks, dO, window_size=None, groups=1):
+    """Backward golden (CPU autograd). Returns dQ, dK, dV (fp16), dSinks (fp32)."""
+    Q_f = Q.float().requires_grad_(True)
+    K_f = K.float().requires_grad_(True)
+    V_f = V.float().requires_grad_(True)
+    Sinks_f = Sinks.float().requires_grad_(True)
+
+    B, H, N, D = Q_f.shape
+    sm_scale = 1.0 / D**0.5
+
+    K_rep = K_f.repeat_interleave(groups, dim=1)
+    V_rep = V_f.repeat_interleave(groups, dim=1)
+
+    S = torch.matmul(Q_f, K_rep.transpose(-2, -1)) * sm_scale
+
+    pos_q = torch.arange(N, device=Q_f.device).float()
+    pos_k = torch.arange(N, device=Q_f.device).float()
+    causal_mask = pos_k[None, :] <= pos_q[:, None]
+    if window_size is not None:
+        window_mask = pos_k[None, :] > (pos_q[:, None] - window_size)
+        mask = causal_mask & window_mask
+    else:
+        mask = causal_mask
+    S = S.masked_fill(~mask.unsqueeze(0).unsqueeze(0), float("-inf"))
+
+    m = S.max(dim=-1, keepdim=True).values
+    sinks_b = Sinks_f.view(1, H, 1, 1)
+    m_with_sink = torch.maximum(sinks_b, m)
+    P = torch.exp(S - m_with_sink)
+    sinks_exp = torch.exp(sinks_b - m_with_sink)
+    normalizer = P.sum(dim=-1, keepdim=True) + sinks_exp
+    P = P / normalizer
+
+    O = torch.matmul(P, V_rep)
+    O.backward(dO.float())
+
+    return Q_f.grad.half(), K_f.grad.half(), V_f.grad.half(), Sinks_f.grad
+
 
 # ============================================================================
 # Precision constants (169-line standard)
@@ -111,10 +181,10 @@ def _cleanup_tmp_compilation_files():
     still reading (especially in retry scenarios where the previous bisheng
     process may still be tearing down), bisheng fails with
     `error reading '/tmp/tmpXXX.cpp'` and the retry also fails — a race
-    condition observed in run 31. The .so is the final loaded artifact and
-    can be safely removed after dlopen. The .cpp files accumulate but
-    inode usage stays low (~540 files/run, 3% inode usage even over 100
-    runs), so leaving them is acceptable.
+    condition. The .so is the final loaded artifact and can be safely
+    removed after dlopen. The .cpp files accumulate but inode usage stays
+    low (~540 files/run, 3% inode usage even over 100 runs), so leaving
+    them is acceptable.
 
     Failures are silently ignored (best-effort cleanup).
     """
@@ -289,17 +359,17 @@ def run_l0_case(case_name, B, H, groups, N, D, window_size, scale=1.0, shift=0.0
         else:
             results["fwd_O"]["status"] = "[PRECISION_PASS]"
 
-        # --- BWD Main: single flashattn_bwd kernel (P2: preprocess merged, 0 GM workspaces) ---
-        # P2: bwd kernel Phase 0 computes Delta internally, Phase 6 computes dSinks.
-        # No separate preprocess kernel, no preprocess→bwd host sync.
+        # --- BWD Main: single flashattn_bwd kernel (preprocess merged, 0 GM workspaces) ---
+        # bwd kernel Phase 0 computes Delta internally, Phase 6 computes dSinks.
+        # No separate preprocess kernel, no preprocess->bwd host sync.
         delta_out = torch.zeros(B, H, N, dtype=torch.float32, device="npu")
         dSinks_npu = torch.zeros(B, H, N, dtype=torch.float32, device="npu")
         dQ = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float16, device="npu")
         dK = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float32, device="npu")
         dV = torch.zeros(B, H_kv, N, D, dtype=torch.float32, device="npu")
 
-        # rev3 + P1: all 6 GM workspace buffers eliminated (on-chip direct UB→L1)
-        # P2: O and Sinks passed as inputs, Delta_out/dSinks as outputs (preprocess merged).
+        # All 6 GM workspace buffers eliminated (on-chip direct UB->L1).
+        # O and Sinks passed as inputs, Delta_out/dSinks as outputs (preprocess merged).
         bwd_args = (B, H, N, D, D, window_size, block_M, block_N, groups)
         bwd_mod = _run_with_retry(
             lambda: flashattn_bwd(*bwd_args),
@@ -328,7 +398,7 @@ def run_l0_case(case_name, B, H, groups, N, D, window_size, scale=1.0, shift=0.0
         results["bwd_Delta"] = {"passed": passed, "ratio": ratio, "max_abs": max_abs}
         results["bwd_Delta"]["status"] = "[PRECISION_PASS]" if passed else "[PRECISION_FAIL]"
 
-        # P4: postprocess kernel removed — host .half() cast (dQ already fp16 from bwd)
+        # postprocess kernel removed — host .half() cast (dQ already fp16 from bwd)
         dQ_fp16 = dQ[..., :D]
         dK_fp16 = dK[..., :D].half()
         dV_fp16 = dV[..., :D].half()
@@ -350,10 +420,10 @@ def run_l0_case(case_name, B, H, groups, N, D, window_size, scale=1.0, shift=0.0
 
         # dSinks golden: recompute using NPU's actual lse/Delta (isolates dSinks kernel
         # from fwd precision — autograd's internal lse/Delta differ from NPU's).
-        # P2: Delta now comes from bwd kernel's Delta_out (Phase 0 output).
+        # Delta now comes from bwd kernel's Delta_out (Phase 0 output).
         sinks_exp = sinks_cpu.float().view(1, H, 1)  # [1, H, 1]
         lse_cpu = lse_npu.cpu().float()  # [B, H, N]
-        delta_cpu = delta_out.cpu().float()  # [B, H, N] — P2: from bwd kernel Delta_out
+        delta_cpu = delta_out.cpu().float()  # [B, H, N] — from bwd kernel Delta_out
         dSinks_ref = -(torch.exp(sinks_exp - lse_cpu) * delta_cpu).sum(dim=0).sum(dim=1)  # [H]
 
         # Compare dQ (fp16)
@@ -464,7 +534,7 @@ COVERAGE_CATEGORY = "Fusion"
 # L1 cases: (name, B, H, groups, N, D, window, tags, scale, shift)
 # Kernel constraints: N % 64 == 0 (fwd/bwd block_M/block_N),
 #   window % 64 == 0, H % groups == 0, D == 128 (bwd pads to 128).
-# P2: N%128 dsink constraint removed (preprocess merged into bwd).
+#   N%128 dsink constraint removed (preprocess merged into bwd).
 # Value ranges: fp16 attention has inherent precision limits — scales kept at
 #   1.0 max; VALRANGE variation via N (score range) and shift (distribution
 #   asymmetry).
@@ -576,7 +646,7 @@ L1_CASES = [
 
 # L2 cases: (name, tags) — invalid inputs that should be rejected by kernel.
 # Kernel rejects: N not multiple of 64 (fwd/bwd assert), D != 128 (bwd shape mismatch),
-#   float32 dtype. P2: N%128 dsink assert removed (preprocess merged into bwd).
+#   float32 dtype. N%128 dsink assert removed (preprocess merged into bwd).
 L2_CASES = [
     ("l2_dtype_f32", ["D-EXC-DTYPE"]),
     ("l2_shape_n129", ["D-EXC-SHAPE", "D-SHAPE-TAIL-1"]),
@@ -666,7 +736,7 @@ def test_gqa_sink_bwd_bhsd_l2():
     """L2: negative tests — invalid dtype/shape should be rejected by kernel.
 
     Kernel constraints: N%64==0 (fwd/bwd), D=128, dtype=float16.
-    P2: N%128 dsink constraint removed (preprocess merged into bwd).
+    N%128 dsink constraint removed (preprocess merged into bwd).
     Non-blocking — [BOUNDARY_WARN] only records, doesn't affect exit code.
     """
     print("\n" + "=" * 60)
@@ -696,7 +766,7 @@ def test_gqa_sink_bwd_bhsd_l2():
     _run_exception("l2_shape_n129", case_shape_n129)
 
     # L2-3: N=192 (multiple of 64 — valid for fwd/bwd block_M=64)
-    # P2: preprocess removed (merged into bwd), so N%32 blk constraint no longer applies.
+    # preprocess removed (merged into bwd), so N%32 blk constraint no longer applies.
     # bwd uses block_M=64 (192%64==0). This is a valid shape — confirm it works.
     def case_shape_n192():
         B, H, groups, N, D = 1, 4, 2, 192, 128
@@ -776,7 +846,7 @@ def _run_boundary_pipeline(B, H, groups, N, D, window_size, Q_cpu, K_cpu, V_cpu,
     O_npu, lse_npu = fwd_mod(Q, K, V, sinks)
     torch.npu.synchronize()
 
-    # BWD main (P2: preprocess merged into bwd kernel Phase 0 + Phase 6, 0 GM workspaces)
+    # BWD main (preprocess merged into bwd kernel Phase 0 + Phase 6, 0 GM workspaces)
     delta_out = torch.zeros(B, H, N, dtype=torch.float32, device="npu")
     dSinks_npu = torch.zeros(B, H, N, dtype=torch.float32, device="npu")
     dQ = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float16, device="npu")
@@ -800,7 +870,7 @@ def _run_boundary_pipeline(B, H, groups, N, D, window_size, Q_cpu, K_cpu, V_cpu,
     )
     torch.npu.synchronize()
 
-    # P4: postprocess kernel removed — dQ already fp16 from bwd
+    # postprocess kernel removed — dQ already fp16 from bwd
     dQ_fp16 = dQ[..., :D]
     torch.npu.synchronize()
 
@@ -875,687 +945,6 @@ def test_gqa_sink_bwd_bhsd_boundary():
 
 
 # ============================================================================
-# do_bench performance (CI §6, D17: def not lambda, D20: semantic naming)
-# ============================================================================
-
-
-def run_bench(B=1, H=64, N=4096, D=128, groups=8, window_size=128, warmup=50, rep=100, per_kernel=False):
-    """Benchmark bwd main pipeline + total pipeline via do_bench.
-
-    P2: 3-kernel pipeline (fwd + bwd[preprocess merged] + postprocess), 1 host sync.
-    Pre-allocates all tensors and pre-compiles all JIT modules to avoid
-    measuring allocation/compilation overhead. atomic_add outputs (dQ/dK/dV)
-    are zeroed in each bench iteration (CI §6.1).
-    """
-    torch.set_default_device("npu")
-    torch.manual_seed(42)
-
-    H_kv = H // groups
-    block_M, block_N = 64, 64
-    dim_qk_padded = ((D + 127) // 128) * 128
-
-    # Inputs
-    Q = torch.randn(B, H, N, D, dtype=torch.float16, device="npu")
-    K = torch.randn(B, H_kv, N, D, dtype=torch.float16, device="npu")
-    V = torch.randn_like(K)
-    sinks = torch.randn(H, dtype=torch.float16, device="npu")
-    dO = torch.randn_like(Q)
-
-    # Forward (precompute O, lse)
-    fwd_mod = flashattn_fwd(B, H, N, D, groups, window_size, 64, 64)
-    O, lse = fwd_mod(Q, K, V, sinks)
-    torch.npu.synchronize()
-
-    # Pre-compile all JIT modules (P4: 2-kernel chain — postprocess removed)
-    bwd_args = (B, H, N, D, D, window_size, block_M, block_N, groups)
-    bwd_mod = flashattn_bwd(*bwd_args)
-    torch.npu.synchronize()
-
-    # Pre-allocate all tensors (P2: Delta_out/dSinks now outputs of bwd kernel)
-    delta_out = torch.zeros(B, H, N, dtype=torch.float32, device="npu")
-    dSinks = torch.zeros(B, H, N, dtype=torch.float32, device="npu")
-    dQ = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float16, device="npu")
-    dK = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float32, device="npu")
-    dV = torch.zeros(B, H_kv, N, D, dtype=torch.float32, device="npu")
-
-    # rev3 + P1: all 6 GM workspace buffers eliminated (on-chip direct UB→L1)
-    bwd_block_num = H * (N // block_M) * B
-    torch.npu.synchronize()
-
-    # Bench 1: bwd main pipeline (single flashattn_bwd kernel, P2: includes Delta+dSink)
-    def bench_bwd_us():
-        dQ.zero_()
-        dK.zero_()
-        dV.zero_()
-        delta_out.zero_()
-        dSinks.zero_()
-        bwd_mod(
-            Q,
-            K,
-            V,
-            dO,
-            O,
-            lse,
-            sinks,
-            delta_out,
-            dSinks,
-            dQ,
-            dK,
-            dV,
-        )
-
-    bwd_us = do_bench(bench_bwd_us, warmup=warmup, rep=rep) * 1e3  # ms->us
-    torch.npu.synchronize()
-
-    # Bench 2: total pipeline (P4: bwd only — postprocess removed, host .half() cast)
-    def bench_total_us():
-        dQ.zero_()
-        dK.zero_()
-        dV.zero_()
-        delta_out.zero_()
-        dSinks.zero_()
-        bwd_mod(
-            Q,
-            K,
-            V,
-            dO,
-            O,
-            lse,
-            sinks,
-            delta_out,
-            dSinks,
-            dQ,
-            dK,
-            dV,
-        )
-
-    total_us = do_bench(bench_total_us, warmup=warmup, rep=rep) * 1e3
-    torch.npu.synchronize()
-
-    # Per-kernel breakdown (optional, with syncs)
-    per_kernel_us = {}
-    if per_kernel:
-
-        def _bench_one(fn):
-            def run():
-                fn()
-
-            return do_bench(run, warmup=warmup // 2 or 1, rep=rep // 2 or 10) * 1e3
-
-        def _bwd():
-            dQ.zero_()
-            dK.zero_()
-            dV.zero_()
-            delta_out.zero_()
-            dSinks.zero_()
-            bwd_mod(
-                Q,
-                K,
-                V,
-                dO,
-                O,
-                lse,
-                sinks,
-                delta_out,
-                dSinks,
-                dQ,
-                dK,
-                dV,
-            )
-
-        # P4: 1 kernel in per-kernel breakdown (postprocess removed)
-        for name, fn in [
-            ("bwd", _bwd),
-        ]:
-            per_kernel_us[name] = _bench_one(fn)
-            torch.npu.synchronize()
-
-    # Report
-    expert_baseline_us = 4699
-    gpu_baseline_us = 14287
-    print("=== BWD Kernel Benchmark (P2: 3-kernel, 1 host sync, rev3+P1 on-chip, 0 GM ws) ===")
-    print(f"Shape: B={B} H={H} N={N} D={D} g={groups} w={window_size}")
-    print(f"bwd_block_num={bwd_block_num}")
-    print()
-    print(f"bwd main pipeline (flashattn_bwd, P2: includes Delta+dSink): {bwd_us:.0f} us")
-    print(f"total pipeline:                                                 {total_us:.0f} us  (bwd only, P4)")
-    print()
-    print(f"--- vs Expert baseline ({expert_baseline_us} us) ---")
-    print(f"bwd vs Expert:   {(expert_baseline_us - bwd_us) / expert_baseline_us * 100:+.1f}%  ({bwd_us - expert_baseline_us:+.0f} us)")
-    print(f"--- vs GPU baseline ({gpu_baseline_us} us) ---")
-    print(f"bwd vs GPU:      {(gpu_baseline_us - bwd_us) / gpu_baseline_us * 100:+.1f}%")
-    print(f"total vs GPU:    {(gpu_baseline_us - total_us) / gpu_baseline_us * 100:+.1f}%")
-    print()
-    target_us = 4464
-    print(f"--- target: <= {target_us} us (Expert 95%) ---")
-    print(f"target reached: {'YES' if bwd_us <= target_us else 'NO'}  (gap: {bwd_us - target_us:+.0f} us)")
-
-    if per_kernel:
-        print()
-        print("--- per-kernel breakdown (with syncs) ---")
-        for name, us in per_kernel_us.items():
-            print(f"  {name:20s}: {us:.0f} us")
-
-    print("\nTest Passed!")
-    return True
-
-
-# ============================================================================
-# msprof op: hardware-level kernel profiling (Cube/MTE2/MTE3/L2/Scalar stall)
-# ============================================================================
-
-# Minimal runner script for msprof op — runs each kernel once, no do_bench loop.
-# P2: 3-kernel chain (forward + bwd[preprocess merged] + postprocess).
-# dQ fp16 direct output (L0C fp32 -> GM fp16 auto-cast), no postprocess for dQ.
-_MSPROF_RUNNER_TEMPLATE = '''\
-"""Auto-generated by test_gqa_sink_bwd_bhsd.py --level msprof. Runs each kernel
-once so msprof op can capture kernel-level performance data."""
-import os, sys
-sys.path.insert(0, {script_dir!r})
-import tilelang, torch
-tilelang.disable_cache()
-torch.set_default_device("npu")
-torch.manual_seed(42)
-from example_gqa_sink_bwd_bhsd import (
-    flashattn_bwd, flashattn_fwd,
-)
-B, H, groups, N, D = {B}, {H}, {groups}, {N}, {D}
-H_kv = H // groups
-window_size = {window_size}
-block_M, block_N = 64, 64
-dim_qk_padded = ((D + 127) // 128) * 128
-Q = torch.randn(B, H, N, D, dtype=torch.float16, device="npu")
-K = torch.randn(B, H_kv, N, D, dtype=torch.float16, device="npu")
-V = torch.randn(B, H_kv, N, D, dtype=torch.float16, device="npu")
-sinks = torch.randn(H, dtype=torch.float16, device="npu")
-dO = torch.randn(B, H, N, D, dtype=torch.float16, device="npu")
-# Forward (produces O, lse for bwd)
-fwd_mod = flashattn_fwd(B, H, N, D, groups, window_size, block_M, block_N)
-O_npu, lse_npu = fwd_mod(Q, K, V, sinks)
-torch.npu.synchronize()
-print("===KERNEL_LABEL:forward===")
-# BWD main: single flashattn_bwd kernel (P2: preprocess merged Phase 0 + Phase 6)
-delta_out = torch.zeros(B, H, N, dtype=torch.float32, device="npu")
-dSinks_npu = torch.zeros(B, H, N, dtype=torch.float32, device="npu")
-dQ = torch.zeros(B, H, N, dim_qk_padded, dtype=torch.float16, device="npu")
-dK = torch.zeros(B, H_kv, N, dim_qk_padded, dtype=torch.float32, device="npu")
-dV = torch.zeros(B, H_kv, N, D, dtype=torch.float32, device="npu")
-bwd_args = (B, H, N, D, D, window_size, block_M, block_N, groups)
-bwd_mod = flashattn_bwd(*bwd_args)
-bwd_mod(
-    Q, K, V, dO, O_npu, lse_npu, sinks,
-    delta_out, dSinks_npu, dQ, dK, dV,
-)
-torch.npu.synchronize()
-print("===KERNEL_LABEL:bwd===")
-print("All 2 kernels executed.")
-'''
-
-
-# Kernel labels in execution order (matches runner script above).
-# P2: 3 kernel launches — forward, bwd (preprocess merged), postprocess (dual output dK+dV).
-_MSPROF_KERNEL_LABELS = [
-    "forward",
-    "bwd",
-]
-
-# Ascend 910B3: 20 cube cores + 20 vector cores
-_NUM_CORES = 20
-
-
-def _read_csv_rows(path):
-    with open(path, "r", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
-
-
-def _safe_float(val, default=0.0):
-    try:
-        if val is None or val == "" or val == "N/A":
-            return default
-        return float(val)
-    except (ValueError, TypeError):
-        return default
-
-
-def _col_floats(rows, col):
-    """Extract float values for a column from per-block rows, skipping NA/empty."""
-    out = []
-    for r in rows:
-        v = r.get(col, "NA")
-        if v in ("NA", "", None):
-            continue
-        try:
-            out.append(float(v))
-        except (ValueError, TypeError):
-            continue
-    return out
-
-
-def _median(vals):
-    s = sorted(v for v in vals if v is not None)
-    n = len(s)
-    return s[n // 2] if n else 0.0
-
-
-def _sum(vals):
-    return sum(v for v in vals if v is not None)
-
-
-def _parse_msprof_op_summary(prof_dir):
-    """Parse msprof op output to extract per-launch hardware metrics.
-
-    msprof op mode emits one CSV set per kernel launch under
-    ``main_kernel/{launch_idx}/``. Each launch directory contains:
-      - OpBasicInfo_*.csv  : one row per main_kernel launch (Task Duration, Block Dim)
-      - PipeUtilization_*.csv  : PER-BLOCK rows (aic_*/aiv_* pipeline times + ratios)
-      - L2Cache_*.csv          : PER-BLOCK rows (L2 hit rates)
-      - ResourceConflictRatio_*.csv : PER-BLOCK rows (wait ratios)
-      - Memory_*.csv           : PER-BLOCK rows (GM/L1/UB/L0C traffic in KB)
-
-    Per-block CSVs have NO "Op Name" column. This function groups by launch
-    directory and aggregates:
-      - ratios -> median across blocks (representative block)
-      - times   -> sum across blocks / num_cores (wall us)
-      - hit rates -> median across blocks
-      - traffic (KB) -> sum across blocks (total kernel traffic)
-
-    Returns list of dicts (one per launch) with metric keys.
-    """
-    launch_dirs = sorted(
-        glob.glob(os.path.join(prof_dir, "**", "main_kernel", "*"), recursive=True),
-        key=lambda p: int(os.path.basename(p)) if os.path.basename(p).isdigit() else 0,
-    )
-    launch_dirs = [d for d in launch_dirs if os.path.isdir(d)]
-
-    launches = []
-    for d in launch_dirs:
-        ob_files = glob.glob(os.path.join(d, "OpBasicInfo_*.csv"))
-        if not ob_files:
-            continue
-        ob_rows = _read_csv_rows(ob_files[0])
-        mk = [r for r in ob_rows if r.get("Op Name") == "main_kernel"]
-        if not mk:
-            continue
-        td = _safe_float(mk[0].get("Task Duration(us)", ""))
-        try:
-            bd = int(mk[0].get("Block Dim", "0")) if mk[0].get("Block Dim", "NA") != "NA" else 0
-        except (ValueError, TypeError):
-            bd = 0
-        op_type = mk[0].get("Op Type", "")
-        launch = {"task_duration_us": td, "block_dim": bd, "op_type": op_type}
-
-        pu_files = glob.glob(os.path.join(d, "PipeUtilization_*.csv"))
-        pu_rows = _read_csv_rows(pu_files[0]) if pu_files else []
-        # AIC times (sum / num_cores ~ wall us)
-        for col, key in [
-            ("aic_cube_time(us)", "aic_cube_us"),
-            ("aic_mte2_time(us)", "aic_mte2_us"),
-            ("aic_mte3_time(us)", "aic_mte3_us"),
-            ("aic_fixpipe_time(us)", "aic_fixpipe_us"),
-            ("aic_scalar_time(us)", "aic_scalar_us"),
-            ("aic_scalar_mte2_stall_time(us)", "aic_scalar_mte2_stall_us"),
-            ("aic_scalar_cube_stall_time(us)", "aic_scalar_cube_stall_us"),
-            ("aic_scalar_wait_time(us)", "aic_scalar_wait_us"),
-        ]:
-            launch[key] = _sum(_col_floats(pu_rows, col)) / _NUM_CORES
-        # AIC ratios (median across blocks)
-        for col, key in [
-            ("aic_cube_ratio", "aic_cube_ratio"),
-            ("aic_mte2_ratio", "aic_mte2_ratio"),
-            ("aic_mte3_ratio", "aic_mte3_ratio"),
-            ("aic_fixpipe_ratio", "aic_fixpipe_ratio"),
-            ("aic_scalar_ratio", "aic_scalar_ratio"),
-        ]:
-            launch[key] = _median(_col_floats(pu_rows, col))
-        # AIV times
-        for col, key in [
-            ("aiv_vec_time(us)", "aiv_vec_us"),
-            ("aiv_mte2_time(us)", "aiv_mte2_us"),
-            ("aiv_mte3_time(us)", "aiv_mte3_us"),
-            ("aiv_scalar_time(us)", "aiv_scalar_us"),
-            ("aiv_scalar_wait_time(us)", "aiv_scalar_wait_us"),
-            ("aiv_scalar_mte2_stall_time(us)", "aiv_scalar_mte2_stall_us"),
-        ]:
-            launch[key] = _sum(_col_floats(pu_rows, col)) / _NUM_CORES
-        # AIV ratios
-        for col, key in [
-            ("aiv_vec_ratio", "aiv_vec_ratio"),
-            ("aiv_mte2_ratio", "aiv_mte2_ratio"),
-            ("aiv_mte3_ratio", "aiv_mte3_ratio"),
-            ("aiv_scalar_ratio", "aiv_scalar_ratio"),
-        ]:
-            launch[key] = _median(_col_floats(pu_rows, col))
-
-        # L2Cache (per-block hit rates -> median)
-        l2_files = glob.glob(os.path.join(d, "L2Cache_*.csv"))
-        l2_rows = _read_csv_rows(l2_files[0]) if l2_files else []
-        launch["aic_read_hit_pct"] = _median(_col_floats(l2_rows, "aic_read_hit_rate(%)"))
-        launch["aiv_read_hit_pct"] = _median(_col_floats(l2_rows, "aiv_read_hit_rate(%)"))
-        launch["aic_total_hit_pct"] = _median(_col_floats(l2_rows, "aic_total_hit_rate(%)"))
-
-        # ResourceConflictRatio (per-block wait ratios -> median)
-        rc_files = glob.glob(os.path.join(d, "ResourceConflictRatio_*.csv"))
-        rc_rows = _read_csv_rows(rc_files[0]) if rc_files else []
-        for col, key in [
-            ("aic_cube_wait_ratio", "aic_cube_wait_ratio"),
-            ("aic_mte2_wait_ratio", "aic_mte2_wait_ratio"),
-            ("aiv_vec_wait_ratio", "aiv_vec_wait_ratio"),
-            ("aiv_mte2_wait_ratio", "aiv_mte2_wait_ratio"),
-            ("aiv_mte3_wait_ratio", "aiv_mte3_wait_ratio"),
-        ]:
-            launch[key] = _median(_col_floats(rc_rows, col))
-
-        # Memory (per-block traffic KB -> sum)
-        mem_files = glob.glob(os.path.join(d, "Memory_*.csv"))
-        mem_rows = _read_csv_rows(mem_files[0]) if mem_files else []
-        for col, key in [
-            ("GM_to_L1_datas(KB)", "gm_to_l1_KB"),
-            ("GM_to_UB_datas(KB)", "gm_to_ub_KB"),
-            ("UB_to_GM_datas(KB)", "ub_to_gm_KB"),
-            ("L0C_to_GM_datas(KB)", "l0c_to_gm_KB"),
-        ]:
-            launch[key] = _sum(_col_floats(mem_rows, col))
-
-        # Derived: cube_ratio_pct (Cube wall us / Task Duration us * 100)
-        launch["cube_ratio_pct"] = (launch["aic_cube_us"] / td * 100.0) if td > 0 else 0.0
-
-        launches.append(launch)
-
-    return launches
-
-
-def run_msprof(B=1, H=64, groups=8, N=4096, D=128, window_size=128, launch_count=10, warm_up=3):
-    """Run msprof op to collect hardware-level kernel performance data.
-
-    Generates a minimal runner script (each kernel runs once, no do_bench loop),
-    invokes ``msprof op`` with aic-metrics covering ArithmeticUtilization, Memory,
-    L2Cache, PipeUtilization, ResourceConflictRatio, BasicInfo, then parses the
-    output CSVs and prints a per-kernel summary table with bottleneck analysis.
-
-    Requires ``msprof`` in PATH (CANN toolkit).
-    """
-    msprof_cmd = os.environ.get("MSPROF_PATH", "msprof")
-    try:
-        subprocess.run([msprof_cmd, "--help"], capture_output=True, timeout=10)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        print("[ERROR] msprof not found in PATH. Please source CANN set_env.sh or set MSPROF_PATH.")
-        return False
-
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    window_repr = "None" if window_size is None else window_size
-    runner_code = _MSPROF_RUNNER_TEMPLATE.format(
-        script_dir=script_dir,
-        B=B,
-        H=H,
-        groups=groups,
-        N=N,
-        D=D,
-        window_size=window_repr,
-    )
-
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".py",
-        dir=script_dir,
-        delete=False,
-    ) as f:
-        f.write(runner_code)
-        runner_path = f.name
-
-    try:
-        output_dir = tempfile.mkdtemp(prefix="msprof_bwd_out_")
-        app_cmd = f"{sys.executable} {runner_path}"
-        aic_metrics = "ArithmeticUtilization,Memory,L2Cache,PipeUtilization,ResourceConflictRatio,BasicInfo"
-        cmd = (
-            f'{msprof_cmd} op --application="{app_cmd}" --output={output_dir} '
-            f"--aic-metrics={aic_metrics} "
-            f'--kernel-name="main_kernel" '
-            f"--launch-count={launch_count} --warm-up={warm_up} --kill=off"
-        )
-
-        print()
-        print("=" * 82)
-        print("  msprof op — hardware-level kernel performance (golden config)")
-        print(f"  Config: B={B} H={H} groups={groups} N={N} D={D} window={window_size}")
-        print(f"  launch-count={launch_count} warm-up={warm_up}")
-        print("=" * 82)
-        print(f"  Running: {cmd}")
-        print()
-
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=1800)
-        if result.returncode != 0:
-            print(f"[ERROR] msprof failed (exit code {result.returncode})")
-            print("--- stdout (last 1500 chars) ---")
-            print(result.stdout[-1500:] if result.stdout else "")
-            print("--- stderr (last 1500 chars) ---")
-            print(result.stderr[-1500:] if result.stderr else "")
-            return False
-
-        # List output directory structure (helps debug CSV layout)
-        print("  msprof output structure:")
-        for root, _dirs, files in os.walk(output_dir):
-            for fn in files:
-                if fn.endswith(".csv"):
-                    rel = os.path.relpath(os.path.join(root, fn), output_dir)
-                    print(f"    {rel}")
-        print()
-
-        launches = _parse_msprof_op_summary(output_dir)
-        if not launches:
-            print("[ERROR] No main_kernel data found in msprof output")
-            print(f"  Output dir: {output_dir}")
-            return False
-
-        # Map launches to kernel labels by index.
-        # The runner script prints ===KERNEL_LABEL:<name>=== markers after each
-        # kernel call; msprof launch directories are named 0,1,2,... in execution
-        # order, matching _MSPROF_KERNEL_LABELS.
-        for i, l in enumerate(launches):
-            l["label"] = _MSPROF_KERNEL_LABELS[i] if i < len(_MSPROF_KERNEL_LABELS) else f"launch_{i}"
-
-        # Per-launch summary table (AIC = Cube core, AIV = Vector core)
-        print(f"  Collected {len(launches)} main_kernel launches")
-        print()
-        print(
-            f"  {'#':<3} {'Label':<20} {'Type':<7} {'TaskDur':>9} {'Block':>7} | "
-            f"{'AIC Cube':>9} {'MTE2':>7} {'MTE3':>6} {'Scalar':>7} | "
-            f"{'AIV Vec':>8} {'MTE2':>7} {'MTE3':>7} {'S_wait':>7} | "
-            f"{'L2R%':>6} {'L2V%':>6}"
-        )
-        print(f"  {'-' * 133}")
-        for i, l in enumerate(launches):
-            print(
-                f"  {i:<3} {l.get('label', ''):<20} {l.get('op_type', ''):<7} "
-                f"{l['task_duration_us']:>7.0f}us {l['block_dim']:>7} | "
-                f"{l.get('aic_cube_us', 0.0):>7.0f}us {l.get('aic_mte2_us', 0.0):>5.0f}us "
-                f"{l.get('aic_mte3_us', 0.0):>4.0f}us {l.get('aic_scalar_us', 0.0):>5.0f}us | "
-                f"{l.get('aiv_vec_us', 0.0):>6.0f}us {l.get('aiv_mte2_us', 0.0):>5.0f}us "
-                f"{l.get('aiv_mte3_us', 0.0):>5.0f}us {l.get('aiv_scalar_wait_us', 0.0):>5.0f}us | "
-                f"{l.get('aic_read_hit_pct', 0.0):>5.1f} {l.get('aiv_read_hit_pct', 0.0):>5.1f}"
-            )
-        print()
-
-        # --- Per BWD Kernel Bottleneck Analysis ---
-        # rev2: single flashattn_bwd kernel (launch index 2).
-        # Compute Cube% / MTE2% / MTE3% / Scalar+wait% /
-        # L2 hit / bottleneck type.
-        bwd_label_set = {
-            "bwd",
-        }
-        bwd_launches = [l for l in launches if l.get("label") in bwd_label_set]
-
-        print("=" * 82)
-        print("  Per BWD Kernel Bottleneck Analysis (single flashattn_bwd)")
-        print("=" * 82)
-        print(
-            f"  {'Kernel':<20} {'TaskDur':>9} | "
-            f"{'Cube%':>6} {'MTE2%':>6} {'MTE3%':>6} {'S+W%':>6} | "
-            f"{'L2R%':>6} {'L2V%':>6} | {'Bottleneck':<12}"
-        )
-        print(f"  {'-' * 100}")
-
-        bwd_total_td = 0.0
-        for l in bwd_launches:
-            td = l["task_duration_us"]
-            bwd_total_td += td
-
-            def _kpct(v, _td=td):
-                return v / _td * 100.0 if _td > 0 else 0.0
-
-            cube_pct = _kpct(l.get("aic_cube_us", 0.0))
-            mte2_pct = _kpct(l.get("aic_mte2_us", 0.0)) + _kpct(l.get("aiv_mte2_us", 0.0))
-            mte3_pct = _kpct(l.get("aic_mte3_us", 0.0)) + _kpct(l.get("aiv_mte3_us", 0.0))
-            sync_pct = _kpct(l.get("aic_scalar_us", 0.0)) + _kpct(l.get("aiv_scalar_wait_us", 0.0))
-            l2r = l.get("aic_read_hit_pct", 0.0)
-            l2v = l.get("aiv_read_hit_pct", 0.0)
-
-            if cube_pct > 50.0:
-                btype = "compute"
-            elif mte2_pct + mte3_pct > 40.0 and 0.0 < l2r < 80.0:
-                btype = "memory"
-            elif sync_pct > 25.0 and cube_pct < 15.0:
-                btype = "sync"
-            elif mte2_pct + mte3_pct > 30.0:
-                btype = "memory"
-            else:
-                btype = "mixed"
-
-            print(
-                f"  {l.get('label', ''):<20} {td:>7.0f}us | "
-                f"{cube_pct:>5.1f}% {mte2_pct:>5.1f}% {mte3_pct:>5.1f}% {sync_pct:>5.1f}% | "
-                f"{l2r:>5.1f} {l2v:>5.1f} | {btype:<12}"
-            )
-
-        print(f"  {'-' * 100}")
-        print(f"  {'bwd_total':<20} {bwd_total_td:>7.0f}us")
-        print()
-
-        # --- Detailed breakdown for the slowest bwd kernel ---
-        # Keeps the original detailed AIC/AIV pipeline breakdown format, but
-        # applied to the slowest bwd kernel (by Task Duration) rather than a
-        # wrongly-selected single "main".
-        if bwd_launches:
-            slowest = max(bwd_launches, key=lambda l: l["task_duration_us"])
-            s_label = slowest.get("label", "?")
-            s_td = slowest["task_duration_us"]
-            s_bd = slowest["block_dim"]
-
-            def _pct(v):
-                return v / s_td * 100.0 if s_td > 0 else 0.0
-
-            s_cube = slowest.get("aic_cube_us", 0.0)
-            s_aic_mte2 = slowest.get("aic_mte2_us", 0.0)
-            s_aic_mte3 = slowest.get("aic_mte3_us", 0.0)
-            s_aic_fix = slowest.get("aic_fixpipe_us", 0.0)
-            s_aic_scalar = slowest.get("aic_scalar_us", 0.0)
-            s_aic_s_wait = slowest.get("aic_scalar_wait_us", 0.0)
-            s_aic_s_mte2_stall = slowest.get("aic_scalar_mte2_stall_us", 0.0)
-            s_aic_s_cube_stall = slowest.get("aic_scalar_cube_stall_us", 0.0)
-            s_aiv_vec = slowest.get("aiv_vec_us", 0.0)
-            s_aiv_mte2 = slowest.get("aiv_mte2_us", 0.0)
-            s_aiv_mte3 = slowest.get("aiv_mte3_us", 0.0)
-            s_aiv_scalar = slowest.get("aiv_scalar_us", 0.0)
-            s_aiv_s_wait = slowest.get("aiv_scalar_wait_us", 0.0)
-            s_l2r = slowest.get("aic_read_hit_pct", 0.0)
-            s_l2v = slowest.get("aiv_read_hit_pct", 0.0)
-            s_cube_ratio = slowest.get("cube_ratio_pct", 0.0)
-            s_gm_l1 = slowest.get("gm_to_l1_KB", 0.0) / 1024.0  # MB
-            s_gm_ub = slowest.get("gm_to_ub_KB", 0.0) / 1024.0
-            s_ub_gm = slowest.get("ub_to_gm_KB", 0.0) / 1024.0
-            s_l0c_gm = slowest.get("l0c_to_gm_KB", 0.0) / 1024.0
-
-            print(f"  --- Slowest BWD kernel: {s_label} (detailed) ---")
-            print(f"  Task Duration:    {s_td:.1f} us  (block_dim={s_bd})")
-            print()
-            print("  --- AIC (Cube core) pipeline breakdown ---")
-            print(f"  Cube compute:     {s_cube:>7.1f} us  ({_pct(s_cube):>5.1f}% of Task Dur)  <- GEMM actual")
-            print(f"  MTE2 (GM->L1):    {s_aic_mte2:>7.1f} us  ({_pct(s_aic_mte2):>5.1f}%)  <- K/V/Q/dO load")
-            print(f"  MTE3 (L1->GM):    {s_aic_mte3:>7.1f} us  ({_pct(s_aic_mte3):>5.1f}%)")
-            print(f"  FIX pipe:         {s_aic_fix:>7.1f} us  ({_pct(s_aic_fix):>5.1f}%)")
-            print(f"  Scalar:           {s_aic_scalar:>7.1f} us  ({_pct(s_aic_scalar):>5.1f}%)  <- flag sync + addr")
-            print(
-                f"  Scalar wait:      {s_aic_s_wait:>7.1f} us  ({_pct(s_aic_s_wait):>5.1f}%)  "
-                f"(mte2_stall={s_aic_s_mte2_stall:.1f}, cube_stall={s_aic_s_cube_stall:.1f})"
-            )
-            print()
-            print("  --- AIV (Vector core) pipeline breakdown ---")
-            print(f"  Vec compute:      {s_aiv_vec:>7.1f} us  ({_pct(s_aiv_vec):>5.1f}%)  <- softmax/mask/dS")
-            print(f"  MTE2 (GM->UB):    {s_aiv_mte2:>7.1f} us  ({_pct(s_aiv_mte2):>5.1f}%)  <- S/lse/Delta load")
-            print(f"  MTE3 (UB->GM):    {s_aiv_mte3:>7.1f} us  ({_pct(s_aiv_mte3):>5.1f}%)  <- P/dS/delta write")
-            print(f"  Scalar:           {s_aiv_scalar:>7.1f} us  ({_pct(s_aiv_scalar):>5.1f}%)")
-            print(f"  Scalar wait:      {s_aiv_s_wait:>7.1f} us  ({_pct(s_aiv_s_wait):>5.1f}%)  <- wait cross_flag")
-            print()
-            print("  --- L2 cache & memory traffic ---")
-            print(f"  L2 read hit:      AIC {s_l2r:.1f}%  AIV {s_l2v:.1f}%")
-            print(f"  Mem traffic(MB):  GM->L1={s_gm_l1:.1f}  GM->UB={s_gm_ub:.1f}  UB->GM={s_ub_gm:.1f}  L0C->GM={s_l0c_gm:.1f}")
-            print()
-
-            # Classification for slowest kernel
-            sync_ratio = _pct(s_aic_scalar) + _pct(s_aiv_s_wait)
-            mem_ratio = _pct(s_aic_mte2) + _pct(s_aiv_mte2) + _pct(s_aiv_mte3) + _pct(s_aic_mte3)
-            compute_ratio = s_cube_ratio
-
-            if compute_ratio > 50.0:
-                bottleneck = "compute"
-                opt_hint = "Cube > 50% -> compute-bound. Candidates: reduce GEMM count, enlarge block_M/N, T.mma intrinsic."
-            elif mem_ratio > 40.0 and 0.0 < s_l2r < 80.0:
-                bottleneck = "memory"
-                opt_hint = (
-                    "MTE2+MTE3 > 40% + L2 hit < 80% -> memory-bound. Candidates: Fixed "
-                    "Core + grid-stride (per-core workspace L2 reuse), T.mma + L0A DB."
-                )
-            elif sync_ratio > 25.0 and compute_ratio < 15.0:
-                bottleneck = "sync"
-                opt_hint = (
-                    f"Scalar+wait {sync_ratio:.1f}% > 25% + Cube {compute_ratio:.1f}% < 15% "
-                    f"-> sync-bound. Candidates: flag reduction, cross_flag reordering."
-                )
-            elif mem_ratio > 30.0:
-                bottleneck = "memory"
-                opt_hint = (
-                    f"MTE2+MTE3 {mem_ratio:.1f}% > 30% -> memory-bound (workspace "
-                    f"round-trip dominates). Candidates: reduce workspace writes, L2 reuse."
-                )
-            else:
-                bottleneck = "mixed"
-                opt_hint = (
-                    f"Compute {compute_ratio:.1f}% / Sync {sync_ratio:.1f}% / "
-                    f"Memory {mem_ratio:.1f}% — no single dominant bottleneck. "
-                    f"Likely CV-overlap-bound."
-                )
-
-            print(f"  Bottleneck type:  {bottleneck}")
-            print(f"    compute_ratio={compute_ratio:.1f}%  sync_ratio={sync_ratio:.1f}%  memory_ratio={mem_ratio:.1f}%")
-            print(f"  Optimization hint: {opt_hint}")
-            print()
-
-        # --- FLOPS analysis (based on bwd Task Duration) ---
-        if window_size is not None and window_size < N:
-            vr = window_size * 1.0 / N
-        else:
-            vr = 1.0
-        bwd_flops = 2.0 * B * H * N * N * (5 * D) * vr
-        if bwd_total_td > 0:
-            print(
-                f"  BWD FLOPS (approx, valid_ratio={vr:.4f}): "
-                f"{bwd_flops / 1e9:.1f} GFLOPS / {bwd_total_td:.1f} us = "
-                f"{bwd_flops / bwd_total_td * 1e-6:.2f} TFlops"
-            )
-            print(f"  A2/A3 theoretical: 364 TFlops (fp16) — utilization {bwd_flops / bwd_total_td * 1e-6 / 364 * 100:.1f}%")
-            print(f"  GPU baseline (14287us): NPU bwd {bwd_total_td:.1f}us = +{(14287 - bwd_total_td) / 14287 * 100:.1f}% vs GPU")
-        print("=" * 82)
-
-        # Cleanup
-        import shutil
-
-        shutil.rmtree(output_dir, ignore_errors=True)
-        print("\nTest Passed!")
-        return True
-    finally:
-        os.unlink(runner_path)
-
-
-# ============================================================================
 # Main entry point
 # ============================================================================
 
@@ -1570,53 +959,10 @@ def main():
         "--level",
         type=str,
         default="l0",
-        choices=["l0", "l1", "l2", "boundary", "all", "bench", "msprof"],
-        help="Test level to run (bench = do_bench perf, msprof = hardware-level profiling)",
+        choices=["l0", "l1", "l2", "boundary", "all"],
+        help="Test level to run",
     )
-    # Bench/msprof config override
-    parser.add_argument("--B", type=int, default=1, help="bench/msprof: batch size")
-    parser.add_argument("--H", type=int, default=64, help="bench/msprof: query heads")
-    parser.add_argument("--N", type=int, default=4096, help="bench/msprof: sequence length")
-    parser.add_argument("--D", type=int, default=128, help="bench/msprof: head dim")
-    parser.add_argument("--groups", type=int, default=8, help="bench/msprof: GQA groups")
-    parser.add_argument("--window", type=int, default=128, help="bench/msprof: window size (0=causal-only)")
-    parser.add_argument("--warmup", type=float, default=50, help="bench: warmup iterations")
-    parser.add_argument("--rep", type=float, default=100, help="bench: repeat iterations")
-    parser.add_argument("--per-kernel", action="store_true", help="bench: also print per-kernel breakdown")
-    parser.add_argument("--launch-count", type=int, default=4, help="msprof: number of kernel launches [1,5000]")
-    parser.add_argument("--warm-up", type=int, default=3, help="msprof: warm-up times [0,500]")
     args = parser.parse_args()
-
-    # --- bench mode (do_bench performance) ---
-    if args.level == "bench":
-        window = args.window if args.window > 0 else None
-        ok = run_bench(
-            args.B,
-            args.H,
-            args.N,
-            args.D,
-            args.groups,
-            window,
-            warmup=args.warmup,
-            rep=args.rep,
-            per_kernel=args.per_kernel,
-        )
-        sys.exit(0 if ok else 1)
-
-    # --- msprof mode (hardware-level kernel performance) ---
-    if args.level == "msprof":
-        window = args.window if args.window > 0 else None
-        ok = run_msprof(
-            args.B,
-            args.H,
-            args.groups,
-            args.N,
-            args.D,
-            window,
-            launch_count=args.launch_count,
-            warm_up=args.warm_up,
-        )
-        sys.exit(0 if ok else 1)
 
     torch.manual_seed(42)
 
