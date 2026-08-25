@@ -6,8 +6,6 @@ Levels:
   - l2:        negative tests (illegal inputs must be rejected)
   - boundary:  special values (INF/NAN/Zero/Denormalized)
   - all:       run l0 + l1 + l2 + boundary
-  - bench:     performance benchmark (tilelang.profiler.do_bench)
-  - msprof:    hardware-level profiling (msprof, inlined script)
 
 Precision standard (fp16): atol=2^-14, rtol=2^-9, max_abs_limit=1e-1, required_ratio=0.99.
 L0/L1 failures block (exit code 1). L2/Boundary failures are non-blocking (warnings only).
@@ -15,22 +13,20 @@ L0/L1 failures block (exit code 1). L2/Boundary failures are non-blocking (warni
 
 import argparse
 import os
-import subprocess
 import sys
 
 import tilelang
 import torch
+import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from example_mla_decode_persistent import (  # noqa: E402
-    ref_mla_decode,
-    run_mla_decode,
-)
+from example_mla_decode_persistent import run_mla_decode  # noqa: E402
 
 try:
-    from einops import rearrange
+    from einops import rearrange, einsum
 except ImportError:
     rearrange = None
+    einsum = None
 
 
 # ============================================================================
@@ -96,6 +92,66 @@ COVERAGE_CATEGORY = "Fusion"
 # D-PARAM-dim/pe_dim: dim=512 and pe_dim=64 are algorithmic constants for
 #   DeepSeek MLA. Testing different values would be a different algorithm.
 COVERAGE_NA = {}
+
+
+# ============================================================================
+# Golden Reference (PyTorch, CPU, standard F.softmax — natural exp/log)
+# ============================================================================
+
+
+def ref_mla_decode(q, q_pe, kv, k_pe):
+    """PyTorch reference implementation (CPU, standard softmax).
+
+    Uses einops if available; falls back to native torch.bmm otherwise.
+
+    Args:
+        q:    [batch, heads, dim]         fp16
+        q_pe: [batch, heads, pe_dim]      fp16
+        kv:   [batch, seqlen_kv, 1, dim]  fp16 (kv_head_num=1)
+        k_pe: [batch, seqlen_kv, 1, pe_dim] fp16
+    Returns:
+        out:  [batch, heads, dim]         fp16
+    """
+    dim = q.shape[-1]
+    pe_dim = q_pe.shape[-1]
+    # NOTE: kernel uses scale = 1/sqrt(dim+pe_dim) with T.tile.axpy (multiplication).
+    # Golden uses scale = sqrt(dim+pe_dim) with division. Mathematically equivalent:
+    # s * (1/sqrt(d)) == s / sqrt(d). Kept as division for readability (NEW-4).
+    scale = (dim + pe_dim) ** 0.5  # sqrt(dim+pe_dim), scores / scale
+
+    if rearrange is not None and einsum is not None:
+        kv_head_num = kv.shape[2] if kv.dim() == 4 else 1
+        assert kv_head_num == 1, "kv_head_num must be 1"
+        num_head_groups = q.shape[1] // kv_head_num
+
+        q_r = rearrange(q, "b (h g) d -> b g h d", g=num_head_groups)
+        q_pe_r = rearrange(q_pe, "b (h g) d -> b g h d", g=num_head_groups)
+        kv_r = rearrange(kv, "b n h d -> b h n d")
+        k_pe_r = rearrange(k_pe, "b n h d -> b h n d")
+
+        query = torch.concat([q_r, q_pe_r], dim=-1)  # [b, g, h, dim+pe_dim]
+        key = torch.concat([kv_r, k_pe_r], dim=-1)  # [b, h, s, dim+pe_dim]
+
+        # einops path: explicit fp32 cast to match native path precision (NEW-1 fix)
+        scores = einsum(query.float(), key.float(), "b g h d, b h s d -> b g h s")
+        attention = F.softmax(scores / scale, dim=-1)
+        out = einsum(attention.float(), kv_r.float(), "b g h s, b h s d -> b g h d")
+        out = rearrange(out, "b g h d -> b (h g) d")
+        return out.half()
+
+    # Native fallback (no einops dependency)
+    B = q.shape[0]
+    S = kv.shape[1]
+    kv_3d = kv.reshape(B, S, dim)
+    k_pe_3d = k_pe.reshape(B, S, pe_dim)
+
+    query = torch.cat([q, q_pe], dim=-1)  # [B, H, dim+pe_dim]
+    key = torch.cat([kv_3d, k_pe_3d], dim=-1)  # [B, S, dim+pe_dim]
+
+    scores = torch.bmm(query.float(), key.float().transpose(1, 2))
+    attention = F.softmax(scores / scale, dim=-1)
+    out = torch.bmm(attention, kv_3d.float())  # [B, H, dim]
+    return out.half()
 
 
 # ============================================================================
@@ -436,124 +492,6 @@ def test_mla_decode_persistent_boundary():
 
 
 # ============================================================================
-# Performance benchmark
-# ============================================================================
-
-
-def run_bench():
-    """Performance benchmark using tilelang.profiler.do_bench on golden config."""
-    from tilelang.profiler import do_bench
-
-    torch.manual_seed(42)
-    B, H, S, D, PE = 128, 128, 8192, 512, 64
-    q = torch.randn(B, H, D, dtype=torch.float16, device="npu")
-    q_pe = torch.randn(B, H, PE, dtype=torch.float16, device="npu")
-    kv = torch.randn(B, S, 1, D, dtype=torch.float16, device="npu")
-    k_pe = torch.randn(B, S, 1, PE, dtype=torch.float16, device="npu")
-
-    # BUG-1 fix: dynamic core_num detection (was hardcoded 20, breaks on A5/other NPUs).
-    # Consistent with main block and msprof script (NEW-3 fix); reuse _get_core_num()
-    # for fallback robustness and style parity with _run_precision_case / test_*.
-    core_num = _get_core_num()
-    lat_ms = do_bench(
-        lambda: run_mla_decode(q, q_pe, kv, k_pe, 128, 64, core_num),
-        _n_warmup=5,
-        _n_repeat=5,
-        return_mode="mean",
-    )
-    lat_us = lat_ms * 1000
-    target_us = 3036
-    gap = lat_us / target_us
-    print(f"[BENCH] latency={lat_us:.0f}us ({lat_ms:.2f}ms) | target={target_us}us | gap={gap:.2f}x")
-    print("\nTest Passed!")
-
-
-# ============================================================================
-# msprof hardware-level profiling (inlined, no external perf_tuning/ dependency)
-# ============================================================================
-
-_MSPROF_SCRIPT_TEMPLATE = '''"""Auto-generated msprof profiling script (inlined by test_mla_decode_persistent.py)."""
-import os
-import sys
-
-import torch
-import tilelang
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from example_mla_decode_persistent import flashattn_mla_decode
-
-torch.set_default_device("npu")
-
-# Golden config — matches run_bench() and host dispatch
-batch, heads, kv_ctx, dim, pe_dim = 128, 128, 8192, 512, 64
-block_N, block_H = 128, 64
-core_num = int(torch.npu.get_device_properties("npu").cube_core_num)
-
-torch.manual_seed(42)
-q = torch.randn(batch, heads, dim, dtype=torch.float16, device="cpu").npu()
-q_pe = torch.randn(batch, heads, pe_dim, dtype=torch.float16, device="cpu").npu()
-kv = torch.randn(batch, kv_ctx, 1, dim, dtype=torch.float16, device="cpu").npu()
-k_pe = torch.randn(batch, kv_ctx, 1, pe_dim, dtype=torch.float16, device="cpu").npu()
-KV_3d = kv.view(batch, kv_ctx, dim)
-K_pe_3d = k_pe.view(batch, kv_ctx, pe_dim)
-
-# unified kernel (num_split=1, fp32 workspace_3, num_stages=1, KV reuse)
-p1 = flashattn_mla_decode(
-    batch, heads, kv_ctx, dim, pe_dim, block_N, block_H, core_num
-)
-
-# warmup
-for _ in range(3):
-    p1(q, q_pe, KV_3d, K_pe_3d)
-torch.npu.synchronize()
-
-# profiled runs (msprof will capture these)
-for _ in range(10):
-    p1(q, q_pe, KV_3d, K_pe_3d)
-torch.npu.synchronize()
-print("flashattn_mla_decode runs done")
-'''
-
-
-def run_msprof():
-    """Run msprof hardware-level profiling on the unified MLA decode kernel.
-
-    Captures 8 metric categories: ArithmeticUtilization, MemoryUB, Memory,
-    MemoryL0, L2Cache, PipeUtilization, ResourceConflictRatio, BasicInfo.
-    Generates a temporary script inlined (no external perf_tuning/ dependency).
-    Output goes to msprof_output_latest/ next to the test file.
-    """
-    import tempfile
-
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    output_dir = os.path.join(base_dir, "msprof_output_latest")
-
-    # Generate temporary profiling script (inlined, no external dependency)
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", dir=base_dir, delete=False) as f:
-        f.write(_MSPROF_SCRIPT_TEMPLATE)
-        script_path = f.name
-
-    try:
-        cmd = [
-            "msprof",
-            "op",
-            "--application=python " + script_path,
-            "--output=" + output_dir,
-            "--aic-metrics=ArithmeticUtilization,PipeUtilization,Memory,MemoryL0,ResourceConflictRatio,MemoryUB,L2Cache",
-            "--launch-count=3",
-            "--warm-up=1",
-        ]
-        print("Running msprof op profiling...")
-        print("Command:", " ".join(cmd))
-        subprocess.run(cmd, check=True)
-        print(f"msprof data saved to {output_dir}")
-    finally:
-        os.unlink(script_path)
-
-    print("\nTest Passed!")
-
-
-# ============================================================================
 # Main entry: --level dispatcher
 # ============================================================================
 
@@ -563,7 +501,7 @@ def main():
     parser.add_argument(
         "--level",
         default="l0",
-        choices=["l0", "l1", "l2", "boundary", "all", "bench", "msprof"],
+        choices=["l0", "l1", "l2", "boundary", "all"],
     )
     args = parser.parse_args()
 
@@ -571,15 +509,7 @@ def main():
     torch.set_default_device("npu")
     torch.manual_seed(42)
 
-    if args.level == "bench":
-        run_bench()
-        return
-
-    if args.level == "msprof":
-        run_msprof()
-        return
-
-    blocking_ok = True  # only L0/L1 count toward exit code
+    blocking_ok = True
     if args.level in ("l0", "all"):
         blocking_ok &= test_mla_decode_persistent_l0()
     if args.level in ("l1", "all"):
