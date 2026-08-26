@@ -109,18 +109,18 @@ def mhc_pre_gemm(pad_hc_hidden, pad_hc_mult3, h_blk=H_BLK, token_block=TOKEN_BLO
 
 
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
-def mhc_pre_sqrsum(pad_hc_hidden, h_blk=SQRSUM_H_BLK, dtype="bfloat16", accum_dtype="float"):
+def mhc_pre_sqrsum(hc_hidden, h_blk=SQRSUM_H_BLK, dtype="bfloat16", accum_dtype="float"):
     """Kernel A2: sqrsum = sum(x^2) over hidden dim.
 
-    Dual-V-core, large h_blk, T.Pipelined.
+    Dual-V-core, large h_blk, T.Pipelined. In-kernel tail via pad_value + TAIL_MASK.
     """
     n = T.symbolic("n")
-    k_num = T.ceildiv(pad_hc_hidden, h_blk)
+    total_tiles = (hc_hidden + h_blk - 1) // h_blk
     VEC_NUM = 2
 
     @T.prim_func
     def main(
-        x: T.Tensor((n, pad_hc_hidden), dtype),
+        x: T.Tensor((n, hc_hidden), dtype),
         sqrsum: T.Tensor((n,), accum_dtype),
     ):
         with T.Kernel(T.ceildiv(n, VEC_NUM), is_npu=True) as (cid, vid):
@@ -134,8 +134,8 @@ def mhc_pre_sqrsum(pad_hc_hidden, h_blk=SQRSUM_H_BLK, dtype="bfloat16", accum_dt
                     x_sq = T.alloc_ub((h_blk,), accum_dtype)
                     T.tile.fill(acc_ub, 0.0)
 
-                    for i_k in T.Pipelined(k_num, num_stages=2):
-                        T.copy(x[bid, i_k * h_blk], x_ub)
+                    for i_k in T.Pipelined(total_tiles, num_stages=2):
+                        T.copy(x[bid, i_k * h_blk], x_ub, pad_value=0.0)
                         T.tile.cast(x_fp32, x_ub, "CAST_NONE", h_blk)
                         T.tile.mul(x_sq, x_fp32, x_fp32)
                         T.tile.add(acc_ub, acc_ub, x_sq)
@@ -384,14 +384,6 @@ def _pad_2d(t, target_rows, target_cols):
     return result
 
 
-def _pad_3d(t, target_dim1, target_dim2):
-    """[n, d1, d2] -> [n, target1, target2], padded with zeros."""
-    n = t.shape[0]
-    result = torch.zeros(n, target_dim1, target_dim2, dtype=t.dtype, device=t.device)
-    result[:, : t.shape[1], : t.shape[2]] = t
-    return result
-
-
 _kernel_cache = {}
 
 
@@ -446,7 +438,6 @@ def mhc_pre_gemm_sqrsum(x, fn, hc_mult, fn_packed=None):
 
     pad_hc_mult3 = calc_pad(hc_mult3, MIN_BLOCK)
     pad_hc_hidden = calc_pad(hc_hidden, H_BLK)
-    pad_hc_hidden_sqr = calc_pad(hc_hidden, SQRSUM_H_BLK)
     pad_n = calc_pad(n, TOKEN_BLOCK)
 
     if pad_n == n and pad_hc_hidden == hc_hidden:
@@ -466,13 +457,8 @@ def mhc_pre_gemm_sqrsum(x, fn, hc_mult, fn_packed=None):
     gemm_kernel = _get_kernel("gemm", pad_hc_hidden, pad_hc_mult3)
     out_padded = gemm_kernel(x_padded, fn_t_padded)
 
-    if pad_hc_hidden_sqr == hc_hidden:
-        sqrsum_kernel = _get_kernel("sqrsum", pad_hc_hidden_sqr)
-        sqrsum = sqrsum_kernel(x)
-    else:
-        x_padded_sqr = _pad_2d(x, n, pad_hc_hidden_sqr)
-        sqrsum_kernel = _get_kernel("sqrsum", pad_hc_hidden_sqr)
-        sqrsum = sqrsum_kernel(x_padded_sqr)
+    sqrsum_kernel = _get_kernel("sqrsum", hc_hidden)
+    sqrsum = sqrsum_kernel(x)
 
     return out_padded, sqrsum
 
