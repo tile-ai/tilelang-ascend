@@ -1623,7 +1623,9 @@ def createvecindex(dst: Buffer, firstValue: PrimExpr):
 
 
 # snake_case alias for createvecindex
-create_vec_index = createvecindex
+def create_vec_index(dst: Buffer, first_value: PrimExpr):
+    """snake_case alias for :func:`createvecindex`."""
+    return createvecindex(dst, first_value)
 
 
 def transpose(dst: Buffer, src: Buffer):

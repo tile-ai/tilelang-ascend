@@ -20,10 +20,10 @@ def createvecindex(
 | 参数名 | 输入/输出 | 描述 | 类型 | 必填/可选 |
 |--------|----------|------|------|----------|
 | dst | 输出 | 存放索引序列，count 由 `math.prod(dst.shape)` 自动计算 | 张量（tensor） | 必填 |
-| firstValue | 输入 | 索引序列的起始值，数据类型須与 dst 的元素类型一致 | 标量（scalar） | 必填 |
+| firstValue | 输入 | 索引序列的起始值，数据类型须与 dst 的元素类型一致 | 标量（scalar） | 必填 |
 
 > **类型说明**：
-> - **tensor**：通过 `T.alloc_ub`、`T.alloc_shared` 等分配的缓冲区（Buffer），或其切片（BufferRegion）
+> - **tensor**：通过 `T.alloc_ub`、`T.alloc_shared` 等分配的缓冲区（Buffer）
 > - **scalar**：单个元素值，可以是 buffer 元素访问（BufferLoad）或 Python 标量/表达式（PrimExpr）
 
 ### 2.3 参数规格
@@ -43,7 +43,7 @@ def createvecindex(
 
 ### 2.4 约束条件
 
-1. firstValue 的数据类型須与 dst 的元素类型保持一致（编译期不强制校验，C++ 层会做隐式类型转换）
+1. firstValue 的数据类型须与 dst 的元素类型保持一致（编译期不强制校验，C++ 层会做隐式类型转换）
 2. firstValue 不能超出 dst 元素数据类型的取值范围（硬件约束）
 3. dst 的起始地址必须 32 字节对齐（硬件约束）
 

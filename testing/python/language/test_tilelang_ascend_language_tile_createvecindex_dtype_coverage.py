@@ -33,7 +33,13 @@ import tilelang
 import tilelang.language as T
 import torch
 
-tilelang.disable_cache()
+
+@pytest.fixture(scope="module", autouse=True)
+def _disable_cache():
+    tilelang.disable_cache()
+    yield
+    tilelang.enable_cache()
+
 
 PASS_CONFIGS = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
@@ -127,6 +133,28 @@ def test_createvecindex_unsupported_dtype_raises(dtype, target):
 
     with pytest.raises(RuntimeError, match="Compilation Failed"):  # noqa: B017
         tilelang.compile(main, out_idx=[-1], pass_configs=PASS_CONFIGS, target=target)
+
+
+def test_create_vec_index_snake_case_alias():
+    """snake_case alias must accept first_value= keyword argument."""
+
+    @T.prim_func
+    def main(
+        C: T.Tensor((N,), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            c_ub = T.alloc_ub((N,), "float32")
+            T.tile.create_vec_index(c_ub, first_value=FIRST_VALUE)
+            T.copy(c_ub, C[0])
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=PASS_CONFIGS, target="ascendc")
+
+    torch.npu.synchronize()
+    c = func()
+    torch.npu.synchronize()
+
+    ref = make_ref("float32", FIRST_VALUE, N).npu()
+    torch.testing.assert_close(c, ref, rtol=1e-2, atol=1e-2)
 
 
 if __name__ == "__main__":
