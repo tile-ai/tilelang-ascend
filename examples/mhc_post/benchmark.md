@@ -203,25 +203,27 @@ stage=2 provides 4.1% speedup over serial. stage=3 not feasible (h_blk=3584 × 3
 
 ## 7. Performance Analysis (n=4096, h=7168, h_blk=3584)
 
-### V9 Unified Effective Bandwidth (do_bench)
+### V10 Generic Effective Bandwidth (do_bench)
 
 | shape | Data volume | Kernel latency | Effective BW | HBM peak ratio |
 |-------|-------------|---------------|--------------|----------------|
-| n=4096, h=2560 | 189 MB | 0.38 ms | 496 GB/s | 42% |
-| n=4096, h=7168 | 529 MB | 0.82 ms | 647 GB/s | 54% |
+| n=4096, h=2560 | 189 MB | 0.38 ms | 497 GB/s | 41% |
+| n=4096, h=7168 | 529 MB | 0.75 ms | 705 GB/s | 59% |
 
 > Unified 2D-res merged copy improves h=2560 bandwidth from 451 GB/s (V7) to
-> 496 GB/s (+10%) by reducing MTE2/MTE3 launch overhead.
+> 497 GB/s by reducing MTE2/MTE3 launch overhead. V10's unified pipeline
+> (merging tail into main loop) further improves h=7168 from 647 GB/s (V9)
+> to 705 GB/s.
 
 ### V6 msprof Reference (h_blk=2048, kernel 1.18 ms)
 
 > V6 hardware-level breakdown measured via msprof (h_blk=2048, kernel 1.18 ms).
-> V9 Unified uses h_blk=3584 (kernel 0.82 ms) with a different data-movement
-> layout (2D-res merged copy); a fresh V9 msprof profile has not been collected,
-> so the V6 result is retained as historical reference rather than a definitive
-> V9 bottleneck characterization. The h=7168 bandwidth (647 GB/s) comes from
-> eliminating padded data movement, same as V7; the merged 2D-res copy improves
-> h=2560 bandwidth to 496 GB/s.
+> V10 uses h_blk=3584 (kernel 0.75 ms) with a different data-movement layout
+> (2D-res merged copy + 2D bf16 merged store); a fresh V10 msprof profile has
+> not been collected, so the V6 result is retained as historical reference
+> rather than a definitive V10 bottleneck characterization. The h=7168
+> bandwidth (705 GB/s) comes from eliminating padded data movement, same as
+> V7; the merged 2D-res copy improves h=2560 bandwidth to 497 GB/s.
 
 | Metric | Value |
 |--------|-------|
@@ -241,11 +243,11 @@ stage=2 provides 4.1% speedup over serial. stage=3 not feasible (h_blk=3584 × 3
 
 V6 msprof (h_blk=2048) shows Vector compute (1818%) > MTE total (1535%), i.e.
 the earlier AXPY implementation was primarily Vector-compute constrained, with
-T.Pipelined overlapping compute and memory (37.6x parallelism). V9 retains the
+T.Pipelined overlapping compute and memory (37.6x parallelism). V10 retains the
 same arithmetic structure while improving the data-movement layout (2D-res
-merged copy: h=2560 bandwidth +10%, 451 → 496 GB/s). V9 itself has not been
-re-profiled, so the Vector-compute bottleneck is treated as historical
-evidence, not a definitive V9 characterization.
+merged copy + 2D bf16 merged store). V10 itself has not been re-profiled, so
+the Vector-compute bottleneck is treated as historical evidence, not a
+definitive V10 characterization.
 
 ## 8. Accuracy
 
