@@ -15,7 +15,7 @@ Architecture (5-kernel pipeline; A1 uses Cube, A2/B1/B2/B3 use dual-V-core):
   Kernel B2 (Vector): mixes -> pre/post/comb + Sinkhorn normalization
                       (adapted from examples/deepseek_v4/hc_split_sinkhorn.py)
   Kernel B3 (Vector): layer_input = sum over hc of (residual * pre_mix)
-                      (AXPY linear combination, hc=4 specialized, h_blk=2048)
+                      (AXPY linear combination, hc 1-8, h_blk=2048, in-kernel tail)
 
   Each kernel launched separately from host. Dual-V-core: bid = cid * 2 + vid.
   fn prepack/cache supported for inference (prepare_fn + fn_packed param).
@@ -48,6 +48,7 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+    tilelang.PassConfigKey.TL_ASCEND_TAIL_MASK: True,
 }
 
 MIN_BLOCK = 16
@@ -76,7 +77,6 @@ def mhc_pre_gemm(pad_hc_hidden, pad_hc_mult3, h_blk=H_BLK, token_block=TOKEN_BLO
     """
     n = T.symbolic("n")
     k_num = T.ceildiv(pad_hc_hidden, h_blk)
-    k_num_int = (pad_hc_hidden + h_blk - 1) // h_blk
 
     @T.prim_func
     def main(
@@ -90,22 +90,13 @@ def mhc_pre_gemm(pad_hc_hidden, pad_hc_mult3, h_blk=H_BLK, token_block=TOKEN_BLO
             c_l0 = T.alloc_L0C((token_block, pad_hc_mult3), accum_dtype)
 
             with T.Scope("C"):
-                if k_num_int > 1:
-                    for i_k in T.Pipelined(k_num, num_stages=2):
-                        T.copy(x[bid * token_block, i_k * h_blk], a_l1)
-                        T.copy(fn_t[i_k * h_blk, 0], b_l1)
-                        if i_k == 0:
-                            T.gemm_v0(a_l1, b_l1, c_l0, init=True)
-                        else:
-                            T.gemm_v0(a_l1, b_l1, c_l0)
-                else:
-                    for i_k in T.serial(k_num):
-                        T.copy(x[bid * token_block, i_k * h_blk], a_l1)
-                        T.copy(fn_t[i_k * h_blk, 0], b_l1)
-                        if i_k == 0:
-                            T.gemm_v0(a_l1, b_l1, c_l0, init=True)
-                        else:
-                            T.gemm_v0(a_l1, b_l1, c_l0)
+                for i_k in T.Pipelined(k_num, num_stages=2):
+                    T.copy(x[bid * token_block, i_k * h_blk], a_l1)
+                    T.copy(fn_t[i_k * h_blk, 0], b_l1)
+                    if i_k == 0:
+                        T.gemm_v0(a_l1, b_l1, c_l0, init=True)
+                    else:
+                        T.gemm_v0(a_l1, b_l1, c_l0)
 
                 T.copy(c_l0, out[bid * token_block, 0])
 
@@ -332,61 +323,51 @@ def mhc_pre_split_sinkhorn(hc, sinkhorn_iters, pre_eps, sinkhorn_eps, hc_post_mu
 
 
 @tilelang.jit(out_idx=[2], pass_configs=pass_configs)
-def mhc_pre_apply_mix(pad_hidden, h_blk=2048, hc=4, dtype="bfloat16", accum_dtype="float"):
+def mhc_pre_apply_mix(hc, hidden, h_blk=2048, dtype="bfloat16", accum_dtype="float"):
     """Kernel B3: layer_input = sum over hc of (residual * pre_mix).
 
-    AXPY linear combination for hc=4:
-      out = pre0*res0 + pre1*res1 + pre2*res2 + pre3*res3
+    AXPY linear combination (fill + axpy, generic hc):
+      out = sum_i(pre_i * res_i)
 
-    Dual-V-core, T.Pipelined.
+    2D merged residual load (1 T.copy vs hc copies).
+    Dual-V-core, T.Pipelined. In-kernel tail via pad_value + TAIL_MASK.
     """
     n = T.symbolic("n")
-    h_num = T.ceildiv(pad_hidden, h_blk)
+    total_tiles = (hidden + h_blk - 1) // h_blk
+    pad_h = total_tiles * h_blk
     VEC_NUM = 2
-    HC = hc
 
     @T.prim_func
     def main(
-        residual: T.Tensor((n, HC, pad_hidden), dtype),
-        pre_mix: T.Tensor((n, HC), accum_dtype),
-        layer_input: T.Tensor((n, pad_hidden), dtype),
+        residual: T.Tensor((n, hc, hidden), dtype),
+        pre_mix: T.Tensor((n, hc), accum_dtype),
+        layer_input: T.Tensor((n, pad_h), dtype),
     ):
         with T.Kernel(T.ceildiv(n, VEC_NUM), is_npu=True) as (cid, vid):
             bid = cid * VEC_NUM + vid
 
             if bid < n:
                 with T.Scope("V"):
-                    pre_ub = T.alloc_ub(HC, accum_dtype)
-                    T.copy(pre_mix[bid, 0], pre_ub)
+                    pre_ub = T.alloc_ub(hc, accum_dtype)
+                    T.copy(pre_mix[bid, 0:hc], pre_ub)
 
-                    res0_ub = T.alloc_ub(h_blk, dtype)
-                    res1_ub = T.alloc_ub(h_blk, dtype)
-                    res2_ub = T.alloc_ub(h_blk, dtype)
-                    res3_ub = T.alloc_ub(h_blk, dtype)
-                    res0_fp32 = T.alloc_ub(h_blk, accum_dtype)
-                    res1_fp32 = T.alloc_ub(h_blk, accum_dtype)
-                    res2_fp32 = T.alloc_ub(h_blk, accum_dtype)
-                    res3_fp32 = T.alloc_ub(h_blk, accum_dtype)
-                    out_ub = T.alloc_ub(h_blk, accum_dtype)
+                    res_ub = T.alloc_ub((hc, h_blk), dtype)
+                    res_fp32 = T.alloc_ub((hc, h_blk), accum_dtype)
+                    out_fp32 = T.alloc_ub(h_blk, accum_dtype)
                     out_bf16 = T.alloc_ub(h_blk, dtype)
 
-                    for i_h in T.Pipelined(h_num, num_stages=2):
-                        T.copy(residual[bid, 0, i_h * h_blk], res0_ub)
-                        T.copy(residual[bid, 1, i_h * h_blk], res1_ub)
-                        T.copy(residual[bid, 2, i_h * h_blk], res2_ub)
-                        T.copy(residual[bid, 3, i_h * h_blk], res3_ub)
-                        T.tile.cast(res0_fp32, res0_ub, "CAST_NONE", h_blk)
-                        T.tile.cast(res1_fp32, res1_ub, "CAST_NONE", h_blk)
-                        T.tile.cast(res2_fp32, res2_ub, "CAST_NONE", h_blk)
-                        T.tile.cast(res3_fp32, res3_ub, "CAST_NONE", h_blk)
+                    for i_h in T.Pipelined(total_tiles, num_stages=2):
+                        h_start = i_h * h_blk
 
-                        T.tile.mul(out_ub, res0_fp32, pre_ub[0])
-                        T.tile.axpy(out_ub, res1_fp32, pre_ub[1])
-                        T.tile.axpy(out_ub, res2_fp32, pre_ub[2])
-                        T.tile.axpy(out_ub, res3_fp32, pre_ub[3])
+                        T.copy(residual[bid, 0:hc, h_start : h_start + h_blk], res_ub, pad_value=0.0)
+                        T.tile.cast(res_fp32, res_ub, "CAST_NONE", h_blk * hc)
 
-                        T.tile.cast(out_bf16, out_ub, "CAST_RINT", h_blk)
-                        T.copy(out_bf16, layer_input[bid, i_h * h_blk])
+                        T.tile.fill(out_fp32, 0.0)
+                        for res_idx in T.unroll(hc):
+                            T.tile.axpy(out_fp32, res_fp32[res_idx, :], pre_ub[res_idx])
+
+                        T.tile.cast(out_bf16, out_fp32, "CAST_RINT", h_blk)
+                        T.copy(out_bf16, layer_input[bid, h_start : h_start + h_blk])
 
     return main
 
@@ -514,11 +495,11 @@ def mhc_pre(residual, fn, hc_scale, hc_base, rms_eps, hc_pre_eps, hc_sinkhorn_ep
         layer_input:  [n, hidden]  bf16
 
     Note:
-        Kernel B3 (apply_mix) is specialized for hc=4 using AXPY.
-        Passing hc != 4 will raise an assertion error.
+        Kernel B3 (apply_mix) uses AXPY with hc as JIT parameter (1-8).
+        Passing hc outside [1, 8] will raise an assertion error.
     """
     hc_mult = residual.shape[1]
-    assert hc_mult == 4, f"Kernel B3 requires hc=4, got hc={hc_mult}"
+    assert 1 <= hc_mult <= 8, f"hc must be in [1, 8] (tested range), got hc={hc_mult}"
     hidden = residual.shape[2]
     n = residual.shape[0]
     hc_mult3 = hc_mult * (2 + hc_mult)
@@ -539,19 +520,10 @@ def mhc_pre(residual, fn, hc_scale, hc_base, rms_eps, hc_pre_eps, hc_sinkhorn_ep
     sinkhorn_kernel = _get_kernel("sinkhorn", hc_mult, sinkhorn_repeat, hc_pre_eps, hc_sinkhorn_eps, hc_post_mult_value)
     pre_mix, post_mix, comb_mix = sinkhorn_kernel(mixes, hc_scale, hc_base)
 
-    # Kernel B3: apply pre_mix
-    pad_hidden = calc_pad(hidden, 2048)
-    if pad_hidden == hidden:
-        residual_padded = residual
-    else:
-        residual_padded = _pad_3d(residual, hc_mult, pad_hidden)
-    apply_kernel = _get_kernel("apply", pad_hidden)
-    layer_input_padded = apply_kernel(residual_padded, pre_mix)
-
-    if pad_hidden == hidden:
-        layer_input = layer_input_padded
-    else:
-        layer_input = layer_input_padded[:n, :hidden]
+    # Kernel B3: apply pre_mix (in-kernel tail, no host pad)
+    apply_kernel = _get_kernel("apply", hc_mult, hidden)
+    layer_input_padded = apply_kernel(residual, pre_mix)
+    layer_input = layer_input_padded[:n, :hidden]
 
     post_mix_out = post_mix.unsqueeze(-1)
     return post_mix_out, comb_mix, layer_input
