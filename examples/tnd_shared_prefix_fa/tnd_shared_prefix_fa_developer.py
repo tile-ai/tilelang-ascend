@@ -141,8 +141,8 @@ def tnd_shared_prefix_fa_developer(
                                 for col in T.serial(block_N):
                                     if col >= kv_valid:
                                         acc_s_ub[row, col] = NEG_INF
-                        if causal_mask:
-                            if q_packed_start < shared_prefix_len:
+                        if causal_mask:  # noqa: SIM102
+                            if q_packed_start < shared_prefix_len:  # noqa: SIM102
                                 if kv_start_shared + block_N > q_packed_start:
                                     for row in T.serial(block_M):
                                         for col in T.serial(block_N):
@@ -160,7 +160,7 @@ def tnd_shared_prefix_fa_developer(
                                 for col in T.serial(block_N):
                                     if col >= kv_valid:
                                         acc_s_ub[row, col] = NEG_INF
-                        if causal_mask:
+                        if causal_mask:  # noqa: SIM102
                             if shared_prefix_len + kv_start_priv + block_N > q_packed_start:
                                 for row in T.serial(block_M):
                                     for col in T.serial(block_N):
