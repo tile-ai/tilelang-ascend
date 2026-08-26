@@ -77,9 +77,7 @@ def ref_tnd_shared_prefix_fa(
             v = V_shared[:, h_kv, :]
             scores = torch.matmul(q, k.T) * sm_scale
             if causal_mask:
-                mask = torch.triu(
-                    torch.ones(shared_prefix_len, shared_prefix_len), diagonal=1
-                ).bool()
+                mask = torch.triu(torch.ones(shared_prefix_len, shared_prefix_len), diagonal=1).bool()
                 scores = scores.masked_fill(mask, float("-inf"))
             attn = torch.softmax(scores, dim=-1)
             O[:shared_prefix_len, h_q, :] = torch.matmul(attn, v)
@@ -163,9 +161,7 @@ def run_test_case(
         total_q = shared_prefix_len + sum(private_q_lens)
         total_private_kv = sum(private_q_lens)
         max_private_kv_len = max(private_q_lens) if private_q_lens else 0
-        total_q_blocks = math.ceil(shared_prefix_len / block_M) + sum(
-            math.ceil(l / block_M) for l in private_q_lens
-        )
+        total_q_blocks = math.ceil(shared_prefix_len / block_M) + sum(math.ceil(l / block_M) for l in private_q_lens)
 
         torch.manual_seed(0)
         npu_dtype = getattr(torch, dtype_str)
