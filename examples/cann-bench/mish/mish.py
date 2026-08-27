@@ -12,6 +12,7 @@ import math
 
 import tilelang
 import tilelang.language as T
+import torch
 
 tilelang.cache.clear_cache()
 
@@ -246,3 +247,16 @@ def mish_forward(x):
 
     output = output_2d.reshape(orig_shape)
     return output
+
+
+# ---------------------------------------------------------------------------
+# Standalone run entry (smoke test, picked from test_mish.py L0 case)
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    torch.manual_seed(0)
+
+    x = torch.randn(1024, 1024, dtype=torch.float16).npu()
+    y = mish_forward(x)
+    ref = torch.nn.functional.mish(x)
+    torch.testing.assert_close(y.cpu().float(), ref.cpu().float(), rtol=1e-3, atol=1e-3)
+    print("Kernel Output Match!")
