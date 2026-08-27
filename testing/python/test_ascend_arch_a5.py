@@ -98,6 +98,8 @@ def test_a5_without_runtime_core_query_fails_loud():
     [
         ("dav-3510", "Ascend910B"),
         ("dav-910b", "Ascend950PR_950z"),
+        ("dav-910c", "Ascend910B"),
+        ("dav-910b", "Ascend910C"),
     ],
 )
 def test_target_mcpu_profile_rejects_runtime_device_mismatch(mcpu, runtime_name):

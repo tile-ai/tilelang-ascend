@@ -185,15 +185,23 @@ class _FakeRuntimeNpu:
         return self.name
 
 
-def test_load_lib_rejects_runtime_device_mismatch_before_dlopen():
-    fake_npu = _FakeRuntimeNpu("Ascend910B")
+@pytest.mark.parametrize(
+    "platform, runtime_name",
+    [
+        ("A5", "Ascend910B"),
+        ("A3", "Ascend910B"),
+        ("A2", "Ascend910C"),
+    ],
+)
+def test_load_lib_rejects_runtime_device_mismatch_before_dlopen(platform, runtime_name):
+    fake_npu = _FakeRuntimeNpu(runtime_name)
     with (
         mock.patch.object(torch, "npu", fake_npu, create=True),
         mock.patch("tilelang.jit.adapter.libgen.ctypes.CDLL") as dlopen,
         mock.patch.dict("os.environ", {"TL_RUN_MODE": "npu"}),
-        pytest.raises(RuntimeError, match="compiled target platform is A5"),
+        pytest.raises(RuntimeError, match=f"compiled target platform is {platform}"),
     ):
-        LibraryGenerator("ascendc", "A5").load_lib("/tmp/not-loaded.so")
+        LibraryGenerator("ascendc", platform).load_lib("/tmp/not-loaded.so")
     dlopen.assert_not_called()
 
 

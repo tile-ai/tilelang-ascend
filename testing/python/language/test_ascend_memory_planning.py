@@ -909,7 +909,7 @@ def test_letstmt_buffer_load_shared_no_crash(target):
 # ---------------------------------------------------------------------------
 
 
-def _lower_single_ub_allocation(num_bytes: int, platform: str):
+def _lower_single_ub_allocation(num_bytes: int, platform: str, pass_configs=PASS_AUTO):
     @T.prim_func
     def main(
         A: T.Tensor((num_bytes,), "uint8"),  # type: ignore
@@ -920,12 +920,13 @@ def _lower_single_ub_allocation(num_bytes: int, platform: str):
             T.copy(A, tmp)
             T.copy(tmp, B)
 
-    with tvm.transform.PassContext(opt_level=3, config=PASS_AUTO):
+    with tvm.transform.PassContext(opt_level=3, config=pass_configs):
         return tilelang.lower(main, target="ascendc", platform=platform)
 
 
-def test_a5_memory_planner_accepts_full_usable_ub_capacity():
-    artifact = _lower_single_ub_allocation(253952, "A5")
+@pytest.mark.parametrize("pass_configs", [PASS_AUTO, PASS_LINEAR], ids=["auto", "linear"])
+def test_a5_memory_planner_accepts_full_usable_ub_capacity(pass_configs):
+    artifact = _lower_single_ub_allocation(253952, "A5", pass_configs)
     assert "GetWithOffset<uint8_t>(253952, 0)" in artifact.kernel_source
 
 
@@ -934,9 +935,10 @@ def test_a3_memory_planner_rejects_a5_only_ub_capacity():
         _lower_single_ub_allocation(253952, "A3")
 
 
-def test_a5_memory_planner_preserves_aligned_overflow_check():
-    with pytest.raises(tvm.error.TVMError, match="Memory allocation failed"):
-        _lower_single_ub_allocation(253952 + 32, "A5")
+@pytest.mark.parametrize("pass_configs", [PASS_AUTO, PASS_LINEAR], ids=["auto", "linear"])
+def test_a5_memory_planner_preserves_aligned_overflow_check(pass_configs):
+    with pytest.raises(tvm.error.TVMError, match="[Mm]emory allocation failed"):
+        _lower_single_ub_allocation(253952 + 32, "A5", pass_configs)
 
 
 if __name__ == "__main__":

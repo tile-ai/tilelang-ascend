@@ -212,7 +212,12 @@ def lower(
         determine_platform,
     )
 
-    platform = determine_platform(platform)
+    explicit_mcpu = getattr(target, "mcpu", None) if isinstance(target, tvm.target.Target) else None
+    target_platform = ascend_platform_from_mcpu(explicit_mcpu)
+    if platform == "auto" and target_platform is not None and "/" not in target_platform:
+        platform = target_platform
+    else:
+        platform = determine_platform(platform)
 
     mod = func_or_mod
     params = None
@@ -227,8 +232,6 @@ def lower(
 
     platform_mcpu = ascend_mcpu_for_platform(platform)
     if isinstance(target, tvm.target.Target):
-        explicit_mcpu = getattr(target, "mcpu", None)
-        target_platform = ascend_platform_from_mcpu(explicit_mcpu)
         if target_platform is not None and platform not in target_platform.split("/"):
             raise ValueError(f"Target mcpu {explicit_mcpu!r} conflicts with Ascend platform {platform}")
         if explicit_mcpu:

@@ -229,6 +229,18 @@ def test_a5_lowering_binds_dav3510_mcpu_to_target():
     assert func.attrs["target"].mcpu == "dav-3510"
 
 
+def test_explicit_dav3510_mcpu_selects_a5_before_auto_runtime_fallback():
+    target = tvm.target.Target({"kind": "llvm", "model": "ascendc", "mcpu": "dav-3510"})
+    artifact = tilelang.lower(
+        dev_ub_explicit_splice(dim=64),
+        target=target,
+        platform="auto",
+    )
+    func = artifact.device_mod.functions_items()[0][1]
+    assert func.attrs["target"].mcpu == "dav-3510"
+    assert func.attrs["npu_platform"] == "A5"
+
+
 def test_lowering_rejects_explicit_mcpu_platform_conflict():
     target = tvm.target.Target({"kind": "llvm", "model": "ascendc", "mcpu": "dav-2201"})
     with pytest.raises(ValueError, match="conflicts with Ascend platform A5"):

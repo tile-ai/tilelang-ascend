@@ -614,7 +614,7 @@ private:
 
     void PlanMemoryForScopeLinear(const std::string &scope,
                                   const std::vector<const VarNode *> &buffers) {
-      bool check_overflow = false; // reserve memory overflow check
+      bool check_overflow = true;
       int64_t current_offset = 0;
       int64_t max_offset = 0;
 

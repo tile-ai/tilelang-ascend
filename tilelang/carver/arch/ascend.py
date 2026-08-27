@@ -130,10 +130,16 @@ class Ascend(TileDevice):
             except Exception as e:
                 logger.warning(f"Failed to detect Ascend NPU properties from torch_npu: {e}")
 
-        if requested_chip_name is not None and runtime_chip_name is not None:
-            requested_is_a5 = requested_chip_name == "Ascend950"
-            runtime_is_a5 = runtime_chip_name == "Ascend950"
-            if requested_is_a5 != runtime_is_a5:
+        requested_platform = target_platform
+        if requested_platform is None and requested_chip_name is not None:
+            if requested_chip_name == "Ascend950":
+                requested_platform = "A5"
+            elif requested_chip_name in {"Ascend910B", "Ascend310P"}:
+                requested_platform = "A2"
+            elif requested_chip_name == "Ascend910A":
+                requested_platform = "A3"
+        if requested_platform is not None and runtime_platform is not None:
+            if runtime_platform not in requested_platform.split("/"):
                 raise RuntimeError(f"Target profile {requested_chip_name} does not match runtime device profile {runtime_chip_name}")
 
         # Explicit chip_name, then target mcpu, then runtime detection, then fallback.
