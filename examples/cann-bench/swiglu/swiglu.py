@@ -288,5 +288,5 @@ if __name__ == "__main__":
     x = a.to(torch.float)
     x0, x1 = x.chunk(2, dim=-1)
     ref = (F.silu(x0) * x1).to(torch.float16)
-    torch.testing.assert_close(b.cpu().float(), ref.float(), rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(b.cpu().float(), ref.cpu().float(), rtol=1e-3, atol=1e-3)
     print("Kernel Output Match!")
