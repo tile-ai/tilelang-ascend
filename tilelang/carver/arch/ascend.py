@@ -1,4 +1,5 @@
-from typing import Optional, List
+from __future__ import annotations
+
 from tvm.target import Target
 from .arch_base import TileDevice
 from tilelang.utils.target import ascend_platform_from_device_name, ascend_platform_from_mcpu
@@ -7,7 +8,7 @@ import logging
 # check if torch_npu is available, if not, degrade using CHIP_SPECS only
 try:
     import torch
-    import torch_npu
+    import torch_npu  # noqa: F401  # Registers the torch.npu device backend.
 
     _TORCH_NPU_AVAILABLE = True
 except ImportError:
@@ -68,14 +69,14 @@ CHIP_SPECS = {
 DEFAULT_CHIP = "Ascend910A"
 
 
-class CubeInstruction(object):
-    def __init__(self, name: str, shape: List[int]):
+class CubeInstruction:
+    def __init__(self, name: str, shape: list[int]):
         self.name = name
         self.shape = shape
 
 
 class Ascend(TileDevice):
-    def __init__(self, target: Target | str = "llvm -keys=ascend", chip_name: Optional[str] = None):
+    def __init__(self, target: Target | str = "llvm -keys=ascend", chip_name: str | None = None):
         if isinstance(target, str):
             target = Target(target)
         self.target = target
@@ -138,9 +139,8 @@ class Ascend(TileDevice):
                 requested_platform = "A2"
             elif requested_chip_name == "Ascend910A":
                 requested_platform = "A3"
-        if requested_platform is not None and runtime_platform is not None:
-            if runtime_platform not in requested_platform.split("/"):
-                raise RuntimeError(f"Target profile {requested_chip_name} does not match runtime device profile {runtime_chip_name}")
+        if requested_platform is not None and runtime_platform is not None and runtime_platform not in requested_platform.split("/"):
+            raise RuntimeError(f"Target profile {requested_chip_name} does not match runtime device profile {runtime_chip_name}")
 
         # Explicit chip_name, then target mcpu, then runtime detection, then fallback.
         chip_name = requested_chip_name or runtime_chip_name or DEFAULT_CHIP
@@ -200,7 +200,7 @@ class Ascend(TileDevice):
         return self.cube_spec[-1]
 
     @property
-    def cube_shape(self) -> List[int]:
+    def cube_shape(self) -> list[int]:
         """
         Return the full dimensions of the CUBE unit [M, N, K].
         """
