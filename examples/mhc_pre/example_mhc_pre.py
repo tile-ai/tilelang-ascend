@@ -248,11 +248,11 @@ def mhc_pre_split_sinkhorn(hc, sinkhorn_iters, pre_eps, sinkhorn_eps, hc_post_mu
                 alpha_1 = hc_scale[1]
                 alpha_2 = hc_scale[2]
 
-                for i in T.serial(hc):
+                for i in T.unroll(hc):
                     hc_scale_ub[i] = alpha_0
-                for i in T.serial(hc):
+                for i in T.unroll(hc):
                     hc_scale_ub[hc + i] = alpha_1
-                for i in T.serial(hc * hc):
+                for i in T.unroll(hc * hc):
                     hc_scale_ub[2 * hc + i] = alpha_2
                 T.copy(hc_base, hc_base_shared)
                 T.copy(mixes[bid, :], mixes_shared)
@@ -274,7 +274,7 @@ def mhc_pre_split_sinkhorn(hc, sinkhorn_iters, pre_eps, sinkhorn_eps, hc_post_mu
                 T.copy(post_shared[:hc], post[bid, :hc])
 
                 # comb
-                for i in T.serial(hc):
+                for i in T.unroll(hc):
                     start = 2 * hc + i * hc
                     end = 2 * hc + i * hc + hc
                     T.copy(workspace[bid, start:end], tmp_shared)
@@ -282,12 +282,12 @@ def mhc_pre_split_sinkhorn(hc, sinkhorn_iters, pre_eps, sinkhorn_eps, hc_post_mu
 
                 # comb = comb.softmax(-1) + eps
                 T.reduce_max(comb_shared, row_max, dim=-1, real_shape=[hc, hc])
-                for i in T.serial(hc):
+                for i in T.unroll(hc):
                     T.tile.fill(row_div[i, :], row_max[i])
                 T.tile.sub(comb_shared, comb_shared, row_div)
                 T.tile.exp(comb_shared, comb_shared)
                 T.reduce_sum(comb_shared, row_sum, dim=-1, real_shape=[hc, hc])
-                for i in T.serial(hc):
+                for i in T.unroll(hc):
                     T.tile.fill(row_div[i, :], row_sum[i])
                 T.tile.div(comb_shared, comb_shared, row_div)
                 T.tile.add(comb_shared, comb_shared, sinkhorn_eps)
@@ -302,7 +302,7 @@ def mhc_pre_split_sinkhorn(hc, sinkhorn_iters, pre_eps, sinkhorn_eps, hc_post_mu
                     # comb = comb / (comb.sum(-1) + eps)
                     T.reduce_sum(comb_shared, row_sum, dim=-1, real_shape=[hc, hc])
                     T.tile.add(row_sum, row_sum, sinkhorn_eps)
-                    for i in T.serial(hc):
+                    for i in T.unroll(hc):
                         T.tile.fill(row_div[i, :], row_sum[i])
                     T.tile.div(comb_shared, comb_shared, row_div)
                     # comb = comb / (comb.sum(-2) + eps)
@@ -311,7 +311,7 @@ def mhc_pre_split_sinkhorn(hc, sinkhorn_iters, pre_eps, sinkhorn_eps, hc_post_mu
                     T.tile.broadcast(col_broadcast, col_sum)
                     T.tile.div(comb_shared, comb_shared, col_broadcast)
 
-                for i in T.serial(hc):
+                for i in T.unroll(hc):
                     T.copy(comb_shared[i, :hc], comb[bid, i, :])
 
     return main
