@@ -40,10 +40,16 @@ def tnd_shared_prefix_fa_developer(
     causal_mask=False,
     threads=2,
 ):
-    sm_scale = (1.0 / head_dim) ** 0.5 if sm_scale is None else sm_scale
+    assert q_head % kv_head == 0, "GQA constraint: q_head must be divisible by kv_head"
+    sm_scale = 1.0 / (head_dim**0.5) if sm_scale is None else sm_scale
     dtype = dtype_str
     accum_dtype = "float32"
     group_size = q_head // kv_head
+
+    total_q = T.symbolic("total_q")
+    total_private_kv = T.symbolic("total_private_kv")
+    shared_prefix_len_sym = T.symbolic("shared_prefix_len")
+    total_q_blocks_sym = T.symbolic("total_q_blocks")
 
     max_shared_iters = (shared_prefix_len + block_N - 1) // block_N
     max_private_iters = (max_private_kv_len + block_N - 1) // block_N
@@ -53,11 +59,11 @@ def tnd_shared_prefix_fa_developer(
     @T.prim_func
     def main(
         Q: T.Tensor([total_q, q_head, head_dim], dtype),  # type: ignore
-        K_shared: T.Tensor([shared_prefix_len, kv_head, head_dim], dtype),  # type: ignore
-        V_shared: T.Tensor([shared_prefix_len, kv_head, head_dim], dtype),  # type: ignore
+        K_shared: T.Tensor([shared_prefix_len_sym, kv_head, head_dim], dtype),  # type: ignore
+        V_shared: T.Tensor([shared_prefix_len_sym, kv_head, head_dim], dtype),  # type: ignore
         K_private: T.Tensor([total_private_kv, kv_head, head_dim], dtype),  # type: ignore
         V_private: T.Tensor([total_private_kv, kv_head, head_dim], dtype),  # type: ignore
-        block_metadata: T.Tensor([total_q_blocks, 4], "int32"),  # type: ignore
+        block_metadata: T.Tensor([total_q_blocks_sym, 4], "int32"),  # type: ignore
         Output: T.Tensor([q_head, total_q, head_dim], dtype),  # type: ignore
     ):
         with T.Kernel(block_num, threads=threads, is_npu=True) as (cid):
