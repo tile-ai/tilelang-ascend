@@ -271,3 +271,13 @@ def sigmoid(x: torch.Tensor) -> torch.Tensor:
     kernel = _kernel_cache[key]
     output_2d = kernel(input_2d)
     return output_2d.reshape(original_shape)
+
+
+if __name__ == "__main__":
+    torch.manual_seed(0)
+
+    x = torch.randn(1024, 1024, dtype=torch.float16).npu()
+    y = sigmoid(x)
+    ref = torch.sigmoid(x)
+    torch.testing.assert_close(y.cpu().float(), ref.cpu().float(), rtol=1e-3, atol=1e-3)
+    print("Kernel Output Match!")
