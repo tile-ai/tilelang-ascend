@@ -206,7 +206,11 @@ def lower(
     own device codegen implementation in jit.
     """
 
-    from tilelang.utils.target import determine_platform
+    from tilelang.utils.target import (
+        ascend_mcpu_for_platform,
+        ascend_platform_from_mcpu,
+        determine_platform,
+    )
 
     platform = determine_platform(platform)
 
@@ -221,7 +225,18 @@ def lower(
     for gvar, f in mod.functions_items():
         mod[gvar] = f.with_attr("npu_platform", platform)
 
-    target = tvm.target.Target({"kind": "llvm", "model": target})
+    platform_mcpu = ascend_mcpu_for_platform(platform)
+    if isinstance(target, tvm.target.Target):
+        explicit_mcpu = getattr(target, "mcpu", None)
+        target_platform = ascend_platform_from_mcpu(explicit_mcpu)
+        if target_platform is not None and platform not in target_platform.split("/"):
+            raise ValueError(f"Target mcpu {explicit_mcpu!r} conflicts with Ascend platform {platform}")
+        if explicit_mcpu:
+            platform_mcpu = explicit_mcpu
+        target_model = getattr(target, "model", "") or str(target)
+    else:
+        target_model = target
+    target = tvm.target.Target({"kind": "llvm", "model": str(target_model), "mcpu": platform_mcpu})
 
     # Phase 1: Lower and legalize the IR
     mod = LowerAndLegalize(mod, target)

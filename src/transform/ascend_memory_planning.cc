@@ -32,11 +32,17 @@
 #include "./common/attr.h"
 #include "./common/collector.h"
 
-#define ASCEND_SHARED_MEM_SIZE 196352
-#define ASCEND_SHARED_DYN_MEM_SIZE 524032
-#define ASCEND_WMMA_MATRIX_A_MEM_SIZE 65536
-#define ASCEND_WMMA_MATRIX_B_MEM_SIZE 65536
-#define ASCEND_WMMA_ACCUMULATOR_MEM_SIZE 131072
+#define ASCEND_A2A3_SHARED_MEM_SIZE 196352
+#define ASCEND_A2A3_SHARED_DYN_MEM_SIZE 524032
+#define ASCEND_A2A3_WMMA_MATRIX_A_MEM_SIZE 65536
+#define ASCEND_A2A3_WMMA_MATRIX_B_MEM_SIZE 65536
+#define ASCEND_A2A3_WMMA_ACCUMULATOR_MEM_SIZE 131072
+
+#define ASCEND_A5_SHARED_MEM_SIZE 253952
+#define ASCEND_A5_SHARED_DYN_MEM_SIZE 524288
+#define ASCEND_A5_WMMA_MATRIX_A_MEM_SIZE 65536
+#define ASCEND_A5_WMMA_MATRIX_B_MEM_SIZE 65536
+#define ASCEND_A5_WMMA_ACCUMULATOR_MEM_SIZE 262144
 
 namespace tvm {
 namespace tl {
@@ -79,8 +85,10 @@ public:
                                .value();
     }
 
+    std::string platform =
+        f->GetAttr<String>("npu_platform").value_or(String("A3"));
     AscendMemoryPlanner planner(f, external_address_map, external_shape_map,
-                                auto_ascend_memory_planning);
+                                platform, auto_ascend_memory_planning);
     auto address_map = planner.GetAddressMap();
     auto buffer_sizes = planner.GetBufferSizes();
 
@@ -106,16 +114,27 @@ private:
     explicit AscendMemoryPlanner(const PrimFunc &func,
                                  Map<Var, PrimExpr> external_address_map,
                                  Map<Var, Array<PrimExpr>> external_shape_map,
+                                 const std::string &platform,
                                  bool auto_plan = false) {
       memory_auto_plan = auto_plan;
       // Preserve layouts needed by CalculateBufferSize.
       // PTO 4D shapes are [physical_M, physical_N, valid_M, valid_N].
       external_shape_map_ = external_shape_map;
-      memory_limits_ = {{"shared.l1", ASCEND_SHARED_DYN_MEM_SIZE},
-                        {"wmma.matrix_a", ASCEND_WMMA_MATRIX_A_MEM_SIZE},
-                        {"wmma.matrix_b", ASCEND_WMMA_MATRIX_B_MEM_SIZE},
-                        {"wmma.accumulator", ASCEND_WMMA_ACCUMULATOR_MEM_SIZE},
-                        {"shared.ub", ASCEND_SHARED_MEM_SIZE}};
+      if (platform == "A5") {
+        memory_limits_ = {
+            {"shared.l1", ASCEND_A5_SHARED_DYN_MEM_SIZE},
+            {"wmma.matrix_a", ASCEND_A5_WMMA_MATRIX_A_MEM_SIZE},
+            {"wmma.matrix_b", ASCEND_A5_WMMA_MATRIX_B_MEM_SIZE},
+            {"wmma.accumulator", ASCEND_A5_WMMA_ACCUMULATOR_MEM_SIZE},
+            {"shared.ub", ASCEND_A5_SHARED_MEM_SIZE}};
+      } else {
+        memory_limits_ = {
+            {"shared.l1", ASCEND_A2A3_SHARED_DYN_MEM_SIZE},
+            {"wmma.matrix_a", ASCEND_A2A3_WMMA_MATRIX_A_MEM_SIZE},
+            {"wmma.matrix_b", ASCEND_A2A3_WMMA_MATRIX_B_MEM_SIZE},
+            {"wmma.accumulator", ASCEND_A2A3_WMMA_ACCUMULATOR_MEM_SIZE},
+            {"shared.ub", ASCEND_A2A3_SHARED_MEM_SIZE}};
+      }
 
       SetPreAllocBuffer(external_address_map);
       SetTmpBuffers(external_shape_map);
@@ -865,6 +884,9 @@ private:
           }
         }
 
+        if (free_blocks.empty()) {
+          return static_cast<size_t>(-1);
+        }
         auto &last_block = free_blocks[free_blocks.size() - 1];
         if ((last_block.first + last_block.second) == next_new_offset_) {
           next_new_offset_ = memory_limit_;

@@ -59,9 +59,21 @@ def _pc(target, vs):
         ("pto", None, {}, None, ["-O3"]),  # pto defaults VS on; never gets the auto-sync flag
         # env vars are lenient legacy fallbacks
         ("ascendc", False, {"TL_CCE_AUTO_SYNC": "off"}, None, ["-O2", "--cce-auto-sync=off"]),
-        ("ascendc", False, {"TL_CCE_AUTO_SYNC": "garbage"}, None, ["-O2"]),  # malformed -> on, never raises
+        (
+            "ascendc",
+            False,
+            {"TL_CCE_AUTO_SYNC": "garbage"},
+            None,
+            ["-O2"],
+        ),  # malformed -> on, never raises
         ("pto", False, {"TL_PTO_DEBUG": "1"}, None, ["-O2", "-D_DEBUG", "--cce-enable-print"]),
-        ("ascendc", False, {"TL_PTO_DEBUG": "1"}, None, ["-O2"]),  # AscendC never gets the PTO debug flags
+        (
+            "ascendc",
+            False,
+            {"TL_PTO_DEBUG": "1"},
+            None,
+            ["-O2"],
+        ),  # AscendC never gets the PTO debug flags
         # caller flags are appended last, so they win (bisheng is last-wins)
         ("ascendc", True, {}, ["-O0"], ["-O3", "--cce-auto-sync=off", "-O0"]),
         ("ascendc", False, {}, "-O3", ["-O2", "-O3"]),  # a bare str is accepted
@@ -155,17 +167,80 @@ def test_libgen_rejects_unknown_native_platform():
         _bisheng_command("ascendc", None, platform="A9")
 
 
+class _FakeRuntimeNpu:
+    def __init__(self, name, available=True):
+        self.name = name
+        self.available = available
+
+    def is_available(self):
+        return self.available
+
+    def device_count(self):
+        return 1 if self.available else 0
+
+    def current_device(self):
+        return 0
+
+    def get_device_name(self, _device):
+        return self.name
+
+
+def test_load_lib_rejects_runtime_device_mismatch_before_dlopen():
+    fake_npu = _FakeRuntimeNpu("Ascend910B")
+    with (
+        mock.patch.object(torch, "npu", fake_npu, create=True),
+        mock.patch("tilelang.jit.adapter.libgen.ctypes.CDLL") as dlopen,
+        mock.patch.dict("os.environ", {"TL_RUN_MODE": "npu"}),
+        pytest.raises(RuntimeError, match="compiled target platform is A5"),
+    ):
+        LibraryGenerator("ascendc", "A5").load_lib("/tmp/not-loaded.so")
+    dlopen.assert_not_called()
+
+
+def test_load_lib_allows_matching_a5_runtime_device():
+    fake_npu = _FakeRuntimeNpu("Ascend950DT_9575")
+    with (
+        mock.patch.object(torch, "npu", fake_npu, create=True),
+        mock.patch("tilelang.jit.adapter.libgen.ctypes.CDLL", return_value=object()) as dlopen,
+        mock.patch.dict("os.environ", {"TL_RUN_MODE": "npu"}),
+    ):
+        LibraryGenerator("ascendc", "A5").load_lib("/tmp/matching.so")
+    dlopen.assert_called_once_with("/tmp/matching.so")
+
+
 def test_documented_manual_a2_aot_sets_catlass_arch():
     """Manual Bisheng callers must match the native A2 LibraryGenerator flags."""
     notebook = Path(__file__).parents[3] / "docs/notebook/aot_jit.ipynb"
     cells = json.loads(notebook.read_text())["cells"]
     manual_a2_commands = [
-        "".join(cell.get("source", []))
-        for cell in cells
-        if "bisheng --npu-arch=dav-2201" in "".join(cell.get("source", []))
+        "".join(cell.get("source", [])) for cell in cells if "bisheng --npu-arch=dav-2201" in "".join(cell.get("source", []))
     ]
     assert manual_a2_commands
     assert all("-DCATLASS_ARCH=2201" in command for command in manual_a2_commands)
+
+
+def _extract_template_body(source: str, function_name: str) -> str:
+    start = source.index(f"CATLASS_DEVICE void {function_name}")
+    next_template = source.find("\ntemplate <", start + 1)
+    return source[start:] if next_template < 0 else source[start:next_template]
+
+
+@pytest.mark.parametrize(
+    "function_name, layout_name, discriminator",
+    [
+        ("copy_l1_to_l0a", "LayoutL0A", "K split 128"),
+        ("copy_l1_to_l0a", "LayoutL0A", "K tail 80"),
+        ("copy_l1_to_l0b", "LayoutL0B", "N split 128"),
+        ("copy_l1_to_l0a", "LayoutL0A", "transpose A rectangular 64x80"),
+        ("copy_l1_to_l0b", "LayoutL0B", "transpose B rectangular 64x112"),
+    ],
+)
+def test_l0_destination_layout_is_packed_for_logical_tile(function_name, layout_name, discriminator):
+    common_h = Path(__file__).parents[3] / "src/tl_templates/ascend/common.h"
+    body = _extract_template_body(common_h.read_text(), function_name)
+    assert f"tla::MakeLayout<T, {layout_name}>(dstM, dstN)" in body, discriminator
+    assert "transpose ? srcN : srcM, transpose ? srcM : srcN" in body, discriminator
+    assert body.count("tla::GetTileLayout(") == 1, discriminator
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +334,10 @@ def test_autotuner_restore_threads_full_signature(tmp_path):
         captured.update(kw)
         return "K"
 
-    with mock.patch.object(JITKernel, "from_database", _spy), mock.patch.dict("os.environ", {"TL_PLATFORM": "A5"}):
+    with (
+        mock.patch.object(JITKernel, "from_database", _spy),
+        mock.patch.dict("os.environ", {"TL_PLATFORM": "A5"}),
+    ):
         result = ap.AutotuneResult._load_kernel_from_disk(
             ap.AutotuneResult,
             tmp_path,

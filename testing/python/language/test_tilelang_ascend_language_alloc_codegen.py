@@ -1,4 +1,5 @@
 import pytest
+from unittest import mock
 
 import tilelang
 import tilelang.language as T
@@ -218,6 +219,26 @@ def test_a5_native_codegen_uses_dav3510_usable_memory_sizes():
     assert "pipe.InitBuffer(ascend_ub, 253952)" in code
 
 
+def test_a5_lowering_binds_dav3510_mcpu_to_target():
+    artifact = tilelang.lower(
+        dev_ub_explicit_splice(dim=64),
+        target="ascendc",
+        platform="A5",
+    )
+    func = artifact.device_mod.functions_items()[0][1]
+    assert func.attrs["target"].mcpu == "dav-3510"
+
+
+def test_lowering_rejects_explicit_mcpu_platform_conflict():
+    target = tvm.target.Target({"kind": "llvm", "model": "ascendc", "mcpu": "dav-2201"})
+    with pytest.raises(ValueError, match="conflicts with Ascend platform A5"):
+        tilelang.lower(
+            dev_ub_explicit_splice(dim=64),
+            target=target,
+            platform="A5",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Regression tests for issue #1301: PTO codegen "Find undefined Variable batch"
 # when a buffer's shape is a composite symbolic expression (e.g. batch + 1)
@@ -286,6 +307,38 @@ def _nested_composite_shape():
     return main
 
 
+def _only_composite_shape():
+    """A symbol with no standalone input extent cannot be recovered at runtime."""
+    batch = T.symbolic("batch")
+
+    @T.prim_func
+    def main(A: T.Tensor([batch + 1], "float32")):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            s = T.alloc_var("int32", init=0)
+            for _i in T.serial(batch):
+                s = s + 1
+
+    return main
+
+
+def _reversed_composite_abi_shape():
+    """Composite order is seq,batch while standalone providers are batch,seq."""
+    batch = T.symbolic("batch")
+    seq = T.symbolic("seq")
+
+    @T.prim_func
+    def main(
+        Composite: T.Tensor([seq + batch], "int32"),
+        Carrier: T.Tensor([batch, seq], "float32"),
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            s = T.alloc_var("int32", init=0)
+            for _i in T.serial(batch):
+                s = s + 1
+
+    return main
+
+
 def _compile_symbolic_and_get_source(prim_func, target, platform="auto"):
     # This suite validates lowering/codegen only.  Going through
     # ``tilelang.compile`` also constructs the Cython runtime adapter, which
@@ -337,6 +390,69 @@ def test_nested_composite_shape_codegen(target):
     _assert_shape_var_in_signature(code, "batch")
 
 
+def test_only_composite_shape_is_collected_by_native_codegen():
+    code = _compile_symbolic_and_get_source(_only_composite_shape(), target="ascendc", platform="A5")
+    _assert_shape_var_in_signature(code, "batch")
+
+
+def test_only_composite_shape_without_runtime_provider_is_rejected():
+    tilelang.disable_cache()
+    with pytest.raises(ValueError, match="no runtime provider for: batch"):
+        tilelang.compile(
+            _only_composite_shape(),
+            target="ascendc",
+            platform="A5",
+            out_idx=[],
+        )
+
+
+def test_compiled_a5_host_and_device_symbolic_abi_order_match():
+    class _FakeWrapper:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __getattr__(self, name):
+            if name.startswith("set_"):
+                return lambda *_args, **_kwargs: self
+            raise AttributeError(name)
+
+        def forward(self, _inputs, stream=-1):
+            return stream
+
+    tilelang.disable_cache()
+    with (
+        mock.patch("tilelang.jit.adapter.cython.adapter.CythonKernelWrapper", _FakeWrapper),
+        mock.patch(
+            "tilelang.jit.adapter.cython.adapter.torch.device",
+            return_value=mock.sentinel.npu_device,
+        ),
+        mock.patch("tilelang.jit.adapter.libgen.LibraryGenerator.compile_lib"),
+        mock.patch(
+            "tilelang.jit.adapter.libgen.LibraryGenerator.load_lib",
+            return_value=object(),
+        ),
+    ):
+        compiled = tilelang.compile(
+            _reversed_composite_abi_shape(),
+            target="ascendc",
+            platform="A5",
+            out_idx=[],
+        )
+
+    source = compiled.get_kernel_source()
+    kernel_signature = next(line for line in source.splitlines() if "main_kernel" in line and "(" in line)
+    host_signature = next(line for line in source.splitlines() if 'extern "C" void call(' in line)
+    assert kernel_signature.index("int64_t seq") < kernel_signature.index("int64_t batch")
+    assert host_signature.index("int64_t seq") < host_signature.index("int64_t batch")
+    assert kernel_signature.count("int64_t seq") == kernel_signature.count("int64_t batch") == 1
+    assert host_signature.count("int64_t seq") == host_signature.count("int64_t batch") == 1
+
+    symbols = list(compiled.adapter.dynamic_symbolic_map)
+    assert [str(symbol) for symbol in symbols] == ["seq", "batch"]
+    assert compiled.adapter.dynamic_symbolic_map[symbols[0]] == (1, 1)
+    assert compiled.adapter.dynamic_symbolic_map[symbols[1]] == (1, 0)
+
+
 def test_a5_native_ascendc_symbolic_shape_uses_one_runtime_abi():
     """A5 shape generalization is one ABI, not one kernel per shape.
 
@@ -349,11 +465,7 @@ def test_a5_native_ascendc_symbolic_shape_uses_one_runtime_abi():
         target="ascendc",
         platform="A5",
     )
-    signatures = [
-        line
-        for line in code.splitlines()
-        if 'extern "C"' in line and "main_kernel" in line and "(" in line
-    ]
+    signatures = [line for line in code.splitlines() if 'extern "C"' in line and "main_kernel" in line and "(" in line]
     assert len(signatures) == 1, f"expected one A5 kernel entry point, got:\n{signatures}"
     assert "int64_t batch" in signatures[0]
     assert "int64_t seq" in signatures[0]

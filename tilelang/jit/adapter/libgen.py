@@ -9,15 +9,13 @@ import subprocess
 import logging
 from pathlib import Path
 from tilelang.env import TILELANG_TEMPLATE_PATH, TILELANG_PACKAGE_PATH
+from tilelang.utils.target import (
+    ascend_mcpu_for_platform,
+    validate_ascend_platform_device,
+)
 
 logger = logging.getLogger(__name__)
 
-
-_ASCENDC_NPU_ARCH = {
-    "A2": "dav-2201",
-    "A3": "dav-2201",
-    "A5": "dav-3510",
-}
 
 _CATLASS_ARCH = {
     "A2": "2201",
@@ -144,6 +142,17 @@ class LibraryGenerator:
         if lib_path is None:
             lib_path = self.libpath
         run_mode = os.environ.get("TL_RUN_MODE", "npu")
+        if run_mode == "npu" and self.target in ("ascendc", "auto"):
+            try:
+                import torch
+
+                if hasattr(torch, "npu") and torch.npu.is_available() and torch.npu.device_count() > 0:
+                    validate_ascend_platform_device(
+                        self.platform,
+                        torch.npu.get_device_name(torch.npu.current_device()),
+                    )
+            except ImportError:
+                pass
         if run_mode == "sim":
             ascend_home = _get_ascend_home_path()
             sim_lib_path = _get_simulator_lib_path(ascend_home, self.platform)
@@ -164,16 +173,14 @@ class LibraryGenerator:
             compile_flags = resolve_compile_flags(self.target)
         if self.target == "ascendc" or self.target == "auto":
             try:
-                npu_arch = _ASCENDC_NPU_ARCH[self.platform]
-            except KeyError as err:
-                raise ValueError(
-                    f"Unsupported AscendC platform {self.platform!r}; "
-                    f"expected one of {sorted(_ASCENDC_NPU_ARCH)}"
-                ) from err
+                npu_arch = ascend_mcpu_for_platform(self.platform)
+                catlass_arch = _CATLASS_ARCH[self.platform]
+            except (KeyError, ValueError) as err:
+                raise ValueError(f"Unsupported AscendC platform {self.platform!r}") from err
             command = [
                 "bisheng",
                 f"--npu-arch={npu_arch}",
-                f"-DCATLASS_ARCH={_CATLASS_ARCH[self.platform]}",
+                f"-DCATLASS_ARCH={catlass_arch}",
                 "-std=c++17",
                 "-xasc",
                 f"-I{ASCEND_HOME_PATH}/include",

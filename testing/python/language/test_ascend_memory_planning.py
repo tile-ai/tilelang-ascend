@@ -904,5 +904,40 @@ def test_letstmt_buffer_load_shared_no_crash(target):
     )
 
 
+# ---------------------------------------------------------------------------
+# 14. Platform-specific memory capacity and overflow boundaries
+# ---------------------------------------------------------------------------
+
+
+def _lower_single_ub_allocation(num_bytes: int, platform: str):
+    @T.prim_func
+    def main(
+        A: T.Tensor((num_bytes,), "uint8"),  # type: ignore
+        B: T.Tensor((num_bytes,), "uint8"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            tmp = T.alloc_ub((num_bytes,), "uint8")
+            T.copy(A, tmp)
+            T.copy(tmp, B)
+
+    with tvm.transform.PassContext(opt_level=3, config=PASS_AUTO):
+        return tilelang.lower(main, target="ascendc", platform=platform)
+
+
+def test_a5_memory_planner_accepts_full_usable_ub_capacity():
+    artifact = _lower_single_ub_allocation(253952, "A5")
+    assert "GetWithOffset<uint8_t>(253952, 0)" in artifact.kernel_source
+
+
+def test_a3_memory_planner_rejects_a5_only_ub_capacity():
+    with pytest.raises(tvm.error.TVMError, match="Memory allocation failed"):
+        _lower_single_ub_allocation(253952, "A3")
+
+
+def test_a5_memory_planner_preserves_aligned_overflow_check():
+    with pytest.raises(tvm.error.TVMError, match="Memory allocation failed"):
+        _lower_single_ub_allocation(253952 + 32, "A5")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-n", "8"])

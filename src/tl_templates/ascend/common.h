@@ -110,9 +110,7 @@ CATLASS_DEVICE void copy_l1_to_l0a(LocalTensor<T> dstTensor,
   auto src = tla::MakeTensor(srcTensor, src_LAYOUT,
                              tla::MakeCoord(0u, 0u), Arch::PositionL1{});
 
-  constexpr auto layoutA = tla::MakeLayout<T, LayoutL0A>(srcM, srcN);
-  auto layoutAInL0 = tla::GetTileLayout(
-      layoutA, tla::MakeShape(dstM, dstN), tla::MakeCoord(0u, 0u));
+  auto layoutAInL0 = tla::MakeLayout<T, LayoutL0A>(dstM, dstN);
   auto dst = tla::MakeTensor(dstTensor, layoutAInL0,
                              tla::MakeCoord(0u, 0u), Arch::PositionL0A{});
   TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
@@ -134,9 +132,7 @@ CATLASS_DEVICE void copy_l1_to_l0b(LocalTensor<T> dstTensor,
   auto src = tla::MakeTensor(srcTensor, src_LAYOUT,
                              tla::MakeCoord(0u, 0u), Arch::PositionL1{});
 
-  constexpr auto layoutB = tla::MakeLayout<T, LayoutL0B>(srcM, srcN);
-  auto layoutBInL0 = tla::GetTileLayout(
-      layoutB, tla::MakeShape(dstM, dstN), tla::MakeCoord(0u, 0u));
+  auto layoutBInL0 = tla::MakeLayout<T, LayoutL0B>(dstM, dstN);
   auto dst = tla::MakeTensor(dstTensor, layoutBInL0,
                              tla::MakeCoord(0u, 0u), Arch::PositionL0B{});
 

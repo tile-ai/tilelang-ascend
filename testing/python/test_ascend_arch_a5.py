@@ -18,16 +18,12 @@ def _load_ascend_arch_module():
     loaded_names = [package_name, f"{package_name}.arch_base", f"{package_name}.ascend"]
     try:
         sys.modules[package_name] = package
-        base_spec = importlib.util.spec_from_file_location(
-            f"{package_name}.arch_base", arch_dir / "arch_base.py"
-        )
+        base_spec = importlib.util.spec_from_file_location(f"{package_name}.arch_base", arch_dir / "arch_base.py")
         base_module = importlib.util.module_from_spec(base_spec)
         sys.modules[base_spec.name] = base_module
         base_spec.loader.exec_module(base_module)
 
-        ascend_spec = importlib.util.spec_from_file_location(
-            f"{package_name}.ascend", arch_dir / "ascend.py"
-        )
+        ascend_spec = importlib.util.spec_from_file_location(f"{package_name}.ascend", arch_dir / "ascend.py")
         ascend_module = importlib.util.module_from_spec(ascend_spec)
         sys.modules[ascend_spec.name] = ascend_module
         ascend_spec.loader.exec_module(ascend_module)
@@ -95,3 +91,20 @@ def test_a5_without_runtime_core_query_fails_loud():
         pytest.raises(RuntimeError, match="core count is device/SKU-specific"),
     ):
         ascend_arch.Ascend(SimpleNamespace(mcpu="dav-3510"), chip_name="Ascend950")
+
+
+@pytest.mark.parametrize(
+    "mcpu, runtime_name",
+    [
+        ("dav-3510", "Ascend910B"),
+        ("dav-910b", "Ascend950PR_950z"),
+    ],
+)
+def test_target_mcpu_profile_rejects_runtime_device_mismatch(mcpu, runtime_name):
+    fake_torch = SimpleNamespace(npu=_FakeNpu(runtime_name, 4, 96 * 1024 * 1024))
+    with (
+        mock.patch.object(ascend_arch, "_TORCH_NPU_AVAILABLE", True),
+        mock.patch.object(ascend_arch, "torch", fake_torch),
+        pytest.raises(RuntimeError, match="does not match runtime device profile"),
+    ):
+        ascend_arch.Ascend(SimpleNamespace(mcpu=mcpu))
