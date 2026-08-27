@@ -12,7 +12,6 @@ import math
 
 import tilelang
 import tilelang.language as T
-import torch
 
 tilelang.cache.clear_cache()
 
