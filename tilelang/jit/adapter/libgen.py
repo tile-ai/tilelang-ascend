@@ -13,6 +13,13 @@ from tilelang.env import TILELANG_TEMPLATE_PATH, TILELANG_PACKAGE_PATH
 logger = logging.getLogger(__name__)
 
 
+_ASCENDC_NPU_ARCH = {
+    "A2": "dav-2201",
+    "A3": "dav-2201",
+    "A5": "dav-3510",
+}
+
+
 def _get_tl_root(third_party_name="3rdparty") -> str:
     """Get TL_ROOT path, fallback to package path if not set."""
     tl_root = os.environ.get("TL_ROOT")
@@ -150,9 +157,16 @@ class LibraryGenerator:
         if compile_flags is None:
             compile_flags = resolve_compile_flags(self.target)
         if self.target == "ascendc" or self.target == "auto":
+            try:
+                npu_arch = _ASCENDC_NPU_ARCH[self.platform]
+            except KeyError as err:
+                raise ValueError(
+                    f"Unsupported AscendC platform {self.platform!r}; "
+                    f"expected one of {sorted(_ASCENDC_NPU_ARCH)}"
+                ) from err
             command = [
                 "bisheng",
-                "--npu-arch=dav-2201",
+                f"--npu-arch={npu_arch}",
                 "-std=c++17",
                 "-xasc",
                 f"-I{ASCEND_HOME_PATH}/include",

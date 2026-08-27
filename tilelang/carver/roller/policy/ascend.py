@@ -58,7 +58,9 @@ class AscendDefaultPolicy(DefaultPolicy):
         self.dma_alignment = 32  # DMA requires 32-byte alignment
         
         # AI Core configuration - use actual hardware value
-        self.num_ai_cores = getattr(arch, "compute_max_core", 32)
+        self.num_ai_cores = getattr(arch, "compute_max_core", None)
+        if not isinstance(self.num_ai_cores, int) or self.num_ai_cores <= 0:
+            raise ValueError("Ascend core count must be supplied by the architecture/device query")
         
         # Memory hierarchy capacities (bytes) - prioritize arch values
         self.l0a_capacity = getattr(arch, "l0a_cap", 64 * 1024)

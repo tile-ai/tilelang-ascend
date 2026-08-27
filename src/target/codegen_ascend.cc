@@ -39,9 +39,9 @@ namespace codegen {
 
 #define ASCEND_A5_L0A_SIZE (ASCEND_A2A3_L0A_SIZE)
 #define ASCEND_A5_L0B_SIZE (ASCEND_A2A3_L0B_SIZE)
-#define ASCEND_A5_L1_SIZE (ASCEND_A2A3_L1_SIZE)
+#define ASCEND_A5_L1_SIZE (524288)
 #define ASCEND_A5_L0C_SIZE (262144)
-#define ASCEND_A5_UB_SIZE (262144)
+#define ASCEND_A5_UB_SIZE (253952)
 
 std::string getType(const DataType &dtype) {
   if (dtype.is_float16()) {

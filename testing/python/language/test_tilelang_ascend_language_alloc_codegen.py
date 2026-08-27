@@ -132,7 +132,7 @@ def dev_ub_explicit_splice(dim, block_N=128, block_size=128, live_max=64):
     return main
 
 
-def _compile_and_get_source(target):
+def _compile_and_get_source(target, platform="auto"):
     prim_func = dev_L1_explicit_splice(dim=64)
     with (
         patch("tilelang.jit.adapter.libgen.LibraryGenerator.compile_lib") as mock_compile,
@@ -147,11 +147,12 @@ def _compile_and_get_source(target):
             out_idx=[2],
             pass_configs=DEV_CONFIGS,
             target=target,
+            platform=platform,
         )
     return compiled.get_kernel_source()
 
 
-def _compile_ub_and_get_source(target):
+def _compile_ub_and_get_source(target, platform="auto"):
     prim_func = dev_ub_explicit_splice(dim=64)
     with (
         patch("tilelang.jit.adapter.libgen.LibraryGenerator.compile_lib") as mock_compile,
@@ -166,6 +167,7 @@ def _compile_ub_and_get_source(target):
             out_idx=[2],
             pass_configs=DEV_CONFIGS,
             target=target,
+            platform=platform,
         )
     return compiled.get_kernel_source()
 
@@ -218,6 +220,17 @@ def test_ub_splice_codegen(target):
         assert "TileMatL1" not in k_ub_alloc_line[0], (
             f"k_ub was incorrectly allocated as TileMatL1 instead of TileUbDataND:\n{k_ub_alloc_line[0]}"
         )
+
+
+def test_a5_native_codegen_uses_dav3510_usable_memory_sizes():
+    code = tilelang.lower(
+        dev_ub_explicit_splice(dim=64),
+        target="ascendc",
+        platform="A5",
+    ).kernel_source
+    assert "pipe.InitBuffer(ascend_l1, 524288)" in code
+    assert "pipe.InitBuffer(ascend_l0c, 262144)" in code
+    assert "pipe.InitBuffer(ascend_ub, 253952)" in code
 
 
 # ---------------------------------------------------------------------------

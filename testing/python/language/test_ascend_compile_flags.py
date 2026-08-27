@@ -91,7 +91,7 @@ def test_no_environ_mutation(clean_env):
 # ---------------------------------------------------------------------------
 
 
-def _bisheng_command(target, compile_flags, env=None):
+def _bisheng_command(target, compile_flags, env=None, platform="A3"):
     """Build the bisheng command without running it."""
     captured = {}
 
@@ -102,7 +102,7 @@ def _bisheng_command(target, compile_flags, env=None):
         captured["cmd"] = list(cmd)
         return _Ret()
 
-    gen = LibraryGenerator(target, "A3", compile_flags)
+    gen = LibraryGenerator(target, platform, compile_flags)
     gen.update_lib_code("// x")
     with (
         mock.patch("tilelang.jit.adapter.libgen._get_ascend_home_path", return_value="/a"),
@@ -128,6 +128,26 @@ def test_libgen_direct_caller_falls_back_to_derived():
     # compile_flags=None (direct/legacy caller) -> framework defaults, env still honored.
     assert "-O2" in _bisheng_command("ascendc", None)
     assert "-O3" in _bisheng_command("ascendc", None, {"TL_CCE_OPT_LEVEL": "3"})
+
+
+@pytest.mark.parametrize(
+    "target, platform, expected_arch",
+    [
+        ("ascendc", "A2", "dav-2201"),
+        ("ascendc", "A3", "dav-2201"),
+        ("ascendc", "A5", "dav-3510"),
+        ("auto", "A5", "dav-3510"),
+    ],
+)
+def test_libgen_selects_native_arch_for_platform(target, platform, expected_arch):
+    cmd = _bisheng_command(target, None, platform=platform)
+    assert f"--npu-arch={expected_arch}" in cmd
+    assert len([arg for arg in cmd if arg.startswith("--npu-arch=")]) == 1
+
+
+def test_libgen_rejects_unknown_native_platform():
+    with pytest.raises(ValueError, match="Unsupported AscendC platform"):
+        _bisheng_command("ascendc", None, platform="A9")
 
 
 # ---------------------------------------------------------------------------

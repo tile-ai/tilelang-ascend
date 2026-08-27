@@ -21,6 +21,18 @@ def is_ascend_arch(arch: TileDevice) -> bool:
 
 # Chip specifications (sizes in bytes)
 CHIP_SPECS = {
+    "Ascend950": {
+        # DAV_3510 core counts vary by physical SKU and vNPU profile.  They
+        # must come from the active device instead of a model-name default.
+        "cores": None,
+        "UB": 248 * 1024,
+        "L1": 512 * 1024,
+        "L0A": 64 * 1024,
+        "L0B": 64 * 1024,
+        "L0C": 256 * 1024,
+        "L2": None,
+        "cube": [16, 16, 16],
+    },
     "Ascend910A": {
         "cores": 32,
         "UB": 256 * 1024,
@@ -67,10 +79,11 @@ class Ascend(TileDevice):
         self.target = target
         self.platform = "ascend"
 
-        # detect npu properties if chip_name is not provided
+        # Query properties whenever possible.  In particular, an explicit A5
+        # profile still cannot supply a SKU-independent core count.
         detected_cores = None
         L2_cache_size_bytes = None
-        if chip_name is None and _TORCH_NPU_AVAILABLE:
+        if _TORCH_NPU_AVAILABLE and (chip_name is None or chip_name == "Ascend950"):
             try:
                 if torch.npu.is_available() and torch.npu.device_count() > 0:
                     # Get the current NPU device properties
@@ -79,15 +92,23 @@ class Ascend(TileDevice):
 
                     if hasattr(props, "cube_core_num"):
                         detected_cores = props.cube_core_num
-                    if hasattr(props, "l2_cache_size"):
+                    # torch_npu exposes this with a capital ``L2``.  Keep the
+                    # lowercase fallback for older vendor builds, but prefer
+                    # the public property spelling used by current CANN.
+                    if hasattr(props, "L2_cache_size"):
+                        L2_cache_size_bytes = props.L2_cache_size
+                    elif hasattr(props, "l2_cache_size"):
                         L2_cache_size_bytes = props.l2_cache_size
 
-                    if "910B" in npu_name:
-                        chip_name = "Ascend910B"
-                    elif "310P" in npu_name:
-                        chip_name = "Ascend310P"
-                    elif "910" in npu_name:
-                        chip_name = "Ascend910A"
+                    if chip_name is None:
+                        if "950" in npu_name or "910_95" in npu_name or "3510" in npu_name:
+                            chip_name = "Ascend950"
+                        elif "910B" in npu_name:
+                            chip_name = "Ascend910B"
+                        elif "310P" in npu_name:
+                            chip_name = "Ascend310P"
+                        elif "910" in npu_name:
+                            chip_name = "Ascend910A"
 
                     logger.debug(
                         f"Detected Ascend NPU: {npu_name}, using chip profile: {chip_name}"
@@ -102,7 +123,9 @@ class Ascend(TileDevice):
             mcpu = getattr(target, "mcpu", None)
             if mcpu:
                 mcpu = mcpu.lower()
-                if "910b" in mcpu:
+                if "950" in mcpu or "910_95" in mcpu or "3510" in mcpu:
+                    chip_name = "Ascend950"
+                elif "910b" in mcpu:
                     chip_name = "Ascend910B"
                 elif "310p" in mcpu:
                     chip_name = "Ascend310P"
@@ -119,6 +142,11 @@ class Ascend(TileDevice):
         # AI Core size
         if detected_cores is not None and detected_cores > 0:
             self.compute_max_core = detected_cores
+        elif spec["cores"] is None:
+            raise RuntimeError(
+                f"{chip_name} core count is device/SKU-specific; "
+                "query torch.npu.get_device_properties(...).cube_core_num on the target device"
+            )
         else:
             self.compute_max_core = spec["cores"]
 
@@ -130,6 +158,11 @@ class Ascend(TileDevice):
         self.l0c_cap = spec["L0C"]
         if L2_cache_size_bytes is not None and L2_cache_size_bytes > 0:
             self.l2_cache_size_bytes = L2_cache_size_bytes
+        elif spec["L2"] is None:
+            raise RuntimeError(
+                f"{chip_name} L2 size is device/SKU-specific; "
+                "query torch.npu.get_device_properties(...).L2_cache_size on the target device"
+            )
         else:
             self.l2_cache_size_bytes = spec["L2"]
 
@@ -180,7 +213,7 @@ class Ascend(TileDevice):
 def is_cube_supported_precision(in_dtype: str, accum_dtype: str, arch: TileDevice) -> bool:
     if not isinstance(arch, Ascend):
         return False
-    if arch.chip_name == "Ascend910A" or arch.chip_name == "Ascend910B" or arch.chip_name == "Ascend310P":
+    if arch.chip_name in {"Ascend910A", "Ascend910B", "Ascend310P", "Ascend950"}:
         # Ascend NPU supports float16 and bfloat16 tensor core operations
         return in_dtype in ["float16", "bfloat16"] and accum_dtype in ["float16", "bfloat16", "float32"]
     else:
