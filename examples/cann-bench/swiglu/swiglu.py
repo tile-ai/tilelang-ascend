@@ -7,7 +7,6 @@ Dynamic tiling (block_M/block_N by output cols) + per-case stages selection.
 
 import tilelang
 import tilelang.language as T
-import torch
 
 tilelang.cache.clear_cache()
 

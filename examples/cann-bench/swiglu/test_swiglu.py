@@ -55,10 +55,7 @@ for shape, dim, dtype in test_configs:
     b = swi_glu(a, dim=dim)
     ref = _golden(a, dim=dim)
     passed, ratio, max_diff = _check_precision(b.cpu(), ref.cpu(), dtype)
-    assert passed, (
-        f"precision fail: shape={shape} dtype={dtype} "
-        f"matched_ratio={ratio:.4f} max_diff={max_diff:.3e}"
-    )
+    assert passed, f"precision fail: shape={shape} dtype={dtype} matched_ratio={ratio:.4f} max_diff={max_diff:.3e}"
     print(f"  PASS  matched_ratio={ratio:.4f}  max_diff={max_diff:.3e}")
 
 print("Kernel Output Match!")
