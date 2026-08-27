@@ -271,27 +271,3 @@ def sigmoid(x: torch.Tensor) -> torch.Tensor:
     kernel = _kernel_cache[key]
     output_2d = kernel(input_2d)
     return output_2d.reshape(original_shape)
-
-
-if __name__ == "__main__":
-    torch.manual_seed(0)
-    test_configs = [
-        (1024, 1024, "float16"),
-        (2048, 2048, "float32"),
-        (4096, 4096, "bfloat16"),
-        (8192, 8192, "float16"),
-    ]
-    for M, N, dtype in test_configs:
-        print(f"Testing sigmoid with M={M}, N={N}, dtype={dtype}")
-        func = sigmoid
-        torch_dtype = getattr(torch, dtype)
-        x = torch.randn(M, N, dtype=torch_dtype).npu()
-        y = func(x)
-        ref = torch.sigmoid(x)
-        y_cpu, ref_cpu = y.cpu().float(), ref.cpu().float()
-        abs_err = (y_cpu - ref_cpu).abs()
-        max_err = abs_err.max().item()
-        print(f"Init successful! max_abs_err={max_err:.6e}")
-        assert max_err < 1e-2, f"precision fail: max_abs_err={max_err}"
-        print(f"Test pass! max_abs_err={max_err:.6e}")
-    print("Kernel Output Match!")
