@@ -9,6 +9,8 @@ the final NPU-gated regression covers the intentionally unsynchronized runtime
 case.
 """
 
+import json
+from pathlib import Path
 import types
 from unittest import mock
 
@@ -143,11 +145,27 @@ def test_libgen_selects_native_arch_for_platform(target, platform, expected_arch
     cmd = _bisheng_command(target, None, platform=platform)
     assert f"--npu-arch={expected_arch}" in cmd
     assert len([arg for arg in cmd if arg.startswith("--npu-arch=")]) == 1
+    expected_catlass_arch = "3510" if platform == "A5" else "2201"
+    assert f"-DCATLASS_ARCH={expected_catlass_arch}" in cmd
+    assert len([arg for arg in cmd if arg.startswith("-DCATLASS_ARCH=")]) == 1
 
 
 def test_libgen_rejects_unknown_native_platform():
     with pytest.raises(ValueError, match="Unsupported AscendC platform"):
         _bisheng_command("ascendc", None, platform="A9")
+
+
+def test_documented_manual_a2_aot_sets_catlass_arch():
+    """Manual Bisheng callers must match the native A2 LibraryGenerator flags."""
+    notebook = Path(__file__).parents[3] / "docs/notebook/aot_jit.ipynb"
+    cells = json.loads(notebook.read_text())["cells"]
+    manual_a2_commands = [
+        "".join(cell.get("source", []))
+        for cell in cells
+        if "bisheng --npu-arch=dav-2201" in "".join(cell.get("source", []))
+    ]
+    assert manual_a2_commands
+    assert all("-DCATLASS_ARCH=2201" in command for command in manual_a2_commands)
 
 
 # ---------------------------------------------------------------------------

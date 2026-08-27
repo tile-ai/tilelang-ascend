@@ -1,8 +1,9 @@
 import pytest
-from unittest.mock import patch
 
 import tilelang
 import tilelang.language as T
+from tilelang import tvm
+from tilelang.transform.pass_config import process_default_pass_config
 
 
 DEV_CONFIGS = {
@@ -134,42 +135,26 @@ def dev_ub_explicit_splice(dim, block_N=128, block_size=128, live_max=64):
 
 def _compile_and_get_source(target, platform="auto"):
     prim_func = dev_L1_explicit_splice(dim=64)
-    with (
-        patch("tilelang.jit.adapter.libgen.LibraryGenerator.compile_lib") as mock_compile,
-        patch(
-            "tilelang.jit.adapter.libgen.LibraryGenerator.load_lib",
-            return_value=None,
-        ),
-    ):
-        mock_compile.return_value = None
-        compiled = tilelang.compile(
+    pass_configs = process_default_pass_config(target, DEV_CONFIGS)
+    with tvm.transform.PassContext(opt_level=3, config=pass_configs):
+        compiled = tilelang.lower(
             prim_func,
-            out_idx=[2],
-            pass_configs=DEV_CONFIGS,
             target=target,
             platform=platform,
         )
-    return compiled.get_kernel_source()
+    return compiled.kernel_source
 
 
 def _compile_ub_and_get_source(target, platform="auto"):
     prim_func = dev_ub_explicit_splice(dim=64)
-    with (
-        patch("tilelang.jit.adapter.libgen.LibraryGenerator.compile_lib") as mock_compile,
-        patch(
-            "tilelang.jit.adapter.libgen.LibraryGenerator.load_lib",
-            return_value=None,
-        ),
-    ):
-        mock_compile.return_value = None
-        compiled = tilelang.compile(
+    pass_configs = process_default_pass_config(target, DEV_CONFIGS)
+    with tvm.transform.PassContext(opt_level=3, config=pass_configs):
+        compiled = tilelang.lower(
             prim_func,
-            out_idx=[2],
-            pass_configs=DEV_CONFIGS,
             target=target,
             platform=platform,
         )
-    return compiled.get_kernel_source()
+    return compiled.kernel_source
 
 
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
@@ -301,17 +286,20 @@ def _nested_composite_shape():
     return main
 
 
-def _compile_symbolic_and_get_source(prim_func, target):
-    with (
-        patch("tilelang.jit.adapter.libgen.LibraryGenerator.compile_lib") as mock_compile,
-        patch(
-            "tilelang.jit.adapter.libgen.LibraryGenerator.load_lib",
-            return_value=None,
-        ),
-    ):
-        mock_compile.return_value = None
-        compiled = tilelang.compile(prim_func, target=target)
-    return compiled.get_kernel_source()
+def _compile_symbolic_and_get_source(prim_func, target, platform="auto"):
+    # This suite validates lowering/codegen only.  Going through
+    # ``tilelang.compile`` also constructs the Cython runtime adapter, which
+    # requires a torch build that has registered the ``npu`` device even though
+    # compile/load are mocked.  ``lower`` is the direct, device-independent
+    # consumer for the generated source under test, but it must use the same
+    # target defaults and PassContext as production ``compile``.
+    pass_configs = process_default_pass_config(target, None)
+    with tvm.transform.PassContext(opt_level=3, config=pass_configs):
+        return tilelang.lower(
+            prim_func,
+            target=target,
+            platform=platform,
+        ).kernel_source
 
 
 def _assert_shape_var_in_signature(code, *var_names):
@@ -347,6 +335,28 @@ def test_nested_composite_shape_codegen(target):
     ``batch``."""
     code = _compile_symbolic_and_get_source(_nested_composite_shape(), target)
     _assert_shape_var_in_signature(code, "batch")
+
+
+def test_a5_native_ascendc_symbolic_shape_uses_one_runtime_abi():
+    """A5 shape generalization is one ABI, not one kernel per shape.
+
+    ``batch`` and ``seq`` must remain runtime parameters in the single emitted
+    AscendC entry point.  This deliberately tests ``platform="A5"`` so the
+    generic symbolic-shape coverage cannot mask a DAV3510 lowering regression.
+    """
+    code = _compile_symbolic_and_get_source(
+        _multi_var_composite_shape(),
+        target="ascendc",
+        platform="A5",
+    )
+    signatures = [
+        line
+        for line in code.splitlines()
+        if 'extern "C"' in line and "main_kernel" in line and "(" in line
+    ]
+    assert len(signatures) == 1, f"expected one A5 kernel entry point, got:\n{signatures}"
+    assert "int64_t batch" in signatures[0]
+    assert "int64_t seq" in signatures[0]
 
 
 if __name__ == "__main__":

@@ -19,6 +19,12 @@ _ASCENDC_NPU_ARCH = {
     "A5": "dav-3510",
 }
 
+_CATLASS_ARCH = {
+    "A2": "2201",
+    "A3": "2201",
+    "A5": "3510",
+}
+
 
 def _get_tl_root(third_party_name="3rdparty") -> str:
     """Get TL_ROOT path, fallback to package path if not set."""
@@ -167,6 +173,7 @@ class LibraryGenerator:
             command = [
                 "bisheng",
                 f"--npu-arch={npu_arch}",
+                f"-DCATLASS_ARCH={_CATLASS_ARCH[self.platform]}",
                 "-std=c++17",
                 "-xasc",
                 f"-I{ASCEND_HOME_PATH}/include",
