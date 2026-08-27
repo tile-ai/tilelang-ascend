@@ -7,6 +7,7 @@ Dynamic tiling (block_M/block_N by output cols) + per-case stages selection.
 
 import tilelang
 import tilelang.language as T
+import torch
 
 tilelang.cache.clear_cache()
 
@@ -272,3 +273,20 @@ def swi_glu(input, dim=-1):
         output = output.permute(inv_perm).contiguous()
 
     return output
+
+
+# ---------------------------------------------------------------------------
+# Standalone run entry (smoke test, picked up by bench_test.sh)
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import torch.nn.functional as F
+
+    torch.manual_seed(0)
+    a = torch.randn((1024, 2048), dtype=torch.float16, device="cpu").npu()
+    b = swi_glu(a, dim=-1)
+    x = a.to(torch.float)
+    x0, x1 = x.chunk(2, dim=-1)
+    ref = (F.silu(x0) * x1).to(torch.float16)
+    torch.testing.assert_close(b.cpu().float(), ref.float(), rtol=1e-3, atol=1e-3)
+    print("Kernel Output Match!")
