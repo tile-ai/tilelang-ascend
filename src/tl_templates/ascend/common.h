@@ -99,20 +99,17 @@ template <typename T, uint32_t srcM, uint32_t srcN, bool transpose = false>
 CATLASS_DEVICE void copy_l1_to_l0a(LocalTensor<T> dstTensor,
                                    LocalTensor<T> srcTensor, uint32_t dstM,
                                    uint32_t dstN) {
-  using LayoutL1Tag =
-      std::conditional_t<transpose,
-                         LayoutL1T,
-                         LayoutL1>;
+  using LayoutL1Tag = std::conditional_t<transpose, LayoutL1T, LayoutL1>;
   constexpr auto layout = tla::MakeLayout<T, LayoutL1Tag>(
       transpose ? srcN : srcM, transpose ? srcM : srcN);
-  auto src_LAYOUT = tla::GetTileLayout(
-      layout, tla::MakeShape(dstM, dstN), tla::MakeCoord(0u, 0u));
-  auto src = tla::MakeTensor(srcTensor, src_LAYOUT,
-                             tla::MakeCoord(0u, 0u), Arch::PositionL1{});
+  auto src_LAYOUT = tla::GetTileLayout(layout, tla::MakeShape(dstM, dstN),
+                                       tla::MakeCoord(0u, 0u));
+  auto src = tla::MakeTensor(srcTensor, src_LAYOUT, tla::MakeCoord(0u, 0u),
+                             Arch::PositionL1{});
 
   auto layoutAInL0 = tla::MakeLayout<T, LayoutL0A>(dstM, dstN);
-  auto dst = tla::MakeTensor(dstTensor, layoutAInL0,
-                             tla::MakeCoord(0u, 0u), Arch::PositionL0A{});
+  auto dst = tla::MakeTensor(dstTensor, layoutAInL0, tla::MakeCoord(0u, 0u),
+                             Arch::PositionL0A{});
   TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
   tileCopier(dst, src);
 }
@@ -121,20 +118,17 @@ template <typename T, uint32_t srcM, uint32_t srcN, bool transpose = false>
 CATLASS_DEVICE void copy_l1_to_l0b(LocalTensor<T> dstTensor,
                                    LocalTensor<T> srcTensor, uint32_t dstM,
                                    uint32_t dstN) {
-  using LayoutL1Tag =
-      std::conditional_t<transpose,
-                         LayoutL1T,
-                         LayoutL1>;
+  using LayoutL1Tag = std::conditional_t<transpose, LayoutL1T, LayoutL1>;
   constexpr auto layout = tla::MakeLayout<T, LayoutL1Tag>(
       transpose ? srcN : srcM, transpose ? srcM : srcN);
-  auto src_LAYOUT = tla::GetTileLayout(
-      layout, tla::MakeShape(dstM, dstN), tla::MakeCoord(0u, 0u));
-  auto src = tla::MakeTensor(srcTensor, src_LAYOUT,
-                             tla::MakeCoord(0u, 0u), Arch::PositionL1{});
+  auto src_LAYOUT = tla::GetTileLayout(layout, tla::MakeShape(dstM, dstN),
+                                       tla::MakeCoord(0u, 0u));
+  auto src = tla::MakeTensor(srcTensor, src_LAYOUT, tla::MakeCoord(0u, 0u),
+                             Arch::PositionL1{});
 
   auto layoutBInL0 = tla::MakeLayout<T, LayoutL0B>(dstM, dstN);
-  auto dst = tla::MakeTensor(dstTensor, layoutBInL0,
-                             tla::MakeCoord(0u, 0u), Arch::PositionL0B{});
+  auto dst = tla::MakeTensor(dstTensor, layoutBInL0, tla::MakeCoord(0u, 0u),
+                             Arch::PositionL0B{});
 
   TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
   tileCopier(dst, src);
