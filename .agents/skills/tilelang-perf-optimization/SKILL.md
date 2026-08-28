@@ -133,7 +133,8 @@ Edit 调用方、dispatch 或 planner 前，再写 `[KERNEL-REUSE-AUDIT]` 复核
 
 | 算子类型 | 文档 | 核心优化技术 |
 |---------|------|-------------|
-| Vector 型 | [RoPE 优化](references/best-practices/rope-developer-mode.md)、[归约遍数融合](references/vector-practices/vector_reduce_pass_fusion.md) | | NPU 内动态生成 Mask、Tile API 向量化、参数简化 |
+| Vector 型 | [RoPE 优化](references/best-practices/rope-developer-mode.md)、[归约遍数融合](references/vector-practices/vector_reduce_pass_fusion.md) | NPU 内动态生成 Mask、Tile API 向量化、参数简化 |
+| Vector 型（归一化） | optimization-guide.md §2.18 + §2.19 | 自适应 tiling、单遍扫描、output_ub 分离、rsqrt Newton、Pass 2 Double Buffer、双 kernel 策略 |
 | Cube 型 | [GEMM Intrinsic](references/best-practices/gemm_intrinsic_optimize.md) | 多缓冲流水线、细粒度 Flag 同步、MMA intrinsic、L0 分块、负载均衡 |
 | CV 融合型 | [Flash Attention](references/best-practices/flash_attn_optimize.md) | num_stages 流水线、批量 Softmax、Cross-core Semaphore、数据布局优化；**多 shape 适配**（BSND 免转置、Sq==1 decode 窄块、加性 mask 屏蔽变长 Skv） |
 

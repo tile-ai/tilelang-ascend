@@ -290,6 +290,21 @@ T.wait_flag("mte3", "mte2", 1)
 >
 > **自检方法**：每个 `[2, ...]` buffer 必须能找到对应的 `T.copy(GM_buf, ...)` 或 `T.copy(..., GM_buf)` 语句。找不到 → 该 buffer 改为单份。
 
+#### 2.2.2 Pass 1 vs Pass 2 双缓冲可行性差异（两遍扫描算子）
+
+> **适用场景**：RMSNorm / LayerNorm 等两遍扫描算子。
+
+**关键约束**：Pass 1 和 Pass 2 的双缓冲可行性完全不同：
+
+| Pass | MTE3 写回 | 双缓冲可行性 | 原因 |
+|------|----------|------------|------|
+| Pass 2（归一化+写回） | ✅ 有 | **可行** | MTE3 写回后通过 `mte3→mte2` flag 释放 buffer，形成 `MTE2→V→MTE3→MTE2` 完整闭环 |
+| Pass 1（累加统计量） | ❌ 无 | **不可行** | 无 MTE3 中继，`v→mte2` flag 在 AIV Vector 硬件上**不可用**（死锁），只能用 `barrier_all()` |
+
+**AIV Vector 硬件 flag 通道限制**：`mte3→mte2` ✅、`mte2→v` ✅、`v→mte3` ✅、`v→mte2` ❌（不可用，死锁）。
+
+**T.Pipelined 在 Pass 1 的表现**：`AUTO_SYNC=False` 下不自动插入 MTE2→V 同步（全 NaN）；配合 `barrier_all` 时同步所有引擎，无重叠。
+
 ### 2.3 MTE2 预取优化（Cube 核）
 
 **适用场景**：
@@ -507,6 +522,16 @@ with T.Kernel(core_num, is_npu=True) as (cid, vid):
         ...
         T.copy(result, workspace[cid, :, :])  # workspace[cid] 被复用
 ```
+
+**失效条件**（实测确认）：
+
+| 失效场景 | 原因 | 实测案例 |
+|---------|------|---------|
+| D 极小（≤8）+ S 极大 | 软件循环开销 > launch 节省；硬件 block scheduler 更高效 | RMSNorm D=2 S=1000003：Fixed Core 慢 42% |
+| 每 block 计算量极小 | 软件 `T.serial` scalar 开销占比高 | 同上 |
+| block 间无数据依赖 | 硬件 scheduler 自动流水线化 | Vector 算子 |
+
+> **判断准则**：Fixed Core 适用于"每 block 有大量计算 + workspace 复用"。对"计算量小 + 无依赖"场景会变慢。实测下降 >5% 立即回退。
 
 ### 2.10 pass_configs 调优（最后手段）
 
@@ -1687,3 +1712,100 @@ for i in range(n):
 | reduce_sum 编译报错 `Invalid reduce output shape` | 输出用了 `[rows, 1]` 2D buffer 而非 1D `[rows]` | output 改为 `alloc_ub([rows], dtype)` 纯 1D，见 §2.13 P1 |
 | cpg 较大时 aicore exception（UB 越界） | 固定 block_S=256 导致多行 tile buffer 溢出 UB | 使用 `find_block_S()` 动态计算 + 开启 `MEMORY_PLANNING`，见 §2.13 |
 | `T.copy` 编译报 `StructuralEqual check failed` | 试图用 copy 做 1D↔2D shape 转换 | 改用 `T.tile.fill` 跨维度值传递，见 §2.13 P4 |
+| `mul_add_dst` 性能反不如 `mul+add` | Ascend 910B3/910C 上 `mul_add_dst` 指令延迟可能高于独立 `mul+add` | 实测对比，若 `mul_add_dst` 变慢则回退为 `mul+add`，见 §2.18 |
+| `T.tile.rsqrt` 精度不足（~1e-3） | Ascend 硬件 rsqrt 指令是查表近似，精度约 1e-3 | 加 Newton 迭代 `y1 = y0 * (1.5 - 0.5 * x * y0²)`，精度提升到 ~1e-6，见 §2.18 |
+| UB buffer 命名 `tmp_ub` 导致编译报 "Duplicate buffer name" | `AscendMemoryPlanning` pass 内部临时 buffer 也用 `tmp_ub` 命名 | 避免使用 `tmp_ub`，用语义化命名如 `newton_ub`/`accum_ub`，见 §2.18 |
+| `T.copy(UB→UB)` 性能无提升 | `T.copy(UB→UB)` 生成 `copy_ub_to_ub` 走 MTE2 引擎（非 V），无法与 GM→UB 重叠 | gamma 预加载等 UB→UB 优化无效；保持 GM→UB 原路径，见 §2.18 |
+| cann-bench profiler 报 `OSError: could not get source code` | profiler 子进程清除 `linecache.cache`，`@T.prim_func` 的 `inspect.getsourcelines` 失败 | 在 `_get_kernel` 中调 `_ensure_source_cached()` 预缓存源代码，见 §2.19 |
+
+---
+
+## 五、算子类专属优化
+
+### 2.18 两遍扫描归一化算子优化（RMSNorm / LayerNorm）
+
+**适用场景**：RMSNorm、LayerNorm 等"Pass 1 累加统计量 + Pass 2 归一化+写回"的两遍扫描归一化算子。纯 Vector 型（无 Cube 操作）。
+
+**优化模式清单**（按实施顺序）：
+
+#### 优化 1：自适应 tiling（host 侧 `_select_tiling`）
+
+**适用条件**：所有 case（无限制）
+
+**实现**：host 侧根据 S、D、dtype 动态选择 block_M / block_N，按 UB 预算反推。候选 block_M: (1024, 512, 256, 128, 64, 32, 16)。评分公式: `n_num * 100000 + m_penalty`（n_num 优先减少 GM 读取，m_num ∈ [24, 48] 避免空闲核和过多 launch）。
+
+**收益**：RMSNorm 实测 0.43x → 0.58x（+35%）
+
+#### 优化 2：单遍扫描（n_num=1 时 Pass 2 跳过 GM 读取）
+
+**适用条件**：`n_num == 1`（block_N ≥ D）
+
+**实现**：Pass 1 只读 a_ub（cast 到 a_cal），不修改 a_ub。Pass 2 可跳过 `T.copy(A, a_ub)`，复用 Pass 1 的 a_ub。jit 闭包加 `single_pass = (n_num_int == 1)` 编译期常量。
+
+**收益**：n_num=1 的 case 减少 1 次 GM→UB 读取，+2-3%
+
+#### 优化 3：output_ub 分离 a_ub 双重写入
+
+**适用条件**：fp16/bf16 dtype（需 cast back 到低精度）
+
+**问题**：Pass 2 中 `T.tile.cast(a_ub, a_cal, CAST_RINT)` 让 a_ub 被 V 写入，与 MTE2 写入冲突，阻止 Double Buffer。
+
+**实现**：引入独立 output_ub 做 cast back，使 a_ub 只被 MTE2 写入。
+
+**收益**：为 Pass 2 Double Buffer 铺路
+
+#### 优化 4：rsqrt Newton 迭代（精度修复）
+
+**适用条件**：使用 `T.tile.rsqrt` 且精度要求 rtol < 1e-3
+
+**问题**：`T.tile.rsqrt` 精度约 1e-3（查表近似），对 fp32 rtol=1e-4 不足。
+
+**实现**：`y1 = y0 * (1.5 - 0.5 * x * y0²)`，精度提升到 ~1e-6。
+
+> **UB buffer 命名约束**：不能命名为 `tmp_ub`（与 `AscendMemoryPlanning` pass 内部临时 buffer 冲突），用 `newton_ub` 等语义化命名。
+
+#### 优化 5：gamma 1D→2D 广播乘
+
+用 `T.tile.broadcast + T.tile.mul`，不要用 `T.Parallel` 赋值与 `T.tile.*` 混用。
+
+#### 优化 6：T.copy(UB→UB) 走 MTE2 的限制
+
+`T.copy(UB→UB)` 生成 `copy_ub_to_ub` 走 MTE2 引擎，不能与 GM→UB 重叠。gamma 预加载类优化**无效**。
+
+#### 优化 7：mul_add_dst 硬件性能反转
+
+`mul_add_dst` 在 910B3/910C 上可能比 `mul+add` **更慢**。必须实测验证，不更快则回退。
+
+#### 优化 8：Pass 2 Double Buffer（Expert 模式）
+
+**适用条件**：n_num > 1 + Expert 模式（AUTO_SYNC=False）
+
+**前置条件**：已实施优化 3（output_ub 分离）；Pass 2 无跨迭代累加器；inv_rms_tile 在循环外计算。
+
+**实现**：参考 §2.2 Vector 核三阶段流水 + §2.2.0 同步决策表。Pass 1 不可双缓冲（见 §2.2.2）。
+
+**收益**：大 D case 耗时下降 10-17%
+
+#### 完整优化检查清单
+
+- [ ] 自适应 tiling 已实施？
+- [ ] 单遍扫描已实施（n_num=1）？
+- [ ] output_ub 已分离（fp16/bf16）？
+- [ ] rsqrt Newton 迭代已加？
+- [ ] gamma 广播用 `broadcast + mul`？
+- [ ] UB buffer 无 `tmp_ub` 命名？
+- [ ] mul_add_dst 已实测验证？
+- [ ] Pass 2 Double Buffer 已实施（n_num>1）？
+- [ ] Pass 1 保持串行（barrier_all）？
+
+---
+
+### 2.19 双 kernel 策略（n_num 自适应模式选择）
+
+**适用场景**：同一算子在不同 shape 下有截然不同的最优 pass_configs，且 pass_configs 不能在 jit 闭包内动态切换。
+
+**实现**：定义两个 jit 函数（Hybrid + Expert），host 侧按 n_num 选择。详见 SKILL.md 最佳实践表。
+
+#### cann-bench profiler linecache 适配
+
+profiler 子进程清除 `linecache.cache`，导致 `OSError: could not get source code`。在 `_get_kernel` 中调 `_ensure_source_cached()` 预缓存源代码。
