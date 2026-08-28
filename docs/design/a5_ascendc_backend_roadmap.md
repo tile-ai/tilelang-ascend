@@ -1,7 +1,9 @@
 # A5 AscendC backend roadmap
 
-Status: architecture decision and implementation roadmap  
-Scope: `target="ascendc"` on the A5 platform  
+Status: architecture decision and implementation roadmap
+
+Scope: `target="ascendc"` on the A5 platform
+
 Non-goal: changing or removing the independent PTO backend
 
 ## Decision
