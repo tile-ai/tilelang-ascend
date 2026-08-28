@@ -62,8 +62,13 @@ contract.
 
 ### Phase 0 — direct A5 AscendC PoC
 
-Use a small static-shape vector kernel that does not need Catlass/Cube. The
-real consumer must prove, from a fresh build:
+Use a small static-shape vector kernel that does not exercise Catlass/Cube.
+Because the current code generator injects `common.h` and that header
+unconditionally includes Catlass and binds `ArchTag=AtlasA2`, Phase 0 must
+first split the direct AscendC/vector base header from the optional
+Catlass/Cube extension. The generated source for this PoC must have no Catlass
+or `AtlasA2` compile-time dependency. The real consumer must then prove, from a
+fresh build:
 
 1. `target="ascendc"` remains selected with no PTO fallback;
 2. the emitted `.cpp` contains AscendC kernel code and is retained;
@@ -74,8 +79,11 @@ real consumer must prove, from a fresh build:
 6. a known-bad source mutation fails the same end-to-end gate.
 
 The first implementation surfaces are platform-to-compiler-option resolution
-in `libgen.py`, explicit target/platform validation, and focused tests that
-prove A3 and PTO behavior do not drift.
+in `libgen.py`; header emission in `CodeGenTileLangAscend::Finish`; the split
+between the direct AscendC base templates and Catlass extensions; explicit
+target/platform validation; and focused generated-source/compile tests that
+prove the vector path is Catlass-independent while A3 and PTO behavior do not
+drift.
 
 ### Phase 1 — dynamic host/tiling closure
 
@@ -92,12 +100,12 @@ claim.
 
 ### Phase 2 — A5 Cube/Catlass interface
 
-After the direct vector route and host/tiling contract pass, remove the
-unconditional `AtlasA2` assumption and introduce an explicit A5 architecture
-interface for Cube kernels. Audit Catlass headers, layouts, memory capacities,
-and compiler flags against the actual A5 toolchain before enabling this path.
-Keep vector-only A5 kernels independent of Catlass so an unavailable Cube
-interface does not block the Phase-0 product route.
+After the direct vector route and host/tiling contract pass, add an explicit A5
+architecture interface to the Catlass extension for Cube kernels. Audit
+Catlass headers, layouts, memory capacities, and compiler flags against the
+actual A5 toolchain before enabling this path. Preserve the Phase-0 separation:
+an unavailable Cube interface must not reintroduce a Catlass dependency into
+vector-only A5 kernels.
 
 The dependency present in this repository is named **Catlass**. “Catalyst” has
 no defined compiler surface here; it must be treated as an unresolved naming
