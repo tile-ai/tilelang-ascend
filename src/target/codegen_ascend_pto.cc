@@ -437,6 +437,29 @@ CodeGenTileLangAscendPto::GetCompareMaskInfo(const CallNode *dst_call,
   int32_t col = shape[1].as<IntImmNode>()->value;
   int32_t valid_col = shape[3].as<IntImmNode>()->value;
 
+  // Memory planning may reuse a wider tensor buffer for the packed uint8
+  // predicate.  In that case buffer_shapess_ describes the backing storage
+  // (for example [4, 64] half) rather than the logical mask ([4, 8] uint8).
+  // Recover the mask width from its access extent so PTO sees the same
+  // 32-byte-aligned row stride as it would for a standalone mask allocation.
+  const DataType access_dtype = dst_call->args[0].dtype();
+  const auto dtype_it = buffer_dtypes_.find(buffer_var.get());
+  const bool is_retyped =
+      dtype_it != buffer_dtypes_.end() && dtype_it->second != access_dtype;
+  if (is_retyped) {
+    const auto *extent_imm = dst_call->args[3].as<IntImmNode>();
+    row = src_info.row;
+    ICHECK_GT(row, 0);
+    if (extent_imm) {
+      ICHECK_EQ(extent_imm->value % row, 0)
+          << "Compare mask extent must be divisible by its row count";
+      valid_col = static_cast<int32_t>(extent_imm->value / row);
+    } else {
+      valid_col = (src_info.col + 7) / 8;
+    }
+    col = GetValidShape(valid_col, getType(access_dtype));
+  }
+
   int32_t slice_valid_row = src_info.slice_valid_row;
   int32_t slice_valid_col =
       std::min(valid_col, (src_info.slice_valid_col + 7) / 8);
