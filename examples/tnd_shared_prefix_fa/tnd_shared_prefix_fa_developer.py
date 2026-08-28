@@ -540,9 +540,150 @@ def test_l0():
     return ok
 
 
+# ========== L1 functional tests ==========
+def test_l1():
+    ok = True
+
+    ok &= run_test_case(
+        batch=2,
+        q_head=4,
+        kv_head=2,
+        head_dim=64,
+        shared_prefix_len=64,
+        private_q_lens=[128, 128],
+        block_M=128,
+        block_N=64,
+        dtype_str="bfloat16",
+        tag="l1_causal_bf16",
+        causal_mask=True,
+        threads=1,
+    )
+    ok &= run_test_case(
+        batch=4,
+        q_head=8,
+        kv_head=2,
+        head_dim=64,
+        shared_prefix_len=64,
+        private_q_lens=[100, 200, 150, 64],
+        block_M=128,
+        block_N=64,
+        dtype_str="float16",
+        tag="l1_varlen_mixed",
+        threads=1,
+    )
+    ok &= run_test_case(
+        batch=3,
+        q_head=4,
+        kv_head=4,
+        head_dim=64,
+        shared_prefix_len=64,
+        private_q_lens=[128, 128, 128],
+        block_M=128,
+        block_N=64,
+        dtype_str="float16",
+        tag="l1_mha_group1",
+        threads=1,
+    )
+    ok &= run_test_case(
+        batch=1,
+        q_head=4,
+        kv_head=2,
+        head_dim=64,
+        shared_prefix_len=64,
+        private_q_lens=[300],
+        block_M=128,
+        block_N=64,
+        dtype_str="float16",
+        tag="l1_single_request",
+    )
+    ok &= run_test_case(
+        batch=5,
+        q_head=4,
+        kv_head=2,
+        head_dim=64,
+        shared_prefix_len=0,
+        private_q_lens=[128, 150, 64, 200, 100],
+        block_M=128,
+        block_N=64,
+        dtype_str="float16",
+        tag="l1_no_shared_prefix",
+        threads=1,
+    )
+    ok &= run_test_case(
+        batch=2,
+        q_head=4,
+        kv_head=2,
+        head_dim=64,
+        shared_prefix_len=128,
+        private_q_lens=[0, 128],
+        block_M=128,
+        block_N=64,
+        dtype_str="float16",
+        tag="l1_empty_private",
+    )
+    return ok
+
+
+# ========== L2 anomaly tests (negative, expect assert/error) ==========
+def test_l2():
+    print("[L2] GQA constraint: q_head not divisible by kv_head")
+    try:
+        tnd_shared_prefix_fa_developer(
+            q_head=7,
+            kv_head=2,
+            head_dim=64,
+            shared_prefix_len=64,
+            max_private_kv_len=128,
+            total_q=192,
+            total_private_kv=128,
+            total_q_blocks=2,
+            block_M=128,
+            block_N=64,
+        )
+        print("[L2_FAIL] l2_bad_gqa: expected AssertionError")
+        return False
+    except AssertionError:
+        print("[L2_PASS] l2_bad_gqa: AssertionError raised as expected")
+    return True
+
+
+# ========== Boundary tests (extreme values) ==========
+def test_boundary():
+    ok = True
+
+    ok &= run_test_case(
+        batch=1,
+        q_head=2,
+        kv_head=2,
+        head_dim=64,
+        shared_prefix_len=64,
+        private_q_lens=[64],
+        block_M=128,
+        block_N=64,
+        dtype_str="float16",
+        tag="boundary_minimal",
+        threads=1,
+    )
+    ok &= run_test_case(
+        batch=2,
+        q_head=4,
+        kv_head=2,
+        head_dim=64,
+        shared_prefix_len=128,
+        private_q_lens=[128, 128],
+        block_M=128,
+        block_N=64,
+        dtype_str="float16",
+        tag="boundary_all_aligned_causal",
+        causal_mask=True,
+        threads=1,
+    )
+    return ok
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--level", default="l0", choices=["l0", "all"])
+    parser.add_argument("--level", default="l0", choices=["l0", "l1", "l2", "boundary", "all"])
     args = parser.parse_args()
 
     tilelang.disable_cache()
@@ -551,6 +692,12 @@ if __name__ == "__main__":
     ok = True
     if args.level in ("l0", "all"):
         ok &= test_l0()
+    if args.level in ("l1", "all"):
+        ok &= test_l1()
+    if args.level in ("l2", "all"):
+        ok &= test_l2()
+    if args.level in ("boundary", "all"):
+        ok &= test_boundary()
 
     if ok:
         print("Test Passed!")
