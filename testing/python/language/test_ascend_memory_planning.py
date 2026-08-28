@@ -955,8 +955,9 @@ def test_a3_memory_planner_rejects_a5_only_ub_capacity():
         _lower_single_ub_allocation(253952, "A3")
 
 
-def test_a3_linear_planner_preserves_three_64k_ub_example():
-    artifact = _lower_three_ub_allocations(65536, "A3")
+@pytest.mark.parametrize("platform", ["A2", "A3"])
+def test_a2_a3_linear_planner_preserves_three_64k_ub_example(platform):
+    artifact = _lower_three_ub_allocations(65536, platform)
     offsets = _get_buffer_offsets(artifact.kernel_source)
     assert offsets["a_ub"] == 0
     assert offsets["b_ub"] == 65536
