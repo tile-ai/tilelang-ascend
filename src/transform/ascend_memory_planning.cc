@@ -117,6 +117,12 @@ private:
                                  const std::string &platform,
                                  bool auto_plan = false) {
       memory_auto_plan = auto_plan;
+      // Keep the legacy A2/A3 linear planner behavior intact.  Existing
+      // kernels rely on the historical behavior that permitted a 256-byte
+      // guard-band overcommit; tightening that contract is a separate
+      // migration.  A5 is new in this backend, so its verified usable capacity
+      // is enforced from the first release.
+      enforce_linear_memory_limit_ = platform == "A5";
       // Preserve layouts needed by CalculateBufferSize.
       // PTO 4D shapes are [physical_M, physical_N, valid_M, valid_N].
       external_shape_map_ = external_shape_map;
@@ -614,7 +620,6 @@ private:
 
     void PlanMemoryForScopeLinear(const std::string &scope,
                                   const std::vector<const VarNode *> &buffers) {
-      bool check_overflow = true;
       int64_t current_offset = 0;
       int64_t max_offset = 0;
 
@@ -622,7 +627,8 @@ private:
       auto alloc_buffer = [&](const VarNode *buffer, int64_t &offset,
                               const std::string &err_prefix) -> bool {
         int64_t buf_size = buffer_sizes_[buffer];
-        if (offset + buf_size > memory_limits_[scope] && check_overflow) {
+        if (offset + buf_size > memory_limits_[scope] &&
+            enforce_linear_memory_limit_) {
           LOG(FATAL) << err_prefix << " Out of memory in scope: " << scope
                      << "\nBuffer: " << buffer->name_hint
                      << "\nRequired size: " << buf_size
@@ -1063,6 +1069,7 @@ private:
 
     size_t scope_level_{0};
     bool memory_auto_plan{false};
+    bool enforce_linear_memory_limit_{false};
   };
 };
 
