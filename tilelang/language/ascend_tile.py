@@ -1024,45 +1024,85 @@ def binary_op(
 
 
 def add(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
-    """Performs element-wise addition: dst = src0 + src1.
+    """Performs element-wise addition: `dst[i] = src0[i] + src1[i]`.
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        dst: The destination buffer; it may alias src0 or src1 (in-place).
+        src0: The first source, a buffer or a contiguous region of it.
+        src1: The second operand: a buffer, a 1D buffer element (BufferLoad), or a scalar.
+
+    Notes:
+        - dst and src0 must have equal sizes; all tensor operands must share
+          the same dtype, while a scalar src1 is auto-cast to the buffer dtype.
+        - Supported dtypes: float16, float32, int16, int32.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return binary_op(dst, src0, src1, "add")
 
 
-def sub(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad):
-    """Performs element-wise subtraction: dst = src0 - src1.
+def sub(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
+    """Performs element-wise subtraction: `dst[i] = src0[i] - src1[i]`.
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer or BufferLoad).
+        dst: The destination buffer; it may alias src0 or src1 (in-place).
+        src0: The first source, a buffer or a contiguous region of it.
+        src1: The second operand: a buffer, a 1D buffer element (BufferLoad), or a scalar.
+
+    Notes:
+        - dst and src0 must have equal sizes; all tensor operands must share
+          the same dtype, while a scalar src1 is auto-cast to the buffer dtype.
+        - Supported dtypes: float16, float32, int16, int32. A BufferLoad src1
+          with int16/int32 is supported on the pto backend only (ascendc fails
+          to compile).
+        - A scalar src1 is applied via `AscendC::Adds(dst, src0, -src1)`.
+        - A scalar is supported as src1 (right operand) only: subtraction is
+          non-commutative, so `scalar - buffer` (e.g. `2.0 - buf`) cannot be
+          expressed. AscendC `Subs` supports a scalar on either side (flexible
+          scalar); the TileLang frontend does not expose that form yet.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return binary_op(dst, src0, src1, "sub")
 
 
 def mul(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
-    """Performs element-wise multiplication: dst = src0 * src1.
+    """Performs element-wise multiplication: `dst[i] = src0[i] * src1[i]`.
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        dst: The destination buffer; it may alias src0 or src1 (in-place).
+        src0: The first source, a buffer or a contiguous region of it.
+        src1: The second operand: a buffer, a 1D buffer element (BufferLoad), or a scalar.
+
+    Notes:
+        - dst and src0 must have equal sizes; all tensor operands must share
+          the same dtype, while a scalar src1 is auto-cast to the buffer dtype.
+        - Supported dtypes: float16, float32, int16, int32.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return binary_op(dst, src0, src1, "mul")
 
 
-def div(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad):
-    """Performs element-wise division: dst = src0 / src1.
+def div(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
+    """Performs element-wise division: `dst[i] = src0[i] / src1[i]`.
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer or BufferLoad).
+        dst: The destination buffer; it may alias src0 or src1 (in-place).
+        src0: The first source, a buffer or a contiguous region of it.
+        src1: The second operand: a buffer, a 1D buffer element (BufferLoad), or a scalar.
+
+    Notes:
+        - dst and src0 must have equal sizes; all tensor operands must share
+          the same dtype, while a scalar src1 is auto-cast to the buffer dtype.
+        - Only float16 and float32 are supported (hardware constraint);
+          integer dtypes are not supported: ascendc fails to compile, and the
+          pto backend may compile a scalar/BufferLoad src1 but gives wrong
+          results.
+        - A scalar src1 is applied via `AscendC::Muls(dst, src0, 1.0f / src1)`,
+          so non-power-of-two divisors introduce an extra rounding error.
+        - A scalar is supported as src1 (right operand) only: division is
+          non-commutative, so `scalar / buffer` (e.g. `2.0 / buf`) cannot be
+          expressed. AscendC `Divs` supports a scalar on either side (flexible
+          scalar); the TileLang frontend does not expose that form yet.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return binary_op(dst, src0, src1, "div")
 
