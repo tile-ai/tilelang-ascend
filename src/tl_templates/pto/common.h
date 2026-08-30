@@ -1373,7 +1373,7 @@ clear_compare_tail_bits(TileUbDataND<T, Rows, Cols, RowValid, ColValid> &dst,
                         uint32_t valid_row, uint32_t logical_valid_col) {
   if ((logical_valid_col & 7U) == 0)
     return;
-  TL_PIPE_V_BARRIER();
+  pto::PtoSetWaitFlag<PIPE_V, PIPE_S>();
   uint8_t keep = static_cast<uint8_t>((1U << (logical_valid_col & 7U)) - 1U);
   uint32_t last = logical_valid_col >> 3;
   for (uint32_t r = 0; r < valid_row; ++r) {
