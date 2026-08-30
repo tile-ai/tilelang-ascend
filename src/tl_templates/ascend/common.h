@@ -241,9 +241,19 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
       WaitFlag<HardEvent::V_MTE2>(0);
     }
   }
-  AscendC::DataCopyExtParams dataCopyParams(
-      maskShapeM, maskShapeN * sizeof(T), (realSrcN - maskShapeN) * sizeof(T),
-      (dstN - maskShapeN) * sizeof(T) / 32, 0);
+  AscendC::DataCopyExtParams dataCopyParams;
+  if (realSrcN == dstN && maskShapeN == dstN) {
+    // DataCopyPad rounds every local block up to 32 bytes.  A compact tile
+    // whose row width is not 32-byte aligned would therefore acquire a gap
+    // between rows when represented as multiple blocks.  Both sides are
+    // contiguous here, so describe the whole valid rectangle as one block.
+    dataCopyParams = AscendC::DataCopyExtParams(
+        1, maskShapeM * maskShapeN * sizeof(T), 0, 0, 0);
+  } else {
+    dataCopyParams = AscendC::DataCopyExtParams(
+        maskShapeM, maskShapeN * sizeof(T), (realSrcN - maskShapeN) * sizeof(T),
+        (dstN - maskShapeN) * sizeof(T) / 32, 0);
+  }
   AscendC::DataCopyPadExtParams<T> padParams(isPad, 0, rightPadding, padValue);
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams, padParams);
 }
@@ -253,9 +263,16 @@ CATLASS_DEVICE void
 copy_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
               uint32_t realdstN = 1, uint32_t maskShapeM = srcM,
               uint32_t maskShapeN = srcN) {
-  AscendC::DataCopyExtParams dataCopyParams(
-      maskShapeM, maskShapeN * sizeof(T), (srcN - maskShapeN) * sizeof(T) / 32,
-      (realdstN - maskShapeN) * sizeof(T), 0);
+  AscendC::DataCopyExtParams dataCopyParams;
+  if (realdstN == srcN && maskShapeN == srcN) {
+    dataCopyParams = AscendC::DataCopyExtParams(
+        1, maskShapeM * maskShapeN * sizeof(T), 0, 0, 0);
+  } else {
+    dataCopyParams =
+        AscendC::DataCopyExtParams(maskShapeM, maskShapeN * sizeof(T),
+                                   (srcN - maskShapeN) * sizeof(T) / 32,
+                                   (realdstN - maskShapeN) * sizeof(T), 0);
+  }
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams);
 }
 
