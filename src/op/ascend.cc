@@ -180,6 +180,129 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     return res;
   };
 
+  auto compute_copy_rows =
+      [analyzer](const Buffer &buf, const Array<Range> &range,
+                 const Array<PrimExpr> &extents) -> PrimExpr {
+    ICHECK_EQ(buf->shape.size(), extents.size());
+    ICHECK_EQ(range.size(), extents.size());
+    if (buf->shape.size() <= 1) {
+      return Integer(1);
+    }
+
+    // The AscendC GM<->UB helpers issue one 2D DMA. A UB operand has no
+    // configurable local row stride, so all row dimensions inside the first
+    // varying one must be dense. A GM operand may additionally end in
+    // singleton row dimensions: compute_strideN folds those dimensions into
+    // the configurable GM row stride.
+    PrimExpr rows = Integer(1);
+    int first_active_row_dim = -1, last_active_row_dim = -1;
+    for (size_t i = 0; i + 1 < extents.size(); ++i) {
+      const auto *extent = extents[i].as<IntImmNode>();
+      rows = rows * extents[i];
+      if (buf->shape.size() <= 2) {
+        continue;
+      }
+      ICHECK(extent)
+          << "High-rank Ascend GM<->UB copies require static row extents, "
+             "but dimension "
+          << i << " of buffer " << buf->name << " is " << extents[i];
+      if (first_active_row_dim < 0 && extent->value != 1) {
+        first_active_row_dim = static_cast<int>(i);
+      }
+      if (extent->value != 1) {
+        last_active_row_dim = static_cast<int>(i);
+      }
+    }
+
+    if (buf->shape.size() <= 2) {
+      return rows;
+    }
+    if (first_active_row_dim < 0) {
+      return rows;
+    }
+
+    int last_dense_dim = buf.scope() == "global"
+                             ? last_active_row_dim
+                             : static_cast<int>(extents.size()) - 2;
+    for (int i = first_active_row_dim + 1; i <= last_dense_dim; ++i) {
+      const auto *extent = extents[i].as<IntImmNode>();
+      const auto *shape = buf->shape[i].as<IntImmNode>();
+      ICHECK(extent && shape && extent->value == shape->value &&
+             analyzer->CanProveEqual(range[i]->min, 0))
+          << "Cannot flatten non-contiguous high-rank Ascend GM<->UB copy "
+             "for buffer "
+          << buf->name << ": dimension " << i << " has region ["
+          << range[i]->min << ", " << range[i]->extent
+          << ") but a zero-based full extent of " << buf->shape[i]
+          << " is required";
+    }
+    return rows;
+  };
+
+  auto has_dynamic_row_extent = [](const Buffer &buf,
+                                   const Array<PrimExpr> &extents) {
+    if (buf->shape.size() <= 2) {
+      return false;
+    }
+    for (size_t i = 0; i + 1 < extents.size(); ++i) {
+      if (!extents[i].as<IntImmNode>()) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  auto compute_ub_template_rows =
+      [&compute_blocklen](const Buffer &ub, const Array<PrimExpr> &extents,
+                          const PrimExpr &region_rows) -> PrimExpr {
+    if (ub->shape.size() == 2) {
+      return compute_blocklen(ub, extents);
+    }
+    // The helper starts at the region pointer, so its template row count must
+    // describe that region rather than the entire physical allocation.  Using
+    // all rows of a leading ping-pong dimension would clear/copy past the
+    // selected slot (for example [2, 16, 128] sliced as [slot, :, :]).
+    ICHECK(region_rows.defined())
+        << "High-rank Ascend GM<->UB copies require static UB row extents";
+    return region_rows;
+  };
+
+  auto compute_buffer_rows = [](const Buffer &buf) -> PrimExpr {
+    PrimExpr rows = Integer(1);
+    for (size_t i = 0; i + 1 < buf->shape.size(); ++i) {
+      rows = rows * buf->shape[i];
+    }
+    return rows;
+  };
+
+  auto validate_high_rank_ub = [analyzer](const Buffer &ub,
+                                          const Array<Range> &range,
+                                          const Array<PrimExpr> &extents,
+                                          const PrimExpr &rows,
+                                          bool compact_unaligned) {
+    ICHECK_EQ(ub.scope(), "shared.ub");
+    for (size_t i = 0; i < range.size(); ++i) {
+      ICHECK(analyzer->CanProve(range[i]->min + extents[i] <= ub->shape[i]))
+          << "High-rank Ascend GM<->UB copy region exceeds buffer " << ub->name
+          << " at dimension " << i << ": region [" << range[i]->min << ", "
+          << range[i]->min + extents[i] << ") is larger than " << ub->shape[i];
+    }
+    // The AscendC helper handles compact unaligned rows by emitting one
+    // contiguous burst. Keep the static shape/range checks above, but do not
+    // reject a valid compact tile merely because its physical row pitch is
+    // smaller than 32 bytes.
+    const auto *row_count = rows.as<IntImmNode>();
+    const auto *row_width = ub->shape.back().as<IntImmNode>();
+    ICHECK(row_count && row_width)
+        << "High-rank Ascend GM<->UB copies require static UB dimensions";
+    ICHECK(row_count->value <= 1 ||
+           (row_width->value * ub->dtype.bytes()) % 32 == 0 ||
+           compact_unaligned)
+        << "High-rank unaligned GM<->UB copies require a compact full-row "
+           "region for buffer "
+        << ub->name;
+  };
+
   auto build_indices = [](const Array<Range> &range) -> Array<PrimExpr> {
     Array<PrimExpr> indices;
     for (size_t i = 0; i < range.size(); i++) {
@@ -203,6 +326,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     bool ub2gm = false;
     bool ub2ub = false;
   } config;
+  bool flatten_gm2ub = false;
+  bool flatten_ub2gm = false;
 
   std::stringstream ss;
   ss << "tl::ascend::";
@@ -232,19 +357,52 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       config.gm2ub = true;
       strideN = compute_strideN(src, src_extents);
       config.needs_strideN = true;
+      bool high_rank_copy = src->shape.size() > 2 || dst->shape.size() > 2;
+      bool dynamic_high_rank_rows =
+          (src->shape.size() > 2 && has_dynamic_row_extent(src, src_extents)) ||
+          (dst->shape.size() > 2 && has_dynamic_row_extent(dst, dst_extents));
+      bool use_high_rank_rows = high_rank_copy && !dynamic_high_rank_rows;
+      PrimExpr src_rows = use_high_rank_rows
+                              ? compute_copy_rows(src, src_range, src_extents)
+                              : Integer(1);
+      PrimExpr dst_rows = use_high_rank_rows
+                              ? compute_copy_rows(dst, dst_range, dst_extents)
+                              : Integer(1);
+      PrimExpr dst_template_rows =
+          compute_ub_template_rows(dst, dst_extents, dst_rows);
+      flatten_gm2ub = dst->shape.size() > 2 && src->shape.size() < 2;
+      bool compact_unaligned = flatten_gm2ub;
+      if (!compact_unaligned && dst->shape.size() > 2 &&
+          dst->shape.back().as<IntImmNode>() &&
+          analyzer->CanProveEqual(src_extents.back(), dst->shape.back()) &&
+          analyzer->CanProveEqual(compute_strideN(src, src_extents),
+                                  dst->shape.back())) {
+        compact_unaligned = true;
+      }
+      if (use_high_rank_rows) {
+        validate_high_rank_ub(dst, dst_range, dst_extents, dst_rows,
+                              compact_unaligned);
+      }
+      // A rank-1 GM slice can feed a higher-rank UB tile (for example the
+      // [rows] merge workspace into [2, rows, 1]).  The copy is a flattened
+      // contiguous stream: its logical row count and column width come from
+      // the UB region, not from the rank-1 GM view.
+      if (flatten_gm2ub) {
+        strideN = dst->shape.back();
+      }
 
       ss << "copy_gm_to_ub<";
       ss << get_dtype(src) << ", ";
       // The column dim is a COMPILE-TIME template arg. A runtime inner-extent
       // slice (dynamic width, e.g. a softmax's actual window tw_a < buffer
       // width) would put a non-const expr in the template -> invalid C++ ("use
-      // of undeclared identifier"). Use the buffer's compile-time shape for the
-      // template; the runtime width is already carried by the maskShapeN
-      // function arg (validCol_dst). A const extent stays byte-identical (==
-      // shape for a full copy, or the const slice width), so every existing
-      // caller is unchanged -- only the previously-uncompilable runtime-slice
-      // case changes.
-      PrimExpr gm2ub_tmpl_n = dst_extents[dst->shape.size() - 1];
+      // of undeclared identifier"). High-rank copies always describe the
+      // physical UB row width; rank-2 copies keep a constant slice width when
+      // available and otherwise fall back to the buffer shape. The runtime
+      // valid width is carried by maskShapeN in either case.
+      PrimExpr gm2ub_tmpl_n = dst->shape.size() > 2
+                                  ? dst->shape.back()
+                                  : dst_extents[dst->shape.size() - 1];
       if (!gm2ub_tmpl_n->IsInstance<IntImmNode>()) {
         gm2ub_tmpl_n = dst->shape[dst->shape.size() - 1];
         // The shape fallback must itself be a compile-time constant; a buffer
@@ -257,20 +415,54 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       }
       ss << gm2ub_tmpl_n;
       if (dst->shape.size() > 1) {
-        ss << ", " << compute_blocklen(dst, dst_extents);
+        ss << ", " << dst_template_rows;
       }
       ss << ">";
     } else if (dst.scope() == "global") {
       config.ub2gm = true;
       strideN = compute_strideN(dst, dst_extents);
       config.needs_strideN = true;
+      bool high_rank_copy = src->shape.size() > 2 || dst->shape.size() > 2;
+      bool dynamic_high_rank_rows =
+          (src->shape.size() > 2 && has_dynamic_row_extent(src, src_extents)) ||
+          (dst->shape.size() > 2 && has_dynamic_row_extent(dst, dst_extents));
+      bool use_high_rank_rows = high_rank_copy && !dynamic_high_rank_rows;
+      PrimExpr src_rows = use_high_rank_rows
+                              ? compute_copy_rows(src, src_range, src_extents)
+                              : Integer(1);
+      PrimExpr dst_rows = use_high_rank_rows
+                              ? compute_copy_rows(dst, dst_range, dst_extents)
+                              : Integer(1);
+      PrimExpr src_template_rows =
+          compute_ub_template_rows(src, src_extents, src_rows);
+      flatten_ub2gm = src->shape.size() > 2 && dst->shape.size() < 2;
+      bool compact_unaligned = flatten_ub2gm;
+      if (!compact_unaligned && src->shape.size() > 2 &&
+          src->shape.back().as<IntImmNode>() &&
+          analyzer->CanProveEqual(dst_extents.back(), src->shape.back()) &&
+          analyzer->CanProveEqual(compute_strideN(dst, dst_extents),
+                                  src->shape.back())) {
+        compact_unaligned = true;
+      }
+      if (use_high_rank_rows) {
+        validate_high_rank_ub(src, src_range, src_extents, src_rows,
+                              compact_unaligned);
+      }
+      // Symmetric rank-changing path: a higher-rank UB tile can be flattened
+      // into a rank-1 GM slice.  Use the UB row width as the GM row stride so
+      // the helper can select its contiguous-burst path.
+      if (flatten_ub2gm) {
+        strideN = src->shape.back();
+      }
 
       ss << "copy_ub_to_gm<";
       ss << get_dtype(dst) << ", ";
       // See copy_gm_to_ub above: a runtime inner-extent must use the buffer's
       // compile-time shape for the template col dim (runtime width is carried
       // by the maskShapeN function arg); const extents are byte-identical.
-      PrimExpr ub2gm_tmpl_n = src_extents[src->shape.size() - 1];
+      PrimExpr ub2gm_tmpl_n = src->shape.size() > 2
+                                  ? src->shape.back()
+                                  : src_extents[src->shape.size() - 1];
       if (!ub2gm_tmpl_n->IsInstance<IntImmNode>()) {
         ub2gm_tmpl_n = src->shape[src->shape.size() - 1];
         // See copy_gm_to_ub: the shape fallback must itself be compile-time.
@@ -281,7 +473,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       }
       ss << ub2gm_tmpl_n;
       if (src->shape.size() > 1) {
-        ss << ", " << compute_blocklen(src, src_extents);
+        ss << ", " << src_template_rows;
       }
       ss << ">";
     } else if (dst.scope() == "shared.l1") {
@@ -415,6 +607,17 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     }
     return Select(remaining >= extent, extent,
                   Select(remaining > 0, remaining, 0));
+  };
+
+  auto compute_copy_valid_rows =
+      [&compute_valid_extent](const Buffer &buf, const Array<Range> &range,
+                              const Array<PrimExpr> &extents) -> PrimExpr {
+    PrimExpr rows = Integer(1);
+    for (size_t i = 0; i + 1 < extents.size(); ++i) {
+      rows = rows * compute_valid_extent(range[i]->min, range[i]->extent,
+                                         buf->shape[i]);
+    }
+    return rows;
   };
 
   auto find_active_dim_indices =
@@ -551,8 +754,14 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   }
 
   if (config.gm2ub) {
-    new_args.push_back(validRow_src);
-    new_args.push_back(validCol_src);
+    if (flatten_gm2ub) {
+      new_args.push_back(compute_copy_valid_rows(dst, dst_range, dst_extents));
+      new_args.push_back(compute_valid_extent(
+          dst_range.back()->min, dst_range.back()->extent, dst->shape.back()));
+    } else {
+      new_args.push_back(compute_copy_valid_rows(src, src_range, src_extents));
+      new_args.push_back(validCol_src);
+    }
     PrimExpr pad_val = padValue;
     if (pad_val->dtype != dst->dtype) {
       pad_val = Cast(dst->dtype, pad_val);
@@ -562,16 +771,26 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     // by AscendTailMaskPropagation to model the tail rect; CopyCodegen prints
     // only the first 4 extra args (strideN, validRow, validCol, pad_val).
     if (dst->shape.size() > 1) {
-      new_args.push_back(dst->shape[dst->shape.size() - 2]);
+      new_args.push_back(dst->shape.size() > 2
+                             ? compute_buffer_rows(dst)
+                             : dst->shape[dst->shape.size() - 2]);
     }
     new_args.push_back(dst->shape[dst->shape.size() - 1]);
   }
 
   if (config.ub2gm) {
-    new_args.push_back(validRow_dst);
-    new_args.push_back(validCol_dst);
+    if (flatten_ub2gm) {
+      new_args.push_back(compute_copy_valid_rows(src, src_range, src_extents));
+      new_args.push_back(compute_valid_extent(
+          src_range.back()->min, src_range.back()->extent, src->shape.back()));
+    } else {
+      new_args.push_back(compute_copy_valid_rows(dst, dst_range, dst_extents));
+      new_args.push_back(validCol_dst);
+    }
     if (src->shape.size() > 1) {
-      new_args.push_back(src->shape[src->shape.size() - 2]);
+      new_args.push_back(src->shape.size() > 2
+                             ? compute_buffer_rows(src)
+                             : src->shape[src->shape.size() - 2]);
     }
     new_args.push_back(src->shape[src->shape.size() - 1]);
   }
