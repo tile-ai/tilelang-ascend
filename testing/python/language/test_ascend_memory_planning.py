@@ -867,11 +867,9 @@ def test_letstmt_buffer_load_shared_no_crash(target):
     visited the BufferLoad child without pushing a scope_ entry, causing
     TrackBufferTouch to dereference an empty std::vector -> SIGSEGV.
 
-    Note: the crash only triggers when the LetStmt appears at the top level
-    of the function body (no T.Kernel wrapper).  With T.Kernel the body is
-    nested inside AttrStmt/Block scopes that keep scope_ non-empty, masking
-    the bug.  Therefore this test deliberately uses a bare @T.prim_func and
-    tilelang.lower() instead of tilelang.compile().
+    This remains a bare ``@T.prim_func`` lowered without ``T.Kernel``. The
+    hardware work is placed in an explicit V resource scope, as required when
+    CV separation is not applicable to a bare function.
     """
 
     @T.prim_func
@@ -881,11 +879,12 @@ def test_letstmt_buffer_load_shared_no_crash(target):
     ):
         a_ub = T.alloc_ub((64, 128), "float32")
         b_ub = T.alloc_ub((64, 128), "float32")
-        T.copy(A[:, :], a_ub)
-        # scalar read from shared buffer -> LetStmt + BufferLoad(shared)
-        s_tmp = a_ub[0, 0]
-        b_ub[0, 0] = s_tmp
-        T.copy(b_ub[:, :], B[:, :])
+        with T.Scope("V"):
+            T.copy(A[:, :], a_ub)
+            # scalar read from shared buffer -> LetStmt + BufferLoad(shared)
+            s_tmp = a_ub[0, 0]
+            b_ub[0, 0] = s_tmp
+            T.copy(b_ub[:, :], B[:, :])
 
     with tvm.transform.PassContext(opt_level=3, config=PASS_AUTO):
         artifact = tilelang.lower(main, target=target)

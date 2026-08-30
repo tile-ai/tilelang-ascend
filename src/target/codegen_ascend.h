@@ -18,6 +18,9 @@
 #include "target/source/codegen_c.h"
 
 namespace tvm {
+namespace tl {
+class SelectedCallView;
+}
 namespace codegen {
 
 constexpr const char *cv_1_1 = "cv_1_1";
@@ -80,21 +83,42 @@ private:
   void PrintConstArray(const CallNode *op, int start_idx, int len,
                        const std::string &dtype = "uint32_t");
 
-  void BinaryVecOpCodegen(const CallNode *op, const std::string &op_name);
+  void PrintConstArray(const Array<PrimExpr> &args, int start_idx, int len,
+                       const std::string &dtype = "uint32_t");
 
-  void UnaryVecOpCodegen(const CallNode *op, const std::string &op_name);
+  std::vector<std::string> CollectBufferArgs(const CallNode *op, int begin,
+                                             int end, bool has_offset = true);
 
-  void ScalarOpCodegen(const CallNode *op, const std::string &op_name);
+  std::vector<std::string> CollectBufferArgs(const Array<PrimExpr> &args,
+                                             int begin, int end,
+                                             bool has_offset = true);
 
-  void ShiftOpCodegen(const CallNode *op, const std::string &op_name);
+  std::string CoerceScalarArg(const PrimExpr &arg, DataType dtype);
+
+  void EmitVectorCall(const std::string &op_name,
+                      const std::vector<std::string> &args);
+
+  bool EmitVectorHelper(const ObjectRef &semantic_op, const CallNode *op);
+  void EmitSelectedVectorTerminal(const tl::SelectedCallView &view);
+  void EmitSelectedRawBinary(const tl::SelectedCallView &view);
+  void EmitSelectedRawUnary(const tl::SelectedCallView &view);
+  void EmitSelectedRawScalar(const tl::SelectedCallView &view);
+  void EmitSelectedRawReduce(const tl::SelectedCallView &view);
+  void EmitSelectedRawBlockReduce(const tl::SelectedCallView &view);
+  void EmitSelectedRawWholeReduce(const tl::SelectedCallView &view);
+  void EmitSelectedRawCast(const tl::SelectedCallView &view);
+  void EmitSelectedRawBroadcast(const tl::SelectedCallView &view);
+  void EmitSelectedRawFill(const tl::SelectedCallView &view);
+  void EmitSelectedRawClamp(const tl::SelectedCallView &view);
+  void EmitSelectedRawRowExpand(const tl::SelectedCallView &view);
+  void EmitSelectedRawExpExperiment(const tl::SelectedCallView &view);
+  void MaskSetterCodegen(const CallNode *op);
 
   void TrigOpCodegen(const CallNode *op, const std::string &op_name);
 
   void TransposeCodegen(const CallNode *op, const std::string &op_name);
 
   void CreateVecIndexCodegen(const CallNode *op, const std::string &op_name);
-
-  void FillCodegen(const CallNode *op);
 
   void ArithProgressionCodegen(const CallNode *op);
 
@@ -116,12 +140,6 @@ private:
 
   void InitSortBufCodegen(const CallNode *op);
 
-  void AddsAndMulsOpCodegen(const CallNode *op, const std::string &op_name);
-
-  void SubsOpCodegen(const CallNode *op);
-
-  void DivsOpCodegen(const CallNode *op);
-
   void CompareCodegen(const CallNode *op, const std::string &op_name);
 
   void CompareScalarCodegen(const CallNode *op, const std::string &op_name);
@@ -131,10 +149,6 @@ private:
   void GatherCodegen(const CallNode *op, const std::string &op_name);
 
   void ReduceOpCodegen(const CallNode *op);
-
-  void BlockReduceOpCodegen(const CallNode *op, const std::string &op_name);
-
-  void CastCodegen(const CallNode *op, const std::string &op_name);
 
   void SetDeqScaleCodegen(const CallNode *op, const std::string &op_name);
 
@@ -158,17 +172,6 @@ private:
 
   void RowExpandMulCodegen(const CallNode *op);
 
-  void RowExpandMulExperimentCodegen(const CallNode *op);
-
-  void RowExpandSubExperimentCodegen(const CallNode *op);
-
-  void RowExpandDivExperimentCodegen(const CallNode *op);
-
-  void RowExpandBinOpExperimentCodegen(const CallNode *op,
-                                       const std::string &mask_op_name);
-
-  void ExpExperimentCodegen(const CallNode *op);
-
   void SetCrossFlagCodegen(const CallNode *op);
 
   void FlagOpCodegen(const CallNode *op, std::string op_name);
@@ -185,8 +188,6 @@ private:
 
   void BilinearInterpolationCodegen(const CallNode *op);
 
-  void WholeReduceOpCodegen(const CallNode *op, const std::string &op_name);
-
   void AutoBarrierCodegen(const CallNode *op);
 
   void AutoFlagOpCodegen(const CallNode *op, std::string op_name);
@@ -202,10 +203,6 @@ private:
   void CopyCodegen(const CallNode *op);
 
   void SigmoidCodegen(const CallNode *op, const std::string &op_name);
-
-  void ClampMaxMinCodegen(const CallNode *op);
-
-  void ClampCodegen(const CallNode *op);
 
   void RoundCodegen(const CallNode *op, const std::string &op_name);
 
@@ -288,6 +285,10 @@ private:
   Map<Var, Array<PrimExpr>> buffer_shapes_;
 
   std::unordered_map<const VarNode *, DataType> buffer_dtypes_;
+
+  // The resource-scope verifier guarantees that selected Vector terminals
+  // and mask setters only occur in an explicit AIV scope.
+  int current_resource_scope_{-1};
 };
 
 } // namespace codegen
