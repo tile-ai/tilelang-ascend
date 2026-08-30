@@ -165,6 +165,22 @@ CATLASS_DEVICE void mma(LocalTensor<T1> const A, LocalTensor<T1> const B,
   // }
 }
 
+// C and C++ integer division truncates toward zero, while TIR FloorDiv and
+// FloorMod round toward negative infinity.  Preserve TIR semantics when an
+// operand is negative instead of lowering these nodes directly to / and %.
+template <typename T, typename U>
+CATLASS_DEVICE __forceinline__ auto tl_floordiv(T a, U b) -> decltype(a / b) {
+  auto q = a / b;
+  auto r = a % b;
+  return (r != 0 && ((r < 0) != (b < 0))) ? q - 1 : q;
+}
+
+template <typename T, typename U>
+CATLASS_DEVICE __forceinline__ auto tl_floormod(T a, U b) -> decltype(a % b) {
+  auto r = a % b;
+  return (r != 0 && ((r < 0) != (b < 0))) ? r + b : r;
+}
+
 template <typename T1, typename T2, typename LayoutGM, uint32_t srcM,
           uint32_t srcN, bool enRelu = false>
 CATLASS_DEVICE void
