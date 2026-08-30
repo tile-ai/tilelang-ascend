@@ -1024,45 +1024,85 @@ def binary_op(
 
 
 def add(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
-    """Performs element-wise addition: dst = src0 + src1.
+    """Performs element-wise addition: `dst[i] = src0[i] + src1[i]`.
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        dst: The destination buffer; it may alias src0 or src1 (in-place).
+        src0: The first source, a buffer or a contiguous region of it.
+        src1: The second operand: a buffer, a 1D buffer element (BufferLoad), or a scalar.
+
+    Notes:
+        - dst and src0 must have equal sizes; all tensor operands must share
+          the same dtype, while a scalar src1 is auto-cast to the buffer dtype.
+        - Supported dtypes: float16, float32, int16, int32.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return binary_op(dst, src0, src1, "add")
 
 
-def sub(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad):
-    """Performs element-wise subtraction: dst = src0 - src1.
+def sub(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
+    """Performs element-wise subtraction: `dst[i] = src0[i] - src1[i]`.
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer or BufferLoad).
+        dst: The destination buffer; it may alias src0 or src1 (in-place).
+        src0: The first source, a buffer or a contiguous region of it.
+        src1: The second operand: a buffer, a 1D buffer element (BufferLoad), or a scalar.
+
+    Notes:
+        - dst and src0 must have equal sizes; all tensor operands must share
+          the same dtype, while a scalar src1 is auto-cast to the buffer dtype.
+        - Supported dtypes: float16, float32, int16, int32. A BufferLoad src1
+          with int16/int32 is supported on the pto backend only (ascendc fails
+          to compile).
+        - A scalar src1 is applied via `AscendC::Adds(dst, src0, -src1)`.
+        - A scalar is supported as src1 (right operand) only: subtraction is
+          non-commutative, so `scalar - buffer` (e.g. `2.0 - buf`) cannot be
+          expressed. AscendC `Subs` supports a scalar on either side (flexible
+          scalar); the TileLang frontend does not expose that form yet.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return binary_op(dst, src0, src1, "sub")
 
 
 def mul(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
-    """Performs element-wise multiplication: dst = src0 * src1.
+    """Performs element-wise multiplication: `dst[i] = src0[i] * src1[i]`.
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        dst: The destination buffer; it may alias src0 or src1 (in-place).
+        src0: The first source, a buffer or a contiguous region of it.
+        src1: The second operand: a buffer, a 1D buffer element (BufferLoad), or a scalar.
+
+    Notes:
+        - dst and src0 must have equal sizes; all tensor operands must share
+          the same dtype, while a scalar src1 is auto-cast to the buffer dtype.
+        - Supported dtypes: float16, float32, int16, int32.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return binary_op(dst, src0, src1, "mul")
 
 
-def div(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad):
-    """Performs element-wise division: dst = src0 / src1.
+def div(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
+    """Performs element-wise division: `dst[i] = src0[i] / src1[i]`.
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer or BufferLoad).
+        dst: The destination buffer; it may alias src0 or src1 (in-place).
+        src0: The first source, a buffer or a contiguous region of it.
+        src1: The second operand: a buffer, a 1D buffer element (BufferLoad), or a scalar.
+
+    Notes:
+        - dst and src0 must have equal sizes; all tensor operands must share
+          the same dtype, while a scalar src1 is auto-cast to the buffer dtype.
+        - Only float16 and float32 are supported (hardware constraint);
+          integer dtypes are not supported: ascendc fails to compile, and the
+          pto backend may compile a scalar/BufferLoad src1 but gives wrong
+          results.
+        - A scalar src1 is applied via `AscendC::Muls(dst, src0, 1.0f / src1)`,
+          so non-power-of-two divisors introduce an extra rounding error.
+        - A scalar is supported as src1 (right operand) only: division is
+          non-commutative, so `scalar / buffer` (e.g. `2.0 / buf`) cannot be
+          expressed. AscendC `Divs` supports a scalar on either side (flexible
+          scalar); the TileLang frontend does not expose that form yet.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return binary_op(dst, src0, src1, "div")
 
@@ -1153,10 +1193,25 @@ def sigmoid(
     *,
     tmp: Buffer | BufferRegion | None = None,
 ):
-    """Compute sigmoid, optionally using explicit UB scratch storage.
+    """Performs element-wise Sigmoid activation: dst[i] = 1 / (1 + exp(-src[i])).
 
-    ``tmp`` may use any fixed-width scalar dtype; lowering reinterprets its
-    storage for the selected backend.
+    Args:
+        dst: The destination buffer; it may alias src on ascendc (in-place),
+            but NOT on pto (results are wrong).
+        src: The source, a buffer or a contiguous region of it.
+        tmp: Optional explicit UB scratch storage; allocated automatically when
+            omitted. It may use any fixed-width scalar dtype; lowering
+            reinterprets its storage for the selected backend.
+
+    Notes:
+        - dst and src should have equal element counts (no runtime check;
+          mismatched sizes produce undefined results).
+        - Supported dtypes: float16, float32 (Atlas A2/A3).
+        - Operand addresses must be 32-byte aligned (hardware constraint).
+        - ``tmp`` is optional; a temporary buffer of ``N x sizeof(dtype)``
+          bytes (N = element count) is auto-allocated when not provided.
+        - Special values: sigmoid(0)=0.5, sigmoid(-inf)=0, sigmoid(inf)=1,
+          sigmoid(nan)=nan.
     """
     if isinstance(dst, BufferRegion):
         dst_ptr, buffer_extent = _handle_buffer_region(dst, "w")
@@ -1173,20 +1228,22 @@ def sigmoid(
 
 
 def silu(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):
-    """Performs element-wise SiLU (Swish) activation: dst = src * sigmoid(src).
+    """Performs element-wise SiLU (Swish) activation: dst[i] = src[i] * sigmoid(src[i]).
 
-    SiLU (Sigmoid Linear Unit) is also known as Swish activation function.
+    SiLU (Sigmoid Linear Unit) is also known as Swish activation function:
+    dst[i] = src[i] / (1 + exp(-src[i])).
 
     Args:
         dst: The destination buffer where the result will be stored.
         src: The source buffer.
 
-    Returns:
-        A TVM intrinsic call that performs the Silu operation.
-
-    Note:
-        - Supports data types: half, float (Atlas A2/A3)
-        - SiLU = x * sigmoid(x) = x / (1 + exp(-x))
+    Notes:
+        - dst and src should have equal element counts (no runtime check;
+          mismatched sizes produce undefined results).
+        - Supported dtypes: float16, float32 (Atlas A2/A3).
+        - Operand addresses must be 32-byte aligned (hardware constraint).
+        - Special values follow IEEE semantics: silu(-inf)=nan, silu(inf)=inf,
+          silu(nan)=nan.
     """
     if isinstance(dst, BufferRegion):
         dst_ptr, buffer_extent = _handle_buffer_region(dst, "w")
@@ -1259,11 +1316,16 @@ def rsqrt(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
 
 
 def relu(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
-    """Performs element-wise Rectified Linear Unit (ReLU): dst = max(0, src0).
+    """Performs element-wise Rectified Linear Unit: `dst[i] = max(0, src0[i])`.
 
     Args:
-        dst: The destination buffer.
-        src0: The source buffer.
+        dst: The destination buffer; it may alias src0 (in-place).
+        src0: The source, a buffer or a contiguous region of it.
+
+    Notes:
+        - dst and src0 must have equal element counts.
+        - Supported dtypes: float16, float32.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return unary_op(dst, src0, "relu")
 
@@ -1311,14 +1373,17 @@ def scalar_op(
 
 
 def leaky_relu(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_value: PrimExpr):  # type: ignore  # noqa: F821
-    """Performs element-wise Leaky ReLU activation.
-
-    Formula: dst = src0 if src0 >= 0 else src0 * scalar_value
+    """Performs element-wise Leaky ReLU: dst[i] = src0[i] if src0[i] >= 0 else src0[i] * scalar_value.
 
     Args:
-        dst: The destination buffer.
-        src0: The source buffer.
+        dst: The destination buffer; it may alias src0 (in-place).
+        src0: The source, a buffer or a contiguous region of it.
         scalar_value: The negative slope coefficient.
+
+    Notes:
+        - dst and src0 must have equal element counts.
+        - Supported dtypes: float16, float32.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return scalar_op(dst, src0, scalar_value, "leaky_relu")
 

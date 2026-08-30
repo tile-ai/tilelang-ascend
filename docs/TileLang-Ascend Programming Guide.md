@@ -1507,8 +1507,8 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 | ---------- | ---------------------------------------- | ------------------------------------------------------------ |
 | 加法       | T.tile.add(dst, src0, src1)              | element-wise加法，dst = src0 + src1                          |
 | 减法       | T.tile.sub(dst, src0, src1)              | element-wise减法，dst = src0 - src1                          |
-| 乘法       | T.tile.mul(dst, src0, src1)              | element-wise法乘，dst = src0 * src1                          |
-| 除法       | T.tile.div(dst, src0, src1)              | element-wise法乘，dst = src0 / src1                          |
+| 乘法       | T.tile.mul(dst, src0, src1)              | element-wise乘法，dst = src0 * src1                          |
+| 除法       | T.tile.div(dst, src0, src1)              | element-wise除法，dst = src0 / src1（仅支持浮点 dtype）      |
 | 最大值     | T.tile.max(dst, src0, src1)              | element-wise 求max，dst = max(src0, src1)                    |
 | 最小值     | T.tile.min(dst, src0, src1)              | element-wise 求min，dst = min(src0, src1)                    |
 | 指数       | T.tile.exp(dst, src0)                    | element-wise 取自然指数，dst = exp(src0)                     |
@@ -1536,11 +1536,13 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   **参数**：
 
-  - dst：计算结果存放目的buffer
+  - dst：计算结果存放目的buffer，可与 src0/src1 别名（原地运算）
   - src0: 操作数1，数据类型为buffer类型
   - src1: 操作数2，数据类型可以为buffer类型，也可以是scalar类型
 
   **功能**：element-wise加法，dst = src0 + src1
+
+  **支持类型**：float16、float32、int16、int32（dst/src0/src1 必须一致）
 
   **举例**：
 
@@ -1556,11 +1558,13 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   **参数**：
 
-  - dst：计算结果存放目的buffer
-  - src0: 操作数1，数据类型为buffer类型
-  - src1: 操作数2，数据类型可以为buffer类型，也可以是scalar类型
+  - dst：计算结果存放目的buffer，可与 src0/src1 别名（原地运算）
+  - src0: 操作数1（被减数），数据类型为buffer类型
+  - src1: 操作数2（减数），数据类型可以为buffer类型，也可以是scalar类型
 
   **功能**：element-wise减法，dst = src0 - src1
+
+  **支持类型**：float16、float32、int16、int32（dst/src0/src1 必须一致）
 
   **举例**：
 
@@ -1576,11 +1580,13 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   **参数**：
 
-  - dst：计算结果存放目的buffer
+  - dst：计算结果存放目的buffer，可与 src0/src1 别名（原地运算）
   - src0: 操作数1，数据类型为buffer类型
   - src1: 操作数2，数据类型可以为buffer类型，也可以是scalar类型
 
-  **功能**：element-wise法乘，dst = src0 * src1
+  **功能**：element-wise乘法，dst = src0 * src1
+
+  **支持类型**：float16、float32、int16、int32（dst/src0/src1 必须一致）
 
   **举例**：
 
@@ -1596,11 +1602,13 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   **参数**：
 
-  - dst：计算结果存放目的buffer
-  - src0: 操作数1，数据类型为buffer类型
-  - src1: 操作数2，数据类型可以为buffer类型，也可以是scalar类型
+  - dst：计算结果存放目的buffer，可与 src0/src1 别名（原地运算）
+  - src0: 操作数1（被除数），数据类型为buffer类型
+  - src1: 操作数2（除数），数据类型可以为buffer类型，也可以是scalar类型
 
-  **功能**：element-wise法乘，dst = src0 / src1
+  **功能**：element-wise除法，dst = src0 / src1
+
+  **支持类型**：仅 float16、float32（整数 dtype 不支持）；scalar 除法通过乘以倒数实现，非 2 的幂次除数有额外舍入误差
 
   **举例**：
 
