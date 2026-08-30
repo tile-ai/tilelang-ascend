@@ -1068,23 +1068,35 @@ def div(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | 
 
 
 def max(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
-    """Performs element-wise maximum: dst = max(src0, src1).
+    """Performs element-wise maximum: `dst[i] = max(src0[i], src1[i])`.
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        dst: The destination buffer; it may alias src0 or src1 (in-place).
+        src0: The first source, a buffer or a contiguous region of it.
+        src1: The second operand: a buffer, a 1D buffer element (BufferLoad), or a scalar.
+
+    Notes:
+        - dst and src0 must have equal sizes; all tensor operands must share
+          the same dtype, while a scalar src1 is auto-cast to the buffer dtype.
+        - Supported dtypes: float16, float32, int16, int32.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return binary_op(dst, src0, src1, "max")
 
 
 def min(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
-    """Performs element-wise minimum: dst = min(src0, src1).
+    """Performs element-wise minimum: `dst[i] = min(src0[i], src1[i])`.
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        dst: The destination buffer; it may alias src0 or src1 (in-place).
+        src0: The first source, a buffer or a contiguous region of it.
+        src1: The second operand: a buffer, a 1D buffer element (BufferLoad), or a scalar.
+
+    Notes:
+        - dst and src0 must have equal sizes; all tensor operands must share
+          the same dtype, while a scalar src1 is auto-cast to the buffer dtype.
+        - Supported dtypes: float16, float32, int16, int32.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return binary_op(dst, src0, src1, "min")
 
