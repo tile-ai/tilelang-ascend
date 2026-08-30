@@ -164,8 +164,8 @@ private:
 
     // Determine the shape based on the actual computation size (loop extent)
     Array<PrimExpr> shape;
-    if (ref->shape.size() == 1) {
-      // 1D case: just the total elements
+    if (ref->shape.size() <= 1) {
+      // Scalar and 1D cases: just the total elements
       shape.push_back(IntImm(DataType::Int(32), num_elements));
     } else if (ref->shape.size() >= 2) {
       // 2D or higher: use the computation dimensions
@@ -237,6 +237,53 @@ private:
       return GetRef<PrimExpr>(op);
     }
   };
+
+  Optional<Stmt> TryLowerScalarLogStore(const BufferStoreNode *store) {
+    Buffer output_buffer = store->buffer;
+    DataType dtype = output_buffer->dtype;
+    if (!IsUnifiedBuffer(output_buffer) || !dtype.is_float() ||
+        (dtype.bits() != 16 && dtype.bits() != 32)) {
+      return NullOpt;
+    }
+
+    Op unary_op_type;
+    Optional<Buffer> input_buffer;
+    const std::unordered_set<const VarNode *> no_parallel_vars;
+    if (!IsUnaryOp(store->value, &unary_op_type, &input_buffer, nullptr,
+                   no_parallel_vars) ||
+        !unary_op_type.same_as(tl::ascend_ln()) || !input_buffer.defined() ||
+        !IsUnifiedBuffer(input_buffer.value()) ||
+        input_buffer.value()->dtype != dtype) {
+      return NullOpt;
+    }
+
+    const auto *input_load =
+        store->value.as<CallNode>()->args[0].as<BufferLoadNode>();
+    if (input_load == nullptr) {
+      return NullOpt;
+    }
+
+    // AscendC vector intrinsics require 32-byte-aligned LocalTensor starts.
+    // Route arbitrary scalar offsets through aligned UB allocations.
+    Buffer aligned_input = CreateTempBufferLike(output_buffer, 1);
+    Buffer aligned_output = CreateTempBufferLike(output_buffer, 1);
+    PrimExpr zero = IntImm(DataType::Int(32), 0);
+    Stmt load_input =
+        BufferStore(aligned_input, GetRef<PrimExpr>(input_load), {zero});
+    Stmt lower_log = GenerateUnaryVectorCall(unary_op_type, aligned_output,
+                                             zero, aligned_input, zero, 1);
+    Stmt write_output = BufferStore(
+        output_buffer, BufferLoad(aligned_output, {zero}), store->indices);
+    return SeqStmt::Flatten(load_input, lower_log, write_output);
+  }
+
+  Stmt VisitStmt_(const BufferStoreNode *op) override {
+    Optional<Stmt> scalar_log = TryLowerScalarLogStore(op);
+    if (scalar_log.defined()) {
+      return scalar_log.value();
+    }
+    return arith::IRMutatorWithAnalyzer::VisitStmt_(op);
+  }
 
   Stmt VisitStmt_(const ForNode *op) override {
     // Sequence of store statements (handles both single stores and sequences)
