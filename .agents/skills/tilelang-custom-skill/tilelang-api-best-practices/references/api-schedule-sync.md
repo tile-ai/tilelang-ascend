@@ -112,6 +112,21 @@ for k in T.Pipelined(T.ceildiv(seq_len, block_N), num_stages=2):
 - 核间流水线与核内流水线不能同时开启
 - 使用核间流水线必须开启：`"tl.ascend_auto_cv_combine": True`, `"tl.ascend_auto_cross_core_sync": True`
 
+
+
+## 2.1 小节"S 维 tiling + double-buffer 三阶段流水线"：
+### S 维 tiling + double-buffer 三阶段流水线（非 T.Pipelined 的手动实现）
+
+对于 cos/sin 只依赖 S 维的逐行算子（如 RoPE），可以用手动 set_flag/wait_flag 实现
+跨 S-tile 的 MTE2→V→MTE3 三阶段流水线，比 T.Pipelined 更灵活：
+
+1. 双缓冲分配：cos_ub[2, S_TILE, D], x_tile[2, S_TILE, D], out_tile[2, S_TILE, D]
+2. 循环外 preload tile[0]
+3. 循环内：加载 tile[i+1]（MTE2）→ 计算 tile[i]（V）→ 存储 tile[i]（MTE3）
+4. flag 同步：set_flag("mte2","v",n) / wait_flag("mte2","v",n) 控制依赖
+
+关键：gather mask / sign_mask 等常量在 (b,n) 外层循环外生成一次，所有 S-tile 复用。
+
 ---
 
 ## 3. T.Persistent

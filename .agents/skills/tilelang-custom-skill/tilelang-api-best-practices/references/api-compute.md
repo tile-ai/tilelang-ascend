@@ -301,6 +301,12 @@ Pass 设计详见 `.agents/skills/tilelang-pass-analyzer/references/pass-designs
 | `T.tile.max(dst, src0, src1)` | dst = max(src0, src1) | buffer 或 scalar |
 | `T.tile.min(dst, src0, src1)` | dst = min(src0, src1) | buffer 或 scalar |
 
+**使用建议**
+
+- 能用连续切片加基础算术表达的公式，优先使用 `mul/add/sub`，避免引入 gather。
+- 二元向量操作的输入 dtype 应保持一致，避免一个输入是 fp16、另一个输入是 fp32。
+- 对低精度输入但要求 fp32 计算的场景，应先统一 cast 到 fp32，再执行 `mul/add/sub`。
+
 ### 4.2 单目运算
 
 | API | 功能 |
@@ -337,6 +343,14 @@ Pass 设计详见 `.agents/skills/tilelang-pass-analyzer/references/pass-designs
 
 - `silu` 执行 SiLU (Swish) 激活函数: x * sigmoid(x)
 - 支持 half、float 类型（Atlas A2/A3）
+
+**mul_add_dst 使用建议**：
+- half 模式 RoPE 的 rotate_half 可用 slice 分解 + mul + sub + mul_add_dst 实现，
+  避免 gather：
+  out1 = q1*cos - q2*s  →  mul(out1, q1, cos) + mul(tmp, q2, sin) + sub(out1, out1, tmp)
+  out2 = q2*cos + q1*s  →  mul(out2, q2, cos) + mul_add_dst(out2, q1, sin)
+- 对连续半区操作（如 half 模式 rotate_half），优先用 T.copy 切片 + 基础算术，
+  不要用 T.tile.gather。只有非连续置换（如 interleaved 偶奇交换）才用 gather。
 
 ### 4.5 逻辑运算
 
@@ -459,6 +473,40 @@ T.tile.cast(b_ub, a_ub, "CAST_RINT", 4096)
 | `T.tile.transpose(dst, src)` | 二维矩阵数据块转置（详见下方 dtype 支持说明） |
 | `T.tile.gather(dst, src, src_offset, src_base_addr)` | 按偏移收集数据 |
 | `T.tile.arith_progression(buffer, first_value, diff_value, count)` | 生成等差数列 |
+
+### 使用建议
+#### T.tile.gather(dst, src, src_offset, src_base_addr)
+
+- `mask` 表示源 tensor 的字节偏移，不是元素下标。如果 gather 的源 tensor 已经 cast 成 `float32`，即使原始输入是 `float16` / `bfloat16`，偏移也要按 `4` 字节计算。
+- 对连续切片、前后半交换这类规则操作，优先用 `T.copy` + `T.tile.mul/add/sub`，不要优先用 gather。
+- 对真正非连续的规则置换，例如偶奇交换，可以用 `T.tile.createvecindex` + `T.tile.bitwise_xor` 构造 mask，避免标量循环。
+- 偶奇交换可用 `idx xor 1`；前后半交换可用 `idx xor HalfD`。
+- gather mask 若在同一 (b,n) 组的所有 S-tile 中不变，应在 (b,n) 外层循环外生成一次并复用，避免每个 tile 重复生成
+
+#### T.tile.createvecindex(dst, first_value)
+
+- 规则 mask 优先用 `T.tile.createvecindex` 构造，再通过加减、异或、乘字节数等方式变换。
+- 避免用标量循环逐元素构造 mask。
+- 多行 gather 时要确认 mask 是每一行内的相对偏移，不要把跨行线性下标误用成每行内偏移。
+
+#### T.tile.broadcast(dst, src)
+
+- 用于 block 内多行共享同一份参数的场景，例如把 `[1, D]` 的参数扩展到 `[block_M, D]` 后参与逐元素计算。
+- `src` 和 `dst` 的 dtype 应保持一致。
+- `dst` 的 shape 通常比 `src` 多一个批量/行维度，例如 `src.shape = [1, D]`，`dst.shape = [M, D]`。
+- 如果每一行参数不同，不要用 `broadcast`；可以直接准备 `[M, D]` 形状的参数（准备`[M, D]` 形状的话可以python侧准备也可在kernel内部准备），并逐行 `T.copy`。
+- 如果为了使用 `broadcast` 导致 block 切分必须满足额外整除条件，例如 `N % block_M == 0`，需要和 host 侧 expand 参数的方案对比。小 shape 或不规则 shape 下，host expand 到 `[M, D]` 后直接读取可能更快。
+
+**T.tile.broadcast示例**
+```python
+cos_row = T.alloc_ub((1, D), "float32")
+cos_block = T.alloc_ub((block_M, D), "float32")
+
+T.copy(cos_full[s_idx, :], cos_row[0, :])
+T.tile.broadcast(cos_block, cos_row)
+
+T.tile.mul(out, x, cos_block)
+```
 
 #### T.tile.transpose 的 dtype 支持与标量回退
 
