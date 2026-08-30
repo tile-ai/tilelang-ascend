@@ -3,6 +3,7 @@
 # cython: language_level=3
 
 import torch
+import torch_npu
 cimport cython
 import ctypes
 from libc.stdint cimport int64_t, uintptr_t
@@ -11,6 +12,20 @@ from tvm import tir
 from tvm.tir import stmt_functor
 from tvm.arith import Analyzer
 from tilelang.utils.tensor import map_torch_type
+
+# Lazily-created process-wide Analyzer singleton. Constructing an Analyzer
+# costs ~170us (17 FFI calls) and it is only needed to simplify dynamic-shape
+# PrimExprs, so do not pay it on every kernel launch. simplify() on expressions
+# without Bind() does not mutate analyzer state, so sharing one instance is safe.
+_GLOBAL_ANALYZER = None
+
+
+def _get_analyzer():
+    global _GLOBAL_ANALYZER
+    if _GLOBAL_ANALYZER is None:
+        _GLOBAL_ANALYZER = Analyzer()
+    return _GLOBAL_ANALYZER
+
 
 cdef class CythonKernelWrapper:
     # Class attributes to store kernel configuration and library reference
@@ -83,16 +98,22 @@ cdef class CythonKernelWrapper:
 
         # Ensure the number of inputs matches expected parameter count
 
-        if stream == -1: 
+        if stream == -1:
             if torch.npu.is_available():
-                stream = torch.npu.current_stream().npu_stream
+                # _npu_getCurrentRawStream (~0.6us) returns the same raw
+                # aclrtStream handle as torch.npu.current_stream().npu_stream
+                # (~24us); it is what torch_npu uses for inductor codegen.
+                _get_raw_stream = getattr(torch_npu._C, "_npu_getCurrentRawStream", None)
+                if _get_raw_stream is not None:
+                    stream = _get_raw_stream(torch.npu.current_device())
+                else:
+                    stream = torch.npu.current_stream().npu_stream
             else:
                 stream = 0
 
         cdef int ins_idx = 0
         cdef list tensor_list = []
 
-        analyzer = Analyzer()
         sym_val_by_name = {}
         for key, (ref_tensor_idx, ref_shape_idx) in self.dynamic_symbolic_map.items():
             val = int(inputs[ref_tensor_idx].shape[ref_shape_idx])
@@ -117,7 +138,7 @@ cdef class CythonKernelWrapper:
                                 raise KeyError(f"Unfounded symbolic var: {str(v)}")
                             vmap[v] = tir.IntImm(v.dtype, sym_val_by_name[str(v)])
                         ss = stmt_functor.substitute(s, vmap)
-                        ss = analyzer.simplify(ss)
+                        ss = _get_analyzer().simplify(ss)
                         if isinstance(ss, tir.IntImm):
                             res = int(ss.value)
                         else:
