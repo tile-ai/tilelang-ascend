@@ -416,23 +416,34 @@ def sort(
     *,
     tmp: Buffer | BufferRegion | None = None,
 ):
-    """
-    Performs a full sort on arbitrarily-lengthed input data with automatic internal
-    alignment. Sorts each 32-element block via sort32, then merges all sorted
-    blocks via merge_sort to produce the final ordered output.
+    """Sort data in descending order, outputting interleaved (value, index) pairs.
 
-    The output contains interleaved (value, index) pairs in descending order:
-      [val0, idx0, val1, idx1, ...] where idx is the original position (0-based).
-    Indices are generated internally; dst must be 2x the size of src.
+    Internally sorts each 32-element block via sort32, then merges sorted
+    blocks via merge_sort. A temporary task buffer is auto-injected by the
+    compiler unless an explicit ``tmp`` is provided.
+
+    Output format: ``dst = [val0, idx0, val1, idx1, ...]`` where ``idx`` is the
+    0-based position in the aligned buffer (including -inf padding positions).
 
     Args:
-    dst: Destination buffer for interleaved (value, index) pairs. Must have
-         at least 2 * aligned_size elements.
-    src: Source buffer containing the data to be sorted.
-    actual_num: The number of valid elements in src. When actual_num is less than
-                the buffer size, unused positions are padded with -inf before sorting.
-    tmp: Optional complete UB scratch storage. Its scalar dtype is reinterpreted
-         by lowering and has no semantic meaning.
+        dst: Destination buffer. Must have at least ``2 * aligned_count``
+            elements, where ``aligned_count = ((actual_num + 31) // 32) * 32``.
+        src: Source buffer. Must have at least ``aligned_count`` elements.
+        actual_num: Number of valid elements in ``src``. Must be >= 1
+            (0 triggers a hardware aicore exception).
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
+
+    Returns:
+        A TVM intrinsic call that performs the sort operation.
+
+    Note:
+        - float32: ``src`` is modified in-place, padding
+          ``[actual_num, aligned_count)`` with -inf. Copy ``src`` beforehand
+          if the original data is needed later.
+        - float16: ``src`` is not modified (internally cast to float32);
+          result is cast back via CAST_RINT. Index may lose half-precision
+          exactness beyond ~2048 elements.
     """
     repeatTimes = (actual_num + 31) // 32  # ceiling to 32-aligned
     return _call_intrin_with_optional_tmp(
