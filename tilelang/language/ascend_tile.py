@@ -458,29 +458,43 @@ def merge_sort(
     *,
     tmp: Buffer | BufferRegion | None = None,
 ):
-    """Performs a 2/3/4-way merge sort operation.
+    """Performs a 2/3/4-way merge sort on sorted input blocks.
 
-    This intrinsic invokes the underlying implementation to perform merge sort
-    on multiple sorted blocks using AscendC::MrgSort hardware API.
-    blockLen is calculated from each source buffer size.
-
-    Hardware MrgSort format: 4 floats per element
-    - Position 0: sort key (value)
-    - Position 1: data (index)
-    - Position 2-3: reserved/padding
-    - blockLen = number of elements = buffer_size / 4
+    Merges multiple descending-sorted blocks via the AscendC MrgSort hardware
+    API and writes the combined descending-sorted stream to dst. Each block is
+    a sequence of interleaved (value, index) pairs occupying two buffer
+    positions per element: ``[val0, idx0, val1, idx1, ...]``.
 
     Args:
-        dst: The destination buffer or buffer region where the merged result will be stored.
-        src0: First source buffer or buffer region.
-        src1: Second source buffer or buffer region.
-        src2: Third source buffer or buffer region (optional, for 3-way or 4-way merge).
-        src3: Fourth source buffer or buffer region (optional, for 4-way merge).
+        dst: Destination buffer or region for the merged (value, index)
+            pairs. Must have at least the sum of all source buffer sizes.
+        src0: First source buffer or region, sorted in descending order.
+        src1: Second source buffer or region, sorted in descending order.
+        src2: Third source buffer or region for 3-way or 4-way merge,
+            sorted in descending order (optional).
+        src3: Fourth source buffer or region for 4-way merge, sorted in
+            descending order (optional).
         tmp: Optional complete UB scratch storage. Its scalar dtype is
-            reinterpreted by lowering and has no semantic meaning.
+            reinterpreted by lowering and has no semantic meaning. The
+            ascendc backend omits it; the pto backend allocates it
+            automatically when omitted.
 
     Returns:
         A TVM intrinsic call that performs the merge sort operation.
+
+    Notes:
+        - blockLen (element count) of each source is derived as
+          ``buffer_size // 2``. The ascendc backend accepts
+          blockLen in [1, 4095]; the pto backend requires equal
+          block lengths in [4, 4088].
+        - Only float32 is supported; float16 inputs are not supported.
+        - Equal scores are ordered stably: sources are consumed in
+          src0 → src1 → src2 → src3 order, preserving the order inside
+          each source block.
+        - Slice sources must be 32-byte aligned. Column-offset slices
+          of 2D buffers (e.g. ``buf[0, 8:136]``) are not supported;
+          use 1D slices or whole-row slices (e.g. ``buf[0, :]``)
+          instead.
     """
 
     def retrieve_shape(object: Buffer | BufferRegion) -> list[int]:
