@@ -555,20 +555,27 @@ def topk(
     *,
     tmp: Buffer | BufferRegion | None = None,
 ):
-    """Performs a TopK operation by sorting the source data and extracting the top K elements.
+    """Performs a Top-K extraction by sorting the source data in descending order and writing the output to dst.
 
-    Internally calls Sort on the source data, then copies the top K interleaved
-    (value, index) pairs into the destination buffer.
+    The output is `[val0, idx0, val1, idx1, ...]` where idx is the 0-based
+    position in the aligned buffer before sorting. Internally calls Sort on the
+    source data, then copies the top K pairs into dst.
 
     Args:
-        dst: Destination buffer for top K interleaved (value, index) pairs.
-             Must have at least 2*K elements.
+        dst: Destination buffer for the top K interleaved (value, index) pairs.
+             Must have at least aligned_topk elements, where
+             aligned_topk = ((2*K + elems_per_block - 1) / elems_per_block) *
+             elems_per_block and elems_per_block = 32 / sizeof(dtype).
         src: Source buffer containing the data to find top K from.
-             Assumes src has static shape for buffer sizing.
-        K: Number of top elements to extract.
-        actual_num: The number of valid elements in src (can be symbolic for dynamic shapes).
+             Must have a compile-time static shape. For float32, positions from
+             actual_num to aligned_count are padded with -inf in-place; for
+             float16, src is not modified (internally cast to float32).
+        K: Number of top elements to extract, 1 <= K <= actual_num.
+        actual_num: The number of valid elements in src (can be symbolic for
+                    dynamic shapes). Positions beyond actual_num are padded
+                    with -inf before sorting.
         tmp: Optional complete UB scratch storage. Its scalar dtype is
-            reinterpreted by lowering and has no semantic meaning.
+             reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the TopK operation.
