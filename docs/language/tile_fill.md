@@ -23,7 +23,8 @@ def fill(
 | value | 输入 | 填充的标量值 | 标量（scalar） | 必填 |
 
 > **类型说明**：
-> - **tensor**：通过 `T.alloc_ub` 分配的 Buffer，或其连续 BufferRegion。
+> - **tensor**：通过 `T.alloc_ub` 分配的 Buffer，或由 `T.alloc_shared` 分配并被编译器
+>   推断为 UB 的 Buffer，以及它们的连续 BufferRegion。
 > - **scalar**：单个元素值，可以是 Python 标量或表达式（PrimExpr），dtype 需可转换到 buffer 的 dtype。
 
 ### 2.3 参数规格
@@ -46,15 +47,19 @@ def fill(
 
 #### 2.3.2 Shape 支持
 
-- 支持 1D 和 2D Buffer，以及其中的连续 BufferRegion。
+- 支持 1D 和 2D Buffer，以及其中物理连续的 BufferRegion。
+- 2D BufferRegion 必须完整覆盖最内层维度。列偏移切片（如 `a_ub[:, 8:40]`）在物理
+  内存中不连续，目前不支持，使用时可能静默写错目标区域并污染区域外元素。
 - size 由 buffer shape 自动推断（BufferRegion 时取 region extent 的乘积，Buffer 时取 shape 的乘积）。
 
 ### 2.4 约束条件
 
-1. value 的 dtype 需可转换到 buffer 的 dtype；不一致时前端自动 Cast。
+1. value 的 dtype 需可转换到 buffer 的 dtype；不一致时前端自动 Cast。Cast 不做范围检查，
+   超出目标 dtype 可表示范围的值可能静默截断或环绕，调用方需确保 value 可表示。
 2. buffer 地址需 32 字节对齐（硬件约束）。
 3. size 由 buffer shape 自动推断，无需显式传入 count 参数。
-4. 仅支持 UB（Unified Buffer）内存；其他内存级别的 fill 行为未经验证。
+4. 仅支持 UB（Unified Buffer）内存。`T.alloc_shared` 仅在编译器将其推断为 UB 时可用，
+   不代表 fill 支持 L1；其他内存级别的 fill 行为未经验证。
 5. 仅支持片上 buffer fill，GM 级别 fill 需用 T.copy。
 
 ## 3. 示例代码
