@@ -2,14 +2,11 @@
 
 This file is the single precision test entry for `example_tilelang_nsa_fwd.py`.
 It embeds:
-  - prepare_inputs:   host-side pre-gather K_selected/V_selected/CausalMask (CPU).
-  - golden_nsa_fwd:   PyTorch CPU reference (independent of prepare_inputs).
+  - prepare_inputs:   host-side pre-gather K_selected/V_selected (CPU).
+  - golden_nsa_fwd:   PyTorch CPU reference (imported from example module).
   - check_precision:  mixed-tolerance dual-gate check (precision-standard.md §4.1).
   - test_nsa_l0/l1/l2/boundary: layered test cases (L0/L1 block, L2/Boundary non-block).
   - main(--level):    unified dispatch + exit code.
-
-Hardware-level profiling (msprof op) and kernel-only latency (do_bench) have been
-moved to `perf_example_tilelang_nsa_fwd.py`.
 
 Run:
   python test_example_tilelang_nsa_fwd.py --level all     # full precision suite
@@ -24,21 +21,21 @@ import torch
 
 # Import kernel from sibling module.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from example_tilelang_nsa_fwd import native_sparse_attention  # noqa: E402
+from example_tilelang_nsa_fwd import native_sparse_attention, golden_nsa_fwd  # noqa: E402
 
 
 # =============================================================================
 # Host-side preprocessing (CPU, no aclnn dependency)
 # =============================================================================
 def prepare_inputs(Q, K, V, block_indices, block_counts, block_size, S, is_causal=True, bs_pad=None):
-    """Pre-gather K_selected / V_selected / CausalMask on CPU.
+    """Pre-gather K_selected / V_selected on CPU (causal mask is kernel-internal).
 
     Returns:
         K_selected/V_selected: [B, T, H, S*bs_pad, D] fp16 (real tokens + padding zeros).
-        CausalMask:            [B, T, H, S*bs_pad]    fp32 (0.0 visible / -2^30 masked).
 
     Invalid blocks (s >= block_counts) and padding tokens (bs_pad - BS) leave K/V as
-    zeros and mask as -2^30, so the kernel's softmax effectively ignores them.
+    zeros. The kernel computes the causal mask inline from BlockStarts, so no host-side
+    mask tensor is needed.
     """
     B, T, HQ, D = Q.shape
     H = K.shape[2]
@@ -47,11 +44,9 @@ def prepare_inputs(Q, K, V, block_indices, block_counts, block_size, S, is_causa
     if bs_pad is None:
         bs_pad = max(BS, 64)
     KV_LEN = S * bs_pad
-    NEG_INF = -(2.0**30)
 
     K_selected = torch.zeros(B, T, H, KV_LEN, D, dtype=Q.dtype)
     V_selected = torch.zeros(B, T, H, KV_LEN, D, dtype=Q.dtype)
-    mask = torch.full((B, T, H, KV_LEN), NEG_INF, dtype=torch.float32)
 
     for b in range(B):
         for t in range(T):
@@ -66,65 +61,15 @@ def prepare_inputs(Q, K, V, block_indices, block_counts, block_size, S, is_causa
                         if 0 <= pos < T:
                             K_selected[b, t, h, s * BS + j, :] = K[b, pos, h, :]
                             V_selected[b, t, h, s * BS + j, :] = V[b, pos, h, :]
-                            if (not is_causal) or pos <= t:
-                                mask[b, t, h, s * BS + j] = 0.0
 
-    return K_selected, V_selected, mask
+    return K_selected, V_selected
 
 
 # =============================================================================
-# Golden reference (CPU, based on naive_nsa; independent of prepare_inputs)
+# Golden reference — imported from example module (single implementation).
+# The test file no longer defines its own golden_nsa_fwd; it imports the
+# canonical version from example_tilelang_nsa_fwd.py to avoid duplication.
 # =============================================================================
-def golden_nsa_fwd(Q, K, V, block_indices, block_counts, block_size=32, scale=0.1, is_causal=True):
-    """PyTorch CPU reference based on naive_nsa (g_slc=g_swa=ones, window_size=0).
-
-    Uses original Q/K/V/block_indices directly (no pre-gather). Single-pass softmax
-    matches the NPU kernel. scale is NOT multiplied by log2(e) — NPU uses T.exp,
-    GPU uses T.exp2 * log2(e), which are mathematically equivalent.
-    """
-    B, T, HQ, D = Q.shape
-    H = K.shape[2]
-    G = HQ // H
-    S = block_indices.shape[-1]
-    BS = block_size
-
-    dtype = Q.dtype
-    Q_f, K_f, V_f = Q.float(), K.float(), V.float()
-    Output = torch.zeros(B, T, HQ, D, dtype=torch.float32)
-
-    for b in range(B):
-        for t in range(T):
-            for h in range(H):
-                # Collect valid positions for this (b, t, h).
-                positions = []
-                bc_val = block_counts[b, t, h].item() if isinstance(block_counts, torch.Tensor) else block_counts
-                for s in range(S):
-                    if s >= bc_val:
-                        continue
-                    bi = block_indices[b, t, h, s].item()
-                    for j in range(BS):
-                        pos = bi * BS + j
-                        if is_causal and pos > t:
-                            continue
-                        if pos < 0 or pos >= T:
-                            continue
-                        positions.append(pos)
-
-                if len(positions) == 0:
-                    continue
-
-                k_gathered = K_f[b, positions, h, :]
-                v_gathered = V_f[b, positions, h, :]
-
-                # Per query head in the group: standard attention.
-                for g in range(G):
-                    hq = h * G + g
-                    q = Q_f[b, t, hq, :]
-                    scores = torch.matmul(q, k_gathered.T) * scale
-                    attn = torch.softmax(scores, dim=0)
-                    Output[b, t, hq, :] = torch.matmul(attn, v_gathered)
-
-    return Output.to(dtype)
 
 
 # =============================================================================
@@ -206,13 +151,11 @@ def gen_test_inputs(B, SEQ_LEN, H, HQ, D, S, block_size, dtype, seed=0):
     return Q, K, V, block_indices, block_counts
 
 
-def _to_3d_inputs(K_sel, V_sel, mask, B, T, H, G, KV_LEN, D):
-    """Reshape [B,T,H,...] → [B*T*H, ...] and expand mask to G groups."""
+def _to_3d_inputs(K_sel, V_sel, B, T, H, G, KV_LEN, D):
+    """Reshape [B,T,H,...] → [B*T*H, ...] for kernel 3D tensor args."""
     K_sel_3d = K_sel.reshape(B * T * H, KV_LEN, D)
     V_sel_3d = V_sel.reshape(B * T * H, KV_LEN, D)
-    # mask is per (b,t,h); broadcast to all G query heads in the group (mask is shared).
-    mask_3d = mask.reshape(B * T * H, KV_LEN).unsqueeze(1).expand(-1, G, -1).contiguous()
-    return K_sel_3d, V_sel_3d, mask_3d
+    return K_sel_3d, V_sel_3d
 
 
 # =============================================================================
@@ -231,10 +174,12 @@ def _run_kernel_and_check(level, name, B, T, H, HQ, D, S, BS, BS_pad, scale, dty
             Q = (Q.float() * scale_factor + shift).to(dtype)
             K = (K.float() * scale_factor + shift).to(dtype)
             V = (V.float() * scale_factor + shift).to(dtype)
-        K_sel, V_sel, mask = prepare_inputs(Q, K, V, bi, bc, BS, S, is_causal=is_causal, bs_pad=BS_pad)
+        K_sel, V_sel = prepare_inputs(Q, K, V, bi, bc, BS, S, is_causal=is_causal, bs_pad=BS_pad)
         KV_LEN = S * BS_pad
         G = HQ // H
-        K_sel_3d, V_sel_3d, mask_3d = _to_3d_inputs(K_sel, V_sel, mask, B, T, H, G, KV_LEN, D)
+        K_sel_3d, V_sel_3d = _to_3d_inputs(K_sel, V_sel, B, T, H, G, KV_LEN, D)
+        # BlockStarts: [B, T, H, S] -> [B*T*H, S] int32 (block_indices * BS, pre-multiplied).
+        block_starts = (bi.to(torch.int32) * BS).reshape(B * T * H, S)
         kernel = native_sparse_attention(
             batch=B,
             seq_len=T,
@@ -242,10 +187,12 @@ def _run_kernel_and_check(level, name, B, T, H, HQ, D, S, BS, BS_pad, scale, dty
             heads=HQ,
             dim=D,
             selected_blocks=S,
+            block_size=BS,
             bs_pad=BS_pad,
             scale=scale,
+            is_causal=is_causal,
         )
-        out = kernel(Q.npu(), K_sel_3d.npu(), V_sel_3d.npu(), mask_3d.npu())
+        out = kernel(Q.npu(), K_sel_3d.npu(), V_sel_3d.npu(), block_starts.npu())
         torch.npu.synchronize()
         ref = golden_nsa_fwd(Q, K, V, bi, bc, block_size=BS, scale=scale, is_causal=is_causal)
         # Convert torch.dtype (e.g. torch.float16) to precision-standard dtype string.
@@ -292,6 +239,15 @@ L1_CASES = [
     ("l1_valrange_m", 2, 64, 1, 16, 32, 1, 32, 0.1, 17, (-10, 10)),  # medium range
     ("l1_valrange_l", 2, 64, 1, 16, 32, 1, 32, 0.1, 18, (-50, 50)),  # large range
     ("l1_valrange_aym", 2, 64, 1, 16, 32, 1, 32, 0.1, 19, (-5, 10)),  # asymmetric range
+    # DeepSeek-V3 NSA paper typical configs (adjusted to fit L0B budget).
+    # Original paper uses D=128, S=16/8, BS=64. Adjusted here to D=64, S=4:
+    # - D=128 with S>=8 exceeds 64KB L0B budget (nTile*D*sizeof(half) too large).
+    # - D=64 with S>=8 still exceeds L0B (KV_LEN=S*bs_pad=512+, GEMM nTile=KV_LEN).
+    # - D=64, S=4 (KV_LEN=256) is the largest config that fits L0B (kernel doesn't
+    #   tile over KV_LEN dimension — GEMM nTile=KV_LEN must fit in L0B slot).
+    # scale = 1/sqrt(D) = 1/sqrt(64) = 0.125.
+    ("typical_d64_s4", 1, 512, 1, 16, 64, 4, 64, 0.125, 30, (-1, 1)),  # D=64 S=4 KV_LEN=256
+    ("typical_d64_s2", 1, 512, 1, 16, 64, 2, 64, 0.125, 31, (-1, 1)),  # D=64 S=2 KV_LEN=128
 ]
 
 
@@ -334,10 +290,11 @@ def test_nsa_l2():
     def _test_fp32_input():
         B, T, H, HQ, D, S, BS = 2, 64, 1, 16, 32, 1, 32
         Q, K, V, bi, bc = gen_test_inputs(B, T, H, HQ, D, S, BS, torch.float32, 0)
-        K_sel, V_sel, mask = prepare_inputs(Q, K, V, bi, bc, BS, S, bs_pad=BS_pad)
+        K_sel, V_sel = prepare_inputs(Q, K, V, bi, bc, BS, S, bs_pad=BS_pad)
         KV_LEN = S * BS_pad
         G = HQ // H
-        K_sel_3d, V_sel_3d, mask_3d = _to_3d_inputs(K_sel, V_sel, mask, B, T, H, G, KV_LEN, D)
+        K_sel_3d, V_sel_3d = _to_3d_inputs(K_sel, V_sel, B, T, H, G, KV_LEN, D)
+        block_starts = (bi.to(torch.int32) * BS).reshape(B * T * H, S)
         kernel = native_sparse_attention(
             batch=B,
             seq_len=T,
@@ -345,10 +302,11 @@ def test_nsa_l2():
             heads=HQ,
             dim=D,
             selected_blocks=S,
+            block_size=BS,
             bs_pad=BS_pad,
             scale=0.1,
         )
-        kernel(Q.npu(), K_sel_3d.npu(), V_sel_3d.npu(), mask_3d.npu())
+        kernel(Q.npu(), K_sel_3d.npu(), V_sel_3d.npu(), block_starts.npu())
         torch.npu.synchronize()
 
     _run_exception("fp32_input_unsupported", _test_fp32_input)
@@ -367,11 +325,11 @@ def test_nsa_l2():
     _run_exception("short_seq_no_block", _test_short_seq)
 
     # D-EXC-GQA: G=odd (HQ % H != 0, e.g. HQ=17, H=1, G=17).
-    # The optimized kernel removed the `assert G % 2 == 0` (no vid split,
-    # threads=1), so odd G is now ALLOWED at JIT compile time. However, at
-    # RUNTIME the NPU GEMM (T.gemm_v0) with odd M dimension (G=17) crashes
-    # with aicore exception 507015: Cube core hardware does not support GEMM
-    # with odd M. This test verifies the runtime rejection.
+    # The kernel allows odd G at JIT compile time (threads=1, no G evenness
+    # requirement). However, at RUNTIME the NPU GEMM (T.gemm_v0) with odd M
+    # dimension (G=17) crashes with aicore exception 507015: Cube core
+    # hardware does not support GEMM with odd M. This test verifies the
+    # runtime rejection.
     #
     # CRITICAL: The NPU crash corrupts NPU state for the rest of the process,
     # causing spurious BOUNDARY_WARNs in subsequent tests. To prevent this
@@ -397,16 +355,17 @@ K = torch.randn(B, T, H, D, dtype=torch.float16)
 V = torch.randn(B, T, H, D, dtype=torch.float16)
 bi = torch.full((B, T, H, S), 0, dtype=torch.long)
 bc = torch.ones((B, T, H), dtype=torch.long)
-K_sel, V_sel, mask = prepare_inputs(Q, K, V, bi, bc, BS, S, bs_pad=BS_pad)
+K_sel, V_sel = prepare_inputs(Q, K, V, bi, bc, BS, S, bs_pad=BS_pad)
 KV_LEN = S * BS_pad
 G = HQ // H  # = 17 (odd)
-K_sel_3d, V_sel_3d, mask_3d = _to_3d_inputs(K_sel, V_sel, mask, B, T, H, G, KV_LEN, D)
+K_sel_3d, V_sel_3d = _to_3d_inputs(K_sel, V_sel, B, T, H, G, KV_LEN, D)
+block_starts = (bi.to(torch.int32) * BS).reshape(B * T * H, S)
 kernel = native_sparse_attention(
     batch=B, seq_len=T, head_kv=H, heads=HQ, dim=D,
-    selected_blocks=S, bs_pad=BS_pad, scale=0.1,
+    selected_blocks=S, block_size=BS, bs_pad=BS_pad, scale=0.1,
 )
 # This kernel() call crashes with aicore exception (odd M GEMM not supported)
-kernel(Q.npu(), K_sel_3d.npu(), V_sel_3d.npu(), mask_3d.npu())
+kernel(Q.npu(), K_sel_3d.npu(), V_sel_3d.npu(), block_starts.npu())
 torch.npu.synchronize()
 """
         result = subprocess.run(
@@ -443,10 +402,11 @@ def _boundary_run(dtype, seed, value_fn):
     B, T, H, HQ, D, S, BS, BS_pad, scale = 2, 64, 1, 16, 32, 1, 32, 64, 0.1
     Q, K, V, bi, bc = gen_test_inputs(B, T, H, HQ, D, S, BS, dtype, seed)
     Q, K, V = value_fn(Q, K, V)
-    K_sel, V_sel, mask = prepare_inputs(Q, K, V, bi, bc, BS, S, is_causal=True, bs_pad=BS_pad)
+    K_sel, V_sel = prepare_inputs(Q, K, V, bi, bc, BS, S, is_causal=True, bs_pad=BS_pad)
     KV_LEN = S * BS_pad
     G = HQ // H
-    K_sel_3d, V_sel_3d, mask_3d = _to_3d_inputs(K_sel, V_sel, mask, B, T, H, G, KV_LEN, D)
+    K_sel_3d, V_sel_3d = _to_3d_inputs(K_sel, V_sel, B, T, H, G, KV_LEN, D)
+    block_starts = (bi.to(torch.int32) * BS).reshape(B * T * H, S)
     kernel = native_sparse_attention(
         batch=B,
         seq_len=T,
@@ -454,10 +414,12 @@ def _boundary_run(dtype, seed, value_fn):
         heads=HQ,
         dim=D,
         selected_blocks=S,
+        block_size=BS,
         bs_pad=BS_pad,
         scale=scale,
+        is_causal=True,
     )
-    out = kernel(Q.npu(), K_sel_3d.npu(), V_sel_3d.npu(), mask_3d.npu())
+    out = kernel(Q.npu(), K_sel_3d.npu(), V_sel_3d.npu(), block_starts.npu())
     torch.npu.synchronize()
     ref = golden_nsa_fwd(Q, K, V, bi, bc, block_size=BS, scale=scale, is_causal=True)
     return out.cpu(), ref
@@ -481,10 +443,11 @@ def test_nsa_boundary():
     def _boundary_scale_none():
         B, T, H, HQ, D, S, BS, BS_pad = 2, 64, 1, 16, 32, 1, 32, 64
         Q, K, V, bi, bc = gen_test_inputs(B, T, H, HQ, D, S, BS, dtype, 30)
-        K_sel, V_sel, mask = prepare_inputs(Q, K, V, bi, bc, BS, S, is_causal=True, bs_pad=BS_pad)
+        K_sel, V_sel = prepare_inputs(Q, K, V, bi, bc, BS, S, is_causal=True, bs_pad=BS_pad)
         KV_LEN = S * BS_pad
         G = HQ // H
-        K_sel_3d, V_sel_3d, mask_3d = _to_3d_inputs(K_sel, V_sel, mask, B, T, H, G, KV_LEN, D)
+        K_sel_3d, V_sel_3d = _to_3d_inputs(K_sel, V_sel, B, T, H, G, KV_LEN, D)
+        block_starts = (bi.to(torch.int32) * BS).reshape(B * T * H, S)
         kernel = native_sparse_attention(
             batch=B,
             seq_len=T,
@@ -492,10 +455,12 @@ def test_nsa_boundary():
             heads=HQ,
             dim=D,
             selected_blocks=S,
+            block_size=BS,
             bs_pad=BS_pad,
             scale=None,
+            is_causal=True,
         )
-        out = kernel(Q.npu(), K_sel_3d.npu(), V_sel_3d.npu(), mask_3d.npu())
+        out = kernel(Q.npu(), K_sel_3d.npu(), V_sel_3d.npu(), block_starts.npu())
         torch.npu.synchronize()
         expected_scale = (1.0 / D) ** 0.5
         ref = golden_nsa_fwd(Q, K, V, bi, bc, block_size=BS, scale=expected_scale, is_causal=True)
