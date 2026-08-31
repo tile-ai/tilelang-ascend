@@ -4881,8 +4881,6 @@ def run_test_reduce_sum(M, N, block_M, block_N, dim, dtype, target):
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_sum(dim, dtype, target):
-    if dtype == "float16":
-        pytest.xfail(reason="float16 reduction sum may overflow")
     M, N = 1024, 64
     run_test_reduce_sum(M, N, 64, 64, dim, dtype, target)
 
@@ -5109,6 +5107,142 @@ def run_test_reduce_runtime_semantics(
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_dim0_runtime_smoke(op, target):
     run_test_reduce_runtime_semantics(op, dim=0, target=target, clear=True)
+
+
+# float16 reduce_sum regression tests. AscendC lowers float16 sum through a
+# float32 widening (Cast -> ReduceSum<float> -> Cast) because the historic
+# WholeReduceSum<half> workaround is wrong for column reductions (issue #1683:
+# its srcRepStride unit is a 32-byte block and cannot express the 2-byte step)
+# and accumulates in f16 precision (issue #754).
+@pytest.mark.parametrize("dim", [0, -1])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_reduce_sum_float16_runtime(dim, target):
+    M, N = 64, 64
+    func = tilelang.compile(
+        reduce_runtime_semantics_kernel(M, N, "sum", dim, dtype="float16"),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
+    )
+
+    # Fixed seed: PTO reduces natively in half precision, and an unseeded
+    # run can draw a near-zero row sum where the relative tolerance is
+    # dominated by the f16 accumulation error.
+    torch.manual_seed(0)
+    a = torch.randn(M, N, dtype=torch.float16).npu()
+    b = func(a)
+    torch.npu.synchronize()
+
+    ref_b = torch.sum(a, dim=1 if dim == -1 else 0)
+    # Both backends reduce through a float32 accumulator, so the result is
+    # bit-accurate up to the final round to half.
+    torch.testing.assert_close(b, ref_b, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize("dim", [0, -1])
+def test_reduce_sum_float16_unaligned_cols_pto(dim):
+    # The widened float32 views over the injected workspace must keep their
+    # physical (32-byte aligned) column count separate from the valid one;
+    # N=5 would otherwise emit a 20-byte row and fail the PTO tile
+    # static_assert. AscendC is not covered here: its native float32 reduce
+    # has the same unaligned-column limitation, so the widened half path
+    # merely matches the platform behavior.
+    M, N = 64, 5
+    func = tilelang.compile(
+        reduce_runtime_semantics_kernel(M, N, "sum", dim, dtype="float16"),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target="pto",
+    )
+
+    torch.manual_seed(0)
+    a = torch.randn(M, N, dtype=torch.float16).npu()
+    b = func(a)
+    torch.npu.synchronize()
+
+    ref_b = torch.sum(a, dim=1 if dim == -1 else 0)
+    torch.testing.assert_close(b, ref_b, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_reduce_sum_float16_slice_dst(target):
+    # The final narrow cast must write the offset-carrying destination view,
+    # not the backing-buffer start (PR #1724 review).
+    @T.prim_func
+    def main(A: T.Tensor((64, 64), "float16"), B: T.Tensor((128,), "float16")):  # type: ignore
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            a_ub = T.alloc_ub((64, 64), "float16")
+            b_ub = T.alloc_ub((128,), "float16")
+            if vid == 0:
+                T.copy(A, a_ub)
+                T.reduce_sum(a_ub, b_ub[32:96], dim=-1)
+                T.copy(b_ub, B)
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    torch.manual_seed(0)
+    a = torch.randn(64, 64, dtype=torch.float16).npu()
+    b = func(a)
+    torch.npu.synchronize()
+
+    ref_b = torch.sum(a, dim=1)
+    torch.testing.assert_close(b[32:96], ref_b, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_reduce_sum_float16_two_reduces_shared_workspace(target):
+    # Memory planning merges the workspaces of the two reduces, so every
+    # widening view must stay uniquely named (PR #1724 review).
+    @T.prim_func
+    def main(
+        A: T.Tensor((64, 64), "float16"),  # type: ignore
+        B: T.Tensor((64,), "float16"),  # type: ignore
+        C: T.Tensor((64,), "float16"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            a_ub = T.alloc_ub((64, 64), "float16")
+            b_ub = T.alloc_ub((64,), "float16")
+            c_ub = T.alloc_ub((64,), "float16")
+            if vid == 0:
+                T.copy(A, a_ub)
+                T.reduce_sum(a_ub, b_ub, dim=-1)
+                T.reduce_sum(a_ub, c_ub, dim=-1)
+                T.copy(b_ub, B)
+                T.copy(c_ub, C)
+
+    func = tilelang.compile(main, out_idx=[1, 2], pass_configs=pass_configs, target=target)
+    torch.manual_seed(0)
+    a = torch.randn(64, 64, dtype=torch.float16).npu()
+    b, c = func(a)
+    torch.npu.synchronize()
+
+    ref_b = torch.sum(a, dim=1)
+    torch.testing.assert_close(b, ref_b, rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(c, ref_b, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize("dim", [0, -1])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_reduce_sum_float16_clear_false(dim, target):
+    # clear=False merges into the destination's current contents; the
+    # widening must seed the float32 partial with the old value (AscendC)
+    # and the merge must fence the pipe before reading the tmp output view
+    # (PTO, PR #1724 review).
+    M, N = 64, 64
+    func = tilelang.compile(
+        reduce_runtime_semantics_kernel(M, N, "sum", dim, dtype="float16", clear=False, init_value=1.25),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
+    )
+
+    torch.manual_seed(0)
+    a = torch.randn(M, N, dtype=torch.float16).npu()
+    b = func(a)
+    torch.npu.synchronize()
+
+    ref_b = torch.sum(a.float(), dim=1 if dim == -1 else 0) + 1.25
+    # The merge adds in half precision, so allow the final round to half.
+    torch.testing.assert_close(b.float(), ref_b, rtol=1e-2, atol=1e-2)
 
 
 @pytest.mark.parametrize(

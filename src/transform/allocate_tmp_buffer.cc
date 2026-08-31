@@ -347,6 +347,16 @@ int64_t EstimatePTOReduceWorkspaceBytes(const CallNode *call,
                                         const Array<Buffer> &alloc_buffers) {
   const ReduceTemplateInfo info = ParseReduceTemplateInfo(call);
   if (info.direction == 0) {
+    // A float16 column sum widens to float32 (TCVT -> TCOLSUM<float> ->
+    // TCVT, issue #754); every other column reduce needs no workspace. The
+    // widened source pads its physical column count to the 32-byte block.
+    if (info.kind == ReduceKind::kSum && info.dtype == "half") {
+      const int64_t f32_bytes = 4;
+      const int64_t src_phys_cols = AlignReduceOutputCols(info.cols, f32_bytes);
+      const int64_t src_elems = info.rows * src_phys_cols;
+      const int64_t dst_col = AlignReduceOutputCols(info.cols, f32_bytes);
+      return (src_elems + dst_col) * f32_bytes;
+    }
     return 0;
   }
 
@@ -358,17 +368,36 @@ int64_t EstimatePTOReduceWorkspaceBytes(const CallNode *call,
 
   const int64_t dtype_bytes = src_buffer->dtype.bytes();
   const int64_t tmp_col = GetPtoRowReduceTmpCols(info.cols, dtype_bytes);
-  return info.rows * tmp_col * dtype_bytes;
+  int64_t bytes = info.rows * tmp_col * dtype_bytes;
+
+  // float16 sum widens to float32 (TCVT -> TROWSUM<float> -> TCVT, issue
+  // #754): the workspace must hold the widened source tile (physical column
+  // count aligned up to the 32-byte block), the TROWSUM scratch in float32,
+  // and the float32 partial destination (whose DN row count also stays
+  // 32-byte aligned).
+  if (info.kind == ReduceKind::kSum && info.dtype == "half") {
+    const int64_t f32_bytes = 4;
+    const int64_t src_phys_cols = AlignReduceOutputCols(info.cols, f32_bytes);
+    const int64_t src_elems = info.rows * src_phys_cols;
+    const int64_t f32_tmp_col = GetPtoRowReduceTmpCols(info.cols, f32_bytes);
+    const int64_t dst_phys_rows = AlignReduceOutputCols(info.rows, f32_bytes);
+    const int64_t widen_bytes =
+        (src_elems + info.rows * f32_tmp_col + dst_phys_rows) * f32_bytes;
+    bytes = std::max<int64_t>(bytes, widen_bytes);
+  }
+  return bytes;
 }
 
 bool AscendCReduceUsesTmp(const CallNode *call) {
   const ReduceCallLayout layout = ParseReduceCallLayout(call);
-  const ReduceTemplateInfo info = ParseReduceTemplateInfo(call);
   if (layout.physical_row > 0) {
     return false;
   }
-  return !(info.kind == ReduceKind::kSum && info.dtype == "half" &&
-           layout.clear);
+  // float16 sum also needs a workspace: the lowering widens the source to
+  // float32 (Cast -> ReduceSum<float> -> Cast) because the historic
+  // WholeReduceSum<half> workaround has an f16 accumulator (issues #754) and
+  // cannot express the 2-byte step of a column reduce (issue #1683).
+  return true;
 }
 
 int64_t
@@ -417,6 +446,41 @@ EstimateAscendCReduceWorkspaceBytes(const CallNode *call,
           info.rows * (info.cols < elements_per_repeat ? kDataBlockBytes
                                                        : kVectorRepeatBytes);
     }
+  }
+
+  // float16 sum lowers through a float32 widen: the workspace must hold the
+  // widened source tile, the float32 partial destination and the CANN
+  // scratch, as three disjoint segments. The scratch need mirrors the
+  // native float32 heuristic above (dtype_bytes == 4), recomputed on the
+  // widened shape so it never aliases the source or the result.
+  if (info.kind == ReduceKind::kSum && info.dtype == "half") {
+    const int64_t f32_bytes = 4;
+    const int64_t widen_src_bytes =
+        AlignUp(info.rows * info.cols * f32_bytes, 32);
+    const int64_t result_len = info.direction == 0 ? info.cols : info.rows;
+    const int64_t result_bytes = AlignUp(result_len * f32_bytes, 32);
+
+    int64_t scratch_bytes = 0;
+    if (info.direction == 0) {
+      const int64_t padded_row_bytes = AlignUp(info.cols * f32_bytes, 32);
+      const int64_t power = FloorPowerOfTwo(info.rows);
+      const int64_t active_rows =
+          info.rows == 1 ? 1 : (info.rows == power ? power / 2 : power);
+      scratch_bytes = active_rows * padded_row_bytes;
+    } else {
+      constexpr int64_t kVectorRepeatBytes = 256;
+      const int64_t elements_per_repeat = kVectorRepeatBytes / f32_bytes;
+      if (info.cols > elements_per_repeat) {
+        const int64_t power = FloorPowerOfTwo(info.cols);
+        const int64_t per_row_elements =
+            info.rows == 1 || info.cols != power ? power : power / 2;
+        scratch_bytes = info.rows * per_row_elements * f32_bytes;
+      }
+    }
+
+    const int64_t widen_total =
+        widen_src_bytes + result_bytes + AlignUp(scratch_bytes, 32);
+    bytes = std::max<int64_t>(bytes, widen_total);
   }
 
   // The current wrapper still has a sharedTmpBuffer parameter even when the
@@ -516,7 +580,10 @@ WorkspaceSpec GetPTOWorkspaceSpec(const CallNode *call,
   if (call->op.same_as(tl::ascend_reduce())) {
     const ReduceTemplateInfo info = ParseReduceTemplateInfo(call);
     const ReduceCallLayout layout = ParseReduceCallLayout(call);
-    if (info.direction != -1 && layout.clear) {
+    // A float16 sum widens to float32 on both directions (issue #754), so a
+    // column reduce with clear=true needs a workspace as well.
+    if (info.direction != -1 && layout.clear &&
+        !(info.kind == ReduceKind::kSum && info.dtype == "half")) {
       return NoWorkspace();
     }
     return RequireWorkspace(

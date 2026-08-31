@@ -2157,30 +2157,73 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
     } catch (...) {
     }
 
-    if (dtype == "half" && clear) {
-      std::string mask, repeatTime, srcRepStride;
-      constexpr int64_t ELE_NUM_PER_C0_FOR_HALF = 16;
-      if (dim_val == -1) {
-        mask = std::to_string(n_val);
-        repeatTime = std::to_string(m_val);
-        srcRepStride = std::to_string((n_val + ELE_NUM_PER_C0_FOR_HALF - 1) /
-                                      ELE_NUM_PER_C0_FOR_HALF);
-      } else if (dim_val == 0) {
-        mask = std::to_string(m_val);
-        repeatTime = std::to_string(n_val);
-        srcRepStride = std::to_string((m_val + ELE_NUM_PER_C0_FOR_HALF - 1) /
-                                      ELE_NUM_PER_C0_FOR_HALF);
-      } else {
-        mask = std::to_string(m_val * n_val);
-        repeatTime = "1";
-        srcRepStride = "0";
+    if (dtype == "half") {
+      // CANN ReduceSum<half> is rejected by a static_assert, and the historic
+      // WholeReduceSum<half> workaround is wrong for column reductions (its
+      // srcRepStride unit is a 32-byte block and cannot express a 2-byte step,
+      // issue #1683) and loses precision on random data (f16 accumulator,
+      // issue #754). Widen to float32 instead: Cast -> ReduceSum<float> ->
+      // Cast. The widened source, the float32 partial destination and the
+      // CANN scratch live in three disjoint segments of the injected reduce
+      // workspace, and clear=false keeps the template's dst merge semantics.
+      ICHECK(var_names.size() >= 3)
+          << "half reduce_sum expects an injected workspace operand";
+      // The workspace name may carry an element offset ("tmp_ub[0]"); strip
+      // it to build a valid C++ identifier for the typed view.
+      const std::string &tmp_name = var_names[2];
+      std::string tmp_base;
+      for (char c : tmp_name) {
+        if (c == '[' || c == ']') {
+          tmp_base += '_';
+        } else if (isalnum(c) || c == '_') {
+          tmp_base += c;
+        }
       }
+      // A kernel may hold several half reduce_sum calls over one merged
+      // workspace; keep every widening view name unique (#1683 review).
+      std::string tmp_view =
+          tmp_base + "_f32_" + std::to_string(this->reduce_widen_counter_++);
+      const int64_t total = m_val * n_val;
+      const int64_t result_len = (dim_val == 0) ? n_val : m_val;
+      // Workspace layout (bytes): [source | result | CANN scratch]. The
+      // scratch must not overlap the source or the result, so it only
+      // starts after both aligned segments; its size is covered by the
+      // workspace heuristic in allocate_tmp_buffer.cc.
+      const int64_t src_f32_bytes = ((total * 4 + 31) / 32) * 32;
+      const int64_t result_f32_bytes = ((result_len * 4 + 31) / 32) * 32;
+      const int64_t dst_f32_off = src_f32_bytes / 4;
+      const int64_t scratch_off_bytes = src_f32_bytes + result_f32_bytes;
 
-      std::string new_op_name = "tl::ascend::reduce_sum_half<" + dtype + ">";
-      this->stream << new_op_name << "(";
-      this->stream << var_names[0] << ", " << var_names[1];
-      this->stream << ", " << mask << ", " << repeatTime << ", " << srcRepStride
-                   << ");\n";
+      this->stream << "AscendC::LocalTensor<float> " << tmp_view << " = "
+                   << tmp_name << ".ReinterpretCast<float>();\n";
+      this->PrintIndent();
+      this->stream << "AscendC::Cast(" << tmp_view << ", " << var_names[1]
+                   << ", AscendC::RoundMode::CAST_NONE, " << total << ");\n";
+      // clear=false merges the reduced value into the destination's current
+      // contents. The template's merge path backs up and restores its float32
+      // destination, so seed that destination with the widened old value
+      // first; otherwise the merge would restore workspace garbage.
+      if (!clear) {
+        this->PrintIndent();
+        this->stream << "AscendC::Cast(" << tmp_view << "[" << dst_f32_off
+                     << "], " << var_names[0]
+                     << ", AscendC::RoundMode::CAST_NONE, " << result_len
+                     << ");\n";
+      }
+      this->PrintIndent();
+      // The sharedTmpBuffer operand is byte-typed, so index it by the byte
+      // offset of the scratch segment instead of reusing the workspace
+      // start, which would alias the widened source.
+      this->stream << "tl::ascend::reduce_sum<float, " << m_str << ", " << n_str
+                   << ", " << dim_str << ">(" << tmp_view << "[" << dst_f32_off
+                   << "], " << tmp_view << ", " << tmp_name << "["
+                   << scratch_off_bytes << "], " << clear_str << ");\n";
+      this->PrintIndent();
+      this->stream << "AscendC::Cast(" << var_names[0] << ", " << tmp_view
+                   << "[" << dst_f32_off
+                   << "], "
+                      "AscendC::RoundMode::CAST_RINT, "
+                   << result_len << ");\n";
     } else {
       std::string new_op_name = "tl::ascend::reduce_sum<" + dtype + ", " +
                                 m_str + ", " + n_str + ", " + dim_str + ">";
