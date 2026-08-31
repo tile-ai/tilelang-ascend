@@ -347,7 +347,9 @@ def fill(buffer: Buffer | BufferRegion, value: PrimExpr):
         buffer: Either a TVM buffer or buffer region to be filled.
         value: The value to fill the buffer with.  Can be a Python scalar
                or PrimExpr.  When the value dtype differs from the buffer
-               dtype, the frontend automatically casts it.
+               dtype, the frontend automatically casts it without range
+               checks.  Out-of-range values may be silently truncated or
+               wrapped.
 
     Returns:
         A TVM intrinsic call that performs the fill operation.
@@ -356,7 +358,11 @@ def fill(buffer: Buffer | BufferRegion, value: PrimExpr):
         On AscendC, dtype support: float16, float32, bfloat16,
         int16, uint16, int32, uint32.  int8/uint8 are not supported.
         On PTO, int8 and uint8 are additionally supported.
-        The buffer should reside in UB (Unified Buffer) memory.
+        The buffer should reside in UB (Unified Buffer) memory.  A buffer
+        allocated by ``T.alloc_shared`` is supported only when memory planning
+        infers it as UB.  Buffer regions must be physically contiguous; 2D
+        column-offset slices are unsupported and may silently write incorrect
+        locations.
     """
     if isinstance(buffer, BufferRegion):
         buffer_ptr, buffer_extent = _handle_buffer_region(buffer, "w")

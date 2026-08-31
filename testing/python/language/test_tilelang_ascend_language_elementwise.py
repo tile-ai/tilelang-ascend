@@ -2409,7 +2409,7 @@ def test_fill_special_values(dtype_value, target):
     run_test_fill_values(1024, 1024, 64, 32, dtype, value, target=target)
 
 
-def fill_shared(M, N, block_M, block_N, dtype="float16"):
+def fill_alloc_shared_inferred_ub(M, N, block_M, block_N, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
 
@@ -2418,6 +2418,7 @@ def fill_shared(M, N, block_M, block_N, dtype="float16"):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
             by = cid % n_num
+            # This Developer-mode buffer is inferred as UB by memory planning.
             a_shared = T.alloc_shared((block_M, block_N), dtype)
 
             T.tile.fill(a_shared, 10.0)
@@ -2426,8 +2427,8 @@ def fill_shared(M, N, block_M, block_N, dtype="float16"):
     return main
 
 
-def run_test_fill_shared(M, N, block_M, block_N, dtype, target):
-    func = fill_shared(M, N, block_M, block_N, dtype)
+def run_test_fill_alloc_shared_inferred_ub(M, N, block_M, block_N, dtype, target):
+    func = fill_alloc_shared_inferred_ub(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
     torch.npu.synchronize()
@@ -2442,8 +2443,8 @@ def run_test_fill_shared(M, N, block_M, block_N, dtype, target):
 
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
-def test_fill_shared(dtype, target):
-    run_test_fill_shared(1024, 1024, 64, 32, dtype, target=target)
+def test_fill_alloc_shared_inferred_ub(dtype, target):
+    run_test_fill_alloc_shared_inferred_ub(1024, 1024, 64, 32, dtype, target=target)
 
 
 def clear(M, N, block_M, block_N, dtype="float"):
