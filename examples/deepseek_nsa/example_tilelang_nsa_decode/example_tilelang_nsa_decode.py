@@ -18,7 +18,7 @@ PASS_CONFIGS = {
 }
 
 
-@tilelang.jit(out_idx=[5], pass_configs=PASS_CONFIGS)
+@tilelang.jit(out_idx=[5], workspace_idx=[6, 7, 8, 9, 10], pass_configs=PASS_CONFIGS)
 def nsa_decode(batch, seq_len, query_heads, kv_head_num, dim, selected_blocks, block_size):
     """NSA Decode kernel (Developer mode).
 
@@ -234,26 +234,13 @@ def validate_block_indices(block_indices, block_counts, block_size, seq_len):
                 )
 
 
-def allocate_workspace(batch, head_kv, G, S, block_size, D, device="npu"):
-    """Pre-allocate 5 workspace tensors."""
-    block_num = batch * head_kv
-    return (
-        torch.empty(block_num, S * block_size, D, dtype=torch.float16, device=device),
-        torch.empty(block_num, G, S * block_size, dtype=torch.float32, device=device),
-        torch.empty(block_num, G, S * block_size, dtype=torch.float16, device=device),
-        torch.empty(block_num, G, D, dtype=torch.float32, device=device),
-        torch.empty(block_num, S * block_size, D, dtype=torch.float16, device=device),
-    )
-
-
 def run_kernel(Q, K, V, block_indices, block_counts, block_size, seq_len):
-    """Compile kernel + expand RowIndices + allocate workspace + run."""
+    """Compile kernel + expand RowIndices + run (workspace auto-allocated by framework)."""
     B = Q.shape[0]
     HQ = Q.shape[2]
     H = K.shape[2]
     D = K.shape[-1]
     S = block_indices.shape[-1]
-    G = HQ // H
 
     row_indices = expand_block_indices_to_rows(block_indices, block_size, seq_len)
     block_counts_f32 = block_counts.to(torch.float32)
@@ -263,61 +250,11 @@ def run_kernel(Q, K, V, block_indices, block_counts, block_size, seq_len):
     q_npu, k_npu, v_npu = Q.npu(), K.npu(), V.npu()
     ri_npu = row_indices.npu()
     bc_npu = block_counts_f32.npu()
-    ws0, ws1, ws2, ws3, ws4 = allocate_workspace(B, H, G, S, block_size, D, device="npu")
 
-    output = kernel(q_npu, k_npu, v_npu, ri_npu, bc_npu, ws0, ws1, ws2, ws3, ws4)
+    # workspace_idx=[6,7,8,9,10] in @tilelang.jit: framework auto-allocates 5 workspace tensors.
+    output = kernel(q_npu, k_npu, v_npu, ri_npu, bc_npu)
     torch.npu.synchronize()
     return output
-
-
-# =============================================================================
-# Naive PyTorch CPU reference (inline for CI smoke test only).
-# The full golden (ref_nsa_decode) lives in test_example_tilelang_nsa_decode.py.
-# =============================================================================
-def _naive_ref(q, k, v, block_indices, block_counts, block_size):
-    """Naive PyTorch CPU reference for the CI smoke test.
-
-    scale = D^-0.5 (matches kernel, no log2(e) factor).
-    Handles GQA expansion, block gather, and block_counts masking.
-    block_counts=0 guard: output zeros (not NaN).
-    """
-    scale = q.shape[-1] ** -0.5
-    HQ = q.shape[2]
-    H = k.shape[2]
-    G = HQ // H
-    BS = block_size
-    S = block_indices.shape[-1]
-
-    # GQA expand: H -> HQ
-    k_e = k.repeat_interleave(G, dim=2).float()
-    v_e = v.repeat_interleave(G, dim=2).float()
-    bi_e = block_indices.repeat_interleave(G, dim=2)
-    bc_e = block_counts.repeat_interleave(G, dim=2)
-    q_f = q.float()
-
-    # Row indices: expand block_idx -> rows [B, 1, HQ, S*BS]
-    row_idx = (bi_e.unsqueeze(-1) * BS + torch.arange(BS)).reshape(q.shape[0], 1, HQ, S * BS)
-    row_idx = row_idx.clamp(0, k_e.shape[1] - 1)
-
-    # Block id per row for masking: [S*BS]
-    blk_id = torch.arange(S).repeat_interleave(BS)
-
-    o = torch.zeros_like(q_f)
-    for b in range(q_f.shape[0]):
-        q_b = q_f[b, 0] * scale  # [HQ, D]
-        for h in range(HQ):
-            bc = bc_e[b, 0, h].item()
-            if bc <= 0:
-                continue
-            ri = row_idx[b, 0, h]  # [S*BS]
-            k_g = k_e[b, ri, h, :]  # [S*BS, D]
-            v_g = v_e[b, ri, h, :]
-            attn = q_b[h] @ k_g.T  # [S*BS]
-            attn = attn.masked_fill(blk_id >= bc, float("-inf"))
-            attn = torch.softmax(attn, dim=0)
-            o[b, 0, h] = attn @ v_g
-
-    return o.to(q.dtype)
 
 
 # =============================================================================
@@ -333,6 +270,7 @@ if __name__ == "__main__":
     # NOTE: use SEQ_LEN (not T) to avoid shadowing tilelang.language as T above.
     B, SEQ_LEN, H, HQ, D, S, BS = 2, 64, 1, 16, 16, 1, 32
     DTYPE = torch.float16
+    G = HQ // H
 
     Q = torch.randn((B, 1, HQ, D), dtype=DTYPE)
     K = torch.randn((B, SEQ_LEN, H, D), dtype=DTYPE)
@@ -341,8 +279,34 @@ if __name__ == "__main__":
     block_indices = torch.zeros((B, 1, H, S), dtype=torch.long)
     block_counts = torch.full((B, 1, H), S, dtype=torch.long)
 
-    # Inline naive golden (self-contained, no import from test file).
-    ref_out = _naive_ref(Q, K, V, block_indices, block_counts, BS)
+    # Inline PyTorch CPU golden (self-contained, no import from test file).
+    # scale = D^-0.5 (matches kernel, no log2(e) factor).
+    scale = D**-0.5
+    k_e = K.repeat_interleave(G, dim=2).float()  # GQA expand: H -> HQ
+    v_e = V.repeat_interleave(G, dim=2).float()
+    bi_e = block_indices.repeat_interleave(G, dim=2)
+    bc_e = block_counts.repeat_interleave(G, dim=2)
+    q_f = Q.float()
+    # Expand block_idx -> rows [B, 1, HQ, S*BS]
+    row_idx = (bi_e.unsqueeze(-1) * BS + torch.arange(BS)).reshape(B, 1, HQ, S * BS)
+    row_idx = row_idx.clamp(0, k_e.shape[1] - 1)
+    blk_id = torch.arange(S).repeat_interleave(BS)  # Block id per row for masking
+    ref_out = torch.zeros_like(q_f)
+    for b in range(B):
+        q_b = q_f[b, 0] * scale  # [HQ, D]
+        for h in range(HQ):
+            bc = bc_e[b, 0, h].item()
+            if bc <= 0:
+                continue
+            ri = row_idx[b, 0, h]  # [S*BS]
+            k_g = k_e[b, ri, h, :]  # [S*BS, D]
+            v_g = v_e[b, ri, h, :]
+            attn = q_b[h] @ k_g.T  # [S*BS]
+            attn = attn.masked_fill(blk_id >= bc, float("-inf"))
+            attn = torch.softmax(attn, dim=0)
+            ref_out[b, 0, h] = attn @ v_g
+    ref_out = ref_out.to(Q.dtype)
+
     out = run_kernel(Q, K, V, block_indices, block_counts, BS, SEQ_LEN)
 
     # Precision check: mixed tolerance dual-gate (precision-standard.md §4.1).

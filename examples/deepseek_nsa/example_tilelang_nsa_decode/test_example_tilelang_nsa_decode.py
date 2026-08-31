@@ -7,8 +7,6 @@ It embeds:
   - test_nsa_l0/l1/l2/boundary: layered test cases (L0/L1 blocking, L2/Boundary non-blocking).
   - main(--level):      unified dispatch + exit code.
 
-Performance profiling (do_bench + msprof) is in perf_example_tilelang_nsa_decode.py.
-
 Run:
   python test_example_tilelang_nsa_decode.py --level all     # full precision suite
   python test_example_tilelang_nsa_decode.py --level l0      # L0 threshold only
@@ -24,7 +22,6 @@ import torch
 # Import kernel + helpers from sibling module.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from example_tilelang_nsa_decode import (  # noqa: E402
-    allocate_workspace,
     nsa_decode,
     run_kernel,
 )
@@ -222,33 +219,6 @@ def _gen_uniform(low, high):
     return fn
 
 
-def _gen_zeros(shape):
-    return torch.zeros(shape, dtype=torch.float16)
-
-
-def _gen_inf(shape):
-    x = torch.randn(shape, dtype=torch.float16)
-    if x.numel() > 10:
-        x.view(-1)[::100] = float("inf")
-    return x
-
-
-def _gen_nan(shape):
-    x = torch.randn(shape, dtype=torch.float16)
-    if x.numel() > 10:
-        x.view(-1)[::100] = float("nan")
-    return x
-
-
-def _gen_dbound(shape):
-    x = torch.randn(shape, dtype=torch.float16)
-    if x.numel() > 10:
-        flat = x.view(-1)
-        flat[0] = 65504.0
-        flat[1] = -65504.0
-    return x
-
-
 def test_nsa_l1():
     """L1 functional tests: shape/value/param coverage."""
     dtype = torch.float16
@@ -278,6 +248,14 @@ def test_nsa_l1():
     ok &= _run_kernel_and_check("l1", "s2_partial", 2, 64, H, HQ, D, 2, BS, dtype, 0, block_counts=1, block_indices_list=[0, 1])
     ok &= _run_kernel_and_check("l1", "s4_full", 2, 128, H, HQ, D, 4, BS, dtype, 0, block_counts=4, block_indices_list=[0, 1, 2, 3])
 
+    # Model typical config (DeepSeek-V3 NSA paper: D=128, S=16, BS=64)
+    ok &= _run_kernel_and_check(
+        "l1", "typical_d128_s16", 1, 1024, H, HQ, 128, 16, 64, dtype, 0, block_counts=16, block_indices_list=list(range(16))
+    )
+    ok &= _run_kernel_and_check(
+        "l1", "typical_d128_s8", 1, 512, H, HQ, 128, 8, 64, dtype, 0, block_counts=8, block_indices_list=list(range(8))
+    )
+
     return ok
 
 
@@ -306,9 +284,8 @@ def test_nsa_l2():
         v_f32 = torch.randn(1, 64, 1, 16, dtype=torch.float32, device="cpu").npu()
         ri = torch.zeros(1, 1, 1, S * BS, dtype=torch.int32, device="cpu").npu()
         bc = torch.full((1, 1, 1), float(S), dtype=torch.float32, device="cpu").npu()
-        G = HQ // H
-        ws0, ws1, ws2, ws3, ws4 = allocate_workspace(B, H, G, S, BS, D, device="npu")
-        kernel(q_f32, k_f32, v_f32, ri, bc, ws0, ws1, ws2, ws3, ws4)
+        # workspace auto-allocated by framework via workspace_idx=[6,7,8,9,10]
+        kernel(q_f32, k_f32, v_f32, ri, bc)
         torch.npu.synchronize()
 
     _run_exception("fp32_input_unsupported", _test_fp32_input)
