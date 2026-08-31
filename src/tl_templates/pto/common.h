@@ -1373,14 +1373,19 @@ clear_compare_tail_bits(TileUbDataND<T, Rows, Cols, RowValid, ColValid> &dst,
                         uint32_t valid_row, uint32_t logical_valid_col) {
   if ((logical_valid_col & 7U) == 0)
     return;
-  TL_PIPE_V_BARRIER();
+  // The compare result is produced by PIPE_V, while the packed-byte cleanup
+  // below is a scalar UB read-modify-write.  A vector-only barrier does not
+  // make that result visible to PIPE_S and can therefore overwrite the final
+  // predicate byte with stale data.  Synchronize both directions so the
+  // following select observes the cleaned mask.
+  pto::PtoSetWaitFlag<PIPE_V, PIPE_S>();
   uint8_t keep = static_cast<uint8_t>((1U << (logical_valid_col & 7U)) - 1U);
   uint32_t last = logical_valid_col >> 3;
   for (uint32_t r = 0; r < valid_row; ++r) {
     dst.data()[r * Cols + last] = static_cast<T>(
         static_cast<uint8_t>(dst.data()[r * Cols + last]) & keep);
   }
-  TL_PIPE_V_BARRIER();
+  pto::PtoSetWaitFlag<PIPE_S, PIPE_V>();
 }
 
 template <typename T, int32_t Rows, int32_t Cols, int32_t RowValid,
