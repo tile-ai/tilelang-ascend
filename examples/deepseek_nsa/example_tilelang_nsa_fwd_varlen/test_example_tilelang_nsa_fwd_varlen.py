@@ -1,11 +1,9 @@
 """NSA Forward VarLen precision test suite: L0/L1/L2/Boundary.
 
 This file is the single precision-test entry for `example_tilelang_nsa_fwd_varlen.py`.
-It owns all host-side helpers (token indices, test data, causal mask, golden
-reference, host wrapper, precision check) and the layered precision test cases
+It owns all host-side helpers (token indices, test data, golden reference,
+host wrapper, precision check) and the layered precision test cases
 (L0 threshold / L1 functional / L2 exception / Boundary special-value).
-
-Performance tests (do_bench + msprof op) live in `perf_example_tilelang_nsa_fwd_varlen.py`.
 
 Run:
   python test_example_tilelang_nsa_fwd_varlen.py --level all     # full precision suite
@@ -116,26 +114,6 @@ def make_test_data(n, c_seq_len, h, hq, d, s, bs, dtype, seed=42):
     return q, k, v, block_indices, block_counts, offsets, token_indices, g_slc, scale
 
 
-def make_causal_mask(block_indices, block_counts, token_indices, offsets, c_seq_len, h, s, bs, g):
-    """Pre-compute causal + NS mask [C_SEQ_LEN, H, S, G, BS] fp32 (CPU).
-
-    mask[c, h, i, g, j] = 0.0 if (i < NS and i_s+j <= i_t) else -inf.
-    G dim pre-broadcast (all groups share same mask). -inf = -(2**30) to match kernel.
-    """
-    neg_inf = float(-(2**30))
-    mask = torch.full((c_seq_len, h, s, g, bs), neg_inf, dtype=torch.float32)
-    col_pos = torch.arange(bs)
-    for c in range(c_seq_len):
-        i_t = int(token_indices[c, 1].item())
-        for head_idx in range(h):
-            ns = int(block_counts[0, c, head_idx].item())
-            for i in range(min(ns, s)):
-                i_s = int(block_indices[0, c, head_idx, i].item()) * bs
-                valid = (col_pos + i_s) <= i_t
-                mask[c, head_idx, i, :, valid] = 0.0
-    return mask
-
-
 def naive_nsa_fwd_varlen(q, k, v, block_indices, block_counts, block_size, scale, offsets, token_indices, g_slc):
     """NSA Forward VarLen PyTorch reference (golden). CPU float32, cast to q.dtype."""
     _, C_SEQ_LEN, HQ, D = q.shape
@@ -184,13 +162,13 @@ def naive_nsa_fwd_varlen(q, k, v, block_indices, block_counts, block_size, scale
     return o
 
 
-def parallel_nsa_fwd(q, k, v, block_indices, block_counts, block_size, scale, offsets, token_indices, g_slc, mask):
+def parallel_nsa_fwd(q, k, v, block_indices, block_counts, block_size, scale, offsets, token_indices, g_slc):
     """Host-side wrapper: H2D-safe preprocessing + kernel call.
 
     - fp32 input is pre-cast to fp16 on host (Cube doesn't support fp32 GEMM).
     - Q is pre-multiplied with scale (fuse scale into Q, eliminates per-iter axpy).
     - All int64 -> int32 conversions done on CPU before H2D.
-    - Gate multiplication fused in kernel; mask is pre-computed causal+NS mask.
+    - Gate multiplication fused in kernel; causal mask computed in-kernel.
     """
     B, C_SEQ_LEN, H, K_dim = k.shape
     _, _, HQ, V_dim = q.shape
@@ -212,13 +190,8 @@ def parallel_nsa_fwd(q, k, v, block_indices, block_counts, block_size, scale, of
         k = k.to(gemm_dtype)
         v = v.to(gemm_dtype)
 
-    # GM workspace for Cube<->Vector data transfer (UB<->L1 not supported).
+    # GM workspace auto-allocated by framework via workspace_idx (no host allocation).
     core_num = 20
-    num_stages = 4  # must match kernel
-
-    ws1 = torch.zeros(core_num, num_stages, G, BS, dtype=torch.float32, device="npu")
-    ws2 = torch.zeros(core_num, num_stages, G, BS, dtype=gemm_dtype, device="npu")
-    ws3 = torch.zeros(core_num, num_stages, G, V_dim, dtype=torch.float32, device="npu")
 
     # Host-side precompute varlen indices to break scalar GM read chain.
     bos_per_token = offsets[token_indices[:, 0]].to(torch.int32)
@@ -250,10 +223,6 @@ def parallel_nsa_fwd(q, k, v, block_indices, block_counts, block_size, scale, of
         i_s_safe,
         bc_2d.to(torch.int32),
         g_slc.view(C_SEQ_LEN, HQ),
-        mask,
-        ws1,
-        ws2,
-        ws3,
     )
     return o_slc.view(B, C_SEQ_LEN, HQ, V_dim)
 
@@ -335,8 +304,6 @@ def _run_nsa_case(level, n, c_seq_len, h, hq, d, s, bs, dtype_str, vrange=(-1, 1
     bc_i32 = bc.to(torch.int32)
     off_i32 = off.to(torch.int32)
     ti_i32 = ti.to(torch.int32)
-    g_groups = hq // h
-    mask = make_causal_mask(bi, bc, ti_i32, off_i32, c_seq_len, h, s, bs, g_groups)
 
     out = parallel_nsa_fwd(
         q.npu(),
@@ -349,7 +316,6 @@ def _run_nsa_case(level, n, c_seq_len, h, hq, d, s, bs, dtype_str, vrange=(-1, 1
         off_i32.npu(),
         ti_i32.npu(),
         g.float().npu(),
-        mask.npu(),
     )
     out_cpu = out.cpu()
     passed, ratio, max_abs = check_precision(out_cpu, ref, dtype_str)
@@ -395,11 +361,24 @@ L1_DBOUND_CASES = [
     (2, 64, 1, 16, 32, 1, 32, "float16", ["D-SPECIAL-DBOUND"]),
 ]
 
+# D-TYPICAL: model-typical configs aligned with DeepSeek NSA paper settings.
+# - GQA groups=16 (HQ/H=16, matches vid split half_G=8 and ZN/NZ fractal alignment).
+# - block_size=32, S=1 specialization, fp16.
+# - Covers seq_len up to 4K and head_dim=64/128 (training-scale shapes).
+# Note: each (D, BS, G) combination triggers a separate JIT compile (D/BS/G are
+# compile-time constants), so these cases also validate multi-config robustness.
+L1_TYPICAL_CASES = [
+    (2, 2048, 4, 64, 64, 1, 32, "float16", ["D-TYPICAL-SEQ2K"]),
+    (4, 1024, 4, 64, 64, 1, 32, "float16", ["D-TYPICAL-BATCH4"]),
+    (1, 4096, 4, 64, 64, 1, 32, "float16", ["D-TYPICAL-SEQ4K"]),
+    (2, 1024, 4, 64, 128, 1, 32, "float16", ["D-TYPICAL-D128"]),
+]
+
 
 def test_nsa_fwd_varlen_l1():
-    """L1 functional tests: irregular shapes + value ranges + dtype variants."""
+    """L1 functional tests: irregular shapes + value ranges + dtype + typical configs."""
     ok = True
-    for case in L1_CASES + L1_DBOUND_CASES:
+    for case in L1_CASES + L1_DBOUND_CASES + L1_TYPICAL_CASES:
         n, c_seq_len, h, hq, d, s, bs, dt, tags = case
         vrange = (-1, 1)
         if "D-VALRANGE-L" in (tags or []):
@@ -467,8 +446,6 @@ def _run_boundary_special(name, q_inject_fn):
         ti = prepare_token_indices(off)
         bi = torch.zeros(1, c_seq_len, h, s, dtype=torch.int32)
         bc = torch.ones(1, c_seq_len, h, dtype=torch.int32)
-        g_groups = hq // h
-        mask = make_causal_mask(bi.long(), bc.long(), ti, off, c_seq_len, h, s, bs, g_groups)
         scale = d**-0.5
 
         ref = naive_nsa_fwd_varlen(q.float(), k.float(), v.float(), bi.long(), bc.long(), bs, scale, off, ti, g.float()).to(dtype)
@@ -483,7 +460,6 @@ def _run_boundary_special(name, q_inject_fn):
             off.npu(),
             ti.npu(),
             g.float().npu(),
-            mask.npu(),
         )
         passed, ratio, max_abs = check_precision(out.cpu(), ref, "float16")
         tag = "PASS" if passed else "WARN"
@@ -508,7 +484,7 @@ def main():
         "--level",
         default="l0",
         choices=["l0", "l1", "l2", "boundary", "all"],
-        help="Test level to run (performance tests are in perf_example_tilelang_nsa_fwd_varlen.py)",
+        help="Test level to run",
     )
     args = parser.parse_args()
 

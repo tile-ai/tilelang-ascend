@@ -15,6 +15,8 @@ Key design:
 - Q pre-multiply scale on host (eliminates per-iter axpy in Vector softmax)
 - S=1 specialization: scores_scale=0, eliminates online softmax scale chain
 - Host-precomputed varlen indices: breaks dependent GM scalar read chain
+- Kernel-internal causal mask: computed from BosPerToken/IsSafe + token
+  position via arith_progression + compare + select (no host pre-compute)
 """
 
 import tilelang
@@ -30,7 +32,7 @@ PASS_CONFIGS = {
 }
 
 
-@tilelang.jit(out_idx=[3], workspace_idx=[9, 10, 11], pass_configs=PASS_CONFIGS)
+@tilelang.jit(out_idx=[3], workspace_idx=[8, 9, 10], pass_configs=PASS_CONFIGS)
 def native_sparse_attention_varlen(
     batch,
     c_seq_len,
@@ -48,7 +50,7 @@ def native_sparse_attention_varlen(
 
     Args (JIT compile-time constants):
         batch, c_seq_len, heads, dim: tensor shape parameters.
-        is_causal: accepted for API compat (mask is pre-computed on host).
+        is_causal: accepted for API compat (causal mask computed in kernel).
         scale: accepted for API compat (Q is pre-scaled on host).
         block_size, groups, selected_blocks: NSA hyperparameters (S must be 1).
         dtype: output dtype ("float16"/"bfloat16"/"float32").
@@ -77,7 +79,6 @@ def native_sparse_attention_varlen(
     G = groups
     BS = block_size
     BK = BV = dim
-    S = selected_blocks
     accum_dtype = "float"
     gemm_dtype = "float16" if dtype == "float32" else dtype
     NEG_INF = -(2**30)
@@ -104,7 +105,6 @@ def native_sparse_attention_varlen(
         IsSafe: T.Tensor([c_seq_len, head_kv], "int32"),  # type: ignore
         BlockCounts: T.Tensor([c_seq_len, head_kv], "int32"),  # type: ignore
         g_slc: T.Tensor([c_seq_len, heads], accum_dtype),  # type: ignore
-        Mask: T.Tensor([c_seq_len, head_kv, S, G, BS], accum_dtype),  # type: ignore
         workspace_1: T.Tensor([core_num, num_stages, G, BS], accum_dtype),  # type: ignore
         workspace_2: T.Tensor([core_num, num_stages, G, BS], gemm_dtype),  # type: ignore
         workspace_3: T.Tensor([core_num, num_stages, G, BV], accum_dtype),  # type: ignore
@@ -135,7 +135,9 @@ def native_sparse_attention_varlen(
 
             # ===== Vector UB buffers (half_G per AIV) =====
             acc_s_ub = T.alloc_ub([half_G, BS], accum_dtype)
-            mask_ub = T.alloc_ub([half_G, BS], accum_dtype)
+            # Kernel-internal causal mask buffers (computed from BosPerToken/IsSafe).
+            col_pos = T.alloc_ub([BS], accum_dtype)  # 1D [0, 1, ..., BS-1]
+            mask_ub = T.alloc_ub([half_G, BS], accum_dtype)  # 2D broadcast mask
             acc_s_cast_ub = T.alloc_ub([half_G, BS], gemm_dtype)
             acc_o = T.alloc_ub([half_G, BV], accum_dtype)
             acc_o_ub = T.alloc_ub([half_G, BV], accum_dtype)
@@ -217,8 +219,25 @@ def native_sparse_attention_varlen(
 
                         # Q pre-scaled on host: ws1 = Q_scaled @ K^T = scale * (Q @ K^T).
                         T.copy(workspace_1[cid, i, v_offset : v_offset + half_G, :], acc_s_ub)
-                        T.copy(Mask[bx, i_h, 0, v_offset : v_offset + half_G, :], mask_ub)
-                        T.tile.add(acc_s_ub, acc_s_ub, mask_ub)
+
+                        # Kernel-internal causal mask: mask[j] = 0 if (i_s+j <= i_t) else -inf.
+                        # i_t = bx - BosPerToken[bx] (token position in segment),
+                        # i_s = IsSafe[bx, i_h] (start index of selected KV block).
+                        bos = BosPerToken[bx]
+                        i_t = bx - bos
+                        i_s = IsSafe[bx, i_h]
+                        T.tile.arith_progression(col_pos, 0, 1, BS)
+                        # mask_ub = (col_pos + i_s) <= i_t ? 1.0 : 0.0, then select -inf.
+                        T.tile.broadcast(mask_ub, col_pos)
+                        T.tile.add(mask_ub, mask_ub, i_s)
+                        T.tile.compare(mask_ub, mask_ub, i_t, "LE")
+                        T.tile.select(
+                            acc_s_ub,
+                            mask_ub,
+                            acc_s_ub,
+                            -T.infinity(accum_dtype),
+                            "VSEL_TENSOR_SCALAR_MODE",
+                        )
                         T.reduce_max(acc_s_ub, scores_max, dim=-1, clear=True)
                         T.tile.broadcast(scores_max_brd, scores_max)
                         T.tile.sub(acc_s_ub, acc_s_ub, scores_max_brd)
@@ -288,11 +307,11 @@ def _prepare_token_indices(offsets):
 def _build_smoke_inputs(n, c_seq_len, h, hq, d, s, bs, dtype):
     """Build self-contained smoke-test inputs for the L0 config (no golden, no test-file import).
 
-    Constructs deterministic Q/K/V/g_slc + varlen indices + causal mask on CPU,
+    Constructs deterministic Q/K/V/g_slc + varlen indices on CPU,
     then moves to NPU. Used only by `__main__` for CI smoke test.
+    Causal mask is computed in-kernel (no host pre-compute).
     """
     torch.manual_seed(42)
-    G = hq // h
 
     # offsets: split c_seq_len into n BS-aligned segments.
     if n == 1:
@@ -341,28 +360,19 @@ def _build_smoke_inputs(n, c_seq_len, h, hq, d, s, bs, dtype):
     g_slc = torch.rand((1, c_seq_len, hq), dtype=dtype)
     scale = d**-0.5
 
-    # Causal + NS mask: mask[c, h, i, g, j] = 0.0 if (i < NS and i_s+j <= i_t) else -inf.
-    neg_inf = float(-(2**30))
-    mask = torch.full((c_seq_len, h, s, G, bs), neg_inf, dtype=torch.float32)
-    col_pos = torch.arange(bs)
-    for c in range(c_seq_len):
-        i_t = int(token_indices[c, 1].item())
-        for head_idx in range(h):
-            ns = int(block_counts[0, c, head_idx].item())
-            for i in range(min(ns, s)):
-                i_s = int(block_indices[0, c, head_idx, i].item()) * bs
-                valid = (col_pos + i_s) <= i_t
-                mask[c, head_idx, i, :, valid] = 0.0
+    # Causal mask is computed in-kernel from BosPerToken/IsSafe + token position.
+    # No host-side mask pre-computation needed.
 
-    return q, k, v, block_indices, block_counts, offsets, token_indices, g_slc, scale, mask
+    return q, k, v, block_indices, block_counts, offsets, token_indices, g_slc, scale
 
 
-def _run_kernel_smoke(q, k, v, block_indices, block_counts, offsets, token_indices, g_slc, scale, mask, dtype_str):
+def _run_kernel_smoke(q, k, v, block_indices, block_counts, offsets, token_indices, g_slc, scale, dtype_str):
     """Host wrapper: H2D-safe preprocessing + kernel call (self-contained, no test-file import).
 
     - fp32 input is pre-cast to fp16 on host (Cube doesn't support fp32 GEMM).
     - Q is pre-multiplied with scale (fuse scale into Q, eliminates per-iter axpy).
     - All int64 -> int32 conversions done on CPU before H2D.
+    - Causal mask computed in-kernel (no host pre-compute, no mask tensor passed).
     """
     B, C_SEQ_LEN, H, K_dim = k.shape
     _, _, HQ, V_dim = q.shape
@@ -383,13 +393,8 @@ def _run_kernel_smoke(q, k, v, block_indices, block_counts, offsets, token_indic
         k = k.to(gemm_dtype)
         v = v.to(gemm_dtype)
 
-    # GM workspace for Cube<->Vector data transfer (UB<->L1 not supported).
+    # GM workspace auto-allocated by framework via workspace_idx (no host allocation).
     core_num = 20
-    num_stages = 4  # must match kernel
-
-    ws1 = torch.zeros(core_num, num_stages, G, BS, dtype=torch.float32, device="npu")
-    ws2 = torch.zeros(core_num, num_stages, G, BS, dtype=gemm_dtype, device="npu")
-    ws3 = torch.zeros(core_num, num_stages, G, V_dim, dtype=torch.float32, device="npu")
 
     # Host-side precompute varlen indices to break scalar GM read chain.
     bos_per_token = offsets[token_indices[:, 0]].to(torch.int32)
@@ -421,10 +426,6 @@ def _run_kernel_smoke(q, k, v, block_indices, block_counts, offsets, token_indic
         i_s_safe.npu(),
         bc_2d.to(torch.int32).npu(),
         g_slc.view(C_SEQ_LEN, HQ).float().npu(),
-        mask.npu(),
-        ws1,
-        ws2,
-        ws3,
     )
     return o_slc.view(B, C_SEQ_LEN, HQ, V_dim)
 
@@ -453,10 +454,10 @@ if __name__ == "__main__":
     DTYPE_STR = "float16"
 
     # === Build self-contained smoke-test inputs (no test-file import) ===
-    q, k, v, bi, bc, off, ti, g, scale, mask = _build_smoke_inputs(N, C_SEQ_LEN, H, HQ, D, S, BS, DTYPE)
+    q, k, v, bi, bc, off, ti, g, scale = _build_smoke_inputs(N, C_SEQ_LEN, H, HQ, D, S, BS, DTYPE)
 
     # === Run kernel on NPU ===
-    out = _run_kernel_smoke(q, k, v, bi, bc, off, ti, g, scale, mask, DTYPE_STR)
+    out = _run_kernel_smoke(q, k, v, bi, bc, off, ti, g, scale, DTYPE_STR)
 
     # === Structural sanity check (no golden, no precision comparison) ===
     out_cpu = out.detach().cpu()
