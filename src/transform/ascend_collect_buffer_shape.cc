@@ -166,15 +166,21 @@ tvm::transform::Pass CreateFlatten2DPass() {
         total_elements = analyzer.Simplify(total_elements * ext);
       }
 
-      // The outer dimension is calculated to preserve the total number of
+      // The outer dimension is calculated to cover the total number of
       // elements. This formula correctly handles all cases:
       // - 1D [m] -> [1, m]
       // - 2D [n, m] -> [n, m]
       // - ND [d1, d2, ..., m] -> [d1*d2*..., m]
+      // For fractal-layout (zN/nZ) L1 buffers the collected extent is the
+      // layout-padded element count, which need not be divisible by the
+      // logical inner dim (e.g. zN(64, 200) spans 13312 = 66.56 * 200).
+      // Ceil-div keeps the [outer, inner] rectangle covering the whole
+      // allocation; a trunc-div here under-sizes the buffer and lets the
+      // next L1 allocation overlap its tail (issue #1341).
       PrimExpr inner_dim = GetInnerDim(buffer_var, shape, initial_shapes);
 
-      PrimExpr outer_dim =
-          analyzer.Simplify(truncdiv(total_elements, inner_dim));
+      PrimExpr outer_dim = analyzer.Simplify(
+          indexdiv(total_elements + inner_dim - 1, inner_dim));
 
       // handle DN/ND
       bool is_inner_dim_one = analyzer.CanProve(inner_dim == 1);

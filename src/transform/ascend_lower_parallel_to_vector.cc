@@ -404,8 +404,13 @@ private:
       return GetRef<Stmt>(op);
     }
 
+    // Preserve the block annotations (e.g. the default zN layout_map injected
+    // by AscendInferBufferScope). Dropping them makes LayoutInference fall
+    // back to an identity layout for L1 gemm operands, which sizes the
+    // buffer by the logical shape instead of the fractal-padded extent and
+    // lets neighbouring L1 allocations overlap (issue #1341).
     return Block(op->iter_vars, op->reads, op->writes, op->name_hint, new_body,
-                 op->init, allocs);
+                 op->init, allocs, op->match_buffers, op->annotations);
   }
 
   // Generic Plan
