@@ -9,7 +9,9 @@ block-internal order is preserved.  Also emits the gather index
 The whole permutation (prefix sums, block lookup, GM<->UB<->GM moves,
 index/scales generation, expert counts, validation probe) happens inside the
 kernel.  The ``moe_re_routing`` host callable only performs metadata
-operations (reshape / contiguous / variant selection / output allocation).
+operations (view / variant selection / output allocation) and never re-lays
+out device data: non-contiguous inputs are rejected instead of being silently
+rearranged by a host-issued ``.contiguous()`` copy.
 """
 
 import math
@@ -94,10 +96,11 @@ def _compute_tile_a(A: int, H: int, N: int, E: int, t_dtype: str, c_dtype: str, 
       fixed bytes (all constant-size buffers) + TILE_A * per-row bytes < 176KB
 
     ``fixed`` accounts for every statically allocated UB buffer: cnt_ub
-    (NE_PAD x cnt_bytes), expert_ub (E_PAD x cnt_bytes), prob_ub (64B) and,
+    (NE_PAD x cnt_bytes), expert_ub (E_PAD x cnt_bytes), prob_ub (16B) and,
     when the prefix-table general path is in use, the 4 int32 tables
-    (4 x NE_PAD x 4B).  Per-row bytes count the tile_ub row (H x elem) plus
-    the idx/ramp/scales rows (3 x 4B).
+    (4 x NE_PAD x 4B); when the table-less general path is in use, the
+    per-rank src offsets rank_src (N_PAD x 4B).  Per-row bytes count the
+    tile_ub row (H x elem) plus the idx/ramp/scales rows (3 x 4B).
 
     use_tables=False is returned when the 4 prefix tables cannot fit with at
     least 16KB of headroom; the general (non-uniform cnt) path then falls
@@ -107,6 +110,7 @@ def _compute_tile_a(A: int, H: int, N: int, E: int, t_dtype: str, c_dtype: str, 
     cbytes = _ELEM_BYTES[c_dtype]
     ne_pad = ((N * E + 7) // 8) * 8
     e_pad = ((E + 7) // 8) * 8
+    n_pad = ((N + 7) // 8) * 8
     per_row = H * elem + 4 + 4 + 4  # tile_ub row + idx + ramp + scales
     block_rows = max(1, A // (N * E))
     per_lane = max(1, (A + num_cores * 2 - 1) // (num_cores * 2))
@@ -128,13 +132,13 @@ def _compute_tile_a(A: int, H: int, N: int, E: int, t_dtype: str, c_dtype: str, 
         return tile
 
     table_bytes = ne_pad * 4 * 4  # src_rm / src / dst / end (int32 each)
-    fixed_tbl = table_bytes + ne_pad * cbytes + e_pad * cbytes + 64  # + prob_ub
+    fixed_tbl = table_bytes + ne_pad * cbytes + e_pad * cbytes + 16  # + prob_ub
     # Tables must fit with 16KB headroom; otherwise prefer the table-less
     # serial-walk general path (more UB for the tile itself).
     tile_tbl = _fit_tile(fixed_tbl)
     if tile_tbl is not None and fixed_tbl + tile_tbl * per_row + _UB_MARGIN_BYTES + 16 * 1024 <= _UB_BUDGET_BYTES:
         return tile_tbl, True
-    fixed_no = ne_pad * cbytes + e_pad * cbytes + 64
+    fixed_no = ne_pad * cbytes + e_pad * cbytes + 16 + n_pad * 4  # + rank_src
     tile_no = _fit_tile(fixed_no)
     if tile_no is not None:
         return tile_no, False
@@ -178,7 +182,7 @@ def _moe_re_routing_kernel(
         permute_scales: (A,) float32            - output scales (zeros when absent)
         permute_idx:    (A,) int32              - output gather index
         expert_token_num: (E,) cnt_dtype        - output expert token counts
-        probe:          (8,) int64              - validation probe (sum, min, 0...)
+        probe:          (2,) int64              - validation probe (sum, min)
 
     Returns (out_idx [3,4,5,6,7]): permute_tokens, permute_scales, permute_idx,
     expert_token_num, probe.
@@ -223,6 +227,9 @@ def _moe_re_routing_kernel(
     # allocated inside an if), so the table size is chosen here at build time:
     # full size when the tables are used, an 8-element stub otherwise.
     tables_ne = NE_PAD if use_tables else 8
+    # rank_src (per-rank src offsets) is only referenced by the table-less
+    # general path; same top-level allocation rule, same stub trick.
+    rank_ne = ((N + 7) // 8) * 8 if not use_tables else 8
 
     @T.prim_func
     def kernel(
@@ -233,7 +240,7 @@ def _moe_re_routing_kernel(
         permute_scales: T.Tensor((A,), "float32"),
         permute_idx: T.Tensor((A,), "int32"),
         expert_token_num: T.Tensor((E,), cnt_dtype),
-        probe_gm: T.Tensor((8,), "int64"),
+        probe_gm: T.Tensor((2,), "int64"),
     ):
         T.func_attr({"enable_auto_sync": True})
         with T.Kernel(NUM_CORES, is_npu=True) as (cid, vid):
@@ -245,12 +252,13 @@ def _moe_re_routing_kernel(
             src_ub = T.alloc_ub([tables_ne], "int32")
             dst_ub = T.alloc_ub([tables_ne], "int32")
             end_ub = T.alloc_ub([tables_ne], "int32")
+            rank_src = T.alloc_ub([rank_ne], "int32")
             tile_ub = T.alloc_ub([TILE_A, H], tokens_dtype)
             idx_ub = T.alloc_ub([TILE_A], "int32")
             ramp_ub = T.alloc_ub([TILE_A], "int32")
             scales_ub = T.alloc_ub([TILE_A], "float32")
             expert_ub = T.alloc_ub([E_PAD], cnt_dtype)
-            prob_ub = T.alloc_ub([8], "int64")
+            prob_ub = T.alloc_ub([2], "int64")
 
             acc = T.alloc_var("int32", init=0)
             s_acc = T.alloc_var("int32", init=0)
@@ -320,7 +328,7 @@ def _moe_re_routing_kernel(
                     # validation probe: sum = total cnt, min = min cnt.
                     prob_ub[0] = T.cast(acc, "int64")
                     prob_ub[1] = T.cast(mn, "int64")
-                    T.copy(prob_ub[0:8], probe_gm[0:8])
+                    T.copy(prob_ub[0:2], probe_gm[0:2])
 
                 # Pre-zero the whole scales tile once; each segment then copies
                 # its [0:seg) view out (noscale variant never overwrites parts).
@@ -424,7 +432,7 @@ def _moe_re_routing_kernel(
                         # validation probe: sum = total cnt, min = min cnt.
                         prob_ub[0] = T.cast(acc, "int64")
                         prob_ub[1] = T.cast(mn, "int64")
-                        T.copy(prob_ub[0:8], probe_gm[0:8])
+                        T.copy(prob_ub[0:2], probe_gm[0:2])
 
                     # ---------- (2) permutation over output-position chunks ----------
                     # Pre-zero the whole scales tile once; each segment then copies
@@ -563,34 +571,38 @@ def _moe_re_routing_kernel(
                     # ---------------- general path without prefix tables (large N*E) ----------
                     # No dst/src prefix tables fit under the UB budget, so walk the dst
                     # blocks in a single serial pass and process the intersection of each
-                    # block with this core's output range.  The dst start and the src
-                    # start are computed incrementally: for dst block d (expert j = d//N,
-                    # rank i = d%N) the src start is
-                    #   column prefix of expert j  (== dst start at the first block of
-                    #   the expert) + intra-expert prefix over ranks < i,
-                    # and the dst start is the running dst offset.  expert_token_num[j]
-                    # is accumulated in the same pass.
+                    # block with this core's output range.  The dst start is the running
+                    # dst offset.  The src start of dst block d (expert j = d//N,
+                    # rank i = d%N) is its rank-major block start, i.e. the rank prefix
+                    # of rank i + the intra-rank prefix over experts < j; this is
+                    # tracked incrementally by rank_src[i] (per-rank src offset of the
+                    # next unconsumed block of rank i), initialised by one rank-major
+                    # pre-pass over cnt and advanced as blocks are consumed.
+                    # expert_token_num[j] is accumulated in the same pass.
                     T.tile.fill(scales_ub[0:TILE_A], 0.0)
 
                     dst_a = T.alloc_var("int32", init=0)
-                    col_a = T.alloc_var("int32", init=0)
-                    row_a = T.alloc_var("int32", init=0)
                     e_tot = T.alloc_var("int32", init=0)
                     cur_src = T.alloc_var("int32", init=0)
                     seg_lo = T.alloc_var("int32", init=0)
                     seg_hi = T.alloc_var("int32", init=0)
                     seg = T.alloc_var("int32", init=0)
                     src0 = T.alloc_var("int32", init=0)
+                    rs = T.alloc_var("int32", init=0)
+
+                    # rank-major pre-pass: rank_src[i] = src start of rank i's
+                    # first block (rank prefix).
+                    for b in T.serial(NE):  # src order (rank-major)
+                        if (b % E) == 0:
+                            rank_src[b // E] = rs
+                        rs = rs + T.cast(cnt_ub[b], "int32")
 
                     for d in T.serial(NE):
                         b = (d % N) * E + (d // N)
                         cv = T.cast(cnt_ub[b], "int32")
                         if (d % N) == 0:
-                            # first block of expert j = d//N: column prefix == dst start.
-                            col_a = dst_a
-                            row_a = 0
                             e_tot = 0
-                        cur_src = col_a + row_a
+                        cur_src = rank_src[d % N]
                         # intersection of [dst_a, dst_a+cv) with [pos_begin, pos_end).
                         seg_lo = T.max(pos_begin, dst_a)
                         seg_hi = T.min(pos_end, dst_a + cv)
@@ -631,8 +643,8 @@ def _moe_re_routing_kernel(
                                     )
                         # advance to the next dst block.
                         dst_a = dst_a + cv
-                        row_a = row_a + cv
                         e_tot = e_tot + cv
+                        rank_src[d % N] = rank_src[d % N] + cv
                         if (d % N) == N - 1:
                             expert_ub[d // N] = T.cast(e_tot, cnt_dtype)
 
@@ -641,7 +653,7 @@ def _moe_re_routing_kernel(
                         # validation probe: sum = total cnt, min = min cnt.
                         prob_ub[0] = T.cast(acc, "int64")
                         prob_ub[1] = T.cast(mn, "int64")
-                        T.copy(prob_ub[0:8], probe_gm[0:8])
+                        T.copy(prob_ub[0:2], probe_gm[0:2])
 
     return kernel
 
@@ -654,6 +666,10 @@ def moe_re_routing(tokens, expert_token_num_per_rank, per_token_scales=None):
         expert_token_num_per_rank: (N, E) tensor (int32 / int64), Sum == A,
             every element > 0.
         per_token_scales: optional (A,) float32 tensor.
+
+    All inputs must be contiguous NPU tensors: the host never re-lays out
+    device data (no ``.contiguous()`` copies); non-contiguous inputs are
+    rejected with a ValueError so the caller can decide how to rearrange.
 
     Returns:
         (permute_tokens, permute_per_token_scales, permute_token_idx, expert_token_num)
@@ -677,24 +693,31 @@ def moe_re_routing(tokens, expert_token_num_per_rank, per_token_scales=None):
         )
     has_scale = per_token_scales is not None
 
-    # Metadata-only operations on the host (no host-side permutation math).
-    tokens_c = tokens.contiguous()
-    cnt_flat = expert_token_num_per_rank.reshape(-1).contiguous()
+    # Metadata-only operations on the host: no host-side permutation math and
+    # no device-side re-layout.  The kernel reads GM through contiguous rows,
+    # so non-contiguous inputs are rejected instead of being silently
+    # re-arranged by a host-issued .contiguous() copy on live NPU data.
+    if not tokens.is_contiguous():
+        raise ValueError("tokens must be contiguous; call .contiguous() at the call site if needed")
+    if not expert_token_num_per_rank.is_contiguous():
+        raise ValueError("expert_token_num_per_rank must be contiguous; call .contiguous() at the call site if needed")
+    if per_token_scales is not None and not per_token_scales.is_contiguous():
+        raise ValueError("per_token_scales must be contiguous; call .contiguous() at the call site if needed")
+    cnt_flat = expert_token_num_per_rank.view(-1)  # metadata-only view, no copy
     num_cores = _compute_launch_cores(A)
     tile_a, use_tables = _compute_tile_a(A, H, N, E, t_dtype, c_dtype, num_cores)
 
     if has_scale:
-        scales_in = per_token_scales.contiguous()
         kern = _moe_re_routing_kernel(A, H, N, E, tile_a, num_cores, t_dtype, c_dtype, True, use_tables)
-        out = kern(tokens_c, cnt_flat, scales_in)
+        out = kern(tokens, cnt_flat, per_token_scales)
     else:
         # No per_token_scales -> compile variant has_scale=False.  Reuse a
         # cached dummy (never read by the kernel) to avoid per-call ZerosLike.
         scale_dummy = _get_dummy_scale(device=tokens.device)
         kern = _moe_re_routing_kernel(A, H, N, E, tile_a, num_cores, t_dtype, c_dtype, False, use_tables)
-        out = kern(tokens_c, cnt_flat, scale_dummy)
+        out = kern(tokens, cnt_flat, scale_dummy)
 
-    # The 5th output is the small (8,) int64 validation probe; discard it and
+    # The 5th output is the small (2,) int64 validation probe; discard it and
     # return the 4 application outputs.
     return out[0], out[1], out[2], out[3]
 
