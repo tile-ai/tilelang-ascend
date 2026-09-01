@@ -498,6 +498,5 @@ print(func.ir_module['main'])
 
 **配置选项**：
 - Pass 配置：`tl.ascend_auto_sync`（Bool）
-- 函数属性：`enable_auto_sync`
 
 **注册**：`TVM_REGISTER_GLOBAL("tl.transform.AscendSyncInsert")`

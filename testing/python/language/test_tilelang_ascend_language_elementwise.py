@@ -1939,7 +1939,6 @@ def cos(M, N, block_M, block_N, dtype="float"):
         A: T.Tensor([M, N], dtype),  # type: ignore
         B: T.Tensor([M, N], dtype),  # type: ignore
     ):
-        T.func_attr({"enable_auto_sync": True})
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
@@ -1989,7 +1988,6 @@ def cos_slice(M, N, block_M, block_N, dtype="float"):
         A: T.Tensor([M, N], dtype),  # type: ignore
         B: T.Tensor([M, N], dtype),  # type: ignore
     ):
-        T.func_attr({"enable_auto_sync": True})
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
@@ -3943,7 +3941,6 @@ def sin(M, N, block_M, block_N, dtype="float"):
         A: T.Tensor([M, N], dtype),  # type: ignore
         B: T.Tensor([M, N], dtype),  # type: ignore
     ):
-        T.func_attr({"enable_auto_sync": True})
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
@@ -3992,7 +3989,6 @@ def sin_slice(M, N, block_M, block_N, dtype="float"):
         A: T.Tensor([M, N], dtype),  # type: ignore
         B: T.Tensor([M, N], dtype),  # type: ignore
     ):
-        T.func_attr({"enable_auto_sync": True})
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
