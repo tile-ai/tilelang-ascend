@@ -34,6 +34,10 @@ pass_configs = {
 # Ascend910B3 AI-core block cap.
 NUM_CORES_CAP = 24
 
+# INT32_MAX: sentinel initial value for the min-scan over expert_token_num
+# (cnt values are non-negative int32, so any cnt < this initial min wins).
+INT32_MAX = 2**31 - 1
+
 # UB hardware capacity is 192KB; keep all statically-allocated UB buffers
 # (kernel buffers + auto-sync temporaries) strictly below 176KB so there is
 # some headroom.
@@ -263,7 +267,7 @@ def _moe_re_routing_kernel(
             hi = T.alloc_var("int32", init=0)
             cur = T.alloc_var("int32", init=0)
             bcur = T.alloc_var("int32", init=0)
-            mn = T.alloc_var("int32", init=2147483647)
+            mn = T.alloc_var("int32", init=INT32_MAX)
             mx = T.alloc_var("int32", init=0)
             uflag = T.alloc_var("int32", init=1)
 
@@ -281,7 +285,7 @@ def _moe_re_routing_kernel(
             # One NE-loop instead of the three prefix-table loops; the scan is
             # shared by both branches.
             acc = 0
-            mn = 2147483647
+            mn = INT32_MAX
             mx = 0
             for b in T.serial(NE):
                 cv = T.cast(cnt_ub[b], "int32")
@@ -398,7 +402,7 @@ def _moe_re_routing_kernel(
                     # src_rm stores rank-major exclusive prefix; dst tables are in
                     # destination (expert-major) order.
                     acc = 0
-                    mn = 2147483647
+                    mn = INT32_MAX
                     for b in T.serial(NE):  # src order (rank-major)
                         src_rm[b] = acc
                         acc = acc + T.cast(cnt_ub[b], "int32")
