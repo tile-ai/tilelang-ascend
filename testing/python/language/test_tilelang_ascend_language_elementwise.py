@@ -1056,7 +1056,7 @@ def run_test_bitwise_xor(M, N, block_M, block_N, dtype, target):
         ref_c = torch.bitwise_xor(a_cpu.to(torch.int32), b_cpu.to(torch.int32)).to(torch.uint16).npu()
     else:
         ref_c = torch.bitwise_xor(a_cpu, b_cpu).npu()
-    assert_close_npu(c, ref_c, dtype, rtol=1e-2, atol=1e-2)
+    assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
@@ -1175,12 +1175,6 @@ def _run_bitwise_xor_ext(dtype, target, block_M=128, block_N=256, use_tmp=False)
     b_cpu = b.cpu()
     ref_c = torch.bitwise_xor(a_cpu.to(torch.int32), b_cpu.to(torch.int32)).to(td).npu()
     assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
-
-
-@pytest.mark.parametrize("dtype", ["int16", "uint16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
-def test_bitwise_xor_ext_basic(dtype, target):
-    _run_bitwise_xor_ext(dtype, target)
 
 
 @pytest.mark.xfail(

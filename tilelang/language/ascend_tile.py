@@ -2106,21 +2106,11 @@ def bitwise_xor(
     Args:
         dst: The destination buffer where the result will be stored.
         src0: The first source operand buffer.
-        src1: The second source operand buffer. Only Buffer / BufferRegion
-            is accepted; scalar (PrimExpr / int / float) is not supported
-            and will raise AttributeError at call time.
-        tmp: Optional 1-D UB scratch buffer (uint8). When omitted, the
-            framework auto-allocates a workspace of at least src_bytes.
-            Must be one-dimensional; its dtype is reinterpreted by lowering.
+        src1: The second source operand buffer. Scalar operands are unsupported.
+        tmp: Optional one-dimensional UB scratch buffer. When omitted, the
+            framework allocates the workspace automatically.
 
-    Supported dtypes on A2/A3 (910B3, verified):
-        - AscendC: int16, uint16 only. CANN ``AscendC::Xor`` has a
-          ``static_assert`` restricting T to int16_t/uint16_t; other integer
-          types fail at compile time.
-        - PTO: int8, int16, uint16. uint8 compiles but triggers a runtime
-          "ub address out of bounds" error (PTO XorCodegen tmp-size bug).
-        - int32/uint32 segfault inside the TVM OptimizeForTarget pass on
-          both backends and are not usable.
+    Supported dtypes: int16, uint16.
 
     Returns:
         A TVM intrinsic call that performs the bitwise XOR operation.
