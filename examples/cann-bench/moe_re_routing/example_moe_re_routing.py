@@ -20,8 +20,6 @@ import tilelang
 import torch
 from tilelang import language as T
 
-tilelang.cache.clear_cache()
-
 # ========== Developer-mode pass configs (pure Vector op, no Cube) ==========
 # Note: AUTO_CV_COMBINE / AUTO_CV_SYNC are intentionally OFF.  A CV-split
 # would place the scalar prefix-sum loops on the Cube lane and the T.copy
@@ -31,15 +29,14 @@ tilelang.cache.clear_cache()
 # Vector lane with AUTO_SYNC gives correct data order.
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
-    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
 # Ascend910B3 AI-core block cap.
 NUM_CORES_CAP = 24
 
 # UB hardware capacity is 192KB; keep all statically-allocated UB buffers
-# (kernel buffers + auto-sync temporaries / MemoryPlanning padding) strictly
-# below 176KB so the planner keeps some headroom.
+# (kernel buffers + auto-sync temporaries) strictly below 176KB so there is
+# some headroom.
 _UB_BUDGET_BYTES = 176 * 1024
 _UB_MARGIN_BYTES = 8192
 
@@ -426,7 +423,7 @@ def _moe_re_routing_kernel(
                         expert_ub[j] = T.cast(s_acc, cnt_dtype)
                     # Only block 0 writes the expert counts to GM; a direct scalar GM
                     # store is unreliable on the multi-core path, so stage in UB first
-                    # and let MemoryPlanning/T.copy emit the DMA write.
+                    # and let T.copy emit the DMA write.
                     if cid == 0 and vid == 0:
                         T.copy(expert_ub[0:E], expert_token_num[0:E])
                         # validation probe: sum = total cnt, min = min cnt.
@@ -753,6 +750,7 @@ def golden_moe_re_routing(tokens, expert_token_num_per_rank, per_token_scales=No
 
 
 if __name__ == "__main__":
+    tilelang.cache.clear_cache()
     torch.manual_seed(0)
 
     # Two representative configs: 1 L0 + 1 L1.  cnt uses the uniform + remainder
