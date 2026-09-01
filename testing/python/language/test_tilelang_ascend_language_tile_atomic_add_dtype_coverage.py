@@ -81,7 +81,13 @@ def _run_and_check(program, shape, dtype, num_blocks, target):
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="tile atomic_add correctness requires an Ascend NPU runtime",
 )
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param("ascendc", marks=pytest.mark.low_priority, id="int32-ascendc"),
+        pytest.param("pto", id="int32-pto"),
+    ],
+)
 def test_atomic_add_int32_1d(target):
     num_blocks = 4
     tile_n = 32
@@ -150,7 +156,7 @@ def test_atomic_add_dtype_mismatch_raises():
     "dtype,target",
     [
         ("uint16", "pto"),
-        ("uint32", "pto"),
+        pytest.param("uint32", "pto", marks=pytest.mark.low_priority, id="uint32-pto"),
         ("int8", "ascendc"),
     ],
 )
