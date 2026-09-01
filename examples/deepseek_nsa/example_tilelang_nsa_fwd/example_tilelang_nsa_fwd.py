@@ -33,6 +33,7 @@ def native_sparse_attention(
     bs_pad,
     scale,
     is_causal=True,
+    core_num=None,
 ):
     """NSA Forward kernel (Developer mode hybrid, on-chip direct, kernel-internal mask).
 
@@ -50,6 +51,8 @@ def native_sparse_attention(
         scale: softmax scale factor (None → 1/sqrt(dim); NPU uses T.exp, so scale
             is NOT multiplied by log2(e), unlike GPU T.exp2 path).
         is_causal: if True, mask = (token_pos <= i_t); if False, mask = (token_pos < seq_len).
+        core_num: physical AI Cube core count. If None, auto-detect via
+            torch.npu.get_device_properties().cube_core_num (e.g. 20 for Ascend 910B3).
 
     Tensor args (prim_func):
         Q:           [batch, seq_len, heads, dim]                  float16
@@ -68,6 +71,15 @@ def native_sparse_attention(
     if scale is None:
         scale = (1.0 / dim) ** 0.5
 
+    # Auto-detect physical AI Cube core count if not provided.
+    # Ascend 910B3: cube_core_num=20, vector_core_num=40.
+    if core_num is None:
+        import torch
+        import torch_npu  # noqa: F401 (registers npu backend)
+
+        props = torch.npu.get_device_properties(torch.npu.current_device())
+        core_num = props.cube_core_num
+
     G = heads // head_kv
     D = dim
     S = selected_blocks
@@ -82,9 +94,10 @@ def native_sparse_attention(
 
     # 1D Kernel: each block handles one (i_t, i_b, i_h) combination.
     block_num = seq_len * batch * head_kv
-    # Largest divisor of block_num <= 20 (exact division; T.Pipelined needs uniform
-    # iteration count across cores). 20 is the physical core count upper bound.
-    core_num = min(block_num, 20)
+    # Largest divisor of block_num <= core_num (exact division; T.Pipelined needs
+    # uniform iteration count across cores). core_num is the physical Cube core
+    # count (auto-detected via torch.npu.get_device_properties).
+    core_num = min(block_num, core_num)
     while core_num > 1 and block_num % core_num != 0:
         core_num -= 1
     if core_num < 4:
