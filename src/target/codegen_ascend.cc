@@ -14,6 +14,8 @@
 
 #include <tvm/tir/expr.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <sstream>
 #include <string>
@@ -2887,6 +2889,70 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
       auto expr = op->args[3 + i];
       std::string var_name = PrintExpr(expr);
       var_names.push_back(var_name);
+    }
+
+    // ---- Address-alignment compile-time error (hardening) ------------------
+    // AscendC DataCopyPad requires the LocalTensor (UB/L1) start address to be
+    // 32-Byte aligned (the GM side has no alignment constraint).  A copy whose
+    // UB/L1 base offset is a compile-time constant that is NOT a 32-Byte
+    // multiple (in the buffer dtype) is a latent correctness bug: the DMA would
+    // operate on a misaligned on-chip base.  Make the violation explicit at
+    // compile time, naming the buffer, the offset, and the alignment
+    // requirement.  Runtime (non-constant) offsets are let through -- they may
+    // be aligned at run time, so rejecting them would be a false positive.
+    auto tmpl_dtype_bytes = [](const std::string &opn) -> int {
+      auto lt = opn.find('<');
+      auto gt = opn.find('>', lt == std::string::npos ? lt : lt + 1);
+      if (lt == std::string::npos || gt == std::string::npos)
+        return 0;
+      std::string t = opn.substr(lt + 1, gt - lt - 1);
+      auto comma = t.find(',');
+      if (comma != std::string::npos)
+        t = t.substr(0, comma);
+      t.erase(std::remove_if(t.begin(), t.end(), ::isspace), t.end());
+      if (t == "half" || t == "float16" || t == "bfloat16_t" ||
+          t == "int16_t" || t == "uint16_t" || t == "float16_t")
+        return 2;
+      if (t == "float" || t == "float32" || t == "int" || t == "int32_t" ||
+          t == "uint32_t" || t == "uint")
+        return 4;
+      if (t == "int8_t" || t == "uint8_t" || t == "char" || t == "uchar")
+        return 1;
+      if (t == "int64_t" || t == "uint64_t" || t == "double")
+        return 8;
+      return 0; // unknown dtype -> skip the check (do not false-positive)
+    };
+    int elem_bytes = tmpl_dtype_bytes(op_name);
+    if (elem_bytes > 0) {
+      auto check_side_align = [&](const PrimExpr &off_expr,
+                                  const std::string &buf_name,
+                                  const char *side) {
+        const auto *imm = off_expr.as<IntImmNode>();
+        if (imm == nullptr)
+          return; // runtime offset -> let through
+        int64_t byte_off = imm->value * elem_bytes;
+        if (byte_off % 32 != 0) {
+          LOG(FATAL) << "Ascend copy alignment violation: the " << side
+                     << " on-chip (UB/L1) base of \"" << op_name
+                     << "\" has a compile-time-constant element offset "
+                     << imm->value << " in buffer \"" << buf_name
+                     << "\" = " << byte_off
+                     << " bytes, which is not a 32-Byte multiple. "
+                        "LocalTensor start addresses must be 32-Byte aligned; "
+                        "pad the offset or use a 32-Byte-aligned window.";
+        }
+      };
+      bool dst_is_onchip =
+          (op_name.find("copy_gm_to_ub") != std::string::npos) ||
+          (op_name.find("copy_gm_to_l1") != std::string::npos) ||
+          (op_name.find("copy_ub_to_ub") != std::string::npos);
+      bool src_is_onchip =
+          (op_name.find("copy_ub_to_gm") != std::string::npos) ||
+          (op_name.find("copy_ub_to_ub") != std::string::npos);
+      if (dst_is_onchip)
+        check_side_align(dst_offset_expr, dst_var_id, "dst");
+      if (src_is_onchip)
+        check_side_align(src_offset_expr, src_var_id, "src");
     }
 
     this->PrintIndent();
