@@ -1398,21 +1398,15 @@ def mul_add_dst(
 def bitwise_lshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalarValue: PrimExpr):  # noqa: F821
     """Performs element-wise bitwise left shift: dst = src0 << scalarValue.
 
-    The shift is a **logical** left shift for both signed and unsigned types:
-    high bits are discarded and low bits are filled with 0. The sign bit is
-    NOT preserved.
+    The API currently accepts a scalar shift amount. Tensor shift amounts are
+    not yet supported.
 
-    Supported dtypes (A2/A3):
-      - Ascend C: int16, uint16, int32, uint32
-      - PTO:      int16, uint16, int32, uint32
-
-    int8/uint8/int64/uint64/float are not supported and fail at compile time.
+    Supported dtypes on A2/A3: int16, uint16, int32, uint32.
 
     Args:
         dst: The destination buffer (UB).
         src0: The source buffer (UB), must have the same size and dtype as dst.
-        scalarValue: The number of bits to shift (scalar). The codegen
-            automatically casts scalarValue to src0's dtype if they differ.
+        scalarValue: The number of bits to shift (scalar).
     """
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
