@@ -1275,14 +1275,11 @@ def bitwise_not(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
         dst: The destination buffer.
         src0: The source buffer.
 
-    Note:
-        - Ascend C backend (AscendC::Not): supports int16/uint16 only on A2/A3.
-          int8/uint8/int32/uint32 fail to compile (vnot only accepts 16-bit types).
-        - PTO backend (TNOT): supports int8/uint8/int16/uint16 on A2/A3.
-          int8/uint8 are widened to int16 via B82B16Trait before calling vnot.
-          int32/uint32 fail to compile.
-        - Float types are not supported on either backend.
-        - BufferRegion slice operands are supported.
+    Supported dtypes on A2/A3:
+        - Ascend C: int16, uint16.
+        - PTO: int8, uint8, int16, uint16.
+
+    BufferRegion slice operands are supported.
     """
     return unary_op(dst, src0, "bitwise_not")
 
