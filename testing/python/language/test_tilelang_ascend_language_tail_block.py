@@ -2,6 +2,7 @@ import pytest
 import tilelang
 import tilelang.language as T
 import torch
+
 """
 Tail-block (尾块) guard suite.
 
@@ -118,9 +119,9 @@ def cube_matmul_tail(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dty
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),  # type: ignore
-            B: T.Tensor((K, N), dtype),  # type: ignore
-            C: T.Tensor((M, N), dtype),  # type: ignore
+        A: T.Tensor((M, K), dtype),  # type: ignore
+        B: T.Tensor((K, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -160,12 +161,9 @@ def run_test_cube_matmul_tail(M, N, K, block_M, block_N, K_L1, target):
 # (M, N, K, block_M, block_N, K_L1) - every dim deliberately non-divisible.
 cube_tail_configs = [
     (32 * 3 + 30, 32 * 2 + 16, 32 * 4 + 31, 32, 32, 32),  # (126, 80, 159) - M/N/K all non-divisible
-    pytest.param(64 * 8 + 45, 64 * 8, 64 * 8 + 27, 64, 64, 64,
-                 marks=pytest.mark.low_priority),  # (557, 512, 539) - N exact
-    pytest.param(128 * 4, 128 * 4 + 99, 128 * 4, 128, 128, 128,
-                 marks=pytest.mark.low_priority),  # (512, 611, 512) - only N tail
-    pytest.param(1024 + 118, 1024 + 206, 1024 + 55, 128, 256, 64,
-                 marks=pytest.mark.low_priority),  # (1142, 1230, 1079)
+    pytest.param(64 * 8 + 45, 64 * 8, 64 * 8 + 27, 64, 64, 64, marks=pytest.mark.low_priority),  # (557, 512, 539) - N exact
+    pytest.param(128 * 4, 128 * 4 + 99, 128 * 4, 128, 128, 128, marks=pytest.mark.low_priority),  # (512, 611, 512) - only N tail
+    pytest.param(1024 + 118, 1024 + 206, 1024 + 55, 128, 256, 64, marks=pytest.mark.low_priority),  # (1142, 1230, 1079)
 ]
 
 
@@ -187,9 +185,9 @@ def vec_add_tail(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),  # type: ignore
-            B: T.Tensor((M, N), dtype),  # type: ignore
-            C: T.Tensor((M, N), dtype),  # type: ignore
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -232,8 +230,8 @@ def vec_abs_tail(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),  # type: ignore
-            B: T.Tensor((M, N), dtype),  # type: ignore
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -273,16 +271,13 @@ def run_test_vec_abs_tail(M, N, block_M, block_N, dtype, target, tail_mask):
 # compiler in OptimizeForTarget -- keep tiles <= 64x128 here.
 vec_tail_configs = [
     (32 * 2 + 13, 32 * 3 + 7, 32, 32),  # (77, 103)  - 32x32  x3 fp32 = 12KB
-    pytest.param(64 * 2 + 2, 64 + 36, 64, 64,
-                 marks=pytest.mark.low_priority),  # (130, 100) - 64x64  x3 fp32 = 48KB
-    pytest.param(64 * 3 + 8, 128 + 22, 64, 128,
-                 marks=pytest.mark.low_priority),  # (200, 150) - 64x128 x3 fp32 = 96KB
+    pytest.param(64 * 2 + 2, 64 + 36, 64, 64, marks=pytest.mark.low_priority),  # (130, 100) - 64x64  x3 fp32 = 48KB
+    pytest.param(64 * 3 + 8, 128 + 22, 64, 128, marks=pytest.mark.low_priority),  # (200, 150) - 64x128 x3 fp32 = 96KB
 ]
 
 
 @pytest.mark.parametrize("tail_mask", [False, True])
-@pytest.mark.parametrize("dtype",
-                         ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("M,N,block_M,block_N", vec_tail_configs)
 def test_vec_add_tail(M, N, block_M, block_N, dtype, target, tail_mask):
@@ -290,8 +285,7 @@ def test_vec_add_tail(M, N, block_M, block_N, dtype, target, tail_mask):
 
 
 @pytest.mark.parametrize("tail_mask", [False, True])
-@pytest.mark.parametrize("dtype",
-                         ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("M,N,block_M,block_N", vec_tail_configs)
 def test_vec_abs_tail(M, N, block_M, block_N, dtype, target, tail_mask):
@@ -313,8 +307,8 @@ def reduce_max_tail(rows_valid, rows_phys, cols, dtype="float"):
 
     @T.prim_func
     def main(
-            Input: T.Tensor((rows_phys, cols), dtype),  # type: ignore
-            Output: T.Tensor((1, cols), dtype),  # type: ignore
+        Input: T.Tensor((rows_phys, cols), dtype),  # type: ignore
+        Output: T.Tensor((1, cols), dtype),  # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             in_ub = T.alloc_ub((rows_phys, cols), dtype)
@@ -349,9 +343,7 @@ def run_test_reduce_max_tail(rows_valid, rows_phys, cols, dtype, target, tail_ma
 # (rows_valid, rows_phys, cols): rows_valid < rows_phys is the row tail that
 # real_shape must exclude from the dim=0 reduce.
 reduce_tail_configs = [
-    pytest.param(
-        3, 5, 8,
-        marks=pytest.mark.low_priority),  # mirrors example_col_reduce_max_slice_buffer.py exactly
+    pytest.param(3, 5, 8, marks=pytest.mark.low_priority),  # mirrors example_col_reduce_max_slice_buffer.py exactly
     (30, 32, 64),  # 32-row tile, 30 valid (tail 2)
     pytest.param(100, 128, 96, marks=pytest.mark.low_priority),  # 128-row tile, 100 valid (tail 28)
 ]
@@ -383,8 +375,8 @@ def reduce_axis0_tail(M, N, block_M, block_N, kind, dim=0, dtype="float"):
 
     @T.prim_func
     def main(
-            Input: T.Tensor((M, N), dtype),  # type: ignore
-            Output: T.Tensor((m_num, N), dtype),  # type: ignore
+        Input: T.Tensor((M, N), dtype),  # type: ignore
+        Output: T.Tensor((m_num, N), dtype),  # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -400,18 +392,13 @@ def reduce_axis0_tail(M, N, block_M, block_N, kind, dim=0, dtype="float"):
 
 
 reduce_axis0_configs = [
-    pytest.param(34, 128, 32, 32,
-                 marks=pytest.mark.low_priority),  # row tail only - covered by (34,130)
-    pytest.param(32, 130, 32, 32,
-                 marks=pytest.mark.low_priority),  # column tail only - covered by (34,130)
+    pytest.param(34, 128, 32, 32, marks=pytest.mark.low_priority),  # row tail only - covered by (34,130)
+    pytest.param(32, 130, 32, 32, marks=pytest.mark.low_priority),  # column tail only - covered by (34,130)
     (34, 130, 32, 32),  # row and column tails
-    pytest.param(
-        33, 129, 32, 32,
-        marks=pytest.mark.low_priority),  # one valid row and one valid column - covered by (34,130)
+    pytest.param(33, 129, 32, 32, marks=pytest.mark.low_priority),  # one valid row and one valid column - covered by (34,130)
     (7, 13, 32, 32),  # tensor smaller than one physical tile
     (32, 128, 32, 32),  # exact full tiles
-    pytest.param(65, 130, 64, 32,
-                 marks=pytest.mark.low_priority),  # larger physical row with a one-row tail
+    pytest.param(65, 130, 64, 32, marks=pytest.mark.low_priority),  # larger physical row with a one-row tail
 ]
 
 REDUCE_TAIL_TARGETS = ("ascendc", "pto")
@@ -429,8 +416,7 @@ REDUCE_TAIL_AXIS0_DIMS = (0, -2)
 @pytest.mark.parametrize("M,N,block_M,block_N", reduce_axis0_configs)
 def test_reduce_axis0_tail(M, N, block_M, block_N, target, kind, dim):
     func = reduce_axis0_tail(M, N, block_M, block_N, kind, dim=dim)
-    func = tilelang.compile(
-        func, out_idx=[-1], pass_configs=TAIL_REDUCE_PASS_CONFIGS, target=target)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=TAIL_REDUCE_PASS_CONFIGS, target=target)
 
     torch.manual_seed(0)
     a = torch.randn(M, N, dtype=torch.float32).npu()
@@ -439,7 +425,7 @@ def test_reduce_axis0_tail(M, N, block_M, block_N, target, kind, dim):
     m_num = (M + block_M - 1) // block_M
     ref = torch.empty((m_num, N), dtype=torch.float32, device=a.device)
     for bx in range(m_num):
-        tile = a[bx * block_M:min((bx + 1) * block_M, M), :]
+        tile = a[bx * block_M : min((bx + 1) * block_M, M), :]
         reduced = getattr(tile, kind)(dim=0)
         ref[bx, :] = reduced if kind == "sum" else reduced.values
     torch.testing.assert_close(out, ref, rtol=1e-4, atol=1e-4)
@@ -457,8 +443,7 @@ def test_reduce_axis0_tail_does_not_consume_zero_padding(target, kind, sign):
     """Guard max/min against treating the zero-filled physical tail as data."""
     M, N, block_M, block_N = 3, 8, 4, 8
     func = reduce_axis0_tail(M, N, block_M, block_N, kind)
-    func = tilelang.compile(
-        func, out_idx=[-1], pass_configs=TAIL_REDUCE_PASS_CONFIGS, target=target)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=TAIL_REDUCE_PASS_CONFIGS, target=target)
 
     base = torch.arange(1, M * N + 1, dtype=torch.float32).reshape(M, N)
     a = (base * sign).npu()
@@ -483,13 +468,11 @@ def test_reduce_axis0_tail_does_not_consume_zero_padding(target, kind, sign):
 def test_reduce_axis0_special_values_ascendc(kind):
     M, N, block_M, block_N = 3, 8, 4, 8
     func = reduce_axis0_tail(M, N, block_M, block_N, kind)
-    func = tilelang.compile(
-        func, out_idx=[-1], pass_configs=TAIL_REDUCE_PASS_CONFIGS, target="ascendc")
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=TAIL_REDUCE_PASS_CONFIGS, target="ascendc")
 
     a = torch.tensor(
         [
-            [0.0, -0.0, float("inf"),
-             float("-inf"), float("nan"), 1.0, -1.0, 3.0],
+            [0.0, -0.0, float("inf"), float("-inf"), float("nan"), 1.0, -1.0, 3.0],
             [-0.0, 0.0, 2.0, -2.0, 4.0, float("nan"), -3.0, 3.0],
             [0.0, -0.0, -5.0, 5.0, -4.0, 2.0, float("nan"), -3.0],
         ],
@@ -524,10 +507,10 @@ def compare_select_tail(
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),  # type: ignore
-            B: T.Tensor((M, N), dtype),  # type: ignore
-            C: T.Tensor((M, N), dtype),  # type: ignore
-            MaskOut: T.Tensor((M, mask_cols), "uint8"),  # type: ignore
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+        MaskOut: T.Tensor((M, mask_cols), "uint8"),  # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -571,9 +554,9 @@ def compare_select_tail_expert(M, N, block_M, block_N):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), "float"),  # type: ignore
-            B: T.Tensor((M, N), "float"),  # type: ignore
-            C: T.Tensor((M, N), "float"),  # type: ignore
+        A: T.Tensor((M, N), "float"),  # type: ignore
+        B: T.Tensor((M, N), "float"),  # type: ignore
+        C: T.Tensor((M, N), "float"),  # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -688,7 +671,7 @@ def test_broadcast_axis1_tail(target, dtype):
     ref = torch.empty((M, N), dtype=a.dtype, device=a.device)
     for by in range(n_num):
         start = by * block_N
-        ref[:, start:min(start + block_N, N)] = a[:, by:by + 1]
+        ref[:, start : min(start + block_N, N)] = a[:, by : by + 1]
     torch.testing.assert_close(out, ref, rtol=0, atol=0)
 
 
@@ -727,7 +710,7 @@ def test_broadcast_axis0_tail(target, dtype):
     ref = torch.empty((M, N), dtype=a.dtype, device=a.device)
     for bx in range(m_num):
         start = bx * block_M
-        ref[start:min(start + block_M, M), :] = a[bx:bx + 1, :]
+        ref[start : min(start + block_M, M), :] = a[bx : bx + 1, :]
     torch.testing.assert_close(out, ref, rtol=0, atol=0)
 
 
@@ -742,10 +725,10 @@ def mixed_broadcast_compare_select_tail(M, N, block_M, block_N, dtype="float"):
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, N), dtype),  # type: ignore
-            Row: T.Tensor((M, n_num), dtype),  # type: ignore
-            Col: T.Tensor((m_num, N), dtype),  # type: ignore
-            C: T.Tensor((M, N), dtype),  # type: ignore
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        Row: T.Tensor((M, n_num), dtype),  # type: ignore
+        Col: T.Tensor((m_num, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -799,9 +782,7 @@ def test_mixed_broadcast_compare_select_tail(target, dtype):
         for by in range(n_num):
             col_start = by * block_N
             col_end = min(col_start + block_N, N)
-            threshold[row_start:row_end,
-                      col_start:col_end] = row[row_start:row_end,
-                                               by:by + 1] + col[bx:bx + 1, col_start:col_end]
+            threshold[row_start:row_end, col_start:col_end] = row[row_start:row_end, by : by + 1] + col[bx : bx + 1, col_start:col_end]
     ref = torch.minimum(torch.abs(a), threshold)
     torch.testing.assert_close(out, ref, rtol=1e-3, atol=1e-3)
 
@@ -863,10 +844,10 @@ def cv_matmul_add_tail(M, N, K, block_M, block_N, block_K, dtype="float16", accu
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),  # type: ignore
-            B: T.Tensor((K, N), dtype),  # type: ignore
-            C: T.Tensor((M, N), dtype),  # type: ignore
-            D: T.Tensor((M, N), dtype),  # type: ignore
+        A: T.Tensor((M, K), dtype),  # type: ignore
+        B: T.Tensor((K, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+        D: T.Tensor((M, N), dtype),  # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -932,8 +913,7 @@ def run_test_cv_matmul_add_tail(M, N, K, block_M, block_N, block_K, target):
 # (M, N, K, block_M, block_N, block_K) - M/N/K non-divisible.
 cv_tail_configs = [
     (128 + 30, 256 + 16, 64 + 8, 128, 256, 64),  # (158, 272, 72)
-    pytest.param(256 + 33, 256 + 40, 128 + 5, 128, 256, 64,
-                 marks=pytest.mark.low_priority),  # (289, 296, 133)
+    pytest.param(256 + 33, 256 + 40, 128 + 5, 128, 256, 64, marks=pytest.mark.low_priority),  # (289, 296, 133)
 ]
 
 
