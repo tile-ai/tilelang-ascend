@@ -66,47 +66,28 @@ _NUM_INPUTS = 4  # var, grad, m, v
 _SCALAR_PAD = 8  # 7 scalars + 1 padding (eff_beta1, eff_ombeta1, eff_beta2,
 #   eff_ombeta2, lr_signed, weight_decay, epsilon, 0.0)
 
-_pipeline_fp32_cache = {}
-_pipeline_lowprec_cache = {}
-_barrier_kernel_cache = {}
-_scalar_tensor_cache = {}
+_TORCH_TO_TL_DTYPE = {
+    torch.float16: "float16",
+    torch.bfloat16: "bfloat16",
+    torch.float32: "float",
+}
 
 
 def torch_dtype_to_tl(dtype):
-    if dtype == torch.float16:
-        return "float16"
-    elif dtype == torch.bfloat16:
-        return "bfloat16"
-    elif dtype == torch.float32:
-        return "float"
-    else:
+    if dtype not in _TORCH_TO_TL_DTYPE:
         raise ValueError(f"Unsupported dtype: {dtype}")
+    return _TORCH_TO_TL_DTYPE[dtype]
 
 
 def _compute_2d_shape(shape):
-    """Reshape to 2D (M, N) for optimal tiling.
-
-    For 1D tensors, use (1, N). For multi-dim, merge trailing dims until
-    N >= 256 for better memory access patterns.
-    """
-    total = 1
-    for s in shape:
-        total *= s
-
-    if len(shape) <= 1:
-        return 1, total
-
+    """Reshape to 2D (M, N): merge trailing dims until N >= 256."""
+    total = math.prod(shape)
     N = 1
-    for i in range(len(shape) - 1, -1, -1):
-        next_N = N * shape[i]
-        if total % next_N != 0:
-            break
-        N = next_N
+    for s in reversed(shape):
+        N *= s
         if N >= 256:
             break
-
-    M = total // N
-    return M, N
+    return total // N, N
 
 
 def _select_tiling(M, N, dtype):
@@ -253,6 +234,56 @@ def _precompute_scalars_safe(lr, beta1, beta2, weight_decay, epsilon, step, maxi
 
 
 # ---------------------------------------------------------------------------
+# Shared AdamW compute (common to all four kernels below)
+# ---------------------------------------------------------------------------
+
+
+@T.macro
+def adam_w_compute(
+    var,
+    grad,
+    m,
+    v,
+    eff_beta1,
+    eff_ombeta1,
+    eff_beta2,
+    eff_ombeta2,
+    lr_signed,
+    weight_decay,
+    epsilon,
+):
+    """In-place AdamW update on UB buffers.
+
+    Scalars may be compile-time Python floats (pipeline kernels) or runtime
+    scalar_ub loads (barrier kernels). Buffer reuse: m -> m_hat,
+    grad -> grad^2 -> denom, v -> v_hat -> update, var -> var_t.
+    """
+    # m_hat = eff_beta1 * m + eff_ombeta1 * grad
+    T.tile.mul(m, m, eff_beta1)
+    T.tile.axpy(m, grad, eff_ombeta1)
+
+    # grad^2 (reuse grad)
+    T.tile.mul(grad, grad, grad)
+
+    # v_hat = eff_beta2 * v + eff_ombeta2 * grad^2
+    T.tile.mul(v, v, eff_beta2)
+    T.tile.axpy(v, grad, eff_ombeta2)
+
+    # denom = sqrt(v_hat) + epsilon (reuse grad)
+    T.tile.sqrt(grad, v)
+    T.tile.add(grad, grad, epsilon)
+
+    # update = m_hat / denom (reuse v)
+    T.tile.div(v, m, grad)
+
+    # update += weight_decay * var
+    T.tile.axpy(v, var, weight_decay)
+
+    # var_t = var + lr_signed * update (reuse var -> output)
+    T.tile.axpy(var, v, lr_signed)
+
+
+# ---------------------------------------------------------------------------
 # Pipeline kernel: fp32 path (no cal buffers, compute directly on input UB)
 # ---------------------------------------------------------------------------
 
@@ -336,29 +367,19 @@ def _adam_w_pipeline_fp32(
                     # --- Vector compute (in-place on input UB) ---
                     T.wait_flag("mte2", "v", cur)
 
-                    # m_hat = eff_beta1 * m + eff_ombeta1 * grad
-                    T.tile.mul(m_ub[cur, :, :], m_ub[cur, :, :], eff_beta1)
-                    T.tile.axpy(m_ub[cur, :, :], grad_ub[cur, :, :], eff_ombeta1)
-
-                    # grad^2 (reuse grad_ub)
-                    T.tile.mul(grad_ub[cur, :, :], grad_ub[cur, :, :], grad_ub[cur, :, :])
-
-                    # v_hat = eff_beta2 * v + eff_ombeta2 * grad^2
-                    T.tile.mul(v_ub[cur, :, :], v_ub[cur, :, :], eff_beta2)
-                    T.tile.axpy(v_ub[cur, :, :], grad_ub[cur, :, :], eff_ombeta2)
-
-                    # denom = sqrt(v_hat) + epsilon (reuse grad_ub)
-                    T.tile.sqrt(grad_ub[cur, :, :], v_ub[cur, :, :])
-                    T.tile.add(grad_ub[cur, :, :], grad_ub[cur, :, :], epsilon)
-
-                    # update = m_hat / denom (reuse v_ub)
-                    T.tile.div(v_ub[cur, :, :], m_ub[cur, :, :], grad_ub[cur, :, :])
-
-                    # update += weight_decay * var
-                    T.tile.axpy(v_ub[cur, :, :], var_ub[cur, :, :], weight_decay)
-
-                    # var_t = var + lr_signed * update (reuse var_ub -> output)
-                    T.tile.axpy(var_ub[cur, :, :], v_ub[cur, :, :], lr_signed)
+                    adam_w_compute(
+                        var_ub[cur, :, :],
+                        grad_ub[cur, :, :],
+                        m_ub[cur, :, :],
+                        v_ub[cur, :, :],
+                        eff_beta1,
+                        eff_ombeta1,
+                        eff_beta2,
+                        eff_ombeta2,
+                        lr_signed,
+                        weight_decay,
+                        epsilon,
+                    )
 
                     T.set_flag("v", "mte3", cur)
 
@@ -471,29 +492,19 @@ def _adam_w_pipeline_lowprec(
                     T.tile.cast(m_cal, m_ub[cur, :, :], CAST_MODE_LOW2HIGH, cnt)
                     T.tile.cast(v_cal, v_ub[cur, :, :], CAST_MODE_LOW2HIGH, cnt)
 
-                    # m_hat = eff_beta1 * m + eff_ombeta1 * grad
-                    T.tile.mul(m_cal, m_cal, eff_beta1)
-                    T.tile.axpy(m_cal, grad_cal, eff_ombeta1)
-
-                    # grad^2 (reuse grad_cal)
-                    T.tile.mul(grad_cal, grad_cal, grad_cal)
-
-                    # v_hat = eff_beta2 * v + eff_ombeta2 * grad^2
-                    T.tile.mul(v_cal, v_cal, eff_beta2)
-                    T.tile.axpy(v_cal, grad_cal, eff_ombeta2)
-
-                    # denom = sqrt(v_hat) + epsilon (reuse grad_cal)
-                    T.tile.sqrt(grad_cal, v_cal)
-                    T.tile.add(grad_cal, grad_cal, epsilon)
-
-                    # update = m_hat / denom (reuse v_cal)
-                    T.tile.div(v_cal, m_cal, grad_cal)
-
-                    # update += weight_decay * var
-                    T.tile.axpy(v_cal, var_cal, weight_decay)
-
-                    # var_t = var + lr_signed * update (reuse var_cal -> output)
-                    T.tile.axpy(var_cal, v_cal, lr_signed)
+                    adam_w_compute(
+                        var_cal,
+                        grad_cal,
+                        m_cal,
+                        v_cal,
+                        eff_beta1,
+                        eff_ombeta1,
+                        eff_beta2,
+                        eff_ombeta2,
+                        lr_signed,
+                        weight_decay,
+                        epsilon,
+                    )
 
                     # Cast back to original dtype
                     T.tile.cast(var_ub[cur, :, :], var_cal, CAST_MODE_HIGH2LOW, cnt)
@@ -567,29 +578,19 @@ def _adam_w_barrier_fp32(M, N, block_M, block_N, dtype="float"):
 
                 T.barrier_all()
 
-                # m_hat = eff_beta1 * m + eff_ombeta1 * grad
-                T.tile.mul(m_ub, m_ub, scalar_ub[0])
-                T.tile.axpy(m_ub, grad_ub, scalar_ub[1])
-
-                # grad^2 (reuse grad_ub)
-                T.tile.mul(grad_ub, grad_ub, grad_ub)
-
-                # v_hat = eff_beta2 * v + eff_ombeta2 * grad^2
-                T.tile.mul(v_ub, v_ub, scalar_ub[2])
-                T.tile.axpy(v_ub, grad_ub, scalar_ub[3])
-
-                # denom = sqrt(v_hat) + epsilon (reuse grad_ub)
-                T.tile.sqrt(grad_ub, v_ub)
-                T.tile.add(grad_ub, grad_ub, scalar_ub[6])
-
-                # update = m_hat / denom (reuse v_ub)
-                T.tile.div(v_ub, m_ub, grad_ub)
-
-                # update += weight_decay * var
-                T.tile.axpy(v_ub, var_ub, scalar_ub[5])
-
-                # var_t = var + lr_signed * update (reuse var_ub -> output)
-                T.tile.axpy(var_ub, v_ub, scalar_ub[4])
+                adam_w_compute(
+                    var_ub,
+                    grad_ub,
+                    m_ub,
+                    v_ub,
+                    scalar_ub[0],
+                    scalar_ub[1],
+                    scalar_ub[2],
+                    scalar_ub[3],
+                    scalar_ub[4],
+                    scalar_ub[5],
+                    scalar_ub[6],
+                )
 
                 T.barrier_all()
 
@@ -654,29 +655,19 @@ def _adam_w_barrier_lowprec(M, N, block_M, block_N, dtype="float16"):
                 T.tile.cast(m_cal, m_ub, CAST_MODE_LOW2HIGH, cnt)
                 T.tile.cast(v_cal, v_ub, CAST_MODE_LOW2HIGH, cnt)
 
-                # m_hat = eff_beta1 * m + eff_ombeta1 * grad
-                T.tile.mul(m_cal, m_cal, scalar_ub[0])
-                T.tile.axpy(m_cal, grad_cal, scalar_ub[1])
-
-                # grad^2 (reuse grad_cal)
-                T.tile.mul(grad_cal, grad_cal, grad_cal)
-
-                # v_hat = eff_beta2 * v + eff_ombeta2 * grad^2
-                T.tile.mul(v_cal, v_cal, scalar_ub[2])
-                T.tile.axpy(v_cal, grad_cal, scalar_ub[3])
-
-                # denom = sqrt(v_hat) + epsilon (reuse grad_cal)
-                T.tile.sqrt(grad_cal, v_cal)
-                T.tile.add(grad_cal, grad_cal, scalar_ub[6])
-
-                # update = m_hat / denom (reuse v_cal)
-                T.tile.div(v_cal, m_cal, grad_cal)
-
-                # update += weight_decay * var
-                T.tile.axpy(v_cal, var_cal, scalar_ub[5])
-
-                # var_t = var + lr_signed * update (reuse var_cal)
-                T.tile.axpy(var_cal, v_cal, scalar_ub[4])
+                adam_w_compute(
+                    var_cal,
+                    grad_cal,
+                    m_cal,
+                    v_cal,
+                    scalar_ub[0],
+                    scalar_ub[1],
+                    scalar_ub[2],
+                    scalar_ub[3],
+                    scalar_ub[4],
+                    scalar_ub[5],
+                    scalar_ub[6],
+                )
 
                 # Cast back to original dtype
                 T.tile.cast(var_ub, var_cal, CAST_MODE_HIGH2LOW, cnt)
@@ -722,19 +713,7 @@ def _clamp_block_m_for_barrier(block_M, block_N, tl_dtype):
     return block_M
 
 
-def _get_barrier_kernel(M, N, block_M, block_N, tl_dtype):
-    """Get cached barrier kernel (keyed by shape+block, not scalars)."""
-    key = (M, N, block_M, block_N, tl_dtype)
-    if tl_dtype in ["float16", "bfloat16"]:
-        if key not in _barrier_kernel_cache:
-            _barrier_kernel_cache[key] = _adam_w_barrier_lowprec(M, N, block_M, block_N, dtype=tl_dtype)
-    else:
-        if key not in _barrier_kernel_cache:
-            _barrier_kernel_cache[key] = _adam_w_barrier_fp32(M, N, block_M, block_N, dtype=tl_dtype)
-    return _barrier_kernel_cache[key]
-
-
-def _get_scalar_tensor(
+def _make_scalar_tensor(
     eff_beta1,
     eff_ombeta1,
     eff_beta2,
@@ -744,7 +723,7 @@ def _get_scalar_tensor(
     epsilon,
     device,
 ):
-    """Get or create cached 8-element scalar tensor for barrier kernel.
+    """Create the 8-element scalar tensor for the barrier kernel.
 
     Layout: [eff_beta1, eff_ombeta1, eff_beta2, eff_ombeta2,
              lr_signed, weight_decay, epsilon, 0.0]
@@ -753,120 +732,25 @@ def _get_scalar_tensor(
     preserved), so the GM tensor carries inf/nan to the kernel at runtime
     without codegen emitting CUDART_INF/CUDART_NAN literals.
     """
-    key = (
-        eff_beta1,
-        eff_ombeta1,
-        eff_beta2,
-        eff_ombeta2,
-        lr_signed,
-        weight_decay,
-        epsilon,
-        str(device),
+    s_tensor = torch.tensor(
+        [
+            eff_beta1,
+            eff_ombeta1,
+            eff_beta2,
+            eff_ombeta2,
+            lr_signed,
+            weight_decay,
+            epsilon,
+            0.0,
+        ],
+        dtype=torch.float32,
     )
-    if key not in _scalar_tensor_cache:
-        s_tensor = torch.tensor(
-            [
-                eff_beta1,
-                eff_ombeta1,
-                eff_beta2,
-                eff_ombeta2,
-                lr_signed,
-                weight_decay,
-                epsilon,
-                0.0,
-            ],
-            dtype=torch.float32,
-        )
-        _scalar_tensor_cache[key] = s_tensor.to(device)
-    return _scalar_tensor_cache[key]
+    return s_tensor.to(device)
 
 
 # ---------------------------------------------------------------------------
-# Kernel cache + public API
+# Public API
 # ---------------------------------------------------------------------------
-
-
-def _get_pipeline_kernel(
-    M,
-    N,
-    block_M,
-    block_N,
-    sub_M,
-    eff_beta1,
-    eff_ombeta1,
-    eff_beta2,
-    eff_ombeta2,
-    lr_signed,
-    weight_decay,
-    epsilon,
-    tl_dtype,
-):
-    if tl_dtype in ["float16", "bfloat16"]:
-        key = (
-            M,
-            N,
-            block_M,
-            block_N,
-            sub_M,
-            eff_beta1,
-            eff_ombeta1,
-            eff_beta2,
-            eff_ombeta2,
-            lr_signed,
-            weight_decay,
-            epsilon,
-            tl_dtype,
-        )
-        if key not in _pipeline_lowprec_cache:
-            _pipeline_lowprec_cache[key] = _adam_w_pipeline_lowprec(
-                M,
-                N,
-                block_M,
-                block_N,
-                sub_M,
-                eff_beta1,
-                eff_ombeta1,
-                eff_beta2,
-                eff_ombeta2,
-                lr_signed,
-                weight_decay,
-                epsilon,
-                dtype=tl_dtype,
-            )
-        return _pipeline_lowprec_cache[key]
-    else:
-        key = (
-            M,
-            N,
-            block_M,
-            block_N,
-            sub_M,
-            eff_beta1,
-            eff_ombeta1,
-            eff_beta2,
-            eff_ombeta2,
-            lr_signed,
-            weight_decay,
-            epsilon,
-            tl_dtype,
-        )
-        if key not in _pipeline_fp32_cache:
-            _pipeline_fp32_cache[key] = _adam_w_pipeline_fp32(
-                M,
-                N,
-                block_M,
-                block_N,
-                sub_M,
-                eff_beta1,
-                eff_ombeta1,
-                eff_beta2,
-                eff_ombeta2,
-                lr_signed,
-                weight_decay,
-                epsilon,
-                dtype=tl_dtype,
-            )
-        return _pipeline_fp32_cache[key]
 
 
 def _needs_barrier_path(lr, beta1, beta2, weight_decay, epsilon, step):
@@ -957,8 +841,11 @@ def apply_adam_w(
         eff_beta1, eff_ombeta1, eff_beta2, eff_ombeta2, lr_signed = scalars
 
         barrier_block_M = _clamp_block_m_for_barrier(block_M, block_N, tl_dtype)
-        kernel = _get_barrier_kernel(M, N, barrier_block_M, block_N, tl_dtype)
-        s_tensor = _get_scalar_tensor(
+        if tl_dtype in ["float16", "bfloat16"]:
+            kernel = _adam_w_barrier_lowprec(M, N, barrier_block_M, block_N, dtype=tl_dtype)
+        else:
+            kernel = _adam_w_barrier_fp32(M, N, barrier_block_M, block_N, dtype=tl_dtype)
+        s_tensor = _make_scalar_tensor(
             eff_beta1,
             eff_ombeta1,
             eff_beta2,
@@ -974,28 +861,45 @@ def apply_adam_w(
         scalars = _precompute_scalars(lr, beta1, beta2, weight_decay, epsilon, step, maximize)
         eff_beta1, eff_ombeta1, eff_beta2, eff_ombeta2, lr_signed = scalars
 
-        kernel = _get_pipeline_kernel(
-            M,
-            N,
-            block_M,
-            block_N,
-            sub_M,
-            eff_beta1,
-            eff_ombeta1,
-            eff_beta2,
-            eff_ombeta2,
-            lr_signed,
-            weight_decay,
-            epsilon,
-            tl_dtype,
-        )
+        if tl_dtype in ["float16", "bfloat16"]:
+            kernel = _adam_w_pipeline_lowprec(
+                M,
+                N,
+                block_M,
+                block_N,
+                sub_M,
+                eff_beta1,
+                eff_ombeta1,
+                eff_beta2,
+                eff_ombeta2,
+                lr_signed,
+                weight_decay,
+                epsilon,
+                dtype=tl_dtype,
+            )
+        else:
+            kernel = _adam_w_pipeline_fp32(
+                M,
+                N,
+                block_M,
+                block_N,
+                sub_M,
+                eff_beta1,
+                eff_ombeta1,
+                eff_beta2,
+                eff_ombeta2,
+                lr_signed,
+                weight_decay,
+                epsilon,
+                dtype=tl_dtype,
+            )
         y_2d = kernel(var_2d, grad_2d, m_2d, v_2d)
 
     return y_2d.reshape(original_shape)
 
 
 # ---------------------------------------------------------------------------
-# Golden reference (matches cann-bench golden.py exactly)
+# Golden reference
 # ---------------------------------------------------------------------------
 
 
@@ -1012,7 +916,7 @@ def golden_apply_adam_w(
     step=1,
     maximize=False,
 ):
-    """PyTorch reference implementation (consistent with cann-bench golden.py).
+    """PyTorch reference implementation.
 
     FP16/BF16 inputs are upcast to FP32 for compute, then cast back.
     epsilon is OUTSIDE sqrt (matches torch.optim.AdamW and torch_npu fused).
@@ -1783,7 +1687,6 @@ def main():
     )
     args = parser.parse_args()
 
-    tilelang.disable_cache()
     torch.manual_seed(0)
 
     blocking_ok = True  # Only L0/L1 count toward blocking

@@ -4,8 +4,6 @@ import tilelang
 import tilelang.language as T
 import torch
 
-tilelang.cache.clear_cache()
-
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
@@ -131,51 +129,56 @@ def masked_scale(M, N, block_M, block_N, scale, dtype="float16", mask_dtype="int
     return main
 
 
-parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
-parser.add_argument("--m", type=int, default=1024, help="Matrix M dimension")
-parser.add_argument("--n", type=int, default=1024, help="Matrix N dimension")
-args = parser.parse_args()
+def main():
+    parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
+    parser.add_argument("--m", type=int, default=1024, help="Matrix M dimension")
+    parser.add_argument("--n", type=int, default=1024, help="Matrix N dimension")
+    args = parser.parse_args()
 
-M = args.m
-N = args.n
+    M = args.m
+    N = args.n
 
-torch.manual_seed(0)
+    torch.manual_seed(0)
 
-# (x_dtype, mask_dtype, scale, block_M, block_N)
-test_configs = [
-    (torch.float16, torch.int8, 1.0, 128, 128),
-    (torch.float16, torch.uint8, 2.0, 128, 128),
-    (torch.float32, torch.int8, 0.5, 128, 128),
-    (torch.float32, torch.float32, 1.0, 128, 128),
-    (torch.bfloat16, torch.float16, 1.0, 128, 128),
-    (torch.bfloat16, torch.int8, 1.0, 128, 128),
-]
+    # (x_dtype, mask_dtype, scale, block_M, block_N)
+    test_configs = [
+        (torch.float16, torch.int8, 1.0, 128, 128),
+        (torch.float16, torch.uint8, 2.0, 128, 128),
+        (torch.float32, torch.int8, 0.5, 128, 128),
+        (torch.float32, torch.float32, 1.0, 128, 128),
+        (torch.bfloat16, torch.float16, 1.0, 128, 128),
+        (torch.bfloat16, torch.int8, 1.0, 128, 128),
+    ]
 
-dtype_map = {
-    torch.float16: "float16",
-    torch.bfloat16: "bfloat16",
-    torch.float32: "float",
-    torch.int8: "int8",
-    torch.uint8: "uint8",
-}
+    dtype_map = {
+        torch.float16: "float16",
+        torch.bfloat16: "bfloat16",
+        torch.float32: "float",
+        torch.int8: "int8",
+        torch.uint8: "uint8",
+    }
 
-for x_dtype, mask_dtype, scale, block_M, block_N in test_configs:
-    x_tl = dtype_map[x_dtype]
-    mask_tl = dtype_map[mask_dtype]
-    print(f"Testing MaskedScale with M={M}, N={N}, x={x_tl}, mask={mask_tl}, scale={scale}")
+    for x_dtype, mask_dtype, scale, block_M, block_N in test_configs:
+        x_tl = dtype_map[x_dtype]
+        mask_tl = dtype_map[mask_dtype]
+        print(f"Testing MaskedScale with M={M}, N={N}, x={x_tl}, mask={mask_tl}, scale={scale}")
 
-    func = masked_scale(M, N, block_M, block_N, scale, dtype=x_tl, mask_dtype=mask_tl)
-    print("Init successful!")
+        func = masked_scale(M, N, block_M, block_N, scale, dtype=x_tl, mask_dtype=mask_tl)
+        print("Init successful!")
 
-    x = torch.randn(M, N, dtype=torch.float32).npu()
-    if x_dtype in (torch.float16, torch.bfloat16):
-        x = x.to(x_dtype)
-    mask = torch.randint(0, 2, (M, N), dtype=mask_dtype).npu()
+        x = torch.randn(M, N, dtype=torch.float32).npu()
+        if x_dtype in (torch.float16, torch.bfloat16):
+            x = x.to(x_dtype)
+        mask = torch.randint(0, 2, (M, N), dtype=mask_dtype).npu()
 
-    y = func(x, mask)
-    ref_y = (x * mask * scale).to(x_dtype)
+        y = func(x, mask)
+        ref_y = (x * mask * scale).to(x_dtype)
 
-    torch.testing.assert_close(y.cpu(), ref_y.cpu(), rtol=1e-2, atol=1e-2)
-    print("Test passed!")
+        torch.testing.assert_close(y.cpu(), ref_y.cpu(), rtol=1e-2, atol=1e-2)
+        print("Test passed!")
 
-print("Kernel Output Match!")
+    print("Kernel Output Match!")
+
+
+if __name__ == "__main__":
+    main()
