@@ -367,29 +367,14 @@ def fill(buffer: Buffer | BufferRegion, value: PrimExpr):
     )
 
 
-def clear(buffer: Buffer | tir.Var):
+def clear(buffer: Buffer | BufferRegion):
     """Clear a buffer or buffer region by filling with zeros.
 
-    Delegates to ``fill(buffer, 0)``.  The generated hardware instruction is
-    ``AscendC::Duplicate`` on the AscendC backend and ``TEXPANDS`` on the PTO
-    backend.
-
     Args:
-        buffer: The buffer, buffer region, or variable to be cleared.
-                If a BufferRegion is passed, it is forwarded to ``fill`` which
-                accepts BufferRegion.  If a tir.Var is provided, it will be
-                resolved automatically via ``T.has_let_value`` /
-                ``T.get_let_value``.
+        buffer: The buffer or buffer region to be cleared.
 
     Returns:
         A TVM intrinsic call that fills the buffer with zeros.
-
-    Note:
-        On AscendC, dtype support follows ``AscendC::Duplicate``:
-        float16, float32, bfloat16, int16, uint16, int32, uint32.
-        int8/uint8 are not supported on AscendC.
-        On PTO, ``TEXPANDS`` additionally supports int8 and uint8.
-        The buffer must reside in UB (Unified Buffer) memory.
     """
     if isinstance(buffer, tir.Var) and T.has_let_value(buffer):
         buffer_region = T.get_let_value(buffer)
