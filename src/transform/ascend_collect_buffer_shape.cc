@@ -181,8 +181,7 @@ tvm::transform::Pass CreateFlatten2DPass() {
       // fractal extent (the normal zN-remapped 1D flow) this is a no-op.
       if (scope == "shared.l1") {
         auto init_it = initial_shapes.find(buffer_var);
-        if (init_it != initial_shapes.end() &&
-            (*init_it).second.size() >= 2) {
+        if (init_it != initial_shapes.end() && (*init_it).second.size() >= 2) {
           const Array<PrimExpr> &init_shape = (*init_it).second;
           const IntImmNode *rows =
               init_shape[init_shape.size() - 2].as<IntImmNode>();
@@ -197,11 +196,9 @@ tvm::transform::Pass CreateFlatten2DPass() {
             };
             const int64_t zn_extent = ceil_div(cols->value, ele_per_c0) *
                                       round_up16(rows->value) * ele_per_c0;
-            if (const IntImmNode *total_imm =
-                    total_elements.as<IntImmNode>()) {
+            if (const IntImmNode *total_imm = total_elements.as<IntImmNode>()) {
               if (total_imm->value < zn_extent) {
-                total_elements =
-                    Integer(static_cast<int64_t>(zn_extent));
+                total_elements = Integer(static_cast<int64_t>(zn_extent));
               }
             }
           }
