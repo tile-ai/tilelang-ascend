@@ -473,7 +473,7 @@ jobs:
           fi
 
   test:
-    name: Full CI Tests (A2/A3 shared pool)
+    name: Benchmark Tests (Ascend NPU)
     runs-on: [self-hosted, Linux, tilelang-ascend-ci]
     needs: check_changes
     outputs:
@@ -496,55 +496,6 @@ jobs:
         with:
           submodules: false
           fetch-depth: 0
-
-      # 执行信道识别：只信任 Runner 本地环境提供的 CI_EXECUTION_MODE，
-      # 未设置时归一化为 legacy。PR 文件/分支/input 均无法选择执行模式。
-      - name: Runtime preflight (execution mode)
-        id: preflight
-        shell: bash
-        run: |
-          MODE="${CI_EXECUTION_MODE:-}"
-          if [ -z "${MODE}" ]; then
-            MODE="legacy"
-          fi
-          case "${MODE}" in
-            legacy|host-wrapper) ;;
-            *)
-              echo "preflight: invalid CI_EXECUTION_MODE='${MODE}' (expected legacy or host-wrapper)" >&2
-              exit 1
-              ;;
-          esac
-
-          if [ "${MODE}" = "host-wrapper" ]; then
-            if [ -z "${CI_EXEC_WRAPPER:-}" ] || [ ! -x "${CI_EXEC_WRAPPER}" ]; then
-              echo "preflight: host-wrapper requires CI_EXEC_WRAPPER to be set and executable" >&2
-              exit 1
-            fi
-            echo "preflight: host-wrapper channel selected (wrapper configured)"
-          else
-            echo "preflight: legacy channel selected (container: ${CI_CONTAINER_NAME:-tilelang_x1})"
-          fi
-
-          echo "mode=${MODE}" >> "${GITHUB_OUTPUT}"
-          echo "namespace=${CI_CACHE_NAMESPACE:-default-ns}" >> "${GITHUB_OUTPUT}"
-          echo "preflight summary: mode=${MODE} arch=${{ runner.arch }} namespace=${CI_CACHE_NAMESPACE:-default-ns}"
-
-      - name: Compute cache key
-        id: cache-key
-        shell: bash
-        run: |
-          scope="trusted"
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then scope="pr"; fi
-          hash="${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}"
-          base="tilelang-build-${{ github.base_ref || github.ref_name }}-${{ runner.arch }}-${{ steps.preflight.outputs.mode }}-${{ steps.preflight.outputs.namespace }}"
-          key="${base}-${scope}-${hash}"
-          echo "key=${key}" >> "${GITHUB_OUTPUT}"
-          if [ "${scope}" = "pr" ]; then
-            echo "restore_fallback=${base}-trusted-${hash}" >> "${GITHUB_OUTPUT}"
-          else
-            echo "restore_fallback=${key}" >> "${GITHUB_OUTPUT}"
-          fi
-          echo "cache key scope: ${scope}"
 
       - name: Check if skip pytest
         id: check_skip_pytest
@@ -591,8 +542,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: build-cache/
-          key: ${{ steps.cache-key.outputs.key }}
-          restore-keys: ${{ steps.cache-key.outputs.restore_fallback }}
+          key: tilelang-build-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
       
       # 全量编译，清理所有残留编译产物
       - name: Clean build artifacts for full build
@@ -678,25 +628,120 @@ jobs:
             PYTEST_MARKERS="not (low_priority or ci_skip)"
           fi
 
-          # 单 Job 双执行信道：由可信 Runner 本地环境 CI_EXECUTION_MODE 决定执行信道
-          # （adapter 校验，PR 不可控）。将执行环境写入 workspace 状态文件后，经
-          # ci_exec_adapter 执行与 upstream 原 A2 逐字一致的完整测试体
-          # （scripts/ci/ci_build_and_test.sh；operator 重试仅在
-          # host-wrapper 信道生效）。
-          ENV_FILE="${GITHUB_WORKSPACE}/ci_exec_env.env"
-          {
-            printf 'export INCREMENTAL_FLAG=%q\n' "$INCREMENTAL_FLAG"
-            printf 'export SKIP_PYTEST=%q\n' "$SKIP_PYTEST_VALUE"
-            printf 'export TEST_DIRS_ARG=%q\n' "$TEST_DIRS_ARG"
-            printf 'export EXPERIMENT_DIRS_ARG=%q\n' "$EXPERIMENT_DIRS_ARG"
-            printf 'export PYTEST_FILES_ARG=%q\n' "$PYTEST_FILES_ARG"
-            printf 'export RUN_EXAMPLES=%q\n' "$RUN_EXAMPLES"
-            printf 'export RUN_PYTEST_ONLY=%q\n' "$RUN_PYTEST_ONLY"
-            printf 'export PYTEST_MARKERS=%q\n' "$PYTEST_MARKERS"
-            printf 'export CI_EXECUTION_MODE=%q\n' "${{ steps.preflight.outputs.mode }}"
-          } > "${ENV_FILE}"
-          bash scripts/ci/ci_exec_adapter.sh "${GITHUB_WORKSPACE}/scripts/ci/ci_build_and_test.sh"
+          docker exec \
+            -w $GITHUB_WORKSPACE \
+            -e GITHUB_ENV=$GITHUB_ENV \
+            -e GITHUB_OUTPUT=$GITHUB_OUTPUT \
+            -e BASH_ENV=/root/.bashrc \
+            -e INCREMENTAL_FLAG="$INCREMENTAL_FLAG" \
+            -e SKIP_PYTEST=$SKIP_PYTEST_VALUE \
+            -e TEST_DIRS_ARG="$TEST_DIRS_ARG" \
+            -e EXPERIMENT_DIRS_ARG="$EXPERIMENT_DIRS_ARG" \
+            -e PYTEST_FILES_ARG="$PYTEST_FILES_ARG" \
+            -e RUN_EXAMPLES="$RUN_EXAMPLES" \
+            -e RUN_PYTEST_ONLY="$RUN_PYTEST_ONLY" \
+            -e PYTEST_MARKERS="$PYTEST_MARKERS" \
+            ${CI_CONTAINER_NAME:-tilelang_x1} \
+            bash -c "
+              set -e
 
+              # 如果有缓存，复制到 build 目录
+              if [ -d build-cache ] && [ \"\$(ls -A build-cache)\" ]; then
+                echo \"Copy build cache...\"
+                mkdir -p build
+                cp -ra build-cache/* build/ 
+              fi
+
+              # 1. 增量编译项目
+              bash install_ascend.sh \$INCREMENTAL_FLAG
+              # 保存编译产物
+              if [ -d \"build\" ]; then
+                echo \"Saving build artifacts...\"
+                rm -rf build-cache/*
+                cp -ra build/* build-cache/
+              fi
+
+              # 2. 加载环境变量
+              echo 'Sourcing environment...'
+              source set_env.sh
+              echo 'TILELANG_PATH='\$PWD >> \$GITHUB_ENV
+
+              # 3. 运行测试用例
+              cd examples
+              chmod +x bench_test.sh
+              
+              # 构建 pytest marker 过滤参数
+              PYTEST_MARKER_ARGS=()
+              if [ -n \"\$PYTEST_MARKERS\" ]; then
+                PYTEST_MARKER_ARGS+=(-m \"\$PYTEST_MARKERS\")
+                echo 'Applying pytest marker filter: -m '\$PYTEST_MARKERS
+              fi
+
+              if [ \"\$RUN_PYTEST_ONLY\" = true ]; then
+                # 只跑 pytest（testing/ 修改）
+                if [ -n \"\$PYTEST_FILES_ARG\" ]; then
+                  echo 'Running incremental pytest for: '\$PYTEST_FILES_ARG
+                  # Prefix every path, not just the first: the value can hold several
+                  # files and the rest would otherwise resolve against examples/.
+                  PYTEST_TARGETS=()
+                  for pytest_target in \$PYTEST_FILES_ARG; do
+                    PYTEST_TARGETS+=(\"../\$pytest_target\")
+                  done
+                  set +e
+                  pytest --forked \"\${PYTEST_TARGETS[@]}\" -v -n 4 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee test_output.log
+                else
+                  echo 'Running full pytest (testing/ modified)'
+                  set +e
+                  pytest --forked ../testing/python/ -v -n 8 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee test_output.log
+                fi
+                TEST_EXIT_CODE=\${PIPESTATUS[0]}
+                set -e
+              elif [ \"\$RUN_EXAMPLES\" = true ]; then
+                # 跑 examples + experiment + pytest
+                echo 'Running benchmark tests with args: '\$TEST_DIRS_ARG' '\$EXPERIMENT_DIRS_ARG
+                set +e
+                if [ \"\$SKIP_PYTEST\" = true ]; then
+                  ./bench_test.sh --skip-pytest \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG 2>&1 | tee test_output.log
+                else
+                  if [ -n \"\$PYTEST_MARKERS\" ]; then
+                    ./bench_test.sh --pytest-markers \"\$PYTEST_MARKERS\" \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG 2>&1 | tee test_output.log
+                  else
+                    ./bench_test.sh \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG 2>&1 | tee test_output.log
+                  fi
+                fi
+                TEST_EXIT_CODE=\${PIPESTATUS[0]}
+
+                # Operator tests were moved out of the legacy runner, so run them here:
+                # one Pytest invocation gets xdist scheduling, the marker filter and the
+                # full failure output. Entries reserved but not migrated yet are absent
+                # from list-tests, so nothing points at a file that does not exist.
+                #
+                # Scoped by the same two arguments the runner just took, so an
+                # incremental run tests the operators in the directories it ran and
+                # no others. Both are empty on a full run, which selects them all.
+                OPERATOR_TESTS=()
+                while IFS= read -r operator_test; do
+                  [ -n \"\$operator_test\" ] && OPERATOR_TESTS+=(\"../\$operator_test\")
+                done < <(python ../scripts/ci/resolve_operator_tests.py list-tests \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG)
+                if [ \${#OPERATOR_TESTS[@]} -gt 0 ]; then
+                  echo 'Running operator tests: '\${OPERATOR_TESTS[*]}
+                  pytest --forked \"\${OPERATOR_TESTS[@]}\" -v -n 8 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee -a test_output.log
+                  OPERATOR_EXIT_CODE=\${PIPESTATUS[0]}
+                  if [ \"\$TEST_EXIT_CODE\" -eq 0 ]; then
+                    TEST_EXIT_CODE=\$OPERATOR_EXIT_CODE
+                  fi
+                fi
+                set -e
+              fi
+
+              echo 'Test exit code: '\$TEST_EXIT_CODE
+              echo \"test_exit_code=\$TEST_EXIT_CODE\" >> \$GITHUB_OUTPUT
+              
+              # 如果测试失败，让脚本退出码非0
+              if [ \"\$TEST_EXIT_CODE\" -ne 0 ]; then
+                exit 1
+              fi
+            "
       # 全量编译下先删除旧缓存，否则 save 会失败
       - name: Delete old cache for overwrite
         if: always() && env.FULL_BUILD == 'true'
@@ -719,7 +764,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: build-cache/
-          key: ${{ steps.cache-key.outputs.key }}
+          key: tilelang-build-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
           
       - name: Check pass rate
         id: check_results
@@ -849,7 +894,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-results-${{ github.job }}-${{ github.run_id }}-${{ steps.preflight.outputs.mode }}-${{ runner.arch }}
+          name: test-results
           path: |
             examples/test_results/
             examples/*.log
