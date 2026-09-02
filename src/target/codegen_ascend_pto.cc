@@ -1007,7 +1007,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
 
     // --- cast ---
   } else if (op->op.same_as(tl::ascend_round())) {
-    CastCodegen(op, "RoundMode::CAST_ROUND");
+    RoundCodegen(op);
   } else if (op->op.same_as(tl::ascend_cast())) {
     static const std::unordered_map<std::string, std::string> kCastRoundModes =
         {
@@ -3522,6 +3522,41 @@ void CodeGenTileLangAscendPto::CastCodegen(const CallNode *op,
   this->PrintIndent();
   this->stream << "TCVT(" << dst_name << ", " << src_name << ", " << op_type
                << ");\n";
+}
+
+// Round is lowered through a single same-dtype TCVT. Two constraints follow
+// from that lowering and are validated here instead of being silently
+// violated (issues #1648 / #1637 / #1649 / #1650):
+//   1. Only float32 is accepted. A same-dtype float16 TCVT has no verified
+//      semantics on hardware and previously produced garbage output.
+//   2. count must equal the destination tile extent. TCVT carries no scalar
+//      count operand, so a partial count cannot be represented and used to
+//      be dropped silently.
+void CodeGenTileLangAscendPto::RoundCodegen(const CallNode *op) {
+  // Call layout is [dst, src, count] or [dst, src, tmp, count] when an
+  // explicit tmp arena survives lowering (frontend inserts tmp at position
+  // 2, see _call_intrin_with_optional_tmp).
+  const auto *arg2_call = op->args[2].as<CallNode>();
+  const bool has_tmp =
+      arg2_call != nullptr && arg2_call->op.same_as(builtin::tvm_access_ptr());
+  const PrimExpr count = has_tmp ? op->args[3] : op->args[2];
+
+  const DataType dtype = GetAccessPtrDtypePto(op->args[1].as<CallNode>());
+  ICHECK(dtype.is_float() && dtype.bits() == 32)
+      << "PTO round only supports float32: same-dtype float16 TCVT has no "
+      << "verified lowering (issues #1637/#1649), got " << dtype;
+
+  const ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
+  const auto *count_imm = count.as<IntImmNode>();
+  ICHECK(count_imm != nullptr)
+      << "PTO round requires a static count, got dynamic expression: " << count;
+  ICHECK_EQ(count_imm->value, dst_shape_info.extent)
+      << "PTO round requires count == destination tile extent ("
+      << dst_shape_info.extent << "), got " << count_imm->value
+      << ": a single TCVT always processes the full tile. Use a destination "
+      << "slice or the ascendc backend for partial-count round.";
+
+  CastCodegen(op, "RoundMode::CAST_RINT");
 }
 
 void CodeGenTileLangAscendPto::ReinterpretCastCodegen(const CallNode *op) {
