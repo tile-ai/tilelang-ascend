@@ -1338,8 +1338,13 @@ def axpy(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_value: 
 
     Note:
         - Supports float16 and float32 on Ascend A2/A3.
-        - The destination and source must have the same data type in the
-          current Ascend C and PTO backends.
+        - The destination and source must have the same data type. This is a
+          current TileLang implementation limitation rather than a hardware
+          one: the underlying Ascend C Axpy API and the PTO TAXPY
+          instruction also support dst=float32 with src0/scalar_value=
+          float16, but the Ascend C codegen enforces identical dtypes and
+          the PTO codegen emits a single-type template call. Mixed-dtype
+          support is a known implementation gap.
         - The destination and source must contain the same number of elements.
         - Operands must reside in Unified Buffer and satisfy its alignment
           requirements.

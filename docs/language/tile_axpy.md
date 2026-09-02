@@ -38,7 +38,7 @@ def axpy(
 |------|:---:|:----:|:------------:|
 | Ascend A2 / A3 | float16, float32 | float16, float32 | 与 dst 数据类型兼容的标量表达式 |
 
-> **数据类型约束**：当前 Ascend C 和 PTO 后端均要求 `dst` 与 `src0` 的数据类型相同。
+> **数据类型约束**：当前 `T.tile.axpy` 要求 `dst` 与 `src0` 的数据类型相同。这是 TileLang 当前实现的限制，而非底层能力限制：底层 Ascend C 高阶 [Axpy](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/latest/API/ascendcopapi/docs/zh/api/SIMD-API/%E9%AB%98%E9%98%B6API/%E6%95%B0%E5%AD%A6%E8%AE%A1%E7%AE%97/Axpy%E6%8E%A5%E5%8F%A3/Axpy-80.md) 接口与 PTO [TAXPY](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/latest/compiler/ptoisa/docs/isa/TAXPY_zh.md) 指令均支持 `dst` 为 `float32`、`src0` 与标量为 `float16` 的混合精度组合；当前 Ascend C codegen 显式要求两个 buffer 同 dtype，PTO codegen 生成单一模板类型的调用，均未接入该混合精度能力。混合精度支持作为已知实现缺口记录，待后续单独 PR/Issue 补齐。
 
 #### 2.3.2 Shape 支持
 
@@ -49,7 +49,7 @@ def axpy(
 
 1. `dst` 为 read-write 语义，调用后其内容被原地更新
 2. `dst` 与 `src0` 的元素总数必须相同
-3. 当前 Ascend C 和 PTO 后端要求 `dst` 与 `src0` 的数据类型相同
+3. 当前 `T.tile.axpy` 要求 `dst` 与 `src0` 的数据类型相同（底层 Ascend C `Axpy` 接口与 PTO `TAXPY` 指令支持 `dst` 为 `float32`、`src0` 与标量为 `float16` 的混合精度组合，属当前 TileLang 实现缺口，待后续补齐）
 4. 操作数应位于 Unified Buffer，起始地址需满足 32 字节对齐要求
 
 ## 3. 示例代码
