@@ -585,7 +585,6 @@ def compare_select_tail_expert(M, N, block_M, block_N):
     return main
 
 
-@pytest.mark.ci_skip
 @pytest.mark.parametrize("scalar_compare,scalar_select", [(False, False), (True, True)])
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
