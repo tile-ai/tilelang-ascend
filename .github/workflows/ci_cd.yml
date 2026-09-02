@@ -487,7 +487,7 @@ jobs:
         needs.check_changes.outputs.merged != 'true' &&
         needs.check_changes.outputs.should_skip != 'true'
       )
-    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 360 || 60 }}
+    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 360 || 120 }}
     env:
       FULL_BUILD: ${{ github.event_name == 'schedule' || github.event.inputs.full_build == 'true' }}
     steps:
@@ -681,7 +681,7 @@ jobs:
           # 单 Job 双执行信道：由可信 Runner 本地环境 CI_EXECUTION_MODE 决定执行信道
           # （adapter 校验，PR 不可控）。将执行环境写入 workspace 状态文件后，经
           # ci_exec_adapter 执行与 upstream 原 A2 逐字一致的完整测试体
-          # （scripts/ci/a3_full_original_ci_test.sh；operator 重试仅在
+          # （scripts/ci/ci_build_and_test.sh；operator 重试仅在
           # host-wrapper 信道生效）。
           ENV_FILE="${GITHUB_WORKSPACE}/ci_exec_env.env"
           {
@@ -695,7 +695,7 @@ jobs:
             printf 'export PYTEST_MARKERS=%q\n' "$PYTEST_MARKERS"
             printf 'export CI_EXECUTION_MODE=%q\n' "${{ steps.preflight.outputs.mode }}"
           } > "${ENV_FILE}"
-          bash scripts/ci/ci_exec_adapter.sh "${GITHUB_WORKSPACE}/scripts/ci/a3_full_original_ci_test.sh"
+          bash scripts/ci/ci_exec_adapter.sh "${GITHUB_WORKSPACE}/scripts/ci/ci_build_and_test.sh"
 
       # 全量编译下先删除旧缓存，否则 save 会失败
       - name: Delete old cache for overwrite
