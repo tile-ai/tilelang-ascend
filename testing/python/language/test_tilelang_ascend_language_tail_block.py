@@ -304,7 +304,6 @@ def test_vec_abs_tail(M, N, block_M, block_N, dtype, target, tail_mask):
 # Mirrors examples/reduce/example_col_reduce_max_slice_buffer.py (known-good on pto).
 # =============================================================================
 def reduce_max_tail(rows_valid, rows_phys, cols, dtype="float"):
-
     @T.prim_func
     def main(
         Input: T.Tensor((rows_phys, cols), dtype),  # type: ignore
