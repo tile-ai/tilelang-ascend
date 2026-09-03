@@ -258,10 +258,11 @@ def test_l1():
     return ok
 
 
-# ========== L2: exception (non-blocking, should reject invalid input) ==========
+# ========== L2: exception (blocking, should reject invalid input) ==========
 
 
 def test_l2():
+    ok = True
     # D-EXC-DTYPE: float32 input (kernel only supports float16)
     try:
         kernel = mla_decode(1, 64, 1, 128, 512, 64)
@@ -270,23 +271,37 @@ def test_l2():
         kv32 = torch.randn(1, 128, 1, 512, dtype=torch.float32, device="cpu").npu()
         kpe32 = torch.randn(1, 128, 1, 64, dtype=torch.float32, device="cpu").npu()
         kernel(q32, qpe32, kv32, kpe32, _col_indices_cpu.npu())
-        print("[BOUNDARY_WARN] l2 exc_dtype float32: not rejected")
-    except Exception as e:
+        print("[BOUNDARY_FAIL] l2 exc_dtype float32: not rejected")
+        ok = False
+    except (ValueError, TypeError) as e:
         print(f"[BOUNDARY_PASS] l2 exc_dtype float32: rejected ({type(e).__name__})")
+    except Exception as e:
+        print(f"[BOUNDARY_FAIL] l2 exc_dtype float32: unexpected {type(e).__name__}: {e}")
+        ok = False
 
     # D-EXC-SHAPE: heads=100 (not multiple of 64)
     try:
         mla_decode(1, 100, 1, 128, 512, 64)
-        print("[BOUNDARY_WARN] l2 exc_shape heads=100: not rejected")
-    except Exception as e:
+        print("[BOUNDARY_FAIL] l2 exc_shape heads=100: not rejected")
+        ok = False
+    except AssertionError as e:
         print(f"[BOUNDARY_PASS] l2 exc_shape heads=100: rejected ({type(e).__name__})")
+    except Exception as e:
+        print(f"[BOUNDARY_FAIL] l2 exc_shape heads=100: unexpected {type(e).__name__}: {e}")
+        ok = False
 
     # D-EXC-ACTUAL: actual_seqlen_kv=0 (all-masked, would yield NaN)
     try:
         mla_decode(1, 64, 1, 128, 512, 64, actual_seqlen_kv=0)
-        print("[BOUNDARY_WARN] l2 exc_actual0 actual_seqlen_kv=0: not rejected")
-    except Exception as e:
+        print("[BOUNDARY_FAIL] l2 exc_actual0 actual_seqlen_kv=0: not rejected")
+        ok = False
+    except AssertionError as e:
         print(f"[BOUNDARY_PASS] l2 exc_actual0 actual_seqlen_kv=0: rejected ({type(e).__name__})")
+    except Exception as e:
+        print(f"[BOUNDARY_FAIL] l2 exc_actual0 actual_seqlen_kv=0: unexpected {type(e).__name__}: {e}")
+        ok = False
+
+    return ok
 
 
 # ========== Boundary: special values (non-blocking) ==========
@@ -350,7 +365,7 @@ def main():
     if args.level in ("l1", "all"):
         blocking_ok &= test_l1()
     if args.level in ("l2", "all"):
-        test_l2()
+        blocking_ok &= test_l2()
     if args.level in ("boundary", "all"):
         test_boundary()
 

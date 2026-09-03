@@ -129,7 +129,7 @@ def mla_decode(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, actual_seqlen_
             acc_o_ub = T.alloc_ub([half_M, dim], accum_dtype)
             acc_o_half = T.alloc_ub([half_M, dim], dtype)
             col_indices_ub = T.alloc_ub([BLOCK_N], accum_dtype)
-            mask_ub = T.alloc_ub([BLOCK_N], accum_dtype)
+            mask_ub = T.alloc_ub([BLOCK_N // 8], "uint8")  # packed bitmask for compare/select
             # Multi-buffer pipeline state (cross-batch online softmax)
             r_factors = T.alloc_ub([num_stages, half_M, 1], accum_dtype)
             sumexp_is = T.alloc_ub([num_stages, half_M, 1], accum_dtype)
@@ -250,10 +250,11 @@ def mla_decode(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, actual_seqlen_
 
 
 if __name__ == "__main__":
-    # CI smoke test: single case, prints "Test Passed!"
+    # CI smoke test: one aligned case + one tail-mask case, prints "Test Passed!"
     torch.set_default_device("npu")
     torch.manual_seed(0)
 
+    # Case 1: aligned (no tail mask, num_stages=2)
     B, H, N, D, Dpe = 1, 64, 128, 512, 64
     q = torch.randn(B, H, D, dtype=torch.float16)
     q_pe = torch.randn(B, H, Dpe, dtype=torch.float16)
@@ -266,7 +267,7 @@ if __name__ == "__main__":
     output = kernel(q, q_pe, kv, k_pe, col_indices)
     torch.npu.synchronize()
 
-    # Inline golden check for CI smoke test
+    # Inline golden check
     kv_2d = kv.squeeze(2)
     k_pe_2d = k_pe.squeeze(2)
     scale = (D + Dpe) ** 0.5
@@ -277,5 +278,37 @@ if __name__ == "__main__":
     ref = torch.matmul(attention, kv_2d.float()).to(q.dtype)
 
     max_diff = (output.float() - ref.float()).abs().max().item()
-    assert max_diff < 1e-1, f"Precision check failed: max_diff={max_diff}"
+    assert max_diff < 1e-1, f"Precision check failed (aligned): max_diff={max_diff}"
+
+    # Case 2: tail mask (actual_seqlen_kv < seqlen_kv, num_stages=1)
+    # Tests compare+select path with uint8 packed mask.
+    N2, ACT2 = 256, 129  # 2 blocks, only 129 valid -> tail block has 1 valid element
+    q2 = torch.randn(B, H, D, dtype=torch.float16)
+    q_pe2 = torch.randn(B, H, Dpe, dtype=torch.float16)
+    kv2_full = torch.randn(B, N2, 1, D, dtype=torch.float16)
+    k_pe2_full = torch.randn(B, N2, 1, Dpe, dtype=torch.float16)
+    # Zero-pad tail for kernel input
+    kv2 = kv2_full.clone()
+    kv2[:, ACT2:, :, :] = 0
+    k_pe2 = k_pe2_full.clone()
+    k_pe2[:, ACT2:, :, :] = 0
+
+    kernel2 = mla_decode(B, H, 1, N2, D, Dpe, actual_seqlen_kv=ACT2)
+    output2 = kernel2(q2, q_pe2, kv2, k_pe2, col_indices)
+    torch.npu.synchronize()
+
+    # Golden uses only valid (unpadded) data
+    kv2_valid = kv2_full[:, :ACT2, :, :]
+    k_pe2_valid = k_pe2_full[:, :ACT2, :, :]
+    kv2_2d = kv2_valid.squeeze(2)
+    k_pe2_2d = k_pe2_valid.squeeze(2)
+    scores2 = torch.matmul(q2.float(), kv2_2d.float().transpose(1, 2))
+    scores2 = scores2 + torch.matmul(q_pe2.float(), k_pe2_2d.float().transpose(1, 2))
+    scores2 = scores2 / scale
+    attention2 = F.softmax(scores2, dim=-1)
+    ref2 = torch.matmul(attention2, kv2_2d.float()).to(q2.dtype)
+
+    max_diff2 = (output2.float() - ref2.float()).abs().max().item()
+    assert max_diff2 < 1e-1, f"Precision check failed (tail mask): max_diff={max_diff2}"
+
     print("Test Passed!")
