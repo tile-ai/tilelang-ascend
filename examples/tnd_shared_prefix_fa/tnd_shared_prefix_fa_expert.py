@@ -101,9 +101,9 @@ def tnd_shared_prefix_fa_expert(
         V_private: T.Tensor([total_private_kv, kv_head, head_dim], dtype),  # type: ignore
         block_metadata: T.Tensor([total_q_blocks, 4], "int32"),  # type: ignore
         Output: T.Tensor([q_head, total_q, head_dim], dtype),  # type: ignore
-        workspace_s: T.Tensor([NUM_CORES, num_stages, block_M, block_N], dtype),  # type: ignore
+        workspace_s: T.Tensor([NUM_CORES, num_stages, block_M, block_N], accum_dtype),  # type: ignore
         workspace_p: T.Tensor([NUM_CORES, num_stages, block_M, block_N], dtype),  # type: ignore
-        workspace_o: T.Tensor([NUM_CORES, num_stages, block_M, head_dim], dtype),  # type: ignore
+        workspace_o: T.Tensor([NUM_CORES, num_stages, block_M, head_dim], accum_dtype),  # type: ignore
     ):
         with T.Kernel(NUM_CORES, is_npu=True) as (cid, vid):
             my_start = cid * q_tasks + T.if_then_else(cid < r_tasks, cid, r_tasks)
@@ -126,7 +126,7 @@ def tnd_shared_prefix_fa_expert(
             r_factors = T.alloc_ub([num_stages, half_M, 1], accum_dtype)
             sumexp_is = T.alloc_ub([num_stages, half_M, 1], accum_dtype)
 
-            io_buf = T.alloc_ub([half_M, block_N], dtype)
+            io_buf = T.alloc_ub([half_M, block_N], accum_dtype)
             acc_s_half = T.alloc_ub([half_M, block_N], dtype)
             work_ub = T.alloc_ub([half_M, block_N], accum_dtype)
             buf_2d = T.alloc_ub([half_M, block_N], accum_dtype)
