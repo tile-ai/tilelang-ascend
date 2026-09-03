@@ -72,6 +72,10 @@ def _load_l0_ref():
 
 _L0 = _load_l0_ref()
 
+# Safe here and not at the top of the file: _load_l0_ref is what puts this
+# directory on sys.path, so the flat import only resolves once it has run.
+import kda_varlen as _VL  # noqa: E402
+
 
 # --------------------------------------------------------------- layout shell
 def _in(x):
@@ -285,12 +289,18 @@ def ref_chunk_o(qg, Aqk, Vt, states, C):
 
 
 # ---------------------------------------------------------- full L1 pipeline
-def kda_chunk_ref(q, k, v, g, beta, C=64, BC=16, scale=None, initial_state=None, output_final_state=False):
+def kda_chunk_ref(q, k, v, g, beta, C=64, BC=16, scale=None, initial_state=None, output_final_state=False, cu_seqlens=None):
     """Six-stage chunkwise KDA at the frozen L0 interface.
 
     Signature mirrors kda_ref.kda_ref, plus the chunk length C and the
     sub-chunk anchor width BC.  Returns (o, final_state | None).
+
+    With ``cu_seqlens`` the inputs are a flattened varlen batch (B == 1) and the
+    final state is [N, HV, K, V], one per sequence.  See _kda_chunk_ref_varlen.
     """
+    if cu_seqlens is not None:
+        return _kda_chunk_ref_varlen(q, k, v, g, beta, C, BC, scale, initial_state, output_final_state, cu_seqlens)
+
     B, SEQ, H, K = q.shape
     HV, _V = v.shape[2], v.shape[-1]
     assert HV % H == 0, "HV must be divisible by H (GVA)"
@@ -331,7 +341,7 @@ def kda_chunk_ref(q, k, v, g, beta, C=64, BC=16, scale=None, initial_state=None,
 
 
 # ------------------------------------------------- stage tensors for kernel tests
-def stage_tensors(q, k, v, g, beta, C=64, BC=16, scale=None, initial_state=None):
+def stage_tensors(q, k, v, g, beta, C=64, BC=16, scale=None, initial_state=None, cu_seqlens=None):
     """Every intermediate of the six stages, in **external** [B, T, HV, *] layout.
 
     This is the single source of truth for per-stage kernel tests: a kernel test
@@ -370,12 +380,42 @@ def stage_tensors(q, k, v, g, beta, C=64, BC=16, scale=None, initial_state=None)
         SF      [B, HV, K, V]     stage 5 out: final state
         o       [B, T, HV, V]     stage 6 out
     """
+    if cu_seqlens is not None:
+        return _stage_tensors_varlen(q, k, v, g, beta, C, BC, scale, initial_state, cu_seqlens)
+
     B, SEQ, H, K = q.shape
     HV, _V = v.shape[2], v.shape[-1]
     assert HV % H == 0, "HV must be divisible by H (GVA)"
     grp = HV // H
     if scale is None:
         scale = K**-0.5
+
+    # SEQ == 0 gets the same explicit guard kda_chunk_ref carries, and for the
+    # same reason: _pad_to_chunk leaves a zero-token tensor alone (pad = 0), the
+    # chunk helpers then reshape it into zero chunks, and the stage algebra runs
+    # on empty operands -- which torch tolerates in some stages by accident and
+    # not in others.  Under varlen this stopped being a corner case: a
+    # cu_seqlens entry with T_i == 0 routes straight through here.
+    if SEQ == 0:
+
+        def _empty(width):
+            return torch.zeros((B, 0, HV, width), dtype=torch.float32)
+
+        sf = initial_state.float().clone() if initial_state is not None else torch.zeros((B, HV, K, _V), dtype=torch.float32)
+        return {
+            "G": _empty(K),
+            "L": _empty(C),
+            "A": _empty(C),
+            "W": _empty(K),
+            "U": _empty(_V),
+            "kg": _empty(K),
+            "qg": _empty(K),
+            "Aqk": _empty(C),
+            "states": torch.zeros((B, HV, 0, K, _V), dtype=torch.float32),
+            "Vt": _empty(_V),
+            "SF": sf,
+            "o": _empty(_V),
+        }
 
     qi = _expand_qk(_in(q.float()), grp) * scale
     ki = _expand_qk(_in(k.float()), grp)
@@ -416,6 +456,84 @@ def stage_tensors(q, k, v, g, beta, C=64, BC=16, scale=None, initial_state=None)
 def make_inputs(*a, **kw):
     """Re-export of the L0 input factory so kernel tests need one import only."""
     return _L0.make_inputs(*a, **kw)
+
+
+def make_varlen_inputs(*a, **kw):
+    """Re-export of the L0 varlen input factory, same reason."""
+    return _L0.make_varlen_inputs(*a, **kw)
+
+
+# ---------------------------------------------------------------------- varlen
+# Both varlen entry points below run the fixed-length body once per sequence and
+# reassemble.  That is exact, not an approximation: chunking restarts at every
+# bos and no state crosses a sequence boundary, so a per-sequence run performs
+# the same arithmetic in the same order.  It is also the only construction worth
+# having in a golden -- a second, varlen-aware copy of the stage algebra would
+# just be a second thing to be wrong, and it is a CPU reference, so the loop
+# costs nothing that matters.
+#
+# The slices are views, not copies: with B == 1 torch ignores the stride of the
+# extent-1 batch axis when deciding contiguity, so ``q[:, bos:eos]`` stays
+# contiguous.
+_TOKEN_AXIS_KEYS = ("G", "L", "A", "W", "U", "kg", "qg", "Aqk", "Vt", "o")
+
+
+def _seq_slices(q, k, v, g, beta, bos, eos):
+    return q[:, bos:eos], k[:, bos:eos], v[:, bos:eos], g[:, bos:eos], beta[:, bos:eos]
+
+
+def _kda_chunk_ref_varlen(q, k, v, g, beta, C, BC, scale, initial_state, output_final_state, cu_seqlens):
+    bounds = _L0.varlen_bounds(cu_seqlens, q, k, v, g, beta, initial_state)
+    outs, finals = [], []
+    for i, (bos, eos) in enumerate(bounds):
+        qs, ks, vs, gs, bs = _seq_slices(q, k, v, g, beta, bos, eos)
+        s0 = None if initial_state is None else initial_state[i : i + 1]
+        o_i, s_i = kda_chunk_ref(qs, ks, vs, gs, bs, C=C, BC=BC, scale=scale, initial_state=s0, output_final_state=True)
+        outs.append(o_i)
+        finals.append(s_i)
+    o = torch.cat(outs, dim=1) if len(outs) > 1 else outs[0]
+    return o, (torch.cat(finals, dim=0) if output_final_state else None)
+
+
+def _stage_tensors_varlen(q, k, v, g, beta, C, BC, scale, initial_state, cu_seqlens):
+    """Per-stage fixtures for a varlen batch, in the layout the kernels produce.
+
+    Token-axis intermediates concatenate along the token axis and therefore keep
+    the flattened [1, T_total, HV, *] layout unchanged -- which is the whole
+    reason the varlen kernels do not need a layout change either.
+
+    ``states`` is the exception.  It is indexed by chunk, not by token, so the
+    per-sequence blocks concatenate along the chunk axis into a single
+    NT_total-long run.  Sequence n's chunk i therefore lives at slot
+    ``chunk_offsets[n] + i`` where ``chunk_offsets[n] = sum_{m<n} ceil(T_m / C)``
+    -- the same addressing FLA's prepare_chunk_offsets produces, and the same one
+    the stage-5 kernel computes on the device.  An empty sequence contributes
+    zero slots, so it simply does not appear.
+    """
+    bounds = _L0.varlen_bounds(cu_seqlens, q, k, v, g, beta, initial_state)
+    parts = []
+    for i, (bos, eos) in enumerate(bounds):
+        qs, ks, vs, gs, bs = _seq_slices(q, k, v, g, beta, bos, eos)
+        s0 = None if initial_state is None else initial_state[i : i + 1]
+        parts.append(stage_tensors(qs, ks, vs, gs, bs, C=C, BC=BC, scale=scale, initial_state=s0))
+
+    out = {}
+    for key in _TOKEN_AXIS_KEYS:
+        out[key] = torch.cat([p[key] for p in parts], dim=1)
+    # states is [B, HV, N, K, V]; the chunk axis is dim 2.
+    out["states"] = torch.cat([p["states"] for p in parts], dim=2)
+    # SF is [1, HV, K, V] per sequence -> [N, HV, K, V].
+    out["SF"] = torch.cat([p["SF"] for p in parts], dim=0)
+    return out
+
+
+def chunk_offsets(cu_seqlens, C):
+    """(first chunk slot of each sequence, total chunk count) -- see kda_varlen.
+
+    Kept here as a convenience for the tests in this file; the arithmetic itself
+    lives in kda_varlen so the kernels and the goldens cannot drift apart on it.
+    """
+    return _VL.chunk_layout(_VL.varlen_bounds(cu_seqlens), C)
 
 
 # ------------------------------------------------------------------- selftest
@@ -533,6 +651,93 @@ def test_naive_fold_blows_up():
     return ok
 
 
+def test_varlen():
+    """A flattened varlen batch must reproduce the L0 recurrence sequence by sequence.
+
+    Checked three ways, because each catches something the others cannot:
+
+      1. vs the L0 recurrence run per sequence -- the actual correctness claim.
+      2. chunk_offsets / NT_total against a hand-computed expectation, including
+         an empty sequence, since that arithmetic is what the stage-5 kernel will
+         reproduce on the device and an off-by-one there is silent.
+      3. shapes of every stage_tensors entry, because the varlen fixtures are
+         what the per-stage kernel tests will compare against; a wrong shape here
+         would show up six stages later as a mysterious kernel failure.
+    """
+    print("== varlen (chunkwise ref) vs L0 recurrent ref, per sequence ==")
+    ok = True
+    cases = [
+        ([64, 64], 64, "equal, chunk-aligned"),
+        ([70, 33, 129], 64, "all ragged, interior tails"),
+        ([70, 0, 129], 64, "empty sequence in the middle"),
+        ([0, 64], 64, "empty sequence first"),
+        ([64, 0], 64, "empty sequence last"),
+        ([1, 200], 64, "one token, then a long sequence"),
+        ([5], 64, "N = 1, shorter than a chunk"),
+        ([100, 28], 32, "C = 32"),
+    ]
+    for seqlens, C, note in cases:
+        q, k, v, g, beta, s0, cu = _L0.make_varlen_inputs(seqlens, 2, 4, 64, 64, device="cpu", dtype=torch.float32, with_state=True)
+        ref, ref_sf = _L0.kda_ref(q, k, v, g, beta, initial_state=s0, output_final_state=True, cu_seqlens=cu)
+        got, got_sf = kda_chunk_ref(q, k, v, g, beta, C=C, initial_state=s0, output_final_state=True, cu_seqlens=cu)
+
+        denom = max(ref.abs().max().item(), 1e-9)
+        rel = _err(got, ref) / denom
+        rel_sf = _err(got_sf, ref_sf) / max(ref_sf.abs().max().item(), 1e-9)
+
+        offs, nt_total = chunk_offsets(cu, C)
+        want_offs, want_total = [], 0
+        for n in seqlens:
+            want_offs.append(want_total)
+            want_total += -(-n // C)
+        meta_ok = offs == want_offs and nt_total == want_total
+
+        st = stage_tensors(q, k, v, g, beta, C=C, initial_state=s0, cu_seqlens=cu)
+        T_total = int(sum(seqlens))
+        shape_ok = all(st[key].shape[:3] == (1, T_total, 4) for key in _TOKEN_AXIS_KEYS)
+        shape_ok &= tuple(st["states"].shape) == (1, 4, nt_total, 64, 64)
+        shape_ok &= tuple(st["SF"].shape) == (len(seqlens), 4, 64, 64)
+
+        # Every empty sequence passes its state through untouched, bit for bit.
+        empty_ok = all(bool(torch.equal(got_sf[i], s0[i])) for i, n in enumerate(seqlens) if n == 0)
+
+        good = rel < 1e-5 and rel_sf < 1e-5 and meta_ok and shape_ok and empty_ok
+        ok &= good
+        flags = f"meta={'ok' if meta_ok else 'BAD'} shapes={'ok' if shape_ok else 'BAD'} empty={'ok' if empty_ok else 'BAD'}"
+        print(
+            f"  {str(seqlens):18s} C={C:2d} NT={nt_total:2d} rel(o)={rel:.2e} rel(SF)={rel_sf:.2e} "
+            f"{flags}  {'ok' if good else 'FAIL'}  {note}"
+        )
+    return ok
+
+
+def test_varlen_equals_fixed_batch():
+    """N equal-length sequences under varlen must equal a B = N fixed batch, bit for bit.
+
+    This is the one varlen test that is not a tautology.  The varlen reference is
+    itself a per-sequence loop, so comparing it against a per-sequence loop proves
+    nothing; comparing it against the *batched* path exercises the flatten/split
+    mapping and the [N, HV, K, V] state indexing, which is where a real mistake
+    would live.  Exact equality, not a tolerance: the two runs perform the same
+    arithmetic in the same order on the same numbers.
+    """
+    print("== varlen (N equal sequences)  vs  fixed-length B = N batch ==")
+    ok = True
+    for seqlens, C in (([64, 64, 64], 64), ([70, 70], 64), ([128, 128], 32)):
+        N, L = len(seqlens), seqlens[0]
+        q, k, v, g, beta, s0, cu = _L0.make_varlen_inputs(seqlens, 2, 4, 64, 64, device="cpu", dtype=torch.float32, with_state=True)
+        o_v, sf_v = kda_chunk_ref(q, k, v, g, beta, C=C, initial_state=s0, output_final_state=True, cu_seqlens=cu)
+
+        def rs(x, N=N, L=L):
+            return x.reshape(N, L, *x.shape[2:])
+
+        o_b, sf_b = kda_chunk_ref(rs(q), rs(k), rs(v), rs(g), rs(beta), C=C, initial_state=s0, output_final_state=True)
+        good = bool(torch.equal(o_v.reshape(N, L, 4, 64), o_b)) and bool(torch.equal(sf_v, sf_b))
+        ok &= good
+        print(f"  {str(seqlens):18s} C={C:2d}  {'ok (bit-identical)' if good else 'FAIL'}")
+    return ok
+
+
 def _mk(B, SEQ, H, HV, K, V, gate):
     return _L0.make_inputs(B, SEQ, H, HV, K, V, device="cpu", dtype=torch.float32, gate=gate, seed=0)
 
@@ -545,6 +750,10 @@ def main():
     ok &= test_state_relay()
     print()
     ok &= test_empty_sequence()
+    print()
+    ok &= test_varlen()
+    print()
+    ok &= test_varlen_equals_fixed_batch()
     print()
     ok &= test_naive_fold_blows_up()
     print()

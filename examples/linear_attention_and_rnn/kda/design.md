@@ -142,8 +142,12 @@ So this stage keeps the element-wise form and folds the causal mask **into the
 exponent before `exp()`**, not after.  Applying it afterwards would leave
 `0 * inf = NaN`: a multiply cannot discard an infinity.
 
-Consequence: the cube is idle for the whole stage.  This is the slowest kernel
-of the six and the obvious target for future work -- see §5.
+That was the whole stage at first, and it left the cube idle.  It no longer
+is: anchoring each row sub-block splits the exponent into a factor in `i` and
+a factor in `j`, which fold into the two operands and leave a plain matmul for
+the off-diagonal strips.  The diagonal blocks keep the element-wise form,
+because there the column factor is unbounded -- `route_b` moves them across
+too, at the cost of a clamp.  See §5 and `bench_mark.md`.
 
 ### 3.3 Stage 3 (solve_tril) -- data dependency
 
@@ -239,36 +243,37 @@ could not be declared this way.
 
 ## 5. Known gaps
 
-* **No performance data.** No msprof run has been made, so this directory makes
-  no speed claim anywhere.  The `Optimize Results` table that the sibling GDN
-  README carries is deliberately absent rather than filled with estimates.
-* **Stage 2 leaves the cube idle.** The anchored decomposition already used by
-  stage 6 applies here as well: anchor each row sub-block, hand the off-diagonal
-  strips to `T.gemm_v0`, keep the element-wise path for the diagonal blocks.
-* **No tail block, no varlen.** All six host wrappers assert `SEQ % C == 0`;
-  ragged batches and `cu_seqlens` are not handled.  The reference layer does
-  handle a tail, by zero-padding on the host — that route is not open to the
-  kernels, because doing the padding host-side is exactly the hidden cost the
-  acceptance gate forbids.
+* **Performance is measured.** `bench_mark.md` carries the numbers and the
+  method: `msprof` device Task Duration, against the hand-written AscendC
+  operator, median of at least three collections.  Nothing here is estimated.
+* **Stage 2's diagonal blocks are the remaining vector work.** The anchored
+  decomposition put the off-diagonal strips on the cube; the diagonal blocks
+  stayed behind because their column factor `exp(g_a - g_j)` is unbounded.
+  `route_b` clamps it and moves the cube operands to bfloat16, whose exponent
+  range holds the clamp, which is why it is opt-in rather than the default.
+* **A ragged tail and varlen are both handled now.** The plan this note used to
+  describe -- opt into the framework's tail-block support, then cover the three
+  places it does not reach -- is what was done.  `compute_valid_extent`
+  (`src/op/ascend.cc:410`) clamps `validRow` / `validCol` on every GM copy, and
+  `T.copy(..., pad_value=)` fills the rest of the destination, so the grid became
+  `ceildiv(SEQ, C)` with full-size tiles.  The three gaps needed explicit work:
+  single-row reads whose token index sits on a unit-extent axis are unguarded,
+  because `find_active_dim_indices` only bounds-checks the last two *active*
+  dims; UB tail rows reach `exp()` before the cube consumes them, so they are
+  zero-filled first -- a garbage gate row exponentiates to `+inf` and `0 * inf`
+  is a `NaN` that lands in a *valid* row's reduction; and stage 5's chunk decay
+  has to be read at the last *valid* token rather than at row `C - 1`.
 
-  The route that *is* open, and is the next round, is to opt into the tail-block
-  support the framework already provides.  `compute_valid_extent`
-  (`src/op/ascend.cc:410`) clamps `validRow` / `validCol` on every GM copy to
-  `shape - offset`, and `T.copy(..., pad_value=)`
-  (`tilelang/language/copy_op.py:262`) fills the unused part of the destination
-  — the same `valid_shape` + `fillpad` pair the official PyPTO implementation
-  uses, already wired up and covered by
-  `testing/python/language/test_tilelang_ascend_language_tail_block.py`.
-  `examples/gemm/example_gemm_tail_block_developer.py` is a working example:
-  a `T.ceildiv` grid, full-size tiles, ordinary `bx * block_M` indexing, and no
-  special-casing anywhere.
+  `cu_seqlens` goes through `kda_varlen.py`, which turns the flat token axis and
+  the cumulative lengths into per-chunk metadata.  Under varlen a chunk starts
+  at a sequence boundary rather than a multiple of `C`, so every loop carries a
+  compile-time trip count with the row count applied as a guard, and the store
+  is per row: the framework clamps a strided store against `SEQ`, which is the
+  end of the *batch*, so a short chunk would otherwise land its pad rows on the
+  next sequence's first tokens.  Those rows look finite and plausible, and the
+  sequence that wrote them stays correct, which is why the acceptance test
+  compares over the whole flat token axis and never per sequence.
 
-  So the change here is `SEQ // C` → `ceildiv(SEQ, C)` plus explicit handling at
-  the three places the framework does *not* cover: single-row reads whose token
-  index sits on a unit-extent axis (`find_active_dim_indices` only bounds-checks
-  the last two *active* dims, so those are unguarded), UB tail rows that reach
-  `exp()` before being consumed by the cube, and the chunk decay in stage 5,
-  which must be read at the last *valid* token rather than at row `C - 1`.
 * **Zero-length sequences are supported**, and are worth calling out separately
   because they are *not* covered by the rule above: `0 % C == 0`, so `SEQ == 0`
   passes every divisibility guard.  Left alone it would launch a zero-block grid

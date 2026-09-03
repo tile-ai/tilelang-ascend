@@ -31,6 +31,12 @@ import torch
 import tilelang
 from tilelang import language as T
 
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+
 import kda_ref
 
 pass_configs = {tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True}

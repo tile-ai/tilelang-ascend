@@ -2,7 +2,7 @@
 #
 # bench.sh -- operator-level benchmark for the KDA L1 chunkwise forward pass.
 #
-# Collects on-board Ascend profiling data with `msprof op` for each of the six
+# Collects on-board Ascend profiling data with `msprof` for each of the six
 # KDA L1 stage kernels and for the full six-stage pipeline, then prints one row
 # per target.  Every number in the report comes from the profiler run that has
 # just happened: no latency, throughput or speedup value is baked into this
@@ -13,12 +13,11 @@
 #   bash bench.sh --list                       # list the targets and exit
 #   bash bench.sh --only cumsum,chunk_o        # profile a subset of stages
 #   bash bench.sh --skip-pipeline              # stages only
-#   bash bench.sh --warmup 10 --launch-count 50
 #   bash bench.sh --output ./msprof_output --python python3
 #   bash bench.sh --kernel-name 'main_kernel'  # override the profiled symbol
 #
 # Environment variables (command line flags take precedence):
-#   KDA_WARMUP KDA_LAUNCH_COUNT KDA_OUTPUT KDA_PYTHON KDA_TIMEOUT
+#   KDA_OUTPUT KDA_PYTHON KDA_TIMEOUT
 #   KDA_KERNEL_NAME KDA_AIC_METRICS
 #
 # Requirements:
@@ -31,8 +30,6 @@ set -euo pipefail
 
 # ======================== defaults ========================
 
-WARMUP="${KDA_WARMUP:-5}"
-LAUNCH_COUNT="${KDA_LAUNCH_COUNT:-20}"
 OUTPUT_DIR="${KDA_OUTPUT:-./msprof_output}"
 PYTHON_BIN="${KDA_PYTHON:-python3}"
 TIMEOUT_S="${KDA_TIMEOUT:-1800}"
@@ -57,8 +54,6 @@ print_help() {
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --warmup)         WARMUP="$2"; shift 2 ;;
-        --launch-count)   LAUNCH_COUNT="$2"; shift 2 ;;
         --output)         OUTPUT_DIR="$2"; shift 2 ;;
         --python)         PYTHON_BIN="$2"; shift 2 ;;
         --timeout)        TIMEOUT_S="$2"; shift 2 ;;
@@ -397,24 +392,28 @@ run_msprof_op() {
     chmod 700 "$out_dir" 2>/dev/null || true
 
     local log_file="$out_dir/msprof.log"
+    # The full msprof form, not `msprof op`: since the CANN 9.1.0 upgrade the
+    # latter reports Task Duration 0.000000 on this toolkit/driver pair, while
+    # op_summary from the full form carries the same per-kernel breakdown.  The
+    # command goes in as one --application string; iteration count belongs to
+    # the profiled script, so there is no --warm-up or --launch-count here.
     local -a cmd=(
-        msprof op
-        "--kernel-name=$KERNEL_NAME"
-        "--warm-up=$WARMUP"
-        "--launch-count=$LAUNCH_COUNT"
-        "--aic-metrics=$AIC_METRICS"
+        msprof
         "--output=$out_dir"
-        "$PYTHON_BIN" "$script"
+        "--application=$PYTHON_BIN -u $script"
+        --ai-core=on
+        --task-time=on
+        "--aic-metrics=$AIC_METRICS"
     )
     if $HAVE_TIMEOUT; then
         cmd=(timeout "$TIMEOUT_S" "${cmd[@]}")
     fi
 
-    echo "  > msprof op (warm-up=$WARMUP launch-count=$LAUNCH_COUNT kernel=$KERNEL_NAME)"
+    echo "  > msprof (kernel=$KERNEL_NAME metrics=$AIC_METRICS)"
     local rc=0
     "${cmd[@]}" >"$log_file" 2>&1 || rc=$?
     if [ "$rc" -ne 0 ]; then
-        echo "  [X] msprof op exited with status $rc; see $log_file"
+        echo "  [X] msprof exited with status $rc; see $log_file"
         tail -n 8 "$log_file" 2>/dev/null | sed 's/^/      /' || true
         return 1
     fi
@@ -430,13 +429,11 @@ SUMMARY_CSV="$OUTPUT_DIR/kda_bench.csv"
 echo "target,script,mean_us,min_us,max_us,samples,source,status" > "$SUMMARY_CSV"
 
 echo "================================================================"
-echo "KDA L1 benchmark -- msprof op, on-board collection"
+echo "KDA L1 benchmark -- msprof, on-board collection"
 echo "================================================================"
 echo "Script dir   : $SCRIPT_DIR"
 echo "Python       : $PYTHON_BIN"
 echo "Kernel name  : $KERNEL_NAME"
-echo "Warm-up      : $WARMUP"
-echo "Launch count : $LAUNCH_COUNT"
 echo "aic-metrics  : $AIC_METRICS"
 echo "Output dir   : $OUTPUT_DIR"
 echo "Timeout      : ${TIMEOUT_S}s${TIMEOUT_NOTE}"
@@ -497,7 +494,7 @@ done
 
 echo ""
 echo "================================================================"
-echo "Per-kernel results (Task Duration, microseconds, from msprof op)"
+echo "Per-kernel results (Task Duration, microseconds, from msprof)"
 echo "================================================================"
 printf "%-12s %12s %12s %12s %9s  %s\n" "TARGET" "MEAN(us)" "MIN(us)" "MAX(us)" "SAMPLES" "STATUS"
 printf "%-12s %12s %12s %12s %9s  %s\n" "------------" "------------" "------------" "------------" "---------" "----------"

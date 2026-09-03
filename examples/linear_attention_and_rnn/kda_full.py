@@ -42,9 +42,34 @@ Three things the framework does not cover, handled per stage:
   * chunk_h must read the chunk decay at the last *valid* token, not at row
     C - 1 -- the one genuine off-by-one of the change.
 
-Known limitations of this first pass
-------------------------------------
-    * varlen / cu_seqlens is not implemented.
+Varlen (cu_seqlens)
+-------------------
+A flattened varlen batch is supported.  The convention is FlashAttention's, the
+one FLA follows: B == 1, every sequence concatenated onto the token axis, and
+cu_seqlens[i] .. cu_seqlens[i+1] delimiting sequence i.  Chunking restarts at
+every sequence start, so a sequence's last chunk is ragged in the MIDDLE of the
+flattened tensor -- which is what makes varlen more than "the ragged tail again":
+compute_valid_extent clamps against the end of the whole tensor, not against eos,
+so nothing bounds an interior chunk for us.  Every stage takes its valid row
+count from per-chunk metadata instead (kda/kda_varlen.py) and passes it as a
+run-time copy extent.
+
+Two shapes change under varlen, and only two -- the ones not indexed by token:
+
+    initial_state / final_state   [N, HV, K, V]            one per SEQUENCE
+    states (stage 5 -> stage 6)   [1, HV, NT_TOTAL, K, V]  chunk axis spans the
+                                                           whole batch
+
+Everything on the token axis keeps its [1, T_total, HV, *] layout, because a
+flattened varlen batch already IS that layout.
+
+An empty sequence (T_i == 0) is legal and needs no special case in five of the
+six stages: it contributes zero chunks, so no block is ever created for it.
+Stage 5 is the exception -- its grid is per sequence -- and there it falls out
+of a zero-trip chunk loop, with the final state passing through untouched.
+
+Known limitations of this pass
+------------------------------
     * No performance claim is made here; no msprof data has been collected.
 
 Zero-length sequences
@@ -69,7 +94,8 @@ import tilelang  # noqa: F401  (imported for its torch_npu side effect)
 # ``import kda_chunk_ref``.  Putting kda/ on the path here means this file picks
 # up the *same* module object they do; importing it as ``kda.kda_chunk_ref``
 # instead would create a second, independent copy of the reference layer.
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "kda"))
+_K = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kda")
+sys.path.insert(0, _K)
 
 from kda.kda_chunk_cumsum import chunk_cumsum  # noqa: E402
 from kda.kda_chunk_scaled_dot_kkt import chunk_scaled_dot_kkt  # noqa: E402
@@ -83,12 +109,17 @@ import kda_ref as _L0  # noqa: E402
 
 
 # ----------------------------------------------------------------- pipeline
-def kda_chunk_fwd(q, k, v, g, beta, C=64, BC=16, scale=None, initial_state=None, output_final_state=False):
+def kda_chunk_fwd(
+    q, k, v, g, beta, C=64, BC=16, BV=None, scale=None, initial_state=None, output_final_state=False, cu_seqlens=None, route_b=False
+):
     """Chunkwise KDA forward on the NPU.  Interface matches kda_ref.kda_ref.
 
     All tensors are the frozen external layout:
         q, k [B,SEQ,H,K]   v [B,SEQ,HV,V]   g [B,SEQ,HV,K] fp32
         beta [B,SEQ,HV]    initial_state [B,HV,K,V] fp32
+
+    With cu_seqlens the batch is flattened (B == 1) and initial_state /
+    final_state are [N, HV, K, V], one per sequence.
     """
     B, SEQ, H, K = q.shape
     HV = v.shape[2]
@@ -120,23 +151,45 @@ def kda_chunk_fwd(q, k, v, g, beta, C=64, BC=16, scale=None, initial_state=None,
     # is consumed, so the state passes through untouched: the final state IS
     # the initial state.  Each of the six stage wrappers carries the same guard
     # independently, since each is also a public entry point.
+    #
+    # Under varlen this fires only when the WHOLE batch is empty.  A single empty
+    # sequence inside a non-empty batch is handled inside the stages.
     if SEQ == 0:
         V = v.shape[-1]
+        n_lead = B if cu_seqlens is None else (cu_seqlens.numel() - 1)
         o = torch.empty((B, 0, HV, V), device=v.device, dtype=v.dtype)
         if not output_final_state:
             return o, None
         if initial_state is not None:
             sf = initial_state.float().clone()
         else:
-            sf = torch.zeros((B, HV, K, V), device=v.device, dtype=torch.float32)
+            sf = torch.zeros((n_lead, HV, K, V), device=v.device, dtype=torch.float32)
         return o, sf
 
-    G = chunk_cumsum(g.float(), C=C)  # stage 1
-    L = chunk_scaled_dot_kkt(k, G, beta, C=C)  # stage 2
-    A = kda_solve_tril(L)  # stage 3
-    W, U = wy_fast(k, v, beta, G, A, C)  # stage 4
-    states, Vnew, SF = chunk_h(k, W, U, G, C=C, initial_state=initial_state)  # stage 5
-    O = chunk_o(q, k, Vnew, states, G, C=C, BC=BC, scale=scale)  # stage 6
+    # cu_seqlens threads through all six stages unchanged.  Each wrapper
+    # rebuilds the per-chunk metadata from it rather than being handed a
+    # prebuilt table: one source of truth, and no way for two stages to disagree
+    # about where a chunk starts.  The cost is six O(N) device-to-host reads of
+    # cu_seqlens per forward -- the grid extent is a trace-time Python int, so
+    # the boundaries have to reach the host somehow.  FLA solves the same
+    # problem by carrying a separate cu_seqlens_cpu the whole way down; passing
+    # cu_seqlens already on the CPU here has the same effect.
+    G = chunk_cumsum(g.float(), C=C, cu_seqlens=cu_seqlens)  # stage 1
+    # BC is stage 2's anchor width and it sets how much stays on the vector
+    # unit: the diagonal blocks are BC wide, everything to their left is a
+    # cube matmul.  Halving BC halves the vector arithmetic and adds more,
+    # smaller strips -- which the cube has room for at 2.4% MAC occupancy.
+    # route_b puts stage 2's diagonal blocks on the cube.  Off by default; see
+    # chunk_scaled_dot_kkt for what it costs and when it is safe to ask for.
+    L = chunk_scaled_dot_kkt(k, G, beta, C=C, BC=BC, cu_seqlens=cu_seqlens, route_b=route_b)  # stage 2
+    A = kda_solve_tril(L, cu_seqlens=cu_seqlens)  # stage 3
+    W, U = wy_fast(k, v, beta, G, A, C, cu_seqlens=cu_seqlens)  # stage 4
+    # BV shards the state along V and IS the whole parallel decomposition of
+    # stage 5: its grid is B * HV * (V // BV).  At the default BV = min(V, 64)
+    # and B=1, HV=4, V=128 that is EIGHT blocks on a 20-core part, so twelve
+    # cores sit idle for the whole stage.  Exposed here so the caller can pick.
+    states, Vnew, SF = chunk_h(k, W, U, G, C=C, BV=BV, initial_state=initial_state, cu_seqlens=cu_seqlens)  # stage 5
+    O = chunk_o(q, k, Vnew, states, G, C=C, BC=BC, scale=scale, cu_seqlens=cu_seqlens)  # stage 6
 
     return O, (SF if output_final_state else None)
 
@@ -149,6 +202,10 @@ def _mk(B, SEQ, H, HV, K, V, gate, dtype, with_state=False):
 
 def _rel(x, ref):
     x, ref = x.float().cpu(), ref.float().cpu()
+    # A varlen batch in which every sequence is empty legitimately produces
+    # zero-element outputs, and .max() raises on those rather than returning 0.
+    if x.numel() == 0 and ref.numel() == 0:
+        return 0.0
     return (x - ref).abs().max().item() / max(ref.abs().max().item(), 1e-9)
 
 
@@ -368,6 +425,229 @@ def test_empty_sequence():
     return ok
 
 
+def _mkv(seqlens, H, HV, K, V, gate, dtype, with_state=False):
+    return _L0.make_varlen_inputs(seqlens, H, HV, K, V, device="cpu", dtype=dtype, gate=gate, seed=0, with_state=with_state)
+
+
+def _vcase(seqlens, H, HV, K, V, C, gate, dtype, with_state=False, note=""):
+    """One varlen batch of the full pipeline against BOTH goldens.
+
+    Compared over the whole flat token axis, never per sequence: a chunk that
+    writes past its own eos lands finite, plausible values on the NEXT
+    sequence's tokens, so a per-sequence comparison would pass on a corrupt
+    batch.  The empty sequences additionally have to pass their state through
+    bit for bit -- no token was consumed, so final_state IS initial_state.
+    """
+    q, k, v, g, beta, s0, cu = _mkv(seqlens, H, HV, K, V, gate, dtype, with_state)
+
+    ref_l0, sf_l0 = _L0.kda_ref(q, k, v, g, beta, initial_state=s0, output_final_state=True, cu_seqlens=cu)
+    ref_ch, _ = R.kda_chunk_ref(q, k, v, g, beta, C=C, initial_state=s0, output_final_state=True, cu_seqlens=cu)
+
+    got, sf = kda_chunk_fwd(
+        q.npu(),
+        k.npu(),
+        v.npu(),
+        g.npu().float(),
+        beta.npu(),
+        C=C,
+        initial_state=None if s0 is None else s0.npu().float(),
+        output_final_state=True,
+        cu_seqlens=cu.npu(),
+    )
+
+    e0, ec = _rel(got, ref_l0), _rel(got, ref_ch)
+    ef = _rel(sf, sf_l0)
+    finite = bool(torch.isfinite(got.float()).all())
+    N, T_total = len(seqlens), int(sum(seqlens))
+    shape_ok = tuple(got.shape) == (1, T_total, HV, V) and tuple(sf.shape) == (N, HV, K, V)
+
+    passthru = True
+    if with_state:
+        for i, n in enumerate(seqlens):
+            if n == 0:
+                passthru &= bool(torch.equal(sf[i].cpu(), s0[i].float().cpu()))
+
+    tol = _tol(dtype)
+    ok = finite and shape_ok and passthru and e0 < tol and ec < tol and ef < tol
+    tag = "bf16" if dtype is torch.bfloat16 else "fp16"
+    print(
+        f"  {str(seqlens):22s} HV{HV} K{K:<4d} C{C:<2d} {tag} {gate:8s} S0={'Y' if with_state else 'N'} "
+        f"vsL0={e0:.2e} vsChunk={ec:.2e} SF={ef:.2e} pass={'Y' if passthru else 'N'}  {'ok' if ok else 'FAIL'}  {note}"
+    )
+    return ok
+
+
+def test_varlen_vs_both_goldens():
+    print("== varlen pipeline  vs  L0 recurrence  and  chunkwise reference ==")
+    ok = True
+    ok &= _vcase([64, 64, 64], 1, 2, 64, 64, 64, "normal", torch.float16, note="equal, chunk-aligned")
+    ok &= _vcase([70, 33, 129], 1, 2, 64, 64, 64, "normal", torch.float16, note="every sequence ragged")
+    ok &= _vcase([70, 33, 129], 1, 2, 64, 64, 64, "forget", torch.float16, True, "ragged + per-sequence S0")
+    ok &= _vcase([1, 200], 1, 2, 64, 64, 64, "forget", torch.float16, note="one token, then a long sequence")
+    ok &= _vcase([20, 20], 1, 2, 64, 64, 64, "normal", torch.float16, note="both shorter than C/2")
+    ok &= _vcase([5], 1, 1, 64, 64, 64, "normal", torch.float16, note="N = 1, shorter than a chunk")
+    ok &= _vcase([256], 1, 1, 64, 64, 64, "normal", torch.float16, note="N = 1, several chunks")
+    print("  -- empty sequences --")
+    ok &= _vcase([70, 0, 129], 1, 2, 64, 64, 64, "forget", torch.float16, True, "empty in the middle")
+    ok &= _vcase([0, 70], 1, 2, 64, 64, 64, "normal", torch.float16, True, "empty first")
+    ok &= _vcase([70, 0], 1, 2, 64, 64, 64, "normal", torch.float16, True, "empty last")
+    ok &= _vcase([0, 0], 1, 2, 64, 64, 64, "normal", torch.float16, True, "every sequence empty")
+    ok &= _vcase([0, 70, 0, 33, 0], 1, 2, 64, 64, 64, "forget", torch.float16, True, "empties interleaved")
+    print("  -- gate extremes, GVA, K3, dtypes --")
+    ok &= _vcase([70, 33], 1, 2, 64, 64, 64, "extreme", torch.float16, note="extreme gate on partial blocks")
+    ok &= _vcase([100, 28], 2, 4, 64, 64, 32, "extreme", torch.float16, note="GVA HV=2H + C = 32")
+    ok &= _vcase([65, 65], 1, 1, 128, 128, 64, "forget", torch.float16, True, "K3 spec K=V=128")
+    ok &= _vcase([128, 64], 2, 4, 128, 128, 64, "normal", torch.float16, note="K3 + GVA")
+    ok &= _vcase([70, 33], 2, 4, 64, 64, 64, "forget", torch.bfloat16, True, "bf16 + GVA")
+    ok &= _vcase([70, 33, 129], 1, 2, 64, 64, 64, "keep", torch.float16, note="alpha -> 1")
+    return ok
+
+
+def test_varlen_equals_per_sequence_calls():
+    """★ The acceptance test for varlen, and the only one that is not a tolerance.
+
+    A varlen batch must produce EXACTLY what the same sequences produce when run
+    one at a time through the fixed-length path -- bit for bit, not within a
+    tolerance.  Nothing approximate is involved: chunking restarts at every
+    sequence start and no state crosses a boundary, so the varlen run performs
+    literally the same arithmetic in the same order on the same numbers.  Any
+    difference at all means a chunk read or wrote outside its own sequence.
+
+    A tolerance here would be worse than no test: the corruption this is built
+    to catch -- an unbounded tile copy spilling into the neighbour -- produces
+    finite, plausible, small-looking differences.
+    """
+    print("== varlen batch  vs  the same sequences run one at a time ==")
+    ok = True
+    cases = [
+        ([64, 64, 64], 64, False, "equal, chunk-aligned"),
+        ([70, 33, 129], 64, False, "every sequence ragged"),
+        ([70, 33, 129], 64, True, "ragged + per-sequence S0"),
+        ([70, 0, 129], 64, True, "empty in the middle"),
+        ([1, 200], 64, False, "one token, then a long sequence"),
+        ([100, 28], 32, False, "C = 32"),
+        ([20, 20, 20], 64, True, "all shorter than C/2"),
+    ]
+    for seqlens, C, ws, note in cases:
+        q, k, v, g, beta, s0, cu = _mkv(seqlens, 1, 2, 64, 64, "forget", torch.float16, ws)
+        qa, ka, va, ga, ba = (x.npu() for x in (q, k, v, g.float(), beta))
+        sa = None if s0 is None else s0.npu().float()
+
+        o_v, sf_v = kda_chunk_fwd(qa, ka, va, ga, ba, C=C, initial_state=sa, output_final_state=True, cu_seqlens=cu.npu())
+
+        outs, finals = [], []
+        pos = 0
+        for i, n in enumerate(seqlens):
+            sl = slice(pos, pos + n)
+            pos += n
+            s_i = None if sa is None else sa[i : i + 1]
+            # .contiguous() on the slices: with B == 1 they are already
+            # contiguous views, so this is a no-op the wrapper's assert accepts.
+            o_i, sf_i = kda_chunk_fwd(
+                qa[:, sl].contiguous(),
+                ka[:, sl].contiguous(),
+                va[:, sl].contiguous(),
+                ga[:, sl].contiguous(),
+                ba[:, sl].contiguous(),
+                C=C,
+                initial_state=s_i,
+                output_final_state=True,
+            )
+            outs.append(o_i)
+            finals.append(sf_i)
+
+        o_s = torch.cat(outs, dim=1)
+        sf_s = torch.cat(finals, dim=0)
+        d_o = (o_v.float() - o_s.float()).abs().max().item()
+        d_s = (sf_v.float() - sf_s.float()).abs().max().item()
+        good = d_o == 0.0 and d_s == 0.0
+        ok &= good
+        print(
+            f"  {str(seqlens):22s} C={C:<2d} S0={'Y' if ws else 'N'}  |dO|={d_o:.1e} |dSF|={d_s:.1e}  {'ok (bit-identical)' if good else 'FAIL'}  {note}"
+        )
+    return ok
+
+
+def test_varlen_equals_fixed_batch():
+    """N equal-length sequences under varlen must equal a B = N fixed batch.
+
+    Exercises the flatten/split mapping and the [N, HV, K, V] state indexing --
+    the parts the per-sequence test above cannot see, because it splits the same
+    way varlen does.  Exact equality again, and for the same reason.
+    """
+    print("== varlen (N equal sequences)  vs  fixed-length B = N batch ==")
+    ok = True
+    for seqlens, C in (([64, 64, 64], 64), ([70, 70], 64), ([128, 128], 32)):
+        N, Lq = len(seqlens), seqlens[0]
+        q, k, v, g, beta, s0, cu = _mkv(seqlens, 1, 2, 64, 64, "normal", torch.float16, True)
+        qa, ka, va, ga, ba = (x.npu() for x in (q, k, v, g.float(), beta))
+        sa = s0.npu().float()
+
+        o_v, sf_v = kda_chunk_fwd(qa, ka, va, ga, ba, C=C, initial_state=sa, output_final_state=True, cu_seqlens=cu.npu())
+
+        def rs(x, N=N, Lq=Lq):
+            return x.reshape(N, Lq, *x.shape[2:]).contiguous()
+
+        o_b, sf_b = kda_chunk_fwd(rs(qa), rs(ka), rs(va), rs(ga), rs(ba), C=C, initial_state=sa, output_final_state=True)
+        d_o = (o_v.reshape(N, Lq, 2, 64).float() - o_b.float()).abs().max().item()
+        d_s = (sf_v.float() - sf_b.float()).abs().max().item()
+        good = d_o == 0.0 and d_s == 0.0
+        ok &= good
+        print(f"  {str(seqlens):22s} C={C:<2d}  |dO|={d_o:.1e} |dSF|={d_s:.1e}  {'ok (bit-identical)' if good else 'FAIL'}")
+    return ok
+
+
+def test_varlen_state_relay():
+    """Relaying final_state across a call boundary must still work under varlen.
+
+    Cut every sequence at a chunk boundary, run the two halves as two varlen
+    batches, and relay the [N, HV, K, V] state between them.  Exact, for the
+    same reason as the fixed-length relay test: the cut is a chunk boundary and
+    chunks are independent given their entry state.
+    """
+    print("== varlen whole  vs  two-segment relay through final_state ==")
+    ok = True
+    for seqlens, cut, C in (([128, 128], 64, 64), ([192, 64], 64, 64), ([128, 256], 128, 64)):
+        q, k, v, g, beta, _, cu = _mkv(seqlens, 1, 2, 64, 64, "forget", torch.float16)
+        qa, ka, va, ga, ba = (x.npu() for x in (q, k, v, g.float(), beta))
+
+        whole, _ = kda_chunk_fwd(qa, ka, va, ga, ba, C=C, cu_seqlens=cu.npu())
+
+        # Split every sequence at `cut`; both halves are themselves varlen
+        # batches with their own cu_seqlens.
+        # seqlens and cut bound as defaults rather than captured: a closure
+        # over a loop variable reads its LAST value, which happens to be
+        # harmless here only because every call is in the same iteration.
+        def halves(x, first, seqlens=seqlens, cut=cut):
+            parts, pos = [], 0
+            for n in seqlens:
+                sl = slice(pos, pos + cut) if first else slice(pos + cut, pos + n)
+                pos += n
+                parts.append(x[:, sl])
+            return torch.cat(parts, dim=1).contiguous()
+
+        cu_a = torch.tensor([0] + [cut * (i + 1) for i in range(len(seqlens))], dtype=torch.int32).npu()
+        tail = [n - cut for n in seqlens]
+        cu_b = torch.tensor([0] + [sum(tail[: i + 1]) for i in range(len(tail))], dtype=torch.int32).npu()
+
+        a, sa = kda_chunk_fwd(*(halves(x, True) for x in (qa, ka, va, ga, ba)), C=C, output_final_state=True, cu_seqlens=cu_a)
+        b, _ = kda_chunk_fwd(*(halves(x, False) for x in (qa, ka, va, ga, ba)), C=C, initial_state=sa, cu_seqlens=cu_b)
+
+        # Reassemble into flattened order to compare against the whole run.
+        seg, pos_a, pos_b = [], 0, 0
+        for n in seqlens:
+            seg.append(a[:, pos_a : pos_a + cut])
+            seg.append(b[:, pos_b : pos_b + (n - cut)])
+            pos_a += cut
+            pos_b += n - cut
+        seg = torch.cat(seg, dim=1)
+        e = (seg.float() - whole.float()).abs().max().item()
+        good = e == 0.0
+        ok &= good
+        print(f"  {str(seqlens):22s} cut={cut} C={C}  max|diff|={e:.1e}  {'ok (bit-identical)' if good else 'FAIL'}")
+    return ok
+
+
 def main():
     tilelang.disable_cache()
     torch.manual_seed(0)
@@ -383,6 +663,14 @@ def main():
     ok &= test_zero_state_equals_none()
     print()
     ok &= test_empty_sequence()
+    print()
+    ok &= test_varlen_vs_both_goldens()
+    print()
+    ok &= test_varlen_equals_per_sequence_calls()
+    print()
+    ok &= test_varlen_equals_fixed_batch()
+    print()
+    ok &= test_varlen_state_relay()
     print()
 
     if ok:

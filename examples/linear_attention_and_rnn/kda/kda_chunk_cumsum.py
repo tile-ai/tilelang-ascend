@@ -80,9 +80,11 @@ import torch
 import tilelang
 from tilelang import language as T
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
 
 import kda_chunk_ref  # noqa: E402
+import kda_varlen as _VL  # noqa: E402
 
 # Only AUTO_SYNC, same as the six GDN kernels in the repo.  MEMORY_PLANNING is
 # deliberately left off: it aliased a reduction target with a scratch tile in
@@ -93,7 +95,122 @@ VEC_NUM = 2
 
 
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+def cumsum_ker_varlen(B, SEQ, HV, K, C, NT_TOTAL, accum_dtype="float"):
+    """Chunk-local inclusive prefix sum, varlen.  Twin of cumsum_ker below.
+
+    ★ Why the varlen and fixed-length kernels are two separate top-level
+    @tilelang.jit builders, and not one builder with a VARLEN flag.  Three
+    independent framework constraints push in the same direction; each was hit
+    in turn, so they are recorded here rather than rediscovered:
+
+      * A plain Python helper cannot carry a shared body.  TVMScript rewrites
+        ``for j in T.Parallel(BK)`` while parsing the source of the function it
+        is attached to, and a helper's source never goes through that pass, so
+        ``T.Parallel`` comes back as a raw ForFrame -- "'ForFrame' object is not
+        iterable".
+      * ``@T.macro`` does get parsed, but tilelang's ``T.Parallel`` is not one
+        of the loop forms its parser accepts ("Expect the for loop to be one of
+        the following: range, T.serial, T.grid, T.parallel, ...").  Every macro
+        in this repo's own examples holds flag calls only, never a tile loop --
+        examples/elementwise/elementwise_add_pipeline.py:26 has the macros and
+        keeps its ``T.Parallel`` at :70, in the prim_func.  Passing a Python
+        ``and`` as an argument is rejected too ("Cannot use and / or / not
+        operator to Expr"); it short-circuits only as an ``if`` condition.
+      * **And the decisive one.**  Two prim_funcs with DIFFERENT PARAMETER
+        COUNTS must not share one ``@tilelang.jit`` decorator, because
+        ``_legalize_auto_memory_idx`` (tilelang/jit/adapter/base.py:39) resolves
+        a negative ``out_idx`` with ``memory_idx[i] = len(params) + idx`` and
+        writes it back INTO THE CALLER'S LIST.  ``out_idx=[-1]`` is one list
+        object created once at decoration time, so the first kernel built
+        normalises it in place -- the 2-parameter fixed-length kernel turns it
+        into ``[1]`` -- and the 3-parameter varlen kernel then inherits ``[1]``
+        and allocates ``Meta`` as its output.  The symptom is a dtype error
+        naming the wrong parameter ("Buffer dtype mismatch for parameter Gsum:
+        expected torch.float32, got torch.int32"), which points nowhere near the
+        cause.  A separate builder gets a separate list and the aliasing is gone.
+
+    The two bodies are kept deliberately line-for-line parallel: the ONLY
+    differences are where (bz, hv, t0) come from and whether the row extent is
+    the compile-time ``C`` or a run-time count.  Writing them out also leaves the
+    fixed-length path emitting exactly the IR that was validated on hardware
+    before varlen existed.
+    """
+    BK = K // VEC_NUM  # channels per vector core
+
+    @T.prim_func
+    def main(
+        G: T.Tensor([B, SEQ, HV, K], accum_dtype),  # type: ignore
+        Meta: T.Tensor([NT_TOTAL, _VL.META_COLS], "int32"),  # type: ignore
+        Gsum: T.Tensor([B, SEQ, HV, K], accum_dtype),  # type: ignore
+    ):
+        # grid = HV * NT_TOTAL; one block owns one (value head, chunk of the
+        # whole flattened batch).  B is 1 under varlen, so the batch axis is
+        # gone, and NT_TOTAL is the sum over sequences of ceil(T_i / C) --
+        # not a rectangle.  That is exactly why a block cannot derive its
+        # own token offset from its id and reads it out of Meta instead.
+        with T.Kernel(HV * NT_TOTAL, is_npu=True) as (cid, vid):
+            ic = cid % NT_TOTAL
+            hv = cid // NT_TOTAL
+
+            # t0 is absolute in the flattened batch and chunking restarts at
+            # every sequence start, so a chunk never spans a boundary and
+            # the prefix sum resets for free.  rows is 1..C, and is less
+            # than C exactly on a sequence's last chunk -- which under
+            # varlen sits in the MIDDLE of the tensor, where nothing clamps
+            # it for us (PROBES/probe_varlen2.log).
+            t0 = Meta[ic, _VL.META_T0]
+            rows = Meta[ic, _VL.META_ROWS]
+            ko = vid * BK  # first channel of this vector core
+
+            g_ub = T.alloc_ub([C, BK], accum_dtype)
+            s_ub = T.alloc_ub([C, BK], accum_dtype)
+
+            with T.Scope("V"):
+                # Unconditional, not predicated on a compile-time modulus:
+                # raggedness is a run-time property now.  Up to N chunks are
+                # ragged and they sit at arbitrary flat indices, so a
+                # `i_c == chunk_num - 1` style guard would fire on the wrong
+                # block.  The bounded load below also gap-fills the unused
+                # rows with 0 by itself (PROBES/probe_varlen3.log), so this
+                # is belt and braces rather than the sole mechanism.  Zero
+                # is the semantically right filler either way: g is a
+                # log-domain gate, so 0 means alpha = 1, no decay.
+                T.tile.fill(g_ub, 0.0)
+
+                # Strided load, bounded to this chunk's own valid rows.
+                T.copy(G[0, t0 : t0 + rows, hv, ko : ko + BK], g_ub)
+
+                # Inclusive prefix sum down the token axis, one vector add
+                # per token.  Ascending only: a descending range() maps onto
+                # a step-less T.serial and does not compile, and a
+                # descending recurrence chain compiles but computes the
+                # wrong thing.
+                for j in T.Parallel(BK):
+                    s_ub[0, j] = g_ub[0, j]
+                for i in range(1, C):
+                    for j in T.Parallel(BK):
+                        s_ub[i, j] = s_ub[i - 1, j] + g_ub[i, j]
+
+                # Bounded store: rows past this chunk's count belong to the
+                # NEXT SEQUENCE and are written by that sequence's own first
+                # block.  Every token row of the output is therefore written
+                # exactly once.  Leaving the extent at C here is the single
+                # most damaging mistake available in this file -- it writes
+                # a plausible, finite, continued prefix sum over up to C-1
+                # of the next sequence's tokens.
+                T.copy(s_ub, Gsum[0, t0 : t0 + rows, hv, ko : ko + BK])
+
+    return main
+
+
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def cumsum_ker(B, SEQ, HV, K, C, accum_dtype="float"):
+    """Chunk-local inclusive prefix sum, fixed-length.
+
+    The varlen twin is cumsum_ker_varlen above; its docstring records why the
+    two bodies are written out rather than shared, and why they are two separate
+    @tilelang.jit builders rather than one builder with a VARLEN flag.
+    """
     # ceil, not floor: the last chunk may be ragged.  SEQ is a Python int at
     # trace time, so this stays a compile-time constant -- a tail needs a *ceil*
     # grid, not a runtime one.  Every GM copy below is then clamped to
@@ -139,7 +256,9 @@ def cumsum_ker(B, SEQ, HV, K, C, accum_dtype="float"):
                     T.tile.fill(g_ub, 0.0)
 
                 # Strided load: C rows of BK fp32, row pitch HV * K fp32.
-                # On the tail chunk this transfers R rows, not C.
+                # On the tail chunk this transfers R rows, not C, because
+                # the ragged chunk is always the last of the tensor here and
+                # compute_valid_extent clamps it to SEQ - t0 for free.
                 T.copy(G[bz, t0 : t0 + C, hv, ko : ko + BK], g_ub)
 
                 # Inclusive prefix sum down the token axis, one vector add per
@@ -149,11 +268,6 @@ def cumsum_ker(B, SEQ, HV, K, C, accum_dtype="float"):
                 for j in T.Parallel(BK):
                     s_ub[0, j] = g_ub[0, j]
                 for i in range(1, C):
-                    # Reads row i-1 of s_ub (already final) and row i of g_ub,
-                    # writes row i of s_ub -- disjoint rows, so the serial token
-                    # loop is the only ordering needed.  Two buffers rather than
-                    # one in-place tile: this is the shape the old kernel was
-                    # validated in.
                     for j in T.Parallel(BK):
                         s_ub[i, j] = s_ub[i - 1, j] + g_ub[i, j]
 
@@ -164,7 +278,7 @@ def cumsum_ker(B, SEQ, HV, K, C, accum_dtype="float"):
     return main
 
 
-def chunk_cumsum(g, C=64):
+def chunk_cumsum(g, C=64, cu_seqlens=None):
     """Chunk-local inclusive prefix sum of g along the token axis.
 
     g is the external [B, SEQ, HV, K] fp32 log gate; the result has the same
@@ -172,18 +286,26 @@ def chunk_cumsum(g, C=64):
 
     A ragged last chunk is supported: ``SEQ`` need not be a multiple of ``C``.
 
-    ★ Contract for the downstream stages, and the one thing a tail changes about
-    the *meaning* of this output:
+    With ``cu_seqlens`` the input is a flattened varlen batch (B == 1) and the
+    chunking restarts at every sequence start.  The output layout does not
+    change -- it is still one row per token in the flattened order -- which is
+    why the token-axis intermediates need no varlen layout of their own.
 
-        ``Gsum`` has exactly ``SEQ`` rows.  On a ragged last chunk, rows
-        ``R .. C-1`` of that chunk (``R = SEQ % C``) DO NOT EXIST IN GM -- the
-        store is clamped and never writes them.
+    ★ Contract for the downstream stages, and the one thing a ragged chunk
+    changes about the *meaning* of this output:
+
+        ``Gsum`` has exactly one row per token, and every row is written by
+        exactly one block: the one that owns that token.  On a ragged chunk the
+        rows past the chunk's valid count are NOT this chunk's to write --
+        fixed-length, they are past the end of the tensor and the store is
+        clamped; under varlen they belong to the NEXT SEQUENCE and are written
+        by that sequence's own first block.
 
     So a stage that wants "the cumulative gate at the end of this chunk" must
-    read row ``min(t0 + C, SEQ) - 1``, not ``t0 + C - 1``.  Reading ``C-1``
-    unconditionally is both an out-of-bounds access and semantically wrong: the
-    chunk decay would be taken at a token that is not in the sequence.  Stage 5
-    (``chunk_h``) is the stage this bites.
+    read the chunk's last VALID row, not row ``t0 + C - 1``.  Reading ``C-1``
+    unconditionally is semantically wrong (the chunk decay would be taken at a
+    token that is not in this sequence) and, fixed-length, out of bounds as
+    well.  Stage 5 (``chunk_h``) is the stage this bites.
     """
     B, SEQ, HV, K = g.shape
     assert g.dtype == torch.float32, f"G is fp32 in the frozen contract (log-domain gate), got {g.dtype}"
@@ -195,10 +317,26 @@ def chunk_cumsum(g, C=64):
     # legal input -- it is what a varlen batch with an empty entry produces, and
     # FLA's fused_recurrent returns early on it too.  Nothing to accumulate, so
     # the result is empty along the token axis.
+    #
+    # Under varlen this guard fires only when the WHOLE batch is empty.  A
+    # single empty sequence inside a non-empty batch needs no special case at
+    # all: it contributes zero chunks, so no block is ever created for it.
     if SEQ == 0:
         return torch.empty((B, 0, HV, K), device=g.device, dtype=torch.float32)
 
-    return cumsum_ker(B, SEQ, HV, K, C)(g)
+    if cu_seqlens is None:
+        return cumsum_ker(B, SEQ, HV, K, C)(g)
+
+    bounds = _VL.varlen_bounds(cu_seqlens, g=g)
+    meta = _VL.chunk_meta(bounds, C, g.device)
+    nt_total = meta.shape[0]
+    # Every token is covered exactly once, or some output row is never written
+    # and the caller gets dirty device memory back (out_idx buffers are
+    # torch.empty, not zeros).  Three lines that turn the worst silent failure
+    # of this change into a loud one.
+    assert nt_total > 0, "a non-empty batch must produce at least one chunk"
+    assert int(meta[:, _VL.META_ROWS].sum()) == SEQ, "chunk metadata does not cover every token exactly once"
+    return cumsum_ker_varlen(B, SEQ, HV, K, C, nt_total)(g, meta)
 
 
 # ----------------------------------------------------------------------- test
@@ -221,6 +359,28 @@ def _case(B, SEQ, H, HV, K, V, C, gate, note=""):
     e = _relerr(got, ref)
     ok = e < 1e-5 and bool(torch.isfinite(got.float()).all().item())
     print(f"  B{B} T{SEQ:<4d} H{H} HV{HV} K{K:<4d} C{C:<3d} {gate:8s} rel={e:.2e}  {'ok' if ok else 'FAIL'}  {note}")
+    return ok
+
+
+def _vcase(seqlens, H, HV, K, V, C, gate, note=""):
+    """One varlen batch, compared against the golden over the WHOLE flat token axis.
+
+    Comparing every token, not per sequence, is what makes this test able to see
+    a spill.  A chunk that writes past its own eos lands on the NEXT sequence's
+    rows with plausible, finite, continued-prefix-sum values; sequence i's own
+    rows are still right, so a per-sequence comparison would pass while the
+    batch is quietly corrupt.  Against the full-axis golden those rows are
+    simply wrong, and an unwritten row is dirty memory, which is wrong too --
+    one comparison catches both.
+    """
+    q, k, v, g, beta, _, cu = kda_chunk_ref.make_varlen_inputs(seqlens, H, HV, K, V, device="cpu", dtype=torch.float16, gate=gate)
+
+    ref = kda_chunk_ref.stage_tensors(q, k, v, g, beta, C=C, cu_seqlens=cu)["G"]
+    got = chunk_cumsum(g.npu(), C, cu_seqlens=cu.npu())
+
+    e = _relerr(got, ref)
+    ok = e < 1e-5 and bool(torch.isfinite(got.float()).all().item()) and tuple(got.shape) == tuple(ref.shape)
+    print(f"  {str(seqlens):24s} HV{HV} K{K:<4d} C{C:<3d} {gate:8s} rel={e:.2e}  {'ok' if ok else 'FAIL'}  {note}")
     return ok
 
 
@@ -254,6 +414,18 @@ def main():
     ok &= _case(1, 33, 1, 1, 64, 64, 32, "forget", "33 = 32 + 1, one valid tail row")
     ok &= _case(1, 65, 1, 1, 128, 128, 64, "forget", "K3 dim, one valid tail row")
     ok &= _case(2, 100, 2, 4, 64, 64, 32, "extreme", "GVA + extreme gate on the tail")
+
+    print("== varlen (cu_seqlens) ==")
+    ok &= _vcase([64, 64, 64], 1, 2, 64, 64, 64, "normal", "equal, chunk-aligned")
+    ok &= _vcase([70, 33, 129], 1, 2, 64, 64, 64, "normal", "every sequence ragged -- interior tails")
+    ok &= _vcase([70, 0, 129], 1, 2, 64, 64, 64, "forget", "empty sequence in the middle")
+    ok &= _vcase([0, 70], 1, 2, 64, 64, 64, "normal", "empty sequence first")
+    ok &= _vcase([70, 0], 1, 2, 64, 64, 64, "normal", "empty sequence last")
+    ok &= _vcase([1, 200], 1, 2, 64, 64, 64, "forget", "one token, then a long sequence")
+    ok &= _vcase([65, 65], 1, 1, 128, 128, 64, "forget", "K3 dim, one valid tail row each")
+    ok &= _vcase([100, 28], 2, 4, 64, 64, 32, "extreme", "GVA + extreme gate, C = 32")
+    ok &= _vcase([5], 1, 1, 64, 64, 64, "normal", "N = 1, shorter than a chunk")
+    ok &= _vcase([96, 32], 1, 2, 64, 64, 32, "normal", "exact core boundary, R = 32")
 
     if ok:
         print("Kernel Output Match!")

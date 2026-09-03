@@ -135,17 +135,20 @@ linear_attention_and_rnn/
     ├── __init__.py                # empty; makes kda_full.py's imports a package import
     ├── kda_chunk_cumsum.py        # stage 1  + self-test
     ├── kda_chunk_scaled_dot_kkt.py# stage 2  + self-test
-    ├── kda_solve_tril.py          # stage 3  + self-test
+    ├── kda_solve_tril.py           # stage 3 dispatch  + self-test
+    ├── kda_solve_tril_cube.py      # stage 3 on the cube (doubling Neumann)
     ├── kda_wy_fast.py             # stage 4  + self-test
     ├── kda_chunk_h.py             # stage 5  + self-test
     ├── kda_chunk_o.py             # stage 6  + self-test
-    ├── kda_chunk_ref.py           # pure-PyTorch chunkwise reference + per-stage goldens
+    ├── kda_chunk_ref.py            # chunkwise PyTorch reference + per-stage goldens
+    ├── kda_varlen.py               # cu_seqlens bookkeeping, shared by both layers
     │
     ├── kda_recurrent.py           # the recurrent decode kernel  + self-test
     ├── test_kda_recurrent.py      # decode acceptance test (incl. the FLA cross-check)
     ├── kda_ref.py                 # pure-PyTorch token-by-token recurrence + make_inputs
     │
-    ├── bench.sh                   # msprof harness -- provided, never run (see "Not yet done")
+    ├── bench.sh                    # msprof harness, per stage and for the pipeline
+    ├── bench_mark.md               # measured results against the AscendC operator
     ├── design.md                  # why each kernel partitions and moves data the way it does
     └── README.md                  # this file
 ```
@@ -246,7 +249,7 @@ Vector cores per AI Core on 910B):
 
 | Constraint | Where |
 |---|---|
-| `SEQ % C == 0` | all six stages and `kda_chunk_fwd` |
+| `SEQ % C == 0` | **lifted** -- a ragged tail chunk is zero-filled in the kernel |
 | `HV % H == 0` (GVA) | stages 2, 4, 5, 6 and `kda_chunk_fwd` |
 | `K % (VEC_NUM * 8) == 0`, i.e. `K % 16 == 0` | stage 1 (UB row pitch must stay 32B-aligned) |
 | `K % 16 == 0` | stage 2 |
@@ -279,7 +282,7 @@ Shapes exercised by the tests: `B = 1, 2`; `H = 1, 2`; `HV = 1 … 6`;
 
 ## Accuracy status
 
-Verified on Ascend 910B. Correctness only — see "Not yet done" below.
+Verified on Ascend 910B. Measured results are in `bench_mark.md`.
 
 **Full pipeline vs the L0 token-by-token recurrence** (`test_vs_both_goldens`,
 18 configurations covering both gate extremes, GVA, `K != V`, the K3 spec,
@@ -340,20 +343,28 @@ is exact, $e_{\text{sens}}=0$, and the criterion tightens to `1e-5` on its own.
 
 ---
 
-## Not yet done
+## Status and what is not done
 
-* **No performance data whatsoever.** `msprof` has never been run on any stage
-  or on the pipeline. There is therefore no latency, no throughput, no bandwidth
-  figure and **no speed claim anywhere in this README or in the source
-  comments** — not against GDN, not against any other KDA implementation. Any
-  such number would have to be measured first.
-* **No tail block, no varlen / `cu_seqlens` support.** All six host wrappers
-  assert `SEQ % C == 0`, so ragged tails are rejected rather than padded. The
-  pure-PyTorch `kda_chunk_ref.kda_chunk_ref` does pad the token axis and is tested
-  at `SEQ = 70` and `SEQ = 33`, but `stage_tensors()` and the kernels do not.
-  Host-side padding is not an option for the kernels: it is exactly the hidden
-  cost the acceptance gate rules out.
-* The six stages are six kernel launches; every inter-stage tensor and all
-  eleven cross-core workspaces (2 in stage 4, 4 in stage 5, 5 in stage 6)
-  round-trip through GM. Fusing them is future work.
+* **Performance is measured, not claimed.** Every figure in `bench_mark.md`
+  comes from an `msprof` collection on board, against the hand-written AscendC
+  operator built from `gitcode.com/cann/ops-transformer`. No number in this
+  directory is an estimate.
+* **A ragged tail chunk and varlen are both supported.** `SEQ % C != 0` is
+  handled by zero-filling the pad rows inside the kernel -- a garbage gate row
+  exponentiates to `+inf`, and `0 * inf` is `NaN` landing in a *valid* row's
+  reduction, so the fill is load-bearing rather than tidy. `cu_seqlens` goes
+  through `kda_varlen.py`, and a batched varlen run is asserted bit-identical to
+  running each sequence on its own.
+* **`route_b` is off by default.** It puts stage 2's diagonal blocks on the cube
+  and is worth 2.3x on that stage, but it saturates a gate that spans more than
+  its clamp inside one block, so it is opt-in rather than automatic. See
+  `bench_mark.md`.
+* The six stages are six kernel launches; every inter-stage tensor and the
+  cross-core workspaces round-trip through GM. The hand-written operator does
+  the same -- its `gk`, `aqk`, `akk`, `w`, `u`, `qg`, `kg`, `v_new` and `h` are
+  all GM tensors -- so fusion is not where the remaining gap is. What it does
+  differently is size its Cube-to-Vector scratch by physical core count rather
+  than by logical task count, which keeps it in L2. That is the next thing to
+  try here.
+
 * Backward is not part of this directory.

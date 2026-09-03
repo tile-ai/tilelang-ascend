@@ -131,8 +131,10 @@ import torch
 import tilelang
 from tilelang import language as T
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
 import kda_chunk_ref  # noqa: E402
+import kda_varlen as _VL  # noqa: E402
 
 # Only AUTO_SYNC, matching the six GDN kernels in the repo.  MEMORY_PLANNING is
 # deliberately off: on the backward bwd_dot kernel it aliased a reduction target
@@ -303,8 +305,15 @@ def chunk_h_ker(B, SEQ, H, HV, K, V, C, BV, dtype="float16", accum_dtype="float"
                     T.copy(G[bz, tv : tv + CV, hv, :], g_ub)
                     T.copy(G[bz, glast_row, hv, 0], glast_ub)  # G_C, all K
                     T.copy(G[bz, glast_row, hv, ko], gexp_ub)  # G_C, my rows
+                    # Materialised broadcast.  glast_ub indexed by an INNER
+                    # variable alone lowers to one narrow instruction per row in
+                    # this dialect; spreading it into a full tile first turns the
+                    # subtraction into a single wide tile-to-tile instruction.
+                    # The destination is coeff_ub itself -- already this line's
+                    # target, so no extra UB.
+                    T.tile.broadcast(coeff_ub, glast_ub, axis=0)
                     for a, b in T.Parallel(CV, K):
-                        coeff_ub[a, b] = glast_ub[b] - g_ub[a, b]  # <= 0
+                        coeff_ub[a, b] = coeff_ub[a, b] - g_ub[a, b]  # <= 0
                     for a, b in T.Parallel(CV, K):
                         coeff_ub[a, b] = T.exp(coeff_ub[a, b])
                     for a, b in T.Parallel(CV, K):
@@ -324,13 +333,35 @@ def chunk_h_ker(B, SEQ, H, HV, K, V, C, BV, dtype="float16", accum_dtype="float"
                     T.set_cross_flag("MTE3", 1)
 
                     # per-channel state decay: row d of S carries e^{G_C[d]}.
-                    # Broadcasting a 1-D buffer along the *outer* loop variable
-                    # has to be in place -- writing to another buffer does not
-                    # pass the UB alignment check.
+                    #
+                    # A note here used to claim that an outer-variable broadcast
+                    # has to be done in place, because writing to a second buffer
+                    # fails the UB alignment check.  That predates L2 and has been
+                    # disproved: probe_chunkh_bcast.py runs T.tile.broadcast at
+                    # chunk_h's real shape ([64] -> [64, 32]) and it compiles,
+                    # passes the alignment check and is bit-identical.
+                    #
+                    # Slicing gexp out of glast_ub (it is a sub-range of the same
+                    # row) to save this second per-row GM read was also tried:
+                    # chunk_h went 269 -> 292 us, because a 1-D read at a run-time
+                    # offset drops off the vector path.  Keep the separate read.
                     for i in T.Parallel(KV):
                         gexp_ub[i] = T.exp(gexp_ub[i])
+                    # Materialised broadcast.  gexp_ub is indexed by the OUTER
+                    # variable, the worst form in this dialect: the generated
+                    # AscendC is a 64-iteration for loop with a GetValue and a
+                    # Muls(32) each.  The compiler names that loop variable
+                    # outer_broadcast_idx -- it knows this is a broadcast, it just
+                    # cannot do the substitution for you.  Spread out it is a
+                    # single Mul(2048); an isolated micro-benchmark measured
+                    # 1866.80 -> 122.46 us, bit-identical
+                    # (PERF/probes/probe_chunkh_bcast.py).
+                    # kv_ub is borrowed as the target: it is not written until
+                    # after wait_cross_flag(2) below, so it is dead here and this
+                    # costs no extra UB.
+                    T.tile.broadcast(kv_ub, gexp_ub, axis=1)
                     for i, j in T.Parallel(KV, BV):
-                        s_ub[i, j] = s_ub[i, j] * gexp_ub[i]
+                        s_ub[i, j] = s_ub[i, j] * kv_ub[i, j]
 
                     T.wait_cross_flag(2)
                     T.copy(ws_kv[cid, ko, 0], kv_ub)
@@ -342,17 +373,370 @@ def chunk_h_ker(B, SEQ, H, HV, K, V, C, BV, dtype="float16", accum_dtype="float"
     return main
 
 
+@tilelang.jit(out_idx=[-3, -2, -1], workspace_idx=[-7, -6, -5, -4], pass_configs=pass_configs)
+def chunk_h_ker_varlen(B, SEQ, H, HV, K, V, C, BV, N_SEQ, NT_TOTAL, dtype="float16", accum_dtype="float"):
+    """Per-chunk entry states, V' = U - W S, and the final state.  Varlen twin.
+
+    This is the only chunk-SERIAL stage of the six, and that decides its varlen
+    shape.  The other five keep a per-chunk grid and look their chunk up in a
+    flat table; this one cannot, because S is carried from one chunk to the
+    next.  So its grid stays per (sequence, value head, value block) and the
+    chunk loop stays inside, with a RUN-TIME trip count taken from that
+    sequence's own length.  It is the shape the shipped GDN varlen example uses
+    (examples_experiment/chunk_gated_delta_rule/chunk_gated_delta_rule.py:98).
+
+    Four things are specific to this stage:
+
+      * **The empty sequence costs nothing.**  T_i == 0 gives NT_i == 0, the
+        loop body never runs, and the pre-loop `T.copy(S0[i_n, ...], s_ub)` and
+        post-loop `T.copy(s_ub, SF[i_n, ...])` deliver SF[i] == S0[i] on their
+        own.  There is no special case anywhere, which is the point.
+      * **NT_i is computed by the same textual expression in both scopes and
+        never depends on vid.**  All eight cross-core flags live inside these
+        two loops, and the AIC/AIV sync is a hardware counter: if the Cube ran a
+        different number of iterations from the Vector cores, the kernel would
+        deadlock rather than produce a wrong answer.
+      * **G_C is read at the chunk's last VALID token.**  This was already the
+        one genuine off-by-one of the ragged-tail round; varlen makes the old
+        expression silently wrong rather than loudly out of range, because
+        `t0 + C <= SEQ` is TRUE for every interior chunk when SEQ is the whole
+        flattened batch.  See the comment at the site.
+      * **`states` is NT_TOTAL-major.**  Sequence n's chunk i lives at slot
+        `chunk_off[n] + i`, the same addressing FLA's prepare_chunk_offsets
+        produces.  Stage 6 has to agree, and both wrappers assert the shape.
+    """
+
+    BV_NUM = V // BV
+    VEC_NUM = 2  # 910B: one Cube core, two Vector cores
+    CV = C // VEC_NUM  # token rows per vector core
+    KV = K // VEC_NUM  # state rows per vector core
+    GRP = HV // H  # GVA: GRP value heads per qk head
+    NBLK = N_SEQ * HV * BV_NUM  # one block per (sequence, value head, value block)
+
+    @T.prim_func
+    def main(
+        Kt: T.Tensor([B, SEQ, H, K], dtype),  # type: ignore
+        W: T.Tensor([B, SEQ, HV, K], dtype),  # type: ignore
+        U: T.Tensor([B, SEQ, HV, V], dtype),  # type: ignore
+        G: T.Tensor([B, SEQ, HV, K], accum_dtype),  # type: ignore
+        S0: T.Tensor([N_SEQ, HV, K, V], accum_dtype),  # type: ignore  one per SEQUENCE, not per batch
+        # SeqMeta goes HERE, before the workspaces, and the position is not
+        # free.  The decorator addresses the workspaces and the outputs with
+        # NEGATIVE indices (workspace_idx=[-7, -6, -5, -4], out_idx=[-3, -2, -1]).
+        # Appending a tensor after them would shift all seven, so the framework
+        # would allocate real outputs as scratch and hand back uninitialised
+        # memory -- a kernel that compiles, runs, and returns garbage.
+        SeqMeta: T.Tensor([N_SEQ, _VL.SEQ_META_COLS], "int32"),  # type: ignore  (bos, eos, chunk_off)
+        # Four scratch workspaces.  Every one of them is written before it is
+        # read inside the same chunk iteration, so all four may be framework
+        # allocated (torch.empty).  A workspace that needed zeroing could NOT
+        # be listed in workspace_idx -- it would come back as dirty memory.
+        # The old [B,H,L,DK]-layout version had to pass the state workspace in
+        # as a host-zeroed input for exactly that reason; supporting S0 removed
+        # the need, because the vector core now writes the state workspace at
+        # the top of every iteration, including the first.
+        ws_wS: T.Tensor([NBLK, C, BV], accum_dtype),  # type: ignore  W S
+        ws_kg: T.Tensor([NBLK, C, K], dtype),  # type: ignore         kg
+        ws_st: T.Tensor([NBLK, K, BV], dtype),  # type: ignore        S as a gemm operand
+        ws_kv: T.Tensor([NBLK, K, BV], accum_dtype),  # type: ignore  kg^T V'
+        states: T.Tensor([B, HV, NT_TOTAL, K, V], dtype),  # type: ignore  chunk axis is the whole batch
+        Vt: T.Tensor([B, SEQ, HV, V], dtype),  # type: ignore
+        SF: T.Tensor([N_SEQ, HV, K, V], accum_dtype),  # type: ignore  one per SEQUENCE
+    ):
+        with T.Kernel(NBLK, is_npu=True) as (cid, vid):
+            bx = cid % BV_NUM  # value block
+            hv = (cid // BV_NUM) % HV  # value head
+            i_n = cid // (BV_NUM * HV)  # sequence
+            hq = hv // GRP  # qk head feeding this value head
+            vo = bx * BV  # value offset of this block
+            ko = vid * KV  # state rows of this vector core
+            co = vid * CV  # token rows of this vector core
+
+            # This sequence's span and where its chunks live in the flat run.
+            bos = SeqMeta[i_n, _VL.SEQ_BOS]
+            eos = SeqMeta[i_n, _VL.SEQ_EOS]
+            c0 = SeqMeta[i_n, _VL.SEQ_CHUNK_OFF]
+            # ★ Both scopes below derive their trip count from THIS line's
+            # expression, verbatim, and it does not mention vid.  Eight
+            # cross-core flags live inside those loops and the AIC/AIV sync is a
+            # hardware counter, so a disagreement deadlocks rather than
+            # miscomputes.  Zero for an empty sequence, which is exactly right.
+            NT_i = T.ceildiv(eos - bos, C)
+
+            s_l1 = T.alloc_L1([K, BV], dtype)
+            w_l1 = T.alloc_L1([C, K], dtype)
+            k_l1 = T.alloc_L1([C, K], dtype)
+            v_l1 = T.alloc_L1([C, BV], dtype)
+            wS_l0 = T.alloc_L0C([C, BV], accum_dtype)
+            kv_l0 = T.alloc_L0C([K, BV], accum_dtype)
+
+            g_ub = T.alloc_ub([CV, K], accum_dtype)
+            coeff_ub = T.alloc_ub([CV, K], accum_dtype)
+            k_ub = T.alloc_ub([CV, K], accum_dtype)
+            glast_ub = T.alloc_ub([K], accum_dtype)
+            gexp_ub = T.alloc_ub([KV], accum_dtype)
+            s_ub = T.alloc_ub([KV, BV], accum_dtype)
+            kv_ub = T.alloc_ub([KV, BV], accum_dtype)
+            u_ub = T.alloc_ub([CV, BV], accum_dtype)
+            ws_ub = T.alloc_ub([CV, BV], accum_dtype)
+            k_half = T.alloc_ub([CV, K], dtype)
+            s_half = T.alloc_ub([KV, BV], dtype)
+            u_half = T.alloc_ub([CV, BV], dtype)
+
+            # ---------------------------------------------------------- Cube
+            # Flag protocol, same four ids and pipes as gdn_chunk_h.py:
+            #   3 (V->C) ws_st holds S_n        1 (V->C) ws_kg / Vt hold kg, V'
+            #   0 (C->V) ws_wS holds W S        2 (C->V) ws_kv holds kg^T V'
+            # Each id is set by both AIVs (or by the AIC) and waited on by the
+            # other side, which is what serialises the two concurrent streams.
+            with T.Scope("C"):
+                for ci in T.serial(NT_i):
+                    t0 = bos + ci * C
+                    # 1..C, never 0: a chunk only exists for a non-empty
+                    # sequence.  That matters because copy_gm_to_l1 reads a row
+                    # count of 0 as "no tail, use the full tile" (common.h:60).
+                    rows = T.min(C, eos - t0)
+
+                    T.wait_cross_flag(3)
+                    T.copy(ws_st[cid, 0, 0], s_l1)
+                    # Bounded.  Left at C this reads the next sequence's W rows
+                    # into L1, and copy_gm_to_l1 only zero-inits when the row
+                    # count differs from the tile height -- which mid-tensor it
+                    # would not.
+                    T.copy(W[0, t0 : t0 + rows, hv, :], w_l1)
+                    T.gemm_v0(w_l1, s_l1, wS_l0, init=True)  # W S
+                    T.copy(wS_l0, ws_wS[cid, 0, 0])
+                    T.set_cross_flag("FIX", 0)
+
+                    T.wait_cross_flag(1)
+                    T.copy(ws_kg[cid, 0, 0], k_l1)
+                    # Bounded for the same reason, and here the rows past eos
+                    # are worse than stale: Vt is a torch.empty output whose
+                    # owning block may not have run yet, so they can be any
+                    # bit pattern at all, inf and NaN included.
+                    T.copy(Vt[0, t0 : t0 + rows, hv, vo : vo + BV], v_l1)
+                    T.gemm_v0(k_l1, v_l1, kv_l0, transpose_A=True, init=True)
+                    T.copy(kv_l0, ws_kv[cid, 0, 0])  # kg^T V'
+                    T.set_cross_flag("FIX", 2)
+
+            # -------------------------------------------------------- Vector
+            with T.Scope("V"):
+                T.copy(S0[i_n, hv, ko, vo], s_ub)  # fp32 state, stays resident
+                # Explicit MTE2 -> MTE3 barrier, and it is NOT redundant.
+                #
+                # An empty sequence gives NT_i == 0, so the chunk loop below
+                # never runs and this load is followed immediately by the
+                # s_ub -> SF store at the bottom.  AUTO_SYNC places the barrier
+                # for that dependency INSIDE the loop -- with a run-time trip
+                # count it cannot know the loop may execute zero times -- so on
+                # an empty sequence the store races the load and SF comes back
+                # part S0, part stale UB.  It is not a clean failure either:
+                # measured, the result tracked S0's magnitude while differing
+                # element by element, so a magnitude check would have passed it.
+                T.set_flag("mte2", "mte3", 0)
+                T.wait_flag("mte2", "mte3", 0)
+
+                for ci in T.serial(NT_i):
+                    t0 = bos + ci * C
+                    rows = T.min(C, eos - t0)  # same expression as the Cube scope
+                    tv = t0 + co  # this core's first token
+
+                    # This core's share of the chunk's valid rows.  CAN be zero
+                    # -- any sequence whose last chunk holds at most C/2 rows
+                    # leaves the second core with nothing -- so it guards
+                    # branches and is never passed as a copy extent.
+                    left = T.if_then_else(rows > co, rows - co, 0)
+                    vrows = T.if_then_else(left < CV, left, CV)
+
+                    # entry state of this chunk: one rounded tile, published
+                    # twice -- to chunk_o as `states`, and to the Cube as the
+                    # right operand of W S.
+                    T.copy(s_ub, s_half)
+                    # NT_TOTAL-major: this sequence's chunk ci sits at slot
+                    # c0 + ci.  The slot index is folded into the base address
+                    # with no bounds check, so a wrong chunk_off writes into
+                    # another sequence's states silently -- which is why the
+                    # host asserts the offsets before the launch.
+                    T.copy(s_half, states[0, hv, c0 + ci, ko, vo])
+                    T.copy(s_half, ws_st[cid, ko, 0])
+                    T.set_cross_flag("MTE3", 3)
+
+                    # kg = K . e^{G_C - G}.  GDN broadcasts one scalar per row
+                    # here; KDA needs the whole [CV, K] tile.
+                    # ★ The one genuine off-by-one of the whole tail-block change.
+                    #
+                    # G_C is the chunk's cumulative gate, and it has to be read
+                    # at the LAST TOKEN THAT EXISTS.  On a ragged chunk row
+                    # t0 + C - 1 is (a) past SEQ, and (b) not the right token
+                    # even if it were in range.  Neither is caught for us: these
+                    # are single-row reads, so the region extents are
+                    # [1, 1, 1, *], find_active_dim_indices keeps only the last
+                    # two *active* dims, and the token axis is folded into the
+                    # base address without a bounds check.
+                    #
+                    # Getting this wrong does not produce a tolerance failure --
+                    # the final state comes out scaled by a spurious e^Gamma,
+                    # which under the `forget` gate is orders of magnitude.
+                    #
+                    # Runtime address, compile-time extent: exactly the pattern
+                    # the varlen kernels in this repo already rely on.
+                    # ★ Under varlen the old expression is not merely
+                    # out of range, it is SILENTLY WRONG.  It read
+                    #     t0 + C <= SEQ  ?  t0 + C - 1  :  SEQ - 1
+                    # and with SEQ meaning the whole flattened batch the first
+                    # branch is taken for every interior ragged chunk, so G_C
+                    # would be read at a token belonging to the NEXT sequence.
+                    # The failure is not a tolerance miss: final_state comes out
+                    # scaled by a spurious e^Gamma, orders of magnitude under
+                    # the `forget` gate.
+                    glast_row = t0 + rows - 1
+
+                    # Unconditional.  Raggedness is a run-time property under
+                    # varlen, and when vrows == 0 the loads below are skipped
+                    # entirely, so these fills are the only thing defining the
+                    # tiles.  Zero is also the right filler: k = 0 contributes
+                    # nothing to kg^T V', and g = 0 leaves the coefficient at
+                    # e^{G_C}.
+                    T.tile.fill(k_half, 0)
+                    T.tile.fill(g_ub, 0.0)
+
+                    if vrows > 0:
+                        T.copy(Kt[0, tv : tv + vrows, hq, :], k_half)
+                        T.copy(G[0, tv : tv + vrows, hv, :], g_ub)
+                    T.copy(k_half, k_ub)
+                    T.copy(G[0, glast_row, hv, 0], glast_ub)  # G_C, all K
+                    T.copy(G[0, glast_row, hv, ko], gexp_ub)  # G_C, my rows
+                    # Materialised broadcast.  glast_ub indexed by an INNER
+                    # variable alone lowers to one narrow instruction per row in
+                    # this dialect; spreading it into a full tile first turns the
+                    # subtraction into a single wide tile-to-tile instruction.
+                    # The destination is coeff_ub itself -- already this line's
+                    # target, so no extra UB.
+                    T.tile.broadcast(coeff_ub, glast_ub, axis=0)
+                    for a, b in T.Parallel(CV, K):
+                        coeff_ub[a, b] = coeff_ub[a, b] - g_ub[a, b]  # <= 0
+                    for a, b in T.Parallel(CV, K):
+                        coeff_ub[a, b] = T.exp(coeff_ub[a, b])
+                    for a, b in T.Parallel(CV, K):
+                        k_ub[a, b] = k_ub[a, b] * coeff_ub[a, b]
+                    T.copy(k_ub, k_half)
+
+                    # V' = U - W S
+                    T.tile.fill(u_half, 0)
+                    if vrows > 0:
+                        T.copy(U[0, tv : tv + vrows, hv, vo : vo + BV], u_half)
+                    T.copy(u_half, u_ub)
+                    T.wait_cross_flag(0)
+                    T.copy(ws_wS[cid, co, 0], ws_ub)
+                    for a, b in T.Parallel(CV, BV):
+                        u_ub[a, b] = u_ub[a, b] - ws_ub[a, b]
+                    T.copy(u_ub, u_half)
+                    # Bounded: the rows past this core's share belong to the
+                    # next sequence and are written by that sequence's own
+                    # block.  Guarded as well -- a zero row count is safe on the
+                    # UB -> GM path (measured, PROBES/probe_varlen5.log) but it
+                    # is an undocumented blockCount, and the guard costs nothing.
+                    if vrows > 0:
+                        T.copy(u_half, Vt[0, tv : tv + vrows, hv, vo : vo + BV])
+                    # Full CV rows, deliberately NOT bounded and NOT guarded:
+                    # the Cube reads ws_kg as a complete [C, K] operand, so the
+                    # rows this core does not own have to be written zeros
+                    # rather than left dirty.  The flag that follows is outside
+                    # every branch for the same reason -- one core skipping it
+                    # deadlocks the Cube forever.
+                    T.copy(k_half, ws_kg[cid, co, 0])
+                    T.set_cross_flag("MTE3", 1)
+
+                    # per-channel state decay: row d of S carries e^{G_C[d]}.
+                    #
+                    # A note here used to claim that an outer-variable broadcast
+                    # has to be done in place, because writing to a second buffer
+                    # fails the UB alignment check.  That predates L2 and has been
+                    # disproved: probe_chunkh_bcast.py runs T.tile.broadcast at
+                    # chunk_h's real shape ([64] -> [64, 32]) and it compiles,
+                    # passes the alignment check and is bit-identical.
+                    #
+                    # Slicing gexp out of glast_ub (it is a sub-range of the same
+                    # row) to save this second per-row GM read was also tried:
+                    # chunk_h went 269 -> 292 us, because a 1-D read at a run-time
+                    # offset drops off the vector path.  Keep the separate read.
+                    for i in T.Parallel(KV):
+                        gexp_ub[i] = T.exp(gexp_ub[i])
+                    # Materialised broadcast.  gexp_ub is indexed by the OUTER
+                    # variable, the worst form in this dialect: the generated
+                    # AscendC is a 64-iteration for loop with a GetValue and a
+                    # Muls(32) each.  The compiler names that loop variable
+                    # outer_broadcast_idx -- it knows this is a broadcast, it just
+                    # cannot do the substitution for you.  Spread out it is a
+                    # single Mul(2048); an isolated micro-benchmark measured
+                    # 1866.80 -> 122.46 us, bit-identical
+                    # (PERF/probes/probe_chunkh_bcast.py).
+                    # kv_ub is borrowed as the target: it is not written until
+                    # after wait_cross_flag(2) below, so it is dead here and this
+                    # costs no extra UB.
+                    T.tile.broadcast(kv_ub, gexp_ub, axis=1)
+                    for i, j in T.Parallel(KV, BV):
+                        s_ub[i, j] = s_ub[i, j] * kv_ub[i, j]
+
+                    T.wait_cross_flag(2)
+                    T.copy(ws_kv[cid, ko, 0], kv_ub)
+                    for i, j in T.Parallel(KV, BV):
+                        s_ub[i, j] = s_ub[i, j] + kv_ub[i, j]
+
+                # Reached with NT_i == 0 too, and that is the whole of the
+                # empty-sequence contract: s_ub still holds S0, so SF == S0.
+                T.copy(s_ub, SF[i_n, hv, ko, vo])
+
+    return main
+
+
 # ----------------------------------------------------------------- host side
 _DTYPE_STR = {torch.float16: "float16", torch.bfloat16: "bfloat16"}
 
 
-def chunk_h(kt, w, u, g_cumsum, C=64, BV=None, initial_state=None):
+_ZERO_S0_CACHE = {}
+
+
+def _zero_state(n_lead, HV, K, V, device):
+    """The all-zero entry state used when the caller passes no initial_state.
+
+    Rebuilt on every call before this cache; the 2026-08-21 full-pipeline profile
+    attributes 7.30 us per call to the ZerosLike sitting in the gap before this
+    kernel.
+
+    Safe to share across calls, and this one deserves the argument spelled out
+    because it is the least obviously safe of the three: S0 is a read-only kernel
+    input -- it is not in out_idx=[-3,-2,-1] nor in workspace_idx=[-7,-6,-5,-4],
+    and the only thing the kernel does with it is `T.copy(S0[...], s_ub)` at the
+    top of the vector scope.  Nothing writes it.  The SEQ == 0 early return hands
+    back `s0.clone()`, not s0 itself, so a caller relaying the final state cannot
+    reach this buffer either.
+    """
+    key = (n_lead, HV, K, V, str(device))
+    z = _ZERO_S0_CACHE.get(key)
+    if z is None:
+        z = torch.zeros((n_lead, HV, K, V), device=device, dtype=torch.float32)
+        _ZERO_S0_CACHE[key] = z
+    return z
+
+
+def chunk_h(kt, w, u, g_cumsum, C=64, BV=None, initial_state=None, cu_seqlens=None):
     """Host wrapper.  Semantics match kda_chunk_ref.ref_chunk_h.
 
     Only zero-filling the absent initial state, a dtype table lookup and the
     block-size choice happen here.  No transpose, no reshape, no staging copy:
     the kernel indexes the external [B, SEQ, HV, *] layout directly, which is
     the task's gate against hiding kernel cost on the host.
+
+    With ``cu_seqlens`` the inputs are a flattened varlen batch (B == 1) and two
+    shapes change, because they are the two that are not indexed by token:
+
+        initial_state / final_state   [N, HV, K, V]     one per SEQUENCE
+        states                        [1, HV, NT_TOTAL, K, V]
+
+    where ``NT_TOTAL = sum_i ceil(T_i / C)`` and sequence n's chunk i lives at
+    slot ``chunk_off[n] + i``.  Stage 6 reads ``states`` with the same
+    addressing and asserts the same shape.
     """
     B, SEQ, H, K = kt.shape
     HV, V = u.shape[2], u.shape[-1]
@@ -376,9 +760,11 @@ def chunk_h(kt, w, u, g_cumsum, C=64, BV=None, initial_state=None):
     assert need <= UB_LIMIT - UB_MARGIN, f"UB overflow: {need} B needed, limit {UB_LIMIT} B (margin {UB_MARGIN} B) for C={C} K={K} BV={BV}"
 
     # Absent initial state is passed as zeros so the kernel can read it
-    # unconditionally; the same choice as the L0 kernel.
-    s0 = initial_state.float() if initial_state is not None else torch.zeros((B, HV, K, V), device=kt.device, dtype=torch.float32)
-    assert s0.shape == (B, HV, K, V) and s0.is_contiguous(), "S0 layout"
+    # unconditionally; the same choice as the L0 kernel.  Under varlen the
+    # leading axis is the SEQUENCE COUNT, not the batch.
+    n_lead = B if cu_seqlens is None else (cu_seqlens.numel() - 1)
+    s0 = initial_state.float() if initial_state is not None else _zero_state(n_lead, HV, K, V, kt.device)
+    assert s0.shape == (n_lead, HV, K, V) and s0.is_contiguous(), "S0 layout"
 
     # SEQ == 0 slips past the assert above (0 % C == 0) and would launch a
     # zero-block grid over unwritten outputs.  A zero-length sequence is legal
@@ -386,21 +772,48 @@ def chunk_h(kt, w, u, g_cumsum, C=64, BV=None, initial_state=None):
     # token is consumed, so the state must pass through untouched and the final
     # state IS the initial state.  Cloned rather than aliased so a caller that
     # relays it into the next segment cannot mutate its own input.
+    #
+    # Under varlen this fires only when the WHOLE batch is empty.  A single
+    # empty sequence inside a non-empty one is handled entirely in the kernel:
+    # its NT_i is 0, the chunk loop never runs, and SF falls out equal to S0.
     if SEQ == 0:
         return (
+            # [B, HV, 0, K, V] is right for both paths: fixed-length has no
+            # chunks, and varlen's NT_TOTAL is 0 when every sequence is empty.
             torch.empty((B, HV, 0, K, V), device=kt.device, dtype=kt.dtype),
             torch.empty((B, 0, HV, V), device=kt.device, dtype=kt.dtype),
             s0.clone(),
         )
 
-    ker = chunk_h_ker(B, SEQ, H, HV, K, V, C, BV, dtype=_DTYPE_STR[kt.dtype])
-    states, vt, sf = ker(kt, w, u, g_cumsum, s0)
+    if cu_seqlens is None:
+        ker = chunk_h_ker(B, SEQ, H, HV, K, V, C, BV, dtype=_DTYPE_STR[kt.dtype])
+        states, vt, sf = ker(kt, w, u, g_cumsum, s0)
+        return states, vt, sf
+
+    bounds = _VL.varlen_bounds(cu_seqlens, q=kt, v=u, g=g_cumsum, initial_state=s0)
+    offsets, nt_total = _VL.chunk_layout(bounds, C)
+    smeta = _VL.seq_meta(bounds, C, kt.device)
+    n_seq = len(bounds)
+    # The slot index into `states` is folded into a base address with no bounds
+    # check, so a chunk_off built with a different C, or with the ceil applied
+    # to the cumulative sum instead of per sequence, would write into another
+    # sequence's states silently.  Assert the layout instead of trusting it.
+    assert nt_total > 0, "a non-empty batch must produce at least one chunk"
+    assert offsets[0] == 0, "the first sequence must start at chunk slot 0"
+    assert all(offsets[i] <= offsets[i + 1] for i in range(n_seq - 1)), "chunk offsets must be non-decreasing"
+    ker = chunk_h_ker_varlen(B, SEQ, H, HV, K, V, C, BV, n_seq, nt_total, dtype=_DTYPE_STR[kt.dtype])
+    states, vt, sf = ker(kt, w, u, g_cumsum, s0, smeta)
+    assert states.shape == (B, HV, nt_total, K, V), f"states must be [1, HV, NT_TOTAL, K, V], got {tuple(states.shape)}"
     return states, vt, sf
 
 
 # ---------------------------------------------------------------------- test
 def _relerr(x, r):
     r = r.float()
+    # An all-empty varlen batch legitimately produces zero-element states and
+    # Vt; .max() on those raises rather than returning 0.
+    if x.numel() == 0 and r.numel() == 0:
+        return 0.0
     return (x.float() - r).abs().max().item() / max(r.abs().max().item(), 1e-9)
 
 
@@ -431,6 +844,54 @@ def _case(B, SEQ, H, HV, K, V, C, gate, with_state, dtype):
         f"  B{B} T{SEQ:<4d} H{H} HV{HV} K{K:<3d} V{V:<3d} C{C:<2d} {tag} "
         f"{gate:8s} state={'Y' if with_state else 'N'}  "
         f"S={eS:.2e} V'={eV:.2e} SF={eF:.2e}  {'ok' if ok else 'FAIL'}"
+    )
+    return ok
+
+
+def _vcase(seqlens, H, HV, K, V, C, gate, with_state, dtype, note=""):
+    """One varlen batch against the stage-5 golden, over the WHOLE flat token axis.
+
+    Three separate things are checked, because this stage can fail in three
+    unrelated ways:
+
+      * `Vt` over every token -- catches a store that walks past its own eos
+        into the next sequence, which stays finite and plausible.
+      * `states` over every slot -- catches a wrong chunk_off, which silently
+        writes into another sequence's states.
+      * `SF` per sequence -- catches the G_C off-by-one, whose signature is a
+        final state scaled by a spurious e^Gamma rather than a small drift.  An
+        empty sequence additionally has to pass its state through bit for bit.
+    """
+    q, k, v, g, beta, s0, cu = kda_chunk_ref.make_varlen_inputs(seqlens, H, HV, K, V, dtype=dtype, gate=gate, with_state=with_state)
+    gold = kda_chunk_ref.stage_tensors(
+        q.cpu(), k.cpu(), v.cpu(), g.cpu(), beta.cpu(), C=C, cu_seqlens=cu.cpu(), initial_state=None if s0 is None else s0.cpu()
+    )
+    W = gold["W"].contiguous().to(dtype).npu()
+    U = gold["U"].contiguous().to(dtype).npu()
+    G = gold["G"].contiguous().npu()
+
+    states, vt, sf = chunk_h(k, W, U, G, C=C, initial_state=s0, cu_seqlens=cu)
+
+    eS = _relerr(states.cpu(), gold["states"])
+    eV = _relerr(vt.cpu(), gold["Vt"])
+    eF = _relerr(sf.cpu(), gold["SF"])
+    tol = 5e-3 if dtype == torch.float16 else 3e-2
+    finite = bool(torch.isfinite(sf.float()).all()) and bool(torch.isfinite(vt.float()).all())
+    shape_ok = tuple(states.shape) == tuple(gold["states"].shape) and tuple(sf.shape) == tuple(gold["SF"].shape)
+
+    # An empty sequence consumes no token, so its final state must be its
+    # initial state -- bit for bit, not merely within tolerance.
+    passthru = True
+    if with_state:
+        for i, n in enumerate(seqlens):
+            if n == 0:
+                passthru &= bool(torch.equal(sf[i].cpu(), s0[i].float().cpu()))
+
+    ok = finite and shape_ok and passthru and eS < tol and eV < tol and eF < tol
+    tag = "fp16" if dtype == torch.float16 else "bf16"
+    print(
+        f"  {str(seqlens):22s} HV{HV} C{C:<2d} {tag} {gate:8s} S0={'Y' if with_state else 'N'} "
+        f"st={eS:.2e} Vt={eV:.2e} SF={eF:.2e} pass={'Y' if passthru else 'N'}  {'ok' if ok else 'FAIL'}  {note}"
     )
     return ok
 
@@ -474,6 +935,20 @@ def main():
         (1, 128, 1, 1, 128, 128, 64, "forget", True),
     ]:
         ok &= _case(B, SEQ, H, HV, K, V, C, gate, ws, torch.bfloat16)
+
+    print("== varlen (cu_seqlens) ==")
+    ok &= _vcase([64, 64, 64], 1, 2, 64, 64, 64, "normal", False, torch.float16, "equal, chunk-aligned")
+    ok &= _vcase([70, 33, 129], 1, 2, 64, 64, 64, "normal", False, torch.float16, "every sequence ragged")
+    ok &= _vcase([70, 33, 129], 1, 2, 64, 64, 64, "forget", True, torch.float16, "ragged + per-sequence S0")
+    ok &= _vcase([70, 0, 129], 1, 2, 64, 64, 64, "forget", True, torch.float16, "empty in the middle, S0 passthrough")
+    ok &= _vcase([0, 70], 1, 2, 64, 64, 64, "normal", True, torch.float16, "empty first")
+    ok &= _vcase([70, 0], 1, 2, 64, 64, 64, "normal", True, torch.float16, "empty last")
+    ok &= _vcase([0, 0], 1, 2, 64, 64, 64, "normal", True, torch.float16, "every sequence empty")
+    ok &= _vcase([1, 200], 1, 2, 64, 64, 64, "forget", False, torch.float16, "one token -- core 1 gets vrows = 0")
+    ok &= _vcase([20, 20], 1, 2, 64, 64, 64, "normal", False, torch.float16, "both shorter than C/2")
+    ok &= _vcase([65, 65], 1, 1, 128, 128, 64, "forget", True, torch.float16, "K3 dim, one valid tail row each")
+    ok &= _vcase([100, 28], 2, 4, 64, 64, 32, "extreme", False, torch.float16, "GVA + extreme gate, C = 32")
+    ok &= _vcase([70, 33], 2, 4, 64, 64, 64, "forget", True, torch.bfloat16, "bf16 + GVA")
 
     if ok:
         print("Kernel Output Match!")
