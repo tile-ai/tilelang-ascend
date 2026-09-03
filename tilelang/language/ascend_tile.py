@@ -1614,21 +1614,24 @@ def createvecindex(dst: Buffer, firstValue: PrimExpr):
 
 
 def transpose(dst: Buffer, src: Buffer):
-    """Performs a matrix transposition operation.
-
-    This intrinsic invokes the underlying implementation to transpose the source
-    buffer into the destination buffer.
+    """Performs a 2D matrix transposition: dst[i][j] = src[j][i].
 
     Args:
         dst: The destination buffer, shape [W, H].
-        src: The source buffer to be transposed, shape [H, W].
+        src: The source buffer, shape [H, W]. Must be 2D with static H and W.
 
     Note:
-        H and W must satisfy 32-byte alignment (i.e., H * sizeof(dtype) and
-        W * sizeof(dtype) must be multiples of 32). For B16 (half/int16/uint16)
-        and B32 (float/int32/uint32), this means H and W must be multiples of
-        16; for int8, multiples of 32. Supports B16 and B32 via hardware
-        instruction; int8 and bfloat16 fall back to scalar implementation.
+        - 32-byte alignment: H * sizeof(dtype) and W * sizeof(dtype) must both
+          be multiples of 32. Concretely: B16 (half/int16/uint16/bfloat16)
+          requires H, W multiples of 16; B32 (float/int32/uint32) requires
+          multiples of 8; int8 requires multiples of 32.
+        - Implementation dispatch: (1) H=W=16 with B16 (except bfloat16) uses
+          the AscendC::Transpose hardware instruction; (2) H, W both multiples
+          of 16 with B16/B32 (except bfloat16) uses TransDataTo5HD block
+          transpose; (3) all other cases (int8, bfloat16, int64, or
+          non-16-multiple shapes that still satisfy 32-byte alignment) fall
+          back to scalar element-wise copy.
+        - src and dst must not overlap (in-place transpose is unsupported).
     """
     src_shape = list(src.shape)
     if len(src_shape) < 2:
