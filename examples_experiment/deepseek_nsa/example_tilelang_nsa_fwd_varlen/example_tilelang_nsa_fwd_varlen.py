@@ -137,7 +137,8 @@ def native_sparse_attention_varlen(
             acc_s_ub = T.alloc_ub([half_G, BS], accum_dtype)
             # Kernel-internal causal mask buffers (computed from BosPerToken/IsSafe).
             col_pos = T.alloc_ub([BS], accum_dtype)  # 1D [0, 1, ..., BS-1]
-            mask_ub = T.alloc_ub([half_G, BS], accum_dtype)  # 2D broadcast mask
+            shifted_pos = T.alloc_ub([half_G, BS], accum_dtype)  # col_pos + i_s (compare input)
+            mask_ub = T.alloc_ub([half_G, BS // 8], "uint8")  # packed bitmask (compare output / select selMask)
             acc_s_cast_ub = T.alloc_ub([half_G, BS], gemm_dtype)
             acc_o = T.alloc_ub([half_G, BV], accum_dtype)
             acc_o_ub = T.alloc_ub([half_G, BV], accum_dtype)
@@ -227,10 +228,13 @@ def native_sparse_attention_varlen(
                         i_t = bx - bos
                         i_s = IsSafe[bx, i_h]
                         T.tile.arith_progression(col_pos, 0, 1, BS)
-                        # mask_ub = (col_pos + i_s) <= i_t ? 1.0 : 0.0, then select -inf.
-                        T.tile.broadcast(mask_ub, col_pos)
-                        T.tile.add(mask_ub, mask_ub, i_s)
-                        T.tile.compare(mask_ub, mask_ub, i_t, "LE")
+                        # shifted_pos = col_pos + i_s (float32, compare input)
+                        T.tile.broadcast(shifted_pos, col_pos)
+                        T.tile.add(shifted_pos, shifted_pos, i_s)
+                        # mask_ub = (shifted_pos <= i_t) ? 1 : 0, packed uint8 bitmask.
+                        # AscendC CompareScalar requires uint8 output; Select selMask
+                        # also requires uint8 (not float).
+                        T.tile.compare(mask_ub, shifted_pos, i_t, "LE")
                         T.tile.select(
                             acc_s_ub,
                             mask_ub,

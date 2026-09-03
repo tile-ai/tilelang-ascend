@@ -403,22 +403,37 @@ def test_nsa_fwd_varlen_l1():
 # L2 exception tests (non-blocking)
 # =============================================================================
 def test_nsa_fwd_varlen_l2():
-    """L2 negative tests: illegal inputs should be rejected."""
-    # D-EXC-DTYPE: unsupported dtype (float64)
+    """L2 negative tests: illegal inputs should be rejected.
+
+    Returns True only if every illegal input is rejected with the expected
+    exception type. Unexpected exception types or no rejection both yield False.
+    """
+    ok = True
+
+    # D-EXC-DTYPE: unsupported dtype (float64) — kernel assert rejects it.
     try:
         _run_nsa_case("l2", 2, 64, 1, 16, 64, 1, 32, "float64")
-        print("[BOUNDARY_WARN] l2 exc_dtype: float64 not rejected")
+        print("[BOUNDARY_FAIL] l2 exc_dtype: float64 not rejected")
+        ok = False
+    except AssertionError:
+        print("[BOUNDARY_PASS] l2 exc_dtype: rejected (AssertionError)")
     except Exception as e:
-        print(f"[BOUNDARY_PASS] l2 exc_dtype: rejected ({type(e).__name__})")
+        print(f"[BOUNDARY_FAIL] l2 exc_dtype: unexpected exception {type(e).__name__}: {e}")
+        ok = False
 
     # D-EXC-SHAPE: HQ=15 -> G=15 is odd (violates vid split half_G=G//2 requirement).
+    # make_test_data asserts (hq // h) % 2 == 0.
     try:
         make_test_data(2, 64, 1, 15, 64, 1, 32, torch.float16)
-        print("[BOUNDARY_WARN] l2 exc_shape: HQ=15 not rejected")
+        print("[BOUNDARY_FAIL] l2 exc_shape: HQ=15 not rejected")
+        ok = False
     except AssertionError as e:
         print(f"[BOUNDARY_PASS] l2 exc_shape: rejected (AssertionError: {e})")
     except Exception as e:
-        print(f"[BOUNDARY_PASS] l2 exc_shape: rejected ({type(e).__name__})")
+        print(f"[BOUNDARY_FAIL] l2 exc_shape: unexpected exception {type(e).__name__}: {e}")
+        ok = False
+
+    return ok
 
 
 # =============================================================================
@@ -492,13 +507,13 @@ def main():
 
     torch.manual_seed(0)
 
-    blocking_ok = True  # only L0/L1 count toward blocking decision
+    blocking_ok = True  # L0/L1/L2 count toward blocking decision
     if args.level in ("l0", "all"):
         blocking_ok &= test_nsa_fwd_varlen_l0()
     if args.level in ("l1", "all"):
         blocking_ok &= test_nsa_fwd_varlen_l1()
     if args.level in ("l2", "all"):
-        test_nsa_fwd_varlen_l2()  # L2 negative: non-blocking
+        blocking_ok &= test_nsa_fwd_varlen_l2()  # L2 negative: now blocking
     if args.level in ("boundary", "all"):
         test_nsa_fwd_varlen_boundary()  # Boundary precision: non-blocking
 
