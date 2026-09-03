@@ -104,84 +104,72 @@ def mhc_pre_gemm(pad_hc_hidden, pad_hc_mult3, h_blk=H_BLK, token_block=TOKEN_BLO
 
 
 # ============================================================
-# Kernel A2: SqrSum (Vector) + T.Pipelined
+# Fused Kernel A2+B1: SqrSum + RMSNorm (Vector)
 # ============================================================
 
 
-@tilelang.jit(out_idx=[1], pass_configs=pass_configs)
-def mhc_pre_sqrsum(hc_hidden, h_blk=SQRSUM_H_BLK, dtype="bfloat16", accum_dtype="float"):
-    """Kernel A2: sqrsum = sum(x^2) over hidden dim.
+@tilelang.jit(out_idx=[2], pass_configs=pass_configs)
+def mhc_pre_sqrsum_rmsnorm(
+    hc_hidden,
+    pad_hc_mult3,
+    hc_mult,
+    hidden_size,
+    rms_eps,
+    sqr_h_blk=SQRSUM_H_BLK,
+    dtype="bfloat16",
+    accum_dtype="float",
+):
+    """Fused Kernel A2+B1: sqrsum + RMSNorm in one kernel.
 
-    Dual-V-core, large h_blk, T.Pipelined. In-kernel tail via pad_value + TAIL_MASK.
+    Step 1 (A2): sqrsum = sum(x^2) over hc_hidden, tiled with T.Pipelined.
+    Step 2 (B1): mixes = gemm_out * rsqrt(sqrsum / (hc*hidden) + rms_eps).
+
+    Saves 1 kernel launch + sqrsum GM round-trip vs separate A2+B1.
     """
     n = T.symbolic("n")
-    total_tiles = (hc_hidden + h_blk - 1) // h_blk
+    sqr_total_tiles = (hc_hidden + sqr_h_blk - 1) // sqr_h_blk
     VEC_NUM = 2
 
     @T.prim_func
     def main(
         x: T.Tensor((n, hc_hidden), dtype),
-        sqrsum: T.Tensor((n,), accum_dtype),
+        gemm_out: T.Tensor((n, pad_hc_mult3), accum_dtype),
+        mixes: T.Tensor((n, pad_hc_mult3), accum_dtype),
     ):
         with T.Kernel(T.ceildiv(n, VEC_NUM), is_npu=True) as (cid, vid):
             bid = cid * VEC_NUM + vid
 
             if bid < n:
                 with T.Scope("V"):
-                    acc_ub = T.alloc_ub((h_blk,), accum_dtype)
-                    x_ub = T.alloc_ub((h_blk,), dtype)
-                    x_fp32 = T.alloc_ub((h_blk,), accum_dtype)
-                    x_sq = T.alloc_ub((h_blk,), accum_dtype)
+                    acc_ub = T.alloc_ub((sqr_h_blk,), accum_dtype)
+                    x_ub = T.alloc_ub((sqr_h_blk,), dtype)
+                    x_fp32 = T.alloc_ub((sqr_h_blk,), accum_dtype)
+                    x_sq = T.alloc_ub((sqr_h_blk,), accum_dtype)
                     T.tile.fill(acc_ub, 0.0)
 
-                    for i_k in T.Pipelined(total_tiles, num_stages=2):
-                        T.copy(x[bid, i_k * h_blk], x_ub, pad_value=0.0)
-                        T.tile.cast(x_fp32, x_ub, "CAST_NONE", h_blk)
+                    for i_k in T.Pipelined(sqr_total_tiles, num_stages=2):
+                        T.copy(x[bid, i_k * sqr_h_blk], x_ub, pad_value=0.0)
+                        T.tile.cast(x_fp32, x_ub, "CAST_NONE", sqr_h_blk)
                         T.tile.mul(x_sq, x_fp32, x_fp32)
                         T.tile.add(acc_ub, acc_ub, x_sq)
 
                     result_ub = T.alloc_ub(1, accum_dtype)
                     T.reduce_sum(acc_ub, result_ub, dim=-1)
-                    T.copy(result_ub, sqrsum[bid])
 
-    return main
+                    rms_ub = T.alloc_ub(1, accum_dtype)
+                    inv_sqrt_ub = T.alloc_ub(1, accum_dtype)
 
+                    T.tile.fill(rms_ub, 0.0)
+                    T.tile.add(rms_ub, rms_ub, result_ub[0])
+                    T.tile.mul(rms_ub, rms_ub, 1.0 / (hc_mult * hidden_size))
+                    T.tile.add(rms_ub, rms_ub, rms_eps)
+                    T.tile.rsqrt(inv_sqrt_ub, rms_ub)
 
-# ============================================================
-# Kernel B1: RMSNorm (Vector)
-# ============================================================
-
-
-@tilelang.jit(out_idx=[2], pass_configs=pass_configs)
-def mhc_pre_rmsnorm(pad_hc_mult3, hc_mult, hidden_size, rms_eps, dtype="float"):
-    """Kernel B1: mixes = out * rsqrt(sqrsum / (hc * hidden) + rms_eps).
-
-    One token per block. Reads gemm_out and sqrsum, writes normalized mixes.
-    """
-    n = T.symbolic("n")
-
-    @T.prim_func
-    def main(
-        gemm_out: T.Tensor((n, pad_hc_mult3), dtype),
-        sqrsum: T.Tensor((n,), dtype),
-        mixes: T.Tensor((n, pad_hc_mult3), dtype),
-    ):
-        with T.Kernel(T.ceildiv(n, 2), is_npu=True) as (cid, vid):
-            bid = cid * 2 + vid
-            if bid < n:
-                rms_ub = T.alloc_ub(1, dtype)
-                inv_sqrt_ub = T.alloc_ub(1, dtype)
-
-                T.copy(sqrsum[bid], rms_ub)
-                T.tile.mul(rms_ub, rms_ub, 1.0 / (hc_mult * hidden_size))
-                T.tile.add(rms_ub, rms_ub, rms_eps)
-                T.tile.rsqrt(inv_sqrt_ub, rms_ub)
-
-                out_ub = T.alloc_ub(pad_hc_mult3, dtype)
-                mixes_ub = T.alloc_ub(pad_hc_mult3, dtype)
-                T.copy(gemm_out[bid, 0], out_ub)
-                T.tile.mul(mixes_ub, out_ub, inv_sqrt_ub[0])
-                T.copy(mixes_ub, mixes[bid, 0])
+                    out_ub = T.alloc_ub(pad_hc_mult3, accum_dtype)
+                    mixes_ub = T.alloc_ub(pad_hc_mult3, accum_dtype)
+                    T.copy(gemm_out[bid, 0], out_ub)
+                    T.tile.mul(mixes_ub, out_ub, inv_sqrt_ub[0])
+                    T.copy(mixes_ub, mixes[bid, 0])
 
     return main
 
@@ -191,24 +179,28 @@ def mhc_pre_rmsnorm(pad_hc_mult3, hc_mult, hidden_size, rms_eps, dtype="float"):
 # ============================================================
 
 
-@tilelang.jit(out_idx=[4, 5, 6], workspace_idx=[3], pass_configs=pass_configs)
-def mhc_pre_split_sinkhorn(hc, sinkhorn_iters, pre_eps, sinkhorn_eps, hc_post_mult_value=2.0, dtype="float"):
-    """Kernel B2: mixes -> pre/post/comb + Sinkhorn normalization.
+@tilelang.jit(out_idx=[5, 6, 7], workspace_idx=[3], pass_configs=pass_configs)
+def mhc_pre_split_sinkhorn_apply(
+    hc,
+    hidden,
+    sinkhorn_iters,
+    pre_eps,
+    sinkhorn_eps,
+    hc_post_mult_value=2.0,
+    apply_h_blk=2048,
+    dtype="float",
+    apply_dtype="bfloat16",
+    accum_dtype="float",
+):
+    """Fused Kernel B2+B3: split + sinkhorn + apply pre_mix.
 
-    Adapted from examples/deepseek_v4/hc_split_sinkhorn.py.
-    One token per block.
-
-    Args:
-        mixes:  [n, mix_hc]  fp32  (mix_hc = hc*(2+hc))
-        hc_scale: [3]  fp32
-        hc_base:  [mix_hc]  fp32
-    Returns:
-        pre:  [n, hc]  fp32
-        post: [n, hc]  fp32
-        comb: [n, hc, hc]  fp32
+    B2 produces pre_mix in shared, B3 reads it and applies to residual.
+    Saves 1 kernel launch + pre_mix GM round-trip.
     """
     n = T.symbolic("n")
     mix_hc = hc * (2 + hc)
+    apply_total_tiles = (hidden + apply_h_blk - 1) // apply_h_blk
+    apply_pad_h = apply_total_tiles * apply_h_blk
 
     hc_pad = hc
     if hc * 4 % 32 != 0:
@@ -220,9 +212,10 @@ def mhc_pre_split_sinkhorn(hc, sinkhorn_iters, pre_eps, sinkhorn_eps, hc_post_mu
         hc_scale: T.Tensor([3], dtype),
         hc_base: T.Tensor([mix_hc], dtype),
         workspace: T.Tensor([n, mix_hc], dtype),
-        pre: T.Tensor([n, hc], dtype),
+        residual: T.Tensor([n, hc, hidden], apply_dtype),
         post: T.Tensor([n, hc], dtype),
         comb: T.Tensor([n, hc, hc], dtype),
+        layer_input: T.Tensor([n, apply_pad_h], apply_dtype),
     ):
         with T.Kernel(T.ceildiv(n, 2), is_npu=True) as (cid, vid):
             bid = cid * 2 + vid
@@ -265,7 +258,6 @@ def mhc_pre_split_sinkhorn(hc, sinkhorn_iters, pre_eps, sinkhorn_eps, hc_post_mu
                 T.copy(workspace[bid, :hc], tmp_shared)
                 T.tile.sigmoid(pre_shared, tmp_shared)
                 T.tile.add(pre_shared, pre_shared, pre_eps)
-                T.copy(pre_shared[:hc], pre[bid, :hc])
 
                 # post
                 T.copy(workspace[bid, hc : hc + hc_pad], tmp_shared)
@@ -313,6 +305,30 @@ def mhc_pre_split_sinkhorn(hc, sinkhorn_iters, pre_eps, sinkhorn_eps, hc_post_mu
 
                 for i in T.unroll(hc):
                     T.copy(comb_shared[i, :hc], comb[bid, i, :])
+
+                # ---- B3: apply pre_mix (fused, no GM round-trip for pre) ----
+                # pre_shared already in shared, copy to UB for AXPY
+                pre_ub_apply = T.alloc_ub(hc, accum_dtype)
+                for i in T.unroll(hc):
+                    pre_ub_apply[i] = pre_shared[i]
+
+                res_ub_apply = T.alloc_ub((hc, apply_h_blk), apply_dtype)
+                res_fp32_apply = T.alloc_ub((hc, apply_h_blk), accum_dtype)
+                out_fp32_apply = T.alloc_ub(apply_h_blk, accum_dtype)
+                out_bf16_apply = T.alloc_ub(apply_h_blk, apply_dtype)
+
+                for i_h in T.Pipelined(apply_total_tiles, num_stages=2):
+                    h_start = i_h * apply_h_blk
+
+                    T.copy(residual[bid, 0:hc, h_start : h_start + apply_h_blk], res_ub_apply, pad_value=0.0)
+                    T.tile.cast(res_fp32_apply, res_ub_apply, "CAST_NONE", apply_h_blk * hc)
+
+                    T.tile.fill(out_fp32_apply, 0.0)
+                    for res_idx in T.unroll(hc):
+                        T.tile.axpy(out_fp32_apply, res_fp32_apply[res_idx, :], pre_ub_apply[res_idx])
+
+                    T.tile.cast(out_bf16_apply, out_fp32_apply, "CAST_RINT", apply_h_blk)
+                    T.copy(out_bf16_apply, layer_input[bid, h_start : h_start + apply_h_blk])
 
     return main
 
@@ -397,10 +413,8 @@ def _get_kernel(name, *args):
 
 _KERNEL_BUILDERS = {
     "gemm": mhc_pre_gemm,
-    "sqrsum": mhc_pre_sqrsum,
-    "rmsnorm": mhc_pre_rmsnorm,
-    "sinkhorn": mhc_pre_split_sinkhorn,
-    "apply": mhc_pre_apply_mix,
+    "sqrsum_rmsnorm": mhc_pre_sqrsum_rmsnorm,
+    "sinkhorn_apply": mhc_pre_split_sinkhorn_apply,
 }
 
 
@@ -421,7 +435,7 @@ def prepare_fn(fn, hc_mult):
 
 
 def mhc_pre_gemm_sqrsum(x, fn, hc_mult, fn_packed=None):
-    """Kernel A host adapter.
+    """Kernel A host adapter: GEMM only (sqrsum fused into B1).
 
     Args:
         x:  [n, hc*hidden] bf16
@@ -429,8 +443,7 @@ def mhc_pre_gemm_sqrsum(x, fn, hc_mult, fn_packed=None):
         hc_mult: int
 
     Returns:
-        out:    [n, hc_mult3] fp32
-        sqrsum: [n] fp32
+        out:    [n, hc_mult3] fp32 (padded)
     """
     n = x.shape[0]
     hc_hidden = x.shape[1]
@@ -457,10 +470,7 @@ def mhc_pre_gemm_sqrsum(x, fn, hc_mult, fn_packed=None):
     gemm_kernel = _get_kernel("gemm", pad_hc_hidden, pad_hc_mult3)
     out_padded = gemm_kernel(x_padded, fn_t_padded)
 
-    sqrsum_kernel = _get_kernel("sqrsum", hc_hidden)
-    sqrsum = sqrsum_kernel(x)
-
-    return out_padded, sqrsum
+    return out_padded
 
 
 def mhc_pre(residual, fn, hc_scale, hc_base, rms_eps, hc_pre_eps, hc_sinkhorn_eps, hc_post_mult_value, sinkhorn_repeat, fn_packed=None):
@@ -492,23 +502,24 @@ def mhc_pre(residual, fn, hc_scale, hc_base, rms_eps, hc_pre_eps, hc_sinkhorn_ep
 
     x_flat = residual.view(n, hc_mult * hidden)
 
-    # Kernel A: gemm + sqrsum (returns padded [pad_n, pad_hc_mult3])
-    gemm_out_padded, sqrsum = mhc_pre_gemm_sqrsum(x_flat, fn, hc_mult, fn_packed)
+    # Kernel A1: GEMM only
+    gemm_out_padded = mhc_pre_gemm_sqrsum(x_flat, fn, hc_mult, fn_packed)
 
-    # Kernel B1: RMSNorm (slice to [n, pad_hc_mult3] to match sqrsum [n])
+    # Fused Kernel A2+B1: sqrsum + RMSNorm
     pad_hc_mult3 = calc_pad(hc_mult3, MIN_BLOCK)
     gemm_out = gemm_out_padded[:n, :pad_hc_mult3].contiguous()
-    rmsnorm_kernel = _get_kernel("rmsnorm", pad_hc_mult3, hc_mult, hidden, rms_eps)
-    mixes_padded = rmsnorm_kernel(gemm_out, sqrsum)
+    sqrsum_rmsnorm_kernel = _get_kernel("sqrsum_rmsnorm", hc_mult * hidden, pad_hc_mult3, hc_mult, hidden, rms_eps)
+    mixes_padded = sqrsum_rmsnorm_kernel(x_flat, gemm_out)
     mixes = mixes_padded[:n, :hc_mult3].contiguous()
 
-    # Kernel B2: split + sinkhorn
-    sinkhorn_kernel = _get_kernel("sinkhorn", hc_mult, sinkhorn_repeat, hc_pre_eps, hc_sinkhorn_eps, hc_post_mult_value)
-    pre_mix, post_mix, comb_mix = sinkhorn_kernel(mixes, hc_scale, hc_base)
+    # Fused Kernel B2+B3: sinkhorn + apply pre_mix
+    sinkhorn_apply_kernel = _get_kernel("sinkhorn_apply", hc_mult, hidden, sinkhorn_repeat, hc_pre_eps, hc_sinkhorn_eps, hc_post_mult_value)
+    post_mix, comb_mix, layer_input_padded = sinkhorn_apply_kernel(mixes, hc_scale, hc_base, residual)
 
-    # Kernel B3: apply pre_mix (in-kernel tail, no host pad)
-    apply_kernel = _get_kernel("apply", hc_mult, hidden)
-    layer_input_padded = apply_kernel(residual, pre_mix)
+    # B2 outputs padded shapes (hc_pad), trim to actual hc
+    post_mix = post_mix[:, :hc_mult].contiguous()
+    comb_mix = comb_mix[:, :, :hc_mult].contiguous()
+
     layer_input = layer_input_padded[:n, :hidden]
 
     post_mix_out = post_mix.unsqueeze(-1)
