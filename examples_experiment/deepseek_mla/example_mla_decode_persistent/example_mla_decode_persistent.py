@@ -434,8 +434,8 @@ def run_mla_decode(q, q_pe, kv, k_pe, block_N, block_H, core_num):
     K_pe_3d = k_pe.view(batch, seqlen_kv, pe_dim)
 
     # Single unified kernel: fp32 workspace_3, num_stages=1, KV reuse.
-    phase1_mod = flashattn_mla_decode(batch, heads, seqlen_kv, dim, pe_dim, block_N, block_H, core_num)
-    output = phase1_mod(q, q_pe, KV_3d, K_pe_3d)
+    kernel_mod = flashattn_mla_decode(batch, heads, seqlen_kv, dim, pe_dim, block_N, block_H, core_num)
+    output = kernel_mod(q, q_pe, KV_3d, K_pe_3d)
     return output
 
 

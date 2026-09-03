@@ -8,7 +8,7 @@ Levels:
   - all:       run l0 + l1 + l2 + boundary
 
 Precision standard (fp16): atol=2^-14, rtol=2^-9, max_abs_limit=1e-1, required_ratio=0.99.
-L0/L1 failures block (exit code 1). L2/Boundary failures are non-blocking (warnings only).
+L0/L1/L2 failures block (exit code 1). Boundary failures are non-blocking (warnings only).
 """
 
 import argparse
@@ -217,7 +217,7 @@ def _run_ref(q, q_pe, kv, k_pe):
 # L0 Test Suite (threshold tests — rule-based shapes for precision convergence)
 # ============================================================================
 
-# L0 configs: single-kernel path (num_split=1, fp32 workspace_3).
+# L0 configs: single-kernel path (fp32 workspace_3, num_stages=1, KV reuse).
 L0_CONFIGS = [
     {
         "name": "l0_small_basic",
@@ -230,9 +230,9 @@ L0_CONFIGS = [
         "tags": ["D-DTYPE-fp16", "D-SHAPE-ALIGNED", "D-VALRANGE-M"],
     },
     {
-        "name": "l0_num_split_1",
+        "name": "l0_default_config",
         "shape": (1, 64, 128, 512, 64),
-        "tags": ["D-DTYPE-fp16", "D-SHAPE-ALIGNED", "D-PARAM-num_split"],
+        "tags": ["D-DTYPE-fp16", "D-SHAPE-ALIGNED", "D-VALRANGE-S"],
     },
     {
         "name": "l0_medium",
@@ -292,7 +292,7 @@ def test_mla_decode_persistent_l0():
 # L1 Functional Tests (irregular shapes, parameter variations)
 # ============================================================================
 
-# L1 configs: single-kernel path (num_split=1, fp32 workspace_3).
+# L1 configs: single-kernel path (fp32 workspace_3, num_stages=1, KV reuse).
 L1_CONFIGS = [
     {
         "name": "l1_edge_minimal",
@@ -392,10 +392,17 @@ def test_mla_decode_persistent_l1():
 
 
 def test_mla_decode_persistent_l2():
-    """L2 negative tests: illegal inputs must be rejected (correct exception = PASS)."""
+    """L2 negative tests: illegal inputs must be rejected (correct exception = PASS).
+
+    Returns bool: True if all illegal inputs correctly rejected with expected
+    exception types. False if any illegal input silently accepted or unexpected
+    exception type raised. Result is merged into blocking exit code by main().
+    """
     core_num = _get_core_num()
+    ok = True
 
     # L2-1: Wrong dtype (fp32 instead of fp16) — D-EXC-DTYPE
+    # Expected: AssertionError (host assert q.dtype == torch.float16)
     try:
         batch, heads, kv_ctx, dim, pe_dim = 1, 64, 128, 512, 64
         q = torch.randn(batch, heads, dim, dtype=torch.float32, device="cpu").npu()
@@ -403,22 +410,29 @@ def test_mla_decode_persistent_l2():
         kv = torch.randn(batch, kv_ctx, 1, dim, dtype=torch.float32, device="cpu").npu()
         k_pe = torch.randn(batch, kv_ctx, 1, pe_dim, dtype=torch.float32, device="cpu").npu()
         run_mla_decode(q, q_pe, kv, k_pe, 64, 64, core_num)
-        print("[BOUNDARY_WARN] l2 l2_wrong_dtype: fp32 input silently accepted (expected rejection)")
-    except (TypeError, ValueError, RuntimeError, AssertionError):
-        print("[BOUNDARY_PASS] l2 l2_wrong_dtype: fp32 input correctly rejected")
+        print("[BOUNDARY_FAIL] l2 l2_wrong_dtype: fp32 input silently accepted (expected rejection)")
+        ok = False
+    except AssertionError as e:
+        print(f"[BOUNDARY_PASS] l2 l2_wrong_dtype: fp32 input correctly rejected ({type(e).__name__})")
     except Exception as e:
-        print(f"[BOUNDARY_WARN] l2 l2_wrong_dtype: unexpected error type: {type(e).__name__}: {e}")
+        print(f"[BOUNDARY_FAIL] l2 l2_wrong_dtype: unexpected error type: {type(e).__name__}: {e}")
+        ok = False
 
     # L2-2: Non-divisible seqlen_kv — D-EXC-SHAPE
+    # Expected: AssertionError (host validation seqlen_kv % block_N == 0)
     try:
         batch, heads, kv_ctx, dim, pe_dim = 1, 64, 65, 512, 64
         q, q_pe, kv, k_pe = _gen_inputs(batch, heads, kv_ctx, dim, pe_dim)
         run_mla_decode(q, q_pe, kv, k_pe, 64, 64, core_num)
-        print("[BOUNDARY_WARN] l2 l2_bad_shape: non-divisible seqlen silently accepted (expected rejection)")
-    except (TypeError, ValueError, RuntimeError, AssertionError, ZeroDivisionError):
-        print("[BOUNDARY_PASS] l2 l2_bad_shape: non-divisible seqlen correctly rejected")
+        print("[BOUNDARY_FAIL] l2 l2_bad_shape: non-divisible seqlen silently accepted (expected rejection)")
+        ok = False
+    except AssertionError as e:
+        print(f"[BOUNDARY_PASS] l2 l2_bad_shape: non-divisible seqlen correctly rejected ({type(e).__name__})")
     except Exception as e:
-        print(f"[BOUNDARY_WARN] l2 l2_bad_shape: unexpected error type: {type(e).__name__}: {e}")
+        print(f"[BOUNDARY_FAIL] l2 l2_bad_shape: unexpected error type: {type(e).__name__}: {e}")
+        ok = False
+
+    return ok
 
 
 # ============================================================================
@@ -515,7 +529,7 @@ def main():
     if args.level in ("l1", "all"):
         blocking_ok &= test_mla_decode_persistent_l1()
     if args.level in ("l2", "all"):
-        test_mla_decode_persistent_l2()
+        blocking_ok &= test_mla_decode_persistent_l2()
     if args.level in ("boundary", "all"):
         test_mla_decode_persistent_boundary()
 
