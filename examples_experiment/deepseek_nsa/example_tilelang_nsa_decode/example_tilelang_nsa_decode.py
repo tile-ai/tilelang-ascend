@@ -108,10 +108,16 @@ def nsa_decode(batch, seq_len, query_heads, kv_head_num, dim, selected_blocks, b
             v_rows_ub = T.alloc_ub([BS // 2, D], dtype)
 
             # block_counts mask buffers (2D for 256-byte alignment)
+            # mask_2d_ub uses uint8 packed bitmask (1 bit per element) per AscendC
+            # CompareScalar/Select selMask requirement: uint8_t, not float.
+            # Shape [G//2, BS//8] = [8, 4] = 32 bytes (32B aligned).
             block_counts_scalar_ub = T.alloc_ub([1], accum_dtype)
             block_counts_1d_ub = T.alloc_ub([BS], accum_dtype)
             block_counts_2d_ub = T.alloc_ub([G // 2, BS], accum_dtype)
-            mask_2d_ub = T.alloc_ub([G // 2, BS], accum_dtype)
+            mask_2d_ub = T.alloc_ub([G // 2, BS // 8], "uint8")
+            # Guard mask for block_counts=0 check on acc_o [G//2, D=16]:
+            # packed = G//2 * D // 8 = 8 * 2 = 16 bytes, padded to 32B alignment.
+            guard_mask_ub = T.alloc_ub([32], "uint8")
 
             # Q load + init (loop-external)
             T.copy(Q[i_b, 0, g_start : g_start + G, :], q_l1)
@@ -190,8 +196,8 @@ def nsa_decode(batch, seq_len, query_heads, kv_head_num, dim, selected_blocks, b
             # Use block_counts > 0 (not sumexp > 0) to avoid swallowing inf/nan NaN
             T.tile.broadcast(sumexp, block_counts_scalar_ub)
             T.tile.broadcast(acc_o_ub, sumexp)
-            T.tile.compare(acc_o_ub, acc_o_ub, 0.0, "GT")
-            T.tile.select(acc_o, acc_o_ub, acc_o, 0.0, "VSEL_TENSOR_SCALAR_MODE")
+            T.tile.compare(guard_mask_ub, acc_o_ub, 0.0, "GT")
+            T.tile.select(acc_o, guard_mask_ub, acc_o, 0.0, "VSEL_TENSOR_SCALAR_MODE")
 
             # Output: fp32 → fp16 → GM
             T.copy(acc_o, acc_o_half)

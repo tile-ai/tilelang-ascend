@@ -260,22 +260,30 @@ def test_nsa_l1():
 
 
 # =============================================================================
-# L2 exception tests — non-blocking
+# L2 exception tests — blocking (returns bool, merged into exit code)
 # =============================================================================
-def _run_exception(name, fn):
-    """L2: fn() feeds invalid input; expects rejection."""
+def _run_exception(name, fn, expected_exc=(AssertionError, ValueError, TypeError)):
+    """L2: fn() feeds invalid input; expects rejection of specific exception type.
+
+    Returns True if rejected with expected exception, False otherwise.
+    Non-expected exceptions are treated as failures (not silently accepted).
+    """
     try:
         fn()
-    except Exception as e:
+    except expected_exc as e:
         print(f"[BOUNDARY_PASS] l2 {name}: correctly rejected ({type(e).__name__})")
-        return
-    print(f"[BOUNDARY_WARN] l2 {name}: invalid input not rejected")
+        return True
+    except Exception as e:
+        print(f"[BOUNDARY_FAIL] l2 {name}: wrong exception type ({type(e).__name__})")
+        return False
+    print(f"[BOUNDARY_FAIL] l2 {name}: invalid input not rejected")
+    return False
 
 
 def test_nsa_l2():
-    """L2 exception tests: unsupported dtype / invalid shape. Non-blocking."""
+    """L2 exception tests: unsupported dtype / invalid shape. Blocking (returns bool)."""
 
-    # float32 input (kernel hardcodes float16)
+    # float32 input (kernel hardcodes float16) — expect ValueError or TypeError
     def _test_fp32_input():
         B, SEQ_LEN, H, HQ, D, S, BS = 1, 64, 1, 16, 16, 1, 32
         kernel = nsa_decode(B, SEQ_LEN, HQ, H, D, S, BS)
@@ -288,19 +296,21 @@ def test_nsa_l2():
         kernel(q_f32, k_f32, v_f32, ri, bc)
         torch.npu.synchronize()
 
-    _run_exception("fp32_input_unsupported", _test_fp32_input)
+    ok = True
+    ok &= _run_exception("fp32_input_unsupported", _test_fp32_input, expected_exc=(ValueError, TypeError))
 
-    # HQ=8 (G=8 < 16, violates L0C fractal)
+    # HQ=8 (G=8 < 16, violates L0C fractal) — expect AssertionError
     def _test_hq8():
         nsa_decode(1, 64, 8, 1, 16, 1, 32)
 
-    _run_exception("hq8_rejected", _test_hq8)
+    ok &= _run_exception("hq8_rejected", _test_hq8, expected_exc=AssertionError)
 
-    # HQ=17 (G=17 odd, violates vid split)
+    # HQ=17 (G=17 odd, violates vid split) — expect AssertionError
     def _test_hq17():
         nsa_decode(1, 64, 17, 1, 16, 1, 32)
 
-    _run_exception("hq17_rejected", _test_hq17)
+    ok &= _run_exception("hq17_rejected", _test_hq17, expected_exc=AssertionError)
+    return ok
 
 
 # =============================================================================
@@ -380,7 +390,7 @@ def main():
     if args.level in ("l1", "all"):
         blocking_ok &= test_nsa_l1()
     if args.level in ("l2", "all"):
-        test_nsa_l2()
+        blocking_ok &= test_nsa_l2()
     if args.level in ("boundary", "all"):
         test_nsa_boundary()
 
