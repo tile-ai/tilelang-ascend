@@ -143,14 +143,16 @@ def native_sparse_attention(
             #   pattern as old host-precomputed mask, proven to avoid NaN).
             # col_pos: 1D [BS] for arith_progression (j = 0..BS-1).
             # cond_s_2d: 2D [G, BS] per-block token_pos, then overwritten with additive mask.
-            # compare_result: 2D [G, BS] separate buffer for compare result (selMask).
+            # compare_result: 1D [G*BS//8] uint8 packed bitmask for compare output (selMask).
+            #   AscendC CompareScalar requires uint8_t output (1 bit per element, packed 8/byte).
+            #   Select selMask also requires uint8. G*BS is always divisible by 8 (G>=16, BS>=32).
             #   (select with selMask==dst causes read-after-write hazard; separate buffer avoids it.)
             # zero_s: 2D [G, BS] filled with 0.0 (src0 for select: visible→0.0).
             #   (compare/select require 256-byte alignment; G>=16 ensures [G,BS] is aligned.)
             mask_ub = T.alloc_shared([G, KV_LEN], accum_dtype)  # full additive mask
             col_pos = T.alloc_shared([BS], accum_dtype)  # j = 0..BS-1 progression
             cond_s_2d = T.alloc_shared([G, BS], accum_dtype)  # per-block work buffer
-            compare_result = T.alloc_shared([G, BS], accum_dtype)  # compare result (selMask)
+            compare_result = T.alloc_shared([G * BS // 8], "uint8")  # packed bitmask (selMask)
             zero_s = T.alloc_shared([G, BS], accum_dtype)  # constant 0.0 for select src0
 
             # T.Pipelined(num_stages=2): overlap Cube[k] with Vector[k-1] via L0C
@@ -184,9 +186,11 @@ def native_sparse_attention(
                 # mask_ub: 0.0=visible, NEG_INF=masked. Built per-block via row-by-row
                 #   T.copy (1D contiguous slices). Applied with T.tile.add (same as old
                 #   host-precomputed mask; NEG_INF is finite → no NaN when all masked).
-                # Conversion: compare → 1.0/0.0, then select(zero_s, NEG_INF) → 0.0/NEG_INF.
+                # Conversion: compare → uint8 packed bitmask (1=visible, 0=masked), then
+                #   select(zero_s, NEG_INF) → 0.0/NEG_INF.
                 #   (Arithmetic mul+sub fails: 0.0*NEG_INF=NaN in IEEE 754.)
                 #   (select with selMask==dst causes RAW hazard; separate compare_result buffer.)
+                #   (AscendC CompareScalar/Select require uint8_t mask, not float — per review.)
                 # Invalid blocks (sentinel → BlockStarts=seq_len*BS → token_pos >> i_t → masked).
                 # Padding positions (S*BS..KV_LEN-1) remain NEG_INF from fill.
                 # Loop is Python-unrolled: s, g are compile-time constants.
@@ -200,10 +204,10 @@ def native_sparse_attention(
                     T.tile.broadcast(cond_s_2d, col_pos)  # [BS] → [G, BS]
                     T.tile.add(cond_s_2d, cond_s_2d, bs_start)  # token_pos = bs_start + j
                     if is_causal:
-                        T.tile.compare(compare_result, cond_s_2d, i_t, "LE")  # 1.0/0.0
+                        T.tile.compare(compare_result, cond_s_2d, i_t, "LE")  # uint8 bitmask
                     else:
                         T.tile.compare(compare_result, cond_s_2d, float(seq_len - 1), "LE")
-                    # Convert 1.0/0.0 → 0.0/NEG_INF: visible→zero_s(0.0), masked→NEG_INF(scalar)
+                    # Convert bitmask → 0.0/NEG_INF: visible→zero_s(0.0), masked→NEG_INF(scalar)
                     T.tile.select(cond_s_2d, compare_result, zero_s, NEG_INF, "VSEL_TENSOR_SCALAR_MODE")
                     # Row-by-row 1D copy to mask_ub slice (contiguous in row-major layout).
                     for g in range(G):

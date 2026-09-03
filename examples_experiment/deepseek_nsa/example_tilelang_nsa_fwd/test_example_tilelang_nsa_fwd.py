@@ -270,21 +270,17 @@ def test_nsa_l1():
 
 
 # =============================================================================
-# L2 exception tests — non-blocking (invalid inputs must be rejected)
+# L2 exception tests — blocking (invalid inputs must be rejected)
 # =============================================================================
-def _run_exception(name, fn):
-    """L2: fn() feeds invalid input; expects rejection. Raises=PASS, silently accepts=WARN."""
-    try:
-        fn()
-    except Exception as e:
-        print(f"[BOUNDARY_PASS] l2 {name}: correctly rejected ({type(e).__name__})")
-        return
-    print(f"[BOUNDARY_WARN] l2 {name}: invalid input not rejected (silently accepted)")
-
-
 def test_nsa_l2():
-    """L2 exception tests: unsupported dtype / invalid shape / odd GQA. Non-blocking."""
+    """L2 exception tests: unsupported dtype / invalid shape / odd GQA. Blocking.
+
+    Each case asserts a specific exception type. If invalid input is NOT
+    rejected (no exception) or an unexpected exception type is raised, the
+    case fails ([BOUNDARY_FAIL]) and the overall L2 result is False.
+    """
     BS_pad = 64
+    ok = True
 
     # D-EXC-DTYPE: float32 input (kernel hardcodes float16).
     def _test_fp32_input():
@@ -309,7 +305,15 @@ def test_nsa_l2():
         kernel(Q.npu(), K_sel_3d.npu(), V_sel_3d.npu(), block_starts.npu())
         torch.npu.synchronize()
 
-    _run_exception("fp32_input_unsupported", _test_fp32_input)
+    try:
+        _test_fp32_input()
+        print("[BOUNDARY_FAIL] l2 fp32_input_unsupported: not rejected (silently accepted)")
+        ok = False
+    except (ValueError, TypeError) as e:
+        print(f"[BOUNDARY_PASS] l2 fp32_input_unsupported: rejected ({type(e).__name__})")
+    except Exception as e:
+        print(f"[BOUNDARY_FAIL] l2 fp32_input_unsupported: unexpected {type(e).__name__}: {e}")
+        ok = False
 
     # D-EXC-SHAPE: T < block_size (no valid block to select).
     def _test_short_seq():
@@ -322,7 +326,15 @@ def test_nsa_l2():
         # prepare_inputs asserts T >= BS, rejecting this invalid input.
         prepare_inputs(Q, K, V, bi, bc, BS, S, bs_pad=BS_pad)
 
-    _run_exception("short_seq_no_block", _test_short_seq)
+    try:
+        _test_short_seq()
+        print("[BOUNDARY_FAIL] l2 short_seq_no_block: not rejected (silently accepted)")
+        ok = False
+    except AssertionError as e:
+        print(f"[BOUNDARY_PASS] l2 short_seq_no_block: rejected ({type(e).__name__})")
+    except Exception as e:
+        print(f"[BOUNDARY_FAIL] l2 short_seq_no_block: unexpected {type(e).__name__}: {e}")
+        ok = False
 
     # D-EXC-GQA: G=odd (HQ % H != 0, e.g. HQ=17, H=1, G=17).
     # The kernel allows odd G at JIT compile time (threads=1, no G evenness
@@ -375,12 +387,20 @@ torch.npu.synchronize()
             cwd=os.path.dirname(os.path.abspath(__file__)),
         )
         # Non-zero exit => NPU correctly rejected odd G at runtime.
-        if result.returncode != 0:
-            print(f"[BOUNDARY_PASS] l2 odd_gqa_runtime_error: correctly rejected at runtime (subprocess exit {result.returncode})")
-        else:
-            print("[BOUNDARY_WARN] l2 odd_gqa_runtime_error: odd G not rejected (subprocess exited 0)")
+        return result.returncode != 0
 
-    _test_odd_gqa()
+    try:
+        rejected = _test_odd_gqa()
+        if rejected:
+            print("[BOUNDARY_PASS] l2 odd_gqa_runtime_error: correctly rejected at runtime (subprocess non-zero exit)")
+        else:
+            print("[BOUNDARY_FAIL] l2 odd_gqa_runtime_error: not rejected (subprocess exited 0)")
+            ok = False
+    except Exception as e:
+        print(f"[BOUNDARY_FAIL] l2 odd_gqa_runtime_error: unexpected {type(e).__name__}: {e}")
+        ok = False
+
+    return ok
 
 
 # =============================================================================
@@ -484,13 +504,13 @@ def main():
 
     tilelang.disable_cache()
 
-    blocking_ok = True  # only L0/L1 count toward blocking decision
+    blocking_ok = True  # L0/L1/L2 count toward blocking decision
     if args.level in ("l0", "all"):
         blocking_ok &= test_nsa_l0()
     if args.level in ("l1", "all"):
         blocking_ok &= test_nsa_l1()
     if args.level in ("l2", "all"):
-        test_nsa_l2()  # L2 negative: non-blocking
+        blocking_ok &= test_nsa_l2()  # L2 exception: blocking (was non-blocking)
     if args.level in ("boundary", "all"):
         test_nsa_boundary()  # Boundary precision: non-blocking
 
