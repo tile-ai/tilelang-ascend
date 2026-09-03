@@ -14,23 +14,35 @@ corrupt ~10% of the output (fp16, rtol=atol=2e-2):
 
 2. **Lost layout annotations.** ``AscendLowerParallelToVector`` rebuilt Blocks
    without their annotations, dropping the default zN ``layout_map`` injected
-   by ``AscendInferBufferScope``. Layout inference then fell back to an
-   identity layout and sized L1 buffers by the *logical* shape (128 * 200 =
+   by ``AscendInferBufferScope``. Layout inference then fell back to a
+   non-fractal layout and sized L1 buffers by the *logical* shape (128 * 200 =
    25600 elements), re-introducing the overlap for any kernel with a
-   ``T.Parallel`` epilogue (the classic blocked-GEMM writer loop).
+   ``T.Parallel`` epilogue (the classic blocked-GEMM writer loop). This
+   upstream annotation-drop is NOT fixed in this PR (preserving it regressed
+   the vid-reduce workspace transform, which relies on linear offsets);
+   instead the sizing is corrected downstream in ``Flatten2DBuffer``
+   (``ascend_collect_buffer_shape.cc``), which pads every ``shared.l1``
+   buffer's element count up to the zN fractal extent once tile ops are
+   lowered and offsets are frozen.
 
 3. **Un-zeroed fractal padding.** ``copy_gm_to_l1`` only zero-initialized the
    L1 tile for partial tail copies, and even then with the logical element
    count. Full-tile copies with K % 16 != 0 left the zN padding holes holding
    stale L1 garbage. ``Mmad`` consumes whole C0 fractals (a tail mma with
    k = 72 accumulates 80 K-slots), so the garbage was multiplied into C.
+   The zero-init also failed for pipeline multi-versioned L1 buffers: the
+   codegen's ``need_clear`` was ``(dst_offset == 0)``, so every non-zero
+   pipeline version skipped the clear; it is now granted to any copy whose
+   destination offset is provably a whole multiple of the tile element count
+   (a version base), while in-tile splice sub-region offsets keep skipping it.
 
 The fixes: size zN/nZ buffers by the fractal-padded extent
-(``lower_tile_op.cc``), ceil-div the 2D re-flattening
-(``ascend_collect_buffer_shape.cc``), preserve Block annotations
-(``ascend_lower_parallel_to_vector.cc``), and zero-init the full fractal extent
-whenever padding holes exist (``copy_gm_to_l1`` in
-``src/tl_templates/ascend/common.h``).
+(``lower_tile_op.cc``), ceil-div the 2D re-flattening and pad ``shared.l1``
+totals to the zN extent (``ascend_collect_buffer_shape.cc``), zero-init the
+full fractal extent whenever padding holes exist plus version-base-aware
+``need_clear`` (``copy_gm_to_l1`` in ``src/tl_templates/ascend/common.h`` and
+its codegen in ``src/target/codegen_ascend.cc``), and compile-time-reject
+unservable int8 K-tails and non-C0-aligned ``kL0Size`` when ``kL0split > 1``.
 
 NOTE: executes on real NPU hardware (``.npu()``); ascendc target only. The PTO
 backend rejects non-fractal-divisible L1 tiles at compile time (pre-existing
@@ -322,6 +334,116 @@ def test_gemm_v0_ktail_int8(K, expected):
     kernel(a, b, c)
     torch.npu.synchronize()
     # int32 matmul is not implemented on NPU; compare on CPU.
+    ref = (a.cpu().int() @ b.cpu().int()).to("npu")
+    torch.testing.assert_close(c, ref)
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
+@pytest.mark.parametrize("K,num_stages", [(200, 2), (200, 3), (456, 2), (256, 2)])
+def test_gemm_v0_ktail_pipeline(K, num_stages):
+    """Pipelined K-loop with an unaligned K-tail: software pipelining
+    (``T.Pipelined``) multi-versions the L1 buffers, and every non-zero
+    version base used to skip the zero-init (the codegen's ``need_clear`` was
+    ``dst_offset == 0``), so a K-tail Mmad accumulated stale data from the
+    previous iteration's version (~97% wrong). The fix grants the clear to
+    any copy whose dst offset is provably a whole multiple of the tile
+    element count (a version base). K=256 is the aligned sanity anchor."""
+    M = N = 256
+    block_M = block_N = 128
+    block_K = 64
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), "float16"),
+        B: T.Tensor((K, N), "float16"),
+        C: T.Tensor((M, N), "float16"),
+    ):
+        with T.Kernel(4, is_npu=True) as (cid, _):
+            bx = cid // 2
+            by = cid % 2
+            A_L1 = T.alloc_shared((block_M, block_K), "float16")
+            B_L1 = T.alloc_shared((block_K, block_N), "float16")
+            C_L0 = T.alloc_L0C((block_M, block_N), "float")
+            with T.Scope("C"):
+                loop_k = T.ceildiv(K, block_K)
+                for k in T.Pipelined(loop_k, num_stages=num_stages):
+                    T.barrier_all()
+                    T.copy(A[bx * block_M, k * block_K], A_L1)
+                    T.copy(B[k * block_K, by * block_N], B_L1)
+                    T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
+                    T.barrier_all()
+                T.copy(C_L0, C[bx * block_M, by * block_N])
+
+    torch.manual_seed(0)
+    kernel = _compile(main)
+    a = torch.randn(M, K, dtype=torch.float16, device="npu")
+    b = torch.randn(K, N, dtype=torch.float16, device="npu")
+    c = torch.zeros(M, N, dtype=torch.float16, device="npu")
+    torch.npu.synchronize()
+    kernel(a, b, c)
+    torch.npu.synchronize()
+    ref = a.float() @ b.float()
+    torch.testing.assert_close(c.float(), ref, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
+@pytest.mark.parametrize(
+    "kL0Size,expected",
+    [
+        (128, "pass"),  # C0-aligned (128 % 32 == 0): fine with kL0split >= 2
+        (96, "pass"),  # C0-aligned (96 % 32 == 0)
+        (48, "reject"),  # 48 % 32 == 16: every tile consumed with a 64-slot
+        # C0 extent while the L1 zN layout provides only 48 rows; the L0
+        # ping-pong bases desynchronize. Must be compile-time rejected.
+    ],
+)
+def test_gemm_v0_ktail_int8_kl0size_c0(kL0Size, expected):
+    """int8 with ``kL0split > 1`` requires ``kL0Size`` itself to be
+    C0-aligned (a multiple of 32): each full tile's mma consumes
+    ``ceil(kL0Size/32)*32`` K-slots, so a non-aligned kL0Size (e.g. 48) reads
+    unwritten L0B slots on the FIRST tile already, not just the tail."""
+    M = N = 256
+    block_M = block_N = 128
+    K = 256  # aligned overall; only kL0Size varies
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), "int8"),
+        B: T.Tensor((K, N), "int8"),
+        C: T.Tensor((M, N), "int32"),
+    ):
+        with T.Kernel(4, is_npu=True) as (cid, _):
+            bx = cid // 2
+            by = cid % 2
+            A_L1 = T.alloc_L1((block_M, K), "int8")
+            B_L1 = T.alloc_L1((K, block_N), "int8")
+            C_L0 = T.alloc_L0C((block_M, block_N), "int32")
+            with T.Scope("C"):
+                T.copy(A[bx * block_M, 0], A_L1)
+                T.copy(B[0, by * block_N], B_L1)
+                T.barrier_all()
+                T.gemm_v0(A_L1, B_L1, C_L0, init=True, kL0Size=kL0Size)
+                T.barrier_all()
+                T.copy(C_L0, C[bx * block_M, by * block_N])
+
+    if expected == "reject":
+        with pytest.raises(RuntimeError, match="Compilation Failed"):
+            _compile(main)
+        return
+    torch.manual_seed(0)
+    kernel = _compile(main)
+    a = torch.randint(-8, 8, (M, K), dtype=torch.int8, device="npu")
+    b = torch.randint(-8, 8, (K, N), dtype=torch.int8, device="npu")
+    c = torch.zeros(M, N, dtype=torch.int32, device="npu")
+    torch.npu.synchronize()
+    kernel(a, b, c)
+    torch.npu.synchronize()
     ref = (a.cpu().int() @ b.cpu().int()).to("npu")
     torch.testing.assert_close(c, ref)
 

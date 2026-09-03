@@ -1227,6 +1227,21 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
       "K-slots unwritten). Split K differently or pad K to the needed "
       "alignment.");
 
+  // The tail guard above is not enough: EVERY K-tile is consumed with a
+  // C0-rounded k (a full tile with kSize = kL0Size uses ceil(kL0Size/C0)*C0
+  // slots), and its L1->L0B source offset steps by ELE_NUM_PER_C0 * kL0Size.
+  // When kL0Size is not C0-aligned (e.g. int8 kL0Size = 48: mma consumes 64
+  // slots while the L1 zN layout only provides roundUp16(48) = 48 rows), the
+  // first tile already reads unwritten L0B slots and the tile offsets drift
+  // from the C0-rounded spans. Require kL0Size itself to be C0-aligned
+  // whenever the K axis is split at the L0 level.
+  static_assert(
+      ELE_NUM_PER_C0 <= 16 || kL0split == 1 || (kL0Size % ELE_NUM_PER_C0) == 0,
+      "gemm_v0: kL0Size must be a multiple of the C0 element count "
+      "(32 for int8) when K is split into multiple L0 tiles. A non-C0-aligned "
+      "kL0Size makes every mma consume more K-slots than the L1 fractal "
+      "layout provides and desynchronizes the L0 ping-pong bases.");
+
   // ---- N tiling -----------------------------------------------------------
   // The B operand tile loaded into L0B is (kL0Size x nTile); L0B holds 64KB,
   // and with the kL0 ping-pong the per-slot budget is 32KB. So a single mma
