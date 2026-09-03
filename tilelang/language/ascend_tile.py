@@ -1979,16 +1979,29 @@ def sin(
     *,
     tmp: Buffer | BufferRegion | None = None,
 ):  # noqa: F821
-    """Performs element-wise sine calculation: dst = sin(src).
+    """Performs element-wise sine calculation: ``dst[i] = sin(src[i])``.
+
+    Only supported on the Ascend C backend; the PTO backend rejects it at
+    compile time.
 
     Args:
-        dst: The destination buffer where the result will be stored.
-        src: The source buffer containing the input data.
-        tmp: Optional complete UB scratch storage. Its scalar dtype is
+        dst: The destination buffer; it may alias src (in-place) on ascendc.
+        src: The source, a buffer or a contiguous region of it.
+        tmp: Optional explicit UB scratch storage. Its scalar dtype is
             reinterpreted by lowering and has no semantic meaning.
 
-    Returns:
-        A TVM intrinsic call that performs the sine operation.
+    Notes:
+        - dst and src must have equal element counts (asserted by the
+          frontend with "size must be same").
+        - Supported dtypes: float16, float32 only (Atlas A2/A3); integer
+          and bfloat16 dtypes fail at compile time.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
+        - ``tmp`` is optional; a temporary buffer is auto-allocated when not
+          provided.
+        - Special values follow IEEE semantics: sin(0)=0, sin(±inf)=nan,
+          sin(nan)=nan. Inputs beyond the float16 range ([-65504, 65504])
+          give approximation results without range reduction and are not
+          guaranteed to match IEEE.
     """
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
@@ -2015,16 +2028,29 @@ def cos(
     *,
     tmp: Buffer | BufferRegion | None = None,
 ):  # noqa: F821
-    """Performs element-wise cosine calculation: dst = cos(src).
+    """Performs element-wise cosine calculation: ``dst[i] = cos(src[i])``.
+
+    Only supported on the Ascend C backend; the PTO backend rejects it at
+    compile time.
 
     Args:
-        dst: The destination buffer where the result will be stored.
-        src: The source buffer containing the input data.
-        tmp: Optional complete UB scratch storage. Its scalar dtype is
+        dst: The destination buffer; it may alias src (in-place) on ascendc.
+        src: The source, a buffer or a contiguous region of it.
+        tmp: Optional explicit UB scratch storage. Its scalar dtype is
             reinterpreted by lowering and has no semantic meaning.
 
-    Returns:
-        A TVM intrinsic call that performs the cosine operation.
+    Notes:
+        - dst and src must have equal element counts (asserted by the
+          frontend with "size must be same").
+        - Supported dtypes: float16, float32 only (Atlas A2/A3); integer
+          and bfloat16 dtypes fail at compile time.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
+        - ``tmp`` is optional; a temporary buffer is auto-allocated when not
+          provided.
+        - Special values follow IEEE semantics: cos(0)=1, cos(±inf)=nan,
+          cos(nan)=nan. Inputs beyond the float16 range ([-65504, 65504])
+          give approximation results without range reduction and are not
+          guaranteed to match IEEE.
     """
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
