@@ -448,5 +448,60 @@ def test_gemm_v0_ktail_int8_kl0size_c0(kL0Size, expected):
     torch.testing.assert_close(c, ref)
 
 
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
+@pytest.mark.parametrize("K_L1", [200, 152])
+def test_gemm_v0_ktail_pipeline_parallel(K_L1):
+    """Pipelined K-loop with an unaligned K_L1 AND a T.Parallel epilogue (the
+    layout_map-loss path): InjectSoftwarePipeline versions the L1 buffers and
+    used to bake the version stride from the LOGICAL slice size (128*200 =
+    25600), while each version physically occupies the zN fractal extent
+    (26624) -- so version 0's fractal tail overlapped version 1's base and the
+    K-tail Mmad read stale data (59% wrong). RewriteAllocBuffer now pads the
+    per-version shape to the fractal extent, which fixes both the version
+    stride and the flattened Allocate size."""
+    M = N = 256
+    K = 2 * K_L1  # exactly two K_L1-wide iterations
+    block_M = block_N = 128
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), "float16"),
+        B: T.Tensor((K, N), "float16"),
+        C: T.Tensor((M, N), "float16"),
+    ):
+        with T.Kernel(4, is_npu=True) as (cid, _):
+            bx = cid // 2
+            by = cid % 2
+            A_L1 = T.alloc_shared((block_M, K_L1), "float16")
+            B_L1 = T.alloc_shared((K_L1, block_N), "float16")
+            C_L0 = T.alloc_L0C((block_M, block_N), "float")
+            with T.Scope("C"):
+                loop_k = T.ceildiv(K, K_L1)
+                for k in T.Pipelined(loop_k, num_stages=2):
+                    T.barrier_all()
+                    T.copy(A[bx * block_M, k * K_L1], A_L1)
+                    T.copy(B[k * K_L1, by * block_N], B_L1)
+                    T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
+                    T.barrier_all()
+                # T.Parallel epilogue: forces the AscendLowerParallelToVector
+                # layout_map-loss path (L1 buffers keep logical shapes).
+                for i, j in T.Parallel(block_M, block_N):
+                    C[bx * block_M + i, by * block_N + j] = C_L0[i, j]
+
+    torch.manual_seed(0)
+    kernel = _compile(main)
+    a = torch.randn(M, K, dtype=torch.float16, device="npu")
+    b = torch.randn(K, N, dtype=torch.float16, device="npu")
+    c = torch.zeros(M, N, dtype=torch.float16, device="npu")
+    torch.npu.synchronize()
+    kernel(a, b, c)
+    torch.npu.synchronize()
+    ref = a.float() @ b.float()
+    torch.testing.assert_close(c.float(), ref, rtol=2e-2, atol=2e-2)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
