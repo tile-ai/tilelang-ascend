@@ -5,7 +5,6 @@ Usage:
 """
 
 import tilelang
-import torch
 
 from examples.mhc_pre.example_mhc_pre import (
     generate_full_test_data,

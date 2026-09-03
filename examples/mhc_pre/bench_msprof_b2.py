@@ -35,17 +35,21 @@ sqrsum = residual_flat.square().sum(-1)
 rms = (sqrsum / (hc_mult * hidden) + data["rms_eps"]).rsqrt()
 mixes = out * rms.unsqueeze(-1)
 
-hc_scale_exp = torch.cat([
-    data["hc_scale"][0].expand(hc_mult),
-    data["hc_scale"][1].expand(hc_mult),
-    data["hc_scale"][2].expand(hc_mult * hc_mult),
-])
+hc_scale_exp = torch.cat(
+    [
+        data["hc_scale"][0].expand(hc_mult),
+        data["hc_scale"][1].expand(hc_mult),
+        data["hc_scale"][2].expand(hc_mult * hc_mult),
+    ]
+)
 mixes = mixes * hc_scale_exp + data["hc_base"]
 
 mixes = mixes.npu()
 
 # B2 Sinkhorn kernel
-sinkhorn_kernel = _get_kernel("sinkhorn", hc, data["sinkhorn_repeat"], data["hc_pre_eps"], data["hc_sinkhorn_eps"], data["hc_post_mult_value"])
+sinkhorn_kernel = _get_kernel(
+    "sinkhorn", hc, data["sinkhorn_repeat"], data["hc_pre_eps"], data["hc_sinkhorn_eps"], data["hc_post_mult_value"]
+)
 
 print("init successful!")
 
