@@ -510,6 +510,26 @@ def leaky_relu_inplace(N, alpha, dtype="float"):
             T.tile.leaky_relu(a_ub, a_ub, alpha)
             T.copy(a_ub, B)
 
+def vec_silu_inplace(M, N, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            # in-place: dst == src (the whole buffer)
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+            T.tile.silu(a_ub, a_ub)
+            T.copy(a_ub, B[bx * block_M, by * block_N])
+
     return main
 
 
@@ -564,8 +584,9 @@ def activation_out_of_place(op_name, N, dtype="float"):
 def run_test_src_after_call(func, golden, N, dtype, target):
     """Check dst correctness and src contents after an out-of-place call.
 
-    AscendC preserves src; PTO rewrites src in place with 1 + exp(-src)
-    (documented backend limitation).
+    Both backends leave src unchanged: the PTO lowering now computes through
+    an internal scratch buffer instead of rewriting src (fixed together with
+    in-place silu/sigmoid).
     """
     compiled = tilelang.compile(func, out_idx=None, pass_configs=pass_configs, target=target)
 
@@ -579,11 +600,7 @@ def run_test_src_after_call(func, golden, N, dtype, target):
     compiled(a, b, c)
 
     torch.testing.assert_close(b, golden(a), rtol=1e-2, atol=1e-2)
-    if target == "pto":
-        expected_src = 1.0 + torch.exp(-a)
-    else:
-        expected_src = a
-    torch.testing.assert_close(c, expected_src, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(c, a, rtol=1e-2, atol=1e-2)
 
 
 @pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
@@ -596,6 +613,72 @@ def test_sigmoid_src_after_call(dtype, target):
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_silu_src_after_call(dtype, target):
     run_test_src_after_call(activation_out_of_place("silu", 256, dtype), lambda a: a * torch.sigmoid(a), 256, dtype, target)
+
+def run_test_silu_inplace(M, N, block_M, block_N, dtype, target):
+    func = vec_silu_inplace(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+
+    torch.npu.synchronize()
+
+    result = func(a)
+    ref = torch.nn.functional.silu(a)
+
+    torch.testing.assert_close(result, ref, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("shape", [(256, 256), pytest.param((512, 512), marks=pytest.mark.low_priority)])
+def test_silu_inplace(dtype, target, shape):
+    M, N = shape
+    run_test_silu_inplace(M, N, 128, 128, dtype, target)
+
+
+def vec_sigmoid_inplace(M, N, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+            T.tile.sigmoid(a_ub, a_ub)  # in-place: dst == src
+            T.copy(a_ub, B[bx * block_M, by * block_N])
+
+    return main
+
+
+def run_test_sigmoid_inplace(M, N, block_M, block_N, dtype, target):
+    func = vec_sigmoid_inplace(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+
+    torch.npu.synchronize()
+
+    result = func(a)
+
+    torch.testing.assert_close(result, torch.sigmoid(a), rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("shape", [(256, 256), pytest.param((512, 512), marks=pytest.mark.low_priority)])
+def test_sigmoid_inplace(dtype, target, shape):
+    M, N = shape
+    run_test_sigmoid_inplace(M, N, 128, 128, dtype, target)
 
 
 def vec_mul_add_dst(M, N, block_M, block_N, dtype="float"):

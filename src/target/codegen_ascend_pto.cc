@@ -3507,11 +3507,27 @@ void CodeGenTileLangAscendPto::SigmoidCodegen(const CallNode *op,
 
   std::string src_name = ResolveUbSliceName(src_shape_info);
   std::string dst_name = ResolveUbSliceName(dst_shape_info);
+  std::string tmp_name =
+      GetTempVarName(dst_shape_info.ub_name) + "_sigmoid_tmp";
 
+  // Update max_ub_addr_ after allocating temporary buffer
+  int32_t elem_bytes = GetTypeLen(dst_shape_info.type);
+  int64_t tmp_buffer_size = tpl_row * tpl_col * elem_bytes;
+  int64_t tmp_addr = max_ub_addr_; // Save original address before alignment
+  max_ub_addr_ += tmp_buffer_size;
+  // Align to 32-byte boundary
+  max_ub_addr_ = ((max_ub_addr_ + kUbAlignmentBytes - 1) / kUbAlignmentBytes) *
+                 kUbAlignmentBytes;
+
+  this->PrintIndent();
+  this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type << ", "
+               << tpl_row << ", " << tpl_col << "> " << tmp_name << ";\n";
+  this->PrintIndent();
+  this->stream << "TASSIGN(" << tmp_name << ", " << tmp_addr << ");\n";
   this->PrintIndent();
   this->stream << kAscendPtoScope << op_name << "<" << dst_shape_info.type
                << ", " << tpl_row << ", " << tpl_col << ">(" << dst_name << ", "
-               << src_name << ");\n";
+               << src_name << ", " << tmp_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::SiluCodegen(const CallNode *op) {

@@ -486,14 +486,15 @@ AICORE PTO_INLINE void unary_tile(int32_t dst_addr, int32_t src_addr,
 
 template <typename T, int32_t row, int32_t col>
 AICORE PTO_INLINE void TSIGMOID(TileUbDataND<T, row, col, row, col> &dst,
-                                TileUbDataND<T, row, col, row, col> &src0) {
-  TMULS(src0, src0, -1);
+                                TileUbDataND<T, row, col, row, col> &src0,
+                                TileUbDataND<T, row, col, row, col> &tmp) {
+  TMULS(tmp, src0, -1);
   TL_PIPE_V_BARRIER();
-  TEXP(src0, src0);
+  TEXP(tmp, tmp);
   TL_PIPE_V_BARRIER();
-  TADDS(src0, src0, 1);
+  TADDS(tmp, tmp, 1);
   TL_PIPE_V_BARRIER();
-  TRECIP(dst, src0);
+  TRECIP(dst, tmp);
 }
 
 template <typename T, int32_t row, int32_t col>
@@ -502,9 +503,13 @@ AICORE PTO_INLINE void TSILU(TileUbDataND<T, row, col, row, col> &dst,
                              TileUbDataND<T, row, col, row, col> &tmp) {
   TMOV(tmp, src);
   TL_PIPE_V_BARRIER();
-  TSIGMOID(dst, src);
+  TMULS(dst, src, -1);
   TL_PIPE_V_BARRIER();
-  TMUL(dst, tmp, dst);
+  TEXP(dst, dst);
+  TL_PIPE_V_BARRIER();
+  TADDS(dst, dst, 1);
+  TL_PIPE_V_BARRIER();
+  TDIV(dst, tmp, dst);
 }
 
 template <typename T, int32_t row, int32_t col>
