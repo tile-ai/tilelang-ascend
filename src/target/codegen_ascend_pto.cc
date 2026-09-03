@@ -191,6 +191,13 @@ int32_t GetTypeLen(std::string type) {
     typeSize = 2;
   } else if (type == "int" || type == "uint32_t") {
     typeSize = 4;
+  } else if (type == "int4b_t") {
+    LOG(FATAL) << "int4 is not supported by the pto target: the pto-isa "
+                  "instruction set currently lacks the int4 instructions "
+                  "(mad_s4 for W4A4 matmul, vconv_f162s4 / vconv_s42f16 for "
+                  "quantization), see "
+                  "https://gitcode.com/cann/pto-isa/issues/115. Use the "
+                  "default ascendc target for int4 kernels.";
   } else {
     ICHECK(false) << "Unsupported datatype";
   }
