@@ -2106,9 +2106,11 @@ def bitwise_xor(
     Args:
         dst: The destination buffer where the result will be stored.
         src0: The first source operand buffer.
-        src1: The second source operand buffer.
-        tmp: Optional complete UB scratch storage. Its scalar dtype is
-            reinterpreted by lowering and has no semantic meaning.
+        src1: The second source operand buffer. Scalar operands are unsupported.
+        tmp: Optional one-dimensional UB scratch buffer. When omitted, the
+            framework allocates the workspace automatically.
+
+    Supported dtypes: int16, uint16.
 
     Returns:
         A TVM intrinsic call that performs the bitwise XOR operation.
