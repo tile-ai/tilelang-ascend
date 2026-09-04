@@ -1324,15 +1324,30 @@ def leaky_relu(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_v
 
 
 def axpy(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_value: PrimExpr):  # noqa: F821
-    """Performs element-wise AXPY operation: dst = scalar_value * src0 + dst.
+    """Performs element-wise AXPY and updates the destination in place.
 
-    Note: This operation updates the destination buffer in-place by adding
-    the scaled source buffer.
+    For each element, computes:
+    ``dst[i] = scalar_value * src0[i] + dst[i]``.
 
     Args:
-        dst: The destination buffer (acts as both operand Y and output).
-        src0: The source buffer X.
-        scalar_value: The scalar alpha.
+        dst: The destination buffer or buffer region. It acts as both the
+            accumulator input and output.
+        src0: The source buffer or buffer region.
+        scalar_value: The scalar multiplier, converted to the destination
+            data type during code generation.
+
+    Note:
+        - Supports float16 and float32 on Ascend A2/A3.
+        - The destination and source must have the same data type. This is a
+          current TileLang implementation limitation rather than a hardware
+          one: the underlying Ascend C Axpy API and the PTO TAXPY
+          instruction also support dst=float32 with src0/scalar_value=
+          float16, but the Ascend C codegen enforces identical dtypes and
+          the PTO codegen emits a single-type template call. Mixed-dtype
+          support is a known implementation gap.
+        - The destination and source must contain the same number of elements.
+        - Operands must reside in Unified Buffer and satisfy its alignment
+          requirements.
     """
     return scalar_op(dst, src0, scalar_value, "axpy")
 

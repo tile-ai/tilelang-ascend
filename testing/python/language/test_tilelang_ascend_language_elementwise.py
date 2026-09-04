@@ -358,6 +358,7 @@ def axpy(M, N, block_M, block_N, dtype="float"):
     @T.prim_func
     def main(
         A: T.Tensor((M, N), dtype),  # type: ignore
+        InitialDst: T.Tensor((M, N), dtype),  # type: ignore
         B: T.Tensor((M, N), dtype),  # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
@@ -366,7 +367,7 @@ def axpy(M, N, block_M, block_N, dtype="float"):
 
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            T.tile.fill(b_ub, 0)
+            T.copy(InitialDst[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
 
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
@@ -381,18 +382,20 @@ def run_test_axpy(M, N, block_M, block_N, dtype, target):
     func = axpy(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+    initial_dst = torch.randn(M, N, dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
-    b = func(a)
+    b = func(a, initial_dst)
 
-    ref_b = a * 2.0
+    ref_b = a * 2.0 + initial_dst
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_axpy(dtype, target, shape):
     M, N = shape
