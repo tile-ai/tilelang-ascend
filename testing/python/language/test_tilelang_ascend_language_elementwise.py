@@ -807,6 +807,223 @@ def test_bitwise_lshift_slice(dtype, target, shape):
     run_test_bitwise_lshift_slice(M, N, 128, 256, scalarvalue=scalarvalue, dtype=dtype, target=target)
 
 
+# ---------------------------------------------------------------------------
+# Factcheck tests for T.tile.bitwise_lshift
+# ---------------------------------------------------------------------------
+
+_TORCH_INT_DTYPE_LSHIFT = {
+    "int16": torch.int16,
+    "uint16": torch.uint16,
+    "int32": torch.int32,
+    "uint32": torch.uint32,
+}
+
+
+def _lshift_ref(a_cpu, scalarvalue, dtype):
+    """Compute reference left shift on CPU, handling dtype overflow correctly."""
+    if dtype == "uint16":
+        return torch.bitwise_left_shift(a_cpu.to(torch.int32), scalarvalue).to(torch.uint16)
+    elif dtype == "uint32":
+        return torch.bitwise_left_shift(a_cpu.to(torch.int32), scalarvalue).to(torch.uint32)
+    return torch.bitwise_left_shift(a_cpu, scalarvalue)
+
+
+def run_test_bitwise_lshift_signed_semantics(dtype, target, scalarvalue):
+    """Verify that left shift on signed types is logical (not sign-preserving).
+
+    The original doc claims signed types use 'arithmetic left shift' preserving
+    the sign bit. The actual vshls/vshl instruction is a standard logical
+    left shift — sign bit is NOT preserved.
+    """
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    VEC_NUM = 2
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.tile.bitwise_lshift(b_ub, a_ub, scalarvalue)
+            T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    td = _TORCH_INT_DTYPE_LSHIFT[dtype]
+    if "int" in dtype and "int8" not in dtype:
+        low = -100
+        high = 100
+    else:
+        low = 1
+        high = 100
+    a = torch.randint(low=low, high=high, size=(M, N), dtype=td).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    ref_b = _lshift_ref(a.cpu(), scalarvalue, dtype).npu()
+    assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("scalarvalue", [1, 2, 4])
+@pytest.mark.parametrize("dtype", ["int16", "int32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_lshift_signed_semantics(dtype, target, scalarvalue):
+    run_test_bitwise_lshift_signed_semantics(dtype, target, scalarvalue)
+
+
+def run_test_bitwise_lshift_1d(dtype, target, scalarvalue):
+    """Test 1D buffer shape support."""
+    N = 1024
+    block_N = 1024
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((N,), dtype),  # type: ignore
+        B: T.Tensor((N,), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((block_N,), dtype)
+            b_ub = T.alloc_ub((block_N,), dtype)
+            T.copy(A[0:], a_ub)
+            T.tile.bitwise_lshift(b_ub, a_ub, scalarvalue)
+            T.copy(b_ub, B[0:])
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    td = _TORCH_INT_DTYPE_LSHIFT[dtype]
+    a = torch.randint(1, 100, size=(N,), dtype=td).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    ref_b = _lshift_ref(a.cpu(), scalarvalue, dtype).npu()
+    assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("scalarvalue", [1, 4, 8])
+@pytest.mark.parametrize("dtype", ["int16", "uint16", "int32", "uint32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_lshift_1d(dtype, target, scalarvalue):
+    run_test_bitwise_lshift_1d(dtype, target, scalarvalue)
+
+
+def run_test_bitwise_lshift_boundary(dtype, target, scalarvalue):
+    """Test boundary shift values: 0, max-bit-width, and over-width."""
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    VEC_NUM = 2
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.tile.bitwise_lshift(b_ub, a_ub, scalarvalue)
+            T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    td = _TORCH_INT_DTYPE_LSHIFT[dtype]
+    a = torch.randint(1, 100, size=(M, N), dtype=td).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    ref_b = _lshift_ref(a.cpu(), scalarvalue, dtype).npu()
+    assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("scalarvalue", [0, 1, 15, 16])
+@pytest.mark.parametrize("dtype", ["int16", "uint16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_lshift_boundary_int16(dtype, target, scalarvalue):
+    run_test_bitwise_lshift_boundary(dtype, target, scalarvalue)
+
+
+@pytest.mark.parametrize("scalarvalue", [0, 1, 31, 32])
+@pytest.mark.parametrize("dtype", ["int32", "uint32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_lshift_boundary_int32(dtype, target, scalarvalue):
+    run_test_bitwise_lshift_boundary(dtype, target, scalarvalue)
+
+
+def run_test_bitwise_lshift_non_aligned(dtype, target, scalarvalue):
+    """Test non-32-byte-aligned shapes for precision issues."""
+    M, N = 1024, 100
+    block_M, block_N = 128, 100
+    VEC_NUM = 2
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.tile.bitwise_lshift(b_ub, a_ub, scalarvalue)
+            T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    td = _TORCH_INT_DTYPE_LSHIFT[dtype]
+    a = torch.randint(1, 100, size=(M, N), dtype=td).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    ref_b = _lshift_ref(a.cpu(), scalarvalue, dtype).npu()
+    assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("scalarvalue", [1, 4])
+@pytest.mark.parametrize("dtype", ["int16", "uint16", "int32", "uint32"])
+@pytest.mark.parametrize("target", ["pto"])
+def test_bitwise_lshift_non_aligned(dtype, target, scalarvalue):
+    run_test_bitwise_lshift_non_aligned(dtype, target, scalarvalue)
+
+
+@pytest.mark.xfail(
+    reason="Ascend C backend produces precision errors when tile element count "
+    "is not 32-byte aligned (e.g. shape=(1024,100)). PTO backend is unaffected."
+)
+@pytest.mark.parametrize("scalarvalue", [1, 4])
+@pytest.mark.parametrize("dtype", ["int16", "uint16", "int32", "uint32"])
+@pytest.mark.parametrize("target", ["ascendc"])
+def test_bitwise_lshift_non_aligned_ascendc_xfail(dtype, target, scalarvalue):
+    run_test_bitwise_lshift_non_aligned(dtype, target, scalarvalue)
+
+
+@pytest.mark.xfail(
+    reason="int8/uint8 are not supported on A2/A3 for bitwise_lshift: "
+    "AscendC ShiftLeftImpl has no int8/uint8 specialization (ASCENDC_ASSERT false), "
+    "PTO TShiftCheck static_assert only allows int16/uint16/int32/uint32."
+)
+@pytest.mark.parametrize("dtype", ["int8", "uint8"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_lshift_int8_xfail(dtype, target):
+    run_test_bitwise_lshift_boundary(dtype, target, 1)
+
+
+@pytest.mark.xfail(
+    reason="float16/float32 are not supported: bitwise shift is integer-only. Both AscendC and PTO lack float specializations."
+)
+@pytest.mark.parametrize("dtype", ["float16", "float32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_lshift_float_xfail(dtype, target):
+    run_test_bitwise_lshift_boundary(dtype, target, 1)
+
+
 def bitwise_not(M, N, block_M, block_N, dtype="int16"):
     m_num = M // block_M
     n_num = N // block_N

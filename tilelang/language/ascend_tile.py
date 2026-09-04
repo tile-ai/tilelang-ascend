@@ -1398,9 +1398,14 @@ def mul_add_dst(
 def bitwise_lshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalarValue: PrimExpr):  # noqa: F821
     """Performs element-wise bitwise left shift: dst = src0 << scalarValue.
 
+    The API currently accepts a scalar shift amount. Tensor shift amounts are
+    not yet supported.
+
+    Supported dtypes on A2/A3: int16, uint16, int32, uint32.
+
     Args:
-        dst: The destination buffer.
-        src0: The source buffer.
+        dst: The destination buffer (UB).
+        src0: The source buffer (UB), must have the same size and dtype as dst.
         scalarValue: The number of bits to shift (scalar).
     """
     if isinstance(dst, BufferRegion):
