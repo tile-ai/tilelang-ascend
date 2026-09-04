@@ -31,22 +31,27 @@ stage 5 carries the state serially across chunks, stage 6 reads it back.
 | # | Stage | File | Computes | Engine |
 |:-:|---|---|---|:-:|
 | 1 | `chunk_cumsum` | `kda_chunk_cumsum.py` | $\Gamma_{t,d}=\sum_{s=t_0}^{t}g_{s,d}$, restarted at every chunk boundary | Vector |
-| 2 | `chunk_scaled_dot_kkt` | `kda_chunk_scaled_dot_kkt.py` | $L_{ij}=\beta_i\sum_d k_{i,d}k_{j,d}\,e^{\Gamma_{i,d}-\Gamma_{j,d}}$ for $j<i$ | Vector |
-| 3 | `solve_tril` | `kda_solve_tril.py` | $\mathbf A=(\mathbf I+\mathbf L)^{-1}$ by row-wise forward substitution | Vector |
+| 2 | `chunk_scaled_dot_kkt` | `kda_chunk_scaled_dot_kkt.py` | $L_{ij}=\beta_i\sum_d k_{i,d}k_{j,d}\,e^{\Gamma_{i,d}-\Gamma_{j,d}}$ for $j<i$ | Vector + Cube |
+| 3 | `solve_tril` | `kda_solve_tril.py` -> `kda_solve_tril_cube.py` | $\mathbf A=(\mathbf I+\mathbf L)^{-1}$ by a doubling Neumann series on the cube; the row-wise forward substitution is the fp32 / $C<16$ fallback | Vector + Cube |
 | 4 | `wy_fast` | `kda_wy_fast.py` | UT transform: $\mathbf U=\mathbf A\,\mathrm{Diag}(\beta)\mathbf V$, $\mathbf W=\mathbf A\,\mathrm{Diag}(\beta)(\mathbf K\odot e^{\Gamma})$ | Vector + Cube |
 | 5 | `chunk_h` | `kda_chunk_h.py` | $\mathbf V'=\mathbf U-\mathbf W\mathbf S$, then $\mathbf S\leftarrow\mathrm{Diag}(e^{\Gamma_C})\mathbf S+\mathrm{kg}^{\top}\mathbf V'$ with $\mathrm{kg}=\mathbf K\odot e^{\Gamma_C-\Gamma}$ | Vector + Cube |
 | 6 | `chunk_o` | `kda_chunk_o.py` | $\mathbf O=(s\mathbf Q\odot e^{\Gamma})\mathbf S_n+\mathbf A^{qk}\mathbf V'$, $A^{qk}_{ij}=\sum_d q_{i,d}k_{j,d}e^{\Gamma_{i,d}-\Gamma_{j,d}}$ for $j\le i$ | Vector + Cube |
 
-The pipeline contains exactly seven `T.gemm_v0` calls: two in `wy_fast`, two in
-`chunk_h`, three in `chunk_o`. Stages 1–3 have none.
+The pipeline contains sixteen `T.gemm_v0` calls on the default path: one in
+`chunk_scaled_dot_kkt`, eight in `solve_tril_cube`, two in `wy_fast`, two in
+`chunk_h`, three in `chunk_o`. Only stage 1 has none.
 
-* **Stage 2 has no matmul by construction, not by omission.** With a
+* **Stage 2 is not a matmul in its natural form.** With a
   per-channel gate the decay sits inside $\sum_d$, and the causal mask has to be
   folded into the exponent *before* `exp()` — masking after `exp()` lets the
   $j>i$ half overflow to $\pm\infty$ and then $0\times\infty=\mathrm{NaN}$
   poisons the half that is kept. Folding the mask into the exponent destroys
-  row/column separability, so the contraction is evaluated one output row at a
-  time on the vector cores.
+  row/column separability, so in that form the contraction has to be evaluated
+  one output row at a time on the vector cores. Anchored blocking recovers the
+  cube anyway -- the same construction stage 6 uses, described next -- which is
+  what moved this stage from 19.1% to 67.6% of the reference (`bench_mark.md`).
+  The diagonal blocks are the part that stays on the vector cores, and `route_b`
+  moves those too.
 * **Stage 6 recovers the Cube by anchored blocking.** Each block of `BC = 16`
   rows is anchored at its first row; on the strictly-below-anchor columns both
   folded factors $e^{\Gamma_i-\Gamma_{ar}}$ and $e^{\Gamma_{ar}-\Gamma_j}$ are
@@ -282,7 +287,8 @@ Shapes exercised by the tests: `B = 1, 2`; `H = 1, 2`; `HV = 1 … 6`;
 
 ## Accuracy status
 
-Verified on Ascend 910B. Measured results are in `bench_mark.md`.
+Verified on `Ascend910_9362` (A3, 20 Cube / 40 Vector cores).  Nothing here has
+been run on an A2-class 910B1/B2.  Measured results are in `bench_mark.md`.
 
 **Full pipeline vs the L0 token-by-token recurrence** (`test_vs_both_goldens`,
 18 configurations covering both gate extremes, GVA, `K != V`, the K3 spec,
@@ -357,14 +363,32 @@ is exact, $e_{\text{sens}}=0$, and the criterion tightens to `1e-5` on its own.
   running each sequence on its own.
 * **`route_b` is off by default.** It puts stage 2's diagonal blocks on the cube
   and is worth 2.3x on that stage, but it saturates a gate that spans more than
-  its clamp inside one block, so it is opt-in rather than automatic. See
-  `bench_mark.md`.
+  its clamp inside one block, so it is opt-in rather than automatic. The
+  approximation itself is not unusual -- the reference makes the same one, and
+  harder: it clamps the same exponent two-sided at 55.45 nats
+  (`chunk_kda_fwd_post_wu.h:40`) against 80 nats one-sided here. No exact cube
+  route exists for these blocks: writing `exp(G_i - G_j)` as a product of a row
+  factor and a column factor forces the row factor's dynamic range to equal the
+  block's gate span, and 80 nats is already what a bf16 exponent holds. What is
+  opt-in here is the approximation, not the speed -- the exact path is the one
+  that ships. See `bench_mark.md`.
 * The six stages are six kernel launches; every inter-stage tensor and the
   cross-core workspaces round-trip through GM. The hand-written operator does
   the same -- its `gk`, `aqk`, `akk`, `w`, `u`, `qg`, `kg`, `v_new` and `h` are
-  all GM tensors -- so fusion is not where the remaining gap is. What it does
-  differently is size its Cube-to-Vector scratch by physical core count rather
-  than by logical task count, which keeps it in L2. That is the next thing to
+  all GM tensors -- so fusion is not where the remaining gap is. It does size
+  its Cube-to-Vector scratch by physical core count rather than by logical task
+  count, and that was tried here: the grid becomes the core count and each core
+  walks its own slice of the tasks, which brings the six stages' workspaces from
+  1.57 GB to 5.1 MB at `H = 96`. Measured, it is worth 3.7% on stage 2 and 1.1%
+  on the pipeline -- real, and not the gap.
+* **The gap is software pipelining.** The reference ships two configurations:
+  `safeGate = 1` carries a 4-deep pipelined triangular solve and a
+  software-pipelined task loop, and runs 1.76x faster than its own
+  `safeGate = 0` fallback at `H = 96` while agreeing with it to fp16
+  quantisation. This implementation has no software pipelining anywhere --
+  neither `num_stages` nor double buffering nor a reduced inter-core sync
+  frequency, which are items 3, 5 and 6 of the optimization list in
+  `examples/flash_attention/fa_opt/bench_mark.md`. That is the next thing to
   try here.
 
 * Backward is not part of this directory.

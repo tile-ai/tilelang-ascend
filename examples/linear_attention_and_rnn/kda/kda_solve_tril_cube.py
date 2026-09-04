@@ -609,7 +609,9 @@ def main():
     if "--quick" in sys.argv:
         ok = _case(1, 512, 4, 4, 128, 128, 64, "normal", torch.float16)
         print()
-        print("Test Passed!" if ok else "FAIL")
+        if not ok:
+            raise SystemExit(1)
+        print("Kernel Output Match!")
         return
     # Four gates: normal is the baseline, forget/keep are the two edges, extreme
     # is the worst case
@@ -627,7 +629,10 @@ def main():
     ok &= _case(1, 512, 4, 4, 128, 128, 64, "normal", torch.bfloat16)
 
     print()
-    print("Test Passed!" if ok else "FAIL")
+    if ok:
+        print("Kernel Output Match!")
+    else:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

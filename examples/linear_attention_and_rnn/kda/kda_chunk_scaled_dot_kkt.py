@@ -120,9 +120,12 @@ sys.path.insert(0, _HERE)
 import kda_chunk_ref  # noqa: E402
 import kda_varlen as _VL  # noqa: E402
 
-# Only AUTO_SYNC, matching all six GDN kernels.  MEMORY_PLANNING is deliberately
-# left off: on the backward bwd_dot it aliased a reduction target with a scratch
-# tile -- the registers held the right values and only the store wrote zeros.
+# Only AUTO_SYNC, as the six kernels of `gdn/` do.  `opt_gdn/`, the optimized twin
+# of that operator, instead runs AUTO_SYNC off and MEMORY_PLANNING on; this
+# example follows the unoptimized pair on both counts, and the second is
+# deliberate.  MEMORY_PLANNING aliased a reduction target with a scratch tile on
+# the backward dot kernel: the registers held the right values and only the store
+# wrote zeros, which reads as a math bug rather than as a pass bug.
 pass_configs = {tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True}
 
 UB_LIMIT = 196352
@@ -194,7 +197,7 @@ def _ub_bytes(C, K, BC, elem):
     planes_low = C * K * elem  # kh_ub
     blk = BC * K * 4 + BC * K * elem  # pb_ub, ob_half (ob_ub was eliminated)
     out = CV * C * 4 + CV * C * elem  # ah_ub (fp32) + ahh_ub (dtype)
-    small = C * 4 + BC * 4 + BC * BC * 4  # mcol_ub, red_ub, mblk_ub
+    small = C * 4 + BC * 4  # mcol_ub, red_ub
     # Batched beta: the [CV, 8] staging tile, the [CV] vector, and the [CV, C]
     # materialised broadcast.
     #
@@ -333,9 +336,6 @@ def kkt_ker(B, SEQ, H, HV, K, C, BC=16, dtype="float16", accum_dtype="float", ro
             # tried: the K == C cases passed and every K > C case was wrong.
             betab_ub = T.alloc_ub([CV, C], accum_dtype)
             mcol_ub = T.alloc_ub([C], accum_dtype)
-            # The diagonal block's strictly-lower mask, read once as a block.
-            # BC * BC fp32 = 1 KB.
-            mblk_ub = T.alloc_ub([BC, BC], accum_dtype)
             red_ub = T.alloc_ub([BC], accum_dtype)
 
             with T.Scope("V"):
@@ -483,20 +483,9 @@ def kkt_ker(B, SEQ, H, HV, K, C, BC=16, dtype="float16", accum_dtype="float", ro
                 # diagonal columns and nothing else.
                 T.wait_cross_flag(1)
                 T.copy(ws_ls[cid, r0, 0], ah_ub)
-                # Msk[a0+rr, a0+jj] is just "rr > jj" -- independent of a0 and of
-                # vid -- so it is identically the [BC, BC] top-left corner of Msk,
-                # a compile-time constant.  Read it once and index mblk_ub[rr, jj]
-                # afterwards: rr comes from range(BC) and is a compile-time
-                # constant while jj is the inner variable, so there is neither a
-                # broadcast nor any scalar traffic.  This used to be one narrow GM
-                # read per row, 32 per block -- chunk_o had already moved to a
-                # resident block and kkt had been missed.
-                # Under route B the strip matmul already produced these
-                # columns correctly, so the whole per-row patch below is dead --
-                # which is the entire point: it was 62% of this kernel.
-                if not route_b:
-                    T.copy(Msk[0, 0], mblk_ub)
-
+                # Under route B the strip matmul already produced these columns
+                # correctly, so the whole per-row patch below is dead -- which is
+                # the entire point: it was 62% of this kernel.
                 for ab in range(0 if route_b else NAB):
                     a0 = r0 + ab * BC
                     for rr in range(BC):
@@ -736,9 +725,6 @@ def kkt_ker_varlen(B, SEQ, H, HV, K, C, NT_TOTAL, BC=16, dtype="float16", accum_
             arow_half = T.alloc_ub([C], dtype)
 
             mcol_ub = T.alloc_ub([C], accum_dtype)
-            # The diagonal block's strictly-lower mask, read once as a block.
-            # BC * BC fp32 = 1 KB.
-            mblk_ub = T.alloc_ub([BC, BC], accum_dtype)
             red_ub = T.alloc_ub([BC], accum_dtype)
             # beta for this core's CV rows in one read: a 1-wide GM region lands
             # in a [CV, 8] tile (the DMA pre-fills with pad 0 and writes only
@@ -858,20 +844,9 @@ def kkt_ker_varlen(B, SEQ, H, HV, K, C, NT_TOTAL, BC=16, dtype="float16", accum_
                 # ---- phase 3: patch the diagonal blocks ---------------------
                 T.wait_cross_flag(1)
                 T.copy(ws_ls[cid, r0, 0], ah_ub)
-                # Msk[a0+rr, a0+jj] is just "rr > jj" -- independent of a0 and of
-                # vid -- so it is identically the [BC, BC] top-left corner of Msk,
-                # a compile-time constant.  Read it once and index mblk_ub[rr, jj]
-                # afterwards: rr comes from range(BC) and is a compile-time
-                # constant while jj is the inner variable, so there is neither a
-                # broadcast nor any scalar traffic.  This used to be one narrow GM
-                # read per row, 32 per block -- chunk_o had already moved to a
-                # resident block and kkt had been missed.
-                # Under route B the strip matmul already produced these
-                # columns correctly, so the whole per-row patch below is dead --
-                # which is the entire point: it was 62% of this kernel.
-                if not route_b:
-                    T.copy(Msk[0, 0], mblk_ub)
-
+                # Under route B the strip matmul already produced these columns
+                # correctly, so the whole per-row patch below is dead -- which is
+                # the entire point: it was 62% of this kernel.
                 for ab in range(0 if route_b else NAB):
                     a0 = r0 + ab * BC
                     for rr in range(BC):

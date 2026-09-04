@@ -86,9 +86,12 @@ sys.path.insert(0, _HERE)
 import kda_chunk_ref  # noqa: E402
 import kda_varlen as _VL  # noqa: E402
 
-# Only AUTO_SYNC, same as the six GDN kernels.  MEMORY_PLANNING is deliberately
-# left off: on the backward dot it aliased a reduction target with a temporary
-# tile, and the stores wrote zeros while the registers held the right values.
+# Only AUTO_SYNC, as the six kernels of `gdn/` do.  `opt_gdn/`, the optimized twin
+# of that operator, instead runs AUTO_SYNC off and MEMORY_PLANNING on; this
+# example follows the unoptimized pair on both counts, and the second is
+# deliberate.  MEMORY_PLANNING aliased a reduction target with a scratch tile on
+# the backward dot kernel: the registers held the right values and only the store
+# wrote zeros, which reads as a math bug rather than as a pass bug.
 pass_configs = {tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True}
 
 VEC_NUM = 2

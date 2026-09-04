@@ -72,6 +72,12 @@ done
 
 # Format: "id|script|description"
 # Order matches the stage order of the pipeline.
+#
+# Each target is a stage source file, and running one executes its __main__,
+# which is a correctness sweep over roughly twenty shapes.  What comes out is
+# therefore a statistic over that sweep -- the right instrument for "has this
+# stage regressed", and NOT the single-shape figures in bench_mark.md, which
+# come from one pipeline run with the six launches separated by their order.
 TARGETS=(
     "cumsum|kda_chunk_cumsum.py|stage 1/6  chunk-local cumulative log gate G"
     "kkt|kda_chunk_scaled_dot_kkt.py|stage 2/6  strict-lower decayed Gram matrix L"
@@ -375,9 +381,13 @@ if not values:
     print("NA|NA|NA|0|none")
     sys.exit(0)
 
-mean = sum(values) / len(values)
+# Median, not mean: bench_mark.md reports medians, and the outlier in a
+# collection is always the cold first launch.
+ordered = sorted(values)
+half = len(ordered) // 2
+median = ordered[half] if len(ordered) % 2 else 0.5 * (ordered[half - 1] + ordered[half])
 tag = source if filtered else source + " (unfiltered)"
-print("%.3f|%.3f|%.3f|%d|%s" % (mean, min(values), max(values), len(values), tag))
+print("%.3f|%.3f|%.3f|%d|%s" % (median, min(values), max(values), len(values), tag))
 PY_PARSER
 }
 
@@ -426,7 +436,7 @@ run_msprof_op() {
 
 mkdir -p "$OUTPUT_DIR"
 SUMMARY_CSV="$OUTPUT_DIR/kda_bench.csv"
-echo "target,script,mean_us,min_us,max_us,samples,source,status" > "$SUMMARY_CSV"
+echo "target,script,median_us,min_us,max_us,samples,source,status" > "$SUMMARY_CSV"
 
 echo "================================================================"
 echo "KDA L1 benchmark -- msprof, on-board collection"
@@ -521,4 +531,4 @@ if [ "$fail_count" -ne 0 ]; then
     exit 1
 fi
 
-echo "Test Passed!"
+echo "Benchmark complete."

@@ -287,7 +287,7 @@ def main():
     print()
     if not ok:
         raise SystemExit(1)
-    print("Test Passed!")
+    print("Kernel Output Match!")
 
 
 if __name__ == "__main__":

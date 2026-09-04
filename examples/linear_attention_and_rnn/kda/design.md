@@ -102,8 +102,8 @@ matmul.  See §3.2.
 | # | file | grid | chunk axis in grid | `vid` splits | engines | flags | gemms |
 |---|---|---|:---:|---|:---:|---:|---:|
 | 1 | `kda_chunk_cumsum.py` | `B*HV*chunk_num` | yes | K channels | V | 0 | 0 |
-| 2 | `kda_chunk_scaled_dot_kkt.py` | `B*HV*chunk_num` | yes | output rows | V | 0 | 0 |
-| 3 | `kda_solve_tril.py` | `ceil(B*HV*N / VEC_NUM)` | yes | **whole tasks** | V | 0 | 0 |
+| 2 | `kda_chunk_scaled_dot_kkt.py` | `B*HV*chunk_num` | yes | output rows | V+C | 2 | 1 |
+| 3 | `kda_solve_tril_cube.py` | `ceil(B*HV*N / VEC_NUM)` | yes | **whole tasks** | V+C | 2 | 8 |
 | 4 | `kda_wy_fast.py` | `B*HV*chunk_num` | yes | token rows | V+C | 1 | 2 |
 | 5 | `kda_chunk_h.py` | `B*HV*BV_NUM` | **no** | state rows **and** token rows | C+V | 4 | 2 |
 | 6 | `kda_chunk_o.py` | `B*HV*N` | yes | output rows (contiguous) **and** anchor blocks (interleaved) | V+C | 3 | 3 |
@@ -228,7 +228,7 @@ Cube:    GM -> L1 -> L0A/L0B -> cube -> L0C -> GM
 UB is **per-AIV**, so anything one vector core produces for the other core, or
 for the cube, is handed over through GM.  That is what every `ws_*` workspace
 is for; the number of workspaces per stage tracks the number of cross-engine
-handoffs (0, 0, 0, 2, 4, 5).
+handoffs (0, 3, 8, 2, 4, 5).
 
 A `copy_ub_to_l1` primitive does exist in the runtime, but it is `half`-only,
 and several of the intermediates have to be written to GM anyway because they

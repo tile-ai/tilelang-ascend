@@ -269,6 +269,12 @@ def test_vs_both_goldens():
     print("  -- K3 spec --")
     ok &= _case(1, 256, 1, 1, 128, 128, 64, "forget", torch.float16, note="K=V=128")
     ok &= _case(1, 128, 2, 4, 128, 128, 64, "normal", torch.float16, note="K3 + GVA")
+    # The K3 head count, at length.  The head axis and the length axis were
+    # each covered on their own and never together, and 96 heads over a long
+    # context is the shape K3 runs.  Both cases take ~40s: the CPU goldens are
+    # a SEQ-long Python loop over a [1, 96, 128, 128] state.
+    ok &= _case(1, 4096, 96, 96, 128, 128, 64, "forget", torch.bfloat16, note="K3 head count at SEQ = 4096")
+    ok &= _case(1, 4000, 96, 96, 128, 128, 64, "normal", torch.float16, note="K3 head count, ragged tail (32 valid rows)")
     print("  -- K != V --")
     ok &= _case(1, 128, 1, 1, 64, 128, 64, "normal", torch.float16)
     print("  -- dtype passthrough --")
@@ -498,6 +504,7 @@ def test_varlen_vs_both_goldens():
     ok &= _vcase([100, 28], 2, 4, 64, 64, 32, "extreme", torch.float16, note="GVA HV=2H + C = 32")
     ok &= _vcase([65, 65], 1, 1, 128, 128, 64, "forget", torch.float16, True, "K3 spec K=V=128")
     ok &= _vcase([128, 64], 2, 4, 128, 128, 64, "normal", torch.float16, note="K3 + GVA")
+    ok &= _vcase([2050, 1000, 46], 96, 96, 128, 128, 64, "forget", torch.bfloat16, note="K3 head count, three ragged sequences")
     ok &= _vcase([70, 33], 2, 4, 64, 64, 64, "forget", torch.bfloat16, True, "bf16 + GVA")
     ok &= _vcase([70, 33, 129], 1, 2, 64, 64, 64, "keep", torch.float16, note="alpha -> 1")
     return ok

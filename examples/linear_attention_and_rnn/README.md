@@ -89,13 +89,13 @@ For prefill, KDA uses the same **chunkwise parallelism** as GDN and its forward 
 
   $$\mathbf L=\text{strictLower}(\text{diag}(\beta)\cdot\mathbf P),\qquad P_{ij}=\sum_{d}k_{i,d}k_{j,d}\,e^{\Gamma_{i,d}-\Gamma_{j,d}}.$$
 
-  In GDN the decay is one scalar per $(i,j)$ and factors straight out of the sum, leaving a plain $\mathbf K\mathbf K^{\top}$ matmul. Here it sits **inside** $\sum_d$, so $\mathbf P$ is no longer a product of a row function and a column function and cannot be written as a matmul. The causal mask must also be folded into the exponent *before* `exp()`: masking afterwards lets the $j>i$ half overflow to $\pm\infty$, and $0\times\infty=\mathrm{NaN}$ then poisons the half that is kept. This stage therefore runs entirely on the vector cores.
+  In GDN the decay is one scalar per $(i,j)$ and factors straight out of the sum, leaving a plain $\mathbf K\mathbf K^{\top}$ matmul. Here it sits **inside** $\sum_d$, so $\mathbf P$ is no longer a product of a row function and a column function and cannot be written as a matmul. The causal mask must also be folded into the exponent *before* `exp()`: masking afterwards lets the $j>i$ half overflow to $\pm\infty$, and $0\times\infty=\mathrm{NaN}$ then poisons the half that is kept. In that form the stage runs on the vector cores; anchoring each block of $BC$ rows at its first row splits the exponent into a factor in $i$ and a factor in $j$, which fold into the two operands and leave a plain matmul for the off-diagonal strips. Only the diagonal blocks stay on the vector cores.
 
-- `solve_tril`: unchanged from GDN,
+- `solve_tril`: mathematically unchanged from GDN,
 
   $$\mathbf A=(\mathbf I+\mathbf L)^{-1},$$
 
-  because the gate is already baked into $\mathbf L$ before this stage runs.
+  because the gate is already baked into $\mathbf L$ before this stage runs. The implementation is not the same: $\mathbf L$ is strictly lower and therefore nilpotent, so $(\mathbf I+\mathbf L)^{-1}$ is a finite sum and repeated squaring evaluates it in eight matmuls on the cube instead of $C-1$ rows of serial forward substitution. The vector substitution remains the fp32 and $C<16$ fallback.
 
 - `wy_fast`: the UT transform, with GDN's row broadcast becoming an elementwise product,
 
@@ -114,7 +114,7 @@ For prefill, KDA uses the same **chunkwise parallelism** as GDN and its forward 
 
   $\mathbf A^{qk}$ has the same non-separable form as $\mathbf P$ above, but here it is recovered for the Cube by **anchored blocking**: each block of $BC=16$ rows is anchored at its first row, and on the strictly-below-anchor columns both folded factors $e^{\Gamma_i-\Gamma_{ar}}$ and $e^{\Gamma_{ar}-\Gamma_j}$ are bounded by $1$. The off-diagonal strips go to `T.gemm_v0`; only the diagonal blocks stay on the vector cores.
 
-The pipeline issues exactly seven `T.gemm_v0` calls — two in `wy_fast`, two in `chunk_h`, three in `chunk_o`. Stages 1–3 have none.
+The pipeline issues sixteen `T.gemm_v0` calls on the default path — one in `chunk_scaled_dot_kkt`, eight in `solve_tril_cube`, two in `wy_fast`, two in `chunk_h`, three in `chunk_o`. Only stage 1 has none.
 
 ---
 
@@ -137,17 +137,19 @@ development device reporting `Ascend910_9362` (20 Cube / 40 Vector cores), which
 
 The FLA comparison runs whenever `flash-linear-attention` is importable and skips cleanly when it is not, so the example carries no third-party dependency.
 
-**Prefill** (`kda_full.py`), 18 configurations checked against both the chunkwise reference in `kda/kda_chunk_ref.py` and the token-by-token recurrence in `kda/kda_ref.py`:
+**Prefill** (`kda_full.py`), 23 fixed-length and 19 varlen configurations checked against both the chunkwise reference in `kda/kda_chunk_ref.py` and the token-by-token recurrence in `kda/kda_ref.py`:
 
 | Check | Result |
 |---|---|
 | full pipeline vs the token-by-token recurrence | rel. $<10^{-3}$ (fp16), $<7\times10^{-3}$ (bf16) |
 | two-segment relay through `final_state` vs one shot | **exactly zero**, asserted as equality rather than as a tolerance |
+| a varlen batch vs each sequence run on its own | **exactly zero** |
+| a varlen batch of $N$ equal sequences vs a fixed-length $B=N$ batch | **exactly zero** |
 | all-zero `initial_state` vs no `initial_state` | bit-identical |
 | zero-length sequence ($T=0$) | accepted, launches nothing; state passes through bit-identically |
 | gate settings | `keep` ($\alpha\to1$) / `normal` / `forget` (the $g_{\min}=-5$ form K3 uses) / `extreme` |
-| shapes | $B\in\{1,2,4\}$, $H_V=H$ and $H_V=nH$ (GVA), $C\in\{32,64\}$, $K=V=128$ (K3), $K\neq V$, one chunk to eight |
+| shapes | $B\in\{1,2,4\}$, $H_V=H$ and $H_V=nH$ (GVA), $C\in\{32,64\}$, $K=V=128$ (K3), $K\neq V$, one chunk to sixty-four, and $H=96$ (the K3 head count) at $L=4096$ |
 
-No performance numbers are reported: no `msprof` run has been made, so this example deliberately omits the latency/TFLOPS table the GDN section above carries. `kda/bench.sh` is provided to produce that data.
+Measured results are in `kda/bench_mark.md`: `msprof` device Task Duration on the same board, against the hand-written AscendC operator built from [ops-transformer](https://gitcode.com/cann/ops-transformer/tree/master/attention/chunk_kda_fwd), median of at least three collections. The per-stage split is by launch order: one prefill is six kernel launches in a fixed sequence, so position mod six is the stage, and `Block Num` corroborates it. `kda/bench.sh` is a separate harness -- it profiles each stage's own correctness sweep, which is a mix of shapes, and is for spotting a per-stage regression rather than for reproducing this table.
 
-Not yet supported in the prefill path: tail blocks ($L\bmod C\neq0$ is rejected by an assert) and varlen / `cu_seqlens`. The decode path has no such restriction. The backward pass is not included.
+A ragged tail ($L\bmod C\neq0$) and varlen / `cu_seqlens` are both supported in the prefill path; the pad rows of a short chunk are zero-filled inside the kernel, because a garbage gate row exponentiates to $+\infty$ and $0\cdot\infty$ is a `NaN` that lands in a *valid* row's reduction. The backward pass is not included.

@@ -297,4 +297,7 @@ if __name__ == "__main__":
         print(f"{str(seqlens):38s} {note:22s} {'ok' if good else 'FAIL':>10s}")
 
     print()
-    print("Test Passed!" if ok else "FAILED")
+    if ok:
+        print("Kernel Output Match!")
+    else:
+        raise SystemExit(1)

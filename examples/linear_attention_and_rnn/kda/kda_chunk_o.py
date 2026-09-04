@@ -112,16 +112,23 @@ UB accounting, worst case in scope (C=64, K=V=128, VEC_NUM=2 -> CV=32, BC=16)
 ----------------------------------------------------------------------------
     g_ub     [C, K]  fp32   32768      chunk-resident G
     k_ub     [C, K]  fp32   32768      chunk-resident K
-    kh_ub    [C, K]  fp16   16384      K load staging, reused for the kf store
     fold_ub  [C, K]  fp32   32768      kf[a] under construction
+    mcol_b   [C, K]  fp32   32768      the far-column mask, broadcast once
+    kh_ub    [C, K]  fp16   16384      K load staging, reused for the kf store
     qb_ub    [BC, K] fp32    8192      scale * q block
-    qb_half  [BC, K] fp16    4096
     pb_ub    [BC, K] fp32    8192      exponent / product tile
+    ob_ub    [BC, K] fp32    8192      the assembled output block
+    qb_half  [BC, K] fp16    4096
     ob_half  [BC, K] fp16    4096
     ah_ub    [CV, C] fp16    4096      this core's rows of Aqk
-    grow/qrow/qrow_half/mcol/mrow/red  1664
+    mblk_ub  [BC, BC] fp32   1024      the diagonal block's strictly-lower mask
+    mcol_ub  [C]     fp32     256
+    red_ub   [BC]    fp32      64
                           -------
-                          153216  of 196352 (no buffer named tmp_ub, and every
+                          185664  of 196352 (ub_bytes() returns 185728: it still
+                                   counts the removed mrow_ub, so it is 64 B
+                                   conservative, which is the safe direction for
+                                   an assert.  No buffer named tmp_ub, and every
                                    T.Parallel is single-op so the backend never
                                    has to allocate a compound temporary)
 """
@@ -138,9 +145,12 @@ sys.path.insert(0, _HERE)
 import kda_chunk_ref  # noqa: E402
 import kda_varlen as _VL  # noqa: E402
 
-# Only AUTO_SYNC, same as the six GDN kernels.  MEMORY_PLANNING is deliberately
-# off: on the backward bwd_dot kernel it aliased a reduction target with a live
-# temporary, which showed up as correct registers but an all-zero store.
+# Only AUTO_SYNC, as the six kernels of `gdn/` do.  `opt_gdn/`, the optimized twin
+# of that operator, instead runs AUTO_SYNC off and MEMORY_PLANNING on; this
+# example follows the unoptimized pair on both counts, and the second is
+# deliberate.  MEMORY_PLANNING aliased a reduction target with a scratch tile on
+# the backward dot kernel: the registers held the right values and only the store
+# wrote zeros, which reads as a math bug rather than as a pass bug.
 pass_configs = {tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True}
 
 # MEMORY_PLANNING (live-range based UB reuse) has always been off in this repo:
