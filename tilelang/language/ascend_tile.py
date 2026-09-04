@@ -1274,6 +1274,12 @@ def bitwise_not(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
     Args:
         dst: The destination buffer.
         src0: The source buffer.
+
+    Supported dtypes on A2/A3:
+        - Ascend C: int16, uint16.
+        - PTO: int8, uint8, int16, uint16.
+
+    BufferRegion slice operands are supported.
     """
     return unary_op(dst, src0, "bitwise_not")
 
