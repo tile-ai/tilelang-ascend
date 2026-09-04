@@ -1596,10 +1596,17 @@ def createvecindex(dst: Buffer, firstValue: PrimExpr):
 
     This intrinsic fills the destination buffer with a sequence of increasing
     indices starting from `firstValue` (e.g., firstValue, firstValue+1, ...).
+    The total element count is derived from ``math.prod(dst.shape)``.
 
     Args:
-        dst: The destination buffer to be filled with indices.
-        firstValue: The starting value of the index sequence.
+        dst: The destination buffer to be filled with indices. Supports
+            float32, int16, int32 on both ascendc and pto backends;
+            float16 on ascendc only; uint16, uint32 on pto only.
+        firstValue: The starting value of the index sequence. Data type
+            should match dst's element type.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call to `tl.ascend_createvecindex`.
     """
     calCount = math.prod(dst.shape)
 
@@ -1611,6 +1618,12 @@ def createvecindex(dst: Buffer, firstValue: PrimExpr):
         firstValue,
         calCount,
     )
+
+
+# snake_case alias for createvecindex
+def create_vec_index(dst: Buffer, first_value: PrimExpr):
+    """snake_case alias for :func:`createvecindex`."""
+    return createvecindex(dst, first_value)
 
 
 def transpose(dst: Buffer, src: Buffer):
