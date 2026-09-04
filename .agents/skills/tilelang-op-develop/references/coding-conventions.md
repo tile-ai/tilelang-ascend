@@ -70,6 +70,32 @@ T.copy(workspace[bn * block_N, k_offset], B_L1)  # 完整 block_N
 
 **易错点（仅回退写法）**：workspace 写入时忘记使用 `actual_row`，导致数据错乱。
 
+**✅ 单输入 split 索引模式（chunk/split 类算子，如 SwiGLU `silu(x0)*x1`）**：
+
+Host 端传完整 tensor（不 chunk、不 contiguous），kernel 内用列偏移读取各子张量：
+```python
+@tilelang.jit(out_idx=[1], pass_configs=pass_configs)
+def kernel(block_M, block_N, K, dtype="float16"):
+    half_k = K // 2
+    M = T.symbolic("M")
+
+    @T.prim_func
+    def main(
+        X: T.Tensor((M, K), dtype),  # type: ignore
+        Y: T.Tensor((M, half_k), dtype),  # type: ignore
+    ):
+        with T.Kernel(...) as (cid, vid):
+            x0_ub = T.alloc_ub((rows, block_N), dtype)
+            x1_ub = T.alloc_ub((rows, block_N), dtype)
+
+            # x0 = X[:, :half_k]，x1 = X[:, half_k:]
+            T.copy(X[row, col], x0_ub)
+            T.copy(X[row, half_k + col], x1_ub)
+            # ... silu(x0) * x1 ...
+```
+
+Host 适配层：dim=-1 时仅 reshape（零拷贝）；dim≠-1 时 permute+contiguous（1 次拷贝）。完整模式与检查清单见 [tilelang-perf-optimization optimization-guide.md §2.12 子模式](../../tilelang-perf-optimization/references/optimization-guide.md)。
+
 ### 2.1 T.copy 多维切片的硬件限制
 
 `T.copy` 的 GM↔UB / GM↔L1 / L0C→GM 搬运底层使用 AscendC 的 `DataCopyPad` 硬件指令。该指令的搬运模型是**每行内数据连续、行间可有 gap**（通过 `srcGap`/`dstGap` 参数控制），**不支持列方向（行内）strided access**——即每行内相邻元素之间不能有间隔。
