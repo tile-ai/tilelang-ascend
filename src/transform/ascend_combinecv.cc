@@ -706,8 +706,12 @@ public:
     }
     std::string api_name = "";
     if (call_node_) {
-      if (const auto *str_imm = call_node_->args[0].as<StringImmNode>()) {
-        api_name = str_imm->value;
+      // Guard against zero-arg intrinsics (e.g. tl.ascend_sync_all),
+      // which would otherwise crash on args[0] access. See issue #1244.
+      if (!call_node_->args.empty()) {
+        if (const auto *str_imm = call_node_->args[0].as<StringImmNode>()) {
+          api_name = str_imm->value;
+        }
       }
       if (const auto *op_node = call_node_->op.as<OpNode>();
           op_node && IsRetainedInBothScopes(op_node->name)) {
