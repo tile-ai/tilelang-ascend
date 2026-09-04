@@ -202,14 +202,13 @@ tvm::transform::Pass CreateFlatten2DPass() {
       final_layouts.Set(buffer_var, aligned_shape);
     }
 
-    // 5. Attach the final logic shapes and remove the intermediate attribute.
+    // 5. Attach the final logic shapes. The intermediate initial shapes are
+    // kept: AscendMemoryPlanning consumes them to recover the leading
+    // double-buffer stage extent (e.g. L0B allocated as [2, ...]) after this
+    // pass has flattened the logical shapes to 2D.
     Map<String, ObjectRef> final_dict;
     if (f->attrs.defined()) {
-      for (const auto &kv : f->attrs->dict) {
-        if (kv.first != kInitialBufferShapes) {
-          final_dict.Set(kv.first, kv.second);
-        }
-      }
+      final_dict = f->attrs->dict;
     }
 
     final_dict.Set(kLogicBufferShapes, final_layouts);

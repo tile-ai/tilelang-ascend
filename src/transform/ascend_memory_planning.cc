@@ -79,8 +79,41 @@ public:
                                .value();
     }
 
+    // Recover the pre-flatten leading extent (double-buffer stage count) of
+    // every buffer from the initial shapes. A buffer declared as [2, ...] in
+    // L0A/L0B/L0C uses the hardware ping-pong convention whose slots are
+    // guarded by per-side ownership tokens, which constrains how its address
+    // range may overlap another such buffer (see
+    // ValidatePreAllocatedDoubleBuffers). Names conflicting across buffers
+    // are marked -1 so the validation skips them.
+    Map<Var, Array<PrimExpr>> initial_shape_map;
+    if (fn_attr->dict.count(kInitialBufferShapes)) {
+      initial_shape_map = fn_attr->dict.at(kInitialBufferShapes)
+                              .as<Map<Var, Array<PrimExpr>>>()
+                              .value();
+    }
+    std::unordered_map<std::string, int64_t> initial_leading_extents;
+    for (const auto &kv : initial_shape_map) {
+      const Array<PrimExpr> &shape = kv.second;
+      if (shape.empty()) {
+        continue;
+      }
+      const IntImmNode *imm = shape[0].as<IntImmNode>();
+      if (imm == nullptr) {
+        continue;
+      }
+      const std::string &name = kv.first->name_hint;
+      auto it = initial_leading_extents.find(name);
+      if (it == initial_leading_extents.end()) {
+        initial_leading_extents.emplace(name, static_cast<int64_t>(imm->value));
+      } else if (it->second != static_cast<int64_t>(imm->value)) {
+        it->second = -1;
+      }
+    }
+
     AscendMemoryPlanner planner(f, external_address_map, external_shape_map,
-                                auto_ascend_memory_planning);
+                                auto_ascend_memory_planning,
+                                initial_leading_extents);
     auto address_map = planner.GetAddressMap();
     auto buffer_sizes = planner.GetBufferSizes();
 
@@ -106,11 +139,14 @@ private:
     explicit AscendMemoryPlanner(const PrimFunc &func,
                                  Map<Var, PrimExpr> external_address_map,
                                  Map<Var, Array<PrimExpr>> external_shape_map,
-                                 bool auto_plan = false) {
+                                 bool auto_plan = false,
+                                 const std::unordered_map<std::string, int64_t>
+                                     &initial_leading_extents = {}) {
       memory_auto_plan = auto_plan;
       // Preserve layouts needed by CalculateBufferSize.
       // PTO 4D shapes are [physical_M, physical_N, valid_M, valid_N].
       external_shape_map_ = external_shape_map;
+      initial_leading_extents_ = initial_leading_extents;
       memory_limits_ = {{"shared.l1", ASCEND_SHARED_DYN_MEM_SIZE},
                         {"wmma.matrix_a", ASCEND_WMMA_MATRIX_A_MEM_SIZE},
                         {"wmma.matrix_b", ASCEND_WMMA_MATRIX_B_MEM_SIZE},
@@ -121,6 +157,7 @@ private:
       SetTmpBuffers(external_shape_map);
 
       operator()(func->body);
+      ValidatePreAllocatedDoubleBuffers();
       PlanMemory();
     }
 
@@ -296,6 +333,109 @@ private:
         std::string scope = GetPtrStorageScope(kv.first);
         if (!pre_alloc_buffer_.count(buf->name_hint) && scope == "shared.ub") {
           tmp_buffers.push_back(buf);
+        }
+      }
+    }
+
+    /*!
+     * \brief Reject pre-allocated double-buffered L0A/L0B/L0C buffers whose
+     *        ping-pong slots straddle each other.
+     *
+     * A buffer allocated as [2, ...] in an L0 scope follows the hardware
+     * double-buffer convention: its two slots live at [base, base + size/2)
+     * and [base + size/2, base + size), and ownership is transferred with one
+     * token per side. When two such buffers are given overlapping addresses
+     * via T.annotate_address, every slot of one buffer must lie inside a
+     * single slot (side) of the other; otherwise a slot straddles the other
+     * buffer's side boundary, and the per-side token of the straddled region
+     * can return while MMAD is still reading the other side, producing the
+     * hardware error "507015: L0B read/write conflict in the MTE (same
+     * address)" (issue #1664). Aligned overlap (identical side boundary
+     * points) and disjoint ranges are both valid; only the straddling layout
+     * is rejected.
+     */
+    void ValidatePreAllocatedDoubleBuffers() {
+      static const std::unordered_set<std::string> kDoubleBufferedScopes = {
+          "wmma.matrix_a", "wmma.matrix_b", "wmma.accumulator"};
+
+      struct Entry {
+        std::string name;
+        std::string scope;
+        int64_t base;
+        int64_t size;
+      };
+      std::vector<Entry> entries;
+      for (const auto &kv : buffer_scopes_) {
+        const VarNode *buf = kv.first;
+        if (kDoubleBufferedScopes.count(kv.second) == 0) {
+          continue;
+        }
+        auto pre = pre_alloc_buffer_.find(buf->name_hint);
+        if (pre == pre_alloc_buffer_.end()) {
+          continue;
+        }
+        auto lead = initial_leading_extents_.find(buf->name_hint);
+        if (lead == initial_leading_extents_.end() || lead->second != 2) {
+          continue;
+        }
+        auto size_it = buffer_sizes_.find(buf);
+        if (size_it == buffer_sizes_.end()) {
+          continue;
+        }
+        entries.push_back({buf->name_hint, kv.second, pre->second,
+                           static_cast<int64_t>(size_it->second)});
+      }
+
+      for (size_t i = 0; i < entries.size(); ++i) {
+        for (size_t j = i + 1; j < entries.size(); ++j) {
+          const Entry &a = entries[i];
+          const Entry &b = entries[j];
+          // L0A, L0B and L0C are separate physical memories: only buffers
+          // sharing one scope can actually conflict.
+          if (a.scope != b.scope) {
+            continue;
+          }
+          if (a.base + a.size <= b.base || b.base + b.size <= a.base) {
+            continue; // disjoint ranges are always fine
+          }
+          int64_t a_slot = a.size / 2;
+          int64_t b_slot = b.size / 2;
+          std::string l0_name =
+              a.scope == "wmma.matrix_a"
+                  ? "L0A"
+                  : (a.scope == "wmma.matrix_b" ? "L0B" : "L0C");
+          for (int sa = 0; sa < 2; ++sa) {
+            for (int sb = 0; sb < 2; ++sb) {
+              if (sa == sb) {
+                continue; // same side: the shared token protects the region
+              }
+              int64_t a_lo = a.base + sa * a_slot;
+              int64_t a_hi = a.base + (sa + 1) * a_slot;
+              int64_t b_lo = b.base + sb * b_slot;
+              int64_t b_hi = b.base + (sb + 1) * b_slot;
+              if (a_lo < b_hi && b_lo < a_hi) {
+                LOG(FATAL)
+                    << "Double-buffered " << l0_name
+                    << " buffer conflict: pre-allocated "
+                    << "buffers " << a.name << " [" << a.base << ", "
+                    << a.base + a.size << ") and " << b.name << " [" << b.base
+                    << ", " << b.base + b.size
+                    << ") overlap, but their ping-pong slot boundaries differ ("
+                    << a.base + a_slot << " vs " << b.base + b_slot
+                    << "): " << b.name << "'s slot " << sb << " [" << b_lo
+                    << ", " << b_hi << ") straddles " << a.name << "'s slot "
+                    << sa << " [" << a_lo << ", " << a_hi
+                    << "). A per-side ownership token cannot protect the "
+                    << "straddled region, so MTE may overwrite " << l0_name
+                    << " data that MMAD is still reading (runtime error 507015 "
+                    << "\"" << l0_name
+                    << " read/write conflict in the MTE\"). Shift one base so "
+                    << "both buffers share the same side boundary point (every "
+                    << "slot of one buffer inside a single slot of the other), "
+                    << "or give the buffers disjoint address ranges.";
+              }
+            }
+          }
         }
       }
     }
@@ -1017,6 +1157,9 @@ private:
         buffer_sizes_; // buffer bytes size
     // Layout map used to size PTO 4D tiles by physical footprint.
     Map<Var, Array<PrimExpr>> external_shape_map_;
+    // Pre-flatten leading extent (double-buffer stage count) per buffer name;
+    // -1 marks ambiguous names. Used to identify [2, ...] ping-pong buffers.
+    std::unordered_map<std::string, int64_t> initial_leading_extents_;
     std::unordered_map<const VarNode *, size_t>
         first_use_; // buffer first use stmt scope
     std::unordered_map<std::string, int>
