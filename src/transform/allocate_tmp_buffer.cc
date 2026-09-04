@@ -547,8 +547,11 @@ WorkspaceSpec GetPTOWorkspaceSpec(const CallNode *call,
     return RequireWorkspace(GetAccessPtrDtype(call->args[2]),
                             EstimatePTOWorkspaceBytes(call, alloc_buffers));
   }
-  if (call->op.same_as(tl::ascend_clamp()) ||
-      call->op.same_as(tl::ascend_clamp_max()) ||
+  if (call->op.same_as(tl::ascend_clamp())) {
+    return RequireWorkspace(GetAccessPtrDtype(call->args[2]),
+                            GetAccessPtrBytes(call->args[2]));
+  }
+  if (call->op.same_as(tl::ascend_clamp_max()) ||
       call->op.same_as(tl::ascend_clamp_min()) ||
       call->op.same_as(tl::ascend_sigmoid()) ||
       call->op.same_as(tl::ascend_pow()) ||

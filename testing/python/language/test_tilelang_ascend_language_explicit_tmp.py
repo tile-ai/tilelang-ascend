@@ -370,6 +370,7 @@ def test_every_workspace_api_has_the_target_specific_lowered_layout(model, expli
     pto_workspace_ops = {
         "tl.ascend_reduce",
         "tl.ascend_bitwise_xor",
+        "tl.ascend_clamp",
         "tl.ascend_merge_sort",
         "tl.ascend_select",
         "tl.ascend_sort",
@@ -757,7 +758,6 @@ def test_pto_zero_workspace_apis_elide_an_explicit_empty_arena():
                 T.tile.pow(dst_ub, src_ub, src_ub, tmp=arena_ub)
                 T.tile.clamp_max(dst_ub, src_ub, 1.0, 64, tmp=arena_ub)
                 T.tile.clamp_min(dst_ub, src_ub, -1.0, 64, tmp=arena_ub)
-                T.tile.clamp(dst_ub, src_ub, -1.0, 1.0, 64, tmp=arena_ub)
                 T.tile.round(dst_ub, src_ub, 64, tmp=arena_ub)
                 T.tile.gather_mask(dst_ub, src_ub, "P0101", tmp=arena_ub)
 
@@ -767,7 +767,6 @@ def test_pto_zero_workspace_apis_elide_an_explicit_empty_arena():
         "tl.ascend_pow",
         "tl.ascend_clamp_max",
         "tl.ascend_clamp_min",
-        "tl.ascend_clamp",
         "tl.ascend_round",
         "tl.ascend_gather_mask",
     }
@@ -1143,6 +1142,46 @@ def test_ascendc_zero_workspace_codegen_uses_basic_intrinsics():
     assert "tl::ascend::Broadcast" in source
     assert "tmp_ub" not in source
     assert "PopStackBuffer" not in source
+
+
+@pytest.mark.parametrize(
+    ("dtype", "count", "expected_bytes"),
+    [
+        ("float16", 64, 128),
+        ("float32", 64, 256),
+        ("int16", 64, 128),
+        ("int32", 64, 256),
+    ],
+)
+def test_pto_clamp_workspace_matches_source(dtype, count, expected_bytes):
+    src = _ub_buffer("src", (count,), dtype)
+    dst = _ub_buffer("dst", (count,), dtype)
+    call = ascend_tile.clamp(dst, src, -1, 1, count)
+
+    func, _, workspace = _lower_single_workspace(call, 3, [src, dst], model="pto")
+
+    assert workspace is not None
+    assert workspace.args[0].dtype == dtype
+    assert _workspace_bytes(workspace) == expected_bytes
+    assert _allocated_buffer_names(func).count("tmp_ub") == 1
+
+
+def test_pto_clamp_codegen_uses_supported_tile_max():
+    @T.prim_func
+    def main():
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            src_ub = T.alloc_ub((64,), "float16")
+            dst_ub = T.alloc_ub((64,), "float16")
+            if vid == 0:
+                T.tile.clamp(dst_ub, src_ub, -1.0, 1.0, 64)
+
+    source = tilelang.lower(main, target="pto").kernel_source
+
+    assert "TEXPANDS(clamp_min" in source
+    assert "TMAX(dst_ub, src_ub, clamp_min" in source
+    assert "TMINS(dst_ub, dst_ub" in source
+    assert "TMAXS(" not in source
+    assert "tmp_ub" in source
 
 
 def test_ascendc_experimental_reduce_codegen_uses_source_dtype_workspace():

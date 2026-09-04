@@ -3408,18 +3408,35 @@ void CodeGenTileLangAscendPto::BinaryVecClampMaxMinOpsCodegen(
 
 void CodeGenTileLangAscendPto::BinaryVecClampOpsCodegen(
     const CallNode *op, const std::string &op_name) {
+  ICHECK_EQ(op->args.size(), 7U);
   ShapeInfo src_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
+  ShapeInfo tmp_shape_info = GetSliceInfo(op->args[3].as<CallNode>());
 
   auto scalar_min = PrintExpr(op->args[op->args.size() - 3]);
   auto scalar_max = PrintExpr(op->args[op->args.size() - 2]);
 
   std::string src_name = ResolveUbSliceName(src_shape_info);
   std::string dst_name = ResolveUbSliceName(dst_shape_info);
+  std::string min_name = GetTempVarName("clamp_min");
+
+  // A2/A3 PTO provides TMINS but not TMAXS. Materialize the lower bound in
+  // the typed workspace and use the supported tile-tile TMAX instead.
+  ShapeInfo min_shape_info = dst_shape_info;
+  min_shape_info.first_addr = tmp_shape_info.first_addr;
+  min_shape_info.offset = tmp_shape_info.offset;
+  min_shape_info.ub_name = tmp_shape_info.ub_name;
+  CreateUbVariableND(min_name, min_shape_info);
 
   this->PrintIndent();
-  this->stream << "TMAXS(" << dst_name << ", " << src_name << ", " << scalar_min
+  this->stream << "TEXPANDS(" << min_name << ", " << scalar_min << ");\n";
+  this->PrintIndent();
+  this->stream << "TL_PIPE_V_BARRIER();\n";
+  this->PrintIndent();
+  this->stream << "TMAX(" << dst_name << ", " << src_name << ", " << min_name
                << ");\n";
+  this->PrintIndent();
+  this->stream << "TL_PIPE_V_BARRIER();\n";
   this->PrintIndent();
   this->stream << "TMINS(" << dst_name << ", " << dst_name << ", " << scalar_max
                << ");\n";
