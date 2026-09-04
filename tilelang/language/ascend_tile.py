@@ -1298,9 +1298,34 @@ def exp(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
     return unary_op(dst, src0, "exp")
 
 
+def _as_const_int(expr) -> int | None:
+    if isinstance(expr, IntImm):
+        return expr.value
+    return None
+
+
 def _is_aliased(dst: Buffer | BufferRegion, src: Buffer | BufferRegion) -> bool:
-    """Check whether dst and src share the same underlying buffer."""
-    return _underlying_buffer(dst).same_as(_underlying_buffer(src))
+    """Check whether dst and src may overlap in storage.
+
+    Different buffers never alias (the memory planner assigns overlapping
+    addresses only to buffers with disjoint live ranges, and both operands are
+    live at the call site). For regions of the same buffer, statically
+    provable disjointness on any dimension (constant bounds) means no alias;
+    anything not provable is conservatively treated as aliased.
+    """
+    if not _underlying_buffer(dst).same_as(_underlying_buffer(src)):
+        return False
+    if isinstance(dst, BufferRegion) and isinstance(src, BufferRegion):
+        for r_dst, r_src in zip(dst.region, src.region):
+            d_min = _as_const_int(r_dst.min)
+            d_ext = _as_const_int(r_dst.extent)
+            s_min = _as_const_int(r_src.min)
+            s_ext = _as_const_int(r_src.extent)
+            if d_min is None or d_ext is None or s_min is None or s_ext is None:
+                continue
+            if d_min + d_ext <= s_min or s_min + s_ext <= d_min:
+                return False
+    return True
 
 
 _alias_tmp_counter = itertools.count()

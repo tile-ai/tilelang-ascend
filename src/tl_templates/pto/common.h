@@ -512,6 +512,22 @@ AICORE PTO_INLINE void TSILU(TileUbDataND<T, row, col, row, col> &dst,
   TDIV(dst, tmp, dst);
 }
 
+// Fast path when dst and src are known to be non-overlapping (distinct
+// buffers): the original src stays intact while only dst is written, so the
+// final division can take the numerator directly from src and no scratch
+// copy is needed.
+template <typename T, int32_t row, int32_t col>
+AICORE PTO_INLINE void TSiluNoAlias(TileUbDataND<T, row, col, row, col> &dst,
+                                    TileUbDataND<T, row, col, row, col> &src) {
+  TMULS(dst, src, -1);
+  TL_PIPE_V_BARRIER();
+  TEXP(dst, dst);
+  TL_PIPE_V_BARRIER();
+  TADDS(dst, dst, 1);
+  TL_PIPE_V_BARRIER();
+  TDIV(dst, src, dst);
+}
+
 template <typename T, int32_t row, int32_t col>
 AICORE PTO_INLINE void MulAddDst(TileUbDataND<T, row, col, row, col> &dst,
                                  TileUbDataND<T, row, col, row, col> &src0,
