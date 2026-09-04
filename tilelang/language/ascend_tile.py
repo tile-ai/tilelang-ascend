@@ -1068,23 +1068,35 @@ def div(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | 
 
 
 def max(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
-    """Performs element-wise maximum: dst = max(src0, src1).
+    """Performs element-wise maximum: `dst[i] = max(src0[i], src1[i])`.
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        dst: The destination buffer; it may alias src0 or src1 (in-place).
+        src0: The first source, a buffer or a contiguous region of it.
+        src1: The second operand: a buffer, a 1D buffer element (BufferLoad), or a scalar.
+
+    Notes:
+        - dst and src0 must have equal sizes; all tensor operands must share
+          the same dtype, while a scalar src1 is auto-cast to the buffer dtype.
+        - Supported dtypes: float16, float32, int16, int32.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return binary_op(dst, src0, src1, "max")
 
 
 def min(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
-    """Performs element-wise minimum: dst = min(src0, src1).
+    """Performs element-wise minimum: `dst[i] = min(src0[i], src1[i])`.
 
     Args:
-        dst: The destination buffer.
-        src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        dst: The destination buffer; it may alias src0 or src1 (in-place).
+        src0: The first source, a buffer or a contiguous region of it.
+        src1: The second operand: a buffer, a 1D buffer element (BufferLoad), or a scalar.
+
+    Notes:
+        - dst and src0 must have equal sizes; all tensor operands must share
+          the same dtype, while a scalar src1 is auto-cast to the buffer dtype.
+        - Supported dtypes: float16, float32, int16, int32.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return binary_op(dst, src0, src1, "min")
 
@@ -1138,11 +1150,16 @@ def unary_op(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, op: str):
 
 
 def exp(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
-    """Performs element-wise exponential: dst = exp(src0).
+    """Performs element-wise exponential: `dst[i] = exp(src0[i])`.
 
     Args:
-        dst: The destination buffer.
-        src0: The source buffer.
+        dst: The destination buffer; it may alias src0 (in-place).
+        src0: The source, a buffer or a contiguous region of it.
+
+    Notes:
+        - dst and src0 must have equal element counts.
+        - Supported dtypes: float16, float32.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return unary_op(dst, src0, "exp")
 
@@ -1209,51 +1226,81 @@ def silu(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):
 
 
 def ln(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
-    """Performs element-wise natural logarithm: dst = ln(src0).
+    """Performs element-wise natural logarithm: `dst[i] = ln(src0[i])`.
 
     Args:
-        dst: The destination buffer.
-        src0: The source buffer.
+        dst: The destination buffer; it may alias src0 (in-place).
+        src0: The source, a buffer or a contiguous region of it.
+
+    Notes:
+        - dst and src0 must have equal element counts.
+        - Supported dtypes: float16, float32.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return unary_op(dst, src0, "ln")
 
 
 def abs(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
-    """Performs element-wise absolute value: dst = abs(src0).
+    """Performs element-wise absolute value: `dst[i] = abs(src0[i])`.
 
     Args:
-        dst: The destination buffer.
-        src0: The source buffer.
+        dst: The destination buffer; it may alias src0 (in-place).
+        src0: The source, a buffer or a contiguous region of it.
+
+    Notes:
+        - dst and src0 must have equal element counts.
+        - Supported dtypes: float16, float32.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return unary_op(dst, src0, "abs")
 
 
 def reciprocal(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
-    """Performs element-wise reciprocal: dst = 1 / src0.
+    """Performs element-wise reciprocal: `dst[i] = 1 / src0[i]`.
 
     Args:
-        dst: The destination buffer.
-        src0: The source buffer.
+        dst: The destination buffer; it may alias src0 (in-place).
+        src0: The source, a buffer or a contiguous region of it.
+
+    Notes:
+        - dst and src0 must have equal element counts.
+        - Supported dtypes: float16, float32.
+        - AscendC uses a hardware approximation (max relative error ~3e-3);
+          PTO computes exactly via division but does not support in-place
+          operation (dst aliasing src0 yields wrong results).
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return unary_op(dst, src0, "reciprocal")
 
 
 def sqrt(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
-    """Performs element-wise square root: dst = sqrt(src0).
+    """Performs element-wise square root: `dst[i] = sqrt(src0[i])`.
 
     Args:
-        dst: The destination buffer.
-        src0: The source buffer.
+        dst: The destination buffer; it may alias src0 (in-place).
+        src0: The source, a buffer or a contiguous region of it.
+
+    Notes:
+        - dst and src0 must have equal element counts.
+        - Supported dtypes: float16, float32.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return unary_op(dst, src0, "sqrt")
 
 
 def rsqrt(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
-    """Performs element-wise reciprocal square root: dst = 1 / sqrt(src0).
+    """Performs element-wise reciprocal square root: `dst[i] = 1 / sqrt(src0[i])`.
 
     Args:
-        dst: The destination buffer.
-        src0: The source buffer.
+        dst: The destination buffer; it may alias src0 (in-place).
+        src0: The source, a buffer or a contiguous region of it.
+
+    Notes:
+        - dst and src0 must have equal element counts.
+        - Supported dtypes: float16, float32.
+        - Uses a hardware approximation on both backends (max relative
+          error ~3e-3).
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return unary_op(dst, src0, "rsqrt")
 
@@ -2064,17 +2111,35 @@ def pow(
     *,
     tmp: Buffer | BufferRegion | None = None,
 ):  # noqa: F821
-    """Performs element-wise power calculation: dst = src0 ^ src1.
+    """Performs element-wise power: `dst[i] = src0[i] ** src1[i]`.
 
     Args:
-        dst: The destination buffer where the result will be stored.
-        src0: The base buffer.
-        src1: The exponent buffer.
-        tmp: Optional complete UB scratch storage. Its scalar dtype is
-            reinterpreted by lowering and has no semantic meaning.
+        dst: The destination buffer; it may alias src0 or src1 (in-place)
+            on AscendC, and src0 on PTO (aliasing src1 on PTO yields wrong
+            results).
+        src0: The base, a buffer or a contiguous region of it.
+        src1: The exponent, a buffer or a contiguous region of it.
+        tmp: Optional complete UB scratch storage for the AscendC backend;
+            its scalar dtype is reinterpreted by lowering and has no semantic
+            meaning. When omitted, workspace is allocated automatically
+            (ascendc: ``max(2*S, 1152)`` bytes for float16, ``max(2*S, 768)``
+            for float32/int32, where ``S`` is the source byte size).
 
-    Returns:
-        A TVM intrinsic call that performs the power operation.
+    Notes:
+        - All operands must share the same dtype. Supported dtypes: float16,
+          float32, and int32 on AscendC; float16 and float32 on PTO.
+        - dst, src0, and src1 must have equal element counts, but the front
+          end does not validate this: mismatched sizes run silently on
+          ascendc (undefined results) and fail to compile on PTO.
+        - On PTO, src0 is modified in place (its logarithm is written back)
+          and negative bases, 0^0, or a NaN exponent yield NaN.
+        - AscendC does not alter the source values during computation (they
+          hold their input values when read; in-place aliasing overwrites
+          the aliased buffer with the result as usual), follows IEEE
+          semantics for special values, and computes in float32 internally,
+          so float32 results are exact while int32 may be off by 1 for
+          powers not exactly representable.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     if isinstance(dst, BufferRegion):
         dst_ptr, _ = _handle_buffer_region(dst, "w")
