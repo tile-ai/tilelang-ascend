@@ -24,6 +24,56 @@ namespace tl {
 
 using namespace tir;
 
+// Physical extent (in elements) of an Ascend fractal (zN/nZ/zZ) layout over a
+// logical 2D (rows, cols) tile. The fractal layout pads rows/cols up to the
+// C0 granularity, and the padding holes are interleaved INSIDE the tile (e.g.
+// zN(K=200, N) stores each 128-wide N band at a roundUp16(K)*16 stride), so
+// the backing buffer must be sized by the padded extent, not by
+// max(valid_offset) + 1: e.g. zN(200, 128) spans 8 * 208 * 16 = 26624
+// elements while its valid data only reaches 26496. Any consumer that walks
+// the fractal grid (the gemm_v0 K-tail L1->L0 copy loads ceil(K/16) whole
+// fractals) reads the padding, so under-sizing the buffer both reads out of
+// bounds and lets neighbouring L1 buffers overlap the tail (issue #1341).
+static Optional<IntImm> AscendFractalExtent(const Layout &layout,
+                                            DataType dtype) {
+  const std::string layout_str = layout->AscendLayoutStr();
+  const bool is_zn = layout_str == "layout::zN";
+  const bool is_nz = layout_str == "layout::nZ";
+  const bool is_zz = layout_str == "layout::zZ";
+  if (!is_zn && !is_nz && !is_zz) {
+    return NullOpt;
+  }
+  if (layout->InputDim() < 2 || dtype.bits() == 0 || dtype.lanes() != 1) {
+    return NullOpt;
+  }
+  const auto *rows =
+      layout->InputShape()[layout->InputDim() - 2].as<IntImmNode>();
+  const auto *cols =
+      layout->InputShape()[layout->InputDim() - 1].as<IntImmNode>();
+  if (rows == nullptr || cols == nullptr) {
+    return NullOpt;
+  }
+  const int64_t ele_per_c0 = 32 * 8 / dtype.bits(); // BYTE_PER_C0 / dtype size
+  constexpr int64_t kC0NumPerFractal = 16;
+  auto round_up = [](int64_t v, int64_t m) { return (v + m - 1) / m * m; };
+  auto ceil_div = [](int64_t a, int64_t b) { return (a + b - 1) / b; };
+  int64_t extent;
+  if (is_zn) {
+    // zN(rows, cols): ceil(cols/C0) column bands, each roundUp(rows,16)*C0.
+    extent = ceil_div(cols->value, ele_per_c0) *
+             round_up(rows->value, kC0NumPerFractal) * ele_per_c0;
+  } else if (is_nz) {
+    // nZ(rows, cols): ceil(rows/C0) row bands, each roundUp(cols,16)*C0.
+    extent = ceil_div(rows->value, ele_per_c0) *
+             round_up(cols->value, kC0NumPerFractal) * ele_per_c0;
+  } else {
+    // zZ(rows, cols): ceil(rows/16) row bands, each roundUp(cols,C0)*16.
+    extent = ceil_div(rows->value, kC0NumPerFractal) *
+             round_up(cols->value, ele_per_c0) * kC0NumPerFractal;
+  }
+  return IntImm(DataType::Int(64), extent);
+}
+
 static Buffer makeBufferWithLayout(const Buffer &buffer, const Layout &layout,
                                    Map<Var, Var> &var_remap) {
   const auto *ptr_type =
@@ -47,6 +97,15 @@ static Buffer makeBufferWithLayout(const Buffer &buffer, const Layout &layout,
     }
   }
   Array<PrimExpr> layout_shape = layout->OutputShape();
+  // The fractal extent replaces only the LAST output dim (the linearized
+  // 2D part); leading replicated dims (if any) keep the inferred shape.
+  if (auto extent = AscendFractalExtent(layout, buffer->dtype)) {
+    if (layout_shape.size() >= 1) {
+      layout_shape.Set(layout_shape.size() - 1, extent.value());
+    } else {
+      layout_shape = {extent.value()};
+    }
+  }
   Array<PrimExpr> output_shape = layout_shape;
 
   if (ptr_type->storage_scope == "shared" ||

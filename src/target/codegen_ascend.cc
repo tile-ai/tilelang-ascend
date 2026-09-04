@@ -2897,15 +2897,71 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
       this->stream << ", " << var_names[i];
     }
 
-    // copy_gm_to_l1: append a `need_clear` flag so the helper only zero-inits
+    // copy_gm_to_l1: append a `need_clear` flag so the helper zero-inits
     // the full L1 tile for the primary copy (dst offset 0). Sub-region copies
     // (non-zero dst offset, e.g. the second DMA of a splice / vertical-merge
-    // pattern) must skip the clear, otherwise they clobber data already written
-    // into the same NZ tile. dst_offset_expr is the scalar start offset of the
-    // destination tile; when it is 0 this DMA targets the tile base and is the
-    // natural owner of the tail-padding clear.
+    // pattern) must skip the clear, otherwise they clobber data already
+    // written into the same NZ tile. dst_offset_expr is the scalar start offset
+    // of the destination tile; when it is 0 this DMA targets the tile base and
+    // is the natural owner of the tail-padding clear.
+    //
+    // Pipeline multi-versioned L1 buffers are the exception: each version is
+    // an INDEPENDENT full tile whose base sits at k * tile_elements within the
+    // versioned allocation, so a version-base copy must own the clear of its
+    // own tile (the zero-init covers exactly fractalExtent(dstM, dstN)
+    // elements from the view base and cannot leak into a neighbouring
+    // version). Distinguish the two structurally:
+    //   - a version copy covers FULL rows (realTailM == template dstM) and its
+    //     dst offset is a whole multiple of the tile element count
+    //     (dstM * realTailN, covering both constant prologue offsets and the
+    //     runtime `k * tile` pipelined body);
+    //   - a splice sub-region copy covers a strict row subset
+    //     (realTailM < dstM) at an offset inside one tile, and must not clear.
+    // PR review: without this, every non-zero version skips the clear and a
+    // K-tail Mmad accumulates stale data from the previous iteration.
     if (op_name.find("copy_gm_to_l1") != std::string::npos) {
-      this->stream << ", " << (is_zero(dst_offset_expr) ? "true" : "false");
+      bool need_clear = is_zero(dst_offset_expr);
+      if (!need_clear) {
+        // Parse the template dims from the op name: "copy_gm_to_l1<T, dstM,
+        // dstN>". dstM (rows) decides whether this is a full-row copy; dstM *
+        // dstN is the whole-tile element count used for the version-base
+        // divisibility test (both are compile-time, unlike the runtime
+        // realTailN which a K-tail pipeline body copy varies).
+        int dst_m = 0, dst_n = 0;
+        size_t tmpl_pos = op_name.find('<');
+        if (tmpl_pos != std::string::npos) {
+          std::stringstream ss(op_name.substr(tmpl_pos + 1));
+          std::string dtype_token, m_token, n_token;
+          if (std::getline(ss, dtype_token, ',') &&
+              std::getline(ss, m_token, ',') &&
+              std::getline(ss, n_token, '>')) {
+            dst_m = std::atoi(m_token.c_str());
+            dst_n = std::atoi(n_token.c_str());
+          }
+        }
+        const Array<PrimExpr> &call_args = op->args;
+        // args[4] = realTailM (this copy's destination row count).
+        const auto *tail_m_imm =
+            call_args.size() > 4 ? call_args[4].as<IntImmNode>() : nullptr;
+        if (dst_m > 0 && dst_n > 0 && tail_m_imm != nullptr) {
+          // The tailM==0 default means "full tile" (the helper remaps 0 to
+          // dstM), so a full-row copy is tail_m == 0 || tail_m == dst_m.
+          const int64_t tail_m =
+              tail_m_imm->value == 0 ? dst_m : tail_m_imm->value;
+          const int64_t tile_elems =
+              static_cast<int64_t>(dst_m) * static_cast<int64_t>(dst_n);
+          if (tail_m == dst_m && tile_elems > 0) {
+            // Prove offset % tile_elems == 0 symbolically: covers both the
+            // constant case (version prologue: 1*tile_elems) and the pipelined
+            // body (k * tile_elems with k runtime).
+            arith::Analyzer analyzer;
+            need_clear = analyzer.CanProve(
+                truncmod(dst_offset_expr,
+                         make_const(dst_offset_expr.dtype(), tile_elems)) == 0);
+          }
+        }
+      }
+      this->stream << ", " << (need_clear ? "true" : "false");
     }
 
     // copy_l0c_to_gm's unitFlag rides at the end of the argument list rather
