@@ -44,6 +44,41 @@ constexpr bool IsDuplicateSupported_v =
     std::is_same_v<T, int32_t> || std::is_same_v<T, uint32_t> ||
     std::is_same_v<T, float>;
 
+namespace detail {
+// Bit width of a single element. Sub-byte types must report their packed bit
+// width, NOT sizeof(): int4b_t has sizeof == 1 but only occupies 4 bits (two
+// elements are nibble-packed into one byte, both in GM and in the on-chip
+// fractal layouts), so any geometry derived from sizeof() is 2x off for int4.
+template <typename T> struct ElementSizeBitsImpl {
+  static constexpr uint32_t value = sizeof(T) * 8;
+};
+template <> struct ElementSizeBitsImpl<int4b_t> {
+  static constexpr uint32_t value = 4;
+};
+} // namespace detail
+
+// Bit width of one element of T (4 for int4b_t).
+template <typename T> CATLASS_DEVICE constexpr uint32_t ElementSizeBits() {
+  return detail::ElementSizeBitsImpl<T>::value;
+}
+
+// Elements of T that fit in one 32-byte C0 block (64 for int4b_t).
+template <typename T> CATLASS_DEVICE constexpr uint32_t EleNumPerC0() {
+  return BYTE_PER_C0 * 8 / ElementSizeBits<T>();
+}
+
+// Elements of T that fit in one 512-byte fractal (1024 for int4b_t).
+template <typename T> CATLASS_DEVICE constexpr uint32_t EleNumPerFractal() {
+  return BYTE_PER_FRCATLASSAL * 8 / ElementSizeBits<T>();
+}
+
+// Exact byte footprint of n elements of T. n must cover whole bytes for
+// sub-byte types (guaranteed for 32B-aligned tiles).
+template <typename T>
+CATLASS_DEVICE constexpr uint64_t EleNumToBytes(uint64_t n) {
+  return n * ElementSizeBits<T>() / 8;
+}
+
 CATLASS_DEVICE void disable_dma_atomic_compat() {
 #if defined(CANN_MAJOR) && CANN_MAJOR >= 9
   AscendC::DisableDmaAtomic();
@@ -68,8 +103,42 @@ copy_gm_to_l1(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
   if (need_clear && (tailM != dstM || tailN != dstN)) {
     AscendC::InitConstValue(
         dstTensor,
-        {1, static_cast<uint16_t>(dstM * dstN * sizeof(T) / 32), 0, 0});
+        {1, static_cast<uint16_t>(EleNumToBytes<T>(dstM * dstN) / 32), 0, 0});
     AscendC::PipeBarrier<PIPE_MTE2>();
+  }
+  if constexpr (std::is_same_v<T, int4b_t>) {
+    // int4 GM -> L1 (Nd2Nz into the zN fractal layout), calling the AscendC
+    // intrinsic directly: the generic TileCopyTla path derives its geometry
+    // from sizeof(T) and has no int4 support. The CCE intrinsic behind this
+    // DataCopy reinterprets int4b_t as int8_t (b8 path), so dValue /
+    // srcDValue are BYTE counts (two nibbles per byte) while the destination
+    // strides are in 32-byte C0 units and one C0 block holds 64 nibble
+    // elements. GM rows must start at even element offsets, which nibble
+    // packing (N even) guarantees.
+    AscendC::Nd2NzParams intriParams;
+    intriParams.ndNum = 1;
+    intriParams.dValue = tailN / 2;
+    intriParams.srcNdMatrixStride = 0;
+    intriParams.dstNzC0Stride =
+        ((dstM + 15) / 16) * 16; // roundUp16(dstM), in C0 units
+    intriParams.dstNzMatrixStride = 0;
+    if (realSrcN / 2 < STRIDE_LIMIT) {
+      intriParams.nValue = tailM;
+      intriParams.srcDValue = realSrcN / 2;
+      intriParams.dstNzNStride = 1;
+      AscendC::DataCopy(dstTensor, srcTensor, intriParams);
+    } else {
+      // Per-row fallback, mirroring the generic path (only reachable for GM
+      // row pitches >= 128K nibbles).
+      intriParams.nValue = 1;
+      intriParams.srcDValue = 0;
+      intriParams.dstNzNStride = 0;
+      for (uint32_t i = 0; i < tailM; i++) {
+        AscendC::DataCopy(dstTensor[i * EleNumPerC0<T>()],
+                          srcTensor[i * realSrcN], intriParams);
+      }
+    }
+    return;
   }
   auto layout = MakeLayoutFromTag(LayoutGM{tailM, realSrcN});
   auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(tailM, tailN));
@@ -89,6 +158,37 @@ template <typename T, uint32_t srcM, uint32_t srcN, bool transpose = false>
 CATLASS_DEVICE void copy_l1_to_l0a(LocalTensor<T> dstTensor,
                                    LocalTensor<T> srcTensor, uint32_t dstM,
                                    uint32_t dstN) {
+  if constexpr (std::is_same_v<T, int4b_t>) {
+    // int4 (W4A4) L1(zN) -> L0A(zZ), calling the s4 load intrinsic directly
+    // (the generic TileCopyTla path derives its geometry from sizeof(T) and
+    // has no int4 support).
+    static_assert(!transpose,
+                  "int4 (W4A4) does not support transpose_A: the s4 L1->L0A "
+                  "load has no transpose mode on this architecture");
+    // s4 fractal geometry: 64 nibble elements per 32B C0 block, 1024 elements
+    // (512B) per fractal; LoadData2DParams strides are in 512B fractal units.
+    AscendC::LoadData2DParams loadDataParams;
+    loadDataParams.startIndex = 0;
+    // One repeat per K-C0 block (64 K elements); each repeat steps the source
+    // by the zN N-block stride = roundUp16(M) x 64 elements = roundUp16(M)/16
+    // fractals.
+    loadDataParams.repeatTimes = (dstN + 63) / 64;
+    loadDataParams.srcStride = ((dstM + 15) / 16 * 16) / 16;
+    loadDataParams.sid = 0;
+    loadDataParams.dstGap = 0;
+    loadDataParams.ifTranspose = false;
+    loadDataParams.addrMode = 0;
+    // One LoadData per 16-row M band. Band stride: 512B (one fractal) in the
+    // zN source; roundUp64(K) x 16 elements in the zZ destination (a 16-row
+    // band spans the whole K extent).
+    const uint32_t rowBlocks = (dstM + 15) / 16;
+    const uint32_t dstBandStride = ((dstN + 63) / 64 * 64) * 16;
+    for (uint32_t i = 0; i < rowBlocks; i++) {
+      AscendC::LoadData(dstTensor[i * dstBandStride],
+                        srcTensor[i * EleNumPerFractal<T>()], loadDataParams);
+    }
+    return;
+  }
   using LayoutL1_ =
       std::conditional_t<transpose,
                          Catlass::detail::TagToLayout_t<T, LayoutL1T>,
@@ -111,6 +211,46 @@ template <typename T, uint32_t srcM, uint32_t srcN, bool transpose = false>
 CATLASS_DEVICE void copy_l1_to_l0b(LocalTensor<T> dstTensor,
                                    LocalTensor<T> srcTensor, uint32_t dstM,
                                    uint32_t dstN) {
+  if constexpr (std::is_same_v<T, int4b_t>) {
+    // int4 (W4A4) L1(zN) -> L0B(nZ) via the s4 transposing load, calling the
+    // AscendC intrinsic directly: the generic LoadData path dispatches to
+    // load_cbuf_to_cb_s4 which hardcodes transpose OFF and silently drops the
+    // ifTranspose flag, so B never receives the nZ layout mad_s4 expects.
+    static_assert(!transpose,
+                  "int4 (W4A4) does not support transpose_B: the s4 L1->L0B "
+                  "transposing load requires a zN source layout");
+    // s4 transposing-load semantics (measured on dav_c220 / Ascend 910B; the
+    // generic LoadDataWithTranspose documents 512B-fractal units, but the s4
+    // variant does NOT follow them):
+    //   - one repeat moves a whole 64K x 64N nibble block (2048B): it reads
+    //     the four consecutive 512B zN row-fractals of one K-64 band and
+    //     writes 64 complete nZ N-columns (16 fractals) to L0B;
+    //   - srcStride steps the source between repeats in 2048B blocks, so one
+    //     N-C0 block (64 columns) needs srcStride = roundUp16(K) / 64, where
+    //     K is the FULL L1 tile depth (template srcM) because the zN buffer
+    //     is allocated for the whole tile;
+    //   - dstGap advances the destination by (1 + dstGap) nZ N-fractals (16
+    //     columns each), so 64 columns per repeat needs dstGap = 3.
+    AscendC::LoadData2dTransposeParams loadDataParams;
+    loadDataParams.startIndex = 0;
+    loadDataParams.repeatTimes = (dstN + 63) / 64;
+    loadDataParams.srcStride = ((srcM + 15) / 16 * 16) / 64;
+    loadDataParams.dstGap = 3;
+    loadDataParams.dstFracGap = 0;
+    loadDataParams.addrMode = 0;
+    // One LoadDataWithTranspose per K-C0 block (64 K elements). Block stride:
+    // 2048B (4 fractals) in the zN source; roundUp16(N) x 64 elements in the
+    // nZ destination (64 K rows spanning the whole N extent).
+    const uint32_t kBlocks = (dstM + 63) / 64;
+    const uint32_t dstKBlockStride = ((dstN + 15) / 16 * 16) * 64;
+    const uint32_t srcKBlockStride = 4 * EleNumPerFractal<T>();
+    for (uint32_t b = 0; b < kBlocks; b++) {
+      AscendC::LoadDataWithTranspose(dstTensor[b * dstKBlockStride],
+                                     srcTensor[b * srcKBlockStride],
+                                     loadDataParams);
+    }
+    return;
+  }
   using LayoutL1_ =
       std::conditional_t<transpose,
                          Catlass::detail::TagToLayout_t<T, LayoutL1T>,
@@ -226,7 +366,7 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
   // elementwise ops) and reaches the unreduced readers intact.
   bool isPad = true;
   uint32_t rightPadding = 1;
-  if (maskShapeN == dstN || (maskShapeN * sizeof(T)) % 32 == 0) {
+  if (maskShapeN == dstN || EleNumToBytes<T>(maskShapeN) % 32 == 0) {
     isPad = false;
     rightPadding = 0;
   }
@@ -242,8 +382,9 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
     }
   }
   AscendC::DataCopyExtParams dataCopyParams(
-      maskShapeM, maskShapeN * sizeof(T), (realSrcN - maskShapeN) * sizeof(T),
-      (dstN - maskShapeN) * sizeof(T) / 32, 0);
+      maskShapeM, EleNumToBytes<T>(maskShapeN),
+      EleNumToBytes<T>(realSrcN - maskShapeN),
+      EleNumToBytes<T>(dstN - maskShapeN) / 32, 0);
   AscendC::DataCopyPadExtParams<T> padParams(isPad, 0, rightPadding, padValue);
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams, padParams);
 }
@@ -254,8 +395,9 @@ copy_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
               uint32_t realdstN = 1, uint32_t maskShapeM = srcM,
               uint32_t maskShapeN = srcN) {
   AscendC::DataCopyExtParams dataCopyParams(
-      maskShapeM, maskShapeN * sizeof(T), (srcN - maskShapeN) * sizeof(T) / 32,
-      (realdstN - maskShapeN) * sizeof(T), 0);
+      maskShapeM, EleNumToBytes<T>(maskShapeN),
+      EleNumToBytes<T>(srcN - maskShapeN) / 32,
+      EleNumToBytes<T>(realdstN - maskShapeN), 0);
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams);
 }
 
@@ -1180,10 +1322,12 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
   // to the runtime K already threaded through mma).
   static_assert(kL0Size % 16 == 0, "kL0Size must be a multiple of 16");
   // Elements per C0 block (32 bytes). Equals 16 only for half; for int8 it is
-  // 32, for float it is 8. The fractal (zN/zZ/nZ) K-stride used below to step
-  // between L0 K-tiles is ELE_NUM_PER_C0 * kL0Size, so hardcoding 16 breaks
-  // int8 (and any dtype where sizeof(T1) != 2) once kL0split > 1.
-  constexpr uint32_t ELE_NUM_PER_C0 = BYTE_PER_C0 / sizeof(T1);
+  // 32, for int4b_t it is 64 (two nibbles per byte), for float it is 8. The
+  // fractal (zN/zZ/nZ) K-stride used below to step between L0 K-tiles is
+  // ELE_NUM_PER_C0 * kL0Size, so hardcoding 16 breaks int8 (and any dtype
+  // where sizeof(T1) != 2) once kL0split > 1. Must be bit-width based:
+  // sizeof(AscendC::int4b_t) == 1 even though an element is 4 bits.
+  constexpr uint32_t ELE_NUM_PER_C0 = EleNumPerC0<T1>();
   constexpr uint32_t kL0split = (K + kL0Size - 1) / kL0Size;
   auto l0a = l0a_.Get<T1>();
   auto l0b = l0b_.Get<T1>();
@@ -1208,7 +1352,8 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
   //   L1 zN B col n0 ->  n0 * roundUp16(K)   (tla::MakeLayout<zN>  C1 stride)
   // both of which are consistent with the original K-offset
   // B[kL0Idx*ELE_NUM_PER_C0*kL0Size] (zN K-row stride) already used below.
-  constexpr uint32_t nMaxByL0B = (32u * 1024u) / (kL0Size * sizeof(T1));
+  constexpr uint32_t nMaxByL0B =
+      (32u * 1024u * 8 / ElementSizeBits<T1>()) / kL0Size;
   constexpr uint32_t nTile = (transpose_B || N <= nMaxByL0B) ? N : nMaxByL0B;
   static_assert(transpose_B || (N % nTile == 0),
                 "gemm_v0 N-tiling requires N divisible by the N tile size");
@@ -1223,11 +1368,11 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
   constexpr uint32_t kL0Budget = (64u * 1024u) / (kNumSteps > 1 ? 2u : 1u);
   // The B tile in L0B is (kL0Size x nTile) -- only the transpose-B path keeps
   // nTile == N, so a large-N transpose-B caller could overflow its L0B slot.
-  static_assert(nTile * kL0Size * sizeof(T1) <= kL0Budget,
+  static_assert(EleNumToBytes<T1>(nTile * kL0Size) <= kL0Budget,
                 "gemm_v0: the (kL0Size x nTile) B tile does not fit its L0B "
                 "ping-pong slot");
   // M is not tiled, so a large M would overflow its L0A slot.
-  static_assert(M * kL0Size * sizeof(T1) <= kL0Budget,
+  static_assert(EleNumToBytes<T1>(M * kL0Size) <= kL0Budget,
                 "gemm_v0: the (M x kL0Size) A tile does not fit its L0A "
                 "ping-pong slot");
   // L0C is caller-allocated (the `C` operand) and holds the full (M x N)
