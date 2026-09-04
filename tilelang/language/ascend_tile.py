@@ -1106,7 +1106,9 @@ def bitwise_or(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Bu
     Args:
         dst: The destination buffer.
         src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        src1: The second source operand. Scalar operands are currently unsupported.
+
+    Supported dtypes on A2/A3: int8, uint8, int16, uint16.
     """
     return binary_op(dst, src0, src1, "bitwise_or")
 
