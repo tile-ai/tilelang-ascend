@@ -542,7 +542,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: build-cache/
-          key: tilelang-build-${{ runner.name }}-${{ runner.arch }}-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
+          key: tilelang-build-${{ runner.name }}-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
       
       # 全量编译，清理所有残留编译产物
       - name: Clean build artifacts for full build
@@ -754,7 +754,7 @@ jobs:
       - name: Delete old cache for overwrite
         if: always() && env.FULL_BUILD == 'true'
         run: |
-          KEY="tilelang-build-${{ runner.name }}-${{ runner.arch }}-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}"
+          KEY="tilelang-build-${{ runner.name }}-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}"
           echo "🗑️ Deleting old cache to allow overwrite: $KEY"
           curl -s -L \
             -X DELETE \
@@ -772,7 +772,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: build-cache/
-          key: tilelang-build-${{ runner.name }}-${{ runner.arch }}-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
+          key: tilelang-build-${{ runner.name }}-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
           
       - name: Check pass rate
         id: check_results
