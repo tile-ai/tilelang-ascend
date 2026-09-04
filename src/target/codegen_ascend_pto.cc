@@ -3693,6 +3693,78 @@ void CodeGenTileLangAscendPto::CodegenRowReduce(const ReduceOpInfo &op_info,
     CreateUbVariableND(temp_name, tmp_cast);
   }
 
+  // A float16 sum reduces natively in f16 precision (TROWSUM on half tiles),
+  // which shows a visible accumulation error on random data (issue #754).
+  // Widen to float32 instead -- TCVT -> TROWSUM<float> -> TCVT -- so the
+  // reduction accumulates in float32 and rounds once at the end. The widened
+  // source, the TROWSUM scratch and the float32 partial destination are
+  // views over the injected workspace; its sizing rule covers the float32
+  // layout for half inputs (EstimatePTOReduceWorkspaceBytes).
+  if (op_info.kind == ReduceKind::SUM && src.type == "half") {
+    const int32_t rows = src.slice_valid_row;
+    const int32_t cols = src.slice_valid_col;
+
+    // Widened source: rows x cols float32.
+    const int32_t src_f32_elems = rows * cols;
+    // TROWSUM scratch: same sizing rule as the native path, in float32.
+    const int32_t tmp_f32_cols = GetRowReduceTmpCol(cols, "float");
+    const int32_t tmp_f32_elems = rows * tmp_f32_cols;
+    // Workspace layout (float32 elements): [source | scratch | destination].
+    const int32_t dst_f32_off = src_f32_elems + tmp_f32_elems;
+
+    // Reinterpret the byte-typed workspace as float32; ReinterpretShapeInfo
+    // converts both the extent and the offset to float32 element units.
+    ShapeInfo ws = ReinterpretShapeInfo(tmp, "float");
+    std::string f32_src_name = GetTempVarName(tmp.ub_name + "_f32_src");
+    std::string f32_scratch_name = GetTempVarName(tmp.ub_name + "_f32_scratch");
+    std::string f32_dst_name = GetTempVarName(tmp.ub_name + "_f32_dst");
+
+    auto emit_subtile = [&](const std::string &name, int32_t off, int32_t nrows,
+                            int32_t ncols, bool is_dst = false) {
+      ShapeInfo view = ws;
+      view.ub_name = name;
+      view.row = nrows;
+      view.col = ncols;
+      view.slice_row = nrows;
+      view.slice_col = ncols;
+      view.slice_valid_row = nrows;
+      view.slice_valid_col = ncols;
+      view.is_slice = false;
+      if (off != 0) {
+        view.offset = "(" + ws.offset + " + " + std::to_string(off) + ")";
+      }
+      if (is_dst) {
+        // TROWSUM writes a DN (column-major) destination: ShapeInfo stays
+        // row=1 x col=nrows so the emitted DN template carries nrows in its
+        // Cols slot, matching the native float32 row-reduce layout.
+        CreateUbVariableDN(name, view);
+      } else {
+        CreateUbVariableND(name, view);
+      }
+    };
+
+    // Destination: a DN (column-major) tile whose 64..N element count keeps
+    // the ColMajor 32-byte alignment check satisfiable; this mirrors the
+    // native float32 row-reduce destination layout.
+    emit_subtile(f32_src_name, 0, rows, cols);
+    emit_subtile(f32_scratch_name, src_f32_elems, rows, tmp_f32_cols);
+    emit_subtile(f32_dst_name, dst_f32_off, 1, rows, true);
+
+    this->PrintIndent();
+    this->stream << "TCVT(" << f32_src_name << ", " << src_name
+                 << ", RoundMode::CAST_NONE);\n";
+    this->PrintIndent();
+    this->stream << "TROWSUM(" << f32_dst_name << ", " << f32_src_name << ", "
+                 << f32_scratch_name << ");\n";
+    this->PrintIndent();
+    // The final narrow cast reads the DN float32 destination; writing into
+    // the original ND half tile keeps both TCVT operands on supported
+    // same-layout combinations (a DN-to-DN TCVT is not a verified path).
+    this->stream << "TCVT(" << dst.ub_name << ", " << f32_dst_name
+                 << ", RoundMode::CAST_RINT);\n";
+    return;
+  }
+
   this->PrintIndent();
   this->stream << op_name << "(" << dst_name << ", " << src_name << ", "
                << temp_name << ");\n";
@@ -3700,7 +3772,9 @@ void CodeGenTileLangAscendPto::CodegenRowReduce(const ReduceOpInfo &op_info,
 
 void CodeGenTileLangAscendPto::CodegenColReduce(const ReduceOpInfo &op_info,
                                                 const ShapeInfo &dst,
-                                                const ShapeInfo &src) {
+                                                const ShapeInfo &src,
+                                                const ShapeInfo &tmp,
+                                                bool has_tmp) {
   std::string op_name = GetReduceOpName(op_info.kind, ReduceDirection::COL);
 
   std::string dst_name = dst.ub_name;
@@ -3714,6 +3788,60 @@ void CodeGenTileLangAscendPto::CodegenColReduce(const ReduceOpInfo &op_info,
   if (src.is_slice) {
     src_name = GetTempVarName(src.ub_name);
     CreateUbVariableND(src_name, src);
+  }
+
+  // A float16 column sum reduces natively in f16 precision (TCOLSUM on half
+  // tiles), which shows a visible accumulation error on random data (issue
+  // #754). Widen to float32 instead -- TCVT -> TCOLSUM<float> -> TCVT --
+  // with the widened source and the float32 partial destination as views
+  // over an injected workspace.
+  if (op_info.kind == ReduceKind::SUM && src.type == "half") {
+    ICHECK(has_tmp) << "PTO float16 column reduce_sum expects an injected "
+                       "workspace for the float32 widening";
+    const int32_t rows = src.slice_valid_row;
+    const int32_t cols = src.slice_valid_col;
+
+    const int32_t src_f32_elems = rows * cols;
+    // TCOLSUM writes a row-major destination whose column count must stay
+    // 32-byte aligned in float32.
+    const int32_t dst_f32_cols = GetValidShape(cols, "float");
+
+    ShapeInfo ws = ReinterpretShapeInfo(tmp, "float");
+    std::string f32_src_name = GetTempVarName(tmp.ub_name + "_f32_src");
+    std::string f32_dst_name = GetTempVarName(tmp.ub_name + "_f32_dst");
+
+    auto emit_col_subtile = [&](const std::string &name, int32_t off,
+                                int32_t nrows, int32_t ncols) {
+      ShapeInfo view = ws;
+      view.ub_name = name;
+      view.row = nrows;
+      view.col = ncols;
+      view.slice_row = nrows;
+      view.slice_col = ncols;
+      view.slice_valid_row = nrows;
+      view.slice_valid_col = ncols;
+      view.is_slice = false;
+      if (off != 0) {
+        view.offset = "(" + ws.offset + " + " + std::to_string(off) + ")";
+      }
+      CreateUbVariableND(name, view);
+    };
+
+    emit_col_subtile(f32_src_name, 0, rows, cols);
+    emit_col_subtile(f32_dst_name, src_f32_elems, 1, dst_f32_cols);
+
+    this->PrintIndent();
+    this->stream << "TCVT(" << f32_src_name << ", " << src_name
+                 << ", RoundMode::CAST_NONE);\n";
+    this->PrintIndent();
+    this->stream << "TCOLSUM(" << f32_dst_name << ", " << f32_src_name
+                 << ");\n";
+    this->PrintIndent();
+    // The narrow cast reads the row-major float32 destination into the
+    // original ND half tile; a DN-to-DN TCVT is not a verified path.
+    this->stream << "TCVT(" << dst.ub_name << ", " << f32_dst_name
+                 << ", RoundMode::CAST_RINT);\n";
+    return;
   }
 
   this->PrintIndent();
@@ -3816,7 +3944,7 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
       ShapeInfo tmp = GetSliceInfo(op->args[3].as<CallNode>());
       CodegenRowReduce(op_info, tmp_dst, src, tmp);
     } else {
-      CodegenColReduce(op_info, tmp_dst, src);
+      CodegenColReduce(op_info, tmp_dst, src, src, false);
     }
     emit_merge(tmp_dst);
     return;
@@ -3833,7 +3961,16 @@ void CodeGenTileLangAscendPto::ReduceOpCodegen(const CallNode *op) {
     if (is_slice) {
       dst.slice_valid_col = op_info.buffer_slice_col;
     }
-    CodegenColReduce(op_info, dst, src);
+    // A float16 column sum has an injected workspace (float32 widening);
+    // every other column reduce is workspace-free.
+    const bool col_has_tmp =
+        (clear_idx > 3) && op->args[3].as<CallNode>() &&
+        op->args[3].as<CallNode>()->op.same_as(builtin::tvm_access_ptr());
+    ShapeInfo col_tmp = src;
+    if (col_has_tmp) {
+      col_tmp = GetSliceInfo(op->args[3].as<CallNode>());
+    }
+    CodegenColReduce(op_info, dst, src, col_tmp, col_has_tmp);
   }
 }
 

@@ -318,7 +318,8 @@ private:
   void CodegenRowReduce(const ReduceOpInfo &op_info, const ShapeInfo &dst,
                         const ShapeInfo &src, const ShapeInfo &tmp);
   void CodegenColReduce(const ReduceOpInfo &op_info, const ShapeInfo &dst,
-                        const ShapeInfo &src);
+                        const ShapeInfo &src, const ShapeInfo &tmp,
+                        bool has_tmp);
 
   void CodegenRowBroadcast(const ShapeInfo &dst, const ShapeInfo &src);
   void CodegenColBroadcast(const ShapeInfo &dst, const ShapeInfo &src);

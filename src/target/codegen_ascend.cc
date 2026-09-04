@@ -2158,29 +2158,46 @@ void CodeGenTileLangAscend::ReduceOpCodegen(const CallNode *op) {
     }
 
     if (dtype == "half" && clear) {
-      std::string mask, repeatTime, srcRepStride;
-      constexpr int64_t ELE_NUM_PER_C0_FOR_HALF = 16;
-      if (dim_val == -1) {
-        mask = std::to_string(n_val);
-        repeatTime = std::to_string(m_val);
-        srcRepStride = std::to_string((n_val + ELE_NUM_PER_C0_FOR_HALF - 1) /
-                                      ELE_NUM_PER_C0_FOR_HALF);
-      } else if (dim_val == 0) {
-        mask = std::to_string(m_val);
-        repeatTime = std::to_string(n_val);
-        srcRepStride = std::to_string((m_val + ELE_NUM_PER_C0_FOR_HALF - 1) /
-                                      ELE_NUM_PER_C0_FOR_HALF);
-      } else {
-        mask = std::to_string(m_val * n_val);
-        repeatTime = "1";
-        srcRepStride = "0";
+      // CANN ReduceSum<half> is rejected by a static_assert, and the historic
+      // WholeReduceSum<half> workaround is wrong for column reductions (its
+      // srcRepStride unit is a 32-byte block and cannot express a 2-byte step,
+      // issue #1683) and loses precision on random data (f16 accumulator,
+      // issue #754). Widen to float32 instead: Cast -> ReduceSum<float> ->
+      // Cast. The widened source and the float32 partial destination live in
+      // the injected reduce workspace.
+      ICHECK(var_names.size() >= 3)
+          << "half reduce_sum expects an injected workspace operand";
+      // The workspace name may carry an element offset ("tmp_ub[0]"); strip
+      // it to build a valid C++ identifier for the typed view.
+      const std::string &tmp_name = var_names[2];
+      std::string tmp_base;
+      for (char c : tmp_name) {
+        if (c == '[' || c == ']') {
+          tmp_base += '_';
+        } else if (isalnum(c) || c == '_') {
+          tmp_base += c;
+        }
       }
+      std::string tmp_view = tmp_base + "_f32";
+      const int64_t total = m_val * n_val;
+      const int64_t result_len = (dim_val == 0) ? n_val : m_val;
+      const int64_t dst_f32_off = ((total * 4 + 31) / 32) * 32 / 4;
 
-      std::string new_op_name = "tl::ascend::reduce_sum_half<" + dtype + ">";
-      this->stream << new_op_name << "(";
-      this->stream << var_names[0] << ", " << var_names[1];
-      this->stream << ", " << mask << ", " << repeatTime << ", " << srcRepStride
-                   << ");\n";
+      this->stream << "AscendC::LocalTensor<float> " << tmp_view << " = "
+                   << tmp_name << ".ReinterpretCast<float>();\n";
+      this->PrintIndent();
+      this->stream << "AscendC::Cast(" << tmp_view << ", " << var_names[1]
+                   << ", AscendC::RoundMode::CAST_NONE, " << total << ");\n";
+      this->PrintIndent();
+      this->stream << "tl::ascend::reduce_sum<float, " << m_str << ", " << n_str
+                   << ", " << dim_str << ">(" << tmp_view << "[" << dst_f32_off
+                   << "], " << tmp_view << ", " << tmp_name << ", true);\n";
+      this->PrintIndent();
+      this->stream << "AscendC::Cast(" << var_names[0] << ", " << tmp_view
+                   << "[" << dst_f32_off
+                   << "], "
+                      "AscendC::RoundMode::CAST_RINT, "
+                   << result_len << ");\n";
     } else {
       std::string new_op_name = "tl::ascend::reduce_sum<" + dtype + ", " +
                                 m_str + ", " + n_str + ", " + dim_str + ">";

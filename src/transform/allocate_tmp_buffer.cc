@@ -347,6 +347,14 @@ int64_t EstimatePTOReduceWorkspaceBytes(const CallNode *call,
                                         const Array<Buffer> &alloc_buffers) {
   const ReduceTemplateInfo info = ParseReduceTemplateInfo(call);
   if (info.direction == 0) {
+    // A float16 column sum widens to float32 (TCVT -> TCOLSUM<float> ->
+    // TCVT, issue #754); every other column reduce needs no workspace.
+    if (info.kind == ReduceKind::kSum && info.dtype == "half") {
+      const int64_t f32_bytes = 4;
+      const int64_t src_elems = info.rows * info.cols;
+      const int64_t dst_col = AlignReduceOutputCols(info.cols, f32_bytes);
+      return (src_elems + dst_col) * f32_bytes;
+    }
     return 0;
   }
 
@@ -358,17 +366,34 @@ int64_t EstimatePTOReduceWorkspaceBytes(const CallNode *call,
 
   const int64_t dtype_bytes = src_buffer->dtype.bytes();
   const int64_t tmp_col = GetPtoRowReduceTmpCols(info.cols, dtype_bytes);
-  return info.rows * tmp_col * dtype_bytes;
+  int64_t bytes = info.rows * tmp_col * dtype_bytes;
+
+  // float16 sum widens to float32 (TCVT -> TROWSUM<float> -> TCVT, issue
+  // #754): the workspace must hold the widened source tile, the TROWSUM
+  // scratch in float32, and the float32 partial destination (its single
+  // column aligned up to the 32-byte block).
+  if (info.kind == ReduceKind::kSum && info.dtype == "half") {
+    const int64_t f32_bytes = 4;
+    const int64_t src_elems = info.rows * info.cols;
+    const int64_t f32_tmp_col = GetPtoRowReduceTmpCols(info.cols, f32_bytes);
+    const int64_t dst_col = AlignReduceOutputCols(1, f32_bytes);
+    const int64_t widen_bytes =
+        (src_elems + info.rows * f32_tmp_col + info.rows * dst_col) * f32_bytes;
+    bytes = std::max<int64_t>(bytes, widen_bytes);
+  }
+  return bytes;
 }
 
 bool AscendCReduceUsesTmp(const CallNode *call) {
   const ReduceCallLayout layout = ParseReduceCallLayout(call);
-  const ReduceTemplateInfo info = ParseReduceTemplateInfo(call);
   if (layout.physical_row > 0) {
     return false;
   }
-  return !(info.kind == ReduceKind::kSum && info.dtype == "half" &&
-           layout.clear);
+  // float16 sum also needs a workspace: the lowering widens the source to
+  // float32 (Cast -> ReduceSum<float> -> Cast) because the historic
+  // WholeReduceSum<half> workaround has an f16 accumulator (issues #754) and
+  // cannot express the 2-byte step of a column reduce (issue #1683).
+  return true;
 }
 
 int64_t
@@ -417,6 +442,16 @@ EstimateAscendCReduceWorkspaceBytes(const CallNode *call,
           info.rows * (info.cols < elements_per_repeat ? kDataBlockBytes
                                                        : kVectorRepeatBytes);
     }
+  }
+
+  // float16 sum lowers through a float32 widen: the workspace must hold the
+  // widened source tile and the float32 partial destination.
+  if (info.kind == ReduceKind::kSum && info.dtype == "half") {
+    const int64_t widen_bytes = info.rows * info.cols * 4;
+    const int64_t result_len = info.direction == 0 ? info.cols : info.rows;
+    const int64_t widen_total =
+        AlignUp(widen_bytes, 32) + AlignUp(result_len * 4, 32);
+    bytes = std::max<int64_t>(bytes, widen_total);
   }
 
   // The current wrapper still has a sharedTmpBuffer parameter even when the
@@ -516,7 +551,10 @@ WorkspaceSpec GetPTOWorkspaceSpec(const CallNode *call,
   if (call->op.same_as(tl::ascend_reduce())) {
     const ReduceTemplateInfo info = ParseReduceTemplateInfo(call);
     const ReduceCallLayout layout = ParseReduceCallLayout(call);
-    if (info.direction != -1 && layout.clear) {
+    // A float16 sum widens to float32 on both directions (issue #754), so a
+    // column reduce with clear=true needs a workspace as well.
+    if (info.direction != -1 && layout.clear &&
+        !(info.kind == ReduceKind::kSum && info.dtype == "half")) {
       return NoWorkspace();
     }
     return RequireWorkspace(

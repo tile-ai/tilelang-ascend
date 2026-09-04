@@ -471,6 +471,11 @@ def reduce_sum(
             Zero extent is allowed for backend paths that need no workspace.
             Compiler heuristics size implicit allocations and internal views;
             nonzero explicit capacity remains the caller's responsibility.
+
+    Note:
+        On the AscendC backend, float16 ``reduce_sum`` lowers through a
+        float32 widening (Cast -> ReduceSum<float> -> Cast), so the reduction
+        accumulates in float32 precision and rounds once at the end.
     """
     parsed_clear, parsed_real_shape = _parse_reduce_optional_args("reduce_sum", args, clear=clear, real_shape=real_shape)
     legalized_dim = _legalize_reduce_dim(_get_buffer_extent(buffer), dim)

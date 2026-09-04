@@ -4877,8 +4877,6 @@ def run_test_reduce_sum(M, N, block_M, block_N, dim, dtype, target):
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_sum(dim, dtype, target):
-    if dtype == "float16":
-        pytest.xfail(reason="float16 reduction sum may overflow")
     M, N = 1024, 64
     run_test_reduce_sum(M, N, 64, 64, dim, dtype, target)
 
@@ -5105,6 +5103,36 @@ def run_test_reduce_runtime_semantics(
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_dim0_runtime_smoke(op, target):
     run_test_reduce_runtime_semantics(op, dim=0, target=target, clear=True)
+
+
+# float16 reduce_sum regression tests. AscendC lowers float16 sum through a
+# float32 widening (Cast -> ReduceSum<float> -> Cast) because the historic
+# WholeReduceSum<half> workaround is wrong for column reductions (issue #1683:
+# its srcRepStride unit is a 32-byte block and cannot express the 2-byte step)
+# and accumulates in f16 precision (issue #754).
+@pytest.mark.parametrize("dim", [0, -1])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_reduce_sum_float16_runtime(dim, target):
+    M, N = 64, 64
+    func = tilelang.compile(
+        reduce_runtime_semantics_kernel(M, N, "sum", dim, dtype="float16"),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
+    )
+
+    # Fixed seed: PTO reduces natively in half precision, and an unseeded
+    # run can draw a near-zero row sum where the relative tolerance is
+    # dominated by the f16 accumulation error.
+    torch.manual_seed(0)
+    a = torch.randn(M, N, dtype=torch.float16).npu()
+    b = func(a)
+    torch.npu.synchronize()
+
+    ref_b = torch.sum(a, dim=1 if dim == -1 else 0)
+    # Both backends reduce through a float32 accumulator, so the result is
+    # bit-accurate up to the final round to half.
+    torch.testing.assert_close(b, ref_b, rtol=1e-3, atol=1e-3)
 
 
 @pytest.mark.parametrize(
