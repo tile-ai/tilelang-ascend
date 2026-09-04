@@ -9,10 +9,10 @@
 #include <tvm/arith/analyzer.h>
 #include <tvm/ir/transform.h>
 #include <tvm/runtime/registry.h>
+#include <tvm/tir/analysis.h>
+#include <tvm/tir/expr.h>
 #include <tvm/tir/index_map.h>
 #include <tvm/tir/op.h>
-
-#include <tvm/tir/expr.h>
 
 #include <cmath>
 #include <sstream>
@@ -39,9 +39,9 @@ namespace codegen {
 
 #define ASCEND_A5_L0A_SIZE (ASCEND_A2A3_L0A_SIZE)
 #define ASCEND_A5_L0B_SIZE (ASCEND_A2A3_L0B_SIZE)
-#define ASCEND_A5_L1_SIZE (ASCEND_A2A3_L1_SIZE)
+#define ASCEND_A5_L1_SIZE (524288)
 #define ASCEND_A5_L0C_SIZE (262144)
-#define ASCEND_A5_UB_SIZE (262144)
+#define ASCEND_A5_UB_SIZE (253952)
 
 std::string getType(const DataType &dtype) {
   if (dtype.is_float16()) {
@@ -1274,12 +1274,14 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
     if (f->buffer_map.find(v) != f->buffer_map.end()) {
       tir::Buffer buffer = f->buffer_map[v];
       for (size_t j = 0; j < buffer->shape.size(); j++) {
-        auto shape_var = buffer->shape[j].as<VarNode>();
-        if ((std::find(shape_vars.begin(), shape_vars.end(), shape_var) ==
-             shape_vars.end()) &&
-            shape_var != 0) {
-          (void)AllocVarID(shape_var);
-          shape_vars.push_back(shape_var);
+        for (const tir::Var &shape_var_ref :
+             tir::UndefinedVars(buffer->shape[j], f->params)) {
+          const auto *shape_var = shape_var_ref.get();
+          if (std::find(shape_vars.begin(), shape_vars.end(), shape_var) ==
+              shape_vars.end()) {
+            (void)AllocVarID(shape_var);
+            shape_vars.push_back(shape_var);
+          }
         }
       }
     }

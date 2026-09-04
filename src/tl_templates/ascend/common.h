@@ -27,10 +27,22 @@ using namespace Catlass::Gemm::Tile;
 using namespace Catlass::Gemm::Block;
 using namespace AscendC;
 
+#if CATLASS_ARCH == 3510
+using ArchTag = Arch::Ascend950;
+#elif CATLASS_ARCH == 2201
 using ArchTag = Arch::AtlasA2;
+#else
+#error "Unsupported CATLASS_ARCH: expected 2201 or 3510"
+#endif
 using LayoutGM = layout::RowMajor;
 
+#if CATLASS_ARCH == 3510
+// Ascend950's L1->L0A TileCopyTla consumes zN on both sides. AtlasA2 keeps
+// the legacy zZ destination contract.
+using LayoutL0A = layout::zN;
+#else
 using LayoutL0A = layout::zZ;
+#endif
 using LayoutL0B = layout::nZ;
 using LayoutL1 = layout::zN;
 using LayoutL1T = layout::nZ;
@@ -72,14 +84,12 @@ copy_gm_to_l1(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
     AscendC::PipeBarrier<PIPE_MTE2>();
   }
   auto layout = MakeLayoutFromTag(LayoutGM{tailM, realSrcN});
-  auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(tailM, tailN));
-  auto src = tla::MakeTensor<decltype(srcTensor), decltype(src_LAYOUT),
-                             AscendC::TPosition::GM>(srcTensor, src_LAYOUT);
+  auto src_LAYOUT =
+      tla::MakeLayout(tla::MakeShape(tailM, tailN), layout.stride());
+  auto src = tla::MakeTensor(srcTensor, src_LAYOUT, Arch::PositionGM{});
 
-  using LayoutL1_ = Catlass::detail::TagToLayout_t<T, LayoutL1>;
-  constexpr auto layoutInL1 = tla::MakeLayout<T, LayoutL1_>(dstM, dstN);
-  auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutInL1),
-                             AscendC::TPosition::A1>(dstTensor, layoutInL1);
+  constexpr auto layoutInL1 = tla::MakeLayout<T, LayoutL1>(dstM, dstN);
+  auto dst = tla::MakeTensor(dstTensor, layoutInL1, Arch::PositionL1{});
 
   TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
   tileCopier(dst, src);
@@ -89,20 +99,17 @@ template <typename T, uint32_t srcM, uint32_t srcN, bool transpose = false>
 CATLASS_DEVICE void copy_l1_to_l0a(LocalTensor<T> dstTensor,
                                    LocalTensor<T> srcTensor, uint32_t dstM,
                                    uint32_t dstN) {
-  using LayoutL1_ =
-      std::conditional_t<transpose,
-                         Catlass::detail::TagToLayout_t<T, LayoutL1T>,
-                         Catlass::detail::TagToLayout_t<T, LayoutL1>>;
-  constexpr auto layout = transpose ? tla::MakeLayout<T, LayoutL1_>(srcN, srcM)
-                                    : tla::MakeLayout<T, LayoutL1_>(srcM, srcN);
-  auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(dstM, dstN));
-  auto src = MakeTensor<decltype(srcTensor), decltype(src_LAYOUT),
-                        AscendC::TPosition::A1>(srcTensor, src_LAYOUT);
+  using LayoutL1Tag = std::conditional_t<transpose, LayoutL1T, LayoutL1>;
+  constexpr auto layout = tla::MakeLayout<T, LayoutL1Tag>(
+      transpose ? srcN : srcM, transpose ? srcM : srcN);
+  auto src_LAYOUT = tla::GetTileLayout(layout, tla::MakeShape(dstM, dstN),
+                                       tla::MakeCoord(0u, 0u));
+  auto src = tla::MakeTensor(srcTensor, src_LAYOUT, tla::MakeCoord(0u, 0u),
+                             Arch::PositionL1{});
 
-  using LayoutL0A_ = Catlass::detail::TagToLayout_t<T, LayoutL0A>;
-  auto layoutAInL0 = tla::MakeLayout<T, LayoutL0A_>(dstM, dstN);
-  auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutAInL0),
-                             AscendC::TPosition::A2>(dstTensor, layoutAInL0);
+  auto layoutAInL0 = tla::MakeLayout<T, LayoutL0A>(dstM, dstN);
+  auto dst = tla::MakeTensor(dstTensor, layoutAInL0, tla::MakeCoord(0u, 0u),
+                             Arch::PositionL0A{});
   TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
   tileCopier(dst, src);
 }
@@ -111,20 +118,17 @@ template <typename T, uint32_t srcM, uint32_t srcN, bool transpose = false>
 CATLASS_DEVICE void copy_l1_to_l0b(LocalTensor<T> dstTensor,
                                    LocalTensor<T> srcTensor, uint32_t dstM,
                                    uint32_t dstN) {
-  using LayoutL1_ =
-      std::conditional_t<transpose,
-                         Catlass::detail::TagToLayout_t<T, LayoutL1T>,
-                         Catlass::detail::TagToLayout_t<T, LayoutL1>>;
-  constexpr auto layout = transpose ? tla::MakeLayout<T, LayoutL1_>(srcN, srcM)
-                                    : tla::MakeLayout<T, LayoutL1_>(srcM, srcN);
-  auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(dstM, dstN));
-  auto src = MakeTensor<decltype(srcTensor), decltype(src_LAYOUT),
-                        AscendC::TPosition::A1>(srcTensor, src_LAYOUT);
+  using LayoutL1Tag = std::conditional_t<transpose, LayoutL1T, LayoutL1>;
+  constexpr auto layout = tla::MakeLayout<T, LayoutL1Tag>(
+      transpose ? srcN : srcM, transpose ? srcM : srcN);
+  auto src_LAYOUT = tla::GetTileLayout(layout, tla::MakeShape(dstM, dstN),
+                                       tla::MakeCoord(0u, 0u));
+  auto src = tla::MakeTensor(srcTensor, src_LAYOUT, tla::MakeCoord(0u, 0u),
+                             Arch::PositionL1{});
 
-  using LayoutL0B_ = Catlass::detail::TagToLayout_t<T, LayoutL0B>;
-  auto layoutBInL0 = tla::MakeLayout<T, LayoutL0B_>(dstM, dstN);
-  auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutBInL0),
-                             AscendC::TPosition::B2>(dstTensor, layoutBInL0);
+  auto layoutBInL0 = tla::MakeLayout<T, LayoutL0B>(dstM, dstN);
+  auto dst = tla::MakeTensor(dstTensor, layoutBInL0, tla::MakeCoord(0u, 0u),
+                             Arch::PositionL0B{});
 
   TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
   tileCopier(dst, src);
@@ -174,15 +178,14 @@ copy_l0c_to_gm(GlobalTensor<T2> dstTensor, LocalTensor<T1> srcTensor,
   uint32_t tailM = realTailM == 0 ? srcM : realTailM;
   uint32_t tailN = realTailN == 0 ? srcN : realTailN;
   auto layoutInL0C = tla::MakeLayoutL0C(srcM, srcN);
-  auto src = tla::MakeTensor<decltype(srcTensor), decltype(layoutInL0C),
-                             AscendC::TPosition::CO1>(srcTensor, layoutInL0C);
+  auto src = tla::MakeTensor(srcTensor, layoutInL0C, Arch::PositionL0C{});
   LayoutGM gm{tailM, realDstN};
   auto layout = MakeLayoutFromTag(gm);
   auto dTensor = MakeTensor(dstTensor, layout, Arch::PositionGM{});
   auto layout_ = dTensor.layout();
-  auto dst_LAYOUT = MakeLayoutTile(layout_, tla::MakeShape(tailM, tailN));
-  auto dst = MakeTensor<decltype(dstTensor), decltype(dst_LAYOUT),
-                        AscendC::TPosition::GM>(dstTensor, dst_LAYOUT);
+  auto dst_LAYOUT =
+      tla::MakeLayout(tla::MakeShape(tailM, tailN), layout_.stride());
+  auto dst = MakeTensor(dstTensor, dst_LAYOUT, Arch::PositionGM{});
 
   CopyL0CToGmTla<ArchTag, decltype(src), decltype(dst),
                  ScaleGranularity::NO_QUANT, enRelu>
