@@ -542,7 +542,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: build-cache/
-          key: tilelang-build-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
+          key: tilelang-build-${{ runner.arch }}-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
       
       # 全量编译，清理所有残留编译产物
       - name: Clean build artifacts for full build
@@ -628,7 +628,15 @@ jobs:
             PYTEST_MARKERS="not (low_priority or ci_skip)"
           fi
 
+          NPU_DEVICE_ARGS=()
+
+          if [[ "${RUNNER_ARCH:-}" == "ARM64" ]]; then
+            NPU_DEVICE_ARGS+=(-e "ASCEND_RT_VISIBLE_DEVICES=0")
+            echo "ARM64 runner detected: limiting Ascend runtime visibility to device 0"
+          fi
+
           docker exec \
+            "${NPU_DEVICE_ARGS[@]}" \
             -w $GITHUB_WORKSPACE \
             -e GITHUB_ENV=$GITHUB_ENV \
             -e GITHUB_OUTPUT=$GITHUB_OUTPUT \
@@ -746,7 +754,7 @@ jobs:
       - name: Delete old cache for overwrite
         if: always() && env.FULL_BUILD == 'true'
         run: |
-          KEY="tilelang-build-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}"
+          KEY="tilelang-build-${{ runner.arch }}-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}"
           echo "🗑️ Deleting old cache to allow overwrite: $KEY"
           curl -s -L \
             -X DELETE \
@@ -764,7 +772,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: build-cache/
-          key: tilelang-build-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
+          key: tilelang-build-${{ runner.arch }}-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
           
       - name: Check pass rate
         id: check_results
