@@ -51,6 +51,11 @@ public:
 constexpr int kUbAlignmentBytes = 32;
 constexpr int kAlignment16Bytes = 16;
 constexpr int kUbAlignmentMask = kUbAlignmentBytes - 1;
+// UB capacity ceiling for codegen-internal scratch. The memory planner caps
+// user buffers at 196352 B (ASCEND_SHARED_MEM_SIZE); internal scratch is
+// layered on top of the planned buffers and must not push the total end
+// address past the hardware-verified 192 KiB envelope.
+constexpr int64_t kUbCapacityBytes = 196608;
 constexpr int kVectorRepeatBytes = 256;
 constexpr int kEleNumPerC0 = 16;
 constexpr int kDefaultL0SliceSize = 128;
@@ -3424,6 +3429,29 @@ void CodeGenTileLangAscendPto::BinaryVecClampOpsCodegen(
   this->stream << "TMINS(" << dst_name << ", " << dst_name << ", " << scalar_max
                << ");\n";
 }
+int64_t
+CodeGenTileLangAscendPto::AllocActivationScratch(int64_t size_bytes,
+                                                 const std::string &op_name) {
+  // Reuse the shared slot when the request fits; activation scratch is only
+  // live within a single op call, so successive calls never overlap.
+  if (activation_scratch_size_ >= size_bytes) {
+    return activation_scratch_addr_;
+  }
+  int64_t addr = max_ub_addr_;
+  int64_t end = ((addr + size_bytes + kUbAlignmentMask) / kUbAlignmentBytes) *
+                kUbAlignmentBytes;
+  ICHECK(end <= kUbCapacityBytes)
+      << "CodeGenTileLangAscendPto: " << op_name << " needs a " << size_bytes
+      << "B internal scratch at UB offset " << addr
+      << ", which exceeds the UB capacity " << kUbCapacityBytes
+      << "B (planned buffers end at " << addr
+      << "B). Reduce the tile size or the number of activation ops in this "
+         "kernel.";
+  activation_scratch_addr_ = addr;
+  activation_scratch_size_ = size_bytes;
+  max_ub_addr_ = end;
+  return addr;
+}
 
 void CodeGenTileLangAscendPto::SigmoidCodegen(const CallNode *op,
                                               const std::string &op_name) {
@@ -3436,11 +3464,23 @@ void CodeGenTileLangAscendPto::SigmoidCodegen(const CallNode *op,
 
   std::string src_name = ResolveUbSliceName(src_shape_info);
   std::string dst_name = ResolveUbSliceName(dst_shape_info);
+  std::string tmp_name =
+      GetTempVarName(dst_shape_info.ub_name) + "_sigmoid_tmp";
 
+  int32_t elem_bytes = GetTypeLen(dst_shape_info.type);
+  int64_t tmp_buffer_size = tpl_row * tpl_col * elem_bytes;
+  // Shared, reusable scratch slot (see AllocActivationScratch).
+  int64_t tmp_addr = AllocActivationScratch(tmp_buffer_size, op_name);
+
+  this->PrintIndent();
+  this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type << ", "
+               << tpl_row << ", " << tpl_col << "> " << tmp_name << ";\n";
+  this->PrintIndent();
+  this->stream << "TASSIGN(" << tmp_name << ", " << tmp_addr << ");\n";
   this->PrintIndent();
   this->stream << kAscendPtoScope << op_name << "<" << dst_shape_info.type
                << ", " << tpl_row << ", " << tpl_col << ">(" << dst_name << ", "
-               << src_name << ");\n";
+               << src_name << ", " << tmp_name << ");\n";
 }
 
 void CodeGenTileLangAscendPto::SiluCodegen(const CallNode *op) {
@@ -3453,26 +3493,31 @@ void CodeGenTileLangAscendPto::SiluCodegen(const CallNode *op) {
 
   std::string dst_name = ResolveUbSliceName(dst_shape_info);
   std::string src_name = ResolveUbSliceName(src_shape_info);
-  std::string tmp_name = GetTempVarName(dst_shape_info.ub_name) + "_silu_tmp";
 
-  // Update max_ub_addr_ after allocating temporary buffer
-  int32_t elem_bytes = GetTypeLen(dst_shape_info.type);
-  int64_t tmp_buffer_size = row * col * elem_bytes;
-  int64_t tmp_addr = max_ub_addr_; // Save original address before alignment
-  max_ub_addr_ += tmp_buffer_size;
-  // Align to 32-byte boundary
-  max_ub_addr_ = ((max_ub_addr_ + kUbAlignmentBytes - 1) / kUbAlignmentBytes) *
-                 kUbAlignmentBytes;
+  // Same underlying buffer (any slicing) means dst may overlap src: use the
+  // scratch-copy sequence. Distinct buffers are planner-guaranteed
+  // non-overlapping (both live at the call site), so take the tmp-free path.
+  if (dst_shape_info.ub_name == src_shape_info.ub_name) {
+    std::string tmp_name = GetTempVarName(dst_shape_info.ub_name) + "_silu_tmp";
+    int32_t elem_bytes = GetTypeLen(dst_shape_info.type);
+    int64_t tmp_buffer_size = row * col * elem_bytes;
+    int64_t tmp_addr = AllocActivationScratch(tmp_buffer_size, "silu");
 
-  this->PrintIndent();
-  this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type << ", "
-               << row << ", " << col << "> " << tmp_name << ";\n";
-  this->PrintIndent();
-  this->stream << "TASSIGN(" << tmp_name << ", " << tmp_addr << ");\n";
-  this->PrintIndent();
-  this->stream << kAscendPtoScope << "TSILU<" << dst_shape_info.type << ", "
-               << row << ", " << col << ">(" << dst_name << ", " << src_name
-               << ", " << tmp_name << ");\n";
+    this->PrintIndent();
+    this->stream << "tl::ascend_pto::TileUbDataND<" << dst_shape_info.type
+                 << ", " << row << ", " << col << "> " << tmp_name << ";\n";
+    this->PrintIndent();
+    this->stream << "TASSIGN(" << tmp_name << ", " << tmp_addr << ");\n";
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "TSILU<" << dst_shape_info.type << ", "
+                 << row << ", " << col << ">(" << dst_name << ", " << src_name
+                 << ", " << tmp_name << ");\n";
+  } else {
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "TSiluNoAlias<" << dst_shape_info.type
+                 << ", " << row << ", " << col << ">(" << dst_name << ", "
+                 << src_name << ");\n";
+  }
 }
 
 void CodeGenTileLangAscendPto::MulAddDstCodegen(const CallNode *op) {

@@ -63,6 +63,11 @@ public:
   void BinaryVecClampOpsCodegen(const CallNode *op, const std::string &op_name);
   void SigmoidCodegen(const CallNode *op, const std::string &op_type);
   void SiluCodegen(const CallNode *op);
+  // Shared UB scratch slot for activation ops (silu/sigmoid). Successive
+  // calls reuse the slot when the requested size fits instead of stacking a
+  // fresh tile on top of max_ub_addr_.
+  int64_t AllocActivationScratch(int64_t size_bytes,
+                                 const std::string &op_name);
   void MulAddDstCodegen(const CallNode *op);
   void CastCodegen(const CallNode *op, const std::string &op_type);
 
@@ -365,6 +370,9 @@ private:
   Map<String, PrimExpr> address_offset_;
   Map<Var, PrimExpr> buffer_address_map_;
   int64_t max_ub_addr_{0};
+  // Shared activation scratch slot (see AllocActivationScratch).
+  int64_t activation_scratch_addr_{-1};
+  int64_t activation_scratch_size_{0};
 
   Map<String, String> copy_tmplte_map_;
   Map<String, String> copy_base_addr_map_;
