@@ -1843,15 +1843,22 @@ def compare(
     """Generic dispatch function for element-wise comparison operations.
 
     This function compares elements between `src0` and `src1` according to the
-    specified `mode` and stores the result in `dst`. It supports both
+    specified `mode` and stores the result in `dst` as bit-packed int8/uint8
+    (``dst.bit[i] = (src0[i] <mode> src1[i]) ? 1 : 0``). It supports both
     tensor-tensor and tensor-scalar comparisons.
 
+    Supports float16, float32, and int32 for ``src0``/``src1``. ``dst`` must be
+    int8 or uint8. When ``src1`` is a scalar (float or PrimExpr), it is cast to
+    ``src0``'s dtype internally. int32 only supports ``mode="EQ"``. The total
+    bytes of ``src0`` (element_count × dtype_bytes) must be 256-byte aligned.
+
     Args:
-        dst: The destination buffer where the comparison results will be stored.
-        src0: The first source buffer.
+        dst: The destination buffer (int8/uint8, bit-packed) where the comparison
+            results will be stored.
+        src0: The first source buffer. Supports float16, float32, int32.
         src1: The second source operand. It can be a Buffer (for element-wise
             tensor comparison) or a BufferLoad/PrimExpr/float (for tensor-scalar
-            comparison).
+            comparison). When scalar, dtype is cast to match src0.
         mode: The comparison mode string. Supported values:
             - "EQ": Equal to (==)
             - "NE": Not equal to (!=)
