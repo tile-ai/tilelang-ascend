@@ -1670,14 +1670,25 @@ def gather(
 
     This intrinsic gathers elements from the source buffer based on the provided
     offsets and a base address, storing the result in the destination buffer.
+    Both ``src_base_addr`` and the values in ``src_offset`` are byte offsets;
+    the effective element index is ``(src_base_addr + src_offset[i]) /
+    elem_size``. The element count is derived from ``min(dst_size,
+    offset_size)``.
 
     Args:
         dst: The destination buffer where the gathered data will be stored.
-        src: The source buffer containing the data table.
+            Supports float16, float32, bfloat16, int16, uint16, int32, uint32
+            on both ascendc and pto backends.
+        src: The source buffer containing the data table. Must have the same
+            dtype as dst.
         src_offset: The buffer containing offsets/indices for gathering.
+            Must be uint32.
         src_base_addr: The base address offset to be added to the gather indices.
         tmp: Optional complete UB scratch storage. Its scalar dtype is
             reinterpreted by lowering and has no semantic meaning.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call to `tl.ascend_gather`.
     """
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
