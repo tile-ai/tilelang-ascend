@@ -28,6 +28,7 @@
 - [ ] 无 AscendC 参考实现时，已检查 [性能反模式清单](../.agents/skills/tilelang-perf-optimization/references/performance-antipatterns.md)，并记录保留项及原因。
 - [ ] 优先使用 Developer 原语；使用 Expert/Mixed、手写 intrinsic 或特殊实现时，已说明原因和验证结果。
 - [ ] PR 已附精度/性能测试报告，以及典型 shape 的 simulator 结果截图；报告包含环境、shape、baseline、候选结果、单位和复现命令。
+- [ ] 新增单算子的全量测试用例耗时不超过 2 分钟；若超过，已通过 pytest marker 仅保留核心用例在 PR 阶段执行，其余用例纳入每日/定时全量，并记录耗时和标签。
 
 性能摘要/报告链接：<!-- 填写结果或附件；不适用时说明原因 -->
 
@@ -38,6 +39,7 @@
 > **测试门禁（重点）｜PR 快速、每日完整：** 只将最小且可复现的核心 ST/UT 放入 PR 阶段；非核心扩展组合通过 marker 放入每日/定时全量任务，避免无意义泛化浪费 CI 资源。
 
 - [ ] 已新增或更新**代表性 ST/UT**，覆盖默认 target、关键边界和适用后端。
+- [ ] 算子及对应测试用例已在本地多轮重复验证，未发现概率性失败；如出现偶发问题，已定位修复或在“其他补充”中说明。
 - [ ] PR 阶段只保留核心冒烟/L0 与关键回归用例；核心回归不得用 marker 隐藏。
 - [ ] 非核心扩展组合统一标记 `low_priority`，由每日/全量任务使用 `-m "not ci_skip"` 执行；`ci_skip` 仅用于已有 Issue 的已知不稳定或硬件限制。
 - [ ] 已避免无意义泛化、重复编译和重复执行；新增/迁移测试已登记 `ci/operator_test_manifest.yaml`，legacy runner 与 pytest 不重复。
