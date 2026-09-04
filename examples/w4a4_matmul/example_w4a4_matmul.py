@@ -121,7 +121,7 @@ def main():
     ref_c = a.cpu().to(torch.int32) @ b.cpu().to(torch.int32)
 
     torch.testing.assert_close(c.cpu(), ref_c, rtol=1e-2, atol=1e-2)
-    print("W4A4 matmul example passed!")
+    print("Kernel Output Match!")
 
 
 if __name__ == "__main__":
