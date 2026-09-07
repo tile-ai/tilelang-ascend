@@ -235,26 +235,13 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
       ss << "copy_gm_to_ub<";
       ss << get_dtype(src) << ", ";
-      // The column dim is a COMPILE-TIME template arg. A runtime inner-extent
-      // slice (dynamic width, e.g. a softmax's actual window tw_a < buffer
-      // width) would put a non-const expr in the template -> invalid C++ ("use
-      // of undeclared identifier"). Use the buffer's compile-time shape for the
-      // template; the runtime width is already carried by the maskShapeN
-      // function arg (validCol_dst). A const extent stays byte-identical (==
-      // shape for a full copy, or the const slice width), so every existing
-      // caller is unchanged -- only the previously-uncompilable runtime-slice
-      // case changes.
-      PrimExpr gm2ub_tmpl_n = dst_extents[dst->shape.size() - 1];
-      if (!gm2ub_tmpl_n->IsInstance<IntImmNode>()) {
-        gm2ub_tmpl_n = dst->shape[dst->shape.size() - 1];
-        // The shape fallback must itself be a compile-time constant; a buffer
-        // declared with a dynamic inner dim would still emit a non-const
-        // template arg (the invalid-C++ case above), so fail early and clearly.
-        ICHECK(gm2ub_tmpl_n->IsInstance<IntImmNode>())
-            << "copy_gm_to_ub: the inner (column) dimension of the destination "
-               "buffer shape must be a compile-time constant, but got "
-            << gm2ub_tmpl_n;
-      }
+      // The helper needs the physical UB row pitch, not merely the copied
+      // region width.  maskShapeN carries the valid region width separately.
+      PrimExpr gm2ub_tmpl_n = dst->shape[dst->shape.size() - 1];
+      ICHECK(gm2ub_tmpl_n->IsInstance<IntImmNode>())
+          << "copy_gm_to_ub: the inner (column) dimension of the destination "
+             "buffer shape must be a compile-time constant, but got "
+          << gm2ub_tmpl_n;
       ss << gm2ub_tmpl_n;
       if (dst->shape.size() > 1) {
         ss << ", " << compute_blocklen(dst, dst_extents);
@@ -267,18 +254,11 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
       ss << "copy_ub_to_gm<";
       ss << get_dtype(dst) << ", ";
-      // See copy_gm_to_ub above: a runtime inner-extent must use the buffer's
-      // compile-time shape for the template col dim (runtime width is carried
-      // by the maskShapeN function arg); const extents are byte-identical.
-      PrimExpr ub2gm_tmpl_n = src_extents[src->shape.size() - 1];
-      if (!ub2gm_tmpl_n->IsInstance<IntImmNode>()) {
-        ub2gm_tmpl_n = src->shape[src->shape.size() - 1];
-        // See copy_gm_to_ub: the shape fallback must itself be compile-time.
-        ICHECK(ub2gm_tmpl_n->IsInstance<IntImmNode>())
-            << "copy_ub_to_gm: the inner (column) dimension of the source "
-               "buffer shape must be a compile-time constant, but got "
-            << ub2gm_tmpl_n;
-      }
+      PrimExpr ub2gm_tmpl_n = src->shape[src->shape.size() - 1];
+      ICHECK(ub2gm_tmpl_n->IsInstance<IntImmNode>())
+          << "copy_ub_to_gm: the inner (column) dimension of the source "
+             "buffer shape must be a compile-time constant, but got "
+          << ub2gm_tmpl_n;
       ss << ub2gm_tmpl_n;
       if (src->shape.size() > 1) {
         ss << ", " << compute_blocklen(src, src_extents);
@@ -492,6 +472,46 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   } else {
     validRow_dst = 0;
     validCol_dst = 0;
+  }
+
+  auto validate_unaligned_local_rows =
+      [&](const Array<Range> &gm_range, const Array<PrimExpr> &gm_extents,
+          const Buffer &local, const Array<Range> &local_range,
+          const Array<PrimExpr> &local_extents, const PrimExpr &gm_stride,
+          const char *op_name) {
+        if (local->shape.size() < 2) {
+          return;
+        }
+        const auto *local_cols = local->shape.back().as<IntImmNode>();
+        const auto *local_rows =
+            compute_blocklen(local, local_extents).as<IntImmNode>();
+        if (local_cols == nullptr || local_rows == nullptr ||
+            local_rows->value <= 1 ||
+            (local_cols->value * local->dtype.bytes()) % 32 == 0) {
+          return;
+        }
+
+        PrimExpr expected_cols = local->shape.back();
+        bool compact_full_rows =
+            analyzer->CanProveEqual(gm_stride, expected_cols) &&
+            analyzer->CanProveEqual(gm_range.back()->min, Integer(0)) &&
+            analyzer->CanProveEqual(gm_extents.back(), expected_cols) &&
+            analyzer->CanProveEqual(local_range.back()->min, Integer(0)) &&
+            analyzer->CanProveEqual(local_extents.back(), expected_cols);
+        ICHECK(compact_full_rows)
+            << op_name
+            << ": multi-row copies with a non-32-byte-aligned UB "
+               "row pitch require compact full rows on both GM and UB; buffer "
+            << local->name << " has "
+            << local_cols->value * local->dtype.bytes() << " bytes per row";
+      };
+
+  if (config.gm2ub) {
+    validate_unaligned_local_rows(src_range, src_extents, dst, dst_range,
+                                  dst_extents, strideN, "copy_gm_to_ub");
+  } else if (config.ub2gm) {
+    validate_unaligned_local_rows(dst_range, dst_extents, src, src_range,
+                                  src_extents, strideN, "copy_ub_to_gm");
   }
 
   Array<PrimExpr> new_args;
@@ -761,22 +781,13 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
          "destination buffer rank";
 
   std::stringstream ss;
-  // Same compile-time-template-arg fix as the GM<->UB copy above (see
-  // AscendCopy::Lower): the inner (column) dim is a template arg, so a runtime
-  // inner-extent -- e.g. atomic_add(A[rows, 0:n], src_ub[:, 0:n]) with a
-  // dynamic n -- would put a non-const expr in the template and emit invalid
-  // C++. Use the source buffer's compile-time shape for the template; the
-  // runtime column count is carried by validCol_dst below, so the DMA still
-  // adds exactly the runtime number of columns. A const extent stays
-  // byte-identical, so every existing caller is unchanged.
-  PrimExpr atomic_tmpl_n = src_extents[src->shape.size() - 1];
-  if (!atomic_tmpl_n->IsInstance<IntImmNode>()) {
-    atomic_tmpl_n = src->shape[src->shape.size() - 1];
-    ICHECK(atomic_tmpl_n->IsInstance<IntImmNode>())
-        << "tl.ascend_atomic_add: the inner (column) dimension of the source "
-           "buffer shape must be a compile-time constant, but got "
-        << atomic_tmpl_n;
-  }
+  // atomic_add_ub_to_gm reuses copy_ub_to_gm, so it also needs the physical UB
+  // row pitch.  The runtime valid column count is passed separately below.
+  PrimExpr atomic_tmpl_n = src->shape[src->shape.size() - 1];
+  ICHECK(atomic_tmpl_n->IsInstance<IntImmNode>())
+      << "tl.ascend_atomic_add: the inner (column) dimension of the source "
+         "buffer shape must be a compile-time constant, but got "
+      << atomic_tmpl_n;
   if (src.scope() == "shared.ub") {
     ss << "tl::ascend::atomic_add_ub_to_gm<";
     ss << get_dtype(dst) << ", " << atomic_tmpl_n;
@@ -934,6 +945,28 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
     }
   } else {
     strideN = compute_strideN(dst, dst_extents);
+  }
+
+  if (src.scope() == "shared.ub" && src->shape.size() > 1) {
+    const auto *local_cols = src->shape.back().as<IntImmNode>();
+    const auto *local_rows =
+        compute_blocklen(src, src_extents).as<IntImmNode>();
+    if (local_cols != nullptr && local_rows != nullptr &&
+        local_rows->value > 1 &&
+        (local_cols->value * src->dtype.bytes()) % 32 != 0) {
+      PrimExpr expected_cols = src->shape.back();
+      bool compact_full_rows =
+          analyzer->CanProveEqual(strideN, expected_cols) &&
+          analyzer->CanProveEqual(validCol_dst, expected_cols) &&
+          analyzer->CanProveEqual(src_range.back()->min, Integer(0)) &&
+          analyzer->CanProveEqual(src_extents.back(), expected_cols);
+      ICHECK(compact_full_rows)
+          << "tl.ascend_atomic_add: multi-row copies with a "
+             "non-32-byte-aligned UB row pitch require compact full rows on "
+             "both GM and UB; buffer "
+          << src->name << " has " << local_cols->value * src->dtype.bytes()
+          << " bytes per row";
+    }
   }
 
   Array<PrimExpr> new_args;
