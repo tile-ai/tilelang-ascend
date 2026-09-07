@@ -217,7 +217,7 @@ def nsa_fwd(
             col_pos = T.alloc_ub([BS], accum_dtype)
             row_pos = T.alloc_ub([hm], accum_dtype)
             row_pos_2d = T.alloc_ub([hm, BS], accum_dtype)
-            mask_2d = T.alloc_ub([hm, BS], accum_dtype)
+            compare_result = T.alloc_ub([hm * BS // 8], "uint8")  # packed bitmask (selMask)
 
             # Load Q (loop-invariant for this Q token)
             T.copy(Q[i_b, i_t, i_h * G : (i_h + 1) * G, :], q_l1)
@@ -249,12 +249,13 @@ def nsa_fwd(
                 T.tile.arith_progression(col_pos, kv_start, 1, BS)
                 T.tile.broadcast(acc_s_ub_, col_pos, axis=0)
                 T.tile.broadcast(row_pos_2d, row_pos, axis=1)
-                T.tile.compare(mask_2d, acc_s_ub_, row_pos_2d, "LE")
+                NEG_INF = -(2.0**30)  # finite (NOT -inf): avoids NaN in online softmax
+                T.tile.compare(compare_result, acc_s_ub_, row_pos_2d, "LE")
                 T.tile.select(
                     acc_s_ub,
-                    mask_2d,
+                    compare_result,
                     acc_s_ub,
-                    -T.infinity(accum_dtype),
+                    NEG_INF,
                     "VSEL_TENSOR_SCALAR_MODE",
                 )
 
@@ -408,7 +409,7 @@ def nsa_bwd_single(batch, seq_len, heads, heads_kv, dim, groups, block_size):
             col_pos = T.alloc_shared([BS], accum_dtype)
             row_1d = T.alloc_shared([BS], accum_dtype)
             row_2d = T.alloc_shared([BS, G], accum_dtype)
-            mask_2d = T.alloc_shared([BS, G], accum_dtype)
+            compare_result = T.alloc_shared([BS * G // 8], "uint8")  # packed bitmask (selMask)
             p_half = T.alloc_shared([BS, G], dtype)
             p_delta_ub = T.alloc_shared([BS, G], accum_dtype)
             p_delta_half = T.alloc_shared([BS, G], dtype)
@@ -453,8 +454,8 @@ def nsa_bwd_single(batch, seq_len, heads, heads_kv, dim, groups, block_size):
                 T.tile.arith_progression(row_1d, i, 0, BS)
                 T.tile.broadcast(lse_2d, col_pos, axis=1)  # [BS] -> [BS, G]
                 T.tile.broadcast(row_2d, row_1d, axis=1)  # [BS] -> [BS, G]
-                T.tile.compare(mask_2d, lse_2d, row_2d, "LE")
-                T.tile.select(qkt_ub, mask_2d, qkt_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
+                T.tile.compare(compare_result, lse_2d, row_2d, "LE")
+                T.tile.select(qkt_ub, compare_result, qkt_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
 
                 # P_fp16 + p_delta
                 T.copy(qkt_ub, p_half)  # fp32 -> fp16
@@ -542,6 +543,12 @@ def _run_nsa_pipeline(q, k, v, do_slc, block_indices, block_counts, B, T, H, HQ,
         f"NS=1 required (T={T} // BS={BS} = {T // BS}), bwd kernel doesn't support NS>1 (Delta computed per single K block)"
     )
 
+    # Input shape validation (rejects D mismatch / wrong B/T/H/HQ at runtime).
+    assert q.shape == (B, T, HQ, D), f"Q shape {tuple(q.shape)} != ({B}, {T}, {HQ}, {D})"
+    assert k.shape == (B, T, H, D), f"K shape {tuple(k.shape)} != ({B}, {T}, {H}, {D})"
+    assert v.shape == (B, T, H, D), f"V shape {tuple(v.shape)} != ({B}, {T}, {H}, {D})"
+    assert do_slc.shape == (B, T, HQ, D), f"dO shape {tuple(do_slc.shape)} != ({B}, {T}, {HQ}, {D})"
+
     # Step 1: block_mask for fwd (CPU computation — NPU scalar GM read unreliable)
     block_mask_cpu = _compute_block_mask_cpu(block_indices, block_counts, BS)
     block_mask = block_mask_cpu.to("npu")
@@ -581,6 +588,13 @@ def _run_bwd_pipeline(q, k, v, o_slc, lse_slc, do_slc, B, T, H, HQ, D, S, BS):
     assert T // BS == 1, (
         f"NS=1 required (T={T} // BS={BS} = {T // BS}), bwd kernel doesn't support NS>1 (Delta computed per single K block)"
     )
+
+    # Input shape validation (rejects D mismatch / wrong B/T/H/HQ at runtime).
+    assert q.shape == (B, T, HQ, D), f"Q shape {tuple(q.shape)} != ({B}, {T}, {HQ}, {D})"
+    assert k.shape == (B, T, H, D), f"K shape {tuple(k.shape)} != ({B}, {T}, {H}, {D})"
+    assert v.shape == (B, T, H, D), f"V shape {tuple(v.shape)} != ({B}, {T}, {H}, {D})"
+    assert do_slc.shape == (B, T, HQ, D), f"dO shape {tuple(do_slc.shape)} != ({B}, {T}, {HQ}, {D})"
+    assert lse_slc.shape == (B, T, HQ), f"LSE shape {tuple(lse_slc.shape)} != ({B}, {T}, {HQ})"
 
     dq = torch.zeros(B, T, HQ, D, dtype=torch.float16, device="npu")
     dk = torch.zeros(B, T, H, D, dtype=torch.float16, device="npu")

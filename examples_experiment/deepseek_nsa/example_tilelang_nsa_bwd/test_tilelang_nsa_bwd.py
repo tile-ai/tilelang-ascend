@@ -1,7 +1,7 @@
 """NSA Backward layered precision test suite (Ascend NPU).
 
 Layered precision tests (L0/L1/L2/Boundary) + golden reference (naive_nsa).
-L0/L1 are blocking (exit 1 on fail); L2/Boundary are non-blocking (WARN only).
+L0/L1/L2 are blocking (exit 1 on fail); Boundary is non-blocking (WARN only).
 """
 
 import argparse
@@ -522,26 +522,32 @@ def test_nsa_bwd_l1():
 
 
 # ============================================================================
-# L2 tests (non-blocking — negative, invalid inputs should be rejected)
+# L2 tests (blocking — negative, invalid inputs should be rejected, returns bool)
 # ============================================================================
 
 
-def _run_exception(name, fn):
+def _run_exception(name, fn, expected_exc_types=(Exception,)):
     """L2 helper: fn() feeds invalid input, expect rejection.
 
-    Raises -> [BOUNDARY_PASS]; silently accepts -> [BOUNDARY_WARN]. Non-blocking.
+    Returns True if rejected with expected exception type, False otherwise.
+    Raises(expected) -> [BOUNDARY_PASS]; silently accepts -> [BOUNDARY_FAIL].
     """
     try:
         fn()
-    except Exception as e:
+    except expected_exc_types as e:
         print(f"[BOUNDARY_PASS] {name}: correctly rejected ({type(e).__name__})")
-        return
-    print(f"[BOUNDARY_WARN] {name}: invalid input silently accepted")
+        return True
+    except Exception as e:
+        print(f"[BOUNDARY_FAIL] {name}: unexpected {type(e).__name__}: {e}")
+        return False
+    print(f"[BOUNDARY_FAIL] {name}: invalid input silently accepted")
+    return False
 
 
 def test_nsa_bwd_l2():
-    """L2 negative tests: invalid dtype / shape should be rejected (non-blocking)."""
+    """L2 negative tests: invalid dtype / shape should be rejected (blocking)."""
     B, T_len, H, HQ, D, S, BS = 1, 32, 1, 16, 32, 1, 32
+    ok = True
 
     # D-EXC-DTYPE: Q with float32 (kernel expects float16)
     def _bad_dtype():
@@ -566,7 +572,7 @@ def test_nsa_bwd_l2():
             BS,
         )
 
-    _run_exception("l2_unsupported_dtype", _bad_dtype)
+    ok &= _run_exception("l2_unsupported_dtype", _bad_dtype, (ValueError, TypeError))
 
     # D-EXC-SHAPE: Q with wrong shape (D mismatch)
     def _bad_shape():
@@ -591,7 +597,7 @@ def test_nsa_bwd_l2():
             BS,
         )
 
-    _run_exception("l2_illegal_shape", _bad_shape)
+    ok &= _run_exception("l2_illegal_shape", _bad_shape, (AssertionError, RuntimeError, ValueError))
 
     # D-EXC-SEQLEN: seq_len=0 (empty KV sequence — OP-R20 assert should reject)
     def _zero_seqlen():
@@ -617,7 +623,8 @@ def test_nsa_bwd_l2():
             BS,
         )
 
-    _run_exception("l2_zero_seqlen", _zero_seqlen)
+    ok &= _run_exception("l2_zero_seqlen", _zero_seqlen, (AssertionError, RuntimeError, ValueError))
+    return ok
 
 
 # ============================================================================
@@ -835,7 +842,7 @@ def main():
     if args.level in ("l1", "all"):
         blocking_ok &= test_nsa_bwd_l1()
     if args.level in ("l2", "all"):
-        test_nsa_bwd_l2()  # L2 negative: non-blocking
+        blocking_ok &= test_nsa_bwd_l2()  # L2 negative: now blocking
     if args.level in ("boundary", "all"):
         test_nsa_bwd_boundary()  # Boundary precision: non-blocking
 
