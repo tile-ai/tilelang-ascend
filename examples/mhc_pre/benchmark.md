@@ -45,7 +45,7 @@ partitioning (bid = cid * 2 + vid).
 |------|--------|--------|
 | A1 token_block | 16 -> 128 | Better Cube utilization |
 | A1 h_blk | 128 -> 512 | K-tile sweep optimum |
-| A1 remove guard | delete h_num=1 T.serial guard | Guard broke CI on 910B (per post §3.10) |
+| A1 remove guard | delete h_num=1 T.serial guard | Guard broke CI on 910B |
 | A2 h_blk | 128 -> 4096 | Fewer loop iterations |
 | A2 in-kernel tail | pad_value + TAIL_MASK | Delete host sqrsum pad |
 | B3 2D merged load | 4 separate 1D -> 2D res_ub[hc, h_blk] | 1 T.copy vs hc copies |
@@ -89,7 +89,7 @@ approaches were attempted, all blocked by codegen limitations:
 
 | Approach | Result | Blocker |
 |----------|--------|---------|
-| T.alloc_shared -> T.alloc_ub | 507015 | 1D UB slice as T.copy dst/src (§2.2b) |
+| T.alloc_shared -> T.alloc_ub | 507015 | 1D UB slice as T.copy source/dst |
 | T.tile.cast for 1D->2D-row | Precision error | Column reduce doesn't support narrow real_shape (dim=0) |
 | T.Scope("V") + T.alloc_shared | 507015 | V scope assigns shared to UB |
 | T.serial(hc) -> T.unroll(hc) | No change (+0.1%) | Compiler already unrolls short loops |

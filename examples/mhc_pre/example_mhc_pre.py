@@ -237,13 +237,14 @@ def mhc_pre_split_sinkhorn_apply(
                 T.tile.sigmoid(pre_shared, tmp_shared)
                 T.tile.add(pre_shared, pre_shared, pre_eps)
 
-                # post
-                T.copy(workspace[bid, hc : hc + hc_pad], tmp_shared)
+                # post (read only hc elements, not hc_pad, to avoid OOB when hc_pad > mix_hc - hc)
+                T.copy(workspace[bid, hc : 2 * hc], tmp_shared)
                 T.tile.sigmoid(post_shared, tmp_shared)
                 T.tile.mul(post_shared, post_shared, hc_post_mult_value)
                 T.copy(post_shared[:hc], post[bid, :hc])
 
                 # comb
+                T.tile.fill(comb_shared, 0.0)
                 for i in T.unroll(hc):
                     start = 2 * hc + i * hc
                     end = 2 * hc + i * hc + hc
@@ -324,6 +325,8 @@ def _pad_2d(t, target_rows, target_cols):
 
 
 _kernel_cache = {}
+# Note: cache key includes float params (rms_eps, pre_eps, etc.).
+# Different values trigger separate JIT compilations; acceptable for examples.
 
 
 def _get_kernel(name, *args):
@@ -557,6 +560,11 @@ def test_full():
         (512, 2560, 4),
         (4096, 2560, 4),
         (4, 100, 4),
+        (4, 128, 1),
+        (4, 128, 2),
+        (4, 128, 3),
+        (4, 128, 8),
+        (4, 100, 8),
     ]
 
     all_passed = [True]

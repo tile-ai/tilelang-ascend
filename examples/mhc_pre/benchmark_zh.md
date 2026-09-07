@@ -44,7 +44,7 @@ A1 使用 Cube GEMM。A2+B1 和 B2+B3 使用双 V 核划分（bid = cid * 2 + vi
 |------|------|------|
 | A1 token_block | 16 -> 128 | 提升 Cube 利用率 |
 | A1 h_blk | 128 -> 512 | K-tile sweep 最优值 |
-| A1 删 guard | 删 h_num=1 T.serial guard | Guard 在 910B CI 失败（post §3.10） |
+| A1 删 guard | 删 h_num=1 T.serial guard | Guard 在 910B CI 失败 |
 | A2 h_blk | 128 -> 4096 | 减少循环次数 |
 | A2 kernel 内 tail | pad_value + TAIL_MASK | 删除 host sqrsum pad |
 | B3 2D merged load | 4 个独立 1D -> 2D res_ub[hc, h_blk] | 1 次 T.copy 替代 hc 次 |
@@ -87,7 +87,7 @@ codegen 限制挡住：
 
 | 方案 | 结果 | 阻塞原因 |
 |------|------|---------|
-| T.alloc_shared -> T.alloc_ub | 507015 | 1D UB slice 作为 T.copy dst/src (§2.2b) |
+| T.alloc_shared -> T.alloc_ub | 507015 | 1D UB slice 作为 T.copy source/dst |
 | T.tile.cast 替代 1D->2D-row | 精度错误 | column reduce 不支持 narrow real_shape (dim=0) |
 | T.Scope("V") + T.alloc_shared | 507015 | V scope 导致 shared 分配到 UB |
 | T.serial(hc) -> T.unroll(hc) | 无变化 (+0.1%) | 编译器已自动展开短循环 |
