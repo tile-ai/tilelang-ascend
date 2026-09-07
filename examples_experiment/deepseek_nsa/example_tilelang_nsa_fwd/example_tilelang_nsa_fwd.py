@@ -243,74 +243,12 @@ def native_sparse_attention(
 
 
 # =============================================================================
-# Golden reference (CPU, based on naive_nsa; independent of prepare_inputs)
-#
-# This is the SINGLE golden implementation. The test file imports it:
-#   from example_tilelang_nsa_fwd import golden_nsa_fwd
-# =============================================================================
-def golden_nsa_fwd(Q, K, V, block_indices, block_counts, block_size=32, scale=0.1, is_causal=True):
-    """PyTorch CPU reference based on naive_nsa (g_slc=g_swa=ones, window_size=0).
-
-    Uses original Q/K/V/block_indices directly (no pre-gather). Single-pass softmax
-    matches the NPU kernel. scale is NOT multiplied by log2(e) — NPU uses T.exp,
-    GPU uses T.exp2 * log2(e), which are mathematically equivalent.
-    """
-    import torch  # deferred: keeps tilelang imports clean at module level
-
-    B, T, HQ, D = Q.shape
-    H = K.shape[2]
-    G = HQ // H
-    S = block_indices.shape[-1]
-    BS = block_size
-
-    dtype = Q.dtype
-    Q_f, K_f, V_f = Q.float(), K.float(), V.float()
-    Output = torch.zeros(B, T, HQ, D, dtype=torch.float32)
-
-    for b in range(B):
-        for t in range(T):
-            for h in range(H):
-                # Collect valid positions for this (b, t, h).
-                positions = []
-                bc_val = block_counts[b, t, h].item() if isinstance(block_counts, torch.Tensor) else block_counts
-                for s in range(S):
-                    if s >= bc_val:
-                        continue
-                    bi = block_indices[b, t, h, s].item()
-                    for j in range(BS):
-                        pos = bi * BS + j
-                        if is_causal and pos > t:
-                            continue
-                        if pos < 0 or pos >= T:
-                            continue
-                        positions.append(pos)
-
-                if len(positions) == 0:
-                    continue
-
-                k_gathered = K_f[b, positions, h, :]
-                v_gathered = V_f[b, positions, h, :]
-
-                # Per query head in the group: standard attention.
-                for g in range(G):
-                    hq = h * G + g
-                    q = Q_f[b, t, hq, :]
-                    scores = torch.matmul(q, k_gathered.T) * scale
-                    attn = torch.softmax(scores, dim=0)
-                    Output[b, t, hq, :] = torch.matmul(attn, v_gathered)
-
-    return Output.to(dtype)
-
-
-# =============================================================================
-# Smoke test entry (CI compatibility, FULLY SELF-CONTAINED)
+# Smoke test entry (CI compatibility)
 #
 # Repository CI (bench_test.sh) runs `python example_tilelang_nsa_fwd.py` and
-# marks PASSED only if stdout contains "Test Passed!". This __main__ block is
-# intentionally self-contained: it does NOT import from the sibling test module
-# (test_example_tilelang_nsa_fwd.py) so the example file can be smoke-tested
-# in isolation. All helper logic (input generation, pre-gather, reshape,
-# golden reference, precision check) is inlined below for the single L0 case.
+# marks PASSED only if stdout contains "Test Passed!". This __main__ block
+# verifies kernel runs and output shape/finite per CI_CHECKLIST §23.2 (shape
+# verification only, no golden comparison — golden is in test file per §23.3).
 #
 # `import torch` is deferred to inside __main__ to avoid making torch a
 # module-level dependency of the example file (keeps tilelang imports clean).
@@ -386,33 +324,15 @@ if __name__ == "__main__":
     out = kernel(Q.npu(), K_sel_3d.npu(), V_sel_3d.npu(), block_starts.npu())
     torch.npu.synchronize()
 
-    # --- Golden: PyTorch CPU reference (single-pass softmax, matches kernel semantics). ---
-    # Calls the module-level golden_nsa_fwd (same function the test file imports).
-    # scale is NOT multiplied by log2(e): NPU uses T.exp, GPU uses T.exp2 * log2(e)
-    # (mathematically equivalent). Uses original Q/K/V/bi directly (no pre-gather).
-    ref = golden_nsa_fwd(Q, K, V, bi, bc, block_size=BS, scale=SCALE, is_causal=True)
-
-    # --- Precision check: mixed tolerance dual-gate (precision-standard.md §4.1). ---
-    # Float16 thresholds: atol=2^-14, rtol=2^-9, max_abs_limit=1e-1, required_ratio=0.99.
-    # Pass condition: matched_ratio >= required_ratio AND max_abs <= max_abs_limit.
-    # inf/nan positions: structural compare (not counted in numeric tolerance).
-    atol, rtol, max_abs_limit, required_ratio = 2**-14, 2**-9, 1e-1, 0.99
-    a = out.detach().cpu().float()
-    g = ref.detach().cpu().float()
-    # inf/nan structural compare (precision-standard.md §3.1).
-    special = ~torch.isfinite(g)
-    if special.any() and (
-        not torch.equal(torch.isnan(a[special]), torch.isnan(g[special]))
-        or not torch.equal(torch.isinf(a[special]), torch.isinf(g[special]))
-    ):
-        raise AssertionError("inf/nan position mismatch between actual and golden")
-    m = torch.isfinite(g)  # golden finite positions: full numeric compare
-    if m.sum().item() == 0:
-        ratio, max_abs = 1.0, 0.0
+    # --- CI smoke check: output shape + finite (no golden comparison, per §23.2). ---
+    out_cpu = out.detach().cpu()
+    shape_ok = tuple(out_cpu.shape) == (B, SEQ_LEN, HQ, D)
+    finite_ok = torch.isfinite(out_cpu).all().item()
+    tag = "OK" if (shape_ok and finite_ok) else "FAIL"
+    print(f"[SMOKE_{tag}] out shape={tuple(out_cpu.shape)} finite={finite_ok}")
+    if shape_ok and finite_ok:
+        print("Test Passed!")
     else:
-        abs_err = (a[m] - g[m]).abs()
-        ratio = (abs_err <= (atol + rtol * g[m].abs())).float().mean().item()
-        max_abs = abs_err.max().item()
-    print(f"matched_ratio={ratio:.4f} max_abs={max_abs:.3e}")
-    assert ratio >= required_ratio and max_abs <= max_abs_limit, f"precision check failed: ratio={ratio:.4f} max_abs={max_abs:.3e}"
-    print("Test Passed!")
+        import sys
+
+        sys.exit(1)

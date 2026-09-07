@@ -2,8 +2,8 @@
 
 This file is the single precision test entry for `example_tilelang_nsa_fwd.py`.
 It embeds:
+  - golden_nsa_fwd:   PyTorch CPU reference (defined here, per CI_CHECKLIST §23.3).
   - prepare_inputs:   host-side pre-gather K_selected/V_selected (CPU).
-  - golden_nsa_fwd:   PyTorch CPU reference (imported from example module).
   - check_precision:  mixed-tolerance dual-gate check (precision-standard.md §4.1).
   - test_nsa_l0/l1/l2/boundary: layered test cases (L0/L1 block, L2/Boundary non-block).
   - main(--level):    unified dispatch + exit code.
@@ -21,7 +21,65 @@ import torch
 
 # Import kernel from sibling module.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from example_tilelang_nsa_fwd import native_sparse_attention, golden_nsa_fwd  # noqa: E402
+from example_tilelang_nsa_fwd import native_sparse_attention  # noqa: E402
+
+
+# =============================================================================
+# Golden reference (CPU, based on naive_nsa; independent of prepare_inputs)
+#
+# Defined in test file per CI_CHECKLIST §23.3 (golden functions unified in test
+# file, not in example file).
+# =============================================================================
+def golden_nsa_fwd(Q, K, V, block_indices, block_counts, block_size=32, scale=0.1, is_causal=True):
+    """PyTorch CPU reference based on naive_nsa (g_slc=g_swa=ones, window_size=0).
+
+    Uses original Q/K/V/block_indices directly (no pre-gather). Single-pass softmax
+    matches the NPU kernel. scale is NOT multiplied by log2(e) — NPU uses T.exp,
+    GPU uses T.exp2 * log2(e), which are mathematically equivalent.
+    """
+    B, T, HQ, D = Q.shape
+    H = K.shape[2]
+    G = HQ // H
+    S = block_indices.shape[-1]
+    BS = block_size
+
+    dtype = Q.dtype
+    Q_f, K_f, V_f = Q.float(), K.float(), V.float()
+    Output = torch.zeros(B, T, HQ, D, dtype=torch.float32)
+
+    for b in range(B):
+        for t in range(T):
+            for h in range(H):
+                # Collect valid positions for this (b, t, h).
+                positions = []
+                bc_val = block_counts[b, t, h].item() if isinstance(block_counts, torch.Tensor) else block_counts
+                for s in range(S):
+                    if s >= bc_val:
+                        continue
+                    bi = block_indices[b, t, h, s].item()
+                    for j in range(BS):
+                        pos = bi * BS + j
+                        if is_causal and pos > t:
+                            continue
+                        if pos < 0 or pos >= T:
+                            continue
+                        positions.append(pos)
+
+                if len(positions) == 0:
+                    continue
+
+                k_gathered = K_f[b, positions, h, :]
+                v_gathered = V_f[b, positions, h, :]
+
+                # Per query head in the group: standard attention.
+                for g in range(G):
+                    hq = h * G + g
+                    q = Q_f[b, t, hq, :]
+                    scores = torch.matmul(q, k_gathered.T) * scale
+                    attn = torch.softmax(scores, dim=0)
+                    Output[b, t, hq, :] = torch.matmul(attn, v_gathered)
+
+    return Output.to(dtype)
 
 
 # =============================================================================
@@ -63,13 +121,6 @@ def prepare_inputs(Q, K, V, block_indices, block_counts, block_size, S, is_causa
                             V_selected[b, t, h, s * BS + j, :] = V[b, pos, h, :]
 
     return K_selected, V_selected
-
-
-# =============================================================================
-# Golden reference — imported from example module (single implementation).
-# The test file no longer defines its own golden_nsa_fwd; it imports the
-# canonical version from example_tilelang_nsa_fwd.py to avoid duplication.
-# =============================================================================
 
 
 # =============================================================================
