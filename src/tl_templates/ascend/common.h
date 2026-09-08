@@ -241,6 +241,44 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
       WaitFlag<HardEvent::V_MTE2>(0);
     }
   }
+  // Narrow contiguous rows: a 2D MTE2 transfer whose blockLen is not a
+  // multiple of 32B writes the destination with a corrupted layout (elements
+  // dropped / shifted), even with isPad disabled and proper MTE2->V sync in
+  // place -- every reader on the V pipe (Add, Broadcast, ...) observes
+  // misplaced data. When each row is fully valid (maskShapeN == dstN) and the
+  // source rows are contiguous (realSrcN == maskShapeN), the whole rectangle
+  // is one contiguous run, so flatten it to a single 1D burst, which the
+  // hardware handles correctly for any length (unaligned tails stay inside
+  // the 32B-aligned allocation slot).
+  if (maskShapeN == dstN && realSrcN == maskShapeN &&
+      (maskShapeN * sizeof(T)) % 32 != 0) {
+    AscendC::DataCopyExtParams flatParams(
+        1, maskShapeM * maskShapeN * sizeof(T), 0, 0, 0);
+    AscendC::DataCopyPadExtParams<T> flatPad(false, 0, 0, padValue);
+    AscendC::DataCopyPad(dstTensor, srcTensor, flatParams, flatPad);
+    return;
+  }
+  // Strided narrow rows: a sub-32B inner dim with a source row pitch cannot
+  // be transferred correctly by the 2D path (the MTE2 engine pads each
+  // sub-32B burst to a 32B slot, corrupting the layout). Fail loudly instead
+  // of silently producing wrong data. Single-row copies (maskShapeM == 1)
+  // are a plain 1D burst and stay on the path below.
+  if (maskShapeM > 1 && maskShapeN == dstN && realSrcN != maskShapeN &&
+      (maskShapeN * sizeof(T)) % 32 != 0) {
+    // Strided narrow sub-32B rows cannot be transferred correctly by the
+    // MTE2 2D path -- the hardware pads each sub-32B burst to a 32B slot,
+    // corrupting the destination layout. On device this check is a no-op
+    // (ASCENDC_ASSERT is compiled out); a compile-time guard in the op
+    // lowering (src/op/ascend.cc) catches the static-shape case before
+    // the kernel is emitted.
+    ASCENDC_ASSERT(false, {
+      KERNEL_LOG(KERNEL_ERROR,
+                 "copy_gm_to_ub: unsupported strided sub-32B inner-dim copy "
+                 "(rows=%u, inner=%u, srcPitch=%u). Copy a contiguous region "
+                 "or stage through a 32B-padded buffer instead.",
+                 maskShapeM, maskShapeN, realSrcN);
+    });
+  }
   AscendC::DataCopyExtParams dataCopyParams(
       maskShapeM, maskShapeN * sizeof(T), (realSrcN - maskShapeN) * sizeof(T),
       (dstN - maskShapeN) * sizeof(T) / 32, 0);
@@ -253,6 +291,30 @@ CATLASS_DEVICE void
 copy_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
               uint32_t realdstN = 1, uint32_t maskShapeM = srcM,
               uint32_t maskShapeN = srcN) {
+  // Narrow contiguous rows: mirror of the copy_gm_to_ub workaround above. A
+  // 2D MTE3 read with a sub-32B blockLen observes the same misplaced layout,
+  // so flatten a fully valid contiguous rectangle to a single 1D burst.
+  if (maskShapeN == srcN && realdstN == maskShapeN &&
+      (maskShapeN * sizeof(T)) % 32 != 0) {
+    AscendC::DataCopyExtParams flatParams(
+        1, maskShapeM * maskShapeN * sizeof(T), 0, 0, 0);
+    AscendC::DataCopyPad(dstTensor, srcTensor, flatParams);
+    return;
+  }
+  // Strided narrow rows: mirror of the copy_gm_to_ub guard above -- the MTE3
+  // 2D read of a sub-32B blockLen samples 32B slots instead of packed rows.
+  if (maskShapeM > 1 && maskShapeN == srcN && realdstN != maskShapeN &&
+      (maskShapeN * sizeof(T)) % 32 != 0) {
+    // See copy_gm_to_ub: ASCENDC_ASSERT is compiled out on device; a
+    // compile-time guard in the op lowering catches the static-shape case.
+    ASCENDC_ASSERT(false, {
+      KERNEL_LOG(KERNEL_ERROR,
+                 "copy_ub_to_gm: unsupported strided sub-32B inner-dim copy "
+                 "(rows=%u, inner=%u, dstPitch=%u). Copy to a contiguous "
+                 "region or stage through a 32B-padded buffer instead.",
+                 maskShapeM, maskShapeN, realdstN);
+    });
+  }
   AscendC::DataCopyExtParams dataCopyParams(
       maskShapeM, maskShapeN * sizeof(T), (srcN - maskShapeN) * sizeof(T) / 32,
       (realdstN - maskShapeN) * sizeof(T), 0);
