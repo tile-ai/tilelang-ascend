@@ -16,12 +16,17 @@
 #include <tvm/tir/transform.h>
 #include <tvm/tir/utils.h>
 
+#include "../op/ascend.h"
 #include "../op/builtin.h"
+#include "./common/ascend_vector_mask.h"
 #include "./common/collector.h"
+#include "./common/operation_config.h"
 
 #include <algorithm>
+#include <cctype>
 #include <deque>
 #include <map>
+#include <vector>
 
 namespace tvm {
 namespace tl {
@@ -594,58 +599,526 @@ private:
   }
 };
 
+namespace {
+
+enum class AscendResource {
+  kNone,
+  kCommon,
+  kExplicit,
+  kCube,
+  kVector,
+};
+
+AscendResource ResourceForStorageScope(const std::string &scope) {
+  if (scope == "shared.ub") {
+    return AscendResource::kVector;
+  }
+  if (scope == "shared.l1" || scope == "wmma.matrix_a" ||
+      scope == "wmma.matrix_b" || scope == "wmma.accumulator") {
+    return AscendResource::kCube;
+  }
+  return AscendResource::kNone;
+}
+
+std::string NormalizePipeName(std::string pipe) {
+  std::transform(pipe.begin(), pipe.end(), pipe.begin(),
+                 [](unsigned char ch) { return std::toupper(ch); });
+  return pipe;
+}
+
+AscendResource ResourceForPipe(const std::string &pipe) {
+  std::string normalized = NormalizePipeName(pipe);
+  if (normalized == "V") {
+    return AscendResource::kVector;
+  }
+  if (normalized == "M" || normalized == "MTE1" || normalized == "FIX") {
+    return AscendResource::kCube;
+  }
+  return AscendResource::kExplicit;
+}
+
+AscendResource ResourceForPipeArgument(const CallNode *call, size_t index) {
+  if (call->args.size() <= index) {
+    return AscendResource::kExplicit;
+  }
+  const auto *pipe = call->args[index].as<StringImmNode>();
+  return pipe == nullptr ? AscendResource::kExplicit
+                         : ResourceForPipe(pipe->value);
+}
+
+AscendResource MergeResources(AscendResource lhs, AscendResource rhs,
+                              const std::string &operation) {
+  if (rhs == AscendResource::kNone || rhs == AscendResource::kCommon) {
+    return lhs;
+  }
+  if (lhs == AscendResource::kNone || lhs == AscendResource::kCommon) {
+    return rhs;
+  }
+  ICHECK(lhs == rhs || lhs == AscendResource::kExplicit ||
+         rhs == AscendResource::kExplicit)
+      << "Ascend operation mixes Cube and Vector local buffers: " << operation;
+  return lhs == AscendResource::kExplicit ? rhs : lhs;
+}
+
+AscendResource ResourceForAccessPtr(const PrimExpr &expr) {
+  const auto *access = expr.as<CallNode>();
+  if (access == nullptr || !access->op.same_as(builtin::tvm_access_ptr()) ||
+      access->args.size() < 2) {
+    return AscendResource::kNone;
+  }
+  const auto *var = access->args[1].as<VarNode>();
+  if (var == nullptr) {
+    return AscendResource::kNone;
+  }
+  return ResourceForStorageScope(GetPtrStorageScope(GetRef<Var>(var)));
+}
+
+AscendResource ResourceForAccessPtrs(const Array<PrimExpr> &args, size_t begin,
+                                     const std::string &operation) {
+  AscendResource result = AscendResource::kNone;
+  for (size_t i = begin; i < args.size(); ++i) {
+    result = MergeResources(result, ResourceForAccessPtr(args[i]), operation);
+  }
+  return result;
+}
+
+std::string NormalizeFunctionName(std::string name) {
+  size_t template_pos = name.find('<');
+  if (template_pos != std::string::npos) {
+    name.resize(template_pos);
+  }
+  size_t namespace_pos = name.rfind("tl::ascend::");
+  if (namespace_pos != std::string::npos) {
+    name = name.substr(namespace_pos + 12);
+  }
+  return name;
+}
+
+AscendResource ResourceForConfiguredOperation(const std::string &name,
+                                              const OperationConfig &config,
+                                              const Array<PrimExpr> &args,
+                                              size_t begin) {
+  AscendResource operands = ResourceForAccessPtrs(args, begin, name);
+  if (config.default_pipeline == "PIPE_V") {
+    return MergeResources(AscendResource::kVector, operands, name);
+  }
+  if (config.default_pipeline == "PIPE_M" ||
+      config.default_pipeline == "PIPE_MTE1" ||
+      config.default_pipeline == "PIPE_FIX") {
+    return MergeResources(AscendResource::kCube, operands, name);
+  }
+  return operands == AscendResource::kNone ? AscendResource::kExplicit
+                                           : operands;
+}
+
+AscendResource ResourceForPipePair(const std::string &src,
+                                   const std::string &dst,
+                                   const std::string &operation) {
+  AscendResource src_resource = ResourceForPipe(src);
+  AscendResource dst_resource = ResourceForPipe(dst);
+  return MergeResources(src_resource, dst_resource, operation);
+}
+
+AscendResource ResourceForEventType(const std::string &event_type,
+                                    const std::string &operation) {
+  size_t separator = event_type.find('_');
+  if (separator == std::string::npos) {
+    return AscendResource::kExplicit;
+  }
+  return ResourceForPipePair(event_type.substr(0, separator),
+                             event_type.substr(separator + 1), operation);
+}
+
+AscendResource ResourceForCall(const CallNode *call, std::string *operation) {
+  Call call_ref = GetRef<Call>(call);
+  const auto *op = call->op.as<OpNode>();
+  *operation = op == nullptr ? "Ascend call" : op->name;
+
+  if (call->op.same_as(ascend_printf()) ||
+      call->op.same_as(ascend_sync_all()) ||
+      call->op.same_as(ascend_use_swizzle())) {
+    return AscendResource::kCommon;
+  }
+  if (call->op.same_as(ascend_src_code())) {
+    return AscendResource::kExplicit;
+  }
+  if (call->op.same_as(ascend_free_pipe())) {
+    if (call->args.empty()) {
+      return AscendResource::kExplicit;
+    }
+    const auto *name = call->args[0].as<StringImmNode>();
+    if (name != nullptr && name->value == "free_pipe_C") {
+      return AscendResource::kCube;
+    }
+    if (name != nullptr && name->value == "free_pipe_V") {
+      return AscendResource::kVector;
+    }
+    return AscendResource::kExplicit;
+  }
+  if (call->op.same_as(ascend_set_deq_scale()) ||
+      IsVectorMaskSetter(call_ref) || IsSelectedVectorTerminal(call_ref)) {
+    return AscendResource::kVector;
+  }
+  if (call->op.same_as(ascend_dump_tensor())) {
+    AscendResource resource = call->args.empty()
+                                  ? AscendResource::kNone
+                                  : ResourceForAccessPtr(call->args[0]);
+    return resource == AscendResource::kNone ? AscendResource::kCommon
+                                             : resource;
+  }
+  if (call->op.same_as(ascend_set_flag()) ||
+      call->op.same_as(ascend_wait_flag())) {
+    if (call->args.size() < 2) {
+      return AscendResource::kExplicit;
+    }
+    const auto *src = call->args[0].as<StringImmNode>();
+    const auto *dst = call->args[1].as<StringImmNode>();
+    return src == nullptr || dst == nullptr
+               ? AscendResource::kExplicit
+               : ResourceForPipePair(src->value, dst->value, *operation);
+  }
+  if (call->op.same_as(ascend_pipe_barrier()) ||
+      call->op.same_as(ascend_set_cross_flag()) ||
+      call->op.same_as(ascend_auto_barrier())) {
+    return ResourceForPipeArgument(call, 0);
+  }
+  if (call->op.same_as(ascend_auto_set_flag()) ||
+      call->op.same_as(ascend_auto_wait_flag())) {
+    if (call->args.empty()) {
+      return AscendResource::kExplicit;
+    }
+    const auto *event_type = call->args[0].as<StringImmNode>();
+    return event_type == nullptr
+               ? AscendResource::kExplicit
+               : ResourceForEventType(event_type->value, *operation);
+  }
+  if (call->op.same_as(ascend_wait_cross_flag()) ||
+      call->op.same_as(ascend_auto_set_cross_flag()) ||
+      call->op.same_as(ascend_auto_wait_cross_flag())) {
+    return ResourceForPipeArgument(call, 1);
+  }
+
+  if (call->op.same_as(builtin::call_extern())) {
+    if (call->args.empty()) {
+      return AscendResource::kExplicit;
+    }
+    const auto *callee = call->args[0].as<StringImmNode>();
+    if (callee == nullptr) {
+      return AscendResource::kExplicit;
+    }
+    *operation = callee->value;
+    std::string name = NormalizeFunctionName(callee->value);
+    if (name == "free_pipe_C") {
+      return AscendResource::kCube;
+    }
+    if (name == "free_pipe_V") {
+      return AscendResource::kVector;
+    }
+    auto it = GetOperationConfig().find(name);
+    if (it != GetOperationConfig().end()) {
+      return ResourceForConfiguredOperation(name, it->second, call->args, 1);
+    }
+    AscendResource resource = ResourceForAccessPtrs(call->args, 1, *operation);
+    return resource == AscendResource::kNone ? AscendResource::kExplicit
+                                             : resource;
+  }
+
+  if (op == nullptr) {
+    return AscendResource::kNone;
+  }
+  auto it = GetOperationConfig().find(op->name);
+  if (it != GetOperationConfig().end()) {
+    return ResourceForConfiguredOperation(op->name, it->second, call->args, 0);
+  }
+  if (std::string(op->name).rfind("tl.ascend_", 0) == 0) {
+    AscendResource resource = ResourceForAccessPtrs(call->args, 0, *operation);
+    return resource == AscendResource::kNone ? AscendResource::kExplicit
+                                             : resource;
+  }
+  return AscendResource::kNone;
+}
+
+bool IsContextDependentSyncCall(const CallNode *call) {
+  if (call->op.same_as(ascend_pipe_barrier())) {
+    if (call->args.empty()) {
+      return false;
+    }
+    const auto *pipe = call->args[0].as<StringImmNode>();
+    return pipe != nullptr && NormalizePipeName(pipe->value) == "ALL";
+  }
+  if (!call->op.same_as(ascend_set_flag()) &&
+      !call->op.same_as(ascend_wait_flag())) {
+    return false;
+  }
+  if (call->args.size() < 2 || call->args[0].as<StringImmNode>() == nullptr ||
+      call->args[1].as<StringImmNode>() == nullptr) {
+    return false;
+  }
+  std::string operation;
+  return ResourceForCall(call, &operation) == AscendResource::kExplicit;
+}
+
+struct ResourceSummary {
+  AscendResource resource{AscendResource::kNone};
+  bool has_context_sync{false};
+};
+
+bool IsConcreteResource(AscendResource resource) {
+  return resource == AscendResource::kCube ||
+         resource == AscendResource::kVector;
+}
+
+class ExactResourceCollector final : public StmtExprVisitor {
+public:
+  ResourceSummary Collect(const Stmt &stmt) {
+    VisitStmt(stmt);
+    return {resource_, has_context_sync_};
+  }
+
+private:
+  void Add(AscendResource resource) {
+    if (resource == AscendResource::kNone ||
+        resource == AscendResource::kCommon) {
+      return;
+    }
+    if (resource_ == AscendResource::kNone) {
+      resource_ = resource;
+    } else if (resource_ != resource) {
+      resource_ = AscendResource::kExplicit;
+    }
+  }
+
+  void VisitExpr_(const CallNode *op) final {
+    if (IsContextDependentSyncCall(op)) {
+      has_context_sync_ = true;
+      return;
+    }
+    std::string operation;
+    Add(ResourceForCall(op, &operation));
+    StmtExprVisitor::VisitExpr_(op);
+  }
+
+  void VisitExpr_(const BufferLoadNode *op) final {
+    Add(ResourceForStorageScope(op->buffer.scope()));
+    StmtExprVisitor::VisitExpr_(op);
+  }
+
+  void VisitStmt_(const BufferStoreNode *op) final {
+    Add(ResourceForStorageScope(op->buffer.scope()));
+    StmtExprVisitor::VisitStmt_(op);
+  }
+
+  void VisitStmt_(const ForNode *op) final {
+    if (op->kind == ForKind::kVectorized) {
+      Add(AscendResource::kVector);
+    }
+    StmtExprVisitor::VisitStmt_(op);
+  }
+
+  void VisitStmt_(const AttrStmtNode *op) final {
+    if (op->attr_key == "resource_scope") {
+      const auto *scope = op->value.as<IntImmNode>();
+      if (scope != nullptr && scope->value == 0) {
+        Add(AscendResource::kCube);
+        return;
+      }
+      if (scope != nullptr && scope->value == 1) {
+        Add(AscendResource::kVector);
+        return;
+      }
+    }
+    StmtExprVisitor::VisitStmt_(op);
+  }
+
+  AscendResource resource_{AscendResource::kNone};
+  bool has_context_sync_{false};
+};
+
+ResourceSummary SummarizeResources(const Stmt &stmt) {
+  return ExactResourceCollector().Collect(stmt);
+}
+
+bool IsContextDependentSync(const Stmt &stmt) {
+  const auto *evaluate = stmt.as<EvaluateNode>();
+  if (evaluate == nullptr) {
+    return false;
+  }
+  const auto *call = evaluate->value.as<CallNode>();
+  if (call == nullptr) {
+    return false;
+  }
+  return IsContextDependentSyncCall(call);
+}
+
+AscendResource RegionResource(const std::vector<ResourceSummary> &summaries) {
+  AscendResource region = AscendResource::kNone;
+  for (const ResourceSummary &summary : summaries) {
+    if (summary.resource == AscendResource::kNone) {
+      continue;
+    }
+    if (!IsConcreteResource(summary.resource) ||
+        (region != AscendResource::kNone && region != summary.resource)) {
+      return AscendResource::kExplicit;
+    }
+    region = summary.resource;
+  }
+  return region;
+}
+
+AscendResource NearestResource(const std::vector<ResourceSummary> &summaries,
+                               int index, int step) {
+  for (; index >= 0 && index < static_cast<int>(summaries.size());
+       index += step) {
+    if (summaries[index].resource != AscendResource::kNone) {
+      return summaries[index].resource;
+    }
+  }
+  return AscendResource::kNone;
+}
+
+class ContextualSyncResolver final : public StmtMutator {
+  Stmt VisitStmt_(const SeqStmtNode *op) final {
+    std::vector<ResourceSummary> summaries;
+    summaries.reserve(op->seq.size());
+    for (const Stmt &stmt : op->seq) {
+      summaries.push_back(SummarizeResources(stmt));
+    }
+
+    AscendResource saved_context = context_;
+    AscendResource region = RegionResource(summaries);
+    AscendResource sequence_context = saved_context;
+    if (IsConcreteResource(region)) {
+      sequence_context = region;
+    }
+
+    Array<Stmt> seq;
+    for (size_t i = 0; i < op->seq.size(); ++i) {
+      AscendResource child_context = sequence_context;
+      if (IsConcreteResource(summaries[i].resource)) {
+        child_context = summaries[i].resource;
+      } else if (!IsConcreteResource(child_context) &&
+                 summaries[i].resource == AscendResource::kNone &&
+                 summaries[i].has_context_sync) {
+        AscendResource before =
+            NearestResource(summaries, static_cast<int>(i) - 1, -1);
+        AscendResource after =
+            NearestResource(summaries, static_cast<int>(i) + 1, 1);
+        if (before == after && IsConcreteResource(before)) {
+          child_context = before;
+        }
+      }
+      context_ = child_context;
+      seq.push_back(VisitStmt(op->seq[i]));
+    }
+    context_ = saved_context;
+    return SeqStmt(seq, op->span);
+  }
+
+  Stmt VisitStmt_(const AttrStmtNode *op) final {
+    if (op->attr_key == "resource_scope") {
+      return GetRef<Stmt>(op);
+    }
+    return StmtMutator::VisitStmt_(op);
+  }
+
+  Stmt VisitStmt_(const EvaluateNode *op) final {
+    Stmt stmt = StmtMutator::VisitStmt_(op);
+    if (!IsContextDependentSync(stmt) || !IsConcreteResource(context_)) {
+      return stmt;
+    }
+    int64_t scope = context_ == AscendResource::kVector ? 1 : 0;
+    return AttrStmt(make_zero(DataType::Int(32)), "resource_scope",
+                    IntImm(DataType::Int(32), scope), stmt);
+  }
+
+  AscendResource context_{AscendResource::kNone};
+};
+
+class AscendResourceScopeVerifier final : public StmtExprVisitor {
+public:
+  static PrimFunc Verify(PrimFunc func, bool require_explicit_scope) {
+    AscendResourceScopeVerifier verifier(require_explicit_scope);
+    verifier(func->body);
+    return func;
+  }
+
+private:
+  explicit AscendResourceScopeVerifier(bool require_explicit_scope)
+      : require_explicit_scope_(require_explicit_scope) {}
+
+  void Check(AscendResource resource, const std::string &operation) const {
+    if (resource == AscendResource::kNone ||
+        resource == AscendResource::kCommon) {
+      return;
+    }
+    if (scope_ < 0) {
+      ICHECK(!require_explicit_scope_ && resource != AscendResource::kExplicit)
+          << "Ascend hardware operation must be inside T.Scope(\"C\") or "
+             "T.Scope(\"V\"); enable tl.ascend_auto_cv_combine or scope it "
+             "explicitly: "
+          << operation;
+      return;
+    }
+    if (resource == AscendResource::kCube) {
+      ICHECK_EQ(scope_, 0) << "Cube operation must be inside T.Scope(\"C\"): "
+                           << operation;
+    } else if (resource == AscendResource::kVector) {
+      ICHECK_EQ(scope_, 1) << "Vector operation must be inside T.Scope(\"V\"): "
+                           << operation;
+    }
+  }
+
+  void VisitStmt_(const AttrStmtNode *op) final {
+    if (op->attr_key != "resource_scope") {
+      StmtExprVisitor::VisitStmt_(op);
+      return;
+    }
+    const auto *scope = op->value.as<IntImmNode>();
+    ICHECK(scope && (scope->value == 0 || scope->value == 1))
+        << "resource_scope must be 0 (C) or 1 (V)";
+    int new_scope = static_cast<int>(scope->value);
+    ICHECK(scope_ < 0 || scope_ == new_scope)
+        << "Conflicting nested T.Scope(\"" << (new_scope == 0 ? "C" : "V")
+        << "\")";
+    int saved_scope = scope_;
+    scope_ = new_scope;
+    VisitStmt(op->body);
+    scope_ = saved_scope;
+  }
+
+  void VisitExpr_(const CallNode *op) final {
+    std::string operation;
+    Check(ResourceForCall(op, &operation), operation);
+    StmtExprVisitor::VisitExpr_(op);
+  }
+
+  void VisitStmt_(const BufferStoreNode *op) final {
+    AscendResource resource = ResourceForStorageScope(op->buffer.scope());
+    Check(resource, "BufferStore to " + op->buffer.scope());
+    StmtExprVisitor::VisitStmt_(op);
+  }
+
+  void VisitExpr_(const BufferLoadNode *op) final {
+    AscendResource resource = ResourceForStorageScope(op->buffer.scope());
+    Check(resource, "BufferLoad from " + op->buffer.scope());
+    StmtExprVisitor::VisitExpr_(op);
+  }
+
+  void VisitStmt_(const ForNode *op) final {
+    if (op->kind == ForKind::kVectorized) {
+      Check(AscendResource::kVector, "vectorized loop");
+    }
+    StmtExprVisitor::VisitStmt_(op);
+  }
+
+  bool require_explicit_scope_;
+  int scope_{-1};
+};
+
 class CVCombineEmitter : public StmtMutator {
 public:
-  CVCombineEmitter(bool is_aiv, Map<Var, String> &location)
-      : is_aiv_(is_aiv), location_map_(location) {}
+  explicit CVCombineEmitter(bool is_aiv) : is_aiv_(is_aiv) {}
 
-  std::string
-  isSubstringInMap(const std::unordered_map<std::string, std::string> &m,
-                   const std::string &target) {
-    if (target.empty()) {
-      return std::string("");
-    }
-    size_t target_len = target.length();
-    for (const auto &pair : m) {
-      const std::string &key = pair.first;
-      if (target.find(key) != std::string::npos) {
-        return pair.second;
-      }
-    }
-    return std::string("");
-  }
-
-  int32_t checkBufferScope(const Var &var) {
-    int32_t check_ternaty = -1;
-    if (is_aiv_) {
-      if (location_map_.find(var) != location_map_.end()) {
-        if (callnodeMapPos_[location_map_[var]] == "vec") {
-          check_ternaty = 1;
-        } else if (callnodeMapPos_[location_map_[var]] == "cube") {
-          check_ternaty = 0;
-        } else {
-          check_ternaty = -1;
-        }
-      }
-    } else {
-      if (location_map_.find(var) != location_map_.end()) {
-        if (callnodeMapPos_[location_map_[var]] == "cube") {
-          check_ternaty = 1;
-        } else if (callnodeMapPos_[location_map_[var]] == "vec") {
-          check_ternaty = 0;
-        } else {
-          check_ternaty = -1;
-        }
-      }
-    }
-    return check_ternaty;
-  }
-
-  // some scene need
-  // Stmt VisitStmt_(const ForNode *op) final {
-  //     current_proccess_switch_ = false; // turn off
-  //     return StmtMutator::VisitStmt_(op);
-  // }
   Stmt VisitStmt_(const ForNode *op) final {
     Stmt new_stmt = StmtMutator::VisitStmt_(op);
 
@@ -662,6 +1135,21 @@ public:
     }
 
     return new_stmt;
+  }
+
+  Stmt VisitStmt_(const AttrStmtNode *op) final {
+    if (op->attr_key != "resource_scope") {
+      return StmtMutator::VisitStmt_(op);
+    }
+    const auto *scope = op->value.as<IntImmNode>();
+    ICHECK(scope && (scope->value == 0 || scope->value == 1));
+    if (scope->value != static_cast<int>(is_aiv_)) {
+      return Evaluate(0);
+    }
+    ++explicit_scope_depth_;
+    Stmt body = VisitStmt(op->body);
+    --explicit_scope_depth_;
+    return body;
   }
 
   bool IsEmptyBody(const Stmt &stmt) {
@@ -700,141 +1188,70 @@ public:
   }
 
   Stmt VisitStmt_(const EvaluateNode *op) final {
-    auto call_node_ = op->value.as<CallNode>();
-    if (!call_node_) {
+    const auto *call = op->value.as<CallNode>();
+    if (call == nullptr) {
       return StmtMutator::VisitStmt_(op);
     }
-    std::string api_name = "";
-    if (call_node_) {
-      if (const auto *str_imm = call_node_->args[0].as<StringImmNode>()) {
-        api_name = str_imm->value;
-      }
-      if (const auto *op_node = call_node_->op.as<OpNode>();
-          op_node && IsRetainedInBothScopes(op_node->name)) {
-        return GetRef<Stmt>(op);
-      }
-    }
-    auto found = isSubstringInMap(callnodeMapPos_, api_name);
-    // judgement 1
-    if (is_aiv_) {
-      if (found == "vec") {
-        current_proccess_switch_ = true; // turn on
-        return StmtMutator::VisitStmt_(op);
-      } else if (found == "cube") {
-        current_proccess_switch_ = false; // turn off
-      }
-    } else {
-      if (found == "cube") {
-        current_proccess_switch_ = true; // turn on
-        return StmtMutator::VisitStmt_(op);
-      } else if (found == "vec") {
-        current_proccess_switch_ = false; // turn off
-      }
-    }
-    // judgement 2
-    int32_t judge2 = -1;
-    for (int i = 0; i < call_node_->args.size(); i++) {
-      if (auto inter_node = call_node_->args[i].as<CallNode>()) {
-        auto buf_name = Downcast<Var>(inter_node->args[1]);
-        judge2 = checkBufferScope(buf_name);
-        if (judge2 != -1) {
-          break;
-        }
-      }
-    }
-    if (judge2 == 1) {
-      current_proccess_switch_ = true; // turn on
-      return StmtMutator::VisitStmt_(op);
-    } else if (judge2 == -1 && current_proccess_switch_) {
+    if (explicit_scope_depth_ > 0) {
       return StmtMutator::VisitStmt_(op);
     }
-    current_proccess_switch_ = false; // turn off
-    return Evaluate(0);
+    std::string operation;
+    AscendResource resource = ResourceForCall(call, &operation);
+    if (resource == AscendResource::kCommon) {
+      return GetRef<Stmt>(op);
+    }
+    if (resource == AscendResource::kCube ||
+        resource == AscendResource::kVector) {
+      bool keep = (resource == AscendResource::kVector) == is_aiv_;
+      current_process_enabled_ = keep;
+      return keep ? StmtMutator::VisitStmt_(op) : Evaluate(0);
+    }
+    ICHECK(resource != AscendResource::kExplicit)
+        << "Unscoped opaque Ascend operation cannot be classified by "
+           "CombineCV; place it in an explicit T.Scope: "
+        << operation;
+    return current_process_enabled_ ? StmtMutator::VisitStmt_(op) : Evaluate(0);
   }
 
   Stmt VisitStmt_(const BufferStoreNode *op) final {
-    auto buf_scope = op->buffer.scope();
-    if (is_aiv_) {
-      if (buf_scope == "shared.ub") {
-        return StmtMutator::VisitStmt_(op);
-      } else {
-        return Evaluate(0);
-      }
-    } else {
-      if (buf_scope == "shared.ub") {
-        return Evaluate(0);
-      } else {
-        return StmtMutator::VisitStmt_(op);
-      }
+    if (explicit_scope_depth_ > 0) {
+      return StmtMutator::VisitStmt_(op);
     }
-  }
-
-  bool IsRetainedInBothScopes(const std::string &api_name) {
-    // APIs that do not belong to cube or vec scope,
-    // and should be retained in both generated code paths (e.g. printf).
-    static const std::vector<std::string> kBothScopesApis = {
-        "tl.ascend_printf",
-    };
-    for (const auto &target_api : kBothScopesApis) {
-      if (api_name.find(target_api) != std::string::npos) {
-        return true;
-      }
+    AscendResource resource = ResourceForStorageScope(op->buffer.scope());
+    if (resource == AscendResource::kNone) {
+      // Preserve the established CombineCV convention for scalar/global
+      // stores. Their resource-specific inputs are classified separately.
+      resource = AscendResource::kCube;
     }
-    return false;
+    bool keep = (resource == AscendResource::kVector) == is_aiv_;
+    current_process_enabled_ = keep;
+    return keep ? StmtMutator::VisitStmt_(op) : Evaluate(0);
   }
 
 private:
   const bool is_aiv_;
-  bool current_proccess_switch_ = false;
-  Map<Var, String> &location_map_;
-  std::unordered_map<std::string, std::string> callnodeMapPos_ = {
-      {"copy_gm_to_l1", "cube"},
-      {"gemm_v0", "cube"},
-      {"copy_l1_to_l0a", "cube"},
-      {"copy_l1_to_l0b", "cube"},
-      {"copy_l0c_to_gm", "cube"},
-      {"copy_gm_to_ub", "vec"},
-      {"copy_ub_to_gm", "vec"},
-      {"atomic_add_ub_to_gm", "vec"},
-      {"atomic_add_l0c_to_gm", "cube"},
-      {"copy_ub_to_ub", "vec"},
-      {"wmma.matrix_a", "cube"},
-      {"wmma.matrix_b", "cube"},
-      {"wmma.accumulator", "cube"},
-      {"shared.l1", "cube"},
-      {"shared.ub", "vec"},
-      {"copy_ub_to_ub_Nz", "vec"},
-      {"copy_ub_to_pipe", "vec"},
-      {"copy_pipe_to_l1", "cube"},
-      {"copy_l0c_to_pipe", "cube"},
-      {"copy_pipe_to_ub", "vec"},
-      {"copy_pipe_to_ub_V", "vec"},
-      {"free_pipe_C", "cube"},
-      {"free_pipe_V", "vec"},
-  };
+  bool current_process_enabled_{false};
+  int explicit_scope_depth_{0};
 };
+
+} // namespace
 
 class CombineCV : public arith::IRMutatorWithAnalyzer {
 public:
   static PrimFunc Substitute(PrimFunc f, PassContext ctx) {
     arith::Analyzer analyzer;
     CombineCV substituter(&analyzer);
-    PrimFuncNode *fptr = f.CopyOnWrite();
-    tir::PostOrderVisit(f->body, [&](const ObjectRef &obj) {
-      if (const auto *realize = obj.as<tir::BlockRealizeNode>()) {
-        for (auto buf : realize->block->alloc_buffers) {
-          String scope = GetPtrStorageScope(buf->data);
-          substituter.location_map_.Set(buf->data, scope);
-        }
-      }
-    });
-
     bool ascend_auto_combine =
         ctx->GetConfig<Bool>(ascendAutoCombine, Bool(false)).value();
     if (!ascend_auto_combine) {
       return f;
     }
 
+    PrimFuncNode *fptr = f.CopyOnWrite();
+    fptr->body = ContextualSyncResolver()(fptr->body);
+    // Reject opaque outer calls and conflicting explicit scopes before the
+    // split can discard their original context.
+    AscendResourceScopeVerifier::Verify(f, false);
     substituter.is_auto_cross_core_sync_ =
         ctx->GetConfig<Bool>(ascendAutoCrossCoreSync, Bool(false)).value();
 
@@ -849,8 +1266,8 @@ private:
     if (op->block->name_hint == "tilelang_root") {
       Block block = op->block;
 
-      CVCombineEmitter cubeStmt(false, location_map_);
-      CVCombineEmitter vecStmt(true, location_map_);
+      CVCombineEmitter cubeStmt(false);
+      CVCombineEmitter vecStmt(true);
 
       Stmt cube_code = cubeStmt(block->body);
       Stmt vec_code = vecStmt(block->body);
@@ -876,7 +1293,6 @@ private:
     return arith::IRMutatorWithAnalyzer::VisitStmt_(op);
   }
 
-  Map<Var, String> location_map_;
   bool is_auto_cross_core_sync_{false};
 };
 
@@ -890,6 +1306,16 @@ tvm::transform::Pass CombineCV() {
 
 // regist host path
 TVM_REGISTER_GLOBAL("tl.transform.CombineCV").set_body_typed(CombineCV);
+
+tvm::transform::Pass AscendResourceScopeVerify() {
+  auto pass_func = [=](PrimFunc f, IRModule, PassContext) {
+    return AscendResourceScopeVerifier::Verify(std::move(f), true);
+  };
+  return CreatePrimFuncPass(pass_func, 0, "tl.AscendResourceScopeVerify", {});
+}
+
+TVM_REGISTER_GLOBAL("tl.transform.AscendResourceScopeVerify")
+    .set_body_typed(AscendResourceScopeVerify);
 
 } // namespace tl
 } // namespace tvm

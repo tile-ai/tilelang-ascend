@@ -157,7 +157,9 @@ def host_codegen(host_mod: tvm.IRModule, target_host: Target) -> tvm.IRModule:
 
 
 def device_codegen(device_mod: tvm.IRModule, target: Target, platform: str) -> tvm.IRModule:
-    device_mod = tir.transform.Simplify()(device_mod)
+    managed_vector_mask = target.model in {"ascendc", "auto"} and platform in {"A2", "A3"}
+    if not managed_vector_mask:
+        device_mod = tir.transform.Simplify()(device_mod)
 
     if target.model == "ascendc" or target.model == "auto":
         device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend")(device_mod, target, platform)

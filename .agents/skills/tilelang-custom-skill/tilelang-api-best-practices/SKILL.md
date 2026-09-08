@@ -1,6 +1,6 @@
 ---
 name: tilelang-api-best-practices
-description: TileLang Ascend API 使用最佳实践。提供内存分配、数据搬运、矩阵计算、归约、元素级运算、同步、调度原语等 API 的正确用法和最佳实践。触发：使用 TileLang API 编写 Ascend NPU kernel 时或遇到 API 相关问题时。
+description: TileLang Ascend API 使用最佳实践。提供内存分配、零拷贝 Buffer view、数据搬运、矩阵计算、归约、元素级运算、同步、调度原语等 API 的正确用法和最佳实践。触发：使用 TileLang API 编写 Ascend NPU kernel 时或遇到 API 相关问题时。
 ---
 
 # TileLang Ascend API 最佳实践
@@ -11,7 +11,7 @@ description: TileLang Ascend API 使用最佳实践。提供内存分配、数�
 
 | 文档 | 涵盖内容 | 典型场景 |
 |------|---------|---------|
-| [api-kernel-memory.md](references/api-kernel-memory.md) | Kernel 定义（T.prim_func, T.Kernel, @jit）、内存分配（Developer: T.alloc_shared/fragment/var, Expert: T.alloc_ub/L1/L0x）、数据搬运（T.copy） | Kernel 编写、片上存储管理、数据搬运 |
+| [api-kernel-memory.md](references/api-kernel-memory.md) | Kernel 定义、内存分配、whole-storage view/reshape 的 API 选择与迁移检查、数据搬运 | Kernel 编写、片上存储管理、零拷贝别名、数据搬运 |
 | [api-compute.md](references/api-compute.md) | 矩阵计算（T.gemm_v0, T.mma）、归约（T.reduce_sum/max/min）、Element-wise（T.Parallel + 符号 API）、Tile 扩展原语（T.tile.xxx，含 T.tile.atomic_add） | GEMM、Softmax、逐元素计算、排序、原子累加 |
 | [api-schedule-sync.md](references/api-schedule-sync.md) | 循环（T.serial, T.unroll）、流水线（T.Pipelined）、持久化调度（T.Persistent）、同步（T.set_flag/wait_flag, T.barrier_all, T.set_cross_flag）、调试（T.printf, T.dump_tensor） | 流水线优化、多核均衡、同步、调试 |
 
@@ -31,6 +31,7 @@ description: TileLang Ascend API 使用最佳实践。提供内存分配、数�
 | **排序** | [api-compute](references/api-compute.md) | T.tile.sort → T.tile.merge_sort → T.tile.topk |
 | **Kernel 调试** | [api-schedule-sync](references/api-schedule-sync.md) | T.printf、T.dump_tensor、get_kernel_source() |
 | **dtype 标量回退适配** | [api-compute](references/api-compute.md) | 先确认硬件支持；同宽 reinterpret / kernel 内 cast / record-aware DMA / 块 DMA + UB-local fallback；宽 dtype lane 拆分仅作已验证实验 |
+| **零拷贝 shape/dtype view** | [api-kernel-memory](references/api-kernel-memory.md) | 完整 storage、总 bit 数相等且物理块对应关系不变时使用 `T.view` |
 
 ---
 
@@ -54,6 +55,8 @@ description: TileLang Ascend API 使用最佳实践。提供内存分配、数�
 | `T.alloc_fragment(shape, dtype)` | fragment 层级（编译器自动判断 L0A/B/C） | Developer |
 | `T.alloc_var(dtype, init=...)` | 标量变量 | Developer |
 | `T.alloc_ub / T.alloc_L1 / T.alloc_L0A/L0B/L0C` | 显式指定存储层级 | Expert |
+| `T.view(src, shape=None, dtype=None)` | 同一 storage 的等 bit 数 shape/dtype view；受最终 scope/target 限制 | Developer / Expert |
+| `T.reshape(src, shape)` | 保持 dtype 的 `T.view` 简写；继承相同限制 | Developer / Expert |
 
 ### 数据搬运与计算
 

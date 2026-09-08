@@ -86,13 +86,22 @@ private:
 
 PrimExpr GetInnerDim(const Var &buffer_var,
                      const Array<PrimExpr> &current_shape,
-                     const Map<Var, Array<PrimExpr>> &initial_shapes) {
+                     const Map<Var, Array<PrimExpr>> &initial_shapes,
+                     const PrimExpr &current_elements,
+                     arith::Analyzer *analyzer) {
   if (initial_shapes.count(buffer_var)) {
     const Array<PrimExpr> &initial_shape = initial_shapes.at(buffer_var);
-    return initial_shape.empty() ? Integer(1) : initial_shape.back();
-  } else {
-    return current_shape.empty() ? Integer(1) : current_shape.back();
+    if (!initial_shape.empty()) {
+      PrimExpr initial_inner = initial_shape.back();
+      // Allocation relocation may select a same-storage view whose element
+      // count differs from the original descriptor. In that case, preserve
+      // the current allocation shape instead of creating a truncated row.
+      if (!analyzer->CanProve(truncmod(current_elements, initial_inner) != 0)) {
+        return initial_inner;
+      }
+    }
   }
+  return current_shape.empty() ? Integer(1) : current_shape.back();
 }
 
 Array<PrimExpr> AlignInnerDim(PrimExpr outer_dim, PrimExpr inner_dim,
@@ -171,7 +180,8 @@ tvm::transform::Pass CreateFlatten2DPass() {
       // - 1D [m] -> [1, m]
       // - 2D [n, m] -> [n, m]
       // - ND [d1, d2, ..., m] -> [d1*d2*..., m]
-      PrimExpr inner_dim = GetInnerDim(buffer_var, shape, initial_shapes);
+      PrimExpr inner_dim = GetInnerDim(buffer_var, shape, initial_shapes,
+                                       total_elements, &analyzer);
 
       PrimExpr outer_dim =
           analyzer.Simplify(truncdiv(total_elements, inner_dim));

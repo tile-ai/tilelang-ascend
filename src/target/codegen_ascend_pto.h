@@ -12,6 +12,7 @@
 #include <tvm/tir/expr.h>
 #include <tvm/tir/op.h>
 
+#include <map>
 #include <string>
 #include <unordered_map>
 
@@ -66,7 +67,6 @@ public:
   void MulAddDstCodegen(const CallNode *op);
   void CastCodegen(const CallNode *op, const std::string &op_type);
 
-  void ReinterpretCastCodegen(const CallNode *op);
   void ReduceOpCodegen(const CallNode *op);
 
   enum class ReduceKind { SUM, MAX, MIN };
@@ -95,6 +95,7 @@ public:
     std::string type;
     std::string ub_name;
     bool is_slice;
+    bool is_view{false};
   };
 
   struct BufferInfo {
@@ -146,6 +147,9 @@ private:
   std::string GetVarId(const Var &var) const;
 
   BufferInfo GetBufferInfo(const PrimExpr &arg) const;
+
+  Array<PrimExpr> GetGmCopyShape(const BufferInfo &info,
+                                 const PrimExpr &row_pitch) const;
 
   void BinaryVecOpCodegen(const CallNode *op, const std::string &op_name);
 
@@ -286,7 +290,18 @@ private:
 
   std::string PrintBufferOffset(const CallNode *op);
 
+  std::string ResolveLocalBufferObject(const VarNode *buffer_var,
+                                       DataType logical_dtype) const;
+
+  std::string ResolveGlobalBufferBase(const VarNode *buffer_var,
+                                      DataType logical_dtype) const;
+
+  void EmitWholeStorageAliases(const AllocateNode *op,
+                               const std::string &root_name,
+                               const std::string &scope);
+
   std::string GetTempVarName(const std::string &temp_name);
+  void BindTile(const std::string &tile_name, const ShapeInfo &shape_info);
   void CreateUbVariableND(const std::string &temp_name,
                           const ShapeInfo &shape_info);
   void CreateUbVariableDN(const std::string &temp_name,
@@ -302,6 +317,9 @@ private:
                           const ShapeInfo &shape_info,
                           const std::string &tile_name);
   ShapeInfo GetSliceInfo(const CallNode *op);
+
+  bool ApplyViewShape(const CallNode *access_ptr, int64_t logical_row,
+                      int64_t logical_col, ShapeInfo *shape_info);
 
   std::string ResolveUbSliceName(const ShapeInfo &info);
 
@@ -358,6 +376,9 @@ private:
   Map<Var, Array<PrimExpr>> buffer_shapess_;
   Map<Var, PrimExpr> buffer_versions_;
   std::unordered_map<const VarNode *, DataType> buffer_dtypes_;
+
+  std::unordered_map<const VarNode *, std::map<std::string, std::string>>
+      local_typed_aliases_;
 
   Map<Var, PrimExpr> tiling_map_;
   Array<Var> var_sequence_;

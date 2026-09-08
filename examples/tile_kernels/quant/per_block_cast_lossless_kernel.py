@@ -255,8 +255,11 @@ def get_per_block_cast_lossless_kernel(
     @T.macro
     def decode_input_sf_exp(dst, src):
         if (not in_config.use_packed_ue8m0) and (not in_config.use_tma_aligned_col_major_sf) and (not input_sf_is_tile_packed):
-            src_bits_ub = T.alloc_ub((num_in_sf_per_data_tile_m, num_in_sf_per_block_k), "int32")
-            T.reinterpretcast(src_bits_ub, src, "int32_t")
+            src_bits_ub = T.view(
+                src,
+                (num_in_sf_per_data_tile_m, num_in_sf_per_block_k),
+                "int32",
+            )
             T.tile.bitwise_rshift(dst, src_bits_ub, 23)
             T.pipe_barrier("v")
             T.tile.bitwise_and(dst, dst, 255)
@@ -439,7 +442,6 @@ def get_per_block_cast_lossless_kernel(
     def decode_reduce_128_plain_pair(
         cache64_ub,
         load64_ub,
-        bits64_ub,
         offset_u32_ub,
         e0_ub,
         e1_ub,
@@ -450,7 +452,7 @@ def get_per_block_cast_lossless_kernel(
         tile_max_ub,
         block_max_ub,
     ):
-        T.reinterpretcast(bits64_ub, load64_ub, "int32_t")
+        bits64_ub = T.view(load64_ub, dtype="int32")
         T.tile.bitwise_rshift(cache64_ub, bits64_ub, 23)
         T.pipe_barrier("v")
         reduce_128x128_exp_rows(
@@ -529,7 +531,7 @@ def get_per_block_cast_lossless_kernel(
     def apply_32x32_packed_fast_path(x_sf, x, out, out_sf, sf_m, sf_k, out_sf_m, out_sf_k, row_offset, col_offset):
         tile_elem_count = 32 * in_sf_block_k
         x_sf_load_ub = T.alloc_ub(fast_x_sf_load_shape, fast_x_sf_load_dtype)
-        x_sf_word_ub = T.alloc_ub((32,), "int32")
+        x_sf_word_ub = T.view(x_sf_load_ub, (32,), "int32")
         e0_ub = T.alloc_ub((32,), "int32")
         e1_ub = T.alloc_ub((32,), "int32")
         e2_ub = T.alloc_ub((32,), "int32")
@@ -544,10 +546,10 @@ def get_per_block_cast_lossless_kernel(
         relative_bits1_ub = T.alloc_ub((32,), "int32")
         relative_bits2_ub = T.alloc_ub((32,), "int32")
         relative_bits3_ub = T.alloc_ub((32,), "int32")
-        relative_sf0_view_ub = T.alloc_ub((32, 1), "float32")
-        relative_sf1_view_ub = T.alloc_ub((32, 1), "float32")
-        relative_sf2_view_ub = T.alloc_ub((32, 1), "float32")
-        relative_sf3_view_ub = T.alloc_ub((32, 1), "float32")
+        relative_sf0_view_ub = T.view(relative_bits0_ub, (32, 1), "float32")
+        relative_sf1_view_ub = T.view(relative_bits1_ub, (32, 1), "float32")
+        relative_sf2_view_ub = T.view(relative_bits2_ub, (32, 1), "float32")
+        relative_sf3_view_ub = T.view(relative_bits3_ub, (32, 1), "float32")
         relative_sf_tile0_ub = T.alloc_ub((32, in_sf_block_k), "float32")
         relative_sf_tile1_ub = T.alloc_ub((32, in_sf_block_k), "float32")
         relative_sf_tile2_ub = T.alloc_ub((32, in_sf_block_k), "float32")
@@ -556,11 +558,6 @@ def get_per_block_cast_lossless_kernel(
         x_in1_ub = T.alloc_ub((32, in_sf_block_k), INPUT_DTYPE)
         x_out0_ub = T.alloc_ub((32, in_sf_block_k), OUTPUT_DTYPE)
         x_out1_ub = T.alloc_ub((32, in_sf_block_k), OUTPUT_DTYPE)
-        T.reinterpretcast(x_sf_word_ub, x_sf_load_ub, "int32_t")
-        T.reinterpretcast(relative_sf0_view_ub, relative_bits0_ub, "float")
-        T.reinterpretcast(relative_sf1_view_ub, relative_bits1_ub, "float")
-        T.reinterpretcast(relative_sf2_view_ub, relative_bits2_ub, "float")
-        T.reinterpretcast(relative_sf3_view_ub, relative_bits3_ub, "float")
         load_input_sf_block_fast(x_sf_load_ub, x_sf, sf_m, sf_k)
         T.set_flag("mte2", "v", 2)
         T.wait_flag("mte2", "v", 2)
@@ -666,13 +663,12 @@ def get_per_block_cast_lossless_kernel(
         x_out30_ub = T.alloc_ub((fast_data_tile_m, in_sf_block_k), OUTPUT_DTYPE)
         x_out31_ub = T.alloc_ub((fast_data_tile_m, in_sf_block_k), OUTPUT_DTYPE)
         xsf_row_offset_i32_ub = T.alloc_ub((fast_data_tile_m,), "int32")
-        xsf_row_offset_u32_ub = T.alloc_ub((fast_data_tile_m,), "uint32")
+        xsf_row_offset_u32_ub = T.view(xsf_row_offset_i32_ub, dtype="uint32")
         e0_ub = T.alloc_ub((fast_data_tile_m,), "int32")
         e1_ub = T.alloc_ub((fast_data_tile_m,), "int32")
         e2_ub = T.alloc_ub((fast_data_tile_m,), "int32")
         e3_ub = T.alloc_ub((fast_data_tile_m,), "int32")
         packed_e_word_ub = T.alloc_ub((fast_data_tile_m,), "int32")
-        x_sf_word_ub = T.alloc_ub((num_in_sf_per_block_k // 4, fast_num_in_sf_per_data_tile_m), "int32")
         max01_ub = T.alloc_ub((fast_data_tile_m,), "int32")
         max23_ub = T.alloc_ub((fast_data_tile_m,), "int32")
         out_exp_ub = T.alloc_ub((fast_data_tile_m,), "int32")
@@ -680,15 +676,11 @@ def get_per_block_cast_lossless_kernel(
         relative_exp1_ub = T.alloc_ub((fast_data_tile_m,), "int32")
         relative_bits0_ub = T.alloc_ub((fast_data_tile_m,), "int32")
         relative_bits1_ub = T.alloc_ub((fast_data_tile_m,), "int32")
-        relative_sf0_view_ub = T.alloc_ub((fast_data_tile_m, 1), "float32")
-        relative_sf1_view_ub = T.alloc_ub((fast_data_tile_m, 1), "float32")
+        relative_sf0_view_ub = T.view(relative_bits0_ub, (fast_data_tile_m, 1), "float32")
+        relative_sf1_view_ub = T.view(relative_bits1_ub, (fast_data_tile_m, 1), "float32")
         relative_sf_tile0_ub = T.alloc_ub((fast_data_tile_m, in_sf_block_k), "float32")
         relative_sf_tile1_ub = T.alloc_ub((fast_data_tile_m, in_sf_block_k), "float32")
-        T.reinterpretcast(xsf_row_offset_u32_ub, xsf_row_offset_i32_ub, "uint32_t")
-        T.reinterpretcast(relative_sf0_view_ub, relative_bits0_ub, "float")
-        T.reinterpretcast(relative_sf1_view_ub, relative_bits1_ub, "float")
         if in_config.use_packed_ue8m0:
-            T.reinterpretcast(x_sf_word_ub, x_sf_load_ub, "int32_t")
             load_input_sf_block_fast(x_sf_load_ub, x_sf, sf_m, sf_k)
             T.pipe_barrier("all")
         else:
@@ -768,6 +760,14 @@ def get_per_block_cast_lossless_kernel(
         for block_idx in T.unroll(num_out_sf_per_block_k):
             sf_k_base = block_idx * num_in_sf_per_out_sf_k
             if in_config.use_packed_ue8m0:
+                x_sf_word_ub = T.view(
+                    x_sf_load_ub,
+                    (
+                        num_in_sf_per_block_k // 4,
+                        fast_num_in_sf_per_data_tile_m,
+                    ),
+                    "int32",
+                )
                 T.tile.arith_progression(xsf_row_offset_i32_ub, block_idx * fast_num_in_sf_per_data_tile_m * 4, 4, fast_data_tile_m)
                 T.tile.gather(packed_e_word_ub, x_sf_word_ub, xsf_row_offset_u32_ub, 0)
                 for i in T.serial(fast_num_in_sf_per_data_tile_m):
@@ -1031,10 +1031,10 @@ def get_per_block_cast_lossless_kernel(
     def apply_32x32_tile_packed_fast_path(x_sf, x, out, out_sf, pid_token, pid_hidden, data_m, out_sf_m, out_sf_k, row_offset, col_offset):
         tile_elem_count = 32 * in_sf_block_k
         x_sf_load_ub = T.alloc_ub((packed_sf_tile_elems,), "float32")
-        x_sf_bits_ub = T.alloc_ub((packed_sf_tile_elems,), "int32")
+        x_sf_bits_ub = T.view(x_sf_load_ub, dtype="int32")
         x_sf_exp_ub = T.alloc_ub((packed_sf_tile_elems,), "int32")
         xsf_row_offset_i32_ub = T.alloc_ub((32,), "int32")
-        xsf_row_offset_u32_ub = T.alloc_ub((32,), "uint32")
+        xsf_row_offset_u32_ub = T.view(xsf_row_offset_i32_ub, dtype="uint32")
         e0_ub = T.alloc_ub((1, 32), "int32")
         e1_ub = T.alloc_ub((1, 32), "int32")
         e2_ub = T.alloc_ub((1, 32), "int32")
@@ -1061,10 +1061,10 @@ def get_per_block_cast_lossless_kernel(
         relative_bits1_ub = T.alloc_ub((32,), "int32")
         relative_bits2_ub = T.alloc_ub((32,), "int32")
         relative_bits3_ub = T.alloc_ub((32,), "int32")
-        relative_sf0_view_ub = T.alloc_ub((32, 1), "float32")
-        relative_sf1_view_ub = T.alloc_ub((32, 1), "float32")
-        relative_sf2_view_ub = T.alloc_ub((32, 1), "float32")
-        relative_sf3_view_ub = T.alloc_ub((32, 1), "float32")
+        relative_sf0_view_ub = T.view(relative_bits0_ub, (32, 1), "float32")
+        relative_sf1_view_ub = T.view(relative_bits1_ub, (32, 1), "float32")
+        relative_sf2_view_ub = T.view(relative_bits2_ub, (32, 1), "float32")
+        relative_sf3_view_ub = T.view(relative_bits3_ub, (32, 1), "float32")
         relative_sf_tile0_ub = T.alloc_ub((32, in_sf_block_k), "float32")
         relative_sf_tile1_ub = T.alloc_ub((32, in_sf_block_k), "float32")
         relative_sf_tile2_ub = T.alloc_ub((32, in_sf_block_k), "float32")
@@ -1073,12 +1073,6 @@ def get_per_block_cast_lossless_kernel(
         x_in1_ub = T.alloc_ub((32, in_sf_block_k), INPUT_DTYPE)
         x_out0_ub = T.alloc_ub((32, in_sf_block_k), OUTPUT_DTYPE)
         x_out1_ub = T.alloc_ub((32, in_sf_block_k), OUTPUT_DTYPE)
-        T.reinterpretcast(x_sf_bits_ub, x_sf_load_ub, "int32_t")
-        T.reinterpretcast(xsf_row_offset_u32_ub, xsf_row_offset_i32_ub, "uint32_t")
-        T.reinterpretcast(relative_sf0_view_ub, relative_bits0_ub, "float")
-        T.reinterpretcast(relative_sf1_view_ub, relative_bits1_ub, "float")
-        T.reinterpretcast(relative_sf2_view_ub, relative_bits2_ub, "float")
-        T.reinterpretcast(relative_sf3_view_ub, relative_bits3_ub, "float")
         T.copy(x_sf[pid_token, pid_hidden, data_m, 0:packed_sf_tile_elems], x_sf_load_ub)
         T.set_flag("mte2", "v", 2)
         T.wait_flag("mte2", "v", 2)
@@ -1189,7 +1183,7 @@ def get_per_block_cast_lossless_kernel(
     ):
         row_offset = pid_token * block_m
         reduce_offset_i32_ub = T.alloc_ub((32,), "int32")
-        reduce_offset_u32_ub = T.alloc_ub((32,), "uint32")
+        reduce_offset_u32_ub = T.view(reduce_offset_i32_ub, dtype="uint32")
         reduce_e0_ub = T.alloc_ub((32,), "int32")
         reduce_e1_ub = T.alloc_ub((32,), "int32")
         reduce_e2_ub = T.alloc_ub((32,), "int32")
@@ -1198,7 +1192,6 @@ def get_per_block_cast_lossless_kernel(
         reduce_max23_ub = T.alloc_ub((32,), "int32")
         reduce_tile_max_ub = T.alloc_ub((32,), "int32")
         reduce_block_max_ub = T.alloc_ub((32,), "int32")
-        T.reinterpretcast(reduce_offset_u32_ub, reduce_offset_i32_ub, "uint32_t")
         T.tile.arith_progression(reduce_offset_i32_ub, 0, 16, 32)
         T.tile.fill(reduce_block_max_ub, 0)
         if input_sf_is_tile_packed:
@@ -1210,16 +1203,15 @@ def get_per_block_cast_lossless_kernel(
             packed_load1_ub = T.alloc_ub((packed_sf_tile_elems,), "float32")
             packed_load2_ub = T.alloc_ub((packed_sf_tile_elems,), "float32")
             packed_load3_ub = T.alloc_ub((packed_sf_tile_elems,), "float32")
-            packed_bits0_ub = T.alloc_ub((packed_sf_tile_elems,), "int32")
-            packed_bits1_ub = T.alloc_ub((packed_sf_tile_elems,), "int32")
-            packed_bits2_ub = T.alloc_ub((packed_sf_tile_elems,), "int32")
-            packed_bits3_ub = T.alloc_ub((packed_sf_tile_elems,), "int32")
+            packed_bits0_ub = T.view(packed_load0_ub, dtype="int32")
+            packed_bits1_ub = T.view(packed_load1_ub, dtype="int32")
+            packed_bits2_ub = T.view(packed_load2_ub, dtype="int32")
+            packed_bits3_ub = T.view(packed_load3_ub, dtype="int32")
             T.copy(x_sf[pid_token, pid_hidden, 0, 0:packed_sf_tile_elems], packed_load0_ub)
             T.set_flag("mte2", "v", 2)
             T.copy(x_sf[pid_token, pid_hidden, 1, 0:packed_sf_tile_elems], packed_load1_ub)
             T.set_flag("mte2", "v", 3)
             T.wait_flag("mte2", "v", 2)
-            T.reinterpretcast(packed_bits0_ub, packed_load0_ub, "int32_t")
             T.tile.bitwise_rshift(packed_cached_exp0_ub, packed_bits0_ub, 23)
             T.pipe_barrier("v")
             reduce_128x128_exp_rows(
@@ -1236,7 +1228,6 @@ def get_per_block_cast_lossless_kernel(
                 0,
             )
             T.wait_flag("mte2", "v", 3)
-            T.reinterpretcast(packed_bits1_ub, packed_load1_ub, "int32_t")
             T.tile.bitwise_rshift(packed_cached_exp1_ub, packed_bits1_ub, 23)
             T.pipe_barrier("v")
             reduce_128x128_exp_rows(
@@ -1257,7 +1248,6 @@ def get_per_block_cast_lossless_kernel(
             T.copy(x_sf[pid_token, pid_hidden, 3, 0:packed_sf_tile_elems], packed_load3_ub)
             T.set_flag("mte2", "v", 3)
             T.wait_flag("mte2", "v", 2)
-            T.reinterpretcast(packed_bits2_ub, packed_load2_ub, "int32_t")
             T.tile.bitwise_rshift(packed_cached_exp2_ub, packed_bits2_ub, 23)
             T.pipe_barrier("v")
             reduce_128x128_exp_rows(
@@ -1274,7 +1264,6 @@ def get_per_block_cast_lossless_kernel(
                 0,
             )
             T.wait_flag("mte2", "v", 3)
-            T.reinterpretcast(packed_bits3_ub, packed_load3_ub, "int32_t")
             T.tile.bitwise_rshift(packed_cached_exp3_ub, packed_bits3_ub, 23)
             T.pipe_barrier("v")
             reduce_128x128_exp_rows(
@@ -1295,8 +1284,6 @@ def get_per_block_cast_lossless_kernel(
             plain_cached_exp23_ub = T.alloc_ub((64, 4), "int32")
             plain_load64_ub0 = T.alloc_ub((64, 4), "float32")
             plain_load64_ub1 = T.alloc_ub((64, 4), "float32")
-            plain_bits64_ub0 = T.alloc_ub((64, 4), "int32")
-            plain_bits64_ub1 = T.alloc_ub((64, 4), "int32")
             T.copy(
                 x_sf[sf_row_offset : sf_row_offset + 64, sf_col_offset : sf_col_offset + 4],
                 plain_load64_ub0,
@@ -1311,7 +1298,6 @@ def get_per_block_cast_lossless_kernel(
             decode_reduce_128_plain_pair(
                 plain_cached_exp01_ub,
                 plain_load64_ub0,
-                plain_bits64_ub0,
                 reduce_offset_u32_ub,
                 reduce_e0_ub,
                 reduce_e1_ub,
@@ -1326,7 +1312,6 @@ def get_per_block_cast_lossless_kernel(
             decode_reduce_128_plain_pair(
                 plain_cached_exp23_ub,
                 plain_load64_ub1,
-                plain_bits64_ub1,
                 reduce_offset_u32_ub,
                 reduce_e0_ub,
                 reduce_e1_ub,
@@ -1350,16 +1335,14 @@ def get_per_block_cast_lossless_kernel(
         fast_relative_exp_b_ub = T.alloc_ub((32,), "int32")
         fast_relative_bits_a_ub = T.alloc_ub((32,), "int32")
         fast_relative_bits_b_ub = T.alloc_ub((32,), "int32")
-        fast_relative_sf_a_view_ub = T.alloc_ub((32, 1), "float32")
-        fast_relative_sf_b_view_ub = T.alloc_ub((32, 1), "float32")
+        fast_relative_sf_a_view_ub = T.view(fast_relative_bits_a_ub, (32, 1), "float32")
+        fast_relative_sf_b_view_ub = T.view(fast_relative_bits_b_ub, (32, 1), "float32")
         fast_relative_sf_tile_a_ub = T.alloc_ub((32, 32), "float32")
         fast_relative_sf_tile_b_ub = T.alloc_ub((32, 32), "float32")
         fast_x_in0_ub = T.alloc_ub((32, 32), INPUT_DTYPE)
         fast_x_in1_ub = T.alloc_ub((32, 32), INPUT_DTYPE)
         fast_x_out0_ub = T.alloc_ub((32, 32), OUTPUT_DTYPE)
         fast_x_out1_ub = T.alloc_ub((32, 32), OUTPUT_DTYPE)
-        T.reinterpretcast(fast_relative_sf_a_view_ub, fast_relative_bits_a_ub, "float")
-        T.reinterpretcast(fast_relative_sf_b_view_ub, fast_relative_bits_b_ub, "float")
         for data_m in T.unroll(num_data_tiles_m):
             fast_row_offset = row_offset + data_m * data_tile_m
             if vid == 0:
@@ -1491,12 +1474,12 @@ def get_per_block_cast_lossless_kernel(
         tp128_load1_ub = T.alloc_ub((packed_sf_tile_elems,), "float32")
         tp128_load2_ub = T.alloc_ub((packed_sf_tile_elems,), "float32")
         tp128_load3_ub = T.alloc_ub((packed_sf_tile_elems,), "float32")
-        tp128_bits0_ub = T.alloc_ub((packed_sf_tile_elems,), "int32")
-        tp128_bits1_ub = T.alloc_ub((packed_sf_tile_elems,), "int32")
-        tp128_bits2_ub = T.alloc_ub((packed_sf_tile_elems,), "int32")
-        tp128_bits3_ub = T.alloc_ub((packed_sf_tile_elems,), "int32")
+        tp128_bits0_ub = T.view(tp128_load0_ub, dtype="int32")
+        tp128_bits1_ub = T.view(tp128_load1_ub, dtype="int32")
+        tp128_bits2_ub = T.view(tp128_load2_ub, dtype="int32")
+        tp128_bits3_ub = T.view(tp128_load3_ub, dtype="int32")
         tp128_offset_i32_ub = T.alloc_ub((32,), "int32")
-        tp128_offset_u32_ub = T.alloc_ub((32,), "uint32")
+        tp128_offset_u32_ub = T.view(tp128_offset_i32_ub, dtype="uint32")
         tp128_e0_ub = T.alloc_ub((32,), "int32")
         tp128_e1_ub = T.alloc_ub((32,), "int32")
         tp128_e2_ub = T.alloc_ub((32,), "int32")
@@ -1505,7 +1488,6 @@ def get_per_block_cast_lossless_kernel(
         tp128_max23_ub = T.alloc_ub((32,), "int32")
         tp128_tile_max_ub = T.alloc_ub((32,), "int32")
         tp128_block_max_ub = T.alloc_ub((32,), "int32")
-        T.reinterpretcast(tp128_offset_u32_ub, tp128_offset_i32_ub, "uint32_t")
         T.tile.arith_progression(tp128_offset_i32_ub, 0, num_in_sf_per_block_k * 4, 32)
         T.tile.fill(tp128_block_max_ub, 0)
 
@@ -1514,7 +1496,6 @@ def get_per_block_cast_lossless_kernel(
         T.copy(x_sf[pid_token, pid_hidden, 1, 0:packed_sf_tile_elems], tp128_load1_ub)
         T.set_flag("mte2", "v", 3)
         T.wait_flag("mte2", "v", 2)
-        T.reinterpretcast(tp128_bits0_ub, tp128_load0_ub, "int32_t")
         T.tile.bitwise_rshift(tp128_cached_exp0_ub, tp128_bits0_ub, 23)
         T.pipe_barrier("v")
         reduce_128x128_exp_rows(
@@ -1533,7 +1514,6 @@ def get_per_block_cast_lossless_kernel(
         T.copy(x_sf[pid_token, pid_hidden, 2, 0:packed_sf_tile_elems], tp128_load2_ub)
         T.set_flag("mte2", "v", 2)
         T.wait_flag("mte2", "v", 3)
-        T.reinterpretcast(tp128_bits1_ub, tp128_load1_ub, "int32_t")
         T.tile.bitwise_rshift(tp128_cached_exp1_ub, tp128_bits1_ub, 23)
         T.pipe_barrier("v")
         reduce_128x128_exp_rows(
@@ -1552,7 +1532,6 @@ def get_per_block_cast_lossless_kernel(
         T.copy(x_sf[pid_token, pid_hidden, 3, 0:packed_sf_tile_elems], tp128_load3_ub)
         T.set_flag("mte2", "v", 3)
         T.wait_flag("mte2", "v", 2)
-        T.reinterpretcast(tp128_bits2_ub, tp128_load2_ub, "int32_t")
         T.tile.bitwise_rshift(tp128_cached_exp2_ub, tp128_bits2_ub, 23)
         T.pipe_barrier("v")
         reduce_128x128_exp_rows(
@@ -1569,7 +1548,6 @@ def get_per_block_cast_lossless_kernel(
             0,
         )
         T.wait_flag("mte2", "v", 3)
-        T.reinterpretcast(tp128_bits3_ub, tp128_load3_ub, "int32_t")
         T.tile.bitwise_rshift(tp128_cached_exp3_ub, tp128_bits3_ub, 23)
         T.pipe_barrier("v")
         reduce_128x128_exp_rows(
@@ -1599,16 +1577,14 @@ def get_per_block_cast_lossless_kernel(
         tp128_relative_exp_b_ub = T.alloc_ub((32,), "int32")
         tp128_relative_bits_a_ub = T.alloc_ub((32,), "int32")
         tp128_relative_bits_b_ub = T.alloc_ub((32,), "int32")
-        tp128_relative_sf_a_view_ub = T.alloc_ub((32, 1), "float32")
-        tp128_relative_sf_b_view_ub = T.alloc_ub((32, 1), "float32")
+        tp128_relative_sf_a_view_ub = T.view(tp128_relative_bits_a_ub, (32, 1), "float32")
+        tp128_relative_sf_b_view_ub = T.view(tp128_relative_bits_b_ub, (32, 1), "float32")
         tp128_relative_sf_tile_a_ub = T.alloc_ub((32, 32), "float32")
         tp128_relative_sf_tile_b_ub = T.alloc_ub((32, 32), "float32")
         tp128_x_in0_ub = T.alloc_ub((32, 32), INPUT_DTYPE)
         tp128_x_in1_ub = T.alloc_ub((32, 32), INPUT_DTYPE)
         tp128_x_out0_ub = T.alloc_ub((32, 32), OUTPUT_DTYPE)
         tp128_x_out1_ub = T.alloc_ub((32, 32), OUTPUT_DTYPE)
-        T.reinterpretcast(tp128_relative_sf_a_view_ub, tp128_relative_bits_a_ub, "float")
-        T.reinterpretcast(tp128_relative_sf_b_view_ub, tp128_relative_bits_b_ub, "float")
         for data_m in T.unroll(num_data_tiles_m):
             tp128_row_offset = row_offset + data_m * data_tile_m
             if vid == 0:
@@ -1699,10 +1675,8 @@ def get_per_block_cast_lossless_kernel(
         plain_cached_exp23_ub = T.alloc_ub((64, 4), "int32")
         plain_load64_ub0 = T.alloc_ub((64, 4), "float32")
         plain_load64_ub1 = T.alloc_ub((64, 4), "float32")
-        plain_bits64_ub0 = T.alloc_ub((64, 4), "int32")
-        plain_bits64_ub1 = T.alloc_ub((64, 4), "int32")
         reduce_offset_i32_ub = T.alloc_ub((32,), "int32")
-        reduce_offset_u32_ub = T.alloc_ub((32,), "uint32")
+        reduce_offset_u32_ub = T.view(reduce_offset_i32_ub, dtype="uint32")
         reduce_e0_ub = T.alloc_ub((32,), "int32")
         reduce_e1_ub = T.alloc_ub((32,), "int32")
         reduce_e2_ub = T.alloc_ub((32,), "int32")
@@ -1711,7 +1685,6 @@ def get_per_block_cast_lossless_kernel(
         reduce_max23_ub = T.alloc_ub((32,), "int32")
         reduce_tile_max_ub = T.alloc_ub((32,), "int32")
         reduce_block_max_ub = T.alloc_ub((32,), "int32")
-        T.reinterpretcast(reduce_offset_u32_ub, reduce_offset_i32_ub, "uint32_t")
         T.tile.arith_progression(reduce_offset_i32_ub, 0, 16, 32)
         T.tile.fill(reduce_block_max_ub, 0)
         if (not in_config.use_packed_ue8m0) and (not in_config.use_tma_aligned_col_major_sf) and (not input_sf_is_tile_packed):
@@ -1729,7 +1702,6 @@ def get_per_block_cast_lossless_kernel(
             decode_reduce_128_plain_pair(
                 plain_cached_exp01_ub,
                 plain_load64_ub0,
-                plain_bits64_ub0,
                 reduce_offset_u32_ub,
                 reduce_e0_ub,
                 reduce_e1_ub,
@@ -1744,7 +1716,6 @@ def get_per_block_cast_lossless_kernel(
             decode_reduce_128_plain_pair(
                 plain_cached_exp23_ub,
                 plain_load64_ub1,
-                plain_bits64_ub1,
                 reduce_offset_u32_ub,
                 reduce_e0_ub,
                 reduce_e1_ub,
@@ -1848,10 +1819,10 @@ def get_per_block_cast_lossless_kernel(
             fast_relative_bits1_ub = T.alloc_ub((32,), "int32")
             fast_relative_bits2_ub = T.alloc_ub((32,), "int32")
             fast_relative_bits3_ub = T.alloc_ub((32,), "int32")
-            fast_relative_sf0_view_ub = T.alloc_ub((32, 1), "float32")
-            fast_relative_sf1_view_ub = T.alloc_ub((32, 1), "float32")
-            fast_relative_sf2_view_ub = T.alloc_ub((32, 1), "float32")
-            fast_relative_sf3_view_ub = T.alloc_ub((32, 1), "float32")
+            fast_relative_sf0_view_ub = T.view(fast_relative_bits0_ub, (32, 1), "float32")
+            fast_relative_sf1_view_ub = T.view(fast_relative_bits1_ub, (32, 1), "float32")
+            fast_relative_sf2_view_ub = T.view(fast_relative_bits2_ub, (32, 1), "float32")
+            fast_relative_sf3_view_ub = T.view(fast_relative_bits3_ub, (32, 1), "float32")
             fast_relative_sf_tile0_ub = T.alloc_ub((32, 32), "float32")
             fast_relative_sf_tile1_ub = T.alloc_ub((32, 32), "float32")
             fast_relative_sf_tile2_ub = T.alloc_ub((32, 32), "float32")
@@ -1860,10 +1831,6 @@ def get_per_block_cast_lossless_kernel(
             fast_x_in1_ub = T.alloc_ub((32, 32), INPUT_DTYPE)
             fast_x_out0_ub = T.alloc_ub((32, 32), OUTPUT_DTYPE)
             fast_x_out1_ub = T.alloc_ub((32, 32), OUTPUT_DTYPE)
-            T.reinterpretcast(fast_relative_sf0_view_ub, fast_relative_bits0_ub, "float")
-            T.reinterpretcast(fast_relative_sf1_view_ub, fast_relative_bits1_ub, "float")
-            T.reinterpretcast(fast_relative_sf2_view_ub, fast_relative_bits2_ub, "float")
-            T.reinterpretcast(fast_relative_sf3_view_ub, fast_relative_bits3_ub, "float")
             for data_m in T.unroll(num_data_tiles_m):
                 if (not in_config.use_packed_ue8m0) and (not in_config.use_tma_aligned_col_major_sf) and (not input_sf_is_tile_packed):
                     if data_m == 0:

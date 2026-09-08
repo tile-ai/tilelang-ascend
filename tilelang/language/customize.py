@@ -4,12 +4,63 @@
 
 from __future__ import annotations
 
-import tilelang.language as T
-from tilelang.language.tir import op
-from tvm.tir import PrimExpr, Buffer, BufferRegion, Var
-from tvm import tir
-from tilelang.language.ascend import _dtype
 import math
+
+import tilelang.language as T
+from tilelang.language.ascend import _dtype
+from tilelang.language.tir import op
+from tvm import DataType, arith, tir
+from tvm.tir import Buffer, BufferRegion, PrimExpr, Var
+
+
+_FRACTAL_SCOPES = {
+    "shared.l1",
+    "wmma.matrix_a",
+    "wmma.matrix_b",
+    "wmma.accumulator",
+}
+
+
+def _fractal_inner_shapes(scope: str, dtype: DataType) -> tuple[tuple[int, int], ...]:
+    element_bits = dtype.bits * dtype.lanes
+    if element_bits < 8 or 256 % element_bits != 0:
+        raise ValueError("L1/L0 fractal views require byte-addressable dtypes")
+    elements_per_c0 = 256 // element_bits
+    if scope == "wmma.matrix_b":
+        return ((elements_per_c0, 16),)
+    if scope == "wmma.accumulator":
+        return ((16, 16),)
+    if scope == "shared.l1":
+        return ((16, elements_per_c0), (elements_per_c0, 16))
+    return ((16, elements_per_c0),)
+
+
+def _validate_fractal_view(
+    src: Buffer,
+    shape: list[PrimExpr] | tuple[PrimExpr, ...],
+    view_dtype: DataType,
+    analyzer: arith.Analyzer,
+    api_name: str,
+) -> None:
+    if len(src.shape) != len(shape) or len(shape) < 2:
+        raise ValueError(f"{api_name} requires L1/L0 views to keep the same fractal grid")
+    if not all(analyzer.can_prove_equal(src_dim, view_dim) for src_dim, view_dim in zip(src.shape[:-2], shape[:-2])):
+        raise ValueError(f"{api_name} requires L1/L0 views to keep leading dimensions unchanged")
+
+    src_inners = _fractal_inner_shapes(src.scope(), DataType(src.dtype))
+    view_inners = _fractal_inner_shapes(src.scope(), view_dtype)
+    for src_inner, view_inner in zip(src_inners, view_inners):
+        if not all(analyzer.can_prove_equal(tir.floormod(dim, block), 0) for dim, block in zip(src.shape[-2:], src_inner)):
+            continue
+        if not all(analyzer.can_prove_equal(tir.floormod(dim, block), 0) for dim, block in zip(shape[-2:], view_inner)):
+            continue
+        if all(
+            analyzer.can_prove_equal(src_dim // src_block, view_dim // view_block)
+            for src_dim, src_block, view_dim, view_block in zip(src.shape[-2:], src_inner, shape[-2:], view_inner)
+        ):
+            return
+
+    raise ValueError(f"{api_name} cannot preserve the L1/L0 fractal-block grid; use an explicit layout conversion")
 
 
 def atomic_add(dst: Buffer, value: PrimExpr) -> PrimExpr:
@@ -81,35 +132,97 @@ def clamp(dst: PrimExpr, min_val: PrimExpr, max_val: PrimExpr) -> PrimExpr:
     return dst
 
 
-def reshape(src: Buffer, shape: list[PrimExpr]) -> Buffer:
-    """Reshapes the input buffer to the specified shape.
+def _make_whole_storage_view(
+    src: Buffer,
+    shape: list[PrimExpr] | tuple[PrimExpr, ...] | None,
+    dtype: str | DataType | None,
+    api_name: str,
+) -> Buffer:
+    if not isinstance(src, Buffer):
+        raise TypeError(f"{api_name} expects a complete tir.Buffer, but got {type(src).__name__}")
+    analyzer = arith.Analyzer()
+    if len(src.strides) != 0:
+        raise ValueError(f"{api_name} does not support buffers with explicit strides")
+    if len(src.axis_separators) != 0:
+        raise ValueError(f"{api_name} does not support buffers with axis separators")
+    if not analyzer.can_prove_equal(src.elem_offset, 0):
+        raise ValueError(f"{api_name} does not support a non-zero source elem_offset")
+
+    shape = src.shape if shape is None else shape
+    dtype = src.dtype if dtype is None else dtype
+    view_dtype = dtype if isinstance(dtype, DataType) else DataType(dtype)
+    src_dtype = DataType(src.dtype)
+    same_shape = len(src.shape) == len(shape) and all(
+        analyzer.can_prove_equal(src_dim, view_dim) for src_dim, view_dim in zip(src.shape, shape)
+    )
+    src_bits = math.prod(src.shape) * src_dtype.bits * src_dtype.lanes
+    view_bits = math.prod(shape) * view_dtype.bits * view_dtype.lanes
+    if not analyzer.can_prove_equal(src_bits, view_bits):
+        raise ValueError(f"{api_name} requires source and view to have the same total bit size, but got {src_bits} and {view_bits}")
+
+    linear_scopes = {"global", "shared", "shared.ub"}
+    if src.scope() in _FRACTAL_SCOPES and (src_dtype != view_dtype or not same_shape):
+        _validate_fractal_view(src, shape, view_dtype, analyzer, api_name)
+    elif src.scope() not in linear_scopes and src.scope() not in _FRACTAL_SCOPES:
+        raise ValueError(f"{api_name} does not support storage scope {src.scope()}")
+
+    return T.Tensor(
+        shape,
+        view_dtype,
+        data=src.data,
+        elem_offset=src.elem_offset,
+        scope=src.scope(),
+        align=src.data_alignment,
+        offset_factor=src.offset_factor,
+    )
+
+
+def reshape(src: Buffer, shape: list[PrimExpr] | tuple[PrimExpr, ...]) -> Buffer:
+    """Return a zero-copy whole-storage view with a new shape.
 
     Args:
-        src (Buffer): Input buffer to be reshaped
-        shape (list[PrimExpr]): New shape for the buffer
+        src: Complete, compact input buffer.
+        shape: New logical shape. Its total bit size must equal that of ``src``.
 
     Returns:
-        Buffer: A new buffer view with the specified shape
+        A buffer that shares ``src.data`` and preserves ``src.dtype``.
+
+    Notes:
+        This is the same whole-storage alias operation as :func:`view`, not a
+        data movement. See ``docs/api_docs/T.view.md`` for the public
+        constraints.
     """
-    return T.Buffer(shape, src.dtype, src.data)
+    return _make_whole_storage_view(src, shape, None, "T.reshape")
 
 
-def view(src: Buffer, shape: list[PrimExpr] | None = None, dtype: str | None = None) -> Buffer:
-    """Views the input buffer with optionally modified shape and dtype.
+def view(
+    src: Buffer,
+    shape: list[PrimExpr] | tuple[PrimExpr, ...] | None = None,
+    dtype: str | DataType | None = None,
+) -> Buffer:
+    """Return a zero-copy whole-storage shape/dtype view of ``src``.
 
     Args:
-        src (Buffer): Input buffer to be viewed
-        shape (list[PrimExpr] | None, optional): New shape for the buffer. Defaults to None.
-        dtype (str | None = None, optional): New dtype for the buffer. Defaults to None.
+        src: Complete, compact input buffer with zero element offset.
+        shape: New logical shape. ``None`` preserves ``src.shape``.
+        dtype: New logical dtype. ``None`` preserves ``src.dtype``.
 
     Returns:
-        Buffer: A new buffer view with the specified shape and dtype
+        A buffer that shares ``src.data`` without allocating, copying, or
+        numerically converting data.
+
+    Notes:
+        A dtype change reinterprets bits; it does not cast values. See the
+        canonical API reference in ``docs/api_docs/T.view.md`` for the public
+        constraints.
+
+    Raises:
+        TypeError: If ``src`` is not a complete :class:`tir.Buffer`.
+        ValueError: If the source is not a supported whole-storage buffer, the
+            total bit sizes differ, or the requested scope/layout view is not
+            supported.
     """
-    if shape is None:
-        shape = src.shape
-    if dtype is None:
-        dtype = src.dtype
-    return T.Buffer(shape, dtype, src.data)
+    return _make_whole_storage_view(src, shape, dtype, "T.view")
 
 
 def npu_gemm(A, B, C, init=False, n_actual=None, unit_flag=None, k_actual=None):

@@ -72,14 +72,14 @@ T.tile.bitwise_xor(mask_ub_i16, tmp_ub_i16, ones_mask_ub)  # idx ^ 1
 T.copy(mask_ub_i16, mask_ub_f32)
 T.copy(mask_ub_f32, mask_ub_i32)
 T.tile.mul(mask_ub_i32, mask_ub_i32, 4)  # 乘以 4（字节偏移）
-T.reinterpretcast(mask_ub, mask_ub_i32, "uint32_t")  # 位重解释
+mask_ub = T.view(mask_ub_i32, dtype=MASK_DTYPE)  # 同一组 bits 的 uint32 view
 ```
 
 **关键 API**：
 - `T.tile.createvecindex`：向量化生成索引序列
 - `T.tile.bitwise_xor`：位异或操作，实现索引交错（`idx ^ 1`）
 - `T.tile.fill`：填充常量值
-- `T.reinterpretcast`：数据类型位重解释，避免转换开销
+- `T.view`：为同一段 storage 建立等 bit 数的 dtype view，不分配或转换数据
 
 ---
 
@@ -132,19 +132,19 @@ T.copy(mask, mask_ub)
 mask_ub_i16 = T.alloc_shared([row_per_vec, rope_dim], "int16")
 mask_ub_f32 = T.alloc_shared([row_per_vec, rope_dim], "float32")
 mask_ub_i32 = T.alloc_shared([row_per_vec, rope_dim], "int32")
-mask_ub = T.alloc_shared([row_per_vec, rope_dim], MASK_DTYPE)
 
 # int16 → float32 → int32 → uint32
 T.copy(mask_ub_i16, mask_ub_f32)
 T.copy(mask_ub_f32, mask_ub_i32)
 T.tile.mul(mask_ub_i32, mask_ub_i32, 4)
-T.reinterpretcast(mask_ub, mask_ub_i32, "uint32_t")
+mask_ub = T.view(mask_ub_i32, dtype=MASK_DTYPE)
 ```
 
 **优化点**：
 - `int16` XOR 操作效率更高（16 位整数运算）
 - `float32` 中间转换用于后续乘法操作（硬件优化路径）
-- `T.reinterpretcast` 避免数据拷贝，仅改变类型视图
+- `T.view` 让 `mask_ub` 与 `mask_ub_i32` 共享 storage，避免第二个 allocation 和数据拷贝
+- view 不是数值转换；这里成立是因为 `int32` 与 `uint32` 每个元素的 bit 数相等
 
 ---
 
@@ -171,7 +171,8 @@ T.reinterpretcast(mask_ub, mask_ub_i32, "uint32_t")
    - `T.tile.fill` 批量填充常量
    - `T.tile.bitwise_xor` 位运算
 3. **合理设计数据类型转换链**
-   - 利用 `T.reinterpretcast` 避免拷贝
+   - 仅在需要以另一 dtype 解释同一组 bits 时使用 `T.view`
+   - 数值转换继续使用对应的 cast/copy 路径，不能用 view 代替
    - 遵循硬件友好的转换路径
 
 ### ❌ 避免做法
@@ -205,6 +206,7 @@ T.reinterpretcast(mask_ub, mask_ub_i32, "uint32_t")
 
 ## 参考资料
 
-- 原始实现：`examples/pos_embedding/rope_mask.py`
-- 优化实现：`examples/pos_embedding/rope.py`
-- API 参考：`.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/SKILL.md`
+- 原始实现：[rope_mask.py](../../../../../examples/pos_embedding/rope_mask.py)
+- 优化实现：[rope.py](../../../../../examples/pos_embedding/rope.py)
+- API 参考：[tilelang-api-best-practices](../../../tilelang-custom-skill/tilelang-api-best-practices/SKILL.md)
+- `T.view` 公开契约：[T.view / T.reshape](../../../../../docs/api_docs/T.view.md)

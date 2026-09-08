@@ -446,16 +446,17 @@ def _reduce_program(
             with T.Kernel(1, is_npu=True) as (_, vid):
                 a_ub = T.alloc_ub((rows, cols), dtype)
                 b_ub = T.alloc_ub((output_size,), dtype)
-                if vid == 0:
-                    T.copy(A, a_ub)
-                    reduce_fn(
-                        a_ub,
-                        b_ub,
-                        dim=dim,
-                        clear=clear,
-                        real_shape=real_shape,
-                    )
-                    T.copy(b_ub, B)
+                with T.Scope("V"):
+                    if vid == 0:
+                        T.copy(A, a_ub)
+                        reduce_fn(
+                            a_ub,
+                            b_ub,
+                            dim=dim,
+                            clear=clear,
+                            real_shape=real_shape,
+                        )
+                        T.copy(b_ub, B)
 
     else:
 
@@ -468,17 +469,18 @@ def _reduce_program(
                 a_ub = T.alloc_ub((rows, cols), dtype)
                 b_ub = T.alloc_ub((output_size,), dtype)
                 arena_ub = T.alloc_ub((arena_bytes,), "uint8")
-                if vid == 0:
-                    T.copy(A, a_ub)
-                    reduce_fn(
-                        a_ub,
-                        b_ub,
-                        dim=dim,
-                        clear=clear,
-                        real_shape=real_shape,
-                        tmp=arena_ub,
-                    )
-                    T.copy(b_ub, B)
+                with T.Scope("V"):
+                    if vid == 0:
+                        T.copy(A, a_ub)
+                        reduce_fn(
+                            a_ub,
+                            b_ub,
+                            dim=dim,
+                            clear=clear,
+                            real_shape=real_shape,
+                            tmp=arena_ub,
+                        )
+                        T.copy(b_ub, B)
 
     return main
 
@@ -493,10 +495,11 @@ def _row_reduce_region_program():
             a_ub = T.alloc_ub((8, 64), "float32")
             b_ub = T.alloc_ub((8,), "float32")
             arena_ub = T.alloc_ub((320,), "uint8")
-            if vid == 0:
-                T.copy(A, a_ub)
-                T.reduce_sum(a_ub, b_ub, clear=False, tmp=arena_ub[32:320])
-                T.copy(b_ub, B)
+            with T.Scope("V"):
+                if vid == 0:
+                    T.copy(A, a_ub)
+                    T.reduce_sum(a_ub, b_ub, clear=False, tmp=arena_ub[32:320])
+                    T.copy(b_ub, B)
 
     return main
 
@@ -512,16 +515,17 @@ def _sort_program(explicit: bool, use_region: bool = False, arena_dtype: str = "
                 src_ub = T.alloc_ub((64,), "float32")
                 dst_ub = T.alloc_ub((128,), "float32")
                 arena_ub = T.alloc_ub((arena_elements,), arena_dtype)
-                if vid == 0:
-                    if use_region:
-                        T.tile.sort(
-                            dst_ub,
-                            src_ub,
-                            64,
-                            tmp=arena_ub[region_start:arena_elements],
-                        )
-                    else:
-                        T.tile.sort(dst_ub, src_ub, 64, tmp=arena_ub)
+                with T.Scope("V"):
+                    if vid == 0:
+                        if use_region:
+                            T.tile.sort(
+                                dst_ub,
+                                src_ub,
+                                64,
+                                tmp=arena_ub[region_start:arena_elements],
+                            )
+                        else:
+                            T.tile.sort(dst_ub, src_ub, 64, tmp=arena_ub)
 
     else:
 
@@ -530,8 +534,9 @@ def _sort_program(explicit: bool, use_region: bool = False, arena_dtype: str = "
             with T.Kernel(1, is_npu=True) as (_, vid):
                 src_ub = T.alloc_ub((64,), "float32")
                 dst_ub = T.alloc_ub((128,), "float32")
-                if vid == 0:
-                    T.tile.sort(dst_ub, src_ub, 64)
+                with T.Scope("V"):
+                    if vid == 0:
+                        T.tile.sort(dst_ub, src_ub, 64)
 
     return main
 
@@ -544,13 +549,14 @@ def _explicit_merge_sort_program():
             src1_ub = T.alloc_ub((64,), "float32")
             dst_ub = T.alloc_ub((128,), "float32")
             arena_ub = T.alloc_ub((544,), "uint8")
-            if vid == 0:
-                T.tile.merge_sort(
-                    dst_ub,
-                    src0_ub,
-                    src1_ub,
-                    tmp=arena_ub[32:544],
-                )
+            with T.Scope("V"):
+                if vid == 0:
+                    T.tile.merge_sort(
+                        dst_ub,
+                        src0_ub,
+                        src1_ub,
+                        tmp=arena_ub[32:544],
+                    )
 
     return main
 
@@ -734,10 +740,11 @@ def test_implicit_workspace_names_do_not_collide_with_explicit_arenas():
             sort_dst1 = T.alloc_ub((128,), "float32")
             tmp_ub = T.alloc_ub((1024,), "uint8")
             tmp_ub_reduce_out = T.alloc_ub((1024,), "uint8")
-            if vid == 0:
-                T.tile.sort(sort_dst0, sort_src, 64, tmp=tmp_ub)
-                T.tile.sort(sort_dst1, sort_src, 64, tmp=tmp_ub_reduce_out)
-                T.reduce_sum(reduce_src, reduce_dst, clear=False)
+            with T.Scope("V"):
+                if vid == 0:
+                    T.tile.sort(sort_dst0, sort_src, 64, tmp=tmp_ub)
+                    T.tile.sort(sort_dst1, sort_src, 64, tmp=tmp_ub_reduce_out)
+                    T.reduce_sum(reduce_src, reduce_dst, clear=False)
 
     source = tilelang.lower(main, target="pto").kernel_source
 
@@ -752,14 +759,15 @@ def test_pto_zero_workspace_apis_elide_an_explicit_empty_arena():
             src_ub = T.alloc_ub((64,), "float32")
             dst_ub = T.alloc_ub((64,), "float32")
             arena_ub = T.alloc_ub((0,), "uint8")
-            if vid == 0:
-                T.tile.sigmoid(dst_ub, src_ub, tmp=arena_ub)
-                T.tile.pow(dst_ub, src_ub, src_ub, tmp=arena_ub)
-                T.tile.clamp_max(dst_ub, src_ub, 1.0, 64, tmp=arena_ub)
-                T.tile.clamp_min(dst_ub, src_ub, -1.0, 64, tmp=arena_ub)
-                T.tile.clamp(dst_ub, src_ub, -1.0, 1.0, 64, tmp=arena_ub)
-                T.tile.round(dst_ub, src_ub, 64, tmp=arena_ub)
-                T.tile.gather_mask(dst_ub, src_ub, "P0101", tmp=arena_ub)
+            with T.Scope("V"):
+                if vid == 0:
+                    T.tile.sigmoid(dst_ub, src_ub, tmp=arena_ub)
+                    T.tile.pow(dst_ub, src_ub, src_ub, tmp=arena_ub)
+                    T.tile.clamp_max(dst_ub, src_ub, 1.0, 64, tmp=arena_ub)
+                    T.tile.clamp_min(dst_ub, src_ub, -1.0, 64, tmp=arena_ub)
+                    T.tile.clamp(dst_ub, src_ub, -1.0, 1.0, 64, tmp=arena_ub)
+                    T.tile.round(dst_ub, src_ub, 64, tmp=arena_ub)
+                    T.tile.gather_mask(dst_ub, src_ub, "P0101", tmp=arena_ub)
 
     func = _inject(main, "pto", repeat=2)
     op_names = {
@@ -815,13 +823,14 @@ def test_pto_explicit_reduce_uses_byte_correct_row_and_column_views():
             src_ub = T.alloc_ub((8, 64), "float32")
             dst_ub = T.alloc_ub((8,), "float32")
             arena_ub = T.alloc_ub((80,), "float32")
-            if vid == 0:
-                T.reduce_sum(
-                    src_ub,
-                    dst_ub,
-                    clear=False,
-                    tmp=arena_ub[8:80],
-                )
+            with T.Scope("V"):
+                if vid == 0:
+                    T.reduce_sum(
+                        src_ub,
+                        dst_ub,
+                        clear=False,
+                        tmp=arena_ub[8:80],
+                    )
 
     func = _inject(main, "pto")
     call = _collect_calls(func, "tl.ascend_reduce")[0]
@@ -935,15 +944,16 @@ def test_ascendc_broadcast_codegen_preserves_explicit_tmp_region_offset():
             src_ub = T.alloc_ub((8, 1), "float32")
             dst_ub = T.alloc_ub((8, 64), "float32")
             arena_ub = T.alloc_ub((544,), "uint8")
-            if vid == 0:
-                T.copy(A, src_ub)
-                T.tile.broadcast(
-                    dst_ub,
-                    src_ub,
-                    axis=1,
-                    tmp=arena_ub[32:544],
-                )
-                T.copy(dst_ub, B)
+            with T.Scope("V"):
+                if vid == 0:
+                    T.copy(A, src_ub)
+                    T.tile.broadcast(
+                        dst_ub,
+                        src_ub,
+                        axis=1,
+                        tmp=arena_ub[32:544],
+                    )
+                    T.copy(dst_ub, B)
 
     source = tilelang.lower(main, target="ascendc").kernel_source
 
@@ -1130,10 +1140,11 @@ def test_ascendc_zero_workspace_codegen_uses_basic_intrinsics():
             src_ub = T.alloc_ub((64,), "float32")
             dst_ub = T.alloc_ub((64,), "float32")
             equal_ub = T.alloc_ub((64,), "float32")
-            if vid == 0:
-                T.tile.clamp(dst_ub, src_ub, -1.0, 1.0, 64)
-                T.tile.round(dst_ub, src_ub, 64)
-                T.tile.broadcast(equal_ub, src_ub, axis=0)
+            with T.Scope("V"):
+                if vid == 0:
+                    T.tile.clamp(dst_ub, src_ub, -1.0, 1.0, 64)
+                    T.tile.round(dst_ub, src_ub, 64)
+                    T.tile.broadcast(equal_ub, src_ub, axis=0)
 
     source = tilelang.lower(main, target="ascendc").kernel_source
 
@@ -1151,8 +1162,9 @@ def test_ascendc_experimental_reduce_codegen_uses_source_dtype_workspace():
         with T.Kernel(1, is_npu=True) as (_, vid):
             src_ub = T.alloc_ub((64,), "float32")
             dst_ub = T.alloc_ub((64,), "float32")
-            if vid == 0:
-                T.tile.reduce_sum_experiment(dst_ub, src_ub, 64)
+            with T.Scope("V"):
+                if vid == 0:
+                    T.tile.reduce_sum_experiment(dst_ub, src_ub, 64)
 
     source = tilelang.lower(main, target="ascendc").kernel_source
     reduce_line = next(line for line in source.splitlines() if "AscendC::ReduceSum(" in line)
@@ -1171,28 +1183,29 @@ def test_pto_select_and_gather_codegen_preserve_workspace_region_offsets():
             indices_ub = T.alloc_ub((64,), "uint32")
             select_arena = T.alloc_ub((288,), "uint8")
             gather_arena = T.alloc_ub((144,), "uint32")
-            if vid == 0:
-                T.tile.select(
-                    dst_ub,
-                    mask_ub,
-                    src_ub,
-                    1.0,
-                    "VSEL_TENSOR_SCALAR_MODE",
-                    tmp=select_arena[32:288],
-                )
-                T.tile.gather(
-                    dst_ub,
-                    src_ub,
-                    indices_ub,
-                    0,
-                    tmp=gather_arena[8:72],
-                )
-                T.tile.gather_mask(
-                    dst_ub,
-                    src_ub,
-                    indices_ub,
-                    tmp=gather_arena[72:136],
-                )
+            with T.Scope("V"):
+                if vid == 0:
+                    T.tile.select(
+                        dst_ub,
+                        mask_ub,
+                        src_ub,
+                        1.0,
+                        "VSEL_TENSOR_SCALAR_MODE",
+                        tmp=select_arena[32:288],
+                    )
+                    T.tile.gather(
+                        dst_ub,
+                        src_ub,
+                        indices_ub,
+                        0,
+                        tmp=gather_arena[8:72],
+                    )
+                    T.tile.gather_mask(
+                        dst_ub,
+                        src_ub,
+                        indices_ub,
+                        tmp=gather_arena[72:136],
+                    )
 
     source = tilelang.lower(main, target="pto").kernel_source
     assign_line = next(line for line in source.splitlines() if "TASSIGN(select_arena_temp_" in line)
@@ -1211,8 +1224,9 @@ def test_pto_half_sort_codegen_scales_typed_workspace_offset():
             src_ub = T.alloc_ub((64,), "float16")
             sort_dst = T.alloc_ub((128,), "float16")
             sort_arena = T.alloc_ub((2080,), "uint8")
-            if vid == 0:
-                T.tile.sort(sort_dst, src_ub, 64, tmp=sort_arena[32:2080])
+            with T.Scope("V"):
+                if vid == 0:
+                    T.tile.sort(sort_dst, src_ub, 64, tmp=sort_arena[32:2080])
 
     func = _inject(main, "pto")
     workspace = _collect_calls(func, "tl.ascend_sort")[0].args[3]

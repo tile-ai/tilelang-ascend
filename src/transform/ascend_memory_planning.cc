@@ -920,6 +920,14 @@ private:
 
     size_t CalculateBufferSize(const AllocateNode *alloc) {
       size_t size_elements = 1;
+      for (const auto &extent : alloc->extents) {
+        const IntImmNode *int_imm = extent.as<IntImmNode>();
+        ICHECK(int_imm) << "Extent must be an integer constant";
+        size_elements *= int_imm->value;
+      }
+      size_t size_bytes =
+          size_elements * alloc->dtype.bytes() * alloc->dtype.lanes();
+
       auto shape_it = external_shape_map_.find(alloc->buffer_var);
       if (shape_it != external_shape_map_.end() &&
           (*shape_it).second.size() == 4) {
@@ -927,17 +935,12 @@ private:
         const IntImmNode *row = shape[0].as<IntImmNode>();
         const IntImmNode *col = shape[1].as<IntImmNode>();
         ICHECK(row && col) << "PTO physical buffer shape must be constant";
-        size_elements = row->value * col->value;
-      } else {
-        for (const auto &extent : alloc->extents) {
-          const IntImmNode *int_imm = extent.as<IntImmNode>();
-          ICHECK(int_imm) << "Extent must be an integer constant";
-          size_elements *= int_imm->value;
-        }
+        size_t layout_bytes = row->value * col->value * alloc->dtype.bytes() *
+                              alloc->dtype.lanes();
+        // Layout metadata may add physical padding, but it must never shrink
+        // the storage explicitly required by Allocate.
+        size_bytes = std::max(size_bytes, layout_bytes);
       }
-
-      size_t size_bytes =
-          size_elements * alloc->dtype.bytes() * alloc->dtype.lanes();
       // A packed compare Buffer is logically [rows, ceil(cols/8)], but the
       // AscendC vector/MTE contracts consume one 32-byte UB data block per
       // predicate row.  Preserve the logical shape used by access_ptr and GM

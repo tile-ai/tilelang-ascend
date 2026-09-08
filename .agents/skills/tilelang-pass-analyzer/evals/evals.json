@@ -33,7 +33,14 @@
       "id": 5,
       "eval_name": "fuzzy-match-query",
       "prompt": "那个处理同步的 pass 叫什么？我记得是 Ascend 开头的。",
-      "expected_output": "应该展示模糊匹配候选列表：根据关键词'同步'和'Ascend'找到候选 Pass。候选列表：1. AscendSyncInsert（自动插入同步指令），2. CrossCorePipeline（跨核流水线同步）。提示用户选择序号或输入完整名称。",
+      "expected_output": "应该展示模糊匹配候选列表：根据关键词'同步'和'Ascend'找到候选 Pass，包括 AscendSyncInsert、AscendSyncInsertVS 与负责跨核流水线结构的 CrossCorePipeline，并说明三者职责不同。提示用户选择完整名称或补充场景。",
+      "files": []
+    },
+    {
+      "id": 6,
+      "eval_name": "managed-vector-mask-pass-analysis",
+      "prompt": "AscendVectorMaskLegalize 是干什么的？它在 pipeline 的什么位置，关闭 mask reuse 后又会怎样？",
+      "expected_output": "应说明它紧跟 AscendVectorInstructionSelection，是 A2/A3 AscendC/auto 的最后一个 TIR-transforming pass；它根据 selected terminal 的 requires/ensures 跟踪 mode 与两个 mask words 并插入缺失 setter。tl.ascend_vector_mask_reuse=false 只清空跨 terminal facts、使每条 terminal 完整 repair，不关闭 Selection、Legalize 或严格 C/V verifier，也不恢复旧 count-form。",
       "files": []
     }
   ]
