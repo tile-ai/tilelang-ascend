@@ -1,12 +1,12 @@
 # T.tile.sort
 
-## 1. Description
+## 1. 描述
 
-Performs a full sort on the input data and outputs the results in descending order as interleaved (value, index) pairs: `dst = [val0, idx0, val1, idx1, ...]`, where `idx` is the 0-based position in the aligned buffer before sorting (including -inf padding positions). Internally, each 32-element block is sorted via sort32, then all sorted blocks are merged via merge_sort.
+对输入数据进行全量排序，以降序输出交错的（值, 索引）对：`dst = [val0, idx0, val1, idx1, ...]`，其中 `idx` 是排序前在 aligned buffer 中的 0-based 位置（包含 -inf padding 位置）。内部实现：每个 32 元素块通过 sort32 排序，然后所有排序后的块通过 merge_sort 合并。
 
-## 2. Function Prototype
+## 2. 函数原型
 
-### 2.1 Function Definition
+### 2.1 函数定义
 
 ```python
 def sort(
@@ -16,67 +16,67 @@ def sort(
 )
 ```
 
-### 2.2 Parameters
+### 2.2 参数
 
-| Parameter | Direction | Description | Type | Required/Optional |
-|-----------|-----------|-------------|------|-------------------|
-| dst | Output | Stores the sort result as interleaved (value, index) pairs. Must have at least `2 × aligned_count` elements (`aligned_count = ((actual_num + 31) // 32) × 32`) | tensor | Required |
-| src | Input/Output | Source data to be sorted. For float32, the positions from `actual_num` to `aligned_count` are padded with -inf in-place; for float16, `src` is not modified (it is internally cast to float32 and padded in a temporary buffer) | tensor | Required |
-| actual_num | Input | Number of valid elements in `src`. When less than `aligned_count`, the remaining positions are automatically padded with -inf before sorting | integer expression (PrimExpr) | Required |
+| 参数 | 方向 | 说明 | 类型 | 必须/可选 |
+|------|------|------|------|-----------|
+| dst | 输出 | 存储排序结果，以交错的（值, 索引）对形式存放。必须至少包含 `2 × aligned_count` 个元素（`aligned_count = ((actual_num + 31) // 32) × 32`） | tensor | 必须 |
+| src | 输入/输出 | 待排序的源数据。float32 时，`actual_num` 到 `aligned_count` 之间的位置会被原地填充 -inf；float16 时，`src` 不会被修改（内部会转换为 float32 并在临时 buffer 中操作） | tensor | 必须 |
+| actual_num | 输入 | `src` 中有效元素的个数。当小于 `aligned_count` 时，剩余位置会自动填充 -inf 后再排序 | 整数表达式 (PrimExpr) | 必须 |
 
-> **Type notes**:
-> - **tensor**: A buffer allocated via `T.alloc_ub`, `T.alloc_shared`, etc. This API does not accept BufferRegion slices.
+> **类型说明**：
+> - **tensor**：通过 `T.alloc_ub`、`T.alloc_shared` 等分配的 buffer。本 API 不支持 BufferRegion 切片。
 
-### 2.3 Parameter Specifications
+### 2.3 参数规格
 
-#### 2.3.1 DataType Support
+#### 2.3.1 数据类型支持
 
-| Platform | dst | src |
-|----------|:---:|:---:|
+| 平台 | dst | src |
+|------|:---:|:---:|
 | Ascend A2 / A3 | float16, float32 | float16, float32 |
 
-#### 2.3.2 Shape Support
+#### 2.3.2 Shape 支持
 
-- Supports 1D and 2D
-- A 2D buffer is **flattened into a single 1D array** in row-major order and sorted as a whole; it is **not** sorted row by row
-- This API only accepts Buffer type. Higher-dimensional buffers must first be copied into a 1D/2D Buffer via `T.copy` before being passed in
+- 支持 1D 和 2D
+- 2D buffer 按行主序**展平为一维数组**整体排序，不会逐行独立排序
+- 本 API 仅接受 Buffer 类型。更高维度的 buffer 需要先通过 `T.copy` 复制到 1D/2D Buffer 后再传入
 
-#### 2.3.3 actual_num Description
+#### 2.3.3 actual_num 说明
 
-| Value | Meaning | Use Case |
-|-------|---------|----------|
-| Equal to aligned_count | All elements participate in sorting, no padding needed | Data exactly fills a 32-aligned buffer |
-| Less than aligned_count | Only the first actual_num elements are valid; the remaining positions are automatically padded with -inf and participate in sorting | Valid data is smaller than one 32-aligned block |
+| 值 | 含义 | 使用场景 |
+|----|------|----------|
+| 等于 aligned_count | 所有元素参与排序，无需 padding | 数据恰好填满 32 对齐的 buffer |
+| 小于 aligned_count | 仅前 actual_num 个元素有效，剩余位置自动填充 -inf 参与排序 | 有效数据不足一个 32 对齐块 |
 
-> `aligned_count = ((actual_num + 31) // 32) × 32`, i.e., actual_num rounded up to a multiple of 32.
+> `aligned_count = ((actual_num + 31) // 32) × 32`，即 actual_num 向上取整到 32 的倍数。
 
-#### 2.3.4 Output Data Format
+#### 2.3.4 输出数据格式
 
-dst stores interleaved (value, index) pairs, where both value and index use the dtype of dst, laid out as follows:
+dst 以交错的（值, 索引）对存储，值和索引均使用 dst 的 dtype，布局如下：
 
-| dst dtype | Storage Layout | Bytes per Pair |
-|-----------|----------------|:--------------:|
-| float32 | `[value(float32), index(float32)]`. The bit pattern of index is identical to uint32 (stored as uint32 internally, read as float in the output) | 8 Bytes |
-| float16 | `[value(float16), index(float16)]`. Sorted internally as float32, then rounded back to float16 via CAST_RINT | 4 Bytes |
+| dst dtype | 存储布局 | 每对字节数 |
+|-----------|----------|:----------:|
+| float32 | `[value(float32), index(float32)]`。index 的位模式与 uint32 相同（内部以 uint32 存储，输出时按 float 读取） | 8 Bytes |
+| float16 | `[value(float16), index(float16)]`。内部以 float32 排序，然后通过 CAST_RINT 舍入回 float16 | 4 Bytes |
 
-> The float16 index is an internally generated 0-based sequence (0.0, 1.0, 2.0, ...), sorted as float32 and then cast back to float16. Index values beyond 2048 may lose exactness due to half-precision rounding.
+> float16 index 是内部生成的 0-based 序列（0.0, 1.0, 2.0, ...），以 float32 排序后转回 float16。索引值超过 2048 时可能因 half 精度损失导致不完全精确。
 
-### 2.4 Constraints
+### 2.4 约束
 
-1. dst and src must have the same dtype
-2. `aligned_count = ((actual_num + 31) // 32) × 32`; dst must have at least `2 × aligned_count` elements (for storing value-index interleaved pairs)
-3. src must have at least `aligned_count` elements
-4. actual_num must satisfy `1 ≤ actual_num ≤ min(src buffer size, 8160)` (actual_num=0 triggers a hardware exception; when actual_num exceeds the buffer size, the hardware does not report an error but the result is unpredictable)
-5. `repeatTimes = (actual_num + 31) // 32`, repeatTimes ∈ [1, 255], i.e., the upper limit of actual_num is 255 × 32 = 8160 (hardware constraint; repeatTimes=0 triggers an aicore exception)
-6. Large actual_num is limited by UB capacity: dst requires `2 × aligned_count` elements, src requires `aligned_count` elements, and the internal temporary buffer is of the same order of magnitude; the sum of all three must not exceed UB capacity (the practically usable actual_num is far smaller than 8160)
-7. Whether src is modified in-place depends on the dtype: for float32, positions from `actual_num` to `aligned_count` are padded with -inf, so src is modified; for float16, src is not modified (it is internally cast to float32 and operated on in a temporary buffer). For float32, copy src beforehand if you need to preserve the original data. Backend difference: on pto, only the 32-byte-aligned part of the tail is padded with -inf (e.g. actual_num=131 pads to 160 leaves the first 5 tail elements as-is), while ascendc pads the whole tail; sorted values are identical on both backends
-8. src and dst addresses must not overlap (dst is written to, and the internal merge process ping-pongs between dst and tmp; src is read/modified for float32)
-9. The sort direction is fixed to descending order
-10. All buffer addresses must be 32-byte aligned (hardware constraint)
+1. dst 和 src 的 dtype 必须相同
+2. `aligned_count = ((actual_num + 31) // 32) × 32`；dst 必须至少有 `2 × aligned_count` 个元素（用于存储值-索引交错对）
+3. src 必须至少有 `aligned_count` 个元素
+4. actual_num 必须满足 `1 ≤ actual_num ≤ min(src buffer 大小, 8160)`
+5. `repeatTimes = (actual_num + 31) // 32`，repeatTimes ∈ [1, 255]，即 actual_num 上限为 255 × 32 = 8160（硬件约束）
+6. 大 actual_num 受 UB 容量限制：dst 需要 `2 × aligned_count` 个元素，src 需要 `aligned_count` 个元素，内部临时 buffer 量级相当，三者之和不能超过 UB 容量（实际可用的 actual_num 远小于 8160）
+7. src 是否被原地修改取决于 dtype：float32 时，`actual_num` 到 `aligned_count` 之间的位置会被填充 -inf，src 被修改；float16 时，src 不会被修改（内部转换为 float32 后在临时 buffer 中操作）。如需保留原始数据，请先拷贝 src
+8. src 和 dst 地址不能重叠（dst 被写入，内部 merge 过程在 dst 和 tmp 之间 ping-pong；float32 时 src 会被读取/修改）
+9. 排序方向固定为降序
+10. 所有 buffer 地址必须 32 字节对齐（硬件约束）
 
-## 3. Example Code
+## 3. 示例代码
 
-**Example 1: 1D sort (actual_num equals buffer size)**
+**示例 1：1D 排序（actual_num 等于 buffer 大小）**
 
 ```python
 src = T.alloc_ub((256,), "float16")
@@ -84,7 +84,7 @@ dst = T.alloc_ub((512,), "float16")
 T.tile.sort(dst, src, 256)
 ```
 
-**Example 2: 1D sort (actual_num smaller than buffer size)**
+**示例 2：1D 排序（actual_num 小于 buffer 大小）**
 
 ```python
 ub_N = ((131 + 31) // 32) * 32  # 160
@@ -93,13 +93,13 @@ dst = T.alloc_ub((ub_N * 2,), "float16")
 T.tile.sort(dst, src, 131)
 ```
 
-**Example 3: 2D sort (flattened and sorted as a whole)**
+**示例 3：2D 排序（展平后整体排序）**
 
 ```python
 M = 4
 per_row_N = 128
-ub_N = per_row_N  # 128 is already a multiple of 32
-src = T.alloc_ub((M, ub_N), "float16")    # 512 elements in total
-dst = T.alloc_ub((M, ub_N * 2), "float16") # 1024 elements in total
-T.tile.sort(dst, src, M * per_row_N)       # actual_num = 512, flattened single sort
+ub_N = per_row_N  # 128 已经是 32 的倍数
+src = T.alloc_ub((M, ub_N), "float16")    # 共 512 个元素
+dst = T.alloc_ub((M, ub_N * 2), "float16") # 共 1024 个元素
+T.tile.sort(dst, src, M * per_row_N)       # actual_num = 512，展平后整体排序
 ```
