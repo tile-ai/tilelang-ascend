@@ -156,6 +156,12 @@ def sparse_attention_fwd(
                         T.tile.fill(log_sum, 0.0)
                         T.tile.fill(score_max, 2.0**30)
 
+                        # acc_s_half / acc_o_ub_temp are single physical UB buffers reused
+                        # across pipeline iterations. Pre-release the return tokens so the
+                        # first iteration's wait_flag does not block on a never-set flag.
+                        T.set_flag("mte3", "v", 1)
+                        T.set_flag("v", "mte2", 2)
+
                         # for i_i in T.serial(n_block_num):
                         for i_i in T.Pipelined(n_block_num, num_stages=2):
                             # ******************** V0 ********************
@@ -260,6 +266,9 @@ def sparse_attention_fwd(
                             T.tile.exp(score_max_pre, score_max_pre)
                             T.pipe_barrier("v")
 
+                            # wait for MTE3 of the previous iteration to finish reading
+                            # acc_s_half before Vector overwrites it
+                            T.wait_flag("mte3", "v", 1)
                             T.copy(acc_s_ub, acc_s_half)
                             T.pipe_barrier("v")
 
@@ -267,6 +276,8 @@ def sparse_attention_fwd(
                             T.wait_flag("v", "mte3", 1)
 
                             T.copy(acc_s_half, workspace_4[cid, vid * m_base_size_v : vid * m_base_size_v + m_base_size_v, :])
+                            # return acc_s_half to Vector once MTE3 has finished reading it
+                            T.set_flag("mte3", "v", 1)
 
                             # ******************** BMM2(S*V) ********************
                             T.copy(workspace_4[cid, :, :], acc_s_l1)
@@ -278,10 +289,15 @@ def sparse_attention_fwd(
                             T.copy(acc_o_l0c, workspace_5[cid, :, :])
 
                             # ******************** VEC2 ********************
-                            T.copy(workspace_5[cid, vid * m_base_size_v : vid * m_base_size_v + m_base_size_v, :], acc_o_ub_temp)
-
                             T.reduce_sum(acc_s_ub, score_sum, dim=-1)
                             T.pipe_barrier("v")
+
+                            # wait for Vector of the previous iteration to finish reading
+                            # acc_o_ub_temp before MTE2 overwrites it; placed right before
+                            # the producing copy (runs on the AIV's own MTE2 pipe) inside
+                            # the VEC2 stage
+                            T.wait_flag("v", "mte2", 2)
+                            T.copy(workspace_5[cid, vid * m_base_size_v : vid * m_base_size_v + m_base_size_v, :], acc_o_ub_temp)
 
                             T.tile.mul(log_sum, log_sum, score_max_pre)
                             T.pipe_barrier("v")
@@ -299,6 +315,8 @@ def sparse_attention_fwd(
                             T.wait_flag("mte2", "v", 2)
 
                             T.tile.add(acc_o_ub, acc_o_ub, acc_o_ub_temp)
+                            # return acc_o_ub_temp to MTE2 once Vector has finished reading it
+                            T.set_flag("v", "mte2", 2)
 
                         T.tile.broadcast(log_sum_broadcast, log_sum)
                         T.pipe_barrier("v")
@@ -307,9 +325,13 @@ def sparse_attention_fwd(
                         T.pipe_barrier("v")
 
                         T.copy(acc_o_ub, acc_o_half)
-                        T.set_flag("v", "mte3", 9)
-                        T.wait_flag("v", "mte3", 9)
+                        T.set_flag("v", "mte3", 3)
+                        T.wait_flag("v", "mte3", 3)
                         T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * m_base_size_v : H0 + (vid + 1) * m_base_size_v, :])
+                        # consume the last return tokens so the token ring stays balanced
+                        # across the outer block_idx loop
+                        T.wait_flag("mte3", "v", 1)
+                        T.wait_flag("v", "mte2", 2)
 
     return main_pipelined
 
