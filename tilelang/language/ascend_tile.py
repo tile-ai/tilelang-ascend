@@ -386,18 +386,31 @@ def clear(buffer: Buffer | tir.Var):
     return fill(buffer, 0)
 
 
-def arith_progression(buffer: Buffer, first_value: PrimExpr, diff_value: PrimExpr, count: PrimExpr):
+def arith_progression(buffer: Buffer, first_value: PrimExpr, diff_value: PrimExpr, count: PrimExpr | None = None):
     """Generates an arithmetic progression sequence in a buffer.
+
+    Writes ``count`` elements to ``buffer`` such that
+    ``buffer[i] = first_value + i * diff_value`` (i = 0, 1, ..., count-1).
+    When ``count`` is omitted, it is inferred as ``math.prod(buffer.shape)``.
 
     Args:
         buffer: The destination buffer where the sequence will be stored.
+            Supports float16, float32, int16, int32. float16 is ascendc-only;
+            uint16, uint32 are pto-only.
         first_value: The starting value of the arithmetic progression.
+            Must have the same dtype as ``buffer``.
         diff_value: The difference (step) between consecutive values.
-        count: The number of elements to generate.
+            Must be >= 0 and have the same dtype as ``buffer``.
+        count: The number of elements to generate. Must be > 0 and
+            not exceed ``buffer`` capacity. If None, inferred as
+            ``math.prod(buffer.shape)``.
 
     Returns:
         A TVM intrinsic call that performs the arithmetic progression operation.
     """
+    if count is None:
+        count = math.prod(buffer.shape)
+
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_arith_progression"),
@@ -1670,14 +1683,25 @@ def gather(
 
     This intrinsic gathers elements from the source buffer based on the provided
     offsets and a base address, storing the result in the destination buffer.
+    Both ``src_base_addr`` and the values in ``src_offset`` are byte offsets;
+    the effective element index is ``(src_base_addr + src_offset[i]) /
+    elem_size``. The element count is derived from ``min(dst_size,
+    offset_size)``.
 
     Args:
         dst: The destination buffer where the gathered data will be stored.
-        src: The source buffer containing the data table.
+            Supports float16, float32, bfloat16, int16, uint16, int32, uint32
+            on both ascendc and pto backends.
+        src: The source buffer containing the data table. Must have the same
+            dtype as dst.
         src_offset: The buffer containing offsets/indices for gathering.
+            Must be uint32.
         src_base_addr: The base address offset to be added to the gather indices.
         tmp: Optional complete UB scratch storage. Its scalar dtype is
             reinterpreted by lowering and has no semantic meaning.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call to `tl.ascend_gather`.
     """
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
@@ -2340,11 +2364,13 @@ def broadcast(
     This function performs a broadcast copy from the source buffer (`src`) to the
     destination buffer (`dst`). It automatically infers the broadcasting axis
     based on the shapes of the input buffers, or uses the explicitly provided axis.
+    Supports int8, uint8, int16, uint16, float16, bfloat16, float32, int32,
+    uint32. Both ``dst`` and ``src`` must be in UB and have the same dtype.
 
     Args:
-        dst: Destination buffer (must be in UB).
-        src: Source buffer (must be in UB).
-        axis: Broadcasting axis (0 or 1). If None, auto-inferred.
+        dst: Destination buffer (must be in UB). Same dtype as ``src``.
+        src: Source buffer (must be in UB). Same dtype as ``dst``.
+        axis: Broadcasting axis (0 or 1). If None, auto-inferred from shapes.
         tmp: Optional complete target-specific scratch storage. It must be a
             one-dimensional, static, contiguous fixed-width scalar buffer in
             ``shared.ub``, or an equivalent 32-byte-aligned buffer region. Its

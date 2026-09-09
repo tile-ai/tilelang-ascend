@@ -69,6 +69,10 @@ private:
   std::string PrintBufferOffset(const CallNode *call_arg,
                                 bool has_offset = true);
 
+  // Disambiguates the float32 widening views when one kernel holds several
+  // half reduce_sum calls sharing a merged workspace.
+  int reduce_widen_counter_{0};
+
   DataType GetAccessPtrDataType(const PrimExpr &arg);
 
   void AddDeclStream(std::ostringstream &ss, const std::string &str);
@@ -111,6 +115,8 @@ private:
   void GatherbCodegen(const CallNode *op);
 
   void SelectCodegen(const CallNode *op, const std::string &op_name);
+
+  void IfThenElseCodegen(const CallNode *op, std::ostream &os);
 
   void MulAddDstCodegen(const CallNode *op);
 

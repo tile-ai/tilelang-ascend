@@ -17,19 +17,16 @@ N = args.n
 K = args.k
 
 
-@tilelang.jit(out_idx=[-2])
+@tilelang.jit(out_idx=[-1])
 def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
 
-    VEC_NUM = 2
-    vec_proc = 4
-
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
@@ -39,12 +36,7 @@ def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="flo
 
             C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
 
-            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N // vec_proc), dtype)
-            d_ub = T.alloc_ub((block_M // VEC_NUM, block_N // vec_proc), dtype)
-            e_ub = T.alloc_ub((block_M // VEC_NUM, block_N // vec_proc), dtype)
-
             with T.Scope("C"):
-
                 loop_k = T.ceildiv(K, block_K)
                 for k in T.Pipelined(loop_k, num_stages=3):
                     T.barrier_all()
