@@ -1,12 +1,12 @@
 # T.tile.topk
 
-## 1. Description
+## 1. 描述
 
-Sorts the source data in descending order and extracts the top K interleaved (value, index) pairs: `dst = [val0, idx0, val1, idx1, ..., val(K-1), idx(K-1)]`, where `idx` is the 0-based position in the aligned buffer before sorting (including -inf padding positions). Internally, the full sort is performed first (via sort32 + merge), then the top K pairs are copied to `dst`.
+对源数据进行降序排序，提取前 K 个交错的（值, 索引）对：`dst = [val0, idx0, val1, idx1, ..., val(K-1), idx(K-1)]`，其中 `idx` 是排序前在 aligned buffer 中的 0-based 位置（包含 -inf padding 位置）。内部实现：先执行全量排序（通过 sort32 + merge），然后将前 K 对复制到 `dst`。
 
-## 2. Function Prototype
+## 2. 函数原型
 
-### 2.1 Function Definition
+### 2.1 函数定义
 
 ```python
 def topk(
@@ -19,90 +19,90 @@ def topk(
 )
 ```
 
-### 2.2 Parameters
+### 2.2 参数
 
-| Parameter | Direction | Description | Type | Required/Optional |
-|-----------|-----------|-------------|------|-------------------|
-| dst | Output | Stores the top K interleaved (value, index) pairs. Must have at least `aligned_topk` elements (`aligned_topk = ((2*K + elems_per_block - 1) / elems_per_block) * elems_per_block`, where `elems_per_block = 32 / sizeof(T)`, i.e. 16 for float16, 8 for float32) | tensor | Required |
-| src | Input/Output | Source data to find the top K from. For float32, the positions from `actual_num` to `aligned_count` are padded with -inf in-place; for float16, `src` is not modified (it is internally cast to float32 and operated on in a temporary buffer) | tensor | Required |
-| K | Input | Number of top elements to extract, `1 <= K <= actual_num` | integer expression (PrimExpr) | Required |
-| actual_num | Input | Number of valid elements in `src`. When less than `aligned_count`, the remaining positions are automatically padded with -inf before sorting | integer expression (PrimExpr) | Required |
-| tmp | Input | Optional complete UB scratch storage. Its scalar dtype is reinterpreted by lowering and has no semantic meaning; when omitted, the compiler allocates it automatically | tensor | Optional (default `None`) |
+| 参数 | 方向 | 说明 | 类型 | 必须/可选 |
+|------|------|------|------|-----------|
+| dst | 输出 | 存储前 K 个交错的（值, 索引）对。必须至少包含 `aligned_topk` 个元素（`aligned_topk = ((2*K + elems_per_block - 1) / elems_per_block) * elems_per_block`，其中 `elems_per_block = 32 / sizeof(T)`，即 float16 为 16，float32 为 8） | tensor | 必须 |
+| src | 输入/输出 | 待提取 topk 的源数据。float32 时，`actual_num` 到 `aligned_count` 之间的位置会被原地填充 -inf；float16 时，`src` 不会被修改（内部会转换为 float32 并在临时 buffer 中操作） | tensor | 必须 |
+| K | 输入 | 要提取的 top 元素个数，`1 <= K <= actual_num` | 整数表达式 (PrimExpr) | 必须 |
+| actual_num | 输入 | `src` 中有效元素的个数。当小于 `aligned_count` 时，剩余位置会自动填充 -inf 后再排序 | 整数表达式 (PrimExpr) | 必须 |
+| tmp | 输入 | 可选的完整 UB 临时存储空间。其标量 dtype 由 lowering 阶段重解释，无语义含义；省略时由编译器自动分配 | tensor | 可选（默认 `None`） |
 
-> **Type notes**:
-> - **tensor**: A buffer allocated via `T.alloc_ub`, `T.alloc_shared`, etc. This API does not accept BufferRegion slices.
+> **类型说明**：
+> - **tensor**：通过 `T.alloc_ub`、`T.alloc_shared` 等分配的 buffer。本 API 不支持 BufferRegion 切片。
 
-### 2.3 Parameter Specifications
+### 2.3 参数规格
 
-#### 2.3.1 DataType Support
+#### 2.3.1 数据类型支持
 
-| Platform | dst | src |
-|----------|:---:|:---:|
+| 平台 | dst | src |
+|------|:---:|:---:|
 | Ascend A2 / A3 | float16, float32 | float16, float32 |
 
-#### 2.3.2 Shape Support
+#### 2.3.2 Shape 支持
 
-- Supports 1D and 2D
-- A 2D buffer is internally treated as a flat 1D array in row-major order; however, the number of elements actually involved in sorting equals the **sum** of the shape dimensions (rows + columns), not the total element count. Using 1D buffers is the intended usage (all built-in examples use 1D)
-- `src` must have a compile-time static shape
+- 支持 1D 和 2D
+- 2D buffer 在内部按行主序视为扁平的一维数组，但实际参与排序的元素数等于 shape 各维度之和（行 + 列），而非总元素数。推荐使用 1D buffer（所有内置示例均使用 1D）
+- `src` 必须具有编译期静态 shape
 
-#### 2.3.3 K Description
+#### 2.3.3 K 说明
 
-| Value | Meaning | Use Case |
-|-------|---------|----------|
-| `1 <= K <= actual_num` | Extract the top K maximum values from src | General TopK scenario |
+| 值 | 含义 | 使用场景 |
+|----|------|----------|
+| `1 <= K <= actual_num` | 从 src 中提取前 K 个最大值 | 通用 TopK 场景 |
 
-#### 2.3.4 actual_num Description
+#### 2.3.4 actual_num 说明
 
-| Value | Meaning |
-|-------|---------|
-| Equal to src buffer size | All elements in the buffer participate in sorting |
-| Less than src buffer size | Only the first actual_num elements are valid; the remaining positions are automatically padded with -inf and participate in sorting |
+| 值 | 含义 |
+|----|------|
+| 等于 src buffer 大小 | buffer 中所有元素参与排序 |
+| 小于 src buffer 大小 | 仅前 actual_num 个元素有效，剩余位置自动填充 -inf 参与排序 |
 
-> `aligned_count = ((buffer_size + 31) // 32) * 32`, derived from the compile-time buffer size.
+> `aligned_count = ((buffer_size + 31) // 32) * 32`，由编译期 buffer 大小推导得出。
 
-#### 2.3.5 Output Data Format
+#### 2.3.5 输出数据格式
 
-dst stores interleaved (value, index) pairs, where both value and index use the dtype of dst, laid out as follows:
+dst 以交错的（值, 索引）对存储，值和索引均使用 dst 的 dtype，布局如下：
 
-| dst dtype | Storage Layout | Bytes per Pair |
-|-----------|----------------|:--------------:|
-| float32 | `[value(float32), index(float32)]`. The bit pattern of index is identical to uint32 (stored as uint32 internally, read as float in the output) | 8 Bytes |
-| float16 | `[value(float16), index(float16)]`. Sorted internally as float32, then rounded back to float16 via CAST_RINT | 4 Bytes |
+| dst dtype | 存储布局 | 每对字节数 |
+|-----------|----------|:----------:|
+| float32 | `[value(float32), index(float32)]`。index 的位模式与 uint32 相同（内部以 uint32 存储，输出时按 float 读取） | 8 Bytes |
+| float16 | `[value(float16), index(float16)]`。内部以 float32 排序，然后通过 CAST_RINT 舍入回 float16 | 4 Bytes |
 
-> The float16 index is an internally generated 0-based sequence (0.0, 1.0, 2.0, ...), sorted as float32 and then cast back to float16. Index values beyond 2048 may lose exactness due to half-precision rounding.
+> float16 index 是内部生成的 0-based 序列（0.0, 1.0, 2.0, ...），以 float32 排序后转回 float16。索引值超过 2048 时可能因 half 精度损失导致不完全精确。
 
-### 2.4 Constraints
+### 2.4 约束
 
-1. dst and src must have the same dtype
-2. `elems_per_block = 32 / sizeof(T)`; dst must have at least `aligned_topk = ((2*K + elems_per_block - 1) / elems_per_block) * elems_per_block` elements. The valid result occupies the first `2*K` elements; the elements beyond `2*K` (up to `aligned_topk`) are unspecified
-3. src must have a compile-time static shape; `buffer_size = sum(src.shape)` and `aligned_count = ((buffer_size + 31) // 32) * 32`
-4. src's buffer size should be a multiple of 32 (so that `aligned_count == buffer_size`); otherwise the -inf padding overflows the buffer and can corrupt the output indices
-5. actual_num must satisfy `1 <= actual_num <= src buffer size`
-6. K must satisfy `1 <= K <= actual_num`
-7. `repeatTimes = (buffer_size + 31) // 32`, repeatTimes in [1, 255], i.e. the src buffer size does not exceed 255 * 32 = 8160 (hardware constraint)
-8. Large buffer sizes are limited by UB capacity: dst requires `aligned_topk` elements, src requires `aligned_count` elements, and the internal temporary buffer is of the same order of magnitude; the practically usable size is far smaller than 8160
-9. Whether src is modified in-place depends on the dtype: for float32, positions from `actual_num` to `aligned_count` are padded with -inf, so src is modified; for float16, src is not modified (it is internally cast to float32 and operated on in a temporary buffer). For float32, copy src beforehand if you need to preserve the original data
-10. src and dst addresses must not overlap
-11. The sort direction is fixed to descending order (extracts the maximum values)
-12. inf is treated as a very large value; nan always sorts first (treated as the largest value)
-13. All buffer addresses must be 32-byte aligned (hardware constraint)
+1. dst 和 src 的 dtype 必须相同
+2. `elems_per_block = 32 / sizeof(T)`；dst 必须至少有 `aligned_topk = ((2*K + elems_per_block - 1) / elems_per_block) * elems_per_block` 个元素。有效结果占据前 `2*K` 个元素；`2*K` 之后的元素（至 `aligned_topk`）内容未定义
+3. src 必须具有编译期静态 shape；`buffer_size = sum(src.shape)`，`aligned_count = ((buffer_size + 31) // 32) * 32`
+4. src 的 buffer 大小应为 32 的倍数（使 `aligned_count == buffer_size`）
+5. actual_num 必须满足 `1 <= actual_num <= src buffer 大小`
+6. K 必须满足 `1 <= K <= actual_num`
+7. `repeatTimes = (buffer_size + 31) // 32`，repeatTimes ∈ [1, 255]，即 src buffer 大小不超过 255 × 32 = 8160（硬件约束）
+8. 大 buffer 受 UB 容量限制：dst 需要 `aligned_topk` 个元素，src 需要 `aligned_count` 个元素，内部临时 buffer 量级相当，三者之和不能超过 UB 容量
+9. src 是否被原地修改取决于 dtype：float32 时，`actual_num` 到 `aligned_count` 之间的位置会被填充 -inf，src 被修改；float16 时，src 不会被修改（内部转换为 float32 后在临时 buffer 中操作）。如需保留原始数据，请先拷贝 src
+10. src 和 dst 地址不能重叠
+11. 排序方向固定为降序（提取最大值）
+12. inf 被视为非常大的值；nan 总是排在首位（被视为最大值）
+13. 所有 buffer 地址必须 32 字节对齐（硬件约束）
 
-## 3. Example Code
+## 3. 示例代码
 
-**Example 1: 1D topk (buffer size is a multiple of 32)**
+**示例 1：1D topk（buffer 大小是 32 的倍数）**
 
 ```python
 src = T.alloc_ub((128,), "float16")
-dst = T.alloc_ub((32,), "float16")  # aligned_topk = ceil(2*10/16)*16 = 32 for float16
+dst = T.alloc_ub((32,), "float16")  # aligned_topk = ceil(2*10/16)*16 = 32（float16）
 T.tile.topk(dst, src, 10, 128)      # K = 10, actual_num = 128
 ```
 
-**Example 2: 1D topk (actual_num smaller than buffer size)**
+**示例 2：1D topk（actual_num 小于 buffer 大小）**
 
 ```python
 ub_N = ((131 + 31) // 32) * 32  # 160
 src = T.alloc_ub((ub_N,), "float16")
 dst = T.alloc_ub((32,), "float16")
-T.tile.topk(dst, src, 10, 131)   # only the first 131 elements are valid
+T.tile.topk(dst, src, 10, 131)   # 仅前 131 个元素有效
 ```
