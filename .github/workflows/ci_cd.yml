@@ -502,8 +502,7 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           BASE_REF="${{ github.base_ref }}"
-          git fetch origin $BASE_REF
-          changed_files=$(git diff --name-only origin/$BASE_REF HEAD)
+          changed_files=$(git diff --name-only "origin/$BASE_REF" HEAD)
           
           skip_pytest=true
           
