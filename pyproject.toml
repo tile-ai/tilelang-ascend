@@ -22,9 +22,15 @@ skip = [
 ]
 
 [tool.pytest.ini_options]
+pythonpath = ["testing/python", "."]
+testpaths = ["testing"]
 markers = [
     "low_priority: marks tests as low priority (only run in full test and scheduled tasks)",
     "ci_skip: marks tests to be skipped in all CI test scenarios",
+    "l0: Gate test — must pass to merge",
+    "l1: Functional test — must pass to merge",
+    "l2: Boundary/exception test — recommended",
+    "compile_time: Compile-time test, no NPU needed",
 ]
 
 [tool.ruff]
