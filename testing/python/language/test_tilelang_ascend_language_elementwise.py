@@ -475,6 +475,96 @@ def test_silu(dtype, target, shape):
     run_test_silu(M, N, 128, 128, dtype, target)
 
 
+def vec_silu_inplace(M, N, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            # in-place: dst == src (the whole buffer)
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+            T.tile.silu(a_ub, a_ub)
+            T.copy(a_ub, B[bx * block_M, by * block_N])
+
+    return main
+
+
+def run_test_silu_inplace(M, N, block_M, block_N, dtype, target):
+    func = vec_silu_inplace(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+
+    torch.npu.synchronize()
+
+    result = func(a)
+    ref = torch.nn.functional.silu(a)
+
+    torch.testing.assert_close(result, ref, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("shape", [(256, 256), pytest.param((512, 512), marks=pytest.mark.low_priority)])
+def test_silu_inplace(dtype, target, shape):
+    M, N = shape
+    run_test_silu_inplace(M, N, 128, 128, dtype, target)
+
+
+def vec_sigmoid_inplace(M, N, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+            T.tile.sigmoid(a_ub, a_ub)  # in-place: dst == src
+            T.copy(a_ub, B[bx * block_M, by * block_N])
+
+    return main
+
+
+def run_test_sigmoid_inplace(M, N, block_M, block_N, dtype, target):
+    func = vec_sigmoid_inplace(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+
+    torch.npu.synchronize()
+
+    result = func(a)
+
+    torch.testing.assert_close(result, torch.sigmoid(a), rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("shape", [(256, 256), pytest.param((512, 512), marks=pytest.mark.low_priority)])
+def test_sigmoid_inplace(dtype, target, shape):
+    M, N = shape
+    run_test_sigmoid_inplace(M, N, 128, 128, dtype, target)
+
+
 def vec_mul_add_dst(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
