@@ -294,6 +294,71 @@ def test_vid_reduction_tile_ops(setup_random_seed, target):
 
 
 # ============================================================
+# 4b) cast / mul_add_dst / silu tile ops
+#
+# Mirrors: T.tile.cast(w0, w_half0, "CAST_NONE", dim_per_core) /
+#          T.tile.mul_add_dst(state0, x_ub, w3) / T.tile.silu(y_ub, tmp)
+#          (from causal_conv1d_decode.py)
+# Pass: tile op last size arg halved (ModifyTileOpSize +
+# IsTileOp in ascend_vid_reduction.cc).
+# Chain: a16 -> cast fp32 -> mul_add_dst (acc += a*a) -> silu ->
+# cast back to fp16, so any incorrect size halving propagates to
+# the final result silu(a + a^2).
+# ============================================================
+
+
+def tile_cast_ops_kernel(M, N, block_M, block_N):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(A: T.Tensor((M, N), "float16"), B: T.Tensor((M, N), "float16")):
+        with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_shared((block_M, block_N), "float16")
+            w_ub = T.alloc_shared((block_M, block_N), "float16")
+            a_f32 = T.alloc_shared((block_M, block_N), "float32")
+            w_f32 = T.alloc_shared((block_M, block_N), "float32")
+            out_f32 = T.alloc_shared((block_M, block_N), "float32")
+            b_ub = T.alloc_shared((block_M, block_N), "float16")
+
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+            T.copy(A[bx * block_M, by * block_N], w_ub)
+
+            # cast: last arg is the element count
+            T.tile.cast(a_f32, a_ub, "CAST_NONE", block_M * block_N)
+            T.tile.cast(w_f32, w_ub, "CAST_NONE", block_M * block_N)
+
+            # mul_add_dst: a_f32 = w_f32 * w_f32 + a_f32
+            T.tile.mul_add_dst(a_f32, w_f32, w_f32)
+
+            # silu: out = a / (1 + exp(-a))
+            T.tile.silu(out_f32, a_f32)
+
+            # cast back to fp16
+            T.tile.cast(b_ub, out_f32, "CAST_RINT", block_M * block_N)
+
+            T.copy(b_ub, B[bx * block_M, by * block_N])
+
+    return main
+
+
+@pytest.mark.parametrize("target", ["ascendc"])
+def test_vid_reduction_tile_cast_ops(setup_random_seed, target):
+    M, N, block_M, block_N = 256, 128, 64, 128
+    func = tilelang.compile(tile_cast_ops_kernel(M, N, block_M, block_N), out_idx=[1], pass_configs=pass_configs, target=target)
+    a = torch.randn(M, N, dtype=torch.float16).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    torch.npu.synchronize()
+    af = a.float()
+    acc = af + af * af
+    ref = (acc / (1.0 + torch.exp(-acc))).half()
+    torch.testing.assert_close(b, ref, rtol=1e-2, atol=1e-2)
+
+
+# ============================================================
 # 5) T.tile + T.Parallel (LoopVarUsedInVidReducedUbFirstDim)
 #
 # Mirrors: for h_i, j in T.Parallel(v_block, D):
