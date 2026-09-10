@@ -64,19 +64,20 @@ description: TileLang-Ascend 错误诊断、调试与修复技能。融合了 GD
 3. **工作空间 (Workspace) 访问**：检查张量切片范围，确认访问是否越界。
 4. **数据依赖与流水线 (Pipeline)**：分析 `T.Pipelined` 的 `num_stages`，检查读写重叠冲突。
 
-### 步骤 4：修复方案制定 (支持 AOT 倒推)
-LLM 根据步骤 3 提出修复方案。对于代码生成或精度相关的复杂问题，**强烈建议采用 AOT (Ahead-Of-Time) 模式**进行验证：
+### 步骤 4：修复方案制定（必要时使用 AOT 隔离）
+
+根据步骤 3 的证据提出最小修复。需要区分 TileLang lowering 与目标代码行为时，可用 AOT
+构造隔离实验：
 
 **方案 A：直接修复 C++ Pass（适用于 GDB 已明确指出问题代码行的情况）**
 - 直接定位 `src/transform/` 或 `src/target/` 下的 `.cc` 文件，提供代码修改建议。
 
-**方案 B：AOT 逆向工程（可参考 `examples/gemm_aot` 目录）**
-AOT 模式将算子执行拆解为三个清晰的阶段：
-1. **算子生成**：TileLang 前端语句 -> AscendC 目标代码（Python -> C++）。
-2. **算子编译**：手动或使用脚本编译生成的算子代码（AscendC -> `.so` 动态库）。
-3. **算子调用**：在 Python 中使用 Ctypes 直接加载并调用该 `.so` 库进行测试。
+**方案 B：AOT counterfactual**
 
-*工作流说明*：先修改导出的 `.c/.cpp` 目标代码，使用 AOT 流程编译为 `.so` 并通过 Ctypes 验证。**如果 AOT 测试通过**，再逆向推导，生成修改底层 C++ Pass 的具体代码方案。
+- 复用 `examples/gemm_aot` 的 `engine.lower` → `LibraryGenerator` → ctypes 流程；不要维护
+  手写 Bisheng include/flag 命令。
+- 对生成 source 的实验性修改只能放在 disposable 副本中。实验通过只能定位问题层，最终
+  修复仍应落到产生该 source 的 frontend/pass/codegen，并用原始重现验证。
 
 ### 步骤 5：执行修复与 C++ 重新编译
 1. 展示修复方案（C++ 代码 Diff），等待用户确认。
@@ -122,7 +123,7 @@ AOT 模式将算子执行拆解为三个清晰的阶段：
    ```
 3. 修复后将自动执行 `make -j8`。
 
-*(如果是生成逻辑错误，将建议先参考 `examples/gemm_aot` 使用 AOT 流程修改目标代码进行验证)*
+*(生成逻辑错误可参考 `examples/gemm_aot` 做隔离 AOT 实验；不得把生成 source 当作长期修复。)*
 
 ### 执行与验证结果
 - 编译状态：✅ 成功

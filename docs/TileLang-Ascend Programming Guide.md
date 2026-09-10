@@ -189,7 +189,9 @@ TileLang还支持JIT（Just-in-time，即时编译）。JIT是一种动态编译
 - NPU硬件约束下的AscendC语法修正。JIT在运行时可检测当前NPU硬件的资源配置，严格遵守硬件资源限制，指导CodeGen生成符合性能约束的AscendC代码。
 - 算子运行时的即时编译与动态优化。算子运行过程中，JIT会在编译过程中结合NPU当前的硬件状态优化指令分配，根据AI Core的利用率和内存占用情况动态调整编译策略。
 
-在TileLang kernel开发中，通过 **@jit** 装饰器来触发调用时的即时编译。
+在TileLang kernel开发中，通过 **@jit** 装饰器来触发调用时的即时编译。需要为单个
+kernel 传递毕昇编译选项时，使用 `compile_flags`，不要修改进程级环境变量。参数优先级、
+缓存行为和调试示例见 [JIT compilation on Ascend](tutorials/jit_compilation.md)。
 
 ### 2.4 A5 Camodel 仿真运行
 
@@ -292,40 +294,20 @@ def add_kernel(
     ...  # kernel body
 ```
 
-shape除了可以是整形常量外，还可以是符号变量的形式表示，以支持动态信息传递。在TileLang中，支持两种符号变量的形式：
+shape除了可以是整形常量外，还可以使用 `T.symbolic(name, dtype)` 创建的符号变量：
 
-- **T.dyn[...]**
+```
+K = T.symbolic("K", "int32")
 
-  这种方式对于符号变量的使用，在kernel体内通过buffer的shape信息来获取和使用。
-
-  ```
-  # 1) Annotation-only symbol; read the bound size via shape
-  K = T.dyn['K']  # dtype defaults to int32
-  @T.prim_func
-  def foo(A: T.Tensor((K,), 'float32')):
-      N = A.shape[0]
-      for i in T.serial(N):
-          ...
-  ```
-
-  
-
-- **T.dynamic(name, dtype)**
-
-   这种方式创建一个tir.Var，然后可以直接在后续的表达式和循环语句中使用该符号。
-
-  ```
-  # 2) Explicit Var symbol usable in the body
-  K = T.dynamic('K', 'int32')   # or T.dynamic('K') defaults to int32
-  @T.prim_func
-  def bar(A: T.Tensor((K,), 'float32')):
-      for i in T.serial(K):
-          ...
-  ```
+@T.prim_func
+def foo(A: T.Tensor((K,), "float32")):
+    for i in T.serial(A.shape[0]):
+        ...
+```
 
 注意：
 
-- T.symbolic(name, dtype) 是T.dynamic的一个已弃用的别名；建议使用T.dynamic。
+- 当前公开接口是 `T.symbolic`；`T.dyn` 和 `T.dynamic` 不由 `tilelang.language` 导出。
 - 在 `@jit`中, 具体的尺寸来自第一次调用时传入的实际张量参数.
 - 注解中的符号不需要作为单独的kernel参数；TileLang 会从参数形状中绑定它们。
 
@@ -341,15 +323,26 @@ float16, float32, bfloat16, int8, int16, int32, int64, uint8, uint16, uint32, ui
 
 ### 3.3 kernel launch
 
-**with T.Kernel(...)** 声明一个kernel运行上下文，并且创建数据tile block与逻辑核的绑定关系。对于Ascend NPU来说，对于每个block，返回一个（cid，vid)的元组。cid的范围为 [0,block_num), vid的范围为0或1。因为A2/A3的CV核配比可以为1:2或1:1, 可以通过vid指定当前vector的索引。
+**with T.Kernel(...)** 声明 kernel 运行上下文，并创建数据 tile block 与逻辑核的绑定。
+Ascend 只接受一个 block 维度。Expert 形式省略 `threads` 并返回 `(cid, vid)`；Developer
+形式显式设置 `threads=1` 或 `2`，只返回 `cid`：
 
-下面的代码片段对于(M, N)大小的数据块，切分为（block_M，block_N）大小的基本tile block，tile block的数量为m_num * n_num个，代码逻辑可以理解为多个并发的执行单元，每个单元处理一个tile block（针对每个tile block，又可以根据vector数量切分为1个或2个vector单元并发处理）。
+```python
+# Expert
+with T.Kernel(block_num, is_npu=True) as (cid, vid):
+    ...
+
+# Developer / Hybrid
+with T.Kernel(block_num, threads=2, is_npu=True) as cid:
+    ...
+```
+
+`cid` 的范围为 `[0, block_num)`。多维任务应折叠成 `block_num`，再在 kernel 内从
+`cid` 恢复逻辑索引：
 
 ```
 m_num = M // block_M
 n_num = N // block_N
-VEC_NUM = 2
-
 @T.prim_func
 def main(A: T.Tensor((M, N), dtype),
          B: T.Tensor((M, N), dtype),
@@ -639,65 +632,12 @@ fragment层级的存储对应偏上的寄存器级别的存储单元，一般用
 
 #### 4.1.3 计算原语
 
-**编译器管理与显式临时 arena**
+**计算原语的 UB 临时空间**
 
-下列公开计算原语统一暴露仅限关键字的 `tmp=None`：
-
-- `T.reduce_sum`、`T.reduce_max`、`T.reduce_min`；
-- `T.tile.broadcast`、`sort`、`merge_sort`、`topk`；
-- `T.tile.gather_mask`、`select`、`gather`；
-- `T.tile.sigmoid`、`sin`、`cos`、`pow`、`bitwise_xor`；
-- `T.tile.clamp`、`clamp_max`、`clamp_min`、`round`；
-- deprecated `T.tile.bilinear_interpolation`，以及
-  `T.tile.reduce_sum_experiment`、`reduce_sum_mask_experiment`。
-
-PTO 不支持 `bilinear_interpolation`、`sin`、`cos`，以及这两个 experimental
-ReduceSum API。
-
-省略 `tmp` 时，`InjectTmpBuffer` 根据 target 自动分配 workspace。同一 kernel 内不同
-dtype 的隐式调用复用一个按最大字节需求分配的 `uint8` 主 arena；lowering 在同一 data
-Var 上生成后端所需 dtype 的 view，不会仅因 dtype 不同再创建 `tmp_ub_<n>`。PTO
-`clear=False` reduce 的独立 reduce-output allocation 保持原有语义。
-
-显式 `tmp` 的 backing Buffer 必须是一维、静态、连续、具有定宽标量 dtype 的 `shared.ub`
-Buffer；BufferRegion 本身也必须一维、静态、位于该 Buffer 内，且起始字节地址 32B 对齐。它
-表示该次调用完整的 target-specific 临时字节空间；dtype 只决定 arena 的字节几何
-（`extent * sizeof(dtype)`），不表示 workspace 数据类型。lowering 会在同一字节存储上建立目标
-所需的 typed view，不进行数值转换，并保留 region 的实际字节起点。前端只检查几何和对齐；
-AscendC 与 PTO 的 target-specific 保守启发值只用于编译器管理的 allocation 和内部 view 布局，
-不是非零显式 arena 的下限检查。非零显式 arena 的容量由调用者负责。若所选 target 路径真实
-不消费 workspace，lowering 会移除 operand，允许使用零 extent arena。当前不提供公开的
-size-query API，非零需求建议保守地过量分配。
-
-当前固定的 `dav-2201` AscendC target 使用如下隐式分配策略。记 `S` 为源 tensor 字节数，
-`N = repeat_times * 32`，`d` 为源元素字节宽度。这些值是来自 CANN source 和定向 sampling 的
-保守启发式，只用于隐式 allocation；不是公开的理论最小容量，也不会用于拒绝非空显式 arena。
-
-| API | view dtype | 隐式字节数 | 依据 |
-| --- | --- | --- | --- |
-| reduce | `uint8` | 过渡期 reduce 公式且至少 32B；`physical_row > 0` 及 half sum、`clear=True` 为 0 | CANN-source/sampling 保守启发式 |
-| sort | 源 dtype | half：`8*N*d`；float：`2*N*d` | CANN-source/sampling 保守启发式 |
-| topk | 源 dtype | half：`10*N*d`；float：`4*N*d` | CANN-source/sampling 保守启发式 |
-| bilinear interpolation | `uint8` | `(src0_elements + src1_elements) * 32` | CANN-source/sampling 保守启发式 |
-| sin/cos | `uint8` | half：`max(2*S, 512)`；float：`max(2*S, 384)` | CANN-source/sampling 保守启发式 |
-| tensor-tensor pow | `uint8` | half：`max(2*S, 1152)`；float/int32：`max(2*S, 768)` | CANN-source/sampling 保守启发式 |
-| bitwise xor | `uint8` | `max(S, 64)` | CANN-source/sampling 保守启发式 |
-| round half | `uint8` | `max(S, 256)` | CANN-source/sampling 保守启发式 |
-| sigmoid | `uint8` | `S` | CANN-source/sampling 保守启发式 |
-| experimental ReduceSum | 源 dtype | `S` | CANN-source/sampling 保守启发式 |
-
-AscendC 的 clamp 系列、float round、merge sort、select、gather、gather mask 不消费 workspace。
-b16/b32 broadcast 的 equal/scalar 路径为 0B，axis 0 为 32B；axis 1 为 `q*q*d`，且当
-`dst_shape[1]*d` 未按 32B 对齐时再增加 `q*align(dst_shape[1],q)*d`，其中 `q=32/d`。
-b8 broadcast 始终使用 workspace，字节数为
-`2*(align(src_elements,16)+align(dst_elements,16)+inner_half_elements)`；其中
-`inner_half_elements` 按上述 axis 规则以 half 元素计。这些 broadcast 值来自 CANN 2201
-staging 布局。
-
-当前 AscendC codegen 会保留 BufferRegion 的起始字节地址和 workspace dtype，但尚未按 region
-extent 调用 `LocalTensor::SetSize`；因此 region extent 尚不构成 AscendC `LocalTensor` 的严格
-上界，调用者仍需保证后端实际访问所需的完整存储。PTO typed view 会同时保留字节 offset 与
-换算后的 extent。
+需要 scratch storage 的计算原语可省略 `tmp`，由编译器管理 UB；Expert 模式也可用关键字
+`tmp=` 为单次调用提供显式 arena。这里的 UB scratch 与 `workspace_idx` 声明的 runtime GM
+workspace 是两种不同机制。显式 arena 的结构、对齐、容量责任和支持 API 见
+[TileLibrary language reference](language_ref/tilelibrary.md)。
 
 ##### 4.1.3.1 矩阵计算
 
@@ -758,11 +698,9 @@ extent 调用 `LocalTensor::SetSize`；因此 region extent 尚不构成 AscendC
 - 对 2D slice buffer 且设置了 `real_shape` 的兼容路径，`out` 还允许保持部分 physical-layout 形式，例如 `[physical_cols]` 或 `[1, physical_cols]`；这是为了兼容当前后端对 slice buffer 的 lowering 方式。
 - 非法 `dim`、非法 `real_shape`、非法 `out` shape 会在前端直接报错，而不是静默进入后端。
 - `clear` 和 `real_shape` 同时支持关键字传参和兼容的 positional 传参形式，建议优先使用关键字形式以获得更清晰的可读性。
-- `tmp` 是可选且仅允许关键字传入的完整 target-specific UB scratch arena；这里的 arena 指由一次调用自行划分和使用的一整段临时字节空间。它必须是一维、静态、连续、具有定宽标量 dtype 的 `shared.ub` Buffer，或同类 Buffer 上一维、静态、连续且起始字节地址 32B 对齐的 BufferRegion。其 dtype 不表示 workspace 数据类型；lowering 按字节地址将存储 reinterpret 为目标所需类型。容量按元素个数乘以 dtype 字节宽度计算。后端路径不需要 workspace 时允许 extent 为 0。
-- 未传 `tmp` 时由编译器自动分配；传入 `tmp` 只影响当前调用，该调用不再参与隐藏主 workspace 的分配。
-- 前端只检查 arena 的结构和起始地址对齐。target-specific 保守启发值用于隐式 allocation 和 PTO `clear=False` 的内部 view 布局，但不用于拒绝非零显式 arena；显式容量由调用者负责。当前不提供公开的 size-query API，建议在需要非零 workspace 时保守地过量分配。
-- PTO 行归约的 `clear=False` lowering 会把同一个 arena 划分为两个互不重叠的 view：主 reduce scratch view，以及从 `align_up(primary_tmp_bytes, 32)` 开始的 reduce-output view。PTO 列归约不需要主 scratch；`clear=False` 时只在 offset 0 创建 reduce-output view。
-- 已知需求为 0 时，lowering 会省略 tmp 参数及其内存访问；例如 PTO broadcast、PTO `dim=0` reduce，以及 AscendC `clear=True` 的 narrow reduce 和 `half` sum 路径。`T.alloc_ub((0,), "uint8")` 和零 extent BufferRegion 可直接用于这些调用，无需用户增加条件分支。
+- `tmp` 是可选的 keyword-only UB scratch arena；省略时由编译器管理，只影响当前调用。
+- 显式 arena 的结构和对齐由前端检查，非零容量由调用者负责；完整契约见
+  [TileLibrary language reference](language_ref/tilelibrary.md)。
 
 - `T.reduce_sum(buffer: Buffer, out: Buffer, dim: int = -1, *args, clear: bool = True, real_shape: list[int] | None = None, tmp: Buffer | BufferRegion | None = None)`
 
@@ -2336,6 +2274,10 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   详细功能，详见AscendC文档：https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/83RC1alpha002/API/ascendcopapi/atlasascendc_api_07_0270.html
 
+旧的 `T.init_flag` / `T.clear_flag` 已删除：它们只对 AscendC 字符串 codegen 生效，PTO
+会静默忽略。读取旧代码时应迁移到结构化同步 API；新 Expert kernel 遵循项目当前要求的
+同步抽象。
+
 - `T.barrier_all():`
 
   **参数**：
@@ -2370,20 +2312,30 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
   详细功能，详见AscendC文档：https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/83RC1alpha002/API/ascendcopapi/atlasascendc_api_07_0204.html
 
 手动同步并复用同一物理缓冲时，应为 producer → consumer 的“数据就绪”和
-consumer → producer 的“缓冲归还”分别使用匹配的 `set_flag` / `wait_flag`。完整生命周期包括：
+consumer → producer 的“缓冲归还”分别使用匹配的 `set_flag` / `wait_flag`：
 
-1. consumer 在作用域入口预先归还 token；
-2. producer 获取 token、写缓冲并通知 consumer；
-3. consumer 获取 token、完成所有读取并归还给下一轮 producer；
-4. 作用域退出前消费最后一次归还的 token。
+1. 若 producer 的首次写需要初始 ownership，由 consumer 在入口预先归还 token；
+2. producer 获取 token、写缓冲，并在异步写完成后通知 consumer；
+3. consumer 获取 token，持有到最后一次读取完成，并在下一次 producer 复用前归还；
+4. 退出前消费所有已初始化槽位尚未消费的 token，包括未使用槽位的初始 token 和最终归还的 token。
+
+TileLang 的核内事件和核间通知均须在初始化、循环、分支和退出路径上保持 Set/Wait 配对。
+核间配对按同步模式的参与核及发送/接收关系判断，而非简单比较所有核的调用总数。
+可以省去不再需要的最终 Set，但不能留下未消费通知，也不能删除数据依赖或缓冲复用所需的 Wait。
+
+在已确认的 A2/A3 运行路径上，不再承担后续依赖的末尾核间通知可以不消费；这是平台特定行为，
+不适用于核内事件或仍承担依赖的通知。[官方迁移指南](https://gitcode.com/cann/ops-math/blob/master/docs/zh/develop/cross_platform_migration_guide.md)
+说明 A2 会在算子之间清理多余计数，而 Ascend 950 要求严格配对；A3 的结论仅限已实测路径。
+TileLang 为保持跨平台一致性，统一要求完整配对，`target="ascendc"` 和 `target="pto"` 均无例外。
+未配对的核内事件可能在当前调用中不暴露错误，却影响后续调用或同一芯片上的其他进程。
+**因此，实测通过不能替代配对检查。**
 
 例如，MTE2 写 L1、MTE1 读取后，正向使用 `MTE2 → MTE1`，反向归还使用
 `MTE1 → MTE2`。若 MTE1 在多个内层循环中持续读取该 L1 缓冲，必须在最后一次读取
 之后再归还，而不是在第一次读取后立即归还。
 
-event ID 按有向 pipe pair 分配，只需在同一 pair 内避免同时占用；反向 pair 是另一个
-独立编号空间。同一 ownership slot 通常在正反两个 pair 中使用相同数字，便于阅读和
-审查；不同方向的信号若表达不同语义（例如 `FREE` 和 `READY`），仍应保留独立名称。
+event ID 按有向 pipe pair 分配；反向 pair 是独立编号空间。同一 ownership slot 可在
+两个方向使用相同数字以便审查，但 `FREE`、`READY` 等不同语义仍应保留独立名称。
 
 ## 5. 调试诊断
 
@@ -2392,7 +2344,17 @@ event ID 按有向 pipe pair 分配，只需在同一 pair 内避免同时占用
 TileLang-ascend 引入了新的调试接口：T.printf 和 T.dump_tensor。目前支持 Ascend 端的全量转储功能。基本类型、指针、ub_buffer、l1_buffer、l0c_buffer 和 global_buffer 均可打印。
 注意：T.printf 和 T.dump_tensor 是设备端的调试工具；对于主机端，请直接使用 Python 内置的 print 即可。
 
-**环境配置**：要使 T.printf 和 T.dump_tensor 的输出在运行时生效，需要在编译时启用调试打印支持。设置环境变量 `TL_PTO_DEBUG=1` 后，编译器会追加 `-D_DEBUG` 和 `--cce-enable-print` 编译选项，开启设备端 printf 功能：
+**编译配置**：要使 T.printf 和 T.dump_tensor 的输出在运行时生效，需要在编译时启用
+调试打印支持。优先用 kernel-scoped `compile_flags`：
+
+```python
+@tilelang.jit(target="ascendc", compile_flags=["-D_DEBUG", "--cce-enable-print"])
+def debug_kernel(...):
+    ...
+```
+
+`TL_PTO_DEBUG=1` 仅对 `target="pto"` 是兼容的进程级设置；它不会为
+AscendC 后端启用调试 flags：
 
 ```bash
 TL_PTO_DEBUG=1 python your_script.py
