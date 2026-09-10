@@ -128,9 +128,9 @@ CubeOp { dst, src1, src2, ... }
 3. **同步类型选择**（GetRequiredSyncType）：
    - 切片操作 → `PipeBarrier_ALL`（全局同步）
    - 同一 pipeline 内 → `PipeBarrier_<pipeline>`（如 PipeBarrier_MTE2, PipeBarrier_FIX）
-   - 跨 pipeline → `EventPair_<src>_<dst>`（共26种组合，见下表）
+   - 跨 pipeline → `EventPair_<src>_<dst>`（以当前 `GetEventMapping()` 为准，见下表）
 
-**EventPair 映射表（基于 src/transform/common/operation_config.h:264-300）：**
+**EventPair 映射表（以 `GetEventMapping()` 当前实现为准）：**
 ```
 PIPE_MTE2 → PIPE_MTE1: EventPair_MTE2_MTE1
 PIPE_MTE1 → PIPE_MTE2: EventPair_MTE1_MTE2
@@ -327,69 +327,34 @@ total_memory: max(1024+512, 2048) = 2048 bytes
 
 **Pass 目标：** 分离 Cube 和 Vector 操作，将混合代码拆分为两块独立代码块，分别发送给 Cube 核和 Vector 核执行。
 
-**核心类：** `CombineCV` (继承 `IRMutatorWithAnalyzer`) + `CVCombineEmitter` (继承 `StmtMutator`)
+**核心类：** `CombineCV` + `CVCombineEmitter` + 共用 `ResourceForCall` classifier
 
 **核心实现逻辑：**
 
 ```
-# 两阶段处理流程
+# 共用分类，再生成两支
 
-Phase 1: CombineCV.VisitStmt_(BlockRealizeNode)
-  → 找到 tilelang_root，准备分离
-  
-  if (block.name_hint == "tilelang_root"):
-    1. 创建两个 CVCombineEmitter:
-       - cubeStmt(is_aiv=false) - 过滤 Cube 操作
-       - vecStmt(is_aiv=true)    - 过滤 Vector 操作
-    
-    2. 分别处理 body:
-       cube_code = cubeStmt(body)
-       vec_code = vecStmt(body)
-    
-    3. 包装为 AttrStmt:
-       AttrStmt[resource_scope=0] { cube_code }  # Cube 核
-       AttrStmt[resource_scope=1] { vec_code }   # Vector 核
+ResourceForCall(call):
+  1. 精确识别 common control（printf / sync_all / use_swizzle）
+  2. 精确识别特殊 operation、setter、selected Vector terminal
+  3. 根据 pipe / 有向 pipe pair 分类 barrier 与 event
+  4. 查询 OperationConfig.default_pipeline，并与 access_ptr storage scope 合并校验
+  5. 未知 opaque call 且无法从 operand scope 证明 owner → Explicit（必须手写 scope）
 
-Phase 2: CVCombineEmitter.VisitStmt_(EvaluateNode)
-  → 过滤操作，保留或丢弃
-  
-  1. 获取 api_name (如 "gemm", "copy", "relu" 等)
-  
-  2. 判断 1 - 根据 API 名称:
-     if is_aiv_ (Vector):       # Vector emitter
-       if api_name == "vec":    → 保留 (switch=on)
-       if api_name == "cube":   → 丢弃 (switch=off)
-     else (Cube):               # Cube emitter
-       if api_name == "cube":   → 保留 (switch=on)
-       if api_name == "vec":    → 丢弃 (switch=off)
-  
-  3. 判断 2 - 根据 Buffer Scope:
-     checkBufferScope(var):
-       if scope == "wmma.*":    → Cube
-        if scope == "shared.ub":    → Vector
-       返回 1(保留)/0(丢弃)/-1(未知)
-  
-  4. 返回结果:
-     if switch=on:  → StmtMutator::VisitStmt_(op)  # 保留
-     if switch=off: → Evaluate(0)                  # 丢弃
-
-CVCombineEmitter.VisitStmt_(BufferStoreNode):
-  → 根据 buffer scope 过滤写入操作
-  
-   if is_aiv_:
-     if scope == "shared.ub":  → 保留
-     else:                  → 丢弃
-   else:
-     if scope == "shared.ub":  → 丢弃
-     else:                  → 保留
+CombineCV(root):
+  1. 只对已知歧义 sync，用 pure region 或同 owner 双侧证据补内部 scope
+  2. 用同一 classifier 检查冲突 scope 与不可分类 outer opaque call
+  3. 创建 CubeEmitter 和 VectorEmitter；common 两侧保留，C/V operation 只保留 owner 分支
+  4. 已有显式 scope 只进入对应分支，最后输出 resource_scope=0 / resource_scope=1
 ```
 
 **关键函数说明：**
 | 函数 | 作用 |
 |------|------|
-| `isSubstringInMap` | 检查 API 名称是否匹配已知的 Cube/Vector 操作 |
-| `checkBufferScope` | 根据 buffer scope 判断操作属于哪个核 |
-| `IsRetainedInBothScopes` | 某些 API（如 printf）需要在两个核上都保留 |
+| `ResourceForCall` | 使用 operation contract、pipe 参数与 access pointer 推导 owner |
+| `ResourceForStorageScope` | `shared.ub` → Vector；L1/L0 scopes → Cube |
+| `MergeResources` | 校验 operation 归属与 operand local scope 不冲突 |
+| `AscendResourceScopeVerifier` | 在 Combine 前 fail closed，并在 pipeline 尾部严格验证最终 IR |
 
 **输入伪 IR：**
 ```
@@ -397,8 +362,10 @@ tilelang_root {
   For i in [0, 64] {
     Copy(global, L0A[i])           # Cube
     CubeGemm(L0A[i], L0B[i], L0C[i]) # Cube
-    VectorReLU(L0C[i], UB[i])      # Vector
-    Copy(UB[i], global)            # Vector
+    Copy(L0C[i], workspace[i])     # Cube FIX -> global handoff
+    Copy(workspace[i], UB[i])      # Vector MTE2
+    VectorReLU(UB[i], UB[i])       # Vector
+    Copy(UB[i], global)            # Vector MTE3
   }
 }
 ```
@@ -410,12 +377,14 @@ tilelang_root {
     For i in [0, 64] {
       Copy(global, L0A[i])
       CubeGemm(L0A[i], L0B[i], L0C[i])
+      Copy(L0C[i], workspace[i])
     }
   }
   
   AttrStmt[resource_scope=1] {
     For i in [0, 64] {
-      VectorReLU(L0C[i], UB[i])
+      Copy(workspace[i], UB[i])
+      VectorReLU(UB[i], UB[i])
       Copy(UB[i], global)
     }
   }
@@ -423,9 +392,53 @@ tilelang_root {
 ```
 
 **变换要点：**
-- 两个 Emitter 实例分别过滤，生成两套独立代码
-- 根据 API 名称 + Buffer Scope 双重判断操作归属
-- resource_scope 标记用于后端代码生成区分核类型
+- 两个 Emitter 共享同一分类器，不维护第二套 substring 规则
+- operation contract 与 dst/src local scope 是一致性校验；copy 的具体方向由 src/dst 决定
+- unknown / opaque operation fail closed，不继承前一条语句的 C/V 状态
+- 只有已知上下文型 sync 可以使用 pure region 或同 owner 双侧证据
+- late verifier 复用同一分类器检查最终 `resource_scope`
+
+---
+
+### AscendVectorInstructionSelection + AscendVectorMaskLegalize
+
+**Pass 目标：** 在全部已有 rewrite 与同步 pass 结束后选择 typed AscendC Vector terminal，
+并只补当前硬件 mask state 缺少的 setter。
+
+**输入伪 IR：**
+
+```text
+AttrStmt[resource_scope=1] {
+  T.tile.add(dst0, src0, src1, length=64)  # fp32
+  T.tile.add(dst1, src2, src3, length=64)
+}
+```
+
+**Selection 后：**
+
+```text
+AttrStmt[resource_scope=1] {
+  tl.ascend_add_raw(dst0, src0, src1,
+                    mode=NORMAL, repeat=1, lo=FULL64, hi=0)
+  tl.ascend_add_raw(dst1, src2, src3,
+                    mode=NORMAL, repeat=1, lo=FULL64, hi=0)
+}
+```
+
+**Legalize 后：**
+
+```text
+AttrStmt[resource_scope=1] {
+  ascend_set_mask_mode(NORMAL)
+  ascend_set_mask_payload(FULL64, 0)
+  tl.ascend_add_raw(dst0, src0, src1, ...)
+  tl.ascend_add_raw(dst1, src2, src3, ...)  # 复用相同 must-facts
+}
+```
+
+**边界：** `AscendResourceScopeVerify` 必须先证明 operation 位于 V scope；Legalize 是最后一个
+TIR-transforming pass。完整 selection geometry、`requires` / `ensures` 与 fallback contract 见
+`docs/ascend/compiler_managed_vector_mask.md`，本示例不复制完整规则。
 
 ---
 
@@ -474,7 +487,7 @@ Phase 3: LoopRewriter (StmtMutator)
        - stage 1: Vector 操作
        - ...
     4. 调整 buffer 访问的索引
-    5. 插入跨核同步 (set_flag / wait_flag)
+    5. 插入跨核同步 (set_cross_flag / wait_cross_flag)
 ```
 
 **关键函数说明：**
@@ -491,9 +504,11 @@ For i in [0, N] annotations={num_stages: 2} {
   # Stage 0: Cube
   Copy(global, L0A[i])
   CubeGemm(L0A, L0B, L0C)
+  Copy(L0C, workspace[i])
   
-  # Stage 1: Vector (跨核依赖 L0C)
-  VectorReLU(L0C, UB)
+  # Stage 1: Vector (通过 GM workspace handoff)
+  Copy(workspace[i], UB)
+  VectorReLU(UB, UB)
   Copy(UB, global)
 }
 ```
@@ -507,12 +522,14 @@ For stage in [0, N+num_stages] {
   if stage < N:
     Copy(global, L0A[stage])
     CubeGemm(L0A, L0B, L0C[stage])
-    set_flag(Cube_done[stage % num_stages])
+    Copy(L0C[stage], workspace[stage])
+    set_cross_flag(Cube_done[stage % num_stages])
   
   # Vector stage (延迟 1 个 stage)
   if stage >= 1 && stage < N+1:
-    wait_flag(Cube_done[(stage-1) % num_stages])
-    VectorReLU(L0C[stage-1], UB)
+    wait_cross_flag(Cube_done[(stage-1) % num_stages])
+    Copy(workspace[stage-1], UB)
+    VectorReLU(UB, UB)
     Copy(UB, global)
 }
 ```
@@ -520,7 +537,7 @@ For stage in [0, N+num_stages] {
 **变换要点：**
 - 检测 num_stages 注解的循环是否有跨核操作
 - 将单循环拆分为多 stage，形成流水线
-- 使用 set_flag/wait_flag 替代阻塞同步
+- 使用 cross-core flag 表达 C/V handoff
 - stage 之间偏移执行，重叠 Cube 和 Vector 计算
 
 ---
@@ -1044,54 +1061,7 @@ For i in [0, 128] {
 
 ---
 
-## 四、复杂 Pass 组合示例
-
-### Ascend GEMM 完整编译链
-
-**输入伪 IR：**
-```
-# 原始 Python DSL
-@tilelang.jit
-def gemm(M, N, K):
-  A = T.alloc_shared([M, K], dtype="float16")
-  B = T.alloc_shared([K, N], dtype="float16")
-  C = T.alloc_shared([M, N], dtype="float32")
-  
-  T.copy(global_A, A)
-  T.copy(global_B, B)
-  T.gemm(A, B, C)
-  T.copy(C, global_C)
-```
-
-**Pass 链变换结果：**
-```
-# Pass 链: InferAllocScope → AscendMemoryPlanning → AscendSyncInsert → AscendLowerParallelToVector
-
-# 最终 IR (伪 IR 表示)
-Allocate A[L0A, float16, addr=0, size=M*K]
-Allocate B[L0B, float16, addr=M*K, size=K*N]
-Allocate C[L0C, float32, addr=0, size=M*N]
-
-# Cube 核矩阵乘
-For tile in [0, num_tiles] {
-  Copy { src: global_A[tile], dst: A[tile] }
-  Copy { src: global_B[tile], dst: B[tile] }
-  Sync[L1]                         ← AscendSyncInsert 插入
-  CubeGemm { dst: C, src1: A, src2: B }
-  Sync[CrossCore]                  ← 等待 Cube 完成
-  Copy { src: C, dst: global_C }
-}
-```
-
-**各 Pass 贡献：**
-- InferAllocScope: 推断 A→L0A, B→L0B, C→L0C
-- AscendMemoryPlanning: 规划地址，A/C 复用空间
-- AscendSyncInsert: 插入 Sync[L1], Sync[CrossCore]
-- AscendLowerParallelToVector: (此例无 Parallel 循环)
-
----
-
-## 五、使用指南
+## 四、使用指南
 
 ### 如何编写 IR 示例
 

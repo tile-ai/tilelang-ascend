@@ -97,6 +97,7 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     from tilelang.utils.target import check_npu_availability
 
     pass_ctx = tilelang.transform.get_pass_context()
+    managed_vector_mask = target.model in {"ascendc", "auto"} and platform in {"A2", "A3"}
     mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
     mod = tilelang.transform.CrossCorePipeline()(mod)
     mod = tilelang.transform.CombineCV()(mod)
@@ -120,5 +121,17 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     mod = tilelang.transform.AscendMemoryPlanning()(mod)
     mod = tilelang.transform.AscendSyncInsert(target, platform)(mod)
     mod = tilelang.transform.AscendSyncInsertVS(target, platform)(mod)
+    if managed_vector_mask:
+        # Materialize physical terminals only after every semantic analysis and
+        # rewrite pass has completed. No TIR-transforming pass may run after
+        # mask legalization.
+        mod = tir.transform.Simplify()(mod)
+    # CombineCV or explicit T.Scope annotations must assign every
+    # resource-specific Ascend operation to C or V. Verify after automatic
+    # synchronization has materialized its final hardware calls.
+    mod = tilelang.transform.AscendResourceScopeVerify()(mod)
+    if managed_vector_mask:
+        mod = tilelang.transform.AscendVectorInstructionSelection(target, platform)(mod)
+        mod = tilelang.transform.AscendVectorMaskLegalize(target, platform)(mod)
     # print(mod)
     return mod

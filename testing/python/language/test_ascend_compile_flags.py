@@ -259,6 +259,7 @@ def _build_sync_dependency_kernel(auto_sync):
     pass_configs = {
         PassConfigKey.TL_ASCEND_AUTO_SYNC: auto_sync,
         PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+        PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     }
 
     @tilelang.jit(

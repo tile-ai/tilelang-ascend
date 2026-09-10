@@ -25,6 +25,7 @@ from tilelang.utils.target import determine_platform
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     # Enable the opt-in tail-block scheme (default off) so the tail_* helpers
     # are actually emitted for these tests.
     tilelang.PassConfigKey.TL_ASCEND_TAIL_MASK: True,

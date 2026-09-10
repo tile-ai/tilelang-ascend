@@ -191,14 +191,15 @@ def _kernel_stride(total_numel, record_len, block_num, single_core_load, dtype, 
         with T.Kernel(block_num, is_npu=True) as (cid, vid):
             row_ub = T.alloc_ub((record_len,), dtype)
 
-            for t in T.serial(single_core_load):
-                task = (cid * VEC_NUM + vid) * single_core_load + t
-                if task < total_records:
-                    src_off = _build_offset_expr(task, n_dims, out_shape, src_strides_mapped)
-                    dst_off = _build_offset_expr(task, n_dims, out_shape, dst_strides)
+            with T.Scope("V"):
+                for t in T.serial(single_core_load):
+                    task = (cid * VEC_NUM + vid) * single_core_load + t
+                    if task < total_records:
+                        src_off = _build_offset_expr(task, n_dims, out_shape, src_strides_mapped)
+                        dst_off = _build_offset_expr(task, n_dims, out_shape, dst_strides)
 
-                    T.copy(x_flat[src_off : src_off + record_len], row_ub)
-                    T.copy(row_ub, y_flat[dst_off : dst_off + record_len])
+                        T.copy(x_flat[src_off : src_off + record_len], row_ub)
+                        T.copy(row_ub, y_flat[dst_off : dst_off + record_len])
 
     return kernel
 
