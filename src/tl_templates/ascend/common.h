@@ -90,6 +90,20 @@ copy_gm_to_l1(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
                              0, 0});
     AscendC::PipeBarrier<PIPE_MTE2>();
   }
+  // A full-width 32-byte row of 16-bit elements has byte-identical linear and
+  // zN representations. Coalesce consecutive rows into one DMA instead of
+  // issuing one 32-byte transfer per row. FP32 C0=8 does not have this layout
+  // equivalence and intentionally stays on the generic path. A column tail
+  // must also stay generic to avoid reading a complete row past valid GM data.
+  if (realSrcN == dstN && tailN == dstN && dstN * sizeof(T) == 32 &&
+      sizeof(T) == 2) {
+    AscendC::DataCopy(dstTensor, srcTensor,
+                      AscendC::DataCopyParams(
+                          static_cast<uint16_t>(1),
+                          static_cast<uint16_t>(tailM * dstN * sizeof(T) / 32),
+                          0, 0));
+    return;
+  }
   auto layout = MakeLayoutFromTag(LayoutGM{tailM, realSrcN});
   auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(tailM, tailN));
   auto src = tla::MakeTensor<decltype(srcTensor), decltype(src_LAYOUT),
