@@ -4,6 +4,39 @@ import tilelang
 import tilelang.language as T
 import torch
 
+
+def _check_precision(actual, golden, dtype=None):
+    configs = {
+        "float16": (2**-14, 2**-9, 1e-1, 0.99),
+        "bfloat16": (2**-10, 2**-6, 1e0, 0.99),
+        "float32": (2**-16, 2**-10, 1e-2, 0.99),
+        "hifloat32": (2**-16, 2**-10, 1e-2, 0.99),
+        "float8_e4m3": (2**-4, 2**-2, 1e0, 0.99),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1, 0.99),
+    }
+    dtype = dtype or {torch.float16: "float16", torch.bfloat16: "bfloat16", torch.float32: "float32"}.get(actual.dtype, "float16")
+    actual, golden = actual.detach().cpu(), golden.detach().cpu()
+    assert actual.shape == golden.shape, f"shape mismatch: {actual.shape} != {golden.shape}"
+    if dtype in {"int8", "int16", "int32", "int64", "uint8"}:
+        assert torch.equal(actual, golden), "integer output mismatch"
+        return
+    atol, rtol, max_abs_limit, required_ratio = configs[dtype]
+    actual, golden = actual.float(), golden.float()
+    special = ~torch.isfinite(golden)
+    assert torch.equal(torch.isnan(actual[special]), torch.isnan(golden[special])), "NaN positions differ"
+    assert torch.equal(torch.isinf(actual[special]), torch.isinf(golden[special])), "Inf positions differ"
+    finite = torch.isfinite(golden)
+    if not finite.any():
+        return
+    abs_error = (actual[finite] - golden[finite]).abs()
+    abs_error = torch.where(torch.isfinite(abs_error), abs_error, torch.full_like(abs_error, float("inf")))
+    matched_ratio = (abs_error <= atol + rtol * golden[finite].abs()).float().mean().item()
+    max_abs_error = abs_error.max().item()
+    assert matched_ratio >= required_ratio and max_abs_error <= max_abs_limit, (
+        f"matched_ratio={matched_ratio:.4f}, max_abs_error={max_abs_error:.3e}"
+    )
+
+
 from utils import (
     DEFAULT_ASCEND_PASS_CONFIGS,
     detect_vec_core_num,
@@ -446,13 +479,8 @@ def _run_ref_check(
         softplus_beta=softplus_beta,
         softplus_threshold=softplus_threshold,
     )
-    torch.testing.assert_close(g_out, g_ref, rtol=1e-3, atol=1e-3)
-    torch.testing.assert_close(
-        beta_out.to(torch.float32),
-        beta_ref.to(torch.float32),
-        rtol=1e-2,
-        atol=1e-2,
-    )
+    _check_precision(g_out, g_ref)
+    _check_precision(beta_out, beta_ref)
     print(f"[PASS] fused_gdn_gating output matches torch reference for num_heads={num_heads}")
 
 

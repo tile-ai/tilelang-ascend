@@ -89,5 +89,5 @@ print("*******c:")
 print(c)
 ref_c = a & b
 
-torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+assert torch.equal(c, ref_c), "elementwise bitwise-and mismatch"
 print("Kernel Output Match!")

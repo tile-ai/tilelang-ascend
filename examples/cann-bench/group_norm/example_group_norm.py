@@ -520,7 +520,9 @@ if __name__ == "__main__":
 
     for name, shape, dtype_str, num_groups, eps in test_cases:
         torch_dtype = getattr(torch, dtype_str)
-        mere_thresh, mare_thresh = thresholds[dtype_str]
+        atol, rtol, max_abs_cap = {"float16": (2**-14, 2**-9, 1e-1), "bfloat16": (2**-10, 2**-6, 1.0), "float32": (2**-16, 2**-10, 1e-2)}[
+            dtype_str
+        ]
 
         if name == "all_zeros_fp32":
             x = torch.zeros(shape, dtype=torch_dtype, device="npu")
@@ -557,35 +559,28 @@ if __name__ == "__main__":
             continue
         y_g = y_golden.float().cpu()
 
-        k_nan = y_k.isnan()
-        g_nan = y_g.isnan()
-        k_inf = y_k.isinf()
-        g_inf = y_g.isinf()
-
-        if name in ("inf_special_bf16", "nan_special_fp16"):
-            nan_match = (k_nan == g_nan).float().mean().item()
-            inf_match = (k_inf == g_inf).float().mean().item()
-            valid = ~(k_nan | g_nan | k_inf | g_inf)
-            if valid.sum() > 0:
-                abs_diff = (y_k[valid] - y_g[valid]).abs()
-                mere = (abs_diff / y_g[valid].abs().clamp(min=1e-7)).mean().item()
-                mare = abs_diff.max().item()
-            else:
-                mere, mare = 0.0, 0.0
-            passed = nan_match > 0.99 and inf_match > 0.99 and mere < mere_thresh and mare < mare_thresh
+        k_special = ~torch.isfinite(y_k)
+        g_special = ~torch.isfinite(y_g)
+        structure_ok = torch.equal(k_special, g_special)
+        if structure_ok and g_special.any():
+            structure_ok = torch.equal(y_k[g_special], y_g[g_special])
+        valid = ~g_special
+        if valid.any():
+            abs_diff = (y_k[valid] - y_g[valid]).abs()
+            passed_mask = abs_diff <= atol + rtol * y_g[valid].abs()
+            ratio = passed_mask.float().mean().item()
+            max_abs = abs_diff.max().item()
+            passed = structure_ok and ratio >= 0.99 and max_abs <= max_abs_cap
         else:
-            abs_diff = (y_k - y_g).abs()
-            mere = (abs_diff / y_g.abs().clamp(min=1e-7)).mean().item()
-            mare = abs_diff.max().item()
-            passed = mere < mere_thresh and mare < mare_thresh
+            ratio, max_abs = 1.0, 0.0
+            passed = structure_ok
         status = "[PRECISION_PASS]" if passed else "[PRECISION_FAIL]"
         if not passed:
             all_passed = False
 
         print(
             f"{status} {name}: shape={shape}, dtype={dtype_str}, groups={num_groups}, "
-            f"MERE={mere:.6e} (thresh={mere_thresh:.6e}), "
-            f"MARE={mare:.6e} (thresh={mare_thresh:.6e})"
+            f"ratio={ratio:.6f}, max_abs={max_abs:.6e} (cap={max_abs_cap:.6e})"
         )
         results.append((name, passed))
 

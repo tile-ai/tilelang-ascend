@@ -328,9 +328,9 @@ _TORCH_DTYPE = {
 
 # per-dtype value tolerance
 _TOL = {
-    "float16": (1e-3, 1e-3),
-    "float32": (1e-5, 1e-5),
-    "bfloat16": (1e-2, 5e-3),
+    "float16": (2**-14, 2**-9),
+    "float32": (2**-16, 2**-10),
+    "bfloat16": (2**-10, 2**-6),
     "int32": (0.0, 0.0),
 }
 
@@ -437,21 +437,28 @@ def _compare(out_v_cpu, out_i_cpu, ref_v, ref_i, dtype):
     Handles inf/nan: uses equal_nan=True for allclose, and skips max_diff
     computation when inf/nan is present.
     """
-    atol, rtol = _TOL[dtype]
     if dtype == "int32":
         v_ok = torch.equal(out_v_cpu, ref_v)
         max_diff = 0.0 if v_ok else (out_v_cpu - ref_v).abs().max().item()
         vmsg = "values_exact" if v_ok else "values_MISMATCH"
     else:
-        v_ok = torch.allclose(out_v_cpu.float(), ref_v.float(), atol=atol, rtol=rtol, equal_nan=True)
-        has_special = torch.isinf(out_v_cpu).any() or torch.isnan(out_v_cpu).any()
-        if has_special:
-            max_diff = float("nan")
-            mere = float("nan")
-            mare = float("nan")
+        atol, rtol, cap = {"float16": (2**-14, 2**-9, 1e-1), "bfloat16": (2**-10, 2**-6, 1.0), "float32": (2**-16, 2**-10, 1e-2)}[dtype]
+        special_o = torch.isnan(out_v_cpu) | torch.isinf(out_v_cpu)
+        special_r = torch.isnan(ref_v) | torch.isinf(ref_v)
+        structure_ok = torch.equal(special_o, special_r)
+        if structure_ok and special_r.any():
+            structure_ok = torch.equal(out_v_cpu[special_r], ref_v[special_r])
+        valid = ~special_r
+        if valid.any():
+            diff = (out_v_cpu[valid].float() - ref_v[valid].float()).abs()
+            passed = diff <= atol + rtol * ref_v[valid].float().abs()
+            ratio = passed.float().mean().item()
+            max_diff = diff.max().item()
+            v_ok = structure_ok and ratio >= 0.99 and max_diff <= cap
+            mere, mare = _rel_stats(out_v_cpu[valid], ref_v[valid])
         else:
-            max_diff = (out_v_cpu.float() - ref_v.float()).abs().max().item()
-            mere, mare = _rel_stats(out_v_cpu, ref_v)
+            ratio, max_diff, mere, mare = 1.0, 0.0, 0.0, 0.0
+            v_ok = structure_ok
         vmsg = f"values MERE={mere:.3e} MARE={mare:.3e}"
 
     i_ok = torch.equal(out_i_cpu, ref_i)

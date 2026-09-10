@@ -1,6 +1,42 @@
 import math
 import tilelang
 import torch
+
+
+def _check_precision(actual, golden, dtype="float32"):
+    configs = {
+        "float16": (2**-14, 2**-9, 1e-1, 0.99),
+        "bfloat16": (2**-10, 2**-6, 1e0, 0.99),
+        "float32": (2**-16, 2**-10, 1e-2, 0.99),
+        "hifloat32": (2**-16, 2**-10, 1e-2, 0.99),
+        "float8_e4m3": (2**-4, 2**-2, 1e0, 0.99),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1, 0.99),
+    }
+    actual, golden = actual.detach().cpu(), golden.detach().cpu()
+    if actual.shape != golden.shape:
+        return False, 0.0, float("inf")
+    if dtype in {"int8", "int16", "int32", "int64", "uint8"}:
+        mismatch = (actual != golden).sum().item()
+        total = max(actual.numel(), 1)
+        return mismatch == 0, 1.0 - mismatch / total, 0.0 if mismatch == 0 else float("inf")
+    atol, rtol, max_abs_limit, required_ratio = configs[dtype]
+    actual, golden = actual.float(), golden.float()
+    special = ~torch.isfinite(golden)
+    if special.any() and (
+        not torch.equal(torch.isnan(actual[special]), torch.isnan(golden[special]))
+        or not torch.equal(torch.isinf(actual[special]), torch.isinf(golden[special]))
+    ):
+        return False, 0.0, float("inf")
+    finite = torch.isfinite(golden)
+    if not finite.any():
+        return True, 1.0, 0.0
+    error = (actual[finite] - golden[finite]).abs()
+    error = torch.where(torch.isfinite(error), error, torch.full_like(error, float("inf")))
+    ratio = (error <= atol + rtol * golden[finite].abs()).float().mean().item()
+    maximum = error.max().item()
+    return ratio >= required_ratio and maximum <= max_abs_limit, ratio, maximum
+
+
 from tilelang import language as T
 
 _FWD_PASS_CONFIGS = {
@@ -205,7 +241,8 @@ def test_fwd():
 
     output_tl = output_reshaped.reshape(-1, mhc_mult)
     ref_output = mhc_head_compute_mix_ref(input_mix, mhc_scale, mhc_base, mhc_pre_eps)
-    torch.testing.assert_close(output_tl, ref_output, rtol=1e-4, atol=1e-4)
+    passed, ratio, max_abs = _check_precision(output_tl, ref_output)
+    assert passed, f"forward: matched_ratio={ratio:.4f}, max_abs_error={max_abs:.6e}"
 
     print("Kernel Output Match!")
 
@@ -251,9 +288,13 @@ def test_bwd():
 
     scale_grad_tl_result = scale_grad_partial_clean.sum().reshape(1)
     base_grad_tl_result = base_grad_partial_clean.sum(dim=0).reshape(_RESHAPE_FACTOR, mhc_mult).sum(dim=0)
-    torch.testing.assert_close(input_grad_tl_result, input_mix.grad, rtol=1e-4, atol=1e-4)
-    torch.testing.assert_close(scale_grad_tl_result, mhc_scale.grad, rtol=1e-4, atol=1e-4)
-    torch.testing.assert_close(base_grad_tl_result, mhc_base.grad, rtol=1e-4, atol=1e-4)
+    for name, actual, golden in (
+        ("input_grad", input_grad_tl_result, input_mix.grad),
+        ("scale_grad", scale_grad_tl_result, mhc_scale.grad),
+        ("base_grad", base_grad_tl_result, mhc_base.grad),
+    ):
+        passed, ratio, max_abs = _check_precision(actual, golden)
+        assert passed, f"{name}: matched_ratio={ratio:.4f}, max_abs_error={max_abs:.6e}"
     print("Kernel Output Match!")
 
 

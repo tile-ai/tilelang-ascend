@@ -22,6 +22,32 @@ FP32 = "float32"
 INT32 = "int32"
 
 
+def _check_precision(actual, golden, dtype):
+    table = {
+        "float16": (2**-14, 2**-9, 1e-1),
+        "bfloat16": (2**-10, 2**-6, 1.0),
+        "float32": (2**-16, 2**-10, 1e-2),
+        "hifloat32": (2**-16, 2**-10, 1e-2),
+        "float8_e4m3": (2**-4, 2**-2, 1.0),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1),
+    }
+    if dtype not in table:
+        assert torch.equal(actual.detach().cpu(), golden.detach().cpu()), "integer output mismatch"
+        return
+    atol, rtol, max_abs_limit = table[dtype]
+    actual, golden = actual.detach().cpu().float(), golden.detach().cpu().float()
+    special = ~torch.isfinite(golden)
+    assert torch.equal(torch.isnan(actual[special]), torch.isnan(golden[special]))
+    assert torch.equal(torch.isinf(actual[special]), torch.isinf(golden[special]))
+    finite = torch.isfinite(golden)
+    if not finite.any():
+        return
+    error = (actual[finite] - golden[finite]).abs()
+    ratio = (error <= atol + rtol * golden[finite].abs()).float().mean().item()
+    max_abs = error.max().item()
+    assert ratio >= 0.99 and max_abs <= max_abs_limit, f"matched_ratio={ratio:.4f}, max_abs={max_abs:.3e}"
+
+
 @tilelang.jit(
     out_idx=[-2, -1],
     pass_configs={
@@ -133,7 +159,11 @@ def act_quant_torch(x: torch.Tensor, round_scale: bool = False) -> Tuple[torch.T
 
     scaled = x_fp32 / scales
     clipped = torch.clamp(scaled, -127, 127)
-    x_int8 = torch.round(clipped).to(torch.float16).to(torch.int8)
+    # AscendC::Round rounds halfway cases away from zero, whereas
+    # ``torch.round`` uses round-to-even.  Keep the golden path aligned with
+    # the device intrinsic so integer outputs can be checked exactly.
+    rounded = torch.where(clipped >= 0, torch.floor(clipped + 0.5), torch.ceil(clipped - 0.5))
+    x_int8 = rounded.to(torch.float16).to(torch.int8)
 
     if len(original_shape) == 3:
         x_int8 = x_int8.view(original_shape)
@@ -162,8 +192,8 @@ def test(custom_args=None):
     x_int8_torch, scales_torch = validate_act_quant_kernel(x_bf16, M, N)
     torch.npu.synchronize()
 
-    torch.testing.assert_close(Y, x_int8_torch, rtol=1e-2, atol=1)
-    torch.testing.assert_close(S.reshape(M), scales_torch.reshape(M), rtol=1e-2, atol=1e-2)
+    _check_precision(Y, x_int8_torch, "int8")
+    _check_precision(S.reshape(M), scales_torch.reshape(M), "float32")
     logging.info("Kernel Output Match!")
 
 
