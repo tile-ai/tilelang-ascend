@@ -244,7 +244,20 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       // shape for a full copy, or the const slice width), so every existing
       // caller is unchanged -- only the previously-uncompilable runtime-slice
       // case changes.
+      //
+      // For a 2D+ destination the template column dim must be the buffer's
+      // PHYSICAL row width (dst->shape[last]), not the copy-region width
+      // (dst_extents[last]): the helper derives the dst inter-block stride as
+      // (dstN - maskShapeN) * sizeof(T) / 32, so a sub-region copy into a wider
+      // buffer (dst col offset + width < physical row width) needs dstN ==
+      // physical row width for the rows to advance correctly. Using the copy
+      // width makes the stride 0 and bit-shifts every row after the first
+      // (test_tilelang_ascend_language_copy_2d_subregion). 1D copies keep the
+      // extent (== shape for a full 1D copy) so they are byte-identical.
       PrimExpr gm2ub_tmpl_n = dst_extents[dst->shape.size() - 1];
+      if (dst->shape.size() > 1) {
+        gm2ub_tmpl_n = dst->shape[dst->shape.size() - 1];
+      }
       if (!gm2ub_tmpl_n->IsInstance<IntImmNode>()) {
         gm2ub_tmpl_n = dst->shape[dst->shape.size() - 1];
         // The shape fallback must itself be a compile-time constant; a buffer
@@ -270,7 +283,14 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       // See copy_gm_to_ub above: a runtime inner-extent must use the buffer's
       // compile-time shape for the template col dim (runtime width is carried
       // by the maskShapeN function arg); const extents are byte-identical.
+      // For a 2D+ source the template col dim must be the buffer's PHYSICAL row
+      // width (src->shape[last]) so the helper's src inter-block stride
+      // (srcN - maskShapeN) advances rows correctly on a sub-region store
+      // (copy width < physical row width). 1D copies keep the extent.
       PrimExpr ub2gm_tmpl_n = src_extents[src->shape.size() - 1];
+      if (src->shape.size() > 1) {
+        ub2gm_tmpl_n = src->shape[src->shape.size() - 1];
+      }
       if (!ub2gm_tmpl_n->IsInstance<IntImmNode>()) {
         ub2gm_tmpl_n = src->shape[src->shape.size() - 1];
         // See copy_gm_to_ub: the shape fallback must itself be compile-time.
