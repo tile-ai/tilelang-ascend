@@ -337,7 +337,11 @@ class CythonKernelAdapter(BaseKernelAdapter):
         #     raise RuntimeError(f"Initialization failed: {error_msg}")
 
         adapter.cython_wrapper = CythonKernelWrapper(
-            adapter.result_idx, adapter.workspace_idx, adapter.auto_gm_idx, adapter.params, adapter.lib
+            adapter.result_idx,
+            adapter.workspace_idx,
+            adapter.auto_gm_idx,
+            adapter.params,
+            adapter.lib,
         )
         adapter.cython_wrapper.set_dynamic_symbolic_map(adapter.dynamic_symbolic_map)
         adapter.cython_wrapper.set_buffer_dtype_map(adapter.buffer_dtype_map)
@@ -352,23 +356,43 @@ class CythonKernelAdapter(BaseKernelAdapter):
         """Extract information about dynamic shapes from the TIR function.
 
         Maps symbolic variables to their corresponding (buffer_index, shape_dimension)
-        for runtime shape resolution.
+        for runtime shape resolution.  Device codegen orders symbols by their
+        first occurrence in all buffer shape expressions, so collect that ABI
+        order first, then resolve each symbol from an exact standalone input
+        dimension.  A composite extent cannot identify its component values.
         """
         func = self.prim_func
         params = func.params
         buffer_map = func.buffer_map
-        dynamic_symbolic_map = {}
-        temp = 0
+
+        ordered_symbols = []
+        seen_symbols = set()
+        for param in params:
+            if param not in buffer_map:
+                continue
+            for shape in buffer_map[param].shape:
+                for symbol in tir.analysis.undefined_vars(shape, params):
+                    if symbol not in seen_symbols:
+                        seen_symbols.add(symbol)
+                        ordered_symbols.append(symbol)
+
+        providers = {}
+        input_index = 0
         for i, param in enumerate(params):
-            if i in self.result_idx or i in self.workspace_idx:
-                temp += 1
+            if i in self.result_idx or i in self.workspace_idx or i in self.auto_gm_idx:
                 continue
             if param in buffer_map:
                 buffer = buffer_map[param]
                 for j, shape in enumerate(buffer.shape):
-                    if isinstance(shape, tir.Var) and (shape not in dynamic_symbolic_map) and (shape not in params):
-                        dynamic_symbolic_map[shape] = (i - temp, j)
-        return dynamic_symbolic_map
+                    if isinstance(shape, tir.Var) and shape in seen_symbols:
+                        providers.setdefault(shape, (input_index, j))
+            input_index += 1
+
+        missing = [symbol for symbol in ordered_symbols if symbol not in providers]
+        if missing:
+            names = ", ".join(str(symbol) for symbol in missing)
+            raise ValueError(f"Dynamic shape symbols require a standalone input dimension; no runtime provider for: {names}")
+        return {symbol: providers[symbol] for symbol in ordered_symbols}
 
     def _process_buffer_dtype(self) -> dict[tir.Var, tuple[int, torch.dtype]]:
         """Extract information about buffer dtypes from the TIR function.
