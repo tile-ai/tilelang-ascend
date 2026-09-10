@@ -3136,3 +3136,83 @@ def datacachecleanandinvalid_experiment(dst: Buffer, CacheLine: str, DcciDst: st
         f"AscendC::DataCacheCleanAndInvalid<{_dtype(dst)}, AscendC::CacheLine::{CacheLine}, AscendC::DcciDst::{DcciDst}>",
         dst.access_ptr("w"),
     )
+
+
+def im2col(
+    dst: Buffer | BufferRegion,
+    src: Buffer | BufferRegion,
+    image_shape: tuple[int, int],
+    kernel: tuple[int, int],
+    stride: tuple[int, int] = (1, 1),
+    dilation: tuple[int, int] = (1, 1),
+    padding: tuple[int, int, int, int] = (0, 0, 0, 0),
+    pos_m: PrimExpr = 0,
+    pos_k: PrimExpr = 0,
+    valid_m: PrimExpr | None = None,
+    valid_k: PrimExpr | None = None,
+):
+    """从 L1 的 NC1HWC0 feature map 提取卷积 im2col tile 到 L0A。
+
+    翻译自 catlass conv 的 L1->L0A 装载路径
+    （catlass/conv/tile/atlasa2/copy_l1_to_l0a.hpp，底层为 AscendC::LoadData
+    + LoadData3DParamsV2 卷积模式）。
+
+    Args:
+        dst: L0A tile buffer（A2 分形 zZ），逻辑形状 [M, K]：
+            M = 输出位置数（ho*wo 展开），K = kh*kw*cin_actual。
+        src: L1 feature map buffer，NC1HWC0 布局 [C1, H, W, C0]。
+        image_shape: (hi, wi)，L1 中 feature map 的实际高宽。
+        kernel: (kh, kw) 卷积核尺寸。
+        stride: (stride_h, stride_w)。
+        dilation: (dilation_h, dilation_w)。
+        padding: (pad_left, pad_right, pad_top, pad_bottom)。
+        pos_m/pos_k: 目的 tile 的 m/k 起点（mStartPt/kStartPt）。
+        valid_m/valid_k: 传输长度（mExtension/kExtension），缺省为 dst tile 形状。
+
+    硬件约束（LoadData3DParamsV2）：
+        - channelSize = valid_k / (kh*kw) 必须为 C0 语义值
+          （fp16/bf16: 4/8/16/N*16+4/N*16+8；fp32: 4/N*8/N*8+4）
+        - pos_k/valid_k 一般需 C0 对齐；pos_m/valid_m 一般需 16 对齐
+          （恰好覆盖最右/最下分形时可放宽）
+
+    Returns:
+        tvm.tir.Call: im2col 指令的 intrinsic call。
+    """
+    dst_ptr, dst_extent = _handle_buffer_region(dst, "w") if isinstance(dst, BufferRegion) else (dst.access_ptr("w"), dst.shape)
+    src_ptr, _ = _handle_buffer_region(src, "r") if isinstance(src, BufferRegion) else (src.access_ptr("r"), src.shape)
+
+    hi, wi = image_shape
+    kh, kw = kernel
+    sh, sw = stride
+    dh, dw = dilation
+    pl, pr, pt, pb = padding
+
+    dst_extent = list(dst_extent)[-2:]
+    if valid_m is None:
+        valid_m = dst_extent[0]
+    if valid_k is None:
+        valid_k = dst_extent[1]
+
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_im2col"),
+        f"im2col<{_dtype(dst)}>",
+        src_ptr,
+        dst_ptr,
+        hi,
+        wi,
+        kh,
+        kw,
+        sh,
+        sw,
+        dh,
+        dw,
+        pl,
+        pr,
+        pt,
+        pb,
+        pos_m,
+        pos_k,
+        valid_m,
+        valid_k,
+    )
