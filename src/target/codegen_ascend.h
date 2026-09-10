@@ -48,6 +48,7 @@ public:
 
   // overload visitor
   void VisitExpr_(const FloatImmNode *op, std::ostream &os) final;
+  void VisitExpr_(const CastNode *op, std::ostream &os) final;
   void VisitExpr_(const CallNode *op, std::ostream &os) final;
   void VisitExpr_(const FloorDivNode *op, std::ostream &os);
   void VisitExpr_(const FloorModNode *op, std::ostream &os);
