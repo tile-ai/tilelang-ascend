@@ -977,6 +977,27 @@ def brcb_experiment(
     )
 
 
+def _validate_binary_op_region(br: BufferRegion, op: str, arg_name: str) -> None:
+    """Reject BufferRegions that are not contiguous when flattened.
+
+    ``binary_op`` lowers a region to a single linear vector operation, so a
+    column-offset slice such as ``buf[:, 8:40]`` silently loses its per-row
+    layout: a 32-byte-aligned offset computes over the wrong elements and an
+    unaligned one raises aicore exception 507015. Only regions that select a
+    contiguous linear span (whole buffer, whole rows, a single row, or a 1D
+    slice) keep the linear semantics.
+    """
+    try:
+        _validate_buffer_region_contiguity(br, require_flat_contiguous=True)
+    except ValueError as err:
+        raise ValueError(
+            f"T.tile.{op} requires {arg_name} to be contiguous when flattened; only "
+            f"whole-row / whole-buffer / 1D contiguous regions are supported, and "
+            f"column-offset slices produce wrong results or aicore exception 507015. "
+            f"Detail: {err}"
+        ) from err
+
+
 def binary_op(
     dst: Buffer | BufferRegion,
     src0: Buffer | BufferRegion,
@@ -984,11 +1005,13 @@ def binary_op(
     op: str,
 ):
     if isinstance(dst, BufferRegion):
+        _validate_binary_op_region(dst, op, "dst")
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
     else:
         dst_ptr = dst.access_ptr("w")
         dst_extent = dst.shape
     if isinstance(src0, BufferRegion):
+        _validate_binary_op_region(src0, op, "src0")
         src0_ptr, src0_extent = _handle_buffer_region(src0, "r")
     else:
         src0_ptr = src0.access_ptr("r")
@@ -1013,6 +1036,7 @@ def binary_op(
     elif isinstance(src1, (PrimExpr, float, int)):
         return T.call_intrin("handle", tir.op.Op.get(f"tl.ascend_{op}s"), dst_ptr, src0_ptr, src1, size_0)
     elif isinstance(src1, BufferRegion):
+        _validate_binary_op_region(src1, op, "src1")
         src1_ptr, src1_extent = _handle_buffer_region(src1, "r")
         size_2 = math.prod(src1_extent)
         assert size_0 == size_2, "size must be same"
