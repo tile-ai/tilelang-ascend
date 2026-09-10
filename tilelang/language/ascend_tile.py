@@ -81,6 +81,39 @@ def _handle_buffer_region(br: BufferRegion, mask):
     return bf.access_ptr(mask, offset=offset, extent=size_extent), extent
 
 
+def _scalar_load_offset(load: BufferLoad) -> PrimExpr:
+    """Resolve a scalar BufferLoad into its element offset in the buffer.
+
+    A multi-dimensional element access such as ``s_ub[1, 3]`` must address the
+    requested element; forwarding only the first index would silently read
+    ``s_ub.flatten()[1]``.
+
+    ``shared.ub`` buffers are physically laid out with each row padded to a
+    32-byte boundary (MTE burst granularity on AscendC, aligned columns in
+    PTO's ``TileUbDataND``, mirrored by ``Flatten2DBuffer``'s 256-bit
+    inner-dim alignment and the UB memory planner), so their row stride is the
+    padded one. 1-D buffers, unit-inner-dim buffers (PTO stores them as a flat
+    ``[1, M]`` DN tile) and non-UB buffers keep dense row-major offsets.
+    """
+    buf = load.buffer
+    indices = load.indices
+    if len(indices) <= 1 or buf.scope() != "shared.ub":
+        return buf.offset_of(indices)[0]
+    last_dim = buf.shape[-1]
+    if isinstance(last_dim, IntImm) and last_dim.value == 1:
+        return buf.offset_of(indices)[0]
+    bits = DataType(buf.dtype).bits
+    elem_align = 256 // bits if bits <= 256 else 1
+    if isinstance(last_dim, IntImm):
+        stride = -(-last_dim.value // elem_align) * elem_align
+    else:
+        stride = (last_dim + (elem_align - 1)) // elem_align * elem_align
+    outer = indices[0]
+    for dim, idx in zip(buf.shape[1:-1], indices[1:-1]):
+        outer = outer * dim + idx
+    return outer * stride + indices[-1]
+
+
 def _is_const_one(val) -> bool:
     """Check if a value is constant 1 (int or IntImm)."""
     if isinstance(val, (int, float)):
@@ -810,7 +843,6 @@ def select(
 
         src1_type = 0
         buffer_1 = src1.buffer
-        indices_1 = src1.indices
         return _call_intrin_with_optional_tmp(
             "select",
             [
@@ -819,7 +851,7 @@ def select(
                 src0_ptr,
                 src1_type,
                 buffer_1.access_ptr("r"),
-                indices_1[0],
+                _scalar_load_offset(src1),
                 selMode,
                 size_0,
             ],
@@ -999,14 +1031,13 @@ def binary_op(
     assert size_0 == size_1, "size must be same"
     if isinstance(src1, BufferLoad):
         buffer_1 = src1.buffer
-        indices_1 = src1.indices
         return T.call_intrin(
             "handle",
             tir.op.Op.get(f"tl.ascend_{op}s"),
             dst_ptr,
             src0_ptr,
             buffer_1.access_ptr("r"),
-            indices_1[0],
+            _scalar_load_offset(src1),
             size_0,
         )
 
@@ -1917,14 +1948,13 @@ def compare(
 
     if isinstance(src1, BufferLoad):
         buffer_1 = src1.buffer
-        indices_1 = src1.indices
         return T.call_intrin(
             "handle",
             tir.op.Op.get("tl.ascend_compare_scalar"),
             dst_ptr,
             src0_ptr,
             buffer_1.access_ptr("r"),
-            indices_1[0],
+            _scalar_load_offset(src1),
             mode,
             dst_size,
         )
