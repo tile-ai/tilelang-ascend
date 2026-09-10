@@ -37,6 +37,8 @@
 - `tilelang-env-check`：环境检查与配置验证（CANN、torch_npu、子模块、编译产物、环境变量）
 - `tilelang-submodule-pull`：自动拉取代码和子模块
 - `tilelang-github-operations`：GitHub PR 创建与操作
+- `tilelang-run-examples`：全量运行 examples/ 算子脚本，支持后端选择（auto/ascendc/pto/双后端）、aclgraph 控制、并行与超时、Excel 多轮对比导出
+- `tilelang-pr-verify`：基于 PR 链接 checkout merge-base 与 head 两版本各跑一次全量 examples，对比标注 FIXED/NEW FAIL，复用 run-examples 的执行与 Excel 导出
 
 #### Skill 管理
 - `skill-creator`：创建新 skill
