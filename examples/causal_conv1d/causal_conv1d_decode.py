@@ -42,7 +42,7 @@ def build_causal_conv1d_decode_kernel(
         bias: T.Tensor((symbol_dim,), dtype_str),
         y: T.Tensor((symbol_batch, symbol_dim), dtype_str),
     ):
-        with T.Kernel(total_tasks, is_npu=True) as (cid, vid):
+        with T.Kernel(total_tasks, threads=2, is_npu=True) as (cid):
             batch_id = cid // dim_chunks
             dim_chunk_id = cid % dim_chunks
 
