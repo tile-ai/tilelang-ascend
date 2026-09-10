@@ -416,18 +416,20 @@ void CodeGenTileLangAscend::PrintStorageScope(const std::string &scope,
 
 void CodeGenTileLangAscend::VisitExpr_(const FloorDivNode *op,
                                        std::ostream &os) {
-  os << "(";
+  // floor 语义降到 tl::ascend::tl_floordiv(C / 是截断,负数不符 floor——
+  // conv strip 闭式错位实录,见 common.h 注释)
+  os << "tl::ascend::tl_floordiv(";
   PrintExpr(op->a, os);
-  os << " / ";
+  os << ", ";
   PrintExpr(op->b, os);
   os << ")";
 }
 
 void CodeGenTileLangAscend::VisitExpr_(const FloorModNode *op,
                                        std::ostream &os) {
-  os << "(";
+  os << "tl::ascend::tl_floormod(";
   PrintExpr(op->a, os);
-  os << " % ";
+  os << ", ";
   PrintExpr(op->b, os);
   os << ")";
 }
