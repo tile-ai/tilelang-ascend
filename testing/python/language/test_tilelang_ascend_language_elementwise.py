@@ -861,6 +861,108 @@ def test_bitwise_not(dtype, target, shape):
     run_test_bitwise_not(M, N, 128, 256, dtype, target=target)
 
 
+_TORCH_INT_DTYPE_NOT = {
+    "int8": torch.int8,
+    "uint8": torch.uint8,
+    "int16": torch.int16,
+    "uint16": torch.uint16,
+}
+
+
+def _torch_bitwise_not(a, dtype):
+    if dtype in ("uint8", "uint16"):
+        return (~a.to(torch.int32)).to(_TORCH_INT_DTYPE_NOT[dtype])
+    return ~a
+
+
+def run_test_bitwise_not_ext(dtype, target):
+    """Extended bitwise_not test supporting int8/uint8."""
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    VEC_NUM = 2
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.tile.bitwise_not(b_ub, a_ub)
+            T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    td = _TORCH_INT_DTYPE_NOT[dtype]
+    a = torch.randint(0, 100, (M, N), dtype=td).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    ref_b = _torch_bitwise_not(a.cpu(), dtype).npu()
+    assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("dtype", ["int8", "uint8"])
+@pytest.mark.parametrize("target", ["pto"])
+def test_bitwise_not_int8_uint8(dtype, target):
+    """int8/uint8 are supported on A2/A3 via PTO backend (B82B16Trait widening).
+
+    AscendC does NOT support int8/uint8 for bitwise_not: NotImpl calls vnot
+    directly with the original type, and vnot only accepts int16/uint16.
+    PTO's TNOT_IMPL uses B82B16Trait to widen int8→int16 before calling vnot.
+    """
+    run_test_bitwise_not_ext(dtype, target)
+
+
+@pytest.mark.xfail(
+    reason="int32 on ascendc fails to compile: NotImpl calls vnot which only "
+    "accepts __ubuf__ short* (int16). PTO also fails: TNOT_IMPL's B82B16Trait "
+    "does not widen int32→int16, so vnot gets int32* and rejects it."
+)
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_not_int32(target):
+    run_test_bitwise_not_ext("int32", target)
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_bitwise_not_buffer_region(target):
+    """BufferRegion slices are supported as operands."""
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    VEC_NUM = 2
+    m_num = M // block_M
+    n_num = N // block_N
+    dtype = "int16"
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.tile.bitwise_not(
+                b_ub[0 : block_M // VEC_NUM, 0:block_N],
+                a_ub[0 : block_M // VEC_NUM, 0:block_N],
+            )
+            T.copy(b_ub, B[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    a = torch.randint(0, 100, (M, N), dtype=torch.int16).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    ref_b = (~a.cpu()).npu()
+    assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
+
+
 def bitwise_rshift(M, N, block_M, block_N, scalarvalue, dtype="int32"):
     m_num = M // block_M
     n_num = N // block_N
