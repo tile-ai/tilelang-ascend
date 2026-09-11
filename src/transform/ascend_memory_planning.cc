@@ -936,8 +936,13 @@ private:
         }
       }
 
-      size_t size_bytes =
-          size_elements * alloc->dtype.bytes() * alloc->dtype.lanes();
+      // Sub-byte dtypes (e.g. int4) are nibble-packed in the AscendC memory
+      // model: two elements share one byte. DataType::bytes() rounds up to 1
+      // byte per element, which would over-allocate such buffers by 2x, so
+      // compute the byte footprint from the exact bit width.
+      size_t size_bits =
+          size_elements * alloc->dtype.bits() * alloc->dtype.lanes();
+      size_t size_bytes = (size_bits + 7) / 8;
       // A packed compare Buffer is logically [rows, ceil(cols/8)], but the
       // AscendC vector/MTE contracts consume one 32-byte UB data block per
       // predicate row.  Preserve the logical shape used by access_ptr and GM
@@ -987,8 +992,11 @@ private:
         const auto *rows = call->args[shape_index + 2].as<IntImmNode>();
         const auto *cols = call->args[shape_index + 3].as<IntImmNode>();
         ICHECK(rows && cols) << "tail broadcast source shape must be static";
-        const size_t row_bytes = static_cast<size_t>(cols->value) *
-                                 alloc->dtype.bytes() * alloc->dtype.lanes();
+        // Bit-exact row footprint (see the sub-byte note above); identical to
+        // cols * dtype.bytes() for every non-sub-byte dtype.
+        const size_t row_bits = static_cast<size_t>(cols->value) *
+                                alloc->dtype.bits() * alloc->dtype.lanes();
+        const size_t row_bytes = (row_bits + 7) / 8;
         if (rows->value > 0 && row_bytes < 32) {
           padded_broadcast_bytes = std::max(
               padded_broadcast_bytes, static_cast<size_t>(rows->value) * 32);
