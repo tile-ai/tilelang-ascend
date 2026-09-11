@@ -811,3 +811,4 @@ if __name__ == "__main__":
     for i in indices:
         run_config(*test_configs[i])
     print("\nAll done. tilelang_rms_norm_opt vs aclnnRmsNorm captured for msprof op.", flush=True)
+    print("TEST PASSED!", flush=True)
