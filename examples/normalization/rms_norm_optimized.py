@@ -45,7 +45,7 @@ pass_configs = {
 
 # ---------------- machine model (queried at runtime) ----------------
 _NPU_PROPS = torch.npu.get_device_properties(torch.npu.current_device())
-UB_LIMIT = _AscendArch().ub_cap - 256    # usable UB bytes per AIV sub-block
+UB_LIMIT = _AscendArch().ub_cap - 256  # usable UB bytes per AIV sub-block
 S_SUBBLOCKS = _NPU_PROPS.vector_core_num  # AIV sub-blocks (GRID = S/2, MIX_AIC_1_2)
 
 # tiling search space: structural candidates (stages / chunk counts) for planners
@@ -83,20 +83,21 @@ def _divisors_desc(n):
 
 
 # ---------------- tier 1: whole_row (single-pass whole row) ----------------
-#容量估算
+# 容量估算
 def _ub_bytes_whole_row(rows, n, dtype, stages, variant):
     cast = dtype in ("bfloat16", "float16")
     xb = 2 if cast else 4
     per_elem = {
-        "cast_bcast": stages * xb + 12,       # a_x_s + a_f32 + sq + inv_tile
-        "cast_scalar": stages * xb + 4,       # a_x_s + a_f32 (recast)
+        "cast_bcast": stages * xb + 12,  # a_x_s + a_f32 + sq + inv_tile
+        "cast_scalar": stages * xb + 4,  # a_x_s + a_f32 (recast)
         "cast_keep_scalar": stages * xb + 8,  # a_x_s + a_f32 + sq
         "fp32_bcast": stages * 4 + 8,
         "fp32_scalar": stages * 4 + 4,
     }[variant]
     return rows * n * per_elem + max(_reduce_tmp_bytes(rows, n), 1024) + rows * 8 + 512
 
-#tier的决策函数
+
+# tier的决策函数
 def _plan_whole_row(M, N, dtype, stages_pref=STAGE_PREF):
     """Returns (variant, stages, ROWS, GRID, k, R) or None. Exact ragged
     distribution: every sub-block runs k pipelined iterations of `stages`
@@ -126,7 +127,8 @@ def _plan_whole_row(M, N, dtype, stages_pref=STAGE_PREF):
     R = tiles - S_SUBBLOCKS * (k * stages)
     return variant, stages, rows, S_SUBBLOCKS // 2, k, R
 
-#语句模板
+
+# 语句模板
 def _whole_row_tile_body(variant, st, buf):
     if variant == "cast_bcast":
         return f"""
@@ -199,29 +201,37 @@ def _whole_row_tile_body(variant, st, buf):
                 T.copy({buf}, B[row0 : row0 + ROWS, :])
 """
 
-#buffer模板
+
+# buffer模板
 def _whole_row_buffers(variant, stages, cast):
     bufs = []
     for s in range(stages):
         bufs.append((f"a_x_{s}", "[ROWS, N]", "dtype" if cast else "acc_dtype"))
     if variant == "cast_bcast":
-        bufs += [("a_f32", "[ROWS, N]", "acc_dtype"), ("sq_f32", "[ROWS, N]", "acc_dtype"),
-                 ("inv_tile", "[ROWS, N]", "acc_dtype"), ("sum_row", "[ROWS]", "acc_dtype"),
-                 ("inv_rms", "[ROWS]", "acc_dtype")]
+        bufs += [
+            ("a_f32", "[ROWS, N]", "acc_dtype"),
+            ("sq_f32", "[ROWS, N]", "acc_dtype"),
+            ("inv_tile", "[ROWS, N]", "acc_dtype"),
+            ("sum_row", "[ROWS]", "acc_dtype"),
+            ("inv_rms", "[ROWS]", "acc_dtype"),
+        ]
     elif variant == "cast_scalar":
         bufs += [("a_f32", "[ROWS, N]", "acc_dtype"), ("sum_row", "[ROWS]", "acc_dtype")]
     elif variant == "cast_keep_scalar":
-        bufs += [("a_f32", "[ROWS, N]", "acc_dtype"), ("sq_f32", "[ROWS, N]", "acc_dtype"),
-                 ("sum_row", "[ROWS]", "acc_dtype")]
+        bufs += [("a_f32", "[ROWS, N]", "acc_dtype"), ("sq_f32", "[ROWS, N]", "acc_dtype"), ("sum_row", "[ROWS]", "acc_dtype")]
     elif variant == "fp32_bcast":
-        bufs += [("sq_f32", "[ROWS, N]", "acc_dtype"), ("inv_tile", "[ROWS, N]", "acc_dtype"),
-                 ("sum_row", "[ROWS]", "acc_dtype"), ("inv_rms", "[ROWS]", "acc_dtype")]
+        bufs += [
+            ("sq_f32", "[ROWS, N]", "acc_dtype"),
+            ("inv_tile", "[ROWS, N]", "acc_dtype"),
+            ("sum_row", "[ROWS]", "acc_dtype"),
+            ("inv_rms", "[ROWS]", "acc_dtype"),
+        ]
     else:  # fp32_scalar
-        bufs += [("sq_f32", "[ROWS, N]", "acc_dtype"), ("sum_row", "[ROWS]", "acc_dtype"),
-                 ("inv_rms", "[ROWS]", "acc_dtype")]
+        bufs += [("sq_f32", "[ROWS, N]", "acc_dtype"), ("sum_row", "[ROWS]", "acc_dtype"), ("inv_rms", "[ROWS]", "acc_dtype")]
     return bufs
 
-#组装器
+
+# 组装器
 def _make_whole_row_impl(variant, stages):
     cast = variant.startswith("cast")
     bufs = _whole_row_buffers(variant, stages, cast)
@@ -230,14 +240,11 @@ def _make_whole_row_impl(variant, stages):
     for s in range(stages):
         body_lines = _whole_row_tile_body(variant, s, f"a_x_{s}").strip("\n").splitlines()
         inner = "\n".join("    " + ln for ln in body_lines)
-        tail_parts.append(
-            "                if s * STG + %d < R:\n"
-            "                    base = S * (k * STG) + s * STG\n%s" % (s, inner)
-        )
+        tail_parts.append("                if s * STG + %d < R:\n                    base = S * (k * STG) + s * STG\n%s" % (s, inner))
     tail = "\n".join(tail_parts)
     decl = "\n            ".join(f"{n} = T.alloc_ub({sh}, {dt})" for n, sh, dt in bufs)
     name = f"_rms_whole_row_{variant}_s{stages}"
-    src = f'''
+    src = f"""
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def {name}(M, N, eps=1e-5, dtype="float", ROWS=1, GRID=20, k=1, R=0):
     need_cast = dtype not in ("float", "float32")
@@ -258,18 +265,19 @@ def {name}(M, N, eps=1e-5, dtype="float", ROWS=1, GRID=20, k=1, R=0):
             if s * STG < R:
 {tail}
     return tilelang_rms_norm_opt
-'''
+"""
     return name, src
 
 
 # ---------------- tier 2: row_cache (huge N, single GM read) ----------------
 
+
 def _ub_bytes_row_cache(rows, n, bn, dtype):
     cast = dtype in ("bfloat16", "float16")
     if cast:
-        total = rows * n * 2 + rows * bn * 8      # rc + a_f32 + inv_tile
+        total = rows * n * 2 + rows * bn * 8  # rc + a_f32 + inv_tile
     else:
-        total = rows * n * 4 + rows * bn * 8      # rc + sq + inv_tile
+        total = rows * n * 4 + rows * bn * 8  # rc + sq + inv_tile
     return total + max(_reduce_tmp_bytes(rows, bn), 1024) + rows * 8 + 512
 
 
@@ -298,7 +306,8 @@ def _plan_row_cache(M, N, dtype):
     R = tiles - S_SUBBLOCKS * k
     return rows, S_SUBBLOCKS // 2, k, R, bn, n_num
 
-#语句模板
+
+# 语句模板
 def _row_cache_body(cast_variant, n_num):
     lines = ["T.tile.fill(sum_row, 0.0)"]
     for c in range(n_num):
@@ -340,7 +349,8 @@ def _row_cache_body(cast_variant, n_num):
             ]
     return lines
 
-#buffer模板 + 组装器
+
+# buffer模板 + 组装器
 def _make_row_cache_impl(cast_variant, n_num):
     name = f"_rms_row_cache_{'cast' if cast_variant else 'fp32'}_n{n_num}"
     buf_dt = "dtype" if cast_variant else "acc_dtype"
@@ -362,10 +372,7 @@ def _make_row_cache_impl(cast_variant, n_num):
         + [I4 + "base = s * k + tt", I4 + "row0 = base * ROWS"]
         + [I4 + ln for ln in _row_cache_body(cast_variant, n_num)]
     )
-    tail = (
-        [I4 + "base = S * k + s", I4 + "row0 = base * ROWS"]
-        + [I4 + ln for ln in _row_cache_body(cast_variant, n_num)]
-    )
+    tail = [I4 + "base = S * k + s", I4 + "row0 = base * ROWS"] + [I4 + ln for ln in _row_cache_body(cast_variant, n_num)]
     kernel_body = "\n".join(
         ["        with T.Kernel(GRID, is_npu=True) as (cid, vid):"]
         + ["            s = cid * 2 + vid"]
@@ -374,7 +381,7 @@ def _make_row_cache_impl(cast_variant, n_num):
         + [I2 + "# remainder tiles, guarded once per kernel", I2 + "if s < R:"]
         + tail
     )
-    src = f'''
+    src = f"""
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def {name}(M, N, eps=1e-5, dtype="float", ROWS=1, GRID=20, k=1, R=0, BLOCK_N=1024):
     need_cast = dtype not in ("float", "float32")
@@ -385,12 +392,12 @@ def {name}(M, N, eps=1e-5, dtype="float", ROWS=1, GRID=20, k=1, R=0, BLOCK_N=102
     def tilelang_rms_norm_opt(A: T.Tensor((M, N), dtype), B: T.Tensor((M, N), dtype)):
 {kernel_body}
     return tilelang_rms_norm_opt
-'''
+"""
     return name, src
 
 
 # ---------------- tier 3: two_pass (column chunks, x re-read) ----------------
-#估算器内置 planner
+# 估算器内置 planner
 def _plan_two_pass(M, N, dtype):
     """Returns (ROWS, GRID, k, R, BLOCK_N, n_num) or None. Biggest chunk
     first; n_num must be even (ping-pong chunk staging)."""
@@ -420,7 +427,8 @@ def _plan_two_pass(M, N, dtype):
     R = tiles - S_SUBBLOCKS * k
     return rows, S_SUBBLOCKS // 2, k, R, bn, n_num
 
-#语句模板
+
+# 语句模板
 def _two_pass_chunk_lines(cast_variant, c, buf):
     if cast_variant:
         return [
@@ -490,15 +498,8 @@ def _make_two_pass_impl(cast_variant, n_num):
         body += _two_pass_chunk_lines2(cast_variant, c, f"a_x_{c % 2}")
     I2 = " " * 12
     I4 = " " * 16
-    main_loop = (
-        [I2 + "for tt in T.serial(k):"]
-        + [I4 + "base = s * k + tt", I4 + "row0 = base * ROWS"]
-        + [I4 + ln for ln in body]
-    )
-    tail = (
-        [I4 + "base = S * k + s", I4 + "row0 = base * ROWS"]
-        + [I4 + ln for ln in body]
-    )
+    main_loop = [I2 + "for tt in T.serial(k):"] + [I4 + "base = s * k + tt", I4 + "row0 = base * ROWS"] + [I4 + ln for ln in body]
+    tail = [I4 + "base = S * k + s", I4 + "row0 = base * ROWS"] + [I4 + ln for ln in body]
     kernel_body = "\n".join(
         ["        with T.Kernel(GRID, is_npu=True) as (cid, vid):"]
         + ["            s = cid * 2 + vid"]
@@ -507,7 +508,7 @@ def _make_two_pass_impl(cast_variant, n_num):
         + [I2 + "# remainder tiles, guarded once per kernel", I2 + "if s < R:"]
         + tail
     )
-    src = f'''
+    src = f"""
 @tilelang.jit(out_idx=[1], pass_configs=pass_configs)
 def {name}(M, N, eps=1e-5, dtype="float", ROWS=1, GRID=20, k=1, R=0, BLOCK_N=1024):
     need_cast = dtype not in ("float", "float32")
@@ -518,7 +519,7 @@ def {name}(M, N, eps=1e-5, dtype="float", ROWS=1, GRID=20, k=1, R=0, BLOCK_N=102
     def tilelang_rms_norm_opt(A: T.Tensor((M, N), dtype), B: T.Tensor((M, N), dtype)):
 {kernel_body}
     return tilelang_rms_norm_opt
-'''
+"""
     return name, src
 
 
@@ -588,6 +589,7 @@ def _build_two_pass(M, N, dtype, eps):
 
 
 # ---------------- tier 4: original kernel (last resort) ----------------
+
 
 def _get_optimized_tiling(M, N, block_M_in, block_N_in, vec_num):
     budget = block_M_in * block_N_in
@@ -707,6 +709,7 @@ def _rms_norm_orig(M, N, block_M_in, block_N_in, eps=1e-5, dtype="float"):
 
 # ---------------- unified entry ----------------
 
+
 def build_rms_norm(M, N, dtype="float", eps=1e-5):
     """Returns (callable, tier). Tiers: whole_row (single-pass) > row_cache
     (GM read once) > two_pass (column chunks) > orig (original kernel)."""
@@ -786,8 +789,10 @@ def run_config(M, N, block_M, block_N, dtype):
         func(a)
         torch_npu.npu_rms_norm(a, weight, 1e-5)
     torch.npu.synchronize()
-    print("  Perf done (capture with: msprof op --launch-skip-before-match=10 "
-          "--launch-count=10 --output=<dir> python <thisfile> <idx>)", flush=True)
+    print(
+        "  Perf done (capture with: msprof op --launch-skip-before-match=10 --launch-count=10 --output=<dir> python <thisfile> <idx>)",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
