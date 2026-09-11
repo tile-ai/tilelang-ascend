@@ -49,6 +49,8 @@ def assert_close_npu(actual, expected, dtype, rtol=1e-2, atol=1e-2, **kwargs):
         torch.testing.assert_close(actual.to(torch.int16), expected.to(torch.int16), rtol=rtol, atol=atol, **kwargs)
     elif dtype == "uint32":
         torch.testing.assert_close(actual.to(torch.int32), expected.to(torch.int32), rtol=rtol, atol=atol, **kwargs)
+    elif dtype in ("int8", "uint8"):
+        torch.testing.assert_close(actual.to(torch.int16), expected.to(torch.int16), rtol=rtol, atol=atol, **kwargs)
     else:
         torch.testing.assert_close(actual, expected, rtol=rtol, atol=atol, **kwargs)
 
@@ -2243,17 +2245,204 @@ def run_test_fill(M, N, block_M, block_N, dtype, target):
 
     b = func()
 
-    ref_b = torch.full((M, N), 10.0, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
+    torch_dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "int32": torch.int32,
+        "uint32": torch.uint32,
+        "int16": torch.int16,
+        "uint16": torch.uint16,
+        "int8": torch.int8,
+        "uint8": torch.uint8,
+    }
+    torch_dtype = torch_dtype_map.get(dtype, torch.float32)
+    fill_value = 10 if dtype in ("int8", "uint8", "int16", "uint16", "int32", "uint32") else 10.0
+    ref_b = torch.full((M, N), fill_value, dtype=torch_dtype).npu()
 
-    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+    assert_close_npu(b, ref_b, dtype, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("dtype", ["float", "float16", "bfloat16", "int32", "uint32", "int16", "uint16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_fill(dtype, target, shape):
     M, N = shape
     run_test_fill(M, N, 64, 32, dtype, target=target)
+
+
+@pytest.mark.parametrize("dtype", ["int8", "uint8"])
+@pytest.mark.parametrize("target", ["pto"])
+@pytest.mark.parametrize("shape", [(1024, 1024)])
+def test_fill_pto_int8(dtype, target, shape):
+    M, N = shape
+    run_test_fill(M, N, 64, 32, dtype, target=target)
+
+
+def fill_1d(N, block_N, dtype="float"):
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(A: T.Tensor((N,), dtype)):  # type: ignore
+        with T.Kernel(n_num, is_npu=True) as (cid, _):
+            a_ub = T.alloc_ub((block_N,), dtype)
+
+            T.tile.fill(a_ub, 10.0)
+            T.copy(a_ub, A[cid * block_N])
+
+    return main
+
+
+def run_test_fill_1d(N, block_N, dtype, target):
+    func = fill_1d(N, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch.npu.synchronize()
+
+    b = func()
+
+    torch_dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "int32": torch.int32,
+    }
+    torch_dtype = torch_dtype_map.get(dtype, torch.float32)
+    ref_b = torch.full((N,), 10.0, dtype=torch_dtype).npu()
+
+    assert_close_npu(b, ref_b, dtype, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16", "int32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_fill_1d(dtype, target):
+    run_test_fill_1d(1024, 128, dtype, target=target)
+
+
+def fill_buffer_region(M, N, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(A: T.Tensor((M, N), dtype)):  # type: ignore
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            T.tile.fill(a_ub, 10.0)
+            T.tile.fill(a_ub[0 : block_M // 2, 0:block_N], 5.0)
+            T.copy(a_ub, A[bx * block_M, by * block_N])
+
+    return main
+
+
+def run_test_fill_buffer_region(M, N, block_M, block_N, dtype, target):
+    func = fill_buffer_region(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch.npu.synchronize()
+
+    b = func()
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    ref_b = torch.full((M, N), 10.0, dtype=torch_dtype).npu()
+    for i in range(0, M, block_M):
+        ref_b[i : i + block_M // 2, :] = 5.0
+
+    assert_close_npu(b, ref_b, dtype, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("shape", [(1024, 1024)])
+def test_fill_buffer_region(dtype, target, shape):
+    M, N = shape
+    run_test_fill_buffer_region(M, N, 64, 32, dtype, target=target)
+
+
+def fill_values(M, N, block_M, block_N, dtype, value):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(A: T.Tensor((M, N), dtype)):  # type: ignore
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            T.tile.fill(a_ub, value)
+            T.copy(a_ub, A[bx * block_M, by * block_N])
+
+    return main
+
+
+def run_test_fill_values(M, N, block_M, block_N, dtype, value, target):
+    func = fill_values(M, N, block_M, block_N, dtype, value)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch.npu.synchronize()
+
+    b = func()
+
+    torch_dtype_map = {
+        "float16": torch.float16,
+        "float": torch.float32,
+        "int32": torch.int32,
+        "int16": torch.int16,
+    }
+    torch_dtype = torch_dtype_map.get(dtype, torch.float32)
+    ref_b = torch.full((M, N), value, dtype=torch_dtype).npu()
+
+    assert_close_npu(b, ref_b, dtype, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize(
+    "dtype_value",
+    [("float16", -1.5), ("float", 3.14159), ("int32", -100), ("int32", 2147483647), ("int16", -32000)],
+)
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_fill_special_values(dtype_value, target):
+    dtype, value = dtype_value
+    run_test_fill_values(1024, 1024, 64, 32, dtype, value, target=target)
+
+
+def fill_alloc_shared_inferred_ub(M, N, block_M, block_N, dtype="float16"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(A: T.Tensor((M, N), dtype)):  # type: ignore
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            # This Developer-mode buffer is inferred as UB by memory planning.
+            a_shared = T.alloc_shared((block_M, block_N), dtype)
+
+            T.tile.fill(a_shared, 10.0)
+            T.copy(a_shared, A[bx * block_M, by * block_N])
+
+    return main
+
+
+def run_test_fill_alloc_shared_inferred_ub(M, N, block_M, block_N, dtype, target):
+    func = fill_alloc_shared_inferred_ub(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch.npu.synchronize()
+
+    b = func()
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    ref_b = torch.full((M, N), 10.0, dtype=torch_dtype).npu()
+
+    assert_close_npu(b, ref_b, dtype, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_fill_alloc_shared_inferred_ub(dtype, target):
+    run_test_fill_alloc_shared_inferred_ub(1024, 1024, 64, 32, dtype, target=target)
 
 
 def clear(M, N, block_M, block_N, dtype="float"):
