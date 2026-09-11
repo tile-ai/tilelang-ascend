@@ -109,6 +109,24 @@ parser = argparse.ArgumentParser(description="SparseMLA test script")
 parser.add_argument("--file", type=str, default="sparse_flash_attn_pa_no_cv_pipeline", help="The version you want to run")
 args = parser.parse_args()
 
+# The baseline variant moved to examples_experiment; keep this driver able to
+# import it without relocating the rest of the bench_sfa harness.
+import os
+import sys
+
+sys.path.insert(
+    0,
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..",
+        "..",
+        "..",
+        "examples_experiment",
+        "sparse_flash_attention",
+        "bench_sfa",
+    ),
+)
+
 if args.file == "sparse_flash_attn_pa_baseline":
     from sparse_flash_attn_pa_baseline import sparse_attn_tilelang
 elif args.file == "sparse_flash_attn_pa_developer":

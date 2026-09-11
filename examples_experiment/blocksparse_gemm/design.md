@@ -71,7 +71,7 @@ GM[B] ──T.copy───> L1[B_shared]                    GM[C]
    - 代码更简洁，易于维护
 
 4. **可行性验证**：
-   - 本项目 `examples/developer_mode/gemm_developer.py` 已验证 Developer 模式 GEMM 可行性
+   - 本项目 `examples_experiment/developer_mode/gemm_developer.py` 已验证 Developer 模式 GEMM 可行性
 
 ### 2.3 模式影响
 
@@ -158,12 +158,12 @@ def blocksparse_matmul(M, N, K, block_M, block_N, block_K, num_stages, dtype="fl
 
 | API | 来源 | 状态 | 备注 |
 |-----|------|------|------|
-| T.Kernel(block_num, is_npu=True) | examples/gemm/example_gemm.py | ✅ 已验证 | 一维 Kernel，手动索引分解 |
-| T.alloc_shared | examples/developer_mode/gemm_developer.py | ✅ 已验证 | Developer 模式自动映射到 L1 |
-| T.alloc_fragment | examples/developer_mode/gemm_developer.py | ✅ 已验证 | Developer 模式自动映射到 L0C |
-| T.serial | examples/developer_mode/gemm_developer.py | ✅ 已验证 | 串行循环（条件判断场景推荐） |
-| T.gemm_v0 | examples/gemm/example_gemm.py | ✅ 已验证 | 本项目专用 GEMM API，init参数替代T.clear |
-| T.copy | examples/gemm/example_gemm.py | ✅ 已验证 | 数据搬运原语 |
+| T.Kernel(block_num, is_npu=True) | examples_experiment/gemm/example_gemm.py | ✅ 已验证 | 一维 Kernel，手动索引分解 |
+| T.alloc_shared | examples_experiment/developer_mode/gemm_developer.py | ✅ 已验证 | Developer 模式自动映射到 L1 |
+| T.alloc_fragment | examples_experiment/developer_mode/gemm_developer.py | ✅ 已验证 | Developer 模式自动映射到 L0C |
+| T.serial | examples_experiment/developer_mode/gemm_developer.py | ✅ 已验证 | 串行循环（条件判断场景推荐） |
+| T.gemm_v0 | examples_experiment/gemm/example_gemm.py | ✅ 已验证 | 本项目专用 GEMM API，init参数替代T.clear |
+| T.copy | examples_experiment/gemm/example_gemm.py | ✅ 已验证 | 数据搬运原语 |
 | if BlockMask[bx, by, k] | Python 控制流 | ✅ 已验证 | 条件判断支持，注意索引顺序 |
 
 ---
@@ -205,8 +205,8 @@ def blocksparse_matmul(M, N, K, block_M, block_N, block_K, num_stages, dtype="fl
 
 | 文件路径 | 相似度 | 关键参考点 |
 |----------|--------|-----------|
-| `examples/gemm/example_gemm.py` | 高度相似 | 一维 Kernel + 手动索引分解、T.gemm_v0 用法、T.alloc_L1/L0C（Expert 模式参考） |
-| `examples/developer_mode/gemm_developer.py` | **最高相似** | Developer 模式 GEMM、T.alloc_shared/fragment、T.gemm_v0、pass_configs 配置 |
+| `examples_experiment/gemm/example_gemm.py` | 高度相似 | 一维 Kernel + 手动索引分解、T.gemm_v0 用法、T.alloc_L1/L0C（Expert 模式参考） |
+| `examples_experiment/developer_mode/gemm_developer.py` | **最高相似** | Developer 模式 GEMM、T.alloc_shared/fragment、T.gemm_v0、pass_configs 配置 |
 | `examples/gemm/example_gemm_intrinsic.py` | 中等相似 | T.use_swizzle 用法、持久化调度、多 buffer stage |
 | `examples/grouped_gemm/example_grouped_gemm_fwd.py` | 中等相似 | 条件数据访问（通过 block_metadata）、静态循环边界 |
 
@@ -372,7 +372,7 @@ with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
 
 **如需启用流水线优化**：
 - 仅适用于全密集场景（BlockMask全为1）
-- 参考 `examples/gemm/example_gemm.py` 的标准 Pipelined 用法
+- 参考 `examples_experiment/gemm/example_gemm.py` 的标准 Pipelined 用法
 - **禁止在条件判断场景使用 T.Pipelined**
 
 ### 6.4 尾块处理
@@ -513,7 +513,7 @@ block_mask[:, :, 0] = 1  # 确保K维第一分块全为1，满足累加器初始
 
 3. **全密集场景**：
    - Sparsity = 0.0 时，无跳过计算，等价于标准 GEMM
-   - 可参考 `examples/gemm/example_gemm.py` 的标准实现
+   - 可参考 `examples_experiment/gemm/example_gemm.py` 的标准实现
    - 全密集场景可使用 T.Pipelined 优化性能
 
 4. **动态 BlockMask**：
@@ -569,7 +569,7 @@ examples/blocksparse_gemm/
 1. **二维 Kernel（本项目只支持一维 Kernel）**
    - 参考实现：`T.Kernel(T.ceildiv(N, block_N), T.ceildiv(M, block_M), threads=thread_num)`
    - 本项目方案：`T.Kernel(m_num * n_num, is_npu=True)` + 手动索引分解 `bx = cid // n_num, by = cid % n_num`
-   - 参考：`examples/gemm/example_gemm.py`, `examples/developer_mode/gemm_developer.py`
+   - 参考：`examples_experiment/gemm/example_gemm.py`, `examples_experiment/developer_mode/gemm_developer.py`
 
 2. **threads 参数不支持大值（本项目只支持 threads=1 或 2）**
    - 参考实现：`threads=128`
@@ -589,7 +589,7 @@ examples/blocksparse_gemm/
 5. **T.clear API 不存在**
    - 参考实现：`T.clear(C_local)`
    - 本项目方案：`T.gemm_v0(..., init=(k == 0))` + 约束 `BlockMask[:,:,0]=1`
-   - 参考：`examples/gemm/example_gemm.py`
+   - 参考：`examples_experiment/gemm/example_gemm.py`
 
 6. **Pipelined 条件判断场景限制**
    - 参考实现：`T.Pipelined(..., num_stages) + if BlockMask`
@@ -599,7 +599,7 @@ examples/blocksparse_gemm/
 7. **GEMM API 差异**
    - 参考实现：`T.gemm(A_shared, B_shared, C_local)`
    - 本项目方案：`T.gemm_v0(A_shared, B_shared, C_local, init=(k == 0))`
-   - 参考：`examples/gemm/example_gemm.py`, api-compute.md
+   - 参考：`examples_experiment/gemm/example_gemm.py`, api-compute.md
 
 8. **Swizzle API 差异**
    - 参考实现：`T.use_swizzle(panel_size=10, enable=enable_rasteration)`
@@ -618,7 +618,7 @@ examples/blocksparse_gemm/
 
 ### 11.3 建议操作
 
-1. 先查阅本项目 `examples/developer_mode/gemm_developer.py` 确认 Developer 模式 GEMM 用法
+1. 先查阅本项目 `examples_experiment/developer_mode/gemm_developer.py` 确认 Developer 模式 GEMM 用法
 2. 使用一维 Kernel + 手动索引分解替代二维 Kernel
 3. 移除 threads 参数
 4. 使用 T.gemm_v0 替代 T.gemm
@@ -645,7 +645,7 @@ examples/blocksparse_gemm/
 | 6 | 验证方案覆盖典型配置 | ✅ 通过（Level 0-3 测试用例） |
 | 7 | 无占位符或模糊描述 | ✅ 通过（所有字段已填充） |
 | 8 | 技术约束已确认 | ✅ 通过（二维 Kernel、threads 等已处理） |
-| 9 | 本项目同类实现已列出 | ✅ 通过（examples/developer_mode/gemm_developer.py 等） |
+| 9 | 本项目同类实现已列出 | ✅ 通过（examples_experiment/developer_mode/gemm_developer.py 等） |
 | 10 | 参考实现差异已说明 | ✅ 通过（详细列出 API/结构差异） |
 
 ### 12.2 通过条件
