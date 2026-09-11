@@ -6,6 +6,7 @@
  * \brief Sync insertion for Ascend NPU
  */
 
+#include <algorithm>
 #include <iostream>
 #include <memory>
 #include <set>
@@ -149,32 +150,7 @@ private:
 
   Stmt VisitStmt_(const EvaluateNode *op) override {
     auto current_accesses = AnalyzeStmtAccesses(GetRef<Stmt>(op));
-
-    std::vector<SyncRequirement> sync_requirements;
-    for (const auto &current_access : current_accesses) {
-      if (current_access.is_sliced) {
-        sync_requirements.push_back(
-            {"PipeBarrier_ALL", current_access.buffer_name});
-      }
-
-      std::vector<std::string> related_buffers =
-          FindRelatedBuffers(current_access.buffer_name);
-      for (const auto &buffer_name : related_buffers) {
-        auto it = current_access_history_.find(buffer_name);
-        if (it != current_access_history_.end()) {
-          const auto &latest_access = it->second;
-          if (HasDataDependency(latest_access, current_access)) {
-            std::string required_sync_type =
-                GetRequiredSyncType(latest_access, current_access);
-            if (!required_sync_type.empty()) {
-              sync_requirements.push_back(
-                  {required_sync_type, current_access.buffer_name});
-            }
-          }
-        }
-      }
-    }
-
+    auto sync_requirements = CollectSyncRequirements(current_accesses);
     auto optimized_syncs = OptimizeSyncRequirements(sync_requirements);
 
     std::vector<Stmt> stmts;
@@ -196,73 +172,12 @@ private:
   }
 
   Stmt VisitStmt_(const BufferStoreNode *op) override {
-    // BufferStore is a scalar pipe operation (e.g., SetValue)
-    // It writes to a buffer on S pipeline, and may read from buffers in the
-    // value expression
-
-    // Step 1: Analyze reads in the value expression (S pipeline reads)
     auto value_accesses = AnalyzeExprAccesses(op->value);
-
-    // Step 2: Check if any read buffer needs sync (was last written by
-    // different pipeline)
-    // Note: Skip same-pipeline dependencies (S→S) because scalar pipeline
-    // is in-order and doesn't need explicit sync
-    std::vector<SyncRequirement> sync_requirements;
     for (auto &read_access : value_accesses) {
       read_access.pipeline = "PIPE_S";
       read_access.is_write = false;
       read_access.operation = "buffer_load";
-
-      std::vector<std::string> related_buffers =
-          FindRelatedBuffers(read_access.buffer_name);
-      for (const auto &buffer_name : related_buffers) {
-        auto it = current_access_history_.find(buffer_name);
-        if (it != current_access_history_.end()) {
-          const auto &latest_access = it->second;
-          // Skip same-pipeline dependencies (S→S)
-          if (latest_access.pipeline == "PIPE_S") {
-            continue;
-          }
-          if (HasDataDependency(latest_access, read_access)) {
-            // Check if the sync has already been inserted
-            std::string required_sync_type =
-                GetRequiredSyncType(latest_access, read_access);
-            if (!required_sync_type.empty()) {
-              // Check if this sync type is already in the sync graph
-              bool already_synced = false;
-              if (required_sync_type.find("EventPair_") == 0) {
-                std::string event_type = required_sync_type.substr(10);
-                size_t pos = event_type.find('_');
-                if (pos != std::string::npos) {
-                  std::string src = event_type.substr(0, pos);
-                  std::string dst = event_type.substr(pos + 1);
-                  already_synced = latest_access.sync_graph.HasPath(src, dst);
-                }
-              } else if (required_sync_type.find("PipeBarrier_") == 0) {
-                std::string pipeline = required_sync_type.substr(12);
-                already_synced = latest_access.pipe_barriers.find(
-                                     "PipeBarrier_" + pipeline) !=
-                                 latest_access.pipe_barriers.end();
-              }
-
-              if (!already_synced) {
-                sync_requirements.push_back(
-                    {required_sync_type, read_access.buffer_name});
-              }
-            }
-          }
-        }
-      }
     }
-
-    // Step 3: Optimize and insert syncs before the BufferStore
-    auto optimized_syncs = OptimizeSyncRequirements(sync_requirements);
-    std::vector<Stmt> stmts;
-    for (const auto &sync_type : optimized_syncs) {
-      InsertSynchronization(sync_type, stmts);
-    }
-
-    // Step 4: Record the write (S pipeline write)
     BufferAccess current_write;
     current_write.buffer_name = op->buffer->data->name_hint;
     current_write.is_write = true;
@@ -273,17 +188,18 @@ private:
     current_write.pipe_barriers = {};
     current_write.physical_address =
         GetPhysicalAddress(current_write.buffer_name);
+    value_accesses.push_back(current_write);
 
-    // Update access history for both reads and writes
-    UpdateLatestAccessHistory(value_accesses);
-    UpdateLatestAccessHistory({current_write});
-
-    // Update sync states AFTER updating access history, so that the new
-    // accesses get the updated sync graph
+    auto optimized_syncs =
+        OptimizeSyncRequirements(CollectSyncRequirements(value_accesses));
+    std::vector<Stmt> stmts;
+    for (const auto &sync_type : optimized_syncs) {
+      InsertSynchronization(sync_type, stmts);
+    }
+    // These handoffs precede the new scalar access and cannot protect it.
     UpdateSyncStatesAfterSync(optimized_syncs);
-
-    // Step 5: Add the BufferStore statement
     stmts.push_back(GetRef<Stmt>(op));
+    UpdateLatestAccessHistory(value_accesses);
 
     if (stmts.size() == 1) {
       return stmts[0];
@@ -1397,24 +1313,71 @@ private:
   void
   UpdateLatestAccessHistory(const std::vector<BufferAccess> &current_accesses) {
     for (const auto &access : current_accesses) {
-      current_access_history_[access.buffer_name] = access;
+      auto &history = current_access_history_[access.buffer_name];
+      if (access.is_write) {
+        // The dependency checks ordered this write after the old accesses.
+        // Future users must wait for this new writer instead.
+        history.clear();
+      } else {
+        // Reads on different pipes can remain outstanding together. Retain
+        // the writer as well: a later read does not supersede its RAW edges.
+        history.erase(std::remove_if(history.begin(), history.end(),
+                                     [&](const BufferAccess &previous) {
+                                       return !previous.is_write &&
+                                              previous.pipeline ==
+                                                  access.pipeline;
+                                     }),
+                      history.end());
+      }
+      history.push_back(access);
     }
+  }
+
+  std::vector<SyncRequirement>
+  CollectSyncRequirements(const std::vector<BufferAccess> &accesses) {
+    std::vector<SyncRequirement> requirements;
+    for (const auto &access : accesses) {
+      if (access.is_sliced) {
+        requirements.push_back({"PipeBarrier_ALL", access.buffer_name});
+      }
+      for (const auto &name : FindRelatedBuffers(access.buffer_name)) {
+        auto it = current_access_history_.find(name);
+        if (it == current_access_history_.end()) {
+          continue;
+        }
+        for (const auto &previous : it->second) {
+          if (HasDataDependency(previous, access)) {
+            auto sync = GetRequiredSyncType(previous, access);
+            if (!sync.empty()) {
+              requirements.push_back({sync, access.buffer_name});
+            }
+          }
+        }
+      }
+    }
+    return requirements;
   }
 
   std::string GetRequiredSyncType(const BufferAccess &prev_access,
                                   const BufferAccess &curr_access) {
-    if (prev_access.pipeline == curr_access.pipeline &&
-        prev_access.pipe_barriers.find("PipeBarrier_" + prev_access.pipeline) ==
-            prev_access.pipe_barriers.end()) {
-      return "PipeBarrier_" + prev_access.pipeline;
-    } else {
-      std::string event_type =
-          GetEventType(prev_access.pipeline, curr_access.pipeline);
-      if (!event_type.empty()) {
-        return "EventPair_" + event_type;
+    if (prev_access.pipeline == curr_access.pipeline) {
+      if (prev_access.pipeline != "PIPE_S" &&
+          !prev_access.pipe_barriers.count("PipeBarrier_" +
+                                           prev_access.pipeline)) {
+        return "PipeBarrier_" + prev_access.pipeline;
       }
+      return "";
     }
-    return "";
+    std::string event_type =
+        GetEventType(prev_access.pipeline, curr_access.pipeline);
+    // Consult this producer's history, not the current buffer's history:
+    // another alias may carry synchronization from an older generation.
+    if (event_type.empty() ||
+        prev_access.sync_graph.HasPath(prev_access.pipeline.substr(5),
+                                       curr_access.pipeline.substr(5))) {
+      return "";
+    }
+    return "EventPair_" + event_type;
   }
 
   std::string GetEventType(const std::string &src_pipeline,
@@ -1509,10 +1472,6 @@ private:
 
   std::vector<std::string>
   OptimizeSyncRequirements(const std::vector<SyncRequirement> &requirements) {
-    if (requirements.empty()) {
-      return {};
-    }
-
     std::vector<std::string> all_required_syncs;
     for (const auto &req : requirements) {
       all_required_syncs.push_back(req.sync_type);
@@ -1523,82 +1482,36 @@ private:
         std::unique(all_required_syncs.begin(), all_required_syncs.end()),
         all_required_syncs.end());
 
-    std::vector<std::string> final_syncs;
-
-    for (const auto &sync_type : all_required_syncs) {
-      bool needed = false;
-
-      for (const auto &req : requirements) {
-        if (req.sync_type == sync_type) {
-          SyncGraph extended_graph = GetBufferSyncGraph(req.buffer_name);
-
-          for (const auto &other_sync : all_required_syncs) {
-            if (other_sync != sync_type) {
-              extended_graph.AddSync(other_sync);
-            }
-          }
-
-          if (!IsSyncSatisfiedByGraph(sync_type, extended_graph)) {
-            needed = true;
-            break;
-          }
-        }
-      }
-
-      if (needed) {
-        final_syncs.push_back(sync_type);
-      }
-    }
-
-    return final_syncs;
-  }
-
-  SyncGraph GetBufferSyncGraph(const std::string &buffer_name) {
-    auto it = current_access_history_.find(buffer_name);
-    if (it != current_access_history_.end()) {
-      return it->second.sync_graph;
-    }
-    return SyncGraph();
-  }
-
-  bool IsSyncSatisfiedByGraph(const std::string &sync_type,
-                              const SyncGraph &graph) {
-    if (sync_type.find("EventPair_") == 0) {
-      std::string target_event = sync_type.substr(10);
-      size_t pos = target_event.find('_');
-      if (pos != std::string::npos) {
-        std::string target_src = target_event.substr(0, pos);
-        std::string target_dst = target_event.substr(pos + 1);
-        return graph.HasPath(target_src, target_dst);
-      }
-    }
-    return false;
+    // Elide only handoffs already proven for each access. Treating all
+    // simultaneous requirements as an unordered graph can remove a needed
+    // edge using a path whose events are emitted in the opposite order.
+    return all_required_syncs;
   }
 
   void
   UpdateSyncStatesAfterSync(const std::vector<std::string> &inserted_syncs) {
-    SyncGraph inserted_graph;
     for (const auto &sync_type : inserted_syncs) {
-      inserted_graph.AddSync(sync_type);
-    }
-
-    SyncGraph transitive_closure = inserted_graph.ComputeTransitiveClosure();
-
-    for (auto &pair : current_access_history_) {
-      BufferAccess &access = pair.second;
-
-      for (const auto &sync_type : inserted_syncs) {
-        if (sync_type.find("EventPair_") == 0) {
-          access.sync_graph.AddSync(sync_type);
-        } else if (sync_type.find("PipeBarrier_") == 0) {
-          std::string pipeline = sync_type.substr(12);
-          if (access.pipeline == pipeline) {
-            access.pipe_barriers.insert(sync_type);
+      for (auto &pair : current_access_history_) {
+        for (BufferAccess &access : pair.second) {
+          if (sync_type.find("EventPair_") == 0) {
+            const auto event = sync_type.substr(10);
+            const auto separator = event.find('_');
+            if (separator != std::string::npos &&
+                access.sync_graph.HasPath(access.pipeline.substr(5),
+                                          event.substr(0, separator))) {
+              // Propagate completion only along events issued after this
+              // access, in emitted order. Earlier reverse-order edges cannot
+              // later become a valid transitive completion path.
+              access.sync_graph.AddSync(sync_type);
+            }
+          } else if (sync_type.find("PipeBarrier_") == 0) {
+            std::string pipeline = sync_type.substr(12);
+            if (access.pipeline == pipeline) {
+              access.pipe_barriers.insert(sync_type);
+            }
           }
         }
       }
-
-      access.sync_graph.Merge(transitive_closure);
     }
   }
 
@@ -1650,7 +1563,10 @@ private:
   int event_id_counter_ = 0;
   std::unordered_map<std::string, std::string> event_mapping_;
   std::unordered_map<std::string, OperationConfig> operation_config_;
-  std::unordered_map<std::string, BufferAccess> current_access_history_;
+  // One last writer plus the latest reader on each pipe, per logical buffer.
+  // Physical aliases are joined by FindRelatedBuffers at each access.
+  std::unordered_map<std::string, std::vector<BufferAccess>>
+      current_access_history_;
   Map<Var, PrimExpr> address_map_;
   Map<Var, PrimExpr> size_map_;
   std::string platform_;

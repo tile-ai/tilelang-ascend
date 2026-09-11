@@ -75,6 +75,9 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
     mod = tilelang.transform.LayoutInference()(mod)
     mod = tilelang.transform.CollectBufferShapes()(mod)
     mod = tilelang.transform.LowerTileOp()(mod)
+    rewrite_reduce = target.model in {"ascendc", "pto", "auto"}
+    mod = tilelang.transform.AscendTailMaskPropagation(rewrite_reduce=rewrite_reduce)(mod)
+    mod = tilelang.transform.AscendWorkspaceReduction()(mod)
     mod = tilelang.transform.LegalizeVectorizedLoop()(mod)
     mod = tilelang.transform.LegalizeSafeMemoryAccess()(mod)
     mod = tir.transform.Simplify()(mod)
@@ -85,6 +88,7 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
 
 ```python
 def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
+    managed_vector_mask = target.model in {"ascendc", "auto"} and platform in {"A2", "A3"}
     mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
     mod = tilelang.transform.CrossCorePipeline()(mod)
     mod = tilelang.transform.CombineCV()(mod)
@@ -98,7 +102,16 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     mod = tir.transform.Simplify()(mod)
     mod = tilelang.transform.VectorizeLoop(...)(mod)
     mod = tilelang.transform.AscendStorageRewrite(is_npu=...)(mod)
-    # ... 后续 Pass
+    # ... loop cleanup passes
+    mod = tilelang.transform.AscendMemoryPlanning()(mod)
+    mod = tilelang.transform.AscendSyncInsert(target, platform)(mod)
+    mod = tilelang.transform.AscendSyncInsertVS(target, platform)(mod)
+    if managed_vector_mask:
+        mod = tir.transform.Simplify()(mod)
+    mod = tilelang.transform.AscendResourceScopeVerify()(mod)
+    if managed_vector_mask:
+        mod = tilelang.transform.AscendVectorInstructionSelection(target, platform)(mod)
+        mod = tilelang.transform.AscendVectorMaskLegalize(target, platform)(mod)
     return mod
 ```
 
@@ -107,7 +120,10 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
 - 一行一个 `mod = tilelang.transform.{Pass}()(mod)`
 - 缩进与上下文一致（4 空格）
 - 每行不写注释，除非需要解释「为什么必须放在这里」
-- 配置驱动：若 Pass 受 `pass_configs` 控制，仍然写在 phase.py 中调用，由 Pass 自己读 config 决定是否生效（避免 phase.py 出现复杂 if）
+- 配置驱动：普通 config-gated Pass 仍在 phase.py 中调用，由 Pass 自己读 config。target-gated
+  backend boundary 可以像 managed Vector path 一样在 phase.py 显式 gate。
+- 不要仅按“Phase 2”选择插入点；先读 workflow skill 的
+  `new-pass-placement-guide.md`。尤其不得在 `AscendVectorMaskLegalize` 后添加 TIR rewrite。
 
 ### 2.4 接入位置 diff 模板
 
@@ -117,7 +133,8 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     mod = tilelang.transform.{下游 Pass}()(mod)
 ```
 
-> 不要插到错误阶段：Phase 1 是「Lowering + 合法化」，Phase 2 是「目标后端优化」，看 `pass-design.md` §2.1 决定。
+> 不要只凭 Phase 1/2 标签定位。必须同时证明不会跨越 MemoryPlanning、ResourceScopeVerify、
+> InstructionSelection 或 MaskLegalize 的结构性边界。
 
 ---
 
@@ -134,7 +151,7 @@ class PassConfigKey(str, Enum):
     # ... 已有键 ...
 
     TL_{PASS_NAME_UPPER} = "tl.{pass_name_lower}"
-    """Enable/disable {PassName}. Default: False.
+    """Enable/disable {PassName}. Default: {verified_default}.
 
     {补充：何时启用、对哪些算子有效}
     """
@@ -143,8 +160,10 @@ class PassConfigKey(str, Enum):
 ### 3.3 对齐要点
 
 - 键名 `tl.xxx` 全小写，下划线分词，与 C++ `static constexpr const char *` 字符串完全一致
-- 默认值通过 C++ 端 `ctx->GetConfig<Bool>(key, Bool(false))` 决定，Python 这边不重复声明默认值
-- Ascend 特定 Pass 默认 `False`，由用户显式开启
+- 默认值由 C++ `GetConfig` 和 target-level defaults 决定；先查源码，再把已确认值写入 docstring。
+- 不要从“Ascend 特定”推断默认 `False`。例如
+  `tl.ascend_vector_mask_reuse` 的 C++ 默认值是 `true`，而且它控制复用策略，不关闭
+  Selection / Legalize。
 
 ---
 

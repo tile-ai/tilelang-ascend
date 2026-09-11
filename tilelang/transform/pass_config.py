@@ -45,7 +45,17 @@ class PassConfigKey(str, Enum):
     """Enable/disable TileLang AscendMemoryPlanning pass. Default: False"""
 
     TL_ASCEND_AUTO_CV_COMBINE = "tl.ascend_auto_cv_combine"
-    """Enable/disable TileLang CombineCV pass. Default: False"""
+    """Enable/disable TileLang CombineCV pass. Default: False.
+
+    When disabled, resource-specific Ascend operations require an explicit
+    ``T.Scope("C")`` or ``T.Scope("V")``.
+    """
+
+    TL_ASCEND_VECTOR_MASK_REUSE = "tl.ascend_vector_mask_reuse"
+    """Reuse compatible A2/A3 AscendC Vector-mask state. Default: True.
+
+    When False, each selected Vector terminal rebuilds its full required mask.
+    """
 
     TL_ASCEND_AUTO_CV_SYNC = "tl.ascend_auto_cross_core_sync"
     """Enable/disable TileLang Auto CV Synchronization. Default: False"""

@@ -109,6 +109,7 @@ level for these cases.  Risk levels are annotated per group.
 CUBE_PASS_CONFIGS = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
 }
 
 # Developer CV configs (auto CV combine + cross-core sync).  Used by kernels

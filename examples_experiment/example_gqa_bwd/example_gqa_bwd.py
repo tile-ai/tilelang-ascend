@@ -27,8 +27,9 @@ _developer_cv_pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
-# pass_configs — Developer mode (Vector-only: 2 keys enabled)
+# pass_configs — Developer mode (Vector-only)
 _developer_vector_pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }

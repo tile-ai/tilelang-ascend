@@ -11,8 +11,8 @@ description: TileLang Ascend Pass 工作流分析。用于理解 Pass 之间的�
 
 | 查询阶段 | 信息来源 | 工具使用 |
 |---------|---------|---------|
-| **首次回答** | ✅ **优先使用 reference 文件** | `read(references/*.md)` |
-| 用户追问深入细节 | ✅ **读取源码补充** | `read(tilelang/engine/phase.py)` |
+| **理解现有模型** | ✅ **先读对应 reference** | `read(references/*.md)` |
+| **给出精确顺序或修改建议** | ✅ **再核对当前源码** | `read(tilelang/engine/phase.py)` |
 
 **执行规则：**
 ```
@@ -20,15 +20,15 @@ description: TileLang Ascend Pass 工作流分析。用于理解 Pass 之间的�
   ↓
 1. 立即读取 reference 文件（pass-pipeline-overview.md / pass-dependency-graph.md）
   ↓
-2. 基于 reference 信息生成报告（足够回答 90% 的查询）
+2. 若只解释概念，基于 reference 回答
   ↓
-3. 仅在用户追问"具体实现"、"源码细节"时才读取源码
+3. 若要给出精确顺序、插入点或改代码，核对当前 phase.py 与相关 pass 源码
 ```
 
 **禁止行为：**
-- ❌ 首次回答就读取源码文件
-- ❌ 忽略 reference 文件中的已有信息
-- ❌ 首次回答就并行读取 reference 和源码
+- ❌ 跳过 reference，重新发明一套依赖模型
+- ❌ 在没有核对当前 `phase.py` 时给出可执行的插入点
+- ❌ 把 reference 中的固定步骤号当成比源码更高的权威
 
 ---
 
@@ -96,8 +96,8 @@ TileLang-Ascend 采用两阶段编译流程：
 Python DSL (@tilelang.jit)
     ↓
 [Phase 1: LowerAndLegalize] ← 前端标准化、Lowering
-    - 目标：将高级 DSL 转换为标准化 TIR
-    - 特点：语义保持、平台无关优化
+    - 目标：将高级 DSL 转换为标准化、可分析的 TIR
+    - 特点：前端规范化与必要的 Ascend early lowering
     ↓
 [Phase 2: OptimizeForTarget] ← 后端优化、平台特化
     - 目标：针对 Ascend 硬件特性的优化
@@ -112,14 +112,18 @@ CANN 工具链 → NPU 执行
 
 ### 数据传递方式
 
-Pass 之间通过 `PrimFunc` attrs 传递数据：
+Pass 之间既通过 `PrimFunc` attrs，也通过结构性 IR contract 传递数据：
 
 | 数据名称 | Attr 键 | 产生 Pass | 消费 Pass |
 |---------|---------|-----------|-----------|
 | Buffer Scope | buffer annotations | `AscendInferBufferScope` | `CrossCorePipeline`, `CombineCV` |
-| Buffer Shapes | `buffer_shapess` | `CollectBufferShapes` | `AscendMemoryPlanning` |
-| Address Map | `address_map` | `AscendMemoryPlanning` | `AscendSyncInsert` |
-| Size Map | `size_map` | `AscendMemoryPlanning` | `AscendSyncInsert` |
+| Initial shapes | `initial_buffer_shapes` | `BufferShapeCollector` | `Flatten2DBuffer` |
+| Final logical shapes | `logic_buffer_shapes` | `Flatten2DBuffer` | `AscendMemoryPlanning` |
+| Address Map | `address_map` | `AscendMemoryPlanning` | `AscendSyncInsert`, `AscendSyncInsertVS` |
+| Size Map | `size_map` | `AscendMemoryPlanning` | `AscendSyncInsert`, `AscendSyncInsertVS` |
+
+storage scope、resource scope、lowered calls、loop annotations 和 selected terminals 都是结构性
+contract；即使 attrs 未变，后续 rewrite 仍可能使分析结果失效。
 
 **详细依赖关系请查阅：** `references/pass-dependency-graph.md`
 
@@ -141,18 +145,20 @@ Pass 之间通过 `PrimFunc` attrs 传递数据：
    - 识别下游 Pass 需要的 attrs
    - 确保下游 Pass 可以访问
 
-4. **语义范围** - Pass 是平台无关还是平台特定？
-   - 平台无关 → Phase 1
-   - Ascend 特定 → Phase 2
+4. **目标范围** - Pass 对哪些 target 生效？
+   - target specificity 决定 gate，不单独决定阶段
+   - 阶段和精确位置由输入/输出 IR contract 决定
 
-### 典型定位场景
+### 不可跨越的后端边界
 
-| Pass 功能特征 | 推荐位置 | 理由 |
-|-------------|---------|------|
-| IR 合法化检查 | Phase 1 末尾 | 确保 lowered IR 正确性 |
-| 新 Tile 操作 lowering | Phase 1，`LowerTileOp` 后 | 紧跟核心 lowering pass |
-| 内存优化 | Phase 2，`AscendStorageRewrite` 后 | 利用 memory planning 信息 |
-| 同步优化 | Phase 2，`AscendSyncInsert` 前 | 为 sync insert 提供信息 |
+具体场景不要在入口 skill 中硬编码。统一从
+`references/new-pass-placement-guide.md` 推导，并核对当前 `phase.py`。特别是：
+
+- buffer/address/access rewrite 必须在 MemoryPlanning 前完成；
+- memory/pipeline-affecting call 必须在 SyncInsert 前生成并补齐 OperationConfig；所有
+  hardware-call/scope rewrite 必须在 ResourceScopeVerify 前完成；
+- managed Vector semantic rewrite 必须在 InstructionSelection 前完成；
+- MaskLegalize 后不得再运行 TIR-transforming pass。
 
 **详细定位指南请查阅：** `references/new-pass-placement-guide.md`
 
@@ -243,8 +249,8 @@ Pass 之间通过 `PrimFunc` attrs 传递数据：
 
 **响应策略**:
 1. 读取 `references/pass-dependency-graph.md`
-2. 展示数据流：`AscendMemoryPlanning` → `address_map` → `AscendSyncInsert`
-3. 解释依赖关系：Sync Insert 需要 Memory Planning 提供的地址映射
+2. 展示数据流：`AscendMemoryPlanning` → `address_map/size_map` → `AscendSyncInsert` / `VS`
+3. 解释依赖关系：两个 Sync pass 都需要 Memory Planning 的最终地址映射
 4. 说明如果要在它们之间添加新 Pass，需要注意数据传递
 
 ### 示例 3: 用户想添加新 Pass
@@ -257,12 +263,9 @@ Pass 之间通过 `PrimFunc` attrs 传递数据：
    - 功能：优化 buffer 数据布局
    - 依赖：需要知道 buffer scope (L0C)
    - 平台：Ascend 特定
-3. 推荐位置：Phase 2，在 `AscendStorageRewrite` 后
-4. 理由：
-   - `AscendStorageRewrite` 已经完成存储优化
-   - 此时 buffer scope 和 shape 信息已经完备
-   - 属于 Ascend 后端优化范畴
-5. 给出实现建议和参考 Pass
+3. 判断它会修改 buffer layout/address contract，因此要求在 MemoryPlanning 前
+4. 读取当前 `phase.py`，再选满足输入依赖且不跨该边界的精确相邻 Pass
+5. 给出实现建议、被消费/失效的 facts 和参考 Pass
 
 ## 注意事项
 
@@ -275,7 +278,7 @@ Pass 之间通过 `PrimFunc` attrs 传递数据：
    - 先展示概要，再根据用户追问提供详细信息
 
 3. **定位建议需明确**
-   - 提供具体位置（如 "Phase 2，第 X 步，在 Pass Y 之后"）
+   - 提供相邻锚点（如 "after X, before Y"），不要依赖易漂移的步骤号
    - 解释理由，不要只给出结论
 
 4. **关联已有文档**
