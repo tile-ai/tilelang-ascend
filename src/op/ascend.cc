@@ -551,6 +551,25 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   }
 
   if (config.gm2ub) {
+    // Compile-time guard for strided narrow sub-32B copies (the MTE2 2D
+    // path corrupts the destination layout — see the ASCENDC_ASSERT in
+    // copy_gm_to_ub for the device-side counterpart).
+    {
+      auto *cm = analyzer->Simplify(validRow_src).as<IntImmNode>();
+      auto *cn = analyzer->Simplify(validCol_src).as<IntImmNode>();
+      auto *sn = analyzer->Simplify(strideN).as<IntImmNode>();
+      auto *dn = analyzer->Simplify(dst->shape[dst->shape.size() - 1])
+                     .as<IntImmNode>();
+      if (cm && cn && sn && dn && cm->value > 1 && cn->value == dn->value &&
+          sn->value != cn->value &&
+          (cn->value * src->dtype.bytes()) % 32 != 0) {
+        LOG(FATAL) << "Unsupported strided sub-32B inner-dim copy: "
+                   << "rows=" << cm->value << ", inner=" << cn->value
+                   << ", srcPitch=" << sn->value
+                   << ". Copy a contiguous region or stage through a "
+                   << "32B-padded buffer instead.";
+      }
+    }
     new_args.push_back(validRow_src);
     new_args.push_back(validCol_src);
     PrimExpr pad_val = padValue;
@@ -568,6 +587,23 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   }
 
   if (config.ub2gm) {
+    // Compile-time guard for strided narrow sub-32B copies (ub->gm).
+    {
+      auto *cm = analyzer->Simplify(validRow_dst).as<IntImmNode>();
+      auto *cn = analyzer->Simplify(validCol_dst).as<IntImmNode>();
+      auto *sn = analyzer->Simplify(strideN).as<IntImmNode>();
+      auto *src_n = analyzer->Simplify(src->shape[src->shape.size() - 1])
+                        .as<IntImmNode>();
+      if (cm && cn && sn && src_n && cm->value > 1 &&
+          cn->value == src_n->value && sn->value != cn->value &&
+          (cn->value * src->dtype.bytes()) % 32 != 0) {
+        LOG(FATAL) << "Unsupported strided sub-32B inner-dim copy (ub->gm): "
+                   << "rows=" << cm->value << ", inner=" << cn->value
+                   << ", dstPitch=" << sn->value
+                   << ". Copy to a contiguous region or stage through a "
+                   << "32B-padded buffer instead.";
+      }
+    }
     new_args.push_back(validRow_dst);
     new_args.push_back(validCol_dst);
     if (src->shape.size() > 1) {
