@@ -31,7 +31,6 @@ import torch
 import torch_npu
 import tilelang
 from tilelang import language as T
-from tilelang.carver.arch.ascend import Ascend as _AscendArch
 
 if os.environ.get("TL_CLEAR_CACHE", "0") == "1":
     tilelang.cache.clear_cache()
@@ -43,9 +42,18 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
 }
 
-# ---------------- machine model (queried at runtime) ----------------
+# ---------------- machine model ----------------
 _NPU_PROPS = torch.npu.get_device_properties(torch.npu.current_device())
-UB_LIMIT = _AscendArch().ub_cap - 256  # usable UB bytes per AIV sub-block
+# Hardcoded conservative UB budget per AIV sub-block. The runtime arch lookup
+# mis-classifies non-910B devices (e.g. Ascend910_9392 falls back to the 910A
+# 256KB spec) and the resulting plans overflow the real, smaller UB (CI hit
+# aicore exception 507015). 910B family: 192KB is validated on 910B3;
+# everything else: stay at 128KB until validated on the actual device.
+# Core counts are NOT hardcoded: the vector_core_num query is accurate.
+if "910B" in _NPU_PROPS.name.upper():
+    UB_LIMIT = 192 * 1024 - 256
+else:
+    UB_LIMIT = 128 * 1024 - 256
 S_SUBBLOCKS = _NPU_PROPS.vector_core_num  # AIV sub-blocks (GRID = S/2, MIX_AIC_1_2)
 
 # tiling search space: structural candidates (stages / chunk counts) for planners
