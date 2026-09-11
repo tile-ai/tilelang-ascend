@@ -45,21 +45,11 @@ pass_configs = {
 
 # ---------------- machine model (queried at runtime) ----------------
 _NPU_PROPS = torch.npu.get_device_properties(torch.npu.current_device())
-# The optimized tiers are validated on the 910B family only. Other devices in
-# the CI fleet (e.g. Ascend910_9392) are mis-modeled by the arch lookup (their
-# name lacks "910B", so ub_cap falls back to the 910A 256KB spec) and their
-# real per-sub-block UB is smaller; whole-row plans then overflow UB and fault.
-# They take the original-kernel fallback instead (see build_rms_norm).
-_IS_910B = "910B" in _NPU_PROPS.name.upper()
 UB_LIMIT = _AscendArch().ub_cap - 256  # usable UB bytes per AIV sub-block
 S_SUBBLOCKS = _NPU_PROPS.vector_core_num  # AIV sub-blocks (GRID = S/2, MIX_AIC_1_2)
 
-# tiling search space: structural candidates (stages / chunk counts) for planners.
-# NOTE: multi-stage (>1) event pipelining hung once on 910B4-1 + CANN
-# 9.1.0-beta.1 (CI runner, sync timeout 507014). Default to single-stage until
-# root-caused; override with TL_STAGES=4,3,2,1 on validated environments
-# (910B3 + CANN 9.0).
-STAGE_PREF = tuple(int(x) for x in os.environ.get("TL_STAGES", "1").split(","))
+# tiling search space: structural candidates (stages / chunk counts) for planners
+STAGE_PREF = (4, 3, 2, 1)  # whole_row pipeline depths, tried in order
 RC_N_SET = (1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24)  # row_cache chunk counts
 FB_N_SET = (2, 4, 6, 8, 10, 12, 16, 20, 24, 32, 40, 50)  # two_pass chunk counts
 
@@ -722,19 +712,16 @@ def _rms_norm_orig(M, N, block_M_in, block_N_in, eps=1e-5, dtype="float"):
 
 def build_rms_norm(M, N, dtype="float", eps=1e-5):
     """Returns (callable, tier). Tiers: whole_row (single-pass) > row_cache
-    (GM read once) > two_pass (column chunks) > orig (original kernel).
-    The optimized tiers are enabled on the 910B family only; other Ascend
-    devices fall back to the original kernel (validated there by CI)."""
-    if _IS_910B:
-        f = _build_whole_row(M, N, dtype, eps)
-        if f is not None:
-            return f, "whole_row"
-        f = _build_row_cache(M, N, dtype, eps)
-        if f is not None:
-            return f, "row_cache"
-        f = _build_two_pass(M, N, dtype, eps)
-        if f is not None:
-            return f, "two_pass"
+    (GM read once) > two_pass (column chunks) > orig (original kernel)."""
+    f = _build_whole_row(M, N, dtype, eps)
+    if f is not None:
+        return f, "whole_row"
+    f = _build_row_cache(M, N, dtype, eps)
+    if f is not None:
+        return f, "row_cache"
+    f = _build_two_pass(M, N, dtype, eps)
+    if f is not None:
+        return f, "two_pass"
     return _rms_norm_orig(M, N, 64 if dtype != "float" else 128, 128, eps=eps, dtype=dtype), "orig"
 
 
@@ -778,14 +765,9 @@ def _make_input(M, N, dtype):
     return torch.randn(M, N, device="npu", dtype=torch.float32)
 
 
-_last_cfg = "startup"
-
-
 def run_config(M, N, block_M, block_N, dtype):
-    global _last_cfg
     print(f"\n[Correctness] M={M}, N={N}, dtype={dtype}", flush=True)
     func, tier = build_rms_norm(M, N, dtype=dtype)
-    _last_cfg = f"M={M}x{N} {dtype} tier={tier}"
     print(f"  tier={tier}", flush=True)
 
     a = _make_input(M, N, dtype)
@@ -814,29 +796,10 @@ def run_config(M, N, block_M, block_N, dtype):
 
 
 if __name__ == "__main__":
-    # CI diagnostics: the legacy runner only keeps the last output line, so on
-    # failure print config + tier + queried machine model as the final line.
-    try:
-        _arch = _AscendArch()
-        _env = (
-            f"dev={_NPU_PROPS.name} vec={_NPU_PROPS.vector_core_num} "
-            f"cube={getattr(_NPU_PROPS, 'cube_core_num', '?')} "
-            f"chip={_arch.chip_name} ub_cap={_arch.ub_cap}"
-        )
-    except Exception as e:  # noqa: BLE001
-        _env = f"dev-query-failed({type(e).__name__})"
-    print(f"[ENV] tilelang={tilelang.__version__} {_env}", flush=True)
-
     if len(sys.argv) > 1:
         indices = [int(x) for x in sys.argv[1].split(",")]
     else:
         indices = range(len(test_configs))
     for i in indices:
-        try:
-            run_config(*test_configs[i])
-        except BaseException as e:  # noqa: BLE001
-            print(f"[DIAG] FAILED at config {i}: {_last_cfg} | {_env} | {type(e).__name__}: {str(e)[:200]}", flush=True)
-            sys.stdout.flush()
-            sys.stderr.flush()
-            os._exit(1)
+        run_config(*test_configs[i])
     print("\nAll done. tilelang_rms_norm_opt vs aclnnRmsNorm captured for msprof op.", flush=True)
