@@ -1,4 +1,6 @@
 import torch
+import torch_npu  # noqa: F401
+import torch_tl_ascend  # noqa: F401
 
 
 def _check_precision(actual, golden):

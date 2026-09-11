@@ -1,4 +1,5 @@
 import torch
+import torch_npu  # noqa: F401
 
 from torch_tl_ascend.op_source.flash_attn_bhsd import flash_attention_fwd
 
