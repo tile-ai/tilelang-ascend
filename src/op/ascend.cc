@@ -750,9 +750,39 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
       << "tl.ascend_atomic_add V1 requires UB/shared or L0C/wmma.accumulator "
          "src, got "
       << src.scope();
-  ICHECK(src->dtype == dst->dtype)
-      << "tl.ascend_atomic_add requires src and dst dtype to match, got src "
-      << src->dtype << " and dst " << dst->dtype;
+  // L0C (wmma.accumulator) src: the L0C accumulator computes in fp32.  Helper
+  // SetAtomicAdd() first converts the L0C value to the destination type DstT
+  // (e.g. bf16), then performs the GM atomic add as DstT -- matching AscendC mm
+  // enAtomic=1.  So the L0C->GM pair is validated exactly: fp32 L0C may write
+  // back to fp32/fp16/bf16 GM (SetAtomicAdd converts to DstT then adds as DstT),
+  // and int32 L0C (int8xint8 GEMM accumulator) may write back to int32 GM
+  // (Catlass/PTO both support int32->int32 L0C atomic writeback).  Anything
+  // else is rejected because the AscendC/PTO backends only express these
+  // supported conversions.  The UB branch keeps the exact src == dst dtype
+  // check.
+  if (src.scope() == "wmma.accumulator") {
+    bool supported = false;
+    for (const auto& pair : {
+             std::make_pair(DataType::Float(32), DataType::Float(32)),
+             std::make_pair(DataType::Float(32), DataType::Float(16)),
+             std::make_pair(DataType::Float(32), DataType::BFloat(16)),
+             std::make_pair(DataType::Int(32), DataType::Int(32)),
+         }) {
+      if (src->dtype == pair.first && dst->dtype == pair.second) {
+        supported = true;
+        break;
+      }
+    }
+    ICHECK(supported)
+        << "tl.ascend_atomic_add L0C (wmma.accumulator) -> GM only supports "
+           "the dtype pairs fp32->fp32, fp32->fp16, fp32->bf16 and "
+           "int32->int32, got src "
+        << src->dtype << " and dst " << dst->dtype;
+  } else {
+    ICHECK(src->dtype == dst->dtype)
+        << "tl.ascend_atomic_add requires src and dst dtype to match, got src "
+        << src->dtype << " and dst " << dst->dtype;
+  }
   ICHECK_EQ(src_extents.size(), src->shape.size())
       << "tl.ascend_atomic_add source region rank must match source buffer "
          "rank";
