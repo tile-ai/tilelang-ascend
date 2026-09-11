@@ -48,8 +48,12 @@ _NPU_PROPS = torch.npu.get_device_properties(torch.npu.current_device())
 UB_LIMIT = _AscendArch().ub_cap - 256  # usable UB bytes per AIV sub-block
 S_SUBBLOCKS = _NPU_PROPS.vector_core_num  # AIV sub-blocks (GRID = S/2, MIX_AIC_1_2)
 
-# tiling search space: structural candidates (stages / chunk counts) for planners
-STAGE_PREF = (4, 3, 2, 1)  # whole_row pipeline depths, tried in order
+# tiling search space: structural candidates (stages / chunk counts) for planners.
+# NOTE (debug): multi-stage (>1) event pipelining deadlocks nondeterministically
+# on 910B4-1 + CANN 9.1.0-beta.1 (CI runner): sync timeout 507014 / aicore
+# exception 507015 across runs. Default to single-stage until root-caused;
+# override with TL_STAGES=4,3,2,1 on validated environments (910B3 + CANN 9.0).
+STAGE_PREF = tuple(int(x) for x in os.environ.get("TL_STAGES", "1").split(","))
 RC_N_SET = (1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24)  # row_cache chunk counts
 FB_N_SET = (2, 4, 6, 8, 10, 12, 16, 20, 24, 32, 40, 50)  # two_pass chunk counts
 
