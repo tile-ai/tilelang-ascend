@@ -32,9 +32,10 @@ def bitwise_and(
 
 #### 2.3.1 DataType 支持
 
-| 平台 | dst | src0 | src1 |
-|------|:---:|:----:|:----:|
-| Ascend A2 / A3 | int8, uint8, int16, uint16 | 同 dst | 同 dst |
+| 平台 / 后端 | dst | src0 | src1 |
+|-------------|:---:|:----:|:----:|
+| Ascend A2 / A3（Ascend C） | int16, uint16 | 同 dst | 同 dst |
+| Ascend A2 / A3（PTO） | int8, uint8, int16, uint16 | 同 dst | 同 dst |
 
 #### 2.3.2 Shape 支持
 
