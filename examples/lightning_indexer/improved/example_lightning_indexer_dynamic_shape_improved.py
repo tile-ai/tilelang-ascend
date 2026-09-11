@@ -627,6 +627,8 @@ def run_precision_suite():
             print(f"[CASE_FAIL] {label}: {error}")
     print(f"\n{'=' * 60}")
     print(f"精度套件汇总: {passed} 通过 / {failed} 失败 / {len(PRECISION_SUITE)} 总计")
+    if failed == 0:
+        print("Kernel Output Match!")
     return failed == 0
 
 
@@ -642,6 +644,7 @@ if __name__ == "__main__":
         raise SystemExit(0 if run_precision_suite() else 1)
     if arguments.quick:
         test_indexer(s1=64, s2=1024, top_k=256, block_n=64, vector_basen=64, s2_splits=arguments.s2_splits)
+        print("Kernel Output Match!")
     else:
         test_indexer(
             s1=1024,
@@ -651,3 +654,4 @@ if __name__ == "__main__":
             vector_basen=arguments.block_n,
             s2_splits=arguments.s2_splits,
         )
+        print("Kernel Output Match!")
