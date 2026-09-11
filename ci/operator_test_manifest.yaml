@@ -3,7 +3,7 @@
 # examples/bench_test.sh 执行。
 #
 # 覆盖 bench_test.sh 会收集到的全部算子。以下不在此表：
-#   examples/gemm_aot/example_gemm.py —— 拼出的名字与已有的独立脚本
+#   examples_experiment/gemm_aot/example_gemm.py —— 拼出的名字与已有的独立脚本
 #     test_example_gemm.py 相同，那个脚本由 run_example_gemm_aot.sh 直接执行。
 #   dispatch_combine/ 与 shmem/ —— bench_test.sh 全量扫描时就排除了。
 #   sparse_flash_attention/bench_sfa/ —— 由 CUSTOM_TASK 按名字驱动，
@@ -32,11 +32,11 @@ mappings:
   examples/activation/tanh.py: examples/activation/test_tanh.py
 
   # examples/autotune
-  examples/autotune/example_gemm_autotune.py: examples/autotune/test_example_gemm_autotune.py
-  examples/autotune/example_gemm_carver.py: examples/autotune/test_example_gemm_carver.py
+  examples_experiment/autotune/example_gemm_autotune.py: examples/autotune/test_example_gemm_autotune.py
+  examples_experiment/autotune/example_gemm_carver.py: examples/autotune/test_example_gemm_carver.py
 
   # examples/batch_gemm
-  examples/batch_gemm/batch_gemm.py: examples/batch_gemm/test_batch_gemm.py
+  examples_experiment/batch_gemm/batch_gemm.py: examples_experiment/batch_gemm/test_batch_gemm.py
 
   # examples/cann-bench
   examples/cann-bench/cummin/example_cummin.py: examples/cann-bench/cummin/test_example_cummin.py
@@ -61,11 +61,11 @@ mappings:
   # examples/developer_mode
   examples/developer_mode/flash_attn_bshd_developer.py: examples/developer_mode/test_flash_attn_bshd_developer.py
   examples/developer_mode/gelu_mul_developer.py: examples/developer_mode/test_gelu_mul_developer.py
-  examples/developer_mode/gemm_developer.py: examples/developer_mode/test_gemm_developer.py
+  examples_experiment/developer_mode/gemm_developer.py: examples/developer_mode/test_gemm_developer.py
   examples/developer_mode/matmul_add_developer.py: examples/developer_mode/test_matmul_add_developer.py
   examples/developer_mode/matmul_add_developer_vec_cast.py: examples/developer_mode/test_matmul_add_developer_vec_cast.py
-  examples/developer_mode/sparse_flash_attn_developer.py: examples/developer_mode/test_sparse_flash_attn_developer.py
-  examples/developer_mode/sparse_flash_attn_developer_vid_reduce.py: examples/developer_mode/test_sparse_flash_attn_developer_vid_reduce.py
+  examples_experiment/developer_mode/sparse_flash_attn_developer.py: examples/developer_mode/test_sparse_flash_attn_developer.py
+  examples_experiment/developer_mode/sparse_flash_attn_developer_vid_reduce.py: examples/developer_mode/test_sparse_flash_attn_developer_vid_reduce.py
 
   # examples/elementwise
   examples/elementwise/elementwise_add.py: examples/elementwise/test_elementwise_add.py
@@ -74,9 +74,9 @@ mappings:
 
   # examples/flash_attention/fa_opt
   examples/flash_attention/fa_opt/flash_attn_bhsd_ascendc.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_ascendc.py
-  examples/flash_attention/fa_opt/flash_attn_bhsd_auto_pipeline_h16_d128.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_auto_pipeline_h16_d128.py
+  examples_experiment/flash_attention/fa_opt/flash_attn_bhsd_auto_pipeline_h16_d128.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_auto_pipeline_h16_d128.py
   examples/flash_attention/fa_opt/flash_attn_bhsd_auto_pipeline_h32_d512.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_auto_pipeline_h32_d512.py
-  examples/flash_attention/fa_opt/flash_attn_bhsd_expert_h16_d128.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_expert_h16_d128.py
+  examples_experiment/flash_attention/fa_opt/flash_attn_bhsd_expert_h16_d128.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_expert_h16_d128.py
 
   # examples/flash_attention
   examples/flash_attention/flash_attn_bhsd.py: examples/flash_attention/test_flash_attn_bhsd.py
@@ -87,19 +87,19 @@ mappings:
   examples/fused_sigmoid_gating_delta_rule/fused_sigmoid_gating_delta_rule_varlen.py: examples/fused_sigmoid_gating_delta_rule/test_fused_sigmoid_gating_delta_rule_varlen.py
 
   # examples/gemm
-  examples/gemm/example_gemm.py: examples/gemm/test_example_gemm.py
+  examples_experiment/gemm/example_gemm.py: examples/gemm/test_example_gemm.py
   examples/gemm/example_gemm_fp8_pto.py: examples/gemm/test_example_gemm_fp8_pto.py
-  examples/gemm/example_gemm_infer_scope.py: examples/gemm/test_example_gemm_infer_scope.py
+  examples_experiment/gemm/example_gemm_infer_scope.py: examples/gemm/test_example_gemm_infer_scope.py
   examples/gemm/example_gemm_intrinsic.py: examples/gemm/test_example_gemm_intrinsic.py
   examples/gemm/example_gemm_intrinsic_persistent.py: examples/gemm/test_example_gemm_intrinsic_persistent.py
-  examples/gemm/example_gemm_persistent.py: examples/gemm/test_example_gemm_persistent.py
-  examples/gemm/example_gemm_pto_developer.py: examples/gemm/test_example_gemm_pto_developer.py
+  examples_experiment/gemm/example_gemm_persistent.py: examples/gemm/test_example_gemm_persistent.py
+  examples_experiment/gemm/example_gemm_pto_developer.py: examples/gemm/test_example_gemm_pto_developer.py
   examples/gemm/example_gemm_tail_block_developer.py: examples/gemm/test_example_gemm_tail_block_developer.py
-  examples/gemm/example_gemm_transpose_l1.py: examples/gemm/test_example_gemm_transpose_l1.py
+  examples_experiment/gemm/example_gemm_transpose_l1.py: examples/gemm/test_example_gemm_transpose_l1.py
 
   # examples/gemv
   examples/gemv/example_gemv_c.py: examples/gemv/test_example_gemv_c.py
-  examples/gemv/example_gemv_v.py: examples/gemv/test_example_gemv_v.py
+  examples_experiment/gemv/example_gemv_v.py: examples/gemv/test_example_gemv_v.py
 
   # examples/generative_recommendation
   examples/generative_recommendation/mtgr_ragged_segment_attention.py: examples/generative_recommendation/test_mtgr_ragged_segment_attention.py
@@ -139,7 +139,7 @@ mappings:
   # examples/moe_token_permute
   examples/moe_token_permute/moe_token_permute.py: examples/moe_token_permute/test_moe_token_permute.py
   examples/moe_token_permute/moe_token_permute_grad.py: examples/moe_token_permute/test_moe_token_permute_grad.py
-  examples/moe_token_permute/moe_token_unpermute.py: examples/moe_token_permute/test_moe_token_unpermute.py
+  examples_experiment/moe_token_permute/moe_token_unpermute.py: examples/moe_token_permute/test_moe_token_unpermute.py
   examples/moe_token_permute/moe_token_unpermute_grad.py: examples/moe_token_permute/test_moe_token_unpermute_grad.py
   examples/moe_token_permute/moe_token_utils.py: examples/moe_token_permute/test_moe_token_utils.py
 
@@ -153,7 +153,7 @@ mappings:
 
   # examples/pipeline
   examples/pipeline/flash_attn_bshd_pipeline.py: examples/pipeline/test_flash_attn_bshd_pipeline.py
-  examples/pipeline/gemm_v0_pipeline.py: examples/pipeline/test_gemm_v0_pipeline.py
+  examples_experiment/pipeline/gemm_v0_pipeline.py: examples/pipeline/test_gemm_v0_pipeline.py
   examples/pipeline/matmul_add_pipeline.py: examples/pipeline/test_matmul_add_pipeline.py
   examples/pipeline/sparse_flash_attn_gqa_pipeline.py: examples/pipeline/test_sparse_flash_attn_gqa_pipeline.py
   examples/pipeline/sparse_flash_attn_gqa_pipeline_pto.py: examples/pipeline/test_sparse_flash_attn_gqa_pipeline_pto.py
@@ -190,13 +190,13 @@ mappings:
   examples/sort/example_merge_sort.py: examples/sort/test_example_merge_sort.py
 
   # examples/sparse_flash_attention
-  examples/sparse_flash_attention/example_sparse_flash_attn.py: examples/sparse_flash_attention/test_example_sparse_flash_attn.py
-  examples/sparse_flash_attention/example_sparse_flash_attn_dynamic_shape.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_dynamic_shape.py
+  examples_experiment/sparse_flash_attention/example_sparse_flash_attn.py: examples/sparse_flash_attention/test_example_sparse_flash_attn.py
+  examples_experiment/sparse_flash_attention/example_sparse_flash_attn_dynamic_shape.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_dynamic_shape.py
   examples/sparse_flash_attention/example_sparse_flash_attn_gqa.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_gqa.py
   examples/sparse_flash_attention/example_sparse_flash_attn_gqa_pto.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_gqa_pto.py
   examples/sparse_flash_attention/example_sparse_flash_attn_gqa_pto_developer.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_gqa_pto_developer.py
-  examples/sparse_flash_attention/example_sparse_flash_attn_mask.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_mask.py
-  examples/sparse_flash_attention/example_sparse_flash_attn_mask_pa.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_mask_pa.py
+  examples_experiment/sparse_flash_attention/example_sparse_flash_attn_mask.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_mask.py
+  examples_experiment/sparse_flash_attention/example_sparse_flash_attn_mask_pa.py: examples/sparse_flash_attention/test_example_sparse_flash_attn_mask_pa.py
 
   # examples/tail_mask
   examples/tail_mask/example_tail_add.py: examples/tail_mask/test_example_tail_add.py
@@ -212,7 +212,7 @@ mappings:
   examples/tile_kernels/quant/per_block_cast_lossless_kernel.py: examples/tile_kernels/quant/test_per_block_cast_lossless_kernel.py
 
   # examples/topk_selector
-  examples/topk_selector/example_topk_selector.py: examples/topk_selector/test_example_topk_selector.py
+  examples_experiment/topk_selector/example_topk_selector.py: examples/topk_selector/test_example_topk_selector.py
 
   # examples/unsorted_segment_sum
   examples/unsorted_segment_sum/unsorted_segment_sum.py: examples/unsorted_segment_sum/test_unsorted_segment_sum.py

@@ -24,7 +24,7 @@ Single unified kernel (flashattn_mla_decode):
 
 References:
   - GPU source: tilelang/examples/deepseek_mla/example_mla_decode_persistent.py
-  - Multi-buffer pipeline: examples/flash_attention/fa_opt/flash_attn_bhsd_expert_h16_d128.py
+  - Multi-buffer pipeline: examples_experiment/flash_attention/fa_opt/flash_attn_bhsd_expert_h16_d128.py
   - gemm_v0 init=False accumulate: examples/linear_attention_and_rnn/linear_attention_causal.py
 """
 

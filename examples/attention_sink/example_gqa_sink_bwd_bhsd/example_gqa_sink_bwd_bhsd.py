@@ -50,6 +50,46 @@ Key design decisions:
 
 import tilelang
 import torch
+
+
+def _get_precision(dtype_str):
+    table = {
+        "float16": (2**-14, 2**-9, 1e-1, 0.99),
+        "bfloat16": (2**-10, 2**-6, 1e0, 0.99),
+        "float32": (2**-16, 2**-10, 1e-2, 0.99),
+        "hifloat32": (2**-16, 2**-10, 1e-2, 0.99),
+        "float8_e4m3": (2**-4, 2**-2, 1e0, 0.99),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1, 0.99),
+    }
+    if dtype_str in {"int8", "int16", "int32", "int64", "uint8"}:
+        return 0.0, 0.0, 0.0, 1.0
+    return table.get(dtype_str, table["float16"])
+
+
+def _check_precision(actual, golden, dtype_str):
+    """Return pass, matched ratio and max error using local mixed tolerance."""
+    atol, rtol, max_limit, required = _get_precision(dtype_str)
+    a, g = actual.detach().cpu(), golden.detach().cpu()
+    if atol == 0.0 and rtol == 0.0:
+        mismatches = (a != g).sum().item()
+        total = max(a.numel(), 1)
+        return mismatches == 0, 1.0 - mismatches / total, 0.0 if mismatches == 0 else float("inf")
+    a, g = a.float(), g.float()
+    special = ~torch.isfinite(g)
+    if special.any() and (
+        not torch.equal(torch.isnan(a[special]), torch.isnan(g[special]))
+        or not torch.equal(torch.isinf(a[special]), torch.isinf(g[special]))
+    ):
+        return False, 0.0, float("inf")
+    finite = torch.isfinite(g)
+    if not finite.any():
+        return True, 1.0, 0.0
+    err = (a[finite] - g[finite]).abs()
+    ratio = (err <= atol + rtol * g[finite].abs()).float().mean().item()
+    max_err = err.max().item()
+    return ratio >= required and max_err <= max_limit, ratio, max_err
+
+
 from tilelang import language as T
 
 # ============================================================================
@@ -593,6 +633,18 @@ if __name__ == "__main__":
     V.requires_grad_(True)
 
     O = attention(Q, K, V, sinks, None, groups)
+    K_rep = K.float().repeat_interleave(groups, dim=1)
+    V_rep = V.float().repeat_interleave(groups, dim=1)
+    logits = torch.matmul(Q.float(), K_rep.transpose(-2, -1)) / (D**0.5)
+    positions = torch.arange(N, device="npu")
+    logits = logits.masked_fill(positions[None, :] > positions[:, None], float("-inf"))
+    sink = sinks.float().view(1, H, 1, 1)
+    m = torch.maximum(logits.max(dim=-1, keepdim=True).values, sink)
+    probs = torch.exp(logits - m)
+    probs = probs / (probs.sum(dim=-1, keepdim=True) + torch.exp(sink - m))
+    O_ref = torch.matmul(probs, V_rep).half()
+    passed, ratio, max_abs = _check_precision(O, O_ref, "float16")
+    assert passed, f"matched_ratio={ratio:.4f}, max_abs={max_abs:.3e}"
     O.backward(dO)
     torch.npu.synchronize()
 

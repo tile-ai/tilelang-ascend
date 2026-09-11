@@ -38,6 +38,53 @@ from example_fusedmoe import (  # noqa: E402
 )
 
 
+def _check_precision(actual, golden, valid_mask=None):
+    """Apply precision-standard ratio, error-cap, and special-value checks."""
+    actual = actual.detach().cpu()
+    golden = golden.detach().cpu()
+    if valid_mask is not None:
+        mask = valid_mask.detach().cpu().bool()
+        while mask.ndim < actual.ndim:
+            mask = mask.unsqueeze(-1)
+        actual, golden = actual[mask.expand_as(actual)], golden[mask.expand_as(golden)]
+    if actual.numel() == 0:
+        return
+    if not (actual.is_floating_point() or actual.is_complex()):
+        if not torch.equal(actual, golden):
+            raise AssertionError("integer outputs differ")
+        return
+    dtype = golden.dtype
+    dtype_name = str(dtype).lower()
+    if "float8_e4m3" in dtype_name:
+        atol, rtol, max_abs, ratio = 2**-4, 2**-2, 1e0, 0.99
+    elif "float8_e5m2" in dtype_name:
+        atol, rtol, max_abs, ratio = 2**-3, 2**-1, 1e-1, 0.99
+    elif dtype == torch.float16:
+        atol, rtol, max_abs, ratio = 2**-14, 2**-9, 1e-1, 0.99
+    elif dtype == torch.bfloat16:
+        atol, rtol, max_abs, ratio = 2**-10, 2**-6, 1e0, 0.99
+    elif dtype in (torch.float32, torch.float64) or "hifloat32" in dtype_name:
+        atol, rtol, max_abs, ratio = 2**-16, 2**-10, 1e-2, 0.99
+    else:
+        atol, rtol, max_abs, ratio = 2**-14, 2**-9, 1e-1, 0.99
+    actual_f, golden_f = actual.float(), golden.float()
+    actual_nan, golden_nan = torch.isnan(actual_f), torch.isnan(golden_f)
+    actual_inf, golden_inf = torch.isinf(actual_f), torch.isinf(golden_f)
+    if not torch.equal(actual_nan, golden_nan) or not torch.equal(actual_inf, golden_inf):
+        raise AssertionError("NaN/Inf structure mismatch")
+    special = actual_nan | actual_inf | golden_nan | golden_inf
+    finite = ~special
+    if finite.any():
+        diff = (actual_f[finite] - golden_f[finite]).abs()
+        bound = atol + rtol * golden_f[finite].abs()
+        matched = diff <= bound
+        if matched.float().mean().item() < ratio:
+            raise AssertionError(f"matched ratio below {ratio}: {matched.float().mean().item():.4f}")
+        observed_max = diff.max().item()
+        if observed_max > max_abs:
+            raise AssertionError(f"max abs error {observed_max:.6g} exceeds {max_abs}")
+
+
 def test_fusedmoe_l0():
     """L0 threshold tests: regular shapes, block-aligned, for precision convergence."""
     ok = True
@@ -57,7 +104,7 @@ def test_fusedmoe_l0():
         output = kernel(x, w_gate, w_up, w_down)
 
         ref = golden_shared_expert(x, w_gate, w_up, w_down)
-        torch.testing.assert_close(output.cpu(), ref.cpu(), atol=5e-3, rtol=5e-3)
+        _check_precision(output, ref)
         print(f"[PRECISION_PASS] l0_shared_basic shape=({num_tokens},{d_hidden},{d_expert}) dtype=float16")
     except Exception as e:
         print(f"[PRECISION_FAIL] l0_shared_basic shape=(64,128,64) dtype=float16: {e}")
@@ -77,7 +124,7 @@ def test_fusedmoe_l0():
         output = kernel(x, w_gate, w_up, w_down)
 
         ref = golden_shared_expert(x, w_gate, w_up, w_down)
-        torch.testing.assert_close(output.cpu(), ref.cpu(), atol=5e-3, rtol=5e-3)
+        _check_precision(output, ref)
         print(f"[PRECISION_PASS] l0_shared_typical shape=({num_tokens},{d_hidden},{d_expert}) dtype=float16")
     except Exception as e:
         print(f"[PRECISION_FAIL] l0_shared_typical shape=(128,256,128) dtype=float16: {e}")
@@ -118,12 +165,7 @@ def test_fusedmoe_l0():
         # Compare only valid rows (exclude padding from non-compact layout)
         valid_mask = routing["stacked_weights"] > 0
         if valid_mask.any():
-            torch.testing.assert_close(
-                output[valid_mask].cpu(),
-                ref[valid_mask].cpu(),
-                atol=5e-3,
-                rtol=5e-3,
-            )
+            _check_precision(output, ref, valid_mask)
         print(f"[PRECISION_PASS] l0_routed_basic group_sum=64 d_hidden={d_hidden} n_experts={n_experts} dtype=float16")
     except Exception as e:
         print(f"[PRECISION_FAIL] l0_routed_basic: {e}")
@@ -163,12 +205,7 @@ def test_fusedmoe_l0():
 
         valid_mask = routing["stacked_weights"] > 0
         if valid_mask.any():
-            torch.testing.assert_close(
-                output[valid_mask].cpu(),
-                ref[valid_mask].cpu(),
-                atol=1e-2,
-                rtol=1e-2,
-            )
+            _check_precision(output, ref, valid_mask)
         print(f"[PRECISION_PASS] l0_routed_multi group_sum=256 d_hidden={d_hidden} n_experts={n_experts} dtype=float16")
     except Exception as e:
         print(f"[PRECISION_FAIL] l0_routed_multi: {e}")
@@ -263,7 +300,7 @@ def test_fusedmoe_l0():
         # Final output
         kernel_output = shared_output.view(batch_size, seq_len, d_hidden) + expert_cache.view(batch_size, seq_len, d_hidden)
 
-        torch.testing.assert_close(kernel_output.cpu(), ref_output.cpu(), atol=0.25, rtol=0.25)
+        _check_precision(kernel_output, ref_output)
         print(
             f"[PRECISION_PASS] l0_e2e_tiny batch={batch_size} seq={seq_len} "
             f"d_hidden={d_hidden} d_expert={d_expert} n_routed={n_routed_experts} "
@@ -305,9 +342,7 @@ def _run_boundary(level, name, fn):
 def test_fusedmoe_l1():
     """L1 functional tests: regular + irregular shapes + user golden params.
 
-    Per DESIGN.md §9.3 precision standard (Fusion class):
-      - float16 standard: atol=5e-3, rtol=5e-3
-      - float16 large (d_hidden=7168): atol=1e-2, rtol=1e-2
+    Precision is checked by the local precision-standard helper.
     """
     ok = True
     device = torch.device("npu")
@@ -323,7 +358,7 @@ def test_fusedmoe_l1():
         kernel = shared_expert_kernel(num_tokens, d_hidden, d_expert)
         output = kernel(x, w_gate, w_up, w_down)
         ref = golden_shared_expert(x, w_gate, w_up, w_down)
-        torch.testing.assert_close(output.cpu(), ref.cpu(), atol=5e-3, rtol=5e-3)
+        _check_precision(output, ref)
 
     ok &= _run_precision("l1", "shared_irregular_1 (100,200,150)", l1_shared_irregular_1, 5e-3, 5e-3)
 
@@ -338,7 +373,7 @@ def test_fusedmoe_l1():
         kernel = shared_expert_kernel(num_tokens, d_hidden, d_expert)
         output = kernel(x, w_gate, w_up, w_down)
         ref = golden_shared_expert(x, w_gate, w_up, w_down)
-        torch.testing.assert_close(output.cpu(), ref.cpu(), atol=5e-3, rtol=5e-3)
+        _check_precision(output, ref)
 
     ok &= _run_precision("l1", "shared_irregular_2 (50,300,100)", l1_shared_irregular_2, 5e-3, 5e-3)
 
@@ -370,7 +405,7 @@ def test_fusedmoe_l1():
             routing["block_metadata"],
         )
         valid_mask = routing["stacked_weights"] > 0
-        torch.testing.assert_close(output[valid_mask].cpu(), ref[valid_mask].cpu(), atol=5e-3, rtol=5e-3)
+        _check_precision(output, ref, valid_mask)
 
     ok &= _run_precision("l1", "routed_irregular groups=[100,50]", l1_routed_irregular, 5e-3, 5e-3)
 
@@ -402,7 +437,7 @@ def test_fusedmoe_l1():
             routing["block_metadata"],
         )
         valid_mask = routing["stacked_weights"] > 0
-        torch.testing.assert_close(output[valid_mask].cpu(), ref[valid_mask].cpu(), atol=5e-3, rtol=5e-3)
+        _check_precision(output, ref, valid_mask)
 
     ok &= _run_precision("l1", "routed_multi_uneven [64,192,128]", l1_routed_multi_uneven, 5e-3, 5e-3)
 
@@ -434,7 +469,7 @@ def test_fusedmoe_l1():
             routing["block_metadata"],
         )
         valid_mask = routing["stacked_weights"] > 0
-        torch.testing.assert_close(output[valid_mask].cpu(), ref[valid_mask].cpu(), atol=5e-3, rtol=5e-3)
+        _check_precision(output, ref, valid_mask)
 
     ok &= _run_precision("l1", "routed_single_token group=[1]", l1_routed_single_token, 5e-3, 5e-3)
 
@@ -487,7 +522,7 @@ def test_fusedmoe_l1():
         expert_cache = torch.zeros(num_tokens, d_hidden, dtype=torch.float16).to(device)
         expert_cache[valid_idxs] = valid_output
         kernel_output = shared_output.view(batch_size, seq_len, d_hidden) + expert_cache.view(batch_size, seq_len, d_hidden)
-        torch.testing.assert_close(kernel_output.cpu(), ref_output.cpu(), atol=0.25, rtol=0.25)
+        _check_precision(kernel_output, ref_output)
 
     ok &= _run_precision("l1", "e2e_multi_expert (b=1,s=128,routed=3,k=2)", l1_e2e_multi_expert, 0.25, 0.25)
 
@@ -540,13 +575,13 @@ def test_fusedmoe_l1():
         expert_cache = torch.zeros(num_tokens, d_hidden, dtype=torch.float16).to(device)
         expert_cache[valid_idxs] = valid_output
         kernel_output = shared_output.view(batch_size, seq_len, d_hidden) + expert_cache.view(batch_size, seq_len, d_hidden)
-        torch.testing.assert_close(kernel_output.cpu(), ref_output.cpu(), atol=0.25, rtol=0.25)
+        _check_precision(kernel_output, ref_output)
 
     ok &= _run_precision("l1", "e2e_topk_clamp (b=1,s=128,routed=1,k=4)", l1_e2e_topk_clamp, 0.25, 0.25)
 
     # ---- L1-8: User's golden params — routed expert (large shape) ----
     # d_hidden=7168, d_expert=2048, n_routed_experts=1, group_sizes=[8192]
-    # Precision: large matrix → atol=1e-2, rtol=1e-2 per DESIGN.md §9.3
+    # Precision uses the float16 standard, including ratio and max-error cap.
     def l1_user_routed_large():
         d_hidden, d_expert, n_experts = 7168, 2048, 1
         group_sizes = [8192]
@@ -574,9 +609,8 @@ def test_fusedmoe_l1():
             routing["block_metadata"],
         )
         valid_mask = routing["stacked_weights"] > 0
-        # Large matrix: d_hidden=7168 → K-dim accumulation 112 iterations
-        # Use relaxed tolerance per DESIGN.md §9.3 (large matrix: 1e-2)
-        torch.testing.assert_close(output[valid_mask].cpu(), ref[valid_mask].cpu(), atol=1e-2, rtol=1e-2)
+        # Large matrix still uses the standard float16 ratio and max-error cap.
+        _check_precision(output, ref, valid_mask)
 
     ok &= _run_precision("l1", "user_routed_large (d_h=7168,d_e=2048,n=1)", l1_user_routed_large, 1e-2, 1e-2)
 
@@ -631,8 +665,8 @@ def test_fusedmoe_l1():
         expert_cache = torch.zeros(num_tokens, d_hidden, dtype=torch.float16).to(device)
         expert_cache[valid_idxs] = valid_output
         kernel_output = shared_output.view(batch_size, seq_len, d_hidden) + expert_cache.view(batch_size, seq_len, d_hidden)
-        # Large matrix E2E: accumulated pipeline error, relaxed tolerance
-        torch.testing.assert_close(kernel_output.cpu(), ref_output.cpu(), atol=0.5, rtol=0.5)
+        # Large matrix E2E uses the standard float16 ratio and max-error cap.
+        _check_precision(kernel_output, ref_output)
 
     ok &= _run_precision("l1", "user_e2e (b=1,s=8192,d_h=7168,d_e=2048)", l1_user_e2e, 0.5, 0.5)
 
@@ -674,7 +708,7 @@ def test_fusedmoe_l2():
             routing["block_metadata"],
         )
         valid_mask = routing["stacked_weights"] > 0
-        torch.testing.assert_close(output[valid_mask].cpu(), ref[valid_mask].cpu(), atol=5e-3, rtol=5e-3)
+        _check_precision(output, ref, valid_mask)
 
     _run_boundary("l2", "empty_group [0,64]", l2_empty_group)
 
@@ -734,7 +768,7 @@ def test_fusedmoe_l2():
             routing["block_metadata"],
         )
         valid_mask = routing["stacked_weights"] > 0
-        torch.testing.assert_close(output[valid_mask].cpu(), ref[valid_mask].cpu(), atol=5e-3, rtol=5e-3)
+        _check_precision(output, ref, valid_mask)
 
     _run_boundary("l2", "minimal_input (d_h=64,group=[1])", l2_minimal_input)
 
@@ -777,7 +811,7 @@ def test_fusedmoe_boundary():
         )
         valid_mask = routing["stacked_weights"] > 0
         # Zero input → zero output (0 @ W = 0, silu(0)=0, 0*0=0, 0 @ W = 0)
-        torch.testing.assert_close(output[valid_mask].cpu(), ref[valid_mask].cpu(), atol=1e-3, rtol=1e-3)
+        _check_precision(output, ref, valid_mask)
 
     _run_boundary("boundary", "zero_input", b_zero_input)
 
@@ -812,7 +846,7 @@ def test_fusedmoe_boundary():
         )
         valid_mask = routing["stacked_weights"] > 0
         # Large values → larger absolute error, use relaxed tolerance
-        torch.testing.assert_close(output[valid_mask].cpu(), ref[valid_mask].cpu(), atol=1.0, rtol=1e-1)
+        _check_precision(output, ref, valid_mask)
 
     _run_boundary("boundary", "large_values", b_large_values)
 
@@ -1159,7 +1193,7 @@ def test_fusedmoe_bench(profiler="do_bench"):
             shared_output = shared_run(x, wgs, wus, wds)
             ref_shared = golden_shared_expert(x, wgs, wus, wds)
             max_diff = (shared_output.cpu().float() - ref_shared.cpu().float()).abs().max().item()
-            torch.testing.assert_close(shared_output.cpu().float(), ref_shared.cpu().float(), rtol=1e-2, atol=1e-2)
+            _check_precision(shared_output, ref_shared)
 
             if profiler == "msprof":
                 import tempfile

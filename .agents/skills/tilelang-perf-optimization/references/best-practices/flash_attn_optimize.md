@@ -860,7 +860,7 @@ pair 中使用相同数字，便于审查；`FREE` 和 `READY` 等不同语义�
 ## 参考资料
 
 - 基础实现：`examples/flash_attention/flash_attn_bhsd.py`
-- Expert 优化：`examples/flash_attention/fa_opt/flash_attn_bhsd_expert_h16_d128.py`
+- Expert 优化：`examples_experiment/flash_attention/fa_opt/flash_attn_bhsd_expert_h16_d128.py`
 - API 参考：`.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/SKILL.md`
 - 流水线同步：`.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-schedule-sync.md`
 - GEMM 优化：`./gemm_intrinsic_optimize.md`

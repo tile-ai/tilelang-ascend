@@ -358,7 +358,7 @@ async_states: {
 
 | 测试编号 | 算子场景 | 测试文件 |
 |---------|---------|---------|
-| OP-01 | 分片 GEMM 核内流水 (num_stages=3) | `examples/pipeline/gemm_v0_pipeline.py` |
+| OP-01 | 分片 GEMM 核内流水 (num_stages=3) | `examples_experiment/pipeline/gemm_v0_pipeline.py` |
 | OP-02 | Matmul+Add 两段核内流水 (Cube流水 + Vector流水) | `examples/pipeline/matmul_add_pipeline.py` |
 
 **OP-01 核内流水场景说明** (`gemm_v0_pipeline.py`):
@@ -421,7 +421,7 @@ for i in T.Pipelined(vec_proc, num_stages=2):
 
 #### 4.2.2 正确性校验
 
-- 运行 `examples/pipeline/gemm_v0_pipeline.py` 结果与参考一致
+- 运行 `examples_experiment/pipeline/gemm_v0_pipeline.py` 结果与参考一致
 - 运行 `examples/pipeline/matmul_add_pipeline.py` 结果与参考一致
 - 生成的后端 Ascend C 代码结构符合预期
 

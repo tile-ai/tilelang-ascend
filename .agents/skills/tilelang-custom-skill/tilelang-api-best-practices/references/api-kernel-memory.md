@@ -185,7 +185,7 @@ b = T.alloc_var("int32", init=a)  # 用另一个变量的值初始化
 | `T.alloc_L0B(shape, dtype)` | L0B Buffer | `wmma.matrix_b` | Cube 右矩阵 |
 | `T.alloc_L0C(shape, dtype)` | L0C Buffer | `wmma.accumulator` | Cube 输出/累加 |
 
-**实际使用示例**（来自 `examples/gemm/example_gemm.py`）：
+**实际使用示例**（来自 `examples_experiment/gemm/example_gemm.py`）：
 
 ```python
 A_L1 = T.alloc_L1([block_M, block_K], dtype)

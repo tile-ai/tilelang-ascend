@@ -579,7 +579,7 @@ def test_layout_annotation(M, N, K, block_M, block_N, block_K, a_layout, b_layou
 # Group 7 - Persistent scheduling                        [risk: low]
 # T.Persistent drives the tile grid in a cache-friendly order; each tile uses
 # the L1 -> L0 copy path (implicit via gemm_v0).  Follows the pattern in
-# examples/gemm/example_gemm_persistent.py.
+# examples_experiment/gemm/example_gemm_persistent.py.
 # =============================================================================
 def persistent_gemm(M, N, K, block_M, block_N, block_K, core_num, dtype="float16", accum_dtype="float"):
     """Persistent-scheduled GEMM (implicit L1 -> L0 copy via gemm_v0).

@@ -174,7 +174,7 @@ threads=2  ──►  vid 消除  ──►  workspace 消除
 | 模式 | 目录 | 说明 |
 |------|------|------|
 | Developer | `examples/developer_mode/` | GEMM、elementwise 等 |
-| Developer（消除 workspace/vid） | `examples/developer_mode/sparse_flash_attn_developer_vid_reduce.py`（新）vs `sparse_flash_attn_developer.py`（旧） | `threads=2` + 片上直连，逐行对照消除范式 |
+| Developer（消除 workspace/vid） | `examples_experiment/developer_mode/sparse_flash_attn_developer_vid_reduce.py`（新）vs `sparse_flash_attn_developer.py`（旧） | `threads=2` + 片上直连，逐行对照消除范式 |
 | Expert | `examples/gemm/example_gemm_intrinsic.py`、`examples/flash_attention/fa_opt/flash_attn_bhsd_expert_*.py` | 极致性能优化 |
 | 混合（核间流水线） | `examples/flash_attention/flash_attn_bhsd_cc_sync.py`、`examples/flash_attention/fa_opt/flash_attn_bhsd_auto_pipeline_*.py` | FA 核间流水线 |
 | 纯 Vector | `examples/elementwise/`、`examples/softmax/` | 无 Cube 操作 |

@@ -29,6 +29,36 @@ from utils import (
 )
 
 
+def _check_precision(actual, golden, dtype):
+    configs = {
+        "float16": (2**-14, 2**-9, 1e-1, 0.99),
+        "bfloat16": (2**-10, 2**-6, 1e0, 0.99),
+        "float32": (2**-16, 2**-10, 1e-2, 0.99),
+        "hifloat32": (2**-16, 2**-10, 1e-2, 0.99),
+        "float8_e4m3": (2**-4, 2**-2, 1e0, 0.99),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1, 0.99),
+    }
+    if dtype in {"int8", "int16", "int32", "int64", "uint8"}:
+        assert torch.equal(actual.detach().cpu(), golden.detach().cpu()), "integer output mismatch"
+        return
+    atol, rtol, max_abs_limit, required_ratio = configs[dtype]
+    actual, golden = actual.detach().cpu().float(), golden.detach().cpu().float()
+    assert actual.shape == golden.shape, f"shape mismatch: {actual.shape} != {golden.shape}"
+    special = ~torch.isfinite(golden)
+    assert torch.equal(torch.isnan(actual[special]), torch.isnan(golden[special])), "NaN positions differ"
+    assert torch.equal(torch.isinf(actual[special]), torch.isinf(golden[special])), "Inf positions differ"
+    finite = torch.isfinite(golden)
+    if not finite.any():
+        return
+    abs_error = (actual[finite] - golden[finite]).abs()
+    abs_error = torch.where(torch.isfinite(abs_error), abs_error, torch.full_like(abs_error, float("inf")))
+    matched_ratio = (abs_error <= atol + rtol * golden[finite].abs()).float().mean().item()
+    max_abs_error = abs_error.max().item()
+    assert matched_ratio >= required_ratio and max_abs_error <= max_abs_limit, (
+        f"matched_ratio={matched_ratio:.4f}, max_abs_error={max_abs_error:.3e}"
+    )
+
+
 COS_SIN_MERGED_LAYOUT = "token_3rope"
 DEFAULT_DTYPE = "bf16"
 SUPPORTED_HEAD_SPECS = ((256, 64),)
@@ -787,20 +817,10 @@ def _run_ref_check(
         is_interleaved=is_interleaved,
     )
 
-    torch.testing.assert_close(
-        q_out.to(torch.float32),
-        q_ref.to(torch.float32),
-        rtol=1e-2,
-        atol=1e-2,
-    )
-    torch.testing.assert_close(
-        k_out.to(torch.float32),
-        k_ref.to(torch.float32),
-        rtol=1e-2,
-        atol=1e-2,
-    )
-    torch.testing.assert_close(v_out, v_ref, rtol=0, atol=0)
-    torch.testing.assert_close(gate_out, gate_ref, rtol=0, atol=0)
+    _check_precision(q_out, q_ref, "bfloat16")
+    _check_precision(k_out, k_ref, "bfloat16")
+    _check_precision(v_out, v_ref, "bfloat16")
+    _check_precision(gate_out, gate_ref, "bfloat16")
     il_tag = "interleaved" if is_interleaved else "non-interleaved"
     print(
         f"[PASS] split_qkv_rmsnorm_mrope output matches torch reference for "

@@ -6,6 +6,43 @@ import tilelang.language as T
 from tilelang import DataType
 
 import torch
+
+
+def _check_precision(actual, golden, dtype):
+    table = {
+        "float16": (2**-14, 2**-9, 0.1),
+        "bfloat16": (2**-10, 2**-6, 1.0),
+        "float32": (2**-16, 2**-10, 0.01),
+        "hifloat32": (2**-16, 2**-10, 0.01),
+        "float8_e4m3": (2**-4, 2**-2, 1.0),
+        "float8_e5m2": (2**-3, 2**-1, 0.1),
+    }
+    actual_cpu, golden_cpu = actual.detach().cpu(), golden.detach().cpu()
+    if actual_cpu.shape != golden_cpu.shape:
+        return False, 0.0, float("inf")
+    dtype_name = str(dtype).replace("torch.", "")
+    if dtype_name in {"int8", "int16", "int32", "int64", "uint8"}:
+        mismatch = (actual_cpu != golden_cpu).sum().item()
+        total = max(actual_cpu.numel(), 1)
+        return mismatch == 0, 1.0 - mismatch / total, 0.0
+    actual, golden = actual_cpu.float(), golden_cpu.float()
+    atol, rtol, limit = table.get(dtype_name, table["float16"])
+    special = ~torch.isfinite(golden)
+    if special.any() and (
+        not torch.equal(torch.isnan(actual[special]), torch.isnan(golden[special]))
+        or not torch.equal(torch.isinf(actual[special]), torch.isinf(golden[special]))
+        or not torch.equal(actual[special][torch.isinf(golden[special])], golden[special][torch.isinf(golden[special])])
+    ):
+        return False, 0.0, float("inf")
+    finite = torch.isfinite(golden)
+    if not finite.any():
+        return True, 1.0, 0.0
+    error = (actual[finite] - golden[finite]).abs()
+    error = torch.where(torch.isfinite(error), error, torch.full_like(error, float("inf")))
+    ratio, maximum = (error <= atol + rtol * golden[finite].abs()).float().mean().item(), error.max().item()
+    return ratio >= 0.99 and maximum <= limit, ratio, maximum
+
+
 from torch import nn
 
 tl.cache.clear_cache()
@@ -148,8 +185,9 @@ def check_case(N: int, C: int, block_N: int = 128, block_C: int = 128, x_dtype="
     loss, log_prob = kernel(x, y)
     ref_loss, ref_log_prob = ref_program(x, y)
 
-    torch.testing.assert_close(loss, ref_loss, rtol=1e-2, atol=1e-2)
-    torch.testing.assert_close(log_prob, ref_log_prob, rtol=1e-2, atol=1e-2)
+    for name, actual, golden in (("loss", loss, ref_loss), ("log_prob", log_prob, ref_log_prob)):
+        passed, ratio, max_abs = _check_precision(actual, golden, actual.dtype)
+        assert passed, f"{name}: dtype={actual.dtype}, matched_ratio={ratio:.4f}, max_abs_error={max_abs:.6e}"
     print(f"Test N={N}, C={C}, block_N={block_N}, block_C={block_C}, x_dtype={x_dtype}, y_dtype={y_dtype} passed!")
 
 

@@ -180,8 +180,8 @@ with T.Kernel(m_num, is_npu=True) as (cid, vid):
 > 仅当编译器无法自动覆盖的复杂同步/多版本流水场景，才回退到 [§7 的 workspace+vid 写法](#7-cv-融合--workspace--vid-写法复杂场景兜底)。
 
 **已验证参考实现**（旧 vs 新，逐行对照）：
-- 旧（workspace+vid）：`examples/developer_mode/sparse_flash_attn_developer.py`
-- 新（消除）：`examples/developer_mode/sparse_flash_attn_developer_vid_reduce.py`
+- 旧（workspace+vid）：`examples_experiment/developer_mode/sparse_flash_attn_developer.py`
+- 新（消除）：`examples_experiment/developer_mode/sparse_flash_attn_developer_vid_reduce.py`
 
 ### 6.1 核心前提链（必须按序成立，不可跳级）
 

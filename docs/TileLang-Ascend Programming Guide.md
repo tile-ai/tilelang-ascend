@@ -236,7 +236,7 @@ python .agents/skills/tilelang-a5-sim-convert/scripts/run_a5_sim_template.py --l
 使用 `/tilelang-a5-sim-convert` skill（位于 `.agents/skills/tilelang-a5-sim-convert/`），输入一个 tilelang DSL 脚本路径，自动生成对应的 `*_sim.py` 仿真脚本（不覆盖原始文件）：
 
 ```
-/tilelang-a5-sim-convert examples/gemm/example_gemm.py
+/tilelang-a5-sim-convert examples_experiment/gemm/example_gemm.py
 ```
 
 转换的核心改动（人工转换时也遵循相同规则）：
@@ -1319,7 +1319,7 @@ for h_i, j in T.Parallel(v_block, BI):
 
 这里有些例子:
 - [MatmulAddDeveloper](../examples/developer_mode/matmul_add_developer.py)
-- [SparseFlashAttnDeveloperVidReduce](../examples/developer_mode/sparse_flash_attn_developer_vid_reduce.py)
+- [SparseFlashAttnDeveloperVidReduce](../examples_experiment/developer_mode/sparse_flash_attn_developer_vid_reduce.py)
 
 更多的细节，可以参考:
 - [vid_reduction_and_auto_cv_ratio.md](./tutorials/vid_reduction_and_auto_cv_ratio.md)
@@ -1388,7 +1388,7 @@ def flash_attn_kernel(...):
 
 相关示例代码：
 - [FlashAttention](../examples/developer_mode/flash_attn_bshd_developer.py)
-- [SparseFlashAttention](../examples/developer_mode/sparse_flash_attn_developer_vid_reduce.py)
+- [SparseFlashAttention](../examples_experiment/developer_mode/sparse_flash_attn_developer_vid_reduce.py)
 - [MatmulAddDeveloper](../examples/developer_mode/matmul_add_developer.py)
 
 更多的细节，可以参考:

@@ -125,8 +125,8 @@ def grouped_gemm_fwd(batch_sizes_list, K, N, block_M, block_N, block_K, dtype="f
 
 | API | 来源确认 | 验证状态 |
 |-----|----------|----------|
-| `T.alloc_L1` | `tilelang/language/allocate.py` + `examples/gemm/example_gemm.py` | ✅ 已验证 |
-| `T.alloc_L0C` | `tilelang/language/allocate.py` + `examples/gemm/example_gemm.py` | ✅ 已验证 |
+| `T.alloc_L1` | `tilelang/language/allocate.py` + `examples_experiment/gemm/example_gemm.py` | ✅ 已验证 |
+| `T.alloc_L0C` | `tilelang/language/allocate.py` + `examples_experiment/gemm/example_gemm.py` | ✅ 已验证 |
 | `T.copy` (带切片) | `tilelang/language/copy.py` + `examples/gemm/example_gemm_fwd.py` | ✅ 已验证 |
 | `T.gemm_v0` | `tilelang/language/customize.py` (npu_gemm alias) | ✅ 已验证 |
 | `T.barrier_all` | `tilelang/language/ascend.py` | ✅ 已验证 |

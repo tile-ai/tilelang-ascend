@@ -2,6 +2,34 @@ import importlib.util
 import sys
 from pathlib import Path
 from types import ModuleType
+import torch
+
+
+def _check_precision(actual, golden, dtype):
+    table = {
+        "float16": (2**-14, 2**-9, 1e-1, 0.99),
+        "bfloat16": (2**-10, 2**-6, 1e0, 0.99),
+        "float32": (2**-16, 2**-10, 1e-2, 0.99),
+        "hifloat32": (2**-16, 2**-10, 1e-2, 0.99),
+        "float8_e4m3": (2**-4, 2**-2, 1e0, 0.99),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1, 0.99),
+    }
+    actual, golden = actual.detach().cpu(), golden.detach().cpu()
+    if dtype in {"int8", "int16", "int32", "int64", "uint8"}:
+        assert torch.equal(actual, golden), "integer output must match exactly"
+        return
+    atol, rtol, max_abs_limit, required_ratio = table[dtype]
+    actual, golden = actual.float(), golden.float()
+    special = ~torch.isfinite(golden)
+    assert torch.equal(torch.isnan(actual[special]), torch.isnan(golden[special]))
+    assert torch.equal(torch.isinf(actual[special]), torch.isinf(golden[special]))
+    finite = torch.isfinite(golden)
+    if not finite.any():
+        return
+    errors = (actual[finite] - golden[finite]).abs()
+    ratio = (errors <= atol + rtol * golden[finite].abs()).float().mean().item()
+    max_abs = errors.max().item()
+    assert ratio >= required_ratio and max_abs <= max_abs_limit, f"matched_ratio={ratio:.4f}, max_abs_error={max_abs:.6e}"
 
 
 def _load_hc_split_sinkhorn_example() -> ModuleType:
@@ -21,8 +49,6 @@ def _load_hc_split_sinkhorn_example() -> ModuleType:
 
 
 def test_hc_split_sinkhorn_accuracy() -> None:
-    import torch
-
     example = _load_hc_split_sinkhorn_example()
 
     dtype = torch.float32
@@ -57,6 +83,6 @@ def test_hc_split_sinkhorn_accuracy() -> None:
     )
     torch.npu.synchronize()
 
-    torch.testing.assert_close(pre_ref, pre, rtol=1e-2, atol=1e-2)
-    torch.testing.assert_close(post_ref, post, rtol=1e-2, atol=1e-2)
-    torch.testing.assert_close(comb_ref, comb, rtol=1e-2, atol=1e-2)
+    _check_precision(pre, pre_ref, "float32")
+    _check_precision(post, post_ref, "float32")
+    _check_precision(comb, comb_ref, "float32")

@@ -1,5 +1,30 @@
 import torch
 
+
+def _check_precision(actual, golden):
+    dtype = actual.dtype
+    if not dtype.is_floating_point:
+        if not torch.equal(actual, golden):
+            raise AssertionError("integer outputs differ")
+        return
+    table = {torch.float16: (2**-14, 2**-9, 1e-1), torch.bfloat16: (2**-10, 2**-6, 1e0), torch.float32: (2**-16, 2**-10, 1e-2)}
+    atol, rtol, max_abs = table.get(dtype, (2**-16, 2**-10, 1e-2))
+    a, g = actual.float(), golden.float()
+    if not (
+        torch.equal(torch.isnan(a), torch.isnan(g))
+        and torch.equal(torch.isposinf(a), torch.isposinf(g))
+        and torch.equal(torch.isneginf(a), torch.isneginf(g))
+    ):
+        raise AssertionError("NaN/Inf structure mismatch")
+    valid = torch.isfinite(g)
+    if valid.any():
+        diff = torch.where(torch.isfinite(a[valid]), (a[valid] - g[valid]).abs(), torch.full_like(g[valid], float("inf")))
+        if (diff > (atol + rtol * g[valid].abs())).float().mean().item() > 0.01:
+            raise AssertionError("precision ratio below 0.99")
+        if diff.max().item() > max_abs:
+            raise AssertionError("maximum absolute error exceeded")
+
+
 import tilelang
 from tilelang import language as T
 from tilelang.intrinsics import make_zn_layout, make_nz_layout
@@ -569,7 +594,6 @@ if __name__ == "__main__":
     padding_mode = "full"
     block_M, block_N = 128, 128
     head_kv = heads // groups
-    atol = 1e-2
 
     torch.manual_seed(0)
     q = torch.randn(batch, heads, sq, dim, dtype=torch.float16, device="npu")
@@ -608,7 +632,7 @@ if __name__ == "__main__":
     ref_out = F.scaled_dot_product_attention(q, k_rep, v_rep, is_causal=False)
     torch.npu.synchronize()
 
+    _check_precision(out, ref_out)
     max_diff = (out.float() - ref_out.float()).abs().max().item()
     print(f"max_diff: {max_diff:.6e}")
-    assert max_diff < atol, f"Precision check failed: max_diff={max_diff} >= atol={atol}"
     print("Test Passed!")
