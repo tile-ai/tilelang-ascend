@@ -2282,7 +2282,108 @@ def run_test_clear(M, N, block_M, block_N, dtype, target):
 
     b = func()
 
-    ref_b = torch.zeros((M, N), dtype=torch.float32 if dtype == "float" else torch.float16).npu()
+    torch_dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "int32": torch.int32,
+        "uint32": torch.uint32,
+        "int16": torch.int16,
+        "uint16": torch.uint16,
+        "int8": torch.int8,
+        "uint8": torch.uint8,
+    }
+    torch_dtype = torch_dtype_map.get(dtype, torch.float32)
+    ref_b = torch.zeros((M, N), dtype=torch_dtype).npu()
+
+    assert_close_npu(b, ref_b, dtype, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16", "bfloat16", "int32", "int16", "uint16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("shape", [(1024, 1024)])
+def test_clear(dtype, target, shape):
+    M, N = shape
+    run_test_clear(M, N, 64, 32, dtype, target=target)
+
+
+@pytest.mark.parametrize("dtype", ["int8", "uint8"])
+@pytest.mark.parametrize("target", ["pto"])
+@pytest.mark.parametrize("shape", [(1024, 1024)])
+def test_clear_pto_int8(dtype, target, shape):
+    M, N = shape
+    run_test_clear(M, N, 64, 32, dtype, target=target)
+
+
+def clear_1d(N, block_N, dtype="float"):
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(A: T.Tensor((N,), dtype)):  # type: ignore
+        with T.Kernel(n_num, is_npu=True) as (cid, _):
+            a_ub = T.alloc_ub((block_N,), dtype)
+
+            T.tile.fill(a_ub, 10.0)
+            T.tile.clear(a_ub)
+            T.copy(a_ub, A[cid * block_N])
+
+    return main
+
+
+def run_test_clear_1d(N, block_N, dtype, target):
+    func = clear_1d(N, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch.npu.synchronize()
+
+    b = func()
+
+    torch_dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "int32": torch.int32,
+        "int8": torch.int8,
+    }
+    torch_dtype = torch_dtype_map.get(dtype, torch.float32)
+    ref_b = torch.zeros((N,), dtype=torch_dtype).npu()
+
+    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16", "int32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_clear_1d(dtype, target):
+    run_test_clear_1d(1024, 128, dtype, target=target)
+
+
+def clear_buffer_region(M, N, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(A: T.Tensor((M, N), dtype)):  # type: ignore
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            T.tile.fill(a_ub, 10.0)
+            T.tile.clear(a_ub[0:block_M, 0:block_N])
+            T.copy(a_ub, A[bx * block_M, by * block_N])
+
+    return main
+
+
+def run_test_clear_buffer_region(M, N, block_M, block_N, dtype, target):
+    func = clear_buffer_region(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch.npu.synchronize()
+
+    b = func()
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    ref_b = torch.zeros((M, N), dtype=torch_dtype).npu()
 
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
@@ -2290,9 +2391,9 @@ def run_test_clear(M, N, block_M, block_N, dtype, target):
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_clear(dtype, target, shape):
+def test_clear_buffer_region(dtype, target, shape):
     M, N = shape
-    run_test_clear(M, N, 64, 32, dtype, target=target)
+    run_test_clear_buffer_region(M, N, 64, 32, dtype, target=target)
 
 
 def gather(M, N, block_M, block_N, dtype="int32"):

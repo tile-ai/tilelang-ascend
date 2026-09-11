@@ -367,12 +367,11 @@ def fill(buffer: Buffer | BufferRegion, value: PrimExpr):
     )
 
 
-def clear(buffer: Buffer | tir.Var):
+def clear(buffer: Buffer | BufferRegion):
     """Clear a buffer or buffer region by filling with zeros.
 
     Args:
-        buffer: The buffer, buffer region, or variable to be cleared.
-                If a tir.Var is provided, it will be resolved automatically.
+        buffer: The buffer or buffer region to be cleared.
 
     Returns:
         A TVM intrinsic call that fills the buffer with zeros.
