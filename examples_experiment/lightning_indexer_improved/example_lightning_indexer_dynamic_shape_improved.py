@@ -1,4 +1,3 @@
-import argparse
 from collections import Counter
 
 import torch
@@ -13,9 +12,103 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
 }
 
+SUPPORTED_BLOCK_N = (64, 128, 256, 512)
+SUPPORTED_DIMENSIONS = (64, 128)
+TOP_K_LIMIT_BY_BLOCK_N = {64: 2048, 128: 2048, 256: 1920, 512: 1536}
+MAX_EXACT_FP32_INDEX = 2**24
+
+
+def _require_positive_int(name, value):
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer, got {value!r}")
+
+
+def validate_indexer_config(
+    n2,
+    groups,
+    dimension,
+    top_k,
+    vector_basen,
+    vector_baseg,
+    block_m,
+    block_n,
+    block_k,
+    max_s2,
+    input_dtype="float16",
+    calc_dtype="float",
+    s2_splits=1,
+    max_cores=None,
+    *,
+    batch=None,
+    s1=None,
+    s2=None,
+):
+    """Validate compile-time parameters and optional runtime shape values."""
+    integer_parameters = {
+        "N2": n2,
+        "G": groups,
+        "D": dimension,
+        "TOP_K": top_k,
+        "VECTOR_BASEN": vector_basen,
+        "VECTOR_BASEG": vector_baseg,
+        "BLOCK_M": block_m,
+        "BLOCK_N": block_n,
+        "BLOCK_K": block_k,
+        "MAX_S2": max_s2,
+        "S2_SPLITS": s2_splits,
+    }
+    if max_cores is not None:
+        integer_parameters["max_cores"] = max_cores
+    if batch is not None:
+        integer_parameters["B"] = batch
+    if s1 is not None:
+        integer_parameters["S1"] = s1
+    if s2 is not None:
+        integer_parameters["S2"] = s2
+    for name, value in integer_parameters.items():
+        _require_positive_int(name, value)
+
+    if input_dtype != "float16":
+        raise ValueError(f"input_dtype must be float16, got {input_dtype!r}")
+    if calc_dtype != "float":
+        raise ValueError(f"calc_dtype must be float, got {calc_dtype!r}")
+    if block_m != 64:
+        raise ValueError(f"BLOCK_M must be 64, got {block_m}")
+    if block_n not in SUPPORTED_BLOCK_N:
+        raise ValueError(f"BLOCK_N must be one of {SUPPORTED_BLOCK_N}, got {block_n}")
+    if dimension not in SUPPORTED_DIMENSIONS:
+        raise ValueError(f"D must be one of {SUPPORTED_DIMENSIONS}, got {dimension}")
+    if block_k != dimension:
+        raise ValueError(f"BLOCK_K must equal D, got BLOCK_K={block_k}, D={dimension}")
+    if groups % 8 or not 8 <= groups <= 248:
+        raise ValueError(f"G must be a multiple of 8 in [8, 248], got {groups}")
+    if groups % vector_baseg:
+        raise ValueError(f"G={groups} must be divisible by VECTOR_BASEG={vector_baseg}")
+    if vector_basen != block_n:
+        raise ValueError(f"VECTOR_BASEN must equal BLOCK_N, got {vector_basen} != {block_n}")
+    if max_s2 % block_n:
+        raise ValueError(f"MAX_S2={max_s2} must be divisible by BLOCK_N={block_n}")
+    if max_s2 > MAX_EXACT_FP32_INDEX:
+        raise ValueError(f"MAX_S2 must not exceed the exact fp32 integer limit {MAX_EXACT_FP32_INDEX}, got {max_s2}")
+    if top_k > max_s2:
+        raise ValueError(f"TOP_K={top_k} must not exceed MAX_S2={max_s2}")
+    top_k_limit = TOP_K_LIMIT_BY_BLOCK_N[block_n]
+    if top_k > top_k_limit:
+        raise ValueError(f"TOP_K must not exceed {top_k_limit} when BLOCK_N={block_n}, got {top_k}")
+
+    if s1 is not None and s1 % block_m:
+        raise ValueError(f"S1={s1} must be divisible by BLOCK_M={block_m}")
+    if s2 is not None:
+        if s2 > max_s2:
+            raise ValueError(f"S2={s2} must not exceed MAX_S2={max_s2}")
+        if s2 % (s2_splits * block_n):
+            raise ValueError(f"S2={s2} must be divisible by S2_SPLITS*BLOCK_N={s2_splits * block_n}")
+        if top_k > s2:
+            raise ValueError(f"TOP_K={top_k} must not exceed S2={s2}")
+
 
 def _get_cube_core_num() -> int:
-    """检测当前设备 Cube 核心数（与 DeepSeek 同模式）。"""
+    """Detect the Cube core count of the current device."""
     try:
         import torch_npu as _tnpu
 
@@ -25,16 +118,25 @@ def _get_cube_core_num() -> int:
 
 
 def auto_s2_splits(batch, s1, s2, block_n, max_cores=None):
-    """Host 侧自动选择 S2 切分数：最小化 Phase 1 关键路径 + 并行 Phase 2 总成本。
+    """Select the S2 split count using a host-side cost model.
 
-    成本模型（单位≈1 trunk 或 1 merge 的时间，实测约等价）：
-      cost(sp) = items(sp) × tps(sp)               # Phase 1 关键路径
-               + rows_per_aiv(sp) × merge_calls     # Phase 2（并行均分，所有 AIV）
-    其中 merge_calls 与 sp 无关（每行仍归并全部 trunk），rows_per_aiv 随 grid 增大而减小。
-    splits==1 时 Phase 2 由 owner（=每 block）独立执行且无 barrier，Phase 2 成本不同。
+    The cost approximates one trunk or one merge operation:
+      cost(sp) = items(sp) * tps(sp) + rows_per_aiv(sp) * merge_calls
+    The first term models the Phase 1 critical path. The second models Phase 2
+    with rows distributed across all AIVs. With one split, each owning block
+    performs Phase 2 independently without a global barrier.
     """
+    for name, value in {"B": batch, "S1": s1, "S2": s2, "BLOCK_N": block_n}.items():
+        _require_positive_int(name, value)
+    if s1 % 64:
+        raise ValueError(f"S1={s1} must be divisible by 64")
+    if block_n not in SUPPORTED_BLOCK_N:
+        raise ValueError(f"BLOCK_N must be one of {SUPPORTED_BLOCK_N}, got {block_n}")
+    if s2 % block_n:
+        raise ValueError(f"S2={s2} must be divisible by BLOCK_N={block_n}")
     if max_cores is None:
         max_cores = _get_cube_core_num()
+    _require_positive_int("max_cores", max_cores)
     base = batch * (s1 // 64)
     trunks_total = s2 // block_n
     merge_calls = (trunks_total - 1 + 2) // 3
@@ -51,18 +153,16 @@ def auto_s2_splits(batch, s1, s2, block_n, max_cores=None):
         if sp > 1:
             grid = min(base * sp, max_cores)
             return (base * 64 + grid * 2 - 1) // (grid * 2)
-        # splits==1：owner 即全部 block，每 AIV 处理 VID_ROWS=32 行。
+        # With one split, every block is an owner and each AIV handles 32 rows.
         return 32
 
     def _cost(sp):
         barrier = 1.0 if sp > 1 else 0.0
         return _crit(sp) + _p2_rows(sp) * merge_calls + barrier
 
-    # 基线：不切分。切分需同时满足（实测校准）：
-    #   ① Phase 1 关键路径降幅 ≥ 2 单位（barrier+不均衡+流水线排空约 1.5-2 单位，
-    #      降幅不足时净退化：B2/S2=1024 crit 不变 +71us、S2=2048 降 1 单位 +56us）
-    #   ② 含 barrier 的总成本下降
-    #   ③ 每 block 工作项 ≤ 4
+    # Use one split as the baseline. A candidate split must reduce the Phase 1
+    # critical path by at least two units, reduce total cost including the
+    # barrier, and keep the number of work items per block at four or fewer.
     base_crit = _crit(1)
     base_cost = _cost(1)
     best_splits, best_cost = 1, base_cost
@@ -96,23 +196,31 @@ def indexer(
     s2_splits=1,
     max_cores=None,
 ):
-    # BLOCK_N 约束：≤256 走单 GEMM；=512 走双 256 列子 GEMM（gemm_v0 单次 L0B 64KB 限制）。
-    if BLOCK_N not in (64, 128, 256, 512):
-        raise ValueError(f"BLOCK_N 仅支持 64/128/256/512，当前 {BLOCK_N}")
+    if max_cores is None:
+        max_cores = _get_cube_core_num()
+    validate_indexer_config(
+        N2,
+        G,
+        D,
+        TOP_K,
+        VECTOR_BASEN,
+        VECTOR_BASEG,
+        BLOCK_M,
+        BLOCK_N,
+        BLOCK_K,
+        MAX_S2,
+        input_dtype,
+        calc_dtype,
+        s2_splits,
+        max_cores,
+    )
+    # BLOCK_N <= 256 uses one GEMM; BLOCK_N = 512 uses two 256-column GEMMs.
     DUAL_GEMM = BLOCK_N > 256
     GEMM_COLS = min(BLOCK_N, 256)
     SECOND_COLS = max(BLOCK_N - 256, 1)
-    if BLOCK_M % 2:
-        raise ValueError("双 AIV 模式要求 BLOCK_M 为偶数")
-    if calc_dtype != "float":
-        raise ValueError("row_expand_mul 仅支持 float32 列块（256B/行）")
-    if G % 8 or not 8 <= G <= 248:
-        raise ValueError(f"row_expand_mul 要求 G 为 8..248 且整除 8，当前 {G}")
-    if VECTOR_BASEN % 64:
-        raise ValueError(f"row_expand_mul 要求 VECTOR_BASEN 整除 64（fp32 256B 列块），当前 {VECTOR_BASEN}")
     VID_ROWS = BLOCK_M // 2
-    # 每 trunk 只需保留 top min(TOP_K, BLOCK_N) 对：全局 top-K 的候选必在各自 trunk
-    # 的 top-K 内。截断同时修复 BLOCK_N > TOP_K 时 Phase 2 越界写 history_ub 的隐患。
+    # Each trunk keeps only min(TOP_K, BLOCK_N) pairs because every global
+    # top-K candidate must belong to the local top-K of its source trunk.
     TRUNK_KEEP = min(TOP_K, BLOCK_N)
     B = T.symbolic("B")
     S1 = T.symbolic("S1")
@@ -120,19 +228,15 @@ def indexer(
     S1_TILES = S1 // BLOCK_M
     TASK_COUNT = B * N2 * S1_TILES
     TRUNKS_MAX = MAX_S2 // BLOCK_N
-    if MAX_S2 % BLOCK_N:
-        raise ValueError(f"MAX_S2={MAX_S2} 必须能被 BLOCK_N={BLOCK_N} 整除")
-    # 持久化 kernel：固定 grid ≤ 核心数，每 block 串行处理多个工作项。
-    if max_cores is None:
-        max_cores = _get_cube_core_num()
+    # Persistent kernel: cap the grid at the core count and process multiple
+    # work items serially in each block.
     S2_SPLITS = s2_splits
     TOTAL_WORK = TASK_COUNT * S2_SPLITS
     GRID_SIZE = T.min(TOTAL_WORK, max_cores)
     ITEMS_PER_BLOCK = (TOTAL_WORK + GRID_SIZE - 1) // GRID_SIZE
     READY_FLAG = 0
     FREE_FLAG = 2
-    # 本地事件 ID 按有向管线对独立分配，910B/A3 的合法范围为 0 到 7。
-    L0C_FLAG = 1  # 避免与 GEMM 内部使用的事件 ID 0 混淆。
+    L0C_FLAG = 1  # Avoid event ID 0, which is used internally by GEMM.
     K_L1_READY_FLAG = 0
     Q_L1_READY_FLAG = 1
     OUTPUT_READY_FLAG = 1
@@ -157,7 +261,7 @@ def indexer(
 
             with T.Scope("C"):
                 q_l1 = T.alloc_L1((BLOCK_M, BLOCK_K), input_dtype)
-                # 双 GEMM 分裂：k_l1_b 在单 GEMM 模式下为哑元，不参与计算。
+                # k_l1_b is an unused placeholder in single-GEMM mode.
                 k_l1_a = T.alloc_L1((GEMM_COLS, BLOCK_K), input_dtype)
                 k_l1_b = T.alloc_L1((SECOND_COLS, BLOCK_K), input_dtype)
                 c_l0 = T.alloc_L0C((BLOCK_M, GEMM_COLS), calc_dtype)
@@ -165,7 +269,7 @@ def indexer(
                 T.set_flag("M", "MTE2", K_L1_FREE_FLAG)
                 T.set_flag("M", "MTE2", Q_L1_FREE_FLAG)
 
-                # ===== Phase 1：串行工作项（group × S2 split），每项完整 C/V 流水线 =====
+                # Phase 1: process group-by-S2-split work items serially.
                 for wi in T.serial(ITEMS_PER_BLOCK):
                     gwi = real_start + wi
                     if gwi < TOTAL_WORK:
@@ -180,7 +284,8 @@ def indexer(
                             slot = n % 2
                             T.wait_cross_flag(FREE_FLAG + slot)
                             T.wait_flag("M", "MTE2", K_L1_FREE_FLAG)
-                            # K 装载：第一段始终执行；双 GEMM 时第二段跟随（MTE2 FIFO，一个 ready 覆盖）。
+                            # Always load the first K segment. In dual-GEMM mode,
+                            # the second load follows in the same MTE2 FIFO.
                             T.copy(
                                 KEY[gb, s2_start + n * BLOCK_N : s2_start + n * BLOCK_N + GEMM_COLS, gn2, 0:D],
                                 k_l1_a,
@@ -205,7 +310,7 @@ def indexer(
                                 )
                                 T.set_flag("MTE2", "M", Q_L1_READY_FLAG)
                                 T.wait_flag("MTE2", "M", Q_L1_READY_FLAG)
-                                # 子 GEMM A（列 0 至 GEMM_COLS-1）：始终执行。
+                                # GEMM A always covers columns [0, GEMM_COLS).
                                 T.wait_flag("FIX", "M", L0C_FLAG)
                                 T.gemm_v0(q_l1, k_l1_a, c_l0, transpose_B=True, init=True)
                                 T.set_flag("M", "FIX", L0C_FLAG)
@@ -213,7 +318,8 @@ def indexer(
                                 T.copy(c_l0, QK_SLOT[cid, slot, :, g, 0:GEMM_COLS], enable_relu=True)
                                 T.set_flag("FIX", "M", L0C_FLAG)
                                 if DUAL_GEMM:
-                                    # 子 GEMM B（列 GEMM_COLS 至末尾）：Q 在此 GEMM 后才释放。
+                                    # GEMM B covers the remaining columns and
+                                    # releases Q only after it completes.
                                     T.wait_flag("FIX", "M", L0C_FLAG)
                                     T.gemm_v0(q_l1, k_l1_b, c_l0, transpose_B=True, init=True)
                                     T.set_flag("M", "FIX", L0C_FLAG)
@@ -230,11 +336,12 @@ def indexer(
                 T.wait_flag("M", "MTE2", K_L1_FREE_FLAG)
                 T.wait_flag("M", "MTE2", Q_L1_FREE_FLAG)
                 if S2_SPLITS > 1:
-                    # 全核屏障：仅 splits>1 时需要（owner 读其他 block 的排序结果）。
+                    # Required before owners read results written by other blocks.
                     T.sync_all()
 
             with T.Scope("V"):
-                # Phase 1/Phase 2 拆分：trunk 主序仅算+排序+存 GM；行主序 history 常驻 UB 批量 4-way 归并。
+                # Phase 1 computes, sorts, and stores in trunk-major order.
+                # Phase 2 keeps row-major history in UB for batched 4-way merges.
                 mm_res_ub = T.alloc_ub((G, VECTOR_BASEN), calc_dtype)
                 weight_ub = T.alloc_ub(G, calc_dtype)
                 expand_tmp_ub = T.alloc_ub(G * 8, calc_dtype)
@@ -249,7 +356,7 @@ def indexer(
                 topk_index_ub = T.alloc_ub(TOP_K, calc_dtype)
                 output_ub = T.alloc_ub(TOP_K, "int32")
 
-                # 两个槽在首个 Cube 写入前均可复用。
+                # Both slots are free before the first Cube write.
                 T.set_cross_flag("MTE2", FREE_FLAG)
                 T.set_cross_flag("MTE2", FREE_FLAG + 1)
                 T.tile.fill(index_lane_ub, 0)
@@ -257,7 +364,7 @@ def indexer(
                 for index_offset in range(BLOCK_N):
                     index_lane_ub[index_offset * 2 + 1] = T.cast(1, calc_dtype)
 
-                # ===== Phase 1：串行工作项，trunk 主序（算+排序+存 GM）=====
+                # Phase 1: serial work items in trunk-major order.
                 for wi in T.serial(ITEMS_PER_BLOCK):
                     gwi = real_start + wi
                     if gwi < TOTAL_WORK:
@@ -272,8 +379,8 @@ def indexer(
                         for n in T.serial(S2 // S2_SPLITS // BLOCK_N):
                             slot = n % 2
                             T.wait_cross_flag(READY_FLAG + slot)
-                            # 行 0 预取：MTE2 立即开始搬运（mm_res 此刻必然空闲），
-                            # 搬运与循环前的 flag 开销重叠。
+                            # Prefetch row 0 immediately while mm_res_ub is free,
+                            # overlapping the copy with loop setup and flag work.
                             T.copy(
                                 QK_SLOT[
                                     cid,
@@ -289,17 +396,15 @@ def indexer(
                                 weight_ub,
                             )
                             T.set_flag("MTE2", "V", G_REDUCE_FLAG)
-                            # 双 AIV：每个 AIV 只处理自己的一半行（vid 分工）。
+                            # Each of the two AIVs handles half of the rows.
                             for s1_local in T.serial(VID_ROWS):
                                 s1_offset = vid * VID_ROWS + s1_local
                                 s1_id = gm * BLOCK_M + s1_offset
                                 T.wait_flag("MTE2", "V", G_REDUCE_FLAG)
-                                # 64 元素（256B）列块 fused 广播乘：brcb 权重 + 单条
-                                # mul_mask 覆盖全部 G 行，消除原 G 循环每迭代的
-                                # PipeBarrier + GetValue 标量同步 + MOVEMASK 掩码开销
-                                # （simulator 指令 trace：MOVEMASK 占 VECTOR 管线 56%），
-                                # 且额外 UB 仅 G*8 元素（1KB），远小于 (G,BASEN) 广播
-                                # 缓冲（64KB，BN=512 时会超 A2/A3 196KB UB 上限）。
+                                # Apply a fused broadcast multiply to each
+                                # 64-element fp32 column block. The temporary
+                                # buffer uses only G * 8 elements instead of a
+                                # full (G, VECTOR_BASEN) broadcast buffer.
                                 for c in T.serial(VECTOR_BASEN // 64):
                                     T.tile.row_expand_mul_experiment(
                                         mm_res_ub[:, c * 64 : (c + 1) * 64],
@@ -315,9 +420,9 @@ def indexer(
                                     index_lane_ub,
                                     T.cast(s2_start + n * BLOCK_N, calc_dtype),
                                 )
-                                # 跨行预取：sort/axpy 已发射（V 管线在 flag 唤醒期间
-                                # 继续执行），此处发射下一行 64KB 拷贝，MTE2 与本行
-                                # sort 执行 + MTE3 store 重叠，消除逐行拷贝的暴露等待。
+                                # Prefetch the next row after issuing sort and
+                                # axpy so MTE2 overlaps with vector execution
+                                # and the current row's MTE3 store.
                                 if s1_local + 1 < VID_ROWS:
                                     T.wait_flag("V", "MTE2", G_REDUCE_FLAG)
                                     T.copy(
@@ -335,7 +440,8 @@ def indexer(
                                         weight_ub,
                                     )
                                     T.set_flag("MTE2", "V", G_REDUCE_FLAG)
-                                # 排序结果（有效前缀）存 GM（全局 trunk 索引），Phase 2 负责填充 -inf 尾部。
+                                # Store only the valid sorted prefix. Phase 2
+                                # fills the unused history tail with -inf.
                                 T.set_flag("V", "MTE3", HISTORY_STORE_FLAG)
                                 T.wait_flag("V", "MTE3", HISTORY_STORE_FLAG)
                                 T.copy(
@@ -344,24 +450,24 @@ def indexer(
                                 )
                                 T.set_flag("MTE3", "V", HISTORY_STORE_FLAG)
                                 T.wait_flag("MTE3", "V", HISTORY_STORE_FLAG)
-                            # trunk 末行 compute 释放的收尾等待：保持 (V→MTE2) 事件
-                            # set/wait 逐 trunk 配平，避免跨 trunk 的陈旧 set 触发
-                            # 下一 trunk 预取提前发射（数据竞争）。
+                            # Drain the final row event so every trunk has
+                            # balanced V-to-MTE2 set/wait operations and stale
+                            # events cannot trigger the next trunk prematurely.
                             T.wait_flag("V", "MTE2", G_REDUCE_FLAG)
                             T.set_flag("V", "MTE2", SLOT_RELEASE_FLAG + slot)
                             T.wait_flag("V", "MTE2", SLOT_RELEASE_FLAG + slot)
                             T.set_cross_flag("MTE2", FREE_FLAG + slot)
 
                 if S2_SPLITS > 1:
-                    # 全核屏障：Phase 1 全部完成后 owner 才能读其他 block 的排序结果。
+                    # Wait for all Phase 1 writes before cross-block reads.
                     T.sync_all()
 
                 # ===== Phase 2 =====
                 num_trunks = S2 // BLOCK_N
                 num_batches = (num_trunks - 1 + 2) // 3
                 if S2_SPLITS > 1:
-                    # 并行 Phase 2：barrier 后全部 block×AIV 均分所有 group 的行归并，
-                    # 替代仅 owner 归并（消除 #3 owner 集中：B=1 时 16→48 个 AIV 参与）。
+                    # Distribute all group rows across every block and AIV
+                    # after the barrier.
                     total_rows = TASK_COUNT * BLOCK_M
                     total_aivs = GRID_SIZE * 2
                     rows_per_aiv = (total_rows + total_aivs - 1) // total_aivs
@@ -376,17 +482,17 @@ def indexer(
                             gn2 = (group // S1_TILES) % N2
                             gm = group % S1_TILES
                             s1_id = gm * BLOCK_M + s1_offset
-                            # trunk 0 直接载入 history（-inf 填充 + 有效前缀）。
+                            # Initialize history with -inf and load trunk 0.
                             T.tile.fill(history_ub, -T.infinity(calc_dtype))
                             T.set_flag("V", "MTE2", HISTORY_LOAD_FLAG)
                             T.wait_flag("V", "MTE2", HISTORY_LOAD_FLAG)
                             T.copy(SORTED_WORKSPACE[group, s1_offset, 0, 0 : 2 * TRUNK_KEEP], history_ub[0 : 2 * TRUNK_KEEP])
                             T.set_flag("MTE2", "V", HISTORY_LOAD_FLAG)
                             T.wait_flag("MTE2", "V", HISTORY_LOAD_FLAG)
-                            # 剩余 trunk 按 3 个一批做 4-way 归并（history + 3 源等长 TOP_K 对）。
+                            # Merge history with up to three additional trunks.
                             for batch in T.serial(num_batches):
                                 base = 1 + batch * 3
-                                # 源 0：本批首个 trunk，始终存在。
+                                # Source 0 always exists for this batch.
                                 T.tile.fill(sort_src0_ub, -T.infinity(calc_dtype))
                                 T.set_flag("V", "MTE2", HISTORY_LOAD_FLAG)
                                 T.wait_flag("V", "MTE2", HISTORY_LOAD_FLAG)
@@ -396,7 +502,7 @@ def indexer(
                                 )
                                 T.set_flag("MTE2", "V", HISTORY_LOAD_FLAG)
                                 T.wait_flag("MTE2", "V", HISTORY_LOAD_FLAG)
-                                # 源 1：存在才装载。
+                                # Load source 1 only when present.
                                 if base + 1 < num_trunks:
                                     T.tile.fill(sort_src1_ub, -T.infinity(calc_dtype))
                                     T.set_flag("V", "MTE2", HISTORY_LOAD_FLAG)
@@ -407,7 +513,7 @@ def indexer(
                                     )
                                     T.set_flag("MTE2", "V", HISTORY_LOAD_FLAG)
                                     T.wait_flag("MTE2", "V", HISTORY_LOAD_FLAG)
-                                # 源 2：存在才装载。
+                                # Load source 2 only when present.
                                 if base + 2 < num_trunks:
                                     T.tile.fill(sort_src2_ub, -T.infinity(calc_dtype))
                                     T.set_flag("V", "MTE2", HISTORY_LOAD_FLAG)
@@ -418,7 +524,7 @@ def indexer(
                                     )
                                     T.set_flag("MTE2", "V", HISTORY_LOAD_FLAG)
                                     T.wait_flag("MTE2", "V", HISTORY_LOAD_FLAG)
-                                # 按实际源数选择归并路数（AIV MrgSort 要求等长源）。
+                                # Select the merge arity from the available sources.
                                 if base + 2 < num_trunks:
                                     T.tile.merge_sort(merged_ub, history_ub, sort_src0_ub, sort_src1_ub, sort_src2_ub)
                                 elif base + 1 < num_trunks:
@@ -426,7 +532,7 @@ def indexer(
                                 else:
                                     T.tile.merge_sort(merged_ub, history_ub, sort_src0_ub)
                                 T.copy(merged_ub[0 : 2 * TOP_K], history_ub)
-                            # 输出：直接从 history_ub 抽取索引。
+                            # Extract indices directly from history_ub.
                             T.tile.gather_mask(topk_index_ub, history_ub, "P1010")
                             T.tile.cast(output_ub, topk_index_ub, "CAST_ROUND", TOP_K)
                             T.set_flag("V", "MTE3", OUTPUT_READY_FLAG)
@@ -435,7 +541,7 @@ def indexer(
                             T.set_flag("MTE3", "V", OUTPUT_READY_FLAG)
                             T.wait_flag("MTE3", "V", OUTPUT_READY_FLAG)
                 else:
-                    # splits==1：per-block 独立归并（无 barrier，只读本 block 写入的数据）。
+                    # With one split, each block merges only its own data.
                     for wi in T.serial(ITEMS_PER_BLOCK):
                         gwi = real_start + wi
                         if gwi < TOTAL_WORK:
@@ -447,14 +553,14 @@ def indexer(
                             for s1_local in T.serial(VID_ROWS):
                                 s1_offset = vid * VID_ROWS + s1_local
                                 s1_id = gm * BLOCK_M + s1_offset
-                                # trunk 0 直接载入 history（-inf 填充 + 有效前缀）。
+                                # Initialize history with -inf and load trunk 0.
                                 T.tile.fill(history_ub, -T.infinity(calc_dtype))
                                 T.set_flag("V", "MTE2", HISTORY_LOAD_FLAG)
                                 T.wait_flag("V", "MTE2", HISTORY_LOAD_FLAG)
                                 T.copy(SORTED_WORKSPACE[group, s1_offset, 0, 0 : 2 * TRUNK_KEEP], history_ub[0 : 2 * TRUNK_KEEP])
                                 T.set_flag("MTE2", "V", HISTORY_LOAD_FLAG)
                                 T.wait_flag("MTE2", "V", HISTORY_LOAD_FLAG)
-                                # 剩余 trunk 按 3 个一批做 4-way 归并。
+                                # Merge the remaining trunks in batches of three.
                                 for batch in T.serial(num_batches):
                                     base = 1 + batch * 3
                                     T.tile.fill(sort_src0_ub, -T.infinity(calc_dtype))
@@ -493,7 +599,7 @@ def indexer(
                                     else:
                                         T.tile.merge_sort(merged_ub, history_ub, sort_src0_ub)
                                     T.copy(merged_ub[0 : 2 * TOP_K], history_ub)
-                                # 输出。
+                                # Write the output indices.
                                 T.tile.gather_mask(topk_index_ub, history_ub, "P1010")
                                 T.tile.cast(output_ub, topk_index_ub, "CAST_ROUND", TOP_K)
                                 T.set_flag("V", "MTE3", OUTPUT_READY_FLAG)
@@ -515,7 +621,7 @@ def index_golden(q, k, weights, top_k):
 
 def count_index_multiset_mismatches(expected, actual):
     if expected.shape != actual.shape:
-        raise ValueError("输出索引张量形状不一致")
+        raise ValueError("Output index tensor shapes do not match")
     total_mismatches = 0
     expected_rows = expected.reshape(-1, expected.shape[-1])
     actual_rows = actual.reshape(-1, actual.shape[-1])
@@ -540,20 +646,29 @@ def test_indexer(
     n2=1,
     s2_splits=None,
 ):
-    # BLOCK_K 默认等于 D：KEY 拷贝按 D 宽度装载到 (BLOCK_N, BLOCK_K) 缓冲。
+    # BLOCK_K defaults to D because KEY is loaded at width D.
     if block_k is None:
         block_k = dimension
     block_m = 64
     vector_baseg = 16
-    if s1 % block_m or s2 % block_n or groups % vector_baseg:
-        raise ValueError("当前实现仅支持 S1、S2 和 G 分别整除 BLOCK_M、BLOCK_N、VECTOR_BASEG")
-    if top_k > s2:
-        raise ValueError("TOP_K 不能大于 S2")
-
     if s2_splits is None:
         s2_splits = auto_s2_splits(batch, s1, s2, block_n)
-    if s2 % (s2_splits * block_n):
-        raise ValueError(f"S2={s2} 不能被 S2_SPLITS×BLOCK_N={s2_splits * block_n} 整除")
+    validate_indexer_config(
+        n2,
+        groups,
+        dimension,
+        top_k,
+        vector_basen,
+        vector_baseg,
+        block_m,
+        block_n,
+        block_k,
+        s2,
+        s2_splits=s2_splits,
+        batch=batch,
+        s1=s1,
+        s2=s2,
+    )
 
     torch.manual_seed(2)
     func = indexer(
@@ -580,78 +695,20 @@ def test_indexer(
     mismatches = count_index_multiset_mismatches(golden_out, actual_out)
     total_indices = batch * s1 * n2 * top_k
     matched_ratio = 1 - mismatches / total_indices
-    print(f"索引多重集合匹配率: {matched_ratio:.6f}，不匹配索引数: {mismatches}")
+    print(f"Index multiset match ratio: {matched_ratio:.6f}; mismatched indices: {mismatches}")
     if matched_ratio > 0.99:
-        print("[PRECISION_PASS] 在线 TopK 索引多重集合匹配率超过 0.99")
+        print("[PRECISION_PASS] Online TopK index multiset match ratio exceeds 0.99")
         return
-    print("[PRECISION_FAIL] 在线 TopK 索引多重集合匹配率未超过 0.99")
-    raise AssertionError("在线 TopK 索引多重集合校验失败")
+    print("[PRECISION_FAIL] Online TopK index multiset match ratio does not exceed 0.99")
+    raise AssertionError("Online TopK index multiset validation failed")
 
 
-# 全量精度套件：覆盖 B/S1/S2/TOP_K/BLOCK_N/D 维度、边界（K==S2、单 trunk、
-# 单批满 4-way、大 K UB 边界）与非常规整除值。
-PRECISION_SUITE = [
-    # (batch, s1, s2, top_k, block_n, dimension) — block_k 自动等于 dimension
-    (1, 64, 512, 256, 512, 64),  # 最小 S2：单 trunk
-    (1, 64, 512, 512, 512, 64),  # K == S2 边界
-    (1, 64, 1024, 256, 64, 64),  # quick 既有：BN=64
-    (1, 128, 1024, 512, 128, 64),  # BN=128
-    (1, 128, 512, 512, 256, 64),  # S2=2 trunk
-    (1, 128, 1536, 512, 512, 64),  # 3 trunk：单批 4-way 满
-    (1, 256, 2048, 1024, 256, 64),  # BN=256 常规
-    (1, 256, 4096, 256, 64, 64),  # 小 K 长序列
-    (1, 512, 4096, 1024, 512, 64),  # 主路径 D=64
-    (1, 512, 4096, 1024, 512, 128),  # 主路径 D=128
-    (1, 1024, 8192, 1024, 512, 64),  # full 既有
-    (1, 1024, 8192, 1024, 512, 128),  # full D=128
-    (2, 512, 4096, 1024, 512, 128),  # benchmark 形状
-    (4, 128, 2048, 512, 512, 64),  # 多 batch
-    (2, 64, 8192, 2048, 128, 64),  # K=2048 上界：需 BN=128（UB 容量 72K B/对依赖）
-    (1, 512, 4096, 2048, 128, 64),  # K=2048 大 K
-    (2, 256, 1024, 256, 128, 128),  # D=128 小形状
-    (3, 192, 3072, 768, 512, 64),  # 非常规整除值
-]
-
-
-def run_precision_suite():
-    passed = 0
-    failed = 0
-    for case_id, (batch, s1, s2, top_k, block_n, dimension) in enumerate(PRECISION_SUITE, 1):
-        label = f"B{batch}_S1_{s1}_S2_{s2}_K{top_k}_BN{block_n}_D{dimension}"
-        print(f"\n[Case {case_id}/{len(PRECISION_SUITE)}] {label}")
-        try:
-            test_indexer(s1=s1, s2=s2, top_k=top_k, block_n=block_n, vector_basen=block_n, batch=batch, dimension=dimension)
-            passed += 1
-        except Exception as error:  # noqa: BLE001 — 套件需汇总失败而非中断
-            failed += 1
-            print(f"[CASE_FAIL] {label}: {error}")
-    print(f"\n{'=' * 60}")
-    print(f"精度套件汇总: {passed} 通过 / {failed} 失败 / {len(PRECISION_SUITE)} 总计")
-    if failed == 0:
-        print("Kernel Output Match!")
-    return failed == 0
+def main():
+    """Run the small correctness case used by the example entry point."""
+    tilelang.disable_cache()
+    test_indexer(s1=64, s2=1024, top_k=256, block_n=64, vector_basen=64)
+    print("Kernel Output Match!")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="验证 Lightning Indexer 在线 TopK")
-    parser.add_argument("--quick", action="store_true", help="运行较小的整除形状用例")
-    parser.add_argument("--suite", action="store_true", help="运行全量精度测试套件")
-    parser.add_argument("--block-n", type=int, default=256, help="BLOCK_N（64/128/256/512）")
-    parser.add_argument("--s2-splits", type=int, default=None, help="S2 切分数（默认自动）")
-    arguments = parser.parse_args()
-    tilelang.disable_cache()
-    if arguments.suite:
-        raise SystemExit(0 if run_precision_suite() else 1)
-    if arguments.quick:
-        test_indexer(s1=64, s2=1024, top_k=256, block_n=64, vector_basen=64, s2_splits=arguments.s2_splits)
-        print("Kernel Output Match!")
-    else:
-        test_indexer(
-            s1=1024,
-            s2=8192,
-            top_k=1024,
-            block_n=arguments.block_n,
-            vector_basen=arguments.block_n,
-            s2_splits=arguments.s2_splits,
-        )
-        print("Kernel Output Match!")
+    main()
