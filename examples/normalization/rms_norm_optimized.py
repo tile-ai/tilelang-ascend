@@ -765,9 +765,14 @@ def _make_input(M, N, dtype):
     return torch.randn(M, N, device="npu", dtype=torch.float32)
 
 
+_last_cfg = "startup"
+
+
 def run_config(M, N, block_M, block_N, dtype):
+    global _last_cfg
     print(f"\n[Correctness] M={M}, N={N}, dtype={dtype}", flush=True)
     func, tier = build_rms_norm(M, N, dtype=dtype)
+    _last_cfg = f"M={M}x{N} {dtype} tier={tier}"
     print(f"  tier={tier}", flush=True)
 
     a = _make_input(M, N, dtype)
@@ -796,10 +801,29 @@ def run_config(M, N, block_M, block_N, dtype):
 
 
 if __name__ == "__main__":
+    # CI diagnostics: the legacy runner only keeps the last output line, so on
+    # failure print config + tier + queried machine model as the final line.
+    try:
+        _arch = _AscendArch()
+        _env = (
+            f"dev={_NPU_PROPS.name} vec={_NPU_PROPS.vector_core_num} "
+            f"cube={getattr(_NPU_PROPS, 'cube_core_num', '?')} "
+            f"chip={_arch.chip_name} ub_cap={_arch.ub_cap}"
+        )
+    except Exception as e:  # noqa: BLE001
+        _env = f"dev-query-failed({type(e).__name__})"
+    print(f"[ENV] tilelang={tilelang.__version__} {_env}", flush=True)
+
     if len(sys.argv) > 1:
         indices = [int(x) for x in sys.argv[1].split(",")]
     else:
         indices = range(len(test_configs))
     for i in indices:
-        run_config(*test_configs[i])
+        try:
+            run_config(*test_configs[i])
+        except BaseException as e:  # noqa: BLE001
+            print(f"[DIAG] FAILED at config {i}: {_last_cfg} | {_env} | {type(e).__name__}: {str(e)[:200]}", flush=True)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(1)
     print("\nAll done. tilelang_rms_norm_opt vs aclnnRmsNorm captured for msprof op.", flush=True)
