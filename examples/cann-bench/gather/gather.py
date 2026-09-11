@@ -5,28 +5,6 @@ from tilelang import language as T
 
 tilelang.disable_cache()
 
-
-def _check_precision(actual, golden):
-    if not actual.is_floating_point():
-        torch.testing.assert_close(actual, golden, rtol=0, atol=0)
-        return
-    atol, rtol, cap = (
-        ATOL_MAP.get(str(actual.dtype).replace("torch.", ""), 1e-2),
-        RTOL_MAP.get(str(actual.dtype).replace("torch.", ""), 1e-2),
-        float("inf"),
-    )
-    sa = torch.isnan(actual) | torch.isinf(actual)
-    sg = torch.isnan(golden) | torch.isinf(golden)
-    if not torch.equal(sa, sg) or (sa.any() and not torch.equal(actual[sa], golden[sg])):
-        raise AssertionError("NaN/Inf structure mismatch")
-    valid = ~sg
-    if valid.any():
-        diff = (actual[valid] - golden[valid]).abs()
-        passed = diff <= atol + rtol * golden[valid].abs()
-        if passed.float().mean().item() < 0.99 or diff.max().item() > cap:
-            raise AssertionError("precision mismatch")
-
-
 # ---------------------------------------------------------------------------
 # Pass configs (from cann_bench/_common.py + gather.py)
 # ---------------------------------------------------------------------------
@@ -312,8 +290,8 @@ DTYPE_MAP = {
 }
 
 # Precision thresholds (float types use relative/absolute error; integers require exact match)
-RTOL_MAP = {"float16": 2**-9, "bfloat16": 2**-6, "float32": 2**-10}
-ATOL_MAP = {"float16": 2**-14, "bfloat16": 2**-10, "float32": 2**-16}
+RTOL_MAP = {"float16": 1e-3, "bfloat16": 8e-3, "float32": 1e-4}
+ATOL_MAP = {"float16": 1e-3, "bfloat16": 8e-3, "float32": 1e-5}
 
 
 def _make_x(x_shape, x_dtype_str, value_range):
@@ -360,7 +338,18 @@ def run_gather(case_id, x_shape, idx_shape, x_dtype_str, idx_dtype_str, dim, val
         if not ok:
             raise AssertionError("integer gather mismatch")
     else:
-        _check_precision(y.cpu(), ref.cpu())
+        rtol = RTOL_MAP.get(x_dtype_str, 1e-2)
+        atol = ATOL_MAP.get(x_dtype_str, 1e-2)
+        y_c = y.cpu().float()
+        ref_c = ref.cpu().float()
+        # NaN positions only need to match (NaN != NaN)
+        nan_mask = torch.isnan(ref_c)
+        if nan_mask.any():
+            if not torch.equal(torch.isnan(y_c), nan_mask):
+                raise AssertionError("NaN pattern mismatch")
+            y_c = torch.where(nan_mask, torch.zeros_like(y_c), y_c)
+            ref_c = torch.where(nan_mask, torch.zeros_like(ref_c), ref_c)
+        torch.testing.assert_close(y_c, ref_c, rtol=rtol, atol=atol, equal_nan=True)
 
     print(f"Case {case_id}: PASSED  (x={x_shape}, idx={idx_shape}, x_dtype={x_dtype_str}, idx_dtype={idx_dtype_str}, dim={dim})")
 
