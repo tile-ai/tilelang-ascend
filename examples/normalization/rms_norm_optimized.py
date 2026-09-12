@@ -44,7 +44,7 @@ pass_configs = {
 
 # ---------------- machine model ----------------
 _NPU_PROPS = torch.npu.get_device_properties(torch.npu.current_device())
-# Hardcoded conservative UB budget per AIV sub-block. The runtime arch lookup
+# Hardcoded conservative UB budget per AIV sub-block.  The runtime arch lookup
 # mis-classifies non-910B devices (e.g. Ascend910_9392 falls back to the 910A
 # 256KB spec) and the resulting plans overflow the real, smaller UB (CI hit
 # aicore exception 507015). 910B family: 192KB is validated on 910B3;
