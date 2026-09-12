@@ -1,41 +1,17 @@
-"""
-Paged Block Sparse MQA Attention Kernel — Decode, Flat Grid
-[Optimization 1] 4×K L1 + 4×L0C + MTE2∥V overlap + DMA reorder
+"""Persistent paged block-sparse MQA decode kernel for A3 PTO.
 
-Strategy:
-  - 4×K L1 slots: K[0]+Q DMA'd first (early staging priority), then K[1..3]
-  - 4×L0C slots: each MMA has its own l0c, no FIX↔M contention
-  - 2×L0B ping-pong (L0B 64KB hardware limit, unchanged)
-  - Removed unnecessary MTE1→MTE2 signals (no L1 buffer reuse)
-  - Removed `if token < total_tokens` guard (decode: always true)
-  - 4 ws slots + per-block cross-flags:
-      Wave 2: ws[0]→BLK0   Wave 3: ws[1]→BLK1
-      Wave 4: ws[2]→BLK2   Wave 5: ws[3]→BLK3
-  - V double-buffered s_ub_e/s_ub_l per AIV
-  - Late DMA enqueued BEFORE early mask+output → MTE2 ∥ V overlap
-  - Tail-fill replaces mask pipeline
+The math and C -> GM workspace -> V data path are unchanged from the corrected
+A3 kernel.  The launch grid is capped to the physical AIC count and each
+resident AIC/AIV cluster processes multiple logical tasks persistently.  The
+GM workspace is already private per logical task, so no extra UB score slot is
+needed; a V -> C release event bounds the cross-core semaphore queue to one
+published task while C can still compute the next task ahead of that release.
 
-C scope (6 waves, DMA reorder for reduced pipeline fill):
-    W0: DMA K[0]+Q first → K[1..3] (MTE2 queue: K0,Q,K1,K2,K3)
-    W1: wait(K0,Q) → Stage Q+K[0] → MMA K[0]
-    W2: L0C0→ws[0]→BLK0 | Stage K[1] | MMA K[1]
-    W3: L0C1→ws[1]→BLK1 | Stage K[2] | MMA K[2]
-    W4: L0C2→ws[2]→BLK2 | Stage K[3] | MMA K[3]
-    W5: L0C3→ws[3]→BLK3 (drain)
-
-Pipeline fill improvement:
-    Original: 5 DMA (K0..K3+Q) must complete before MTE1 starts
-    Optimized: only K0+Q before MTE1 starts (K1..K3 overlap with staging/MMA)
-
-V scope (MTE2 ∥ V):
-    early: DMA_in → compute → [enqueue late DMA] → mask → output
-    late:                                        [wait DMA] → compute → mask → output
-                    ↑ late MTE2 DMA runs while V does early mask+output ↑
-
-Key invariants:
-  - Grid unchanged: batch * topk_groups (16 blocks for batch=1, topk=64)
-  - 16 cores, 2 AIVs per core, no head split
-  - Same output shape, same reference function
+The context mask has three paths: full blocks bypass masking, invalid blocks
+use one Vector fill, and partial blocks use Scalar ``SetValue`` only for the
+invalid tail.  The partial path explicitly synchronizes
+``TCOLSUM(V) -> Scalar -> MTE3`` so both producer/consumer dependencies are
+visible without constructing a full position vector.
 """
 
 import tilelang
@@ -44,6 +20,9 @@ import argparse
 import torch
 
 tilelang.disable_cache()
+
+A3_9392_AICORE_NUM = 24
+PERSISTENT_QUEUE_DEPTH = 1
 
 
 @tilelang.jit(
@@ -62,16 +41,19 @@ def paged_block_sparse_mqa_attn_return_logits(
     max_blocks: int,
     num_stages: int = 2,  # noqa: ARG001
     threads: int = 2,  # noqa: ARG001
+    aicore_num: int = A3_9392_AICORE_NUM,
 ):
     dtype = "float16"
     accum_dtype = "float32"
     index_dtype = "int32"
 
     assert topk % 4 == 0, "topk must be divisible by 4"
+    assert aicore_num > 0, "aicore_num must be positive"
     topk_groups = topk // 4
 
     total_tokens = batch * seq_len
-    grid_size = batch * topk_groups
+    grid_size = total_tokens * topk_groups
+    kernel_grid_size = min(grid_size, aicore_num)
 
     index_q_shape = [total_tokens, heads, index_dim]
     topk_index_shape = [total_tokens, topk]
@@ -86,65 +68,52 @@ def paged_block_sparse_mqa_attn_return_logits(
     kv = kv_block_size
 
     # ---------- Signal IDs ----------
-    # C scope: MTE2→MTE1 only (L1 data readiness — MTE1→MTE2 removed, no reuse)
     SIG_Q_L1 = 0
     SIG_K_L1_0 = 1
     SIG_K_L1_1 = 2
     SIG_K_L1_2 = 3
     SIG_K_L1_3 = 4
-    # C scope: M↔MTE1  (L0A/L0B — 2-way ping-pong, L0B 64KB limit)
     SIG_L0AB_0 = 0
     SIG_L0AB_1 = 1
-    # C scope: FIX↔M  (L0C — 4 independent, no reuse)
     SIG_L0C_0 = 0
     SIG_L0C_1 = 1
     SIG_L0C_2 = 2
     SIG_L0C_3 = 3
-    # V scope: V↔MTE2  (s_ub double-buffered + weights)
-    SIG_S_E = 0  # s_ub_e — early block (0 or 1)
-    SIG_S_L = 1  # s_ub_l — late  block (2 or 3)
+    SIG_S_E = 0
+    SIG_S_L = 1
     SIG_W_UB = 2
-    # V scope: MTE3↔V  (logits output)
     SIG_LOGITS_E = 0
     SIG_LOGITS_L = 1
-    # Cross-scope: per-block flags
     FLAG_BLK0 = 0
     FLAG_BLK1 = 1
     FLAG_BLK2 = 2
     FLAG_BLK3 = 3
+    FLAG_SCORE_RELEASE = 8
+    # Partial-tail dependency: TCOLSUM(V) -> SetValue(S) -> output(MTE3).
+    SIG_V_TO_S = 0
+    SIG_S_TO_MTE3 = 0
 
     @T.prim_func
     def kernel(
-        IndexQ: T.Tensor(index_q_shape, dtype),  # type: ignore
-        KvCache: T.Tensor(kv_cache_shape, dtype),  # type: ignore
-        TopKBlockIndex: T.Tensor(topk_index_shape, index_dtype),  # type: ignore
-        Logits: T.Tensor(logits_shape, accum_dtype),  # type: ignore
-        Weights: T.Tensor(weights_shape, dtype),  # type: ignore
-        ContextLens: T.Tensor(context_lens_shape, index_dtype),  # type: ignore
-        BlockTables: T.Tensor(block_tables_shape, index_dtype),  # type: ignore
+        IndexQ: T.Tensor(index_q_shape, dtype),
+        KvCache: T.Tensor(kv_cache_shape, dtype),
+        TopKBlockIndex: T.Tensor(topk_index_shape, index_dtype),
+        Logits: T.Tensor(logits_shape, accum_dtype),
+        Weights: T.Tensor(weights_shape, dtype),
+        ContextLens: T.Tensor(context_lens_shape, index_dtype),
+        BlockTables: T.Tensor(block_tables_shape, index_dtype),
         ws_buf: T.Tensor([4, total_tokens, topk, H_per_block, kv], accum_dtype),
     ):
-        with T.Kernel(grid_size, is_npu=True) as (bx, by):
-            token = bx // topk_groups
-            n_outer = bx - token * topk_groups
-            n_i_base = n_outer * 4
-            n_i0 = n_i_base + 0
-            n_i1 = n_i_base + 1
-            n_i2 = n_i_base + 2
-            n_i3 = n_i_base + 3
-
+        with T.Kernel(kernel_grid_size, is_npu=True) as (bx, by):
             # ---- V scope: UB allocations ----
-            # Double-buffered s_ub for DMA↔compute overlap
             s_ub_e = T.alloc_ub([H_per_block, kv], accum_dtype)
             logits_e = T.alloc_ub([1, kv], accum_dtype)
             s_ub_l = T.alloc_ub([H_per_block, kv], accum_dtype)
             logits_l = T.alloc_ub([1, kv], accum_dtype)
             weights_ub = T.alloc_ub([heads], dtype)
             weights = T.alloc_ub([heads], accum_dtype)
-            # Mask buffers eliminated — scalar tail-fill replaces mask pipeline
 
             # ---- C scope: L1 / L0A / L0B / L0C ----
-            # 4×K L1 slots + 4×L0C slots — no reuse, fewer flag waits
             q_l1 = T.alloc_L1([H_per_block, index_dim], dtype)
             k_l1_0 = T.alloc_L1([kv, index_dim], dtype)
             k_l1_1 = T.alloc_L1([kv, index_dim], dtype)
@@ -158,19 +127,6 @@ def paged_block_sparse_mqa_attn_return_logits(
             l0c_2 = T.alloc_L0C([H_per_block, kv], accum_dtype)
             l0c_3 = T.alloc_L0C([H_per_block, kv], accum_dtype)
 
-            # ================================================================
-            # C scope: 6-wave pipeline, DMA reorder + signal cleanup
-            #
-            # Wave 0: DMA K[0]+Q first → K[1..3] (MTE2 queue: K0,Q,K1,K2,K3)
-            # Wave 1: wait(K0,Q) → Stage Q+K[0] → MMA K[0]
-            # Wave 2: L0C0→ws[0]→BLK0, Stage K[1], MMA K[1]
-            # Wave 3: L0C1→ws[1]→BLK1, Stage K[2], MMA K[2]
-            # Wave 4: L0C2→ws[2]→BLK2, Stage K[3], MMA K[3]
-            # Wave 5: L0C3→ws[3]→BLK3
-            #
-            # Removed: MTE1→MTE2 signals (no L1 reuse), if guard (decode always true)
-            # Pipeline fill: only K0+Q before MTE1 starts (K1..K3 overlap staging)
-            # ================================================================
             with T.Scope("C"):
                 T.set_flag("M", "MTE1", SIG_L0AB_0)
                 T.set_flag("M", "MTE1", SIG_L0AB_1)
@@ -179,127 +135,134 @@ def paged_block_sparse_mqa_attn_return_logits(
                 T.set_flag("FIX", "M", SIG_L0C_2)
                 T.set_flag("FIX", "M", SIG_L0C_3)
 
-                b = token // seq_len
+                for task in T.Persistent([grid_size], kernel_grid_size, bx):
+                    token = task // topk_groups
+                    n_outer = task - token * topk_groups
+                    n_i_base = n_outer * 4
+                    n_i0 = n_i_base + 0
+                    n_i1 = n_i_base + 1
+                    n_i2 = n_i_base + 2
+                    n_i3 = n_i_base + 3
 
-                # ---- Wave 0: DMA K[0]+Q first, then K[1..3] ----
-                T.copy(
-                    KvCache[BlockTables[b, TopKBlockIndex[token, n_i0]], :, 0, :],
-                    k_l1_0,
-                )
-                T.set_flag("MTE2", "MTE1", SIG_K_L1_0)
+                    b = token // seq_len
 
-                T.copy(IndexQ[token, :, :], q_l1)
-                T.set_flag("MTE2", "MTE1", SIG_Q_L1)
+                    # Finish both previous L1 -> L0/MMA users before the next
+                    # iteration can overwrite their shared Q/K L1 buffers.
+                    T.wait_flag("M", "MTE1", SIG_L0AB_0)
+                    T.wait_flag("M", "MTE1", SIG_L0AB_1)
 
-                T.copy(
-                    KvCache[BlockTables[b, TopKBlockIndex[token, n_i1]], :, 0, :],
-                    k_l1_1,
-                )
-                T.set_flag("MTE2", "MTE1", SIG_K_L1_1)
+                    # ---- Wave 0: DMA K[0]+Q first, then K[1..3] ----
+                    T.copy(
+                        KvCache[BlockTables[b, TopKBlockIndex[token, n_i0]], :, 0, :],
+                        k_l1_0,
+                    )
+                    T.set_flag("MTE2", "MTE1", SIG_K_L1_0)
 
-                T.copy(
-                    KvCache[BlockTables[b, TopKBlockIndex[token, n_i2]], :, 0, :],
-                    k_l1_2,
-                )
-                T.set_flag("MTE2", "MTE1", SIG_K_L1_2)
+                    T.copy(IndexQ[token, :, :], q_l1)
+                    T.set_flag("MTE2", "MTE1", SIG_Q_L1)
 
-                T.copy(
-                    KvCache[BlockTables[b, TopKBlockIndex[token, n_i3]], :, 0, :],
-                    k_l1_3,
-                )
-                T.set_flag("MTE2", "MTE1", SIG_K_L1_3)
+                    T.copy(
+                        KvCache[BlockTables[b, TopKBlockIndex[token, n_i1]], :, 0, :],
+                        k_l1_1,
+                    )
+                    T.set_flag("MTE2", "MTE1", SIG_K_L1_1)
 
-                # ---- Wave 1: wait(K0,Q) → Stage Q+K[0] → MMA K[0] ----
-                T.wait_flag("MTE2", "MTE1", SIG_K_L1_0)
-                T.wait_flag("MTE2", "MTE1", SIG_Q_L1)
+                    T.copy(
+                        KvCache[BlockTables[b, TopKBlockIndex[token, n_i2]], :, 0, :],
+                        k_l1_2,
+                    )
+                    T.set_flag("MTE2", "MTE1", SIG_K_L1_2)
+
+                    T.copy(
+                        KvCache[BlockTables[b, TopKBlockIndex[token, n_i3]], :, 0, :],
+                        k_l1_3,
+                    )
+                    T.set_flag("MTE2", "MTE1", SIG_K_L1_3)
+
+                    # ---- Wave 1: wait(K0,Q) → Stage Q+K[0] → MMA K[0] ----
+                    T.wait_flag("MTE2", "MTE1", SIG_K_L1_0)
+                    T.wait_flag("MTE2", "MTE1", SIG_Q_L1)
+
+                    T.copy(q_l1, l0a)
+                    T.copy(k_l1_0, l0b_0, transpose=True)
+                    T.set_flag("MTE1", "M", SIG_L0AB_0)
+
+                    T.wait_flag("MTE1", "M", SIG_L0AB_0)
+                    T.wait_flag("FIX", "M", SIG_L0C_0)
+                    T.mma(l0a, l0b_0, l0c_0, init=True)
+                    T.set_flag("M", "MTE1", SIG_L0AB_0)
+                    T.set_flag("M", "FIX", SIG_L0C_0)
+
+                    # ---- Wave 2: L0C0→ws[0]→BLK0 | Stage K[1] | MMA K[1] ----
+                    T.wait_flag("M", "FIX", SIG_L0C_0)
+                    T.copy(l0c_0, ws_buf[0, token, n_i0, :, :])
+                    T.set_flag("FIX", "M", SIG_L0C_0)
+                    # A3 cross-core flags are counting semaphores.  Keep at most
+                    # one logical task in flight so their 4-bit counters cannot
+                    # overflow, while retaining C/V overlap through distinct GM
+                    # workspace addresses.
+                    if task >= PERSISTENT_QUEUE_DEPTH * kernel_grid_size:
+                        T.wait_cross_flag(FLAG_SCORE_RELEASE)
+                    T.set_cross_flag("FIX", FLAG_BLK0)
+
+                    T.wait_flag("MTE2", "MTE1", SIG_K_L1_1)
+                    T.copy(k_l1_1, l0b_1, transpose=True)
+                    T.set_flag("MTE1", "M", SIG_L0AB_1)
+
+                    T.wait_flag("MTE1", "M", SIG_L0AB_1)
+                    T.wait_flag("FIX", "M", SIG_L0C_1)
+                    T.mma(l0a, l0b_1, l0c_1, init=True)
+                    T.set_flag("M", "MTE1", SIG_L0AB_1)
+                    T.set_flag("M", "FIX", SIG_L0C_1)
+
+                    # ---- Wave 3: L0C1→ws[1]→BLK1 | Stage K[2] | MMA K[2] ----
+                    T.wait_flag("M", "FIX", SIG_L0C_1)
+                    T.copy(l0c_1, ws_buf[1, token, n_i1, :, :])
+                    T.set_flag("FIX", "M", SIG_L0C_1)
+                    T.set_cross_flag("FIX", FLAG_BLK1)
+
+                    T.wait_flag("MTE2", "MTE1", SIG_K_L1_2)
+                    T.wait_flag("M", "MTE1", SIG_L0AB_0)
+                    T.copy(k_l1_2, l0b_0, transpose=True)
+                    T.set_flag("MTE1", "M", SIG_L0AB_0)
+
+                    T.wait_flag("MTE1", "M", SIG_L0AB_0)
+                    T.wait_flag("FIX", "M", SIG_L0C_2)
+                    T.mma(l0a, l0b_0, l0c_2, init=True)
+                    T.set_flag("M", "MTE1", SIG_L0AB_0)
+                    T.set_flag("M", "FIX", SIG_L0C_2)
+
+                    # ---- Wave 4: L0C2→ws[2]→BLK2 | Stage K[3] | MMA K[3] ----
+                    T.wait_flag("M", "FIX", SIG_L0C_2)
+                    T.copy(l0c_2, ws_buf[2, token, n_i2, :, :])
+                    T.set_flag("FIX", "M", SIG_L0C_2)
+                    T.set_cross_flag("FIX", FLAG_BLK2)
+
+                    T.wait_flag("MTE2", "MTE1", SIG_K_L1_3)
+                    T.wait_flag("M", "MTE1", SIG_L0AB_1)
+                    T.copy(k_l1_3, l0b_1, transpose=True)
+                    T.set_flag("MTE1", "M", SIG_L0AB_1)
+
+                    T.wait_flag("MTE1", "M", SIG_L0AB_1)
+                    T.wait_flag("FIX", "M", SIG_L0C_3)
+                    T.mma(l0a, l0b_1, l0c_3, init=True)
+                    T.set_flag("M", "MTE1", SIG_L0AB_1)
+                    T.set_flag("M", "FIX", SIG_L0C_3)
+
+                    # ---- Wave 5: L0C3→ws[3]→BLK3 (drain) ----
+                    T.wait_flag("M", "FIX", SIG_L0C_3)
+                    T.copy(l0c_3, ws_buf[3, token, n_i3, :, :])
+                    T.set_flag("FIX", "M", SIG_L0C_3)
+                    T.set_cross_flag("FIX", FLAG_BLK3)
+
+                # Destroy
                 T.wait_flag("M", "MTE1", SIG_L0AB_0)
-
-                T.copy(q_l1, l0a)
-                T.copy(k_l1_0, l0b_0, transpose=True)
-                T.set_flag("MTE1", "M", SIG_L0AB_0)
-
-                T.wait_flag("MTE1", "M", SIG_L0AB_0)
+                T.wait_flag("M", "MTE1", SIG_L0AB_1)
                 T.wait_flag("FIX", "M", SIG_L0C_0)
-                T.mma(l0a, l0b_0, l0c_0, init=True)
-                T.set_flag("M", "MTE1", SIG_L0AB_0)
-                T.set_flag("M", "FIX", SIG_L0C_0)
-
-                # ---- Wave 2: L0C0→ws[0]→BLK0 | Stage K[1] | MMA K[1] ----
-                T.wait_flag("M", "FIX", SIG_L0C_0)
-                T.copy(l0c_0, ws_buf[0, token, n_i0, :, :])
-                T.set_flag("FIX", "M", SIG_L0C_0)
-                T.set_cross_flag("FIX", FLAG_BLK0)
-
-                T.wait_flag("MTE2", "MTE1", SIG_K_L1_1)
-                T.wait_flag("M", "MTE1", SIG_L0AB_1)
-                T.copy(k_l1_1, l0b_1, transpose=True)
-                T.set_flag("MTE1", "M", SIG_L0AB_1)
-
-                T.wait_flag("MTE1", "M", SIG_L0AB_1)
-                T.wait_flag("FIX", "M", SIG_L0C_1)
-                T.mma(l0a, l0b_1, l0c_1, init=True)
-                T.set_flag("M", "MTE1", SIG_L0AB_1)
-                T.set_flag("M", "FIX", SIG_L0C_1)
-
-                # ---- Wave 3: L0C1→ws[1]→BLK1 | Stage K[2] | MMA K[2] ----
-                T.wait_flag("M", "FIX", SIG_L0C_1)
-                T.copy(l0c_1, ws_buf[1, token, n_i1, :, :])
-                T.set_flag("FIX", "M", SIG_L0C_1)
-                T.set_cross_flag("FIX", FLAG_BLK1)
-
-                T.wait_flag("MTE2", "MTE1", SIG_K_L1_2)
-                T.wait_flag("M", "MTE1", SIG_L0AB_0)
-                T.copy(k_l1_2, l0b_0, transpose=True)
-                T.set_flag("MTE1", "M", SIG_L0AB_0)
-
-                T.wait_flag("MTE1", "M", SIG_L0AB_0)
-                T.wait_flag("FIX", "M", SIG_L0C_2)
-                T.mma(l0a, l0b_0, l0c_2, init=True)
-                T.set_flag("M", "MTE1", SIG_L0AB_0)
-                T.set_flag("M", "FIX", SIG_L0C_2)
-
-                # ---- Wave 4: L0C2→ws[2]→BLK2 | Stage K[3] | MMA K[3] ----
-                T.wait_flag("M", "FIX", SIG_L0C_2)
-                T.copy(l0c_2, ws_buf[2, token, n_i2, :, :])
-                T.set_flag("FIX", "M", SIG_L0C_2)
-                T.set_cross_flag("FIX", FLAG_BLK2)
-
-                T.wait_flag("MTE2", "MTE1", SIG_K_L1_3)
-                T.wait_flag("M", "MTE1", SIG_L0AB_1)
-                T.copy(k_l1_3, l0b_1, transpose=True)
-                T.set_flag("MTE1", "M", SIG_L0AB_1)
-
-                T.wait_flag("MTE1", "M", SIG_L0AB_1)
-                T.wait_flag("FIX", "M", SIG_L0C_3)
-                T.mma(l0a, l0b_1, l0c_3, init=True)
-                T.set_flag("M", "MTE1", SIG_L0AB_1)
-                T.set_flag("M", "FIX", SIG_L0C_3)
-
-                # ---- Wave 5: L0C3→ws[3]→BLK3 (drain) ----
-                T.wait_flag("M", "FIX", SIG_L0C_3)
-                T.copy(l0c_3, ws_buf[3, token, n_i3, :, :])
-                T.set_flag("FIX", "M", SIG_L0C_3)
-                T.set_cross_flag("FIX", FLAG_BLK3)
-
-                # Destroy (no MTE1→MTE2 waits — L1 buffers not reused)
-                T.wait_flag("M", "MTE1", SIG_L0AB_0)
-                T.wait_flag("M", "MTE1", SIG_L0AB_1)
-                T.wait_flag("FIX", "M", SIG_L0C_0)
                 T.wait_flag("FIX", "M", SIG_L0C_1)
                 T.wait_flag("FIX", "M", SIG_L0C_2)
                 T.wait_flag("FIX", "M", SIG_L0C_3)
 
-            # ================================================================
-            # V scope: tail-fill replaces mask pipeline, MTE2 ∥ V overlap
-            #
-            # Mask pipeline eliminated — instead, compute valid_count per block
-            # and use a scalar loop to fill the tail with -inf.
-            #
-            # valid_count = max(0, min(kv, cu_k_e_max - block_start))
-            # tail positions [valid_count .. kv) → -inf
-            #
-            # Late DMA enqueued BEFORE early tail-fill+output (MTE2 ∥ V).
-            # ================================================================
             with T.Scope("V"):
                 T.set_flag("V", "MTE2", SIG_S_E)
                 T.set_flag("V", "MTE2", SIG_S_L)
@@ -307,7 +270,10 @@ def paged_block_sparse_mqa_attn_return_logits(
                 T.set_flag("MTE3", "V", SIG_LOGITS_E)
                 T.set_flag("MTE3", "V", SIG_LOGITS_L)
 
-                if token < total_tokens:
+                for task in T.Persistent([grid_size], kernel_grid_size, bx):
+                    token = task // topk_groups
+                    n_outer = task - token * topk_groups
+                    n_i_base = n_outer * 4
                     b_v = token // seq_len
                     cu_k_e_max = ContextLens[b_v]
 
@@ -344,15 +310,20 @@ def paged_block_sparse_mqa_attn_return_logits(
                     T.set_flag("V", "MTE2", SIG_S_E)
 
                     # ---- Tail-fill early block ----
+                    # full: no-op; invalid: one Vector fill; partial: write
+                    # only [valid, kv) on Scalar with explicit V -> S -> MTE3.
                     e_block_start = TopKBlockIndex[token, early_n_i] * kv
-                    e_valid = cu_k_e_max - e_block_start
-                    e_limit = T.max(
-                        T.cast(0, index_dtype),
-                        T.min(T.cast(kv, index_dtype), e_valid),
-                    )
-                    for i in T.serial(kv):
-                        if T.cast(i, index_dtype) >= e_limit:
-                            logits_e[0, i] = -T.infinity(accum_dtype)
+                    if e_block_start + kv > cu_k_e_max:
+                        if e_block_start >= cu_k_e_max:
+                            T.tile.fill(logits_e, -T.infinity(accum_dtype))
+                        else:
+                            e_valid = cu_k_e_max - e_block_start
+                            T.set_flag("V", "S", SIG_V_TO_S)
+                            T.wait_flag("V", "S", SIG_V_TO_S)
+                            for i in T.serial(e_valid, kv):
+                                logits_e[0, i] = -T.infinity(accum_dtype)
+                            T.set_flag("S", "MTE3", SIG_S_TO_MTE3)
+                            T.wait_flag("S", "MTE3", SIG_S_TO_MTE3)
 
                     # ============================================
                     # Enqueue late DMA NOW (MTE2), before early output
@@ -389,16 +360,31 @@ def paged_block_sparse_mqa_attn_return_logits(
                     T.reduce_sum(s_ub_l, logits_l, dim=0, clear=True)
                     T.set_flag("V", "MTE2", SIG_S_L)
 
-                    # ---- Tail-fill late block ----
+                    # Mode2 broadcasts each C ready event to both AIVs.  Each
+                    # AIV consumes its two data-bearing events above; drain the
+                    # partner AIV's copies as well so no 4-bit semaphore count
+                    # accumulates across many persistent iterations.
+                    T.wait_cross_flag(FLAG_BLK1 - by)
+                    T.wait_cross_flag(FLAG_BLK3 - by)
+
+                    # Both AIVs publish one release.  The paired AIC wait has
+                    # reduce semantics and resumes only after both are done.
+                    if task + PERSISTENT_QUEUE_DEPTH * kernel_grid_size < grid_size:
+                        T.set_cross_flag("V", FLAG_SCORE_RELEASE)
+
+                    # ---- Tail-fill late block: same three-way policy ----
                     l_block_start = TopKBlockIndex[token, late_n_i] * kv
-                    l_valid = cu_k_e_max - l_block_start
-                    l_limit = T.max(
-                        T.cast(0, index_dtype),
-                        T.min(T.cast(kv, index_dtype), l_valid),
-                    )
-                    for i in T.serial(kv):
-                        if T.cast(i, index_dtype) >= l_limit:
-                            logits_l[0, i] = -T.infinity(accum_dtype)
+                    if l_block_start + kv > cu_k_e_max:
+                        if l_block_start >= cu_k_e_max:
+                            T.tile.fill(logits_l, -T.infinity(accum_dtype))
+                        else:
+                            l_valid = cu_k_e_max - l_block_start
+                            T.set_flag("V", "S", SIG_V_TO_S)
+                            T.wait_flag("V", "S", SIG_V_TO_S)
+                            for i in T.serial(l_valid, kv):
+                                logits_l[0, i] = -T.infinity(accum_dtype)
+                            T.set_flag("S", "MTE3", SIG_S_TO_MTE3)
+                            T.wait_flag("S", "MTE3", SIG_S_TO_MTE3)
 
                     # ---- Late output ----
                     T.set_flag("V", "MTE3", SIG_LOGITS_L)
@@ -419,9 +405,6 @@ def paged_block_sparse_mqa_attn_return_logits(
     return kernel
 
 
-# ============================================================================
-# Reference — unchanged
-# ============================================================================
 def ref_paged_block_sparse_mqa_attn(
     q: torch.Tensor,
     kv_cache: torch.Tensor,
@@ -478,8 +461,9 @@ def test_paged_block_sparse_mqa_attn(
     topk: int,
     max_blocks: int,
     dtype: str = "float16",
+    aicore_num: int = A3_9392_AICORE_NUM,
 ):
-    """Test paged sparse MQA attention (decode, flat grid)."""
+    """Test paged sparse MQA attention (decode, persistent grid)."""
     kernel = paged_block_sparse_mqa_attn_return_logits(
         batch=batch,
         seq_len=seq_len,
@@ -489,16 +473,12 @@ def test_paged_block_sparse_mqa_attn(
         heads=heads,
         index_dim=index_dim,
         max_blocks=max_blocks,
+        aicore_num=aicore_num,
     )
-    print(kernel.get_kernel_source())
-
     device = "npu"
     total_tokens = batch * seq_len
     topk_groups = topk // 4
 
-    # Generate random tensors on CPU first to work around dynamic kernel
-    # init failures (aclnnInplaceRandom, aclnnMax, etc.) on this CANN
-    # version, then copy to NPU via plain H2D transfers.
     with torch.device("cpu"):
         q_cpu = torch.rand((batch, seq_len, heads, index_dim), dtype=torch.float16)
         kv_cache_cpu = torch.rand((num_phys_blocks, kv_block_size, 1, index_dim), dtype=torch.float16)
@@ -512,7 +492,6 @@ def test_paged_block_sparse_mqa_attn(
         max_logical_block = min(max_logical_block, max_blocks)
         topk_block_indices_cpu = torch.randint(0, max_logical_block, (batch, seq_len, topk), dtype=torch.int32)
 
-    # Copy to NPU (plain H2D, no compute kernel needed)
     q = q_cpu.to(device)
     kv_cache = kv_cache_cpu.to(device)
     weights = weights_cpu.to(device)
@@ -520,7 +499,6 @@ def test_paged_block_sparse_mqa_attn(
     block_tables = block_tables_cpu.to(device)
     topk_block_indices = topk_block_indices_cpu.to(device)
 
-    # Flatten batch×seq_len
     q_flat = q.reshape(total_tokens, heads, index_dim).contiguous()
     topk_flat = topk_block_indices.reshape(total_tokens, topk).contiguous()
     weights_flat = weights.reshape(total_tokens, heads).contiguous()
@@ -557,7 +535,7 @@ def test_paged_block_sparse_mqa_attn(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Paged Sparse MQA Attention — Opt1: WS Double-buffer + Padded Mask")
+    parser = argparse.ArgumentParser(description="Paged Sparse MQA Attention")
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--seq_len", type=int, default=1)
     parser.add_argument("--num_phys_blocks", type=int, default=1024)
@@ -567,6 +545,12 @@ if __name__ == "__main__":
     parser.add_argument("--topk", type=int, default=64)
     parser.add_argument("--max_blocks", type=int, default=256)
     parser.add_argument("--dtype", type=str, default="float16")
+    parser.add_argument(
+        "--aicore_num",
+        type=int,
+        default=A3_9392_AICORE_NUM,
+        help="physical AIC count (9392=24; 9362=20)",
+    )
     args = parser.parse_args()
 
     torch.set_default_device("npu")
@@ -575,13 +559,13 @@ if __name__ == "__main__":
     assert args.topk % 4 == 0
 
     print("=" * 60)
-    print("Paged Sparse MQA — Opt1: Per-block flags + Double-buffered V UB")
+    print("Paged Sparse MQA — A3 persistent Expert kernel")
     print("=" * 60)
     print(f"  batch={args.batch}, heads={args.heads}, index_dim={args.index_dim}")
     print(f"  kv_block_size={args.kv_block_size}, topk={args.topk}")
-    print(f"  grid={args.batch * args.topk // 4} tasks")
-    print("  cross flags: BLK0..BLK3 (per-block, immediate)")
-    print("  V UB: s_ub_e + s_ub_l per AIV (DMA ∥ compute)")
+    logical_grid = args.batch * args.topk // 4
+    print(f"  grid={logical_grid} logical tasks, {min(logical_grid, args.aicore_num)} resident AICs")
+    print("  mask: full bypass + invalid Vector fill + partial Scalar tail")
     print()
 
     test_paged_block_sparse_mqa_attn(
@@ -593,5 +577,6 @@ if __name__ == "__main__":
         kv_block_size=args.kv_block_size,
         topk=args.topk,
         max_blocks=args.max_blocks,
+        aicore_num=args.aicore_num,
     )
     print("Kernel Output Match!")
