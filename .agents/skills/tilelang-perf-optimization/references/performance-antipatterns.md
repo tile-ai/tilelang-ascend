@@ -13,7 +13,14 @@
 - [tile size 过小导致片上内存浪费](#tile-size-过小导致片上内存浪费)
 - [AIC/AIV 混合算子未开启 CV overlap](#aicaiv-混合算子未开启-cv-overlap)
 - [纯 AIV memory bound 算子未做流水/双 buffer](#纯-aiv-memory-bound-算子未做流水双-buffer)
+- [多行 tile 循环内逐块归约](#多行-tile-循环内逐块归约)
 - [正交轴串行化（Scalar Scan on Parallelizable Axis）](#正交轴串行化scalar-scan-on-parallelizable-axis)
+- [T.copy(UB→UB) 走 MTE2 导致 gamma 预加载无效](#tcopyubub-走-mte2-导致-gamma-预加载无效)
+- [mul_add_dst 硬件性能反转](#mul_add_dst-硬件性能反转)
+- [UB buffer 命名 tmp_ub 导致 AscendMemoryPlanning 冲突](#ub-buffer-命名-tmp_ub-导致-ascendmemoryplanning-冲突)
+- [Pass 1（无 MTE3 写回）双缓冲不可行](#pass-1无-mte3-写回双缓冲不可行)
+- [Fixed Core 在小 D + 大 S 场景反而变慢](#fixed-core-在最小-d-大-s-场景反而变慢)
+- [纯 Vector 算子的 AUTO_CV_COMBINE 误分核风险](#纯-vector-算子的-auto_cv_combine-误分核风险)
 - [评审记录模板](#评审记录模板)
 
 ---
@@ -455,6 +462,54 @@ for j in range(1, L):
 - 内层是否是标量 `if`/`GetValue`/`SetValue` 而非 `T.tile` 操作？
 - 扫描轴是否有真依赖（无法直接消除内层循环）？
 - 若全部满足，参考 §2.15 正交轴向量化
+
+---
+
+## T.copy(UB→UB) 走 MTE2 导致 gamma 预加载无效
+
+**识别特征**：尝试"gamma 预加载常驻 UB"——循环前一次性 `T.copy(G[0:D], gamma_ub_full)`，循环内用 UB→UB 切片替代 GM 读取。
+
+**性能原因**：`T.copy(UB→UB)` 生成 `copy_ub_to_ub` 走 **MTE2 引擎**（DMA），不能与 GM→UB 重叠。MTE2 总字节数从 D 翻倍到 D + n_num×block_N，无带宽节省。
+
+**替代方案**：保持原路径（循环内每轮从 GM 读 gamma 分块）。详见 [vector-practices/reduction/two_pass_normalization.md](vector-practices/reduction/two_pass_normalization.md) 优化 6。
+
+---
+
+## mul_add_dst 硬件性能反转
+
+**识别特征**：用 `T.tile.mul_add_dst` 替代 `mul + add`，期望减少指令数。
+
+**性能原因**：910B3/910C 上 `mul_add_dst` 延迟可能**高于**独立 `mul+add`。fp16/bf16 case 回归 5-8%。
+
+**替代方案**：必须实测验证，不更快则回退为 `mul+add`。详见 [vector-practices/reduction/two_pass_normalization.md](vector-practices/reduction/two_pass_normalization.md) 优化 7。
+
+---
+
+## UB buffer 命名 tmp_ub 导致 AscendMemoryPlanning 冲突
+
+**识别特征**：buffer 命名为 `tmp_ub`，编译报 "Duplicate buffer name"。
+
+**替代方案**：用语义化命名（`newton_ub`、`accum_ub`）。详见 [vector-practices/reduction/two_pass_normalization.md](vector-practices/reduction/two_pass_normalization.md) 优化 4。
+
+---
+
+## Pass 1（无 MTE3 写回）双缓冲不可行
+
+**识别特征**：两遍扫描算子的 Pass 1 尝试 Double Buffer/T.Pipelined，性能无提升或精度失败。
+
+**性能原因**：Pass 1 只有 MTE2→V 两路（无 MTE3），`v→mte2` flag 在 AIV 不可用（死锁）。只能用 `barrier_all()`，但同步所有引擎阻止重叠。
+
+**替代方案**：Pass 1 保持串行，集中优化 Pass 2（有 MTE3 可形成闭环）。详见 optimization-guide.md §2.2.2 及 [vector-practices/reduction/two_pass_normalization.md](vector-practices/reduction/two_pass_normalization.md) 优化 8。
+
+---
+
+## Fixed Core 在小 D + 大 S 场景反而变慢
+
+**识别特征**：D≤8 + S>100000，Fixed Core 模式性能下降。
+
+**性能原因**：软件循环开销 > launch 节省；硬件 block scheduler 更高效。
+
+**替代方案**：保持按逻辑任务数 launch，让硬件 scheduler 调度。详见 optimization-guide.md §2.9 失效条件。
 
 ---
 
