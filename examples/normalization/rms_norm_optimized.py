@@ -49,7 +49,6 @@ _NPU_PROPS = torch.npu.get_device_properties(torch.npu.current_device())
 # 256KB spec) and the resulting plans overflow the real, smaller UB (CI hit
 # aicore exception 507015). 910B family: 192KB is validated on 910B3;
 # everything else: stay at 128KB until validated on the actual device.
-# Core counts are NOT hardcoded: the vector_core_num query is accurate.
 if "910B" in _NPU_PROPS.name.upper():
     UB_LIMIT = 192 * 1024 - 256
 else:
