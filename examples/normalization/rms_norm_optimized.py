@@ -287,6 +287,7 @@ def _ub_bytes_row_cache(rows, n, bn, dtype):
         total = rows * n * 4 + rows * bn * 8  # rc + sq + inv_tile
     return total + max(_reduce_tmp_bytes(rows, bn), 1024) + rows * 8 + 512
 
+
 # Tier decision function
 def _plan_row_cache(M, N, dtype):
     """Returns (ROWS, GRID, k, R, BLOCK_N, n_num) or None. Biggest chunk
@@ -312,6 +313,7 @@ def _plan_row_cache(M, N, dtype):
     k = tiles // S_SUBBLOCKS
     R = tiles - S_SUBBLOCKS * k
     return rows, S_SUBBLOCKS // 2, k, R, bn, n_num
+
 
 # Statement template
 def _row_cache_body(cast_variant, n_num):
@@ -354,6 +356,7 @@ def _row_cache_body(cast_variant, n_num):
                 f"T.copy(rc_{c}, B[row0 : row0 + ROWS, col0 : col0 + BLOCK_N])",
             ]
     return lines
+
 
 # Assembler
 def _make_row_cache_impl(cast_variant, n_num):
