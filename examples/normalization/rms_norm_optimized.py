@@ -91,7 +91,7 @@ def _divisors_desc(n):
 
 
 # ---------------- tier 1: whole_row (single-pass whole row) ----------------
-# 容量估算
+# Capacity estimation
 def _ub_bytes_whole_row(rows, n, dtype, stages, variant):
     cast = dtype in ("bfloat16", "float16")
     xb = 2 if cast else 4
@@ -105,7 +105,7 @@ def _ub_bytes_whole_row(rows, n, dtype, stages, variant):
     return rows * n * per_elem + max(_reduce_tmp_bytes(rows, n), 1024) + rows * 8 + 512
 
 
-# tier的决策函数
+# Tier decision function
 def _plan_whole_row(M, N, dtype, stages_pref=STAGE_PREF):
     """Returns (variant, stages, ROWS, GRID, k, R) or None. Exact ragged
     distribution: every sub-block runs k pipelined iterations of `stages`
@@ -136,7 +136,7 @@ def _plan_whole_row(M, N, dtype, stages_pref=STAGE_PREF):
     return variant, stages, rows, S_SUBBLOCKS // 2, k, R
 
 
-# 语句模板
+# Statement template
 def _whole_row_tile_body(variant, st, buf):
     if variant == "cast_bcast":
         return f"""
@@ -210,7 +210,7 @@ def _whole_row_tile_body(variant, st, buf):
 """
 
 
-# buffer模板
+# Buffer template
 def _whole_row_buffers(variant, stages, cast):
     bufs = []
     for s in range(stages):
@@ -239,7 +239,7 @@ def _whole_row_buffers(variant, stages, cast):
     return bufs
 
 
-# 组装器
+# Assembler
 def _make_whole_row_impl(variant, stages):
     cast = variant.startswith("cast")
     bufs = _whole_row_buffers(variant, stages, cast)
@@ -278,8 +278,7 @@ def {name}(M, N, eps=1e-5, dtype="float", ROWS=1, GRID=20, k=1, R=0):
 
 
 # ---------------- tier 2: row_cache (huge N, single GM read) ----------------
-
-
+# Capacity estimation
 def _ub_bytes_row_cache(rows, n, bn, dtype):
     cast = dtype in ("bfloat16", "float16")
     if cast:
@@ -288,7 +287,7 @@ def _ub_bytes_row_cache(rows, n, bn, dtype):
         total = rows * n * 4 + rows * bn * 8  # rc + sq + inv_tile
     return total + max(_reduce_tmp_bytes(rows, bn), 1024) + rows * 8 + 512
 
-
+# Tier decision function
 def _plan_row_cache(M, N, dtype):
     """Returns (ROWS, GRID, k, R, BLOCK_N, n_num) or None. Biggest chunk
     first (measured best), then more rows."""
@@ -314,8 +313,7 @@ def _plan_row_cache(M, N, dtype):
     R = tiles - S_SUBBLOCKS * k
     return rows, S_SUBBLOCKS // 2, k, R, bn, n_num
 
-
-# 语句模板
+# Statement template
 def _row_cache_body(cast_variant, n_num):
     lines = ["T.tile.fill(sum_row, 0.0)"]
     for c in range(n_num):
@@ -357,8 +355,7 @@ def _row_cache_body(cast_variant, n_num):
             ]
     return lines
 
-
-# buffer模板 + 组装器
+# Assembler
 def _make_row_cache_impl(cast_variant, n_num):
     name = f"_rms_row_cache_{'cast' if cast_variant else 'fp32'}_n{n_num}"
     buf_dt = "dtype" if cast_variant else "acc_dtype"
@@ -405,7 +402,7 @@ def {name}(M, N, eps=1e-5, dtype="float", ROWS=1, GRID=20, k=1, R=0, BLOCK_N=102
 
 
 # ---------------- tier 3: two_pass (column chunks, x re-read) ----------------
-# 估算器内置 planner
+# Estimator is built into the planner
 def _plan_two_pass(M, N, dtype):
     """Returns (ROWS, GRID, k, R, BLOCK_N, n_num) or None. Biggest chunk
     first; n_num must be even (ping-pong chunk staging)."""
@@ -436,7 +433,6 @@ def _plan_two_pass(M, N, dtype):
     return rows, S_SUBBLOCKS // 2, k, R, bn, n_num
 
 
-# 语句模板
 def _two_pass_chunk_lines(cast_variant, c, buf):
     if cast_variant:
         return [
@@ -738,12 +734,12 @@ def build_rms_norm(M, N, dtype="float", eps=1e-5):
 torch.manual_seed(0)
 
 test_configs = [
-    # 小 shape
+    # Small shape
     (256, 256, 64, 64, "float"),
     (256, 256, 64, 64, "bfloat16"),
     (1024, 1024, 128, 128, "float"),
     (1024, 1024, 64, 128, "bfloat16"),
-    # 一大一小: M 大 N 小 / M 小 N 大
+    # One large and one small: M large N small / M small N large
     (16384, 1536, 64, 128, "float"),
     (8192, 1536, 64, 128, "float"),
     (1536, 16384, 64, 128, "float"),
@@ -752,7 +748,7 @@ test_configs = [
     (8192, 1536, 64, 128, "bfloat16"),
     (1536, 16384, 64, 128, "bfloat16"),
     (1536, 8192, 64, 128, "bfloat16"),
-    # 大 shape: 8k/16k 量级
+    # Large shape: on the order of 8k/16k
     (8192, 8192, 128, 128, "float"),
     (8192, 8192, 64, 128, "bfloat16"),
     (16384, 16384, 128, 128, "float"),
