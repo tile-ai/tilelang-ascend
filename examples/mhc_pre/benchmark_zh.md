@@ -56,6 +56,8 @@ A1 使用 Cube GEMM。A2+B1 和 B2+B3 使用双 V 核划分（bid = cid * 2 + vi
 | pass_configs | 加 TL_ASCEND_TAIL_MASK | 启用 pad_value 支持 kernel 内 tail |
 | fn 预打包/缓存 | prepare_fn + fn_packed | 避免推理时重复 cast/transpose |
 | kernel 编译缓存 | _kernel_cache dict | 避免重复 JIT 查找 |
+| review: developer 模式 | 删手动 T.Scope("C"/"V")，alloc_L1/L0C -> alloc_shared/fragment | combineCV 自动建 scope，无性能回退，代码更简洁 |
+| shape 测试扩展 | 11 -> 17 个 shape（补 hc 5/6/7，n 1024/2048，h 7168）| 覆盖 hc 1-8 全范围与中大 shape |
 
 ## 5. 最终性能（E2E, do_bench, warmup=20, rep=100, 5 次平均, 预打包 fn）
 
@@ -68,7 +70,50 @@ A1 使用 Cube GEMM。A2+B1 和 B2+B3 使用双 V 核划分（bid = cid * 2 + vi
 小 shape（512x2560）比 CANN 慢是因为 3 次 kernel launch 固定开销。
 大 shape 从融合流水线受益。4096x2560 在 kernel 融合后从 0.96x 提升到 1.40x。
 
-## 6. Kernel 分解（n=4096, h=2560, 融合后）
+## 6. Developer 模式与流水线优势分析
+
+### 6.1 流水线优势来源
+
+相比逐算子基线（eager CANN 算子或 ascendc 风格 5-kernel 链），E2E 收益来自
+四个方面，按影响排序：
+
+| # | 来源 | 证据 |
+|---|------|------|
+| 1 | Kernel 融合（5 -> 3）| E2E -28.3%；host 开销 0.32 -> 0.16 ms（见第 7 节）|
+| 2 | 中间结果留片上 | sqrsum 留 UB（A2+B1），pre_mix 留 shared（B2+B3）；每个 token 省 2 次 GM 往返 |
+| 3 | 双 V 核划分 | A2+B1 / B2+B3 用 bid = cid * 2 + vid，一个 AI Core 的两个 Vector 核并行 |
+| 4 | T.Pipelined + tail mask | 双缓冲隐藏 MTE2 延迟；pad_value + TL_ASCEND_TAIL_MASK 消除 host 侧 padding 拷贝 |
+
+融合收益占主导：5 算子链的中间张量虽小，但每次 launch + GM 往返开销对每个
+token-block 固定，因此去掉 2 次 launch + 2 次 GM 往返使 4096x2560 从 0.96x
+提升到 1.40x。
+
+### 6.2 Developer 模式（alloc_shared，无手动 T.Scope）
+
+按 review 意见，开启 `TL_ASCEND_AUTO_CV_COMBINE` 后不再需要手动
+`T.Scope("C"/"V")`。kernel 现在遵循 developer 模式惯例：
+
+- GEMM 操作数：`T.alloc_shared`（L1/UB 由 InferAllocScope 按用途决定）；
+  累加器：`T.alloc_fragment`（L0C），与 `examples/developer_mode/gemm_developer.py` 一致。
+- Vector kernel：无手动 scope；`T.alloc_shared`/`T.alloc_ub` 混用，跨 scope
+  放置由 pass 解析而非手写。
+- 同步：`TL_ASCEND_AUTO_SYNC` 自动插入 barrier，无手写 `T.set_flag`/`T.wait_flag`。
+
+带来的收益（基于 pass 流水线推断，见第 4 节）：
+
+| 机制 | 效果 |
+|------|------|
+| combineCV + AUTO_SYNC | 在融合后的 C/V scope 内自动放置最优 barrier，而非用户强制 scope 边界 |
+| alloc_shared 的 InferAllocScope | 按用途逐 buffer 决定 L1/UB；MEMORY_PLANNING 可在融合 stage 间复用 buffer |
+| alloc_fragment 累加器 | GEMM 累加留在 L0C，GM 写回与 gemm_developer 相同 |
+
+在 Ascend 910B3 / CANN 9.2 上验证：developer 风格代码通过全部 17 个 shape
+用例 + distinct-eps（见第 9 节），最大 diff 不变（0.0156）。与旧手动 scope
+版本相比 E2E 延迟双向差异 <= 6%（100 次取中位数，与 run-to-run 方差同量级）
+——即本机测量噪声内的持平，简化写法不带来回退，同时放开 memory planner 与
+scope 推断 pass。
+
+## 7. Kernel 分解（n=4096, h=2560, 融合后）
 
 | Kernel | 延迟 | 占比 |
 |--------|------|------|
@@ -80,7 +125,7 @@ A1 使用 Cube GEMM。A2+B1 和 B2+B3 使用双 V 核划分（bid = cid * 2 + vi
 B2+B3 融合 kernel 是主导组件（52.7%）。Host 开销从 0.32 ms（5 次 launch）
 降到 0.16 ms（3 次 launch）。
 
-## 7. B2 Sinkhorn 优化尝试
+## 8. B2 Sinkhorn 优化尝试
 
 B2（Sinkhorn）曾是 #1 瓶颈（融合前 28-39%）。尝试了 6 种优化方案，全部被
 codegen 限制挡住：
@@ -98,16 +143,16 @@ msprof 分析显示 B2 **三路均衡**（Vec 18.8% / MTE 19.4% / Scalar 18.3% /
 Wait 25.2%）——无单一主导组件。瓶颈来自 ~130 个小操作在 4-8 元素 buffer 上的
 scalar dispatch 开销，不是计算或内存。
 
-## 8. 精度
+## 9. 精度
 
 | 指标 | 值 |
 |--------|-------|
-| 测试用例 | 7/7 通过（含 distinct-eps 参数测试）|
+| 测试用例 | 18/18 通过（17 个 shape 覆盖 hc 1-8、n 4-4096、h 100-7168 + distinct-eps 参数测试）|
 | 容差 | rtol=1e-2, atol=1e-2 |
 | 最大差异 | 0.0156 (layer_input, n=4096) |
 | 差异来源 | BF16 量化和 AXPY apply kernel 的不同累加顺序 |
 
-## 9. 停止条件
+## 10. 停止条件
 
 | 条件 | 状态 |
 |-----------|--------|

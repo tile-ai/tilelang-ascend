@@ -57,6 +57,8 @@ partitioning (bid = cid * 2 + vid).
 | pass_configs | add TL_ASCEND_TAIL_MASK | Enable pad_value for in-kernel tail |
 | fn prepack/cache | prepare_fn + fn_packed | Avoid repeated cast/transpose at inference |
 | kernel compile cache | _kernel_cache dict | Avoid repeated JIT lookup |
+| review: developer mode | drop manual T.Scope("C"/"V"), alloc_L1/L0C -> alloc_shared/fragment | combineCV builds scopes automatically, no perf regression, cleaner code |
+| shape test expansion | 11 -> 17 shapes (add hc 5/6/7, n 1024/2048, h 7168) | Full hc 1-8 + mid/large shape coverage |
 
 ## 5. Final Performance (E2E, do_bench, warmup=20, rep=100, 5-run average, prepacked fn)
 
@@ -70,7 +72,51 @@ Small shape (512x2560) is slower than CANN due to 3-kernel launch overhead.
 Large shapes benefit from fused pipeline. 4096x2560 improved from 0.96x to 1.40x
 after kernel fusion.
 
-## 6. Kernel Breakdown (n=4096, h=2560, after fusion)
+## 6. Developer Mode & Pipeline Advantage Analysis
+
+### 6.1 Where the pipeline advantage comes from
+
+The E2E win over a per-op baseline (eager CANN ops or an ascendc-style
+5-kernel chain) comes from four sources, in order of impact:
+
+| # | Source | Evidence |
+|---|--------|----------|
+| 1 | Kernel fusion (5 -> 3) | -28.3% E2E; host overhead 0.32 -> 0.16 ms (section 7) |
+| 2 | On-chip intermediates | sqrsum stays in UB (A2+B1), pre_mix stays in shared (B2+B3); 2 GM round-trips saved per token |
+| 3 | Dual-V-core partition | A2+B1 / B2+B3 run `bid = cid * 2 + vid`, both vector cores of one AI Core in parallel |
+| 4 | T.Pipelined + tail mask | double-buffering hides MTE2 latency; pad_value + TL_ASCEND_TAIL_MASK removes all host-side padding copies |
+
+Fusion dominates: the intermediate tensors of a 5-op chain are small but their
+launch + GM round-trip cost is fixed per token-block, so removing two launches
+plus two GM round-trips is what moved 4096x2560 from 0.96x to 1.40x vs CANN.
+
+### 6.2 Developer mode (alloc_shared, no manual T.Scope)
+
+Per review, with `TL_ASCEND_AUTO_CV_COMBINE` enabled the manual `T.Scope("C"/"V")`
+wrappers are unnecessary. The kernels now follow the developer-mode convention:
+
+- GEMM operands: `T.alloc_shared` (L1/UB placement decided by InferAllocScope);
+  accumulator: `T.alloc_fragment` (L0C), same as `examples/developer_mode/gemm_developer.py`.
+- Vector kernels: no manual scope; `T.alloc_shared`/`T.alloc_ub` mixed freely,
+  cross-scope placement resolved by the pass instead of by hand.
+- Sync: `TL_ASCEND_AUTO_SYNC` inserts barriers; no `T.set_flag`/`T.wait_flag` pairs.
+
+What this buys (inferred from the pass pipeline, section 4):
+
+| Mechanism | Effect |
+|-----------|--------|
+| combineCV + AUTO_SYNC | optimal barrier placement across the fused C/V scope instead of user-forced scope boundaries |
+| InferAllocScope on alloc_shared | per-buffer L1/UB placement by usage; MEMORY_PLANNING can reuse buffers across fused stages |
+| alloc_fragment accumulator | GEMM accumulation stays in L0C, store to GM handled like gemm_developer |
+
+Verified on Ascend 910B3 / CANN 9.2: developer-style code passes all 17 shape
+cases + distinct-eps (section 9) with identical max diff (0.0156). E2E latency
+vs the previous manual-scope version differs by <= 6% in either direction
+(median of 100 reps, run-to-run variance of the same magnitude) — i.e. parity
+within measurement noise on this box, so the simplification costs nothing while
+unblocking the memory planner and scope-inference passes.
+
+## 7. Kernel Breakdown (n=4096, h=2560, after fusion)
 
 | Kernel | Latency | Share |
 |--------|---------|-------|
@@ -82,7 +128,7 @@ after kernel fusion.
 B2+B3 fused kernel is the dominant component (52.7%). Host overhead reduced
 from 0.32 ms (5 launches) to 0.16 ms (3 launches) after fusion.
 
-## 7. B2 Sinkhorn Optimization Attempts
+## 8. B2 Sinkhorn Optimization Attempts
 
 B2 (Sinkhorn) was the #1 bottleneck (28-39% before fusion). Six optimization
 approaches were attempted, all blocked by codegen limitations:
@@ -100,16 +146,16 @@ msprof analysis shows B2 is **balanced** (Vec 18.8% / MTE 19.4% / Scalar 18.3% /
 Wait 25.2%) — no single dominant component. The bottleneck is scalar dispatch
 overhead from ~130 small operations on 4-8 element buffers, not compute or memory.
 
-## 8. Accuracy
+## 9. Accuracy
 
 | Metric | Value |
 |--------|-------|
-| Test cases | 7/7 passed (including distinct-eps parameter test) |
+| Test cases | 18/18 passed (17 shapes covering hc 1-8, n 4-4096, h 100-7168 + distinct-eps parameter test) |
 | Tolerance | rtol=1e-2, atol=1e-2 |
 | Max diff | 0.0156 (layer_input, n=4096) |
 | Source of diff | BF16 quantization and different accumulation order of AXPY-based apply kernel |
 
-## 9. Stop Condition
+## 10. Stop Condition
 
 | Condition | Status |
 |-----------|--------|
