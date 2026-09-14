@@ -16,6 +16,9 @@ Architecture (3-kernel pipeline; A1 uses Cube, A2+B1 / B2+B3 use dual-V-core):
   Each kernel launched separately from host. Dual-V-core: bid = cid * 2 + vid.
   fn prepack/cache supported for inference (prepare_fn + fn_packed param).
   hc 1-8 (JIT parameter). In-kernel tail via pad_value + TL_ASCEND_TAIL_MASK.
+
+Developer mode: buffers use T.alloc_shared / T.alloc_fragment and C/V scopes are
+combined automatically by the TL_ASCEND_AUTO_CV_COMBINE pass (no manual T.Scope).
 """
 
 import tilelang
@@ -63,20 +66,19 @@ def mhc_pre_gemm(pad_hc_hidden, pad_hc_mult3, h_blk=H_BLK, token_block=TOKEN_BLO
         out: T.Tensor((n, pad_hc_mult3), accum_dtype),
     ):
         with T.Kernel(T.ceildiv(n, token_block), is_npu=True) as (bid, _):
-            a_l1 = T.alloc_L1((token_block, h_blk), dtype)
-            b_l1 = T.alloc_L1((h_blk, pad_hc_mult3), dtype)
-            c_l0 = T.alloc_L0C((token_block, pad_hc_mult3), accum_dtype)
+            a_l1 = T.alloc_shared((token_block, h_blk), dtype)
+            b_l1 = T.alloc_shared((h_blk, pad_hc_mult3), dtype)
+            c_l0 = T.alloc_fragment((token_block, pad_hc_mult3), accum_dtype)
 
-            with T.Scope("C"):
-                for i_k in T.Pipelined(k_num, num_stages=2):
-                    T.copy(x[bid * token_block, i_k * h_blk], a_l1)
-                    T.copy(fn_t[i_k * h_blk, 0], b_l1)
-                    if i_k == 0:
-                        T.gemm_v0(a_l1, b_l1, c_l0, init=True)
-                    else:
-                        T.gemm_v0(a_l1, b_l1, c_l0)
+            for i_k in T.Pipelined(k_num, num_stages=2):
+                T.copy(x[bid * token_block, i_k * h_blk], a_l1)
+                T.copy(fn_t[i_k * h_blk, 0], b_l1)
+                if i_k == 0:
+                    T.gemm_v0(a_l1, b_l1, c_l0, init=True)
+                else:
+                    T.gemm_v0(a_l1, b_l1, c_l0)
 
-                T.copy(c_l0, out[bid * token_block, 0])
+            T.copy(c_l0, out[bid * token_block, 0])
 
     return main
 
@@ -118,36 +120,35 @@ def mhc_pre_sqrsum_rmsnorm(
             bid = cid * VEC_NUM + vid
 
             if bid < n:
-                with T.Scope("V"):
-                    acc_ub = T.alloc_ub((sqr_h_blk,), accum_dtype)
-                    x_ub = T.alloc_ub((sqr_h_blk,), dtype)
-                    x_fp32 = T.alloc_ub((sqr_h_blk,), accum_dtype)
-                    x_sq = T.alloc_ub((sqr_h_blk,), accum_dtype)
-                    T.tile.fill(acc_ub, 0.0)
+                acc_ub = T.alloc_ub((sqr_h_blk,), accum_dtype)
+                x_ub = T.alloc_ub((sqr_h_blk,), dtype)
+                x_fp32 = T.alloc_ub((sqr_h_blk,), accum_dtype)
+                x_sq = T.alloc_shared((sqr_h_blk,), accum_dtype)
+                T.tile.fill(acc_ub, 0.0)
 
-                    for i_k in T.Pipelined(sqr_total_tiles, num_stages=2):
-                        T.copy(x[bid, i_k * sqr_h_blk], x_ub, pad_value=0.0)
-                        T.tile.cast(x_fp32, x_ub, "CAST_NONE", sqr_h_blk)
-                        T.tile.mul(x_sq, x_fp32, x_fp32)
-                        T.tile.add(acc_ub, acc_ub, x_sq)
+                for i_k in T.Pipelined(sqr_total_tiles, num_stages=2):
+                    T.copy(x[bid, i_k * sqr_h_blk], x_ub, pad_value=0.0)
+                    T.tile.cast(x_fp32, x_ub, "CAST_NONE", sqr_h_blk)
+                    T.tile.mul(x_sq, x_fp32, x_fp32)
+                    T.tile.add(acc_ub, acc_ub, x_sq)
 
-                    result_ub = T.alloc_ub(1, accum_dtype)
-                    T.reduce_sum(acc_ub, result_ub, dim=-1)
+                result_ub = T.alloc_ub(1, accum_dtype)
+                T.reduce_sum(acc_ub, result_ub, dim=-1)
 
-                    rms_ub = T.alloc_ub(1, accum_dtype)
-                    inv_sqrt_ub = T.alloc_ub(1, accum_dtype)
+                rms_ub = T.alloc_ub(1, accum_dtype)
+                inv_sqrt_ub = T.alloc_ub(1, accum_dtype)
 
-                    T.tile.fill(rms_ub, 0.0)
-                    T.tile.add(rms_ub, rms_ub, result_ub[0])
-                    T.tile.mul(rms_ub, rms_ub, 1.0 / (hc_mult * hidden_size))
-                    T.tile.add(rms_ub, rms_ub, rms_eps)
-                    T.tile.rsqrt(inv_sqrt_ub, rms_ub)
+                T.tile.fill(rms_ub, 0.0)
+                T.tile.add(rms_ub, rms_ub, result_ub[0])
+                T.tile.mul(rms_ub, rms_ub, 1.0 / (hc_mult * hidden_size))
+                T.tile.add(rms_ub, rms_ub, rms_eps)
+                T.tile.rsqrt(inv_sqrt_ub, rms_ub)
 
-                    out_ub = T.alloc_ub(pad_hc_mult3, accum_dtype)
-                    mixes_ub = T.alloc_ub(pad_hc_mult3, accum_dtype)
-                    T.copy(gemm_out[bid, 0], out_ub)
-                    T.tile.mul(mixes_ub, out_ub, inv_sqrt_ub[0])
-                    T.copy(mixes_ub, mixes[bid, 0])
+                out_ub = T.alloc_ub(pad_hc_mult3, accum_dtype)
+                mixes_ub = T.alloc_ub(pad_hc_mult3, accum_dtype)
+                T.copy(gemm_out[bid, 0], out_ub)
+                T.tile.mul(mixes_ub, out_ub, inv_sqrt_ub[0])
+                T.copy(mixes_ub, mixes[bid, 0])
 
     return main
 
@@ -558,11 +559,17 @@ def test_full():
         (16, 256, 4),
         (4, 1280, 4),
         (512, 2560, 4),
+        (1024, 2560, 4),
+        (2048, 2560, 4),
         (4096, 2560, 4),
+        (1024, 7168, 4),
         (4, 100, 4),
         (4, 128, 1),
         (4, 128, 2),
         (4, 128, 3),
+        (4, 128, 5),
+        (4, 128, 6),
+        (4, 128, 7),
         (4, 128, 8),
         (4, 100, 8),
     ]
