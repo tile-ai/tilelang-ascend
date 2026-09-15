@@ -14,7 +14,7 @@ Architecture (3-kernel pipeline; A1 uses Cube, A2+B1 / B2+B3 use dual-V-core):
   Kernel B2+B3 (Vector):  split + Sinkhorn + apply pre_mix (fused, pre_mix stays in shared/L1)
 
   Each kernel launched separately from host. Dual-V-core: bid = cid * 2 + vid.
-  fn prepack/cache supported for inference (prepare_fn + fn_packed param).
+  fn prepack supported for inference (prepare_fn + fn_packed param).
   hc 1-8 (JIT parameter). In-kernel tail via pad_value + TL_ASCEND_TAIL_MASK.
 
 Developer mode: buffers use T.alloc_shared / T.alloc_fragment and C/V scopes are
@@ -138,8 +138,7 @@ def mhc_pre_sqrsum_rmsnorm(
                 rms_ub = T.alloc_ub(1, accum_dtype)
                 inv_sqrt_ub = T.alloc_ub(1, accum_dtype)
 
-                T.tile.fill(rms_ub, 0.0)
-                T.tile.add(rms_ub, rms_ub, result_ub[0])
+                rms_ub[0] = result_ub[0]
                 T.tile.mul(rms_ub, rms_ub, 1.0 / (hc_mult * hidden_size))
                 T.tile.add(rms_ub, rms_ub, rms_eps)
                 T.tile.rsqrt(inv_sqrt_ub, rms_ub)
@@ -325,26 +324,6 @@ def _pad_2d(t, target_rows, target_cols):
     return result
 
 
-_kernel_cache = {}
-# Note: cache key includes float params (rms_eps, pre_eps, etc.).
-# Different values trigger separate JIT compilations; acceptable for examples.
-
-
-def _get_kernel(name, *args):
-    """Cache compiled kernel to avoid repeated JIT lookup."""
-    key = (name, *args)
-    if key not in _kernel_cache:
-        _kernel_cache[key] = _KERNEL_BUILDERS[name](*args)
-    return _kernel_cache[key]
-
-
-_KERNEL_BUILDERS = {
-    "gemm": mhc_pre_gemm,
-    "sqrsum_rmsnorm": mhc_pre_sqrsum_rmsnorm,
-    "sinkhorn_apply": mhc_pre_split_sinkhorn_apply,
-}
-
-
 def prepare_fn(fn, hc_mult):
     """Prepack fn for mhc_pre: fp32 -> bf16 -> transpose -> pad.
 
@@ -388,14 +367,9 @@ def mhc_pre_gemm_sqrsum(x, fn, hc_mult, fn_packed=None):
     if fn_packed is not None:
         fn_t_padded = fn_packed
     else:
-        fn_t = fn.bfloat16().T.contiguous()
-        if pad_hc_hidden == hc_hidden and pad_hc_mult3 == hc_mult3:
-            fn_t_padded = fn_t
-        else:
-            fn_t_padded = _pad_2d(fn_t, pad_hc_hidden, pad_hc_mult3)
+        fn_t_padded = prepare_fn(fn, hc_mult)
 
-    gemm_kernel = _get_kernel("gemm", pad_hc_hidden, pad_hc_mult3)
-    out_padded = gemm_kernel(x_padded, fn_t_padded)
+    out_padded = mhc_pre_gemm(pad_hc_hidden, pad_hc_mult3)(x_padded, fn_t_padded)
 
     return out_padded
 
@@ -435,13 +409,13 @@ def mhc_pre(residual, fn, hc_scale, hc_base, rms_eps, hc_pre_eps, hc_sinkhorn_ep
     # Fused Kernel A2+B1: sqrsum + RMSNorm
     pad_hc_mult3 = calc_pad(hc_mult3, MIN_BLOCK)
     gemm_out = gemm_out_padded[:n, :pad_hc_mult3].contiguous()
-    sqrsum_rmsnorm_kernel = _get_kernel("sqrsum_rmsnorm", hc_mult * hidden, pad_hc_mult3, hc_mult, hidden, rms_eps)
-    mixes_padded = sqrsum_rmsnorm_kernel(x_flat, gemm_out)
+    mixes_padded = mhc_pre_sqrsum_rmsnorm(hc_mult * hidden, pad_hc_mult3, hc_mult, hidden, rms_eps)(x_flat, gemm_out)
     mixes = mixes_padded[:n, :hc_mult3].contiguous()
 
     # Fused Kernel B2+B3: sinkhorn + apply pre_mix
-    sinkhorn_apply_kernel = _get_kernel("sinkhorn_apply", hc_mult, hidden, sinkhorn_repeat, hc_pre_eps, hc_sinkhorn_eps, hc_post_mult_value)
-    post_mix, comb_mix, layer_input_padded = sinkhorn_apply_kernel(mixes, hc_scale, hc_base, residual)
+    post_mix, comb_mix, layer_input_padded = mhc_pre_split_sinkhorn_apply(
+        hc_mult, hidden, sinkhorn_repeat, hc_pre_eps, hc_sinkhorn_eps, hc_post_mult_value
+    )(mixes, hc_scale, hc_base, residual)
 
     # B2 outputs padded shapes (hc_pad), trim to actual hc
     post_mix = post_mix[:, :hc_mult].contiguous()

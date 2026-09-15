@@ -55,8 +55,8 @@ partitioning (bid = cid * 2 + vid).
 | B2+B3 fusion | Sinkhorn + apply in one kernel | Save 1 launch + pre_mix GM round-trip |
 | B2 T.unroll(hc) | T.serial(hc) -> T.unroll(hc) | Compile-time unroll (no perf change, cleaner) |
 | pass_configs | add TL_ASCEND_TAIL_MASK | Enable pad_value for in-kernel tail |
-| fn prepack/cache | prepare_fn + fn_packed | Avoid repeated cast/transpose at inference |
-| kernel compile cache | _kernel_cache dict | Avoid repeated JIT lookup |
+| fn prepack | prepare_fn + fn_packed | Avoid repeated cast/transpose at inference |
+| remove _kernel_cache | drop _get_kernel/_KERNEL_BUILDERS dict, call jit kernels directly | tilelang.jit already caches kernels in-memory; -34 lines, no perf impact |
 | review: developer mode | drop manual T.Scope("C"/"V"), alloc_L1/L0C -> alloc_shared/fragment | combineCV builds scopes automatically, no perf regression, cleaner code |
 | shape test expansion | 11 -> 17 shapes (add hc 5/6/7, n 1024/2048, h 7168) | Full hc 1-8 + mid/large shape coverage |
 

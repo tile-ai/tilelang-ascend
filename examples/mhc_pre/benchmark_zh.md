@@ -54,8 +54,8 @@ A1 使用 Cube GEMM。A2+B1 和 B2+B3 使用双 V 核划分（bid = cid * 2 + vi
 | B2+B3 融合 | Sinkhorn + apply 合一 | 省 1 次 launch + pre_mix GM 往返 |
 | B2 T.unroll(hc) | T.serial(hc) -> T.unroll(hc) | 编译期展开（无性能变化，意图更清晰） |
 | pass_configs | 加 TL_ASCEND_TAIL_MASK | 启用 pad_value 支持 kernel 内 tail |
-| fn 预打包/缓存 | prepare_fn + fn_packed | 避免推理时重复 cast/transpose |
-| kernel 编译缓存 | _kernel_cache dict | 避免重复 JIT 查找 |
+| fn 预打包 | prepare_fn + fn_packed | 避免推理时重复 cast/transpose |
+| 删 _kernel_cache | 删 _get_kernel/_KERNEL_BUILDERS 字典，直接调用 jit kernel | tilelang.jit 自身按参数内存缓存；-34 行，无性能影响 |
 | review: developer 模式 | 删手动 T.Scope("C"/"V")，alloc_L1/L0C -> alloc_shared/fragment | combineCV 自动建 scope，无性能回退，代码更简洁 |
 | shape 测试扩展 | 11 -> 17 个 shape（补 hc 5/6/7，n 1024/2048，h 7168）| 覆盖 hc 1-8 全范围与中大 shape |
 
