@@ -419,7 +419,7 @@ class TestTileLangKernels:
 
     def test_shiftright_operation(self, clear_cache, setup_random_seed):
         """Test bitwise right shift kernel"""
-        scalar_value = random.randint(1, 32)
+        scalar_value = random.randint(1, 31)
 
         def kernel_func(M, N, block_M, block_N):
             return self.unary_op_kernel_int(M, N, block_M, block_N, op_func=lambda a: a >> scalar_value, dtype="int32")

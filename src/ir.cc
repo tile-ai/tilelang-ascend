@@ -114,6 +114,29 @@ ForFrame PersistentFor(const Array<PrimExpr> &domain, const PrimExpr &wave_size,
                        const PrimExpr &index, PrimExpr group_size) {
   using namespace tvm::tir;
   ICHECK(!domain.empty());
+  arith::Analyzer validation_analyzer;
+  for (const auto &extent : domain) {
+    ICHECK(!validation_analyzer.CanProveLess(extent, 1))
+        << "T.Persistent domain extents must be positive, but got " << extent;
+  }
+  ICHECK(!validation_analyzer.CanProveLess(wave_size, 1))
+      << "T.Persistent wave_size must be positive, but got " << wave_size;
+  ICHECK(!validation_analyzer.CanProveLess(index, 0) &&
+         !validation_analyzer.CanProveGreaterEqual(index - wave_size, 0))
+      << "T.Persistent index must satisfy 0 <= index < wave_size, but got "
+      << "index=" << index << " and wave_size=" << wave_size;
+  ICHECK(!validation_analyzer.CanProveLess(group_size, 1))
+      << "T.Persistent group_size must be positive, but got " << group_size;
+  PrimExpr last_extent = domain[domain.size() - 1];
+  PrimExpr effective_group_size = min(group_size, last_extent);
+  PrimExpr group_remainder =
+      validation_analyzer.Simplify(truncmod(last_extent, effective_group_size));
+  if (const int64_t *remainder = as_const_int(group_remainder)) {
+    ICHECK_EQ(*remainder, 0)
+        << "T.Persistent last domain extent must be divisible by "
+        << "min(group_size, domain[-1]), but got domain[-1]=" << last_extent
+        << " and group_size=" << group_size;
+  }
   ObjectPtr<ForFrameNode> n = make_object<ForFrameNode>();
   n->vars.reserve(domain.size());
   n->doms.reserve(domain.size());
@@ -147,7 +170,8 @@ ForFrame PersistentFor(const Array<PrimExpr> &domain, const PrimExpr &wave_size,
     ICHECK_EQ(vars.size(), doms.size());
     Map<String, ObjectRef> anno;
     Array<PrimExpr> idxs(grouped_domain.size(), PrimExpr());
-    PrimExpr rem = loop_var * wave_size + index;
+    PrimExpr global_index = loop_var * wave_size + index;
+    PrimExpr rem = global_index;
 
     for (int i = grouped_domain.size() - 1; i >= 1; --i) {
       idxs.Set(i, truncmod(rem, grouped_domain[i]));
@@ -156,7 +180,7 @@ ForFrame PersistentFor(const Array<PrimExpr> &domain, const PrimExpr &wave_size,
     idxs.Set(0, rem);
 
     auto out_if = tvm::tir::IfThenElse(
-        domain_size <= (loop_var * wave_size + index),
+        domain_size <= global_index,
         tvm::tir::Evaluate(
             tvm::tir::Call(DataType::Handle(), tvm::tl::loop_break(), {})),
         Stmt());
@@ -165,6 +189,13 @@ ForFrame PersistentFor(const Array<PrimExpr> &domain, const PrimExpr &wave_size,
     Stmt new_body = body;
     if (analyzer.CanProveGreaterEqual(waves, 2)) {
       new_body = SeqStmt({out_if, body});
+    } else if (!analyzer.CanProveEqual(domain_size, wave_size)) {
+      // A unit loop can be removed during lowering, so a loop_break guard
+      // would become an invalid top-level C++ break. Predicate the tile body
+      // for partial first waves and symbolic wave counts instead. Under
+      // Persistent's 0 <= index < wave_size contract, no guard is needed when
+      // the domain is provably exactly one full wave.
+      new_body = tvm::tir::IfThenElse(global_index < domain_size, body, Stmt());
     }
     Stmt outer =
         For(loop_var, 0, waves, ForKind::kSerial, new_body, NullOpt, anno);

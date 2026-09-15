@@ -167,6 +167,38 @@ T.set_flag("mte2", "v", 0)
 T.wait_flag("mte2", "v", 0)
 ```
 
+`set_flag` / `wait_flag` 应按“物理缓冲 ownership”设计，而不是只做一次 producer →
+consumer 就绪通知。只要同一缓冲会被下一轮复用，就必须同时有 consumer → producer
+归还方向：
+
+```python
+# 初始化：consumer 预先把缓冲归还给 producer。
+T.set_flag("MTE1", "MTE2", SIG_L1)
+
+for task in T.serial(task_count):
+    T.wait_flag("MTE1", "MTE2", SIG_L1)  # MTE2 获得可写 ownership
+    T.copy(src[task], l1_buf)
+    T.set_flag("MTE2", "MTE1", SIG_L1)   # producer → consumer
+
+    T.wait_flag("MTE2", "MTE1", SIG_L1)  # MTE1 获得可读 ownership
+    # 完成这一 task 对 l1_buf 的全部读取；可以跨多个内层循环。
+    T.copy(l1_buf, l0_buf)
+    T.set_flag("MTE1", "MTE2", SIG_L1)   # consumer → 下一轮 producer
+
+# 销毁：消费最后一次归还，确保 token 生命周期闭合。
+T.wait_flag("MTE1", "MTE2", SIG_L1)
+```
+
+`T.barrier_all()` 只为它之前已经发出的本地异步操作建立完成边界。它不是缓冲区
+ownership token，也不能保护 barrier **之后**的 store，防止下一 task 过早复用同一缓冲。
+跨流水线复用必须使用与实际 producer/consumer 匹配的双向 flag 生命周期。
+
+event ID 属于有向 `(src_pipe, dst_pipe)` pair，不是所有 pipe 共享的全局编号。
+为新缓冲分配 ID 时，应在它的正、反两个 pair 中选择未占用的 ID；不必为了
+全局数字唯一而跳到更高 ID。反向 pair 是独立的编号空间；同一 ownership
+slot 通常在正反两个 pair 中使用相同数字，但 `FREE` 和 `READY` 等不同语义应保留
+独立名称，且两个方向仍分别需要匹配的 `set_flag` / `wait_flag`。
+
 ### 核间同步
 
 | API | 说明 |

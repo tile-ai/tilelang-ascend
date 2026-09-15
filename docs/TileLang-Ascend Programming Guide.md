@@ -2346,6 +2346,9 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   详细功能，详见AscendC文档：https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/83RC1alpha002/API/ascendcopapi/atlasascendc_api_07_0271.html
 
+  **边界**：该屏障只等待它之前已经发出的本地异步操作。它不等价于缓冲区
+  ownership handoff，也不能保护屏障之后的 store，防止后续 task 复用同一物理缓冲。
+
 - `T.pipe_barrier(pipe: _pipe):`
 
   **参数**：
@@ -2365,6 +2368,22 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
   **功能**：在计算单元（块/核心）内执行全局同步。
 
   详细功能，详见AscendC文档：https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/83RC1alpha002/API/ascendcopapi/atlasascendc_api_07_0204.html
+
+手动同步并复用同一物理缓冲时，应为 producer → consumer 的“数据就绪”和
+consumer → producer 的“缓冲归还”分别使用匹配的 `set_flag` / `wait_flag`。完整生命周期包括：
+
+1. consumer 在作用域入口预先归还 token；
+2. producer 获取 token、写缓冲并通知 consumer；
+3. consumer 获取 token、完成所有读取并归还给下一轮 producer；
+4. 作用域退出前消费最后一次归还的 token。
+
+例如，MTE2 写 L1、MTE1 读取后，正向使用 `MTE2 → MTE1`，反向归还使用
+`MTE1 → MTE2`。若 MTE1 在多个内层循环中持续读取该 L1 缓冲，必须在最后一次读取
+之后再归还，而不是在第一次读取后立即归还。
+
+event ID 按有向 pipe pair 分配，只需在同一 pair 内避免同时占用；反向 pair 是另一个
+独立编号空间。同一 ownership slot 通常在正反两个 pair 中使用相同数字，便于阅读和
+审查；不同方向的信号若表达不同语义（例如 `FREE` 和 `READY`），仍应保留独立名称。
 
 ## 5. 调试诊断
 

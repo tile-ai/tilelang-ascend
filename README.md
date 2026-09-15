@@ -363,8 +363,6 @@ def vec_add(M, N, block_M, block_N, dtype="float"):
             B: T.Tensor((M, N), dtype),
             C: T.Tensor((M, N), dtype),
     ):
-        # Enable by setting the enable_auto_sync attribute
-        T.func_attr({"enable_auto_sync": True})
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
