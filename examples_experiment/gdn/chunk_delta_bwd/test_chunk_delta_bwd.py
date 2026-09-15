@@ -133,16 +133,21 @@ def torch_chunk_gated_delta_rule_bwd_dhu(
 
 
 def check_precision(actual, reference, dtype_str):
-    """Mixed-tolerance precision check.
+    """Mixed-tolerance precision check per precision-standard.md.
 
-    Uses a value-range-aware max_abs_limit: for algorithms that produce
-    large values (e.g., backward gradients over 512 steps), the standard
-    max_abs_limit is too strict. The limit scales as:
-        max_abs_limit = max(standard_limit, rtol * max(|golden|))
+    Dual-gate (AND):
+        (1) matched_ratio >= required_matched_ratio
+        (2) max_abs_error  <= max_abs_error_limit  (hard cap, dtype-only)
 
-    This ensures:
-    - For small values: standard limit applies (catches real bugs)
-    - For large values: limit scales with value range (prevents false FAIL)
+    Element-wise pass condition (finite values only):
+        |actual - golden| <= atol + rtol * |golden|
+
+    INF/NAN structural compare per §3.1: inf/nan positions must match
+    (isinf/isnan positions agree), and are excluded from matched_ratio /
+    max_abs_error computation.
+
+    Thresholds are dtype-only (§二): GEMM/Softmax/Normalization/Activation
+    /Reduction/Fusion all use the same table.
 
     Args:
         actual: kernel output tensor
@@ -152,31 +157,47 @@ def check_precision(actual, reference, dtype_str):
     Returns:
         (passed, matched_ratio, max_abs_error)
     """
+    # dtype-only thresholds per precision-standard.md §二
     if dtype_str == "float32":
-        atol, rtol, max_abs_limit_base, required_ratio = (
-            2**-16,
-            2**-10,
+        atol, rtol, max_abs_limit, required_ratio = (
+            2**-16,  # 1.53e-5
+            2**-10,  # 9.77e-4
             1e-2,
             0.99,
         )
     else:  # bfloat16
-        atol, rtol, max_abs_limit_base, required_ratio = (
-            2**-10,
-            2**-6,
+        atol, rtol, max_abs_limit, required_ratio = (
+            2**-10,  # 9.77e-4
+            2**-6,  # 1.56e-2
             1e0,
             0.99,
         )
 
-    a = actual.detach().cpu().float()
-    g = reference.detach().cpu().float()
-    abs_err = (a - g).abs()
-    tol = atol + rtol * g.abs()
-    matched_ratio = (abs_err <= tol).float().mean().item()
+    a = actual.detach().cpu()
+    g = reference.detach().cpu()
+
+    # §3.1 INF/NAN structural compare: positions must match, not in tolerance
+    special = ~torch.isfinite(g)  # golden inf/nan positions
+    if special.any() and (
+        not torch.equal(torch.isnan(a[special]), torch.isnan(g[special]))
+        or not torch.equal(torch.isinf(a[special]), torch.isinf(g[special]))
+    ):
+        return False, 0.0, float("inf")
+
+    # Finite-value positions: full compare. If actual is inf/nan where golden
+    # is finite, abs_err = inf/nan -> element-wise False and raises max_abs.
+    m = torch.isfinite(g)
+    if m.sum().item() == 0:
+        return True, 1.0, 0.0
+
+    a_f = a.float()
+    g_f = g.float()
+    abs_err = (a_f[m] - g_f[m]).abs()
+    matched_ratio = (abs_err <= (atol + rtol * g_f[m].abs())).float().mean().item()
     max_abs_error = abs_err.max().item()
-    # Value-range-aware limit: scale max_abs_limit with value range
-    golden_max_abs = g.abs().max().item()
-    max_abs_limit = max(max_abs_limit_base, rtol * golden_max_abs)
-    passed = matched_ratio >= required_ratio and max_abs_error <= max_abs_limit
+
+    # §1.2 Dual-gate AND (hard cap, no value-range scaling)
+    passed = (matched_ratio >= required_ratio) and (max_abs_error <= max_abs_limit)
     return passed, matched_ratio, max_abs_error
 
 
