@@ -32,6 +32,36 @@ def clear_cache():
     yield
 
 
+def unaligned_multirow_copy():
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((2, 9), "float16"),
+        C: T.Tensor((2, 9), "float16"),
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((2, 9), "float16")
+            b_ub = T.alloc_ub((2, 9), "float16")
+            with T.Scope("V"):
+                T.copy(A, a_ub)
+                T.tile.add(b_ub, a_ub, 1.0)
+                T.copy(b_ub, C)
+
+    return main
+
+
+def test_unaligned_multirow_full_rows_supported():
+    kernel = tilelang.compile(
+        unaligned_multirow_copy(),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target="ascendc",
+    )
+    a = torch.arange(18, dtype=torch.float16).reshape(2, 9).npu()
+    torch.npu.synchronize()
+    torch.testing.assert_close(kernel(a), a + 1, rtol=0, atol=0)
+
+
 @pytest.fixture
 def setup_random_seed():
     """Set random seed for reproducibility"""
