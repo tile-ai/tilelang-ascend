@@ -152,14 +152,15 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
   auto compute_strideN = [](const Buffer &buf,
                             const Array<PrimExpr> &extents) -> PrimExpr {
-    PrimExpr strideN = buf->shape[buf->shape.size() - 1];
+    PrimExpr strideN =
+        Cast(DataType::Int(64), buf->shape[buf->shape.size() - 1]);
     if (extents.size() > 1) {
       for (int i = extents.size() - 2; i >= 0; --i) {
         auto *extent = extents[i].as<IntImmNode>();
         if (!extent || extent->value != 1) {
           break;
         }
-        strideN = strideN * buf->shape[i];
+        strideN = strideN * Cast(DataType::Int(64), buf->shape[i]);
       }
     }
     return strideN;
@@ -374,14 +375,30 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   auto src_new_buffer = T.buffer_remap.count(src) ? T.buffer_remap[src] : src;
   auto dst_new_buffer = T.buffer_remap.count(dst) ? T.buffer_remap[dst] : dst;
 
-  PrimExpr src_len = 1;
+  auto widen_global_indices = [](const Buffer &buffer,
+                                 const Array<PrimExpr> &indices) {
+    if (buffer.scope() != "global") {
+      return indices;
+    }
+    Array<PrimExpr> widened;
+    widened.reserve(indices.size());
+    for (const PrimExpr &index : indices) {
+      widened.push_back(Cast(DataType::Int(64, index.dtype().lanes()), index));
+    }
+    return widened;
+  };
+
+  src_new_indices = widen_global_indices(src_new_buffer, src_new_indices);
+  dst_new_indices = widen_global_indices(dst_new_buffer, dst_new_indices);
+
+  PrimExpr src_len = IntImm(DataType::Int(64), 1);
   for (auto &shape : src_extents) {
-    src_len *= shape;
+    src_len *= Cast(DataType::Int(64), shape);
   }
 
-  PrimExpr dst_len = 1;
+  PrimExpr dst_len = IntImm(DataType::Int(64), 1);
   for (auto &shape : dst_extents) {
-    dst_len *= shape;
+    dst_len *= Cast(DataType::Int(64), shape);
   }
 
   auto src_ptr = src_new_buffer.access_ptr(
