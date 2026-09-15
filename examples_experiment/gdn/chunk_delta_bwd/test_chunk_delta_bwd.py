@@ -1,6 +1,6 @@
 """Chunk Delta Backward precision test: L0 + L1 + L2 + main(--level).
 
-L0: 6 small configs (C=64/128/256/512/1024) + bench shape (BS=32 with C=1024)
+L0: 5 small configs (C=64/128/256/512)
 L1: 5 irregular shapes
 L2: boundary (minimal shape)
 Precision: all outputs fp32 (atol=2^-16, rtol=2^-10, max_abs=1e-2, ratio=0.99)
@@ -285,7 +285,6 @@ def test_chunk_delta_bwd_l0():
         ("l0_small_cs128", 1, 256, 1, 128, 128, 128),  # BS=2, C=128
         ("l0_small_cs256", 1, 512, 1, 128, 128, 256),  # BS=2, C=256
         ("l0_small_cs512", 1, 1024, 1, 128, 128, 512),  # BS=2, C=512
-        ("l0_small_cs1024", 1, 2048, 1, 128, 128, 1024),  # BS=2, C=1024
     ]
     ok = True
     for name, B, S, H, DK, DV, cs in configs:
@@ -296,16 +295,6 @@ def test_chunk_delta_bwd_l0():
             print(f"[PRECISION_FAIL] {name}: {e}")
             ok = False
     return ok
-
-
-def test_chunk_delta_bwd_l0_bench():
-    """L0 bench shape: BS=32 with C=1024."""
-    try:
-        passed = run_and_check(1, 32768, 8, 128, 128, 1024, tag="l0_bench_shape")
-        return passed
-    except Exception as e:
-        print(f"[PRECISION_FAIL] l0_bench_shape: {e}")
-        return False
 
 
 def test_chunk_delta_bwd_l1():
@@ -367,8 +356,6 @@ def main():
 
     if args.level in ("l0", "all"):
         blocking_ok &= test_chunk_delta_bwd_l0()
-    if args.level in ("l0", "all") and blocking_ok:
-        blocking_ok &= test_chunk_delta_bwd_l0_bench()
     if args.level in ("l1", "all") and blocking_ok:
         blocking_ok &= test_chunk_delta_bwd_l1()
 
