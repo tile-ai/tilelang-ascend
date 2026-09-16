@@ -25,6 +25,9 @@ Architecture (pure Vector, no Cube):
   - T.tile.fill for initialization (T.fill not on Ascend)
   - T.Parallel for element-wise ops on UB
   - T.reduce_sum with real_shape for reductions
+  - The per-tile "+x" of the matvec is hoisted out of the per-tile loop
+    into one whole-block update (the CG loop is scalar-dispatch bound,
+    see benchmark.md)
 
 Migration from CUDA:
   1. T.alloc_fragment -> T.alloc_ub (UB scope for Vector ops)
@@ -61,9 +64,13 @@ def matvec_A(R, x1, x2, buf, y1, y2, tilesize, n_stream):
             buf[i, j] = R[i_tile, i, j] * x1[i_tile, i]
         T.reduce_sum(buf, y2[i_tile, :], dim=-2, real_shape=[n_stream, n_stream])
 
-        for i in T.Parallel(n_stream):
-            y1[i_tile, i] += x1[i_tile, i]
-            y2[i_tile, i] += x2[i_tile, i]
+    # A @ [x1; x2] = [R @ x2 + x1; R^T @ x1 + x2]: the "+x" part is
+    # tile-invariant, hoist it out of the per-tile loop into two
+    # whole-block updates instead of tilesize per-tile updates.
+    for i_tile, i in T.Parallel(tilesize, n_stream):
+        y1[i_tile, i] += x1[i_tile, i]
+    for i_tile, i in T.Parallel(tilesize, n_stream):
+        y2[i_tile, i] += x2[i_tile, i]
 
 
 @T.macro
@@ -141,13 +148,10 @@ def sinkhorn_bwd_implicit_cg(n_stream, tilesize=8):
                 T.tile.fill(x1, 0.0)
                 T.tile.fill(x2, 0.0)
 
-                matvec_A(R, x1, x2, buf1, r1, r2, TS, NS)
-
-                for i_tile, i_n in T.Parallel(TS, NS):
-                    r1[i_tile, i_n] = b1[i_tile, i_n] - r1[i_tile, i_n]
-
-                for i_tile, i_n in T.Parallel(TS, NS):
-                    r2[i_tile, i_n] = b2[i_tile, i_n] - r2[i_tile, i_n]
+                # x0 = 0 => r0 = b - A @ x0 = b: skip the initial matvec
+                # (it would compute A @ 0 = 0 through tilesize * 6 dispatches)
+                T.copy(b1, r1)
+                T.copy(b2, r2)
 
                 T.copy(r1, p1)
                 T.copy(r2, p2)
