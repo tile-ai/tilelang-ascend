@@ -10,6 +10,29 @@ Flag conventions:
   - M↔FIX for L0C management
   - V↔MTE2 for UB buffer management
   - V↔MTE3 for output buffer management
+
+Cross-scope workspace protocol (ready/free slot ownership):
+
+The AIC produces [H, kv] score tiles into a GM workspace and hands them to the
+two AIVs of the same block, which read them back, apply ReLU/weights/reduce/
+mask and write the final Logits. The workspace is handed over in two slots
+(ping/pong by n_outer parity). Each slot carries a full ownership protocol:
+
+    init (V scope):  both AIVs mark slot 0 and slot 1 as free
+    per n_outer:     AIC waits free(slot)      # back-pressure
+                     AIC writes workspace      # L0C -> GM via FIX
+                     AIC sends ready(slot)     # cross flag 0/1
+                     AIVs wait ready(slot)
+                     AIVs read workspace + finish output
+                     AIVs return free(slot)    # cross flag 2/3, mode-2 quorum
+
+The free return uses mode-2 quorum: the AIC's wait is released only after BOTH
+AIVs of the block have returned the slot, so the AIC can never lap the AIVs by
+more than the 2-slot window. Without the V->C free leg the AIC can set the
+same ready flag again before the AIVs consumed the previous set (the FFTS
+flags are binary semaphores — the two sets collapse and the AIV hangs forever
+in WAIT_FLAG_DEV), which surfaces as 507014 cross-core timeouts when several
+processes share one card and the AIVs get descheduled.
 """
 
 import tilelang
@@ -73,9 +96,11 @@ def block_sparse_mqa_attn_return_logits(
     SIG_S_UB = 0  # s_ub: V↔MTE2
     SIG_W_UB = 1  # weights_ub: V↔MTE2
     SIG_LOGITS = 0  # logits: V↔MTE3
-    # Cross-scope (ping-pong flags for n_outer-level pipelining)
-    CROSS_FLAG_C2V_0 = 0  # C→V for even n_outer
-    CROSS_FLAG_C2V_1 = 1  # C→V for odd n_outer
+    # Cross-scope (workspace slot ownership, ping-pong by n_outer parity)
+    CROSS_FLAG_C2V_0 = 0  # AIC→AIV: slot 0 ready (even n_outer)
+    CROSS_FLAG_C2V_1 = 1  # AIC→AIV: slot 1 ready (odd n_outer)
+    CROSS_FLAG_V2C_0 = 2  # AIV→AIC: slot 0 freed (even n_outer)
+    CROSS_FLAG_V2C_1 = 3  # AIV→AIC: slot 1 freed (odd n_outer)
 
     @T.prim_func
     def kernel(
@@ -143,6 +168,17 @@ def block_sparse_mqa_attn_return_logits(
 
                 for pair_i in T.serial(num_pairs_bx):
                     for n_outer in T.serial(topk_groups):
+                        # Slot ownership: wait until both AIVs returned this
+                        # slot's free credit (i.e. consumed the ready flag set
+                        # two n_outer iterations ago) before reusing it. This
+                        # back-pressure bounds the AIC to a 2-slot lead over
+                        # the AIVs and prevents the ping-pong ready flags from
+                        # being set twice before being consumed.
+                        if n_outer % 2 == 0:
+                            T.wait_cross_flag(CROSS_FLAG_V2C_0)
+                        else:
+                            T.wait_cross_flag(CROSS_FLAG_V2C_1)
+
                         n_i0 = n_outer * 4 + 0
                         n_i1 = n_outer * 4 + 1
                         n_i2 = n_outer * 4 + 2
@@ -431,6 +467,12 @@ def block_sparse_mqa_attn_return_logits(
                 T.set_flag("V", "MTE2", SIG_S_UB)
                 T.set_flag("V", "MTE2", SIG_W_UB)
                 T.set_flag("MTE3", "V", SIG_LOGITS)
+                # Pre-arm both workspace slots as free (one mode-2 quorum round
+                # per flag: the AIC's wait is released only after BOTH AIVs set
+                # it) so its first two n_outer iterations can start without
+                # waiting for a consumer that has not produced anything yet.
+                T.set_cross_flag("V", CROSS_FLAG_V2C_0)
+                T.set_cross_flag("V", CROSS_FLAG_V2C_1)
 
                 for pair_i in T.serial(num_pairs_bx):
                     for n_outer in T.serial(topk_groups):
@@ -536,6 +578,18 @@ def block_sparse_mqa_attn_return_logits(
                                 Logits[token_idx, n_i_base + 3, :],
                             )
                             T.set_flag("MTE3", "V", SIG_LOGITS)
+
+                        # Return this slot's ownership to the AIC: this AIV has
+                        # consumed the workspace tile and issued its output
+                        # (the MTE3-queued set fires once the output DMA
+                        # completes). Unconditional — also for out-of-range
+                        # tokens — so the AIC's per-n_outer wait count stays
+                        # balanced. mode-2 quorum: the AIC's wait is released
+                        # only after BOTH AIVs of the block returned the slot.
+                        if n_outer % 2 == 0:
+                            T.set_cross_flag("MTE3", CROSS_FLAG_V2C_0)
+                        else:
+                            T.set_cross_flag("MTE3", CROSS_FLAG_V2C_1)
 
                 # Destroy: consume outstanding init-direction flags
                 T.wait_flag("V", "MTE2", SIG_S_UB)
