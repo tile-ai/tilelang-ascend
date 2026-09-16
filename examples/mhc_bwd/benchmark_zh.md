@@ -21,7 +21,7 @@
 |------|-----|
 | NPU | Ascend 910B3 |
 | CANN | 9.2.0 |
-| 工具 | torch 计时（Python），warmup=10, rep=50, 中位数 |
+| 工具 | do_bench (tilelang.profiler)，warmup=10 ms, rep=100 ms, 中位数 |
 | 数据类型 | fp32 输入 / fp32 累加 |
 
 ## 3. 架构（单 kernel，纯 Vector）
@@ -40,7 +40,7 @@ kernel 按 tilesize 行分 block。host 适配器 `sinkhorn_bwd` 对非整除 se
 
 | 步骤 | 改动 | 效果 |
 |------|------|------|
-| baseline | PR head：批量单 V 核 kernel | seqlen=256 时 1.23 ms |
+| baseline | PR head：批量单 V 核 kernel | seqlen=256 时 1.12 ms（do_bench）|
 | tail 修复 | `sinkhorn_bwd` 适配器 host pad | 非整除 seqlen 不再越界（原实现会静默越界读写） |
 | shape 测试 | 1 -> 6 个用例（seqlen 100-512，n_stream 8/16/32）| 6/6 通过 |
 | 尝试：双 V 核逐 tile | 改成 [NS, NS] 逐 tile buffer + vid 0/1 分工 | 否决：慢 12-23%，批量宽指令更优 |
@@ -49,17 +49,24 @@ kernel 按 tilesize 行分 block。host 适配器 `sinkhorn_bwd` 对非整除 se
 UB buffer 的 `T.copy` 触发 aicore exception（507015）；`T.Parallel` 更新携带
 跨迭代标量依赖会产生 NaN（改成 `T.tile` ops 可解）。批量设计两者都不涉及。
 
-## 5. 最终性能（torch 计时，50 次中位数，warmup=10）
+## 5. 最终性能（do_bench, warmup=10 ms, rep=100 ms, 中位数）
 
 | seqlen | kernel | torch autograd (NPU) | 加速比 |
 |--------|--------|----------------------|--------|
-| 256 | 1.29 ms | 8.58 ms | **6.66x** |
-| 512 | 1.55 ms | 8.87 ms | **5.72x** |
-| 1024 | 2.13 ms | 9.29 ms | **4.37x** |
-| 2048 | 3.03 ms | 9.34 ms | **3.08x** |
+| 256 | 1.12 ms | 8.85 ms | **7.88x** |
+| 512 | 1.08 ms | 9.32 ms | **8.61x** |
+| 1024 | 1.15 ms | 9.12 ms | **7.91x** |
+| 2048 | 2.02 ms | 9.19 ms | **4.55x** |
+| 4096 | 4.03 ms | 9.04 ms | **2.24x** |
 
-注：torch autograd 耗时主要由对 20 次前向 Sinkhorn 迭代的反传决定（launch 开销
-固定，随 seqlen 几乎不变）——这正是隐式 CG 方案所规避的。
+说明：
+
+- seqlen < 1024 时 kernel 在 910B3 上处于 dispatch 瓶颈（约 1.1 ms 固定
+  开销：32-128 个小 block，每个约 500 条标量指令）。从 2048 起延迟随行数
+  线性增长，与原 PR 在 910B 上的 do_bench 数字一致（2048 为 2.19 ms，
+  4096 为 4.38 ms，本构建略快）。
+- torch autograd 耗时主要来自对 20 次前向 Sinkhorn 迭代的反传（launch 开销
+  固定，随 seqlen 几乎不变）——这正是隐式 CG 方案所规避的。
 
 ## 6. 精度
 

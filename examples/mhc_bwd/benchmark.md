@@ -21,7 +21,7 @@ Backward: dL/dM = (dR - x1 - x2^T) * R
 |------|-------|
 | NPU | Ascend 910B3 |
 | CANN | 9.2.0 |
-| Tool | torch timing (Python), warmup=10, rep=50, median |
+| Tool | do_bench (tilelang.profiler), warmup=10 ms, rep=100 ms, median |
 | Dtype | fp32 in / fp32 accumulate |
 
 ## 3. Architecture (single kernel, pure Vector)
@@ -41,7 +41,7 @@ solution degenerates to exactly zero grads, and the padded rows are trimmed off.
 
 | Step | Change | Effect |
 |------|--------|--------|
-| baseline | PR head: batched single-V-core kernel | 1.23 ms @ seqlen=256 |
+| baseline | PR head: batched single-V-core kernel | 1.12 ms @ seqlen=256 (do_bench) |
 | tail fix | host pad in `sinkhorn_bwd` adapter | Non-divisible seqlen safe (was silent out-of-bounds read/write) |
 | shape tests | 1 -> 6 cases (seqlen 100-512, n_stream 8/16/32) | 6/6 passed |
 | attempted: dual-V-core per-tile | restructure to per-tile [NS, NS] buffers + vid 0/1 split | rejected: +12-23% slower, batched ops win |
@@ -52,18 +52,24 @@ around but not worth the perf cost: `T.copy` on a [1]-element UB buffer faults
 `T.Parallel` updates produce NaN (fixed by rewriting as `T.tile` ops). The
 batched design needs neither.
 
-## 5. Final Performance (torch timing, median of 50, warmup=10)
+## 5. Final Performance (do_bench, warmup=10 ms, rep=100 ms, median)
 
 | seqlen | kernel | torch autograd (NPU) | Speedup |
 |--------|--------|----------------------|---------|
-| 256 | 1.29 ms | 8.58 ms | **6.66x** |
-| 512 | 1.55 ms | 8.87 ms | **5.72x** |
-| 1024 | 2.13 ms | 9.29 ms | **4.37x** |
-| 2048 | 3.03 ms | 9.34 ms | **3.08x** |
+| 256 | 1.12 ms | 8.85 ms | **7.88x** |
+| 512 | 1.08 ms | 9.32 ms | **8.61x** |
+| 1024 | 1.15 ms | 9.12 ms | **7.91x** |
+| 2048 | 2.02 ms | 9.19 ms | **4.55x** |
+| 4096 | 4.03 ms | 9.04 ms | **2.24x** |
 
-Note: `torch autograd` time is dominated by backpropagation through the 20
-forward Sinkhorn iterations (fixed launch overhead, nearly flat in seqlen),
-which is exactly what the implicit-CG formulation avoids.
+Notes:
+- The kernel is dispatch-bound below seqlen=1024 on 910B3 (~1.1 ms fixed
+  floor: 32-128 small blocks of ~500 scalar instructions each). From 2048 on,
+  latency scales with rows and matches the original PR's 910B do_bench numbers
+  (2.19 ms @ 2048, 4.38 ms @ 4096 — this build is slightly faster).
+- `torch autograd` is dominated by backpropagation through the 20 forward
+  Sinkhorn iterations (fixed launch overhead, nearly flat in seqlen), which
+  is exactly what the implicit-CG formulation avoids.
 
 ## 6. Accuracy
 
