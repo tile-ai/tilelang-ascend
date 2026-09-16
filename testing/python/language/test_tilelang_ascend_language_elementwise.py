@@ -1630,6 +1630,7 @@ def test_tile_clamp_buffer_region(target):
 
 def test_tile_clamp_count_omitted():
     target = "ascendc"
+
     @T.prim_func
     def main(
         A: T.Tensor((4, 16), "float16"),  # type: ignore
