@@ -2751,6 +2751,64 @@ void CodeGenTileLangAscend::MulAddDstCodegen(const CallNode *op) {
                << ", " << count << ");\n";
 }
 
+void CodeGenTileLangAscend::ClampMaxMinCodegen(const CallNode *op) {
+  ICHECK_EQ(op->args.size(), 5U);
+  const std::string kind = Downcast<StringImm>(op->args[0])->value;
+  const DataType dst_dtype = GetAccessPtrDtype(op->args[1].as<CallNode>());
+  const DataType src_dtype = GetAccessPtrDtype(op->args[2].as<CallNode>());
+  ICHECK_EQ(dst_dtype, src_dtype)
+      << "Clamp operand dtype mismatch: " << dst_dtype << " vs " << src_dtype;
+  this->PrintIndent();
+  auto var_name_1 = PrintBufferOffset(op->args[1].as<CallNode>());
+  auto var_name_2 = PrintBufferOffset(op->args[2].as<CallNode>());
+  const std::string op_name = kind.find("ClampMax") != std::string::npos
+                                  ? "AscendC::Mins"
+                                  : "AscendC::Maxs";
+  this->stream << op_name << "<" << getType(src_dtype) << ">(" << var_name_1
+               << ", " << var_name_2 << ", " << PrintExpr(op->args[3]) << ", "
+               << PrintExpr(op->args[4]) << ");\n";
+}
+
+void CodeGenTileLangAscend::ClampCodegen(const CallNode *op) {
+  ICHECK_EQ(op->args.size(), 6U);
+  const DataType dst_dtype = GetAccessPtrDtype(op->args[1].as<CallNode>());
+  const DataType src_dtype = GetAccessPtrDtype(op->args[2].as<CallNode>());
+  ICHECK_EQ(dst_dtype, src_dtype)
+      << "Clamp operand dtype mismatch: " << dst_dtype << " vs " << src_dtype;
+  const std::string type = getType(src_dtype);
+  auto var_name_1 = PrintBufferOffset(op->args[1].as<CallNode>());
+  auto var_name_2 = PrintBufferOffset(op->args[2].as<CallNode>());
+
+  const bool min_is_tensor = op->args[3].as<CallNode>() != nullptr;
+  const bool max_is_tensor = op->args[4].as<CallNode>() != nullptr;
+
+  if (min_is_tensor) {
+    auto min_tile = PrintBufferOffset(op->args[3].as<CallNode>());
+    this->PrintIndent();
+    this->stream << "AscendC::Max<" << type << ">(" << var_name_1 << ", "
+                 << var_name_2 << ", " << min_tile << ", "
+                 << PrintExpr(op->args[5]) << ");\n";
+  } else {
+    this->PrintIndent();
+    this->stream << "AscendC::Maxs<" << type << ">(" << var_name_1 << ", "
+                 << var_name_2 << ", " << PrintExpr(op->args[3]) << ", "
+                 << PrintExpr(op->args[5]) << ");\n";
+  }
+
+  if (max_is_tensor) {
+    auto max_tile = PrintBufferOffset(op->args[4].as<CallNode>());
+    this->PrintIndent();
+    this->stream << "AscendC::Min<" << type << ">(" << var_name_1 << ", "
+                 << var_name_1 << ", " << max_tile << ", "
+                 << PrintExpr(op->args[5]) << ");\n";
+  } else {
+    this->PrintIndent();
+    this->stream << "AscendC::Mins<" << type << ">(" << var_name_1 << ", "
+                 << var_name_1 << ", " << PrintExpr(op->args[4]) << ", "
+                 << PrintExpr(op->args[5]) << ");\n";
+  }
+}
+
 void CodeGenTileLangAscend::ReinterpretCastCodegen(const CallNode *op) {
   std::vector<std::string> var_names;
   for (int i = 0; i < 2; i++) {
