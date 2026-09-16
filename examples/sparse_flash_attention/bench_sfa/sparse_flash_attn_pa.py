@@ -372,23 +372,16 @@ def sparse_attn_tilelang(
     block_table=None,
     attention_mode=None,
 ):
+    q_heads = query.shape[1]
+    rope_dim = query_rope.shape[-1]
     query = query.unsqueeze(0)
     query_rope = query_rope.unsqueeze(0)
-    print(query.shape)
     block_num, block_size, num_head_kv, dim = key.size()
-    print("query_rope.shape=", query_rope.shape)
-    print("key_rope.shape=", key_rope.shape)
     query = torch.cat((query, query_rope), dim=-1)
     key_value = torch.cat((key, key_rope), dim=-1)
-    print("q.shape=", query.shape)
-    print("kv.shape=", key_value.shape)
-    print("indices=", sparse_indices.shape)
-    print("actual_q_len=", actual_seq_lengths_query)
-    print("actual_kv_len=", actual_seq_lengths_kv)
-    print("block_table=", block_table.shape)
     topk = sparse_indices.shape[-1]
-    kernel = sparse_attention_fwd(q_heads=128, dim=512, rope_dim=64, topk=topk, scale=scale_value, core_num=24, block_size=block_size)
+    kernel = sparse_attention_fwd(
+        q_heads=q_heads, dim=dim, rope_dim=rope_dim, topk=topk, scale=scale_value, core_num=24, block_size=block_size
+    )
     output = kernel(query, key_value, sparse_indices, actual_seq_lengths_query, actual_seq_lengths_kv, block_table)
-    output = output.squeeze(0)
-    print(type(output))
-    return output
+    return output.squeeze(0)
