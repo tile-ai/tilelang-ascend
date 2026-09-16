@@ -62,7 +62,7 @@ def _gather_kernel_standard(outer_size, M, K, TILE_OUTER, dtype, idx_dtype, elem
             x_row = T.alloc_ub([1, M], dtype)
             idx_row = T.alloc_ub([1, K], idx_dtype)
             off_row_i32 = T.alloc_ub([1, K], "int32")
-            off_row_u32 = T.alloc_ub([1, K], "uint32")
+            off_row_u32 = T.view(off_row_i32, dtype="uint32")
             out_row = T.alloc_ub([1, K], dtype)
 
             for i in T.serial(0, TILE_OUTER):
@@ -76,7 +76,6 @@ def _gather_kernel_standard(outer_size, M, K, TILE_OUTER, dtype, idx_dtype, elem
                     T.tile.cast(idx_i32, idx_row, "CAST_NONE", K)
                     T.tile.mul(off_row_i32, idx_i32, elem_size)
 
-                T.reinterpretcast(off_row_u32, off_row_i32, "uint32_t")
                 T.tile.gather(out_row, x_row, off_row_u32, 0)
                 T.copy(out_row[0, :], output_2d[tile_start + i, 0])
 
@@ -102,7 +101,7 @@ def _gather_kernel_int64(outer_size, M2, K, TILE_OUTER, idx_dtype, word_off):
             idx_row = T.alloc_ub([1, K], idx_dtype)
             idx_doubled = T.alloc_ub([1, K], "int32")
             off_i32 = T.alloc_ub([1, K], "int32")
-            off_u32 = T.alloc_ub([1, K], "uint32")
+            off_u32 = T.view(off_i32, dtype="uint32")
             out_row = T.alloc_ub([1, K], "int32")
 
             for i in T.serial(0, TILE_OUTER):
@@ -120,7 +119,6 @@ def _gather_kernel_int64(outer_size, M2, K, TILE_OUTER, idx_dtype, word_off):
                 T.tile.mul(off_i32, idx_doubled, 4)
                 if byte_off != 0:
                     T.tile.add(off_i32, off_i32, byte_off)
-                T.reinterpretcast(off_u32, off_i32, "uint32_t")
                 T.tile.gather(out_row, x_row, off_u32, 0)
                 T.copy(out_row[0, :], out_int32[tile_start + i, 0])
 

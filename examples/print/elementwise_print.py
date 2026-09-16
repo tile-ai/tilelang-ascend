@@ -49,9 +49,14 @@ def bitwise_and(M, N, block_M, block_N, dtype="int16"):
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            T.printf("===========original c_ub:\n")
-            T.dump_tensor(c_ub, 222, block_M // VEC_NUM * block_N, (block_M // VEC_NUM, block_N))
             with T.Scope("V"):
+                T.printf("===========original c_ub:\n")
+                T.dump_tensor(
+                    c_ub,
+                    222,
+                    block_M // VEC_NUM * block_N,
+                    (block_M // VEC_NUM, block_N),
+                )
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
                 T.printf("===========a_ub after copy:\n")
                 T.dump_tensor(a_ub, 222, block_M // VEC_NUM * block_N, (block_M // VEC_NUM, block_N))

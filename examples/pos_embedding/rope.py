@@ -14,9 +14,7 @@ device = torch.device("npu")
 
 
 @tilelang.jit(pass_configs=pass_configs)
-def rope_kernel_in_place(
-    M, block_M, batch_size, hidden_size, rope_dim, head_num, dtype="float16"
-):
+def rope_kernel_in_place(M, block_M, batch_size, hidden_size, rope_dim, head_num, dtype="float16"):
     VEC_NUM = 2
     m_num = M // block_M
 
@@ -26,7 +24,6 @@ def rope_kernel_in_place(
 
     ACC_DTYPE = "float32"
     MASK_DTYPE = "uint32"
-    TMP_DTYPE = "uint8"
 
     @T.prim_func
     def kernel(
@@ -59,7 +56,7 @@ def rope_kernel_in_place(
             mask_ub_i16 = T.alloc_shared([row_per_vec, rope_dim], "int16")
             mask_ub_f32 = T.alloc_shared([row_per_vec, rope_dim], "float32")
             mask_ub_i32 = T.alloc_shared([row_per_vec, rope_dim], "int32")
-            mask_ub = T.alloc_shared([row_per_vec, rope_dim], MASK_DTYPE)
+            mask_ub = T.view(mask_ub_i32, dtype=MASK_DTYPE)
             idx_ub = T.alloc_shared([row_per_vec, rope_dim], "int32")
             tmp_ub_i16 = T.alloc_shared([row_per_vec, rope_dim], "int16")
             ones_mask_ub = T.alloc_shared([row_per_vec, rope_dim], "int16")
@@ -70,8 +67,6 @@ def rope_kernel_in_place(
             T.copy(mask_ub_i16, mask_ub_f32)
             T.copy(mask_ub_f32, mask_ub_i32)
             T.tile.mul(mask_ub_i32, mask_ub_i32, 4)
-            T.reinterpretcast(mask_ub, mask_ub_i32, "uint32_t")
-
             sin_mask_ub = T.alloc_ub(rope_dim, ACC_DTYPE)
             T.tile.fill(sin_mask_ub, -1.0)
             for i in T.serial(0, rope_dim // 2):
@@ -121,9 +116,7 @@ def tilelang_apply_rope_partial_in_place(x, sin, cos):
     sin = sin.to(device)
     cos = cos.to(device)
 
-    kernel = rope_kernel_in_place(
-        total_rows, block_M, bsz, hidden_size, rope_dim, head_num
-    )
+    kernel = rope_kernel_in_place(total_rows, block_M, bsz, hidden_size, rope_dim, head_num)
     kernel(x, sin, cos)
 
     return x.view(org_shape)
@@ -173,9 +166,7 @@ if __name__ == "__main__":
     device = "npu"
     torch_dtype = torch.float16
 
-    x = torch.randn(
-        (batch_size, head_num, hidden_size), device=device, dtype=torch_dtype
-    )
+    x = torch.randn((batch_size, head_num, hidden_size), device=device, dtype=torch_dtype)
     sin = torch.randn((batch_size, rope_dim), device=device, dtype=torch_dtype)
     cos = torch.randn((batch_size, rope_dim), device=device, dtype=torch_dtype)
 
@@ -183,9 +174,7 @@ if __name__ == "__main__":
     dim_start = hidden_size - rope_dim
     x_ref = x.clone()
     x_part = x_ref[..., dim_start:]
-    x_part_out = torch_rope_ref(
-        x_part.to(torch.float32), sin.to(torch.float32), cos.to(torch.float32)
-    )
+    x_part_out = torch_rope_ref(x_part.to(torch.float32), sin.to(torch.float32), cos.to(torch.float32))
     x_ref[..., dim_start:] = x_part_out
 
     # 2. Run TileLang Kernel

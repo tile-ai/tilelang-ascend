@@ -249,10 +249,14 @@ for i in range(block_M // VEC_NUM):  # 行顺序
 |---------------|---------|---------|
 | `if-else` 条件分支 | 编译错误（SIMD 架构不支持元素级条件判断） | 使用 `T.tile.compare` + `T.tile.select` |
 | `T.if_then_else(...)` | 编译错误 ("undefined Variable v_thread") | 使用 `T.tile.compare` + `T.tile.select` |
-| `tir.reinterpret("int8", ...)` | 运行时错误 | 使用 `T.reinterpretcast`（整个 buffer） |
+| `tir.reinterpret("int8", ...)` | 运行时错误 | whole-storage reinterpret 移到 `T.Parallel` 外建立 `T.view`；数值转换使用 `T.tile.cast` |
 | `T.int8(expr)` 或 `.astype("int8")` | 编译错误或数据异常 | 使用 `T.tile.cast`（整个 buffer） |
 | 非线性索引 `a[i*i]` | 未实现 | 使用 `T.tile.xxx` + 手动索引计算 |
 | 动态 shift `a[i] >> shift[i]` | 不支持（shift 必须是 scalar） | 使用固定 scalar shift |
+
+`T.view` 只接受完整 Buffer；应在 `T.Parallel` 外建立 view，再按其 shape 索引。
+`T.view(words[i], ...)` 会被拒绝。完整决策门见
+[api-kernel-memory](api-kernel-memory.md#tview--treshape-决策与迁移检查)。
 
 #### 循环范围要求
 
