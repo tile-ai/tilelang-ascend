@@ -275,10 +275,12 @@ def sinkhorn_bwd(out, dout, n_stream, tilesize=8):
     would read/write out of bounds. Zeros-padded rows are degenerate
     (b1=b2=0 -> zero grads), so pad-run-trim is exact.
     """
+    assert out.dtype == torch.float32, f"kernel is fp32 only, got {out.dtype}"
+    assert dout.dtype == torch.float32, f"kernel is fp32 only, got {dout.dtype}"
     seqlen = out.shape[0]
     pad_n = ((seqlen + tilesize - 1) // tilesize) * tilesize
+    kernel = sinkhorn_bwd_implicit_cg(n_stream, tilesize)
     if pad_n == seqlen:
-        kernel = sinkhorn_bwd_implicit_cg(n_stream, tilesize)
         return kernel(out, dout)
 
     out_pad = torch.zeros(pad_n, n_stream, n_stream, dtype=out.dtype, device=out.device)
@@ -286,7 +288,6 @@ def sinkhorn_bwd(out, dout, n_stream, tilesize=8):
     dout_pad = torch.zeros(pad_n, n_stream, n_stream, dtype=dout.dtype, device=dout.device)
     dout_pad[:seqlen] = dout
 
-    kernel = sinkhorn_bwd_implicit_cg(n_stream, tilesize)
     res_pad = kernel(out_pad, dout_pad)
     return res_pad[:seqlen]
 
@@ -342,10 +343,10 @@ def test():
         print(f"  max_abs_diff = {max_abs_diff:.6e}")
         print(f"  kernel vs manual-CG ref max_diff = {ref_max_diff:.6e}")
 
-        if max_abs_diff < 1e-3:
+        if max_abs_diff < 1e-3 and ref_max_diff < 1e-5:
             print("  PASSED")
         else:
-            print(f"  FAILED (max_abs_diff={max_abs_diff:.6e} > 1e-3)")
+            print(f"  FAILED (max_abs_diff={max_abs_diff:.6e}, ref_max_diff={ref_max_diff:.6e})")
             all_passed = False
 
     print("=" * 60)
