@@ -80,6 +80,12 @@ def sinkhorn_bwd_implicit_cg(n_stream, tilesize=8):
     Args:
         n_stream: matrix dimension (hc * hc after reshape)
         tilesize: number of rows per kernel block (compile-time constant)
+
+    Note:
+        The raw kernel requires seqlen to be a multiple of tilesize (the last
+        block would otherwise read/write rows beyond seqlen). Use the host
+        adapter :func:`sinkhorn_bwd` to handle non-divisible seqlen via
+        zero-padding (degenerate rows produce exactly zero grads).
     """
     seqlen = T.symbolic("seqlen")
     dtype = "float"
@@ -258,6 +264,29 @@ def sinkhorn_bwd_ref(out, dout, n_stream, tilesize=8):
     return res
 
 
+def sinkhorn_bwd(out, dout, n_stream, tilesize=8):
+    """Host adapter: pad seqlen to a multiple of tilesize, run, trim.
+
+    The kernel tiles seqlen by tilesize rows per block; non-divisible seqlen
+    would read/write out of bounds. Zeros-padded rows are degenerate
+    (b1=b2=0 -> zero grads), so pad-run-trim is exact.
+    """
+    seqlen = out.shape[0]
+    pad_n = ((seqlen + tilesize - 1) // tilesize) * tilesize
+    if pad_n == seqlen:
+        kernel = sinkhorn_bwd_implicit_cg(n_stream, tilesize)
+        return kernel(out, dout)
+
+    out_pad = torch.zeros(pad_n, n_stream, n_stream, dtype=out.dtype, device=out.device)
+    out_pad[:seqlen] = out
+    dout_pad = torch.zeros(pad_n, n_stream, n_stream, dtype=dout.dtype, device=dout.device)
+    dout_pad[:seqlen] = dout
+
+    kernel = sinkhorn_bwd_implicit_cg(n_stream, tilesize)
+    res_pad = kernel(out_pad, dout_pad)
+    return res_pad[:seqlen]
+
+
 # ============================================================
 # Tests
 # ============================================================
@@ -276,50 +305,50 @@ def test():
     print("MHC BWD (Sinkhorn implicit CG) test (Ascend NPU)")
     print("=" * 60)
 
-    seqlen = 256
-    n_stream = 16
-    tilesize = 8
     iters = 20
+    test_cases = [
+        (256, 16, 8),
+        (100, 16, 8),
+        (250, 16, 8),
+        (512, 16, 8),
+        (256, 32, 8),
+        (250, 8, 8),
+    ]
 
-    M = generate_test_data(seqlen, n_stream)
-    R, P = sinkhorn_forward(M, iters)
-    loss_weight = torch.randn_like(R)
+    all_passed = True
+    for seqlen, n_stream, tilesize in test_cases:
+        M = generate_test_data(seqlen, n_stream)
+        R, P = sinkhorn_forward(M, iters)
+        loss_weight = torch.randn_like(R)
 
-    loss_a = (R * loss_weight).sum()
-    loss_a.backward()
-    grad_M_autograd = M.grad.detach().clone()
+        loss_a = (R * loss_weight).sum()
+        loss_a.backward()
+        grad_M_autograd = M.grad.detach().clone()
 
-    grad_R = loss_weight
+        grad_M_implicit = sinkhorn_bwd(R.detach(), loss_weight, n_stream, tilesize)
 
-    kernel = sinkhorn_bwd_implicit_cg(n_stream, tilesize)
-    grad_M_implicit = kernel(R.detach(), grad_R)
+        grad_M_ref = sinkhorn_bwd_ref(R.detach().cpu(), loss_weight.cpu(), n_stream, tilesize)
+        ref_diff = (grad_M_ref - grad_M_implicit.cpu()).abs()
+        ref_max_diff = ref_diff.max().item()
 
-    grad_M_ref = sinkhorn_bwd_ref(R.detach().cpu(), grad_R.cpu(), n_stream, tilesize)
-    ref_diff = (grad_M_ref - grad_M_implicit.cpu()).abs()
-    ref_max_diff = ref_diff.max().item()
+        abs_diff = (grad_M_autograd.cpu() - grad_M_implicit.cpu()).abs()
+        max_abs_diff = abs_diff.max().item()
 
-    abs_diff = (grad_M_autograd.cpu() - grad_M_implicit.cpu()).abs()
-    rel_diff = abs_diff / (torch.maximum(grad_M_autograd.cpu().abs(), grad_M_implicit.cpu().abs()) + 1e-8)
+        print(f"--- seqlen={seqlen}, n_stream={n_stream}, tilesize={tilesize} ---")
+        print(f"  max_abs_diff = {max_abs_diff:.6e}")
+        print(f"  kernel vs manual-CG ref max_diff = {ref_max_diff:.6e}")
 
-    max_abs_diff = abs_diff.max().item()
-    max_rel_diff = rel_diff.max().item()
-    mean_abs_diff = abs_diff.mean().item()
+        if max_abs_diff < 1e-3:
+            print("  PASSED")
+        else:
+            print(f"  FAILED (max_abs_diff={max_abs_diff:.6e} > 1e-3)")
+            all_passed = False
 
-    print(f"  seqlen={seqlen}, n_stream={n_stream}, tilesize={tilesize}")
-    print(f"  max_abs_diff = {max_abs_diff:.6e}")
-    print(f"  mean_abs_diff = {mean_abs_diff:.6e}")
-    print(f"  max_rel_diff = {max_rel_diff:.6e}")
-    print(f"  kernel vs manual-CG ref max_diff = {ref_max_diff:.6e}")
-
-    print(f"\n  Grad (autograd) sample:\n{grad_M_autograd[0, :3, :3]}")
-    print(f"\n  Grad (implicit) sample:\n{grad_M_implicit[0, :3, :3]}")
-
-    if max_abs_diff < 1e-3:
-        print("\n  PASSED (implicit CG matches autograd within fp32 tolerance)")
+    print("=" * 60)
+    if all_passed:
         print("Kernel Output Match!")
     else:
-        print(f"\n  FAILED (max_abs_diff={max_abs_diff:.6e} > 1e-3)")
-
+        print("Some tests failed.")
     print("=" * 60)
 
 
