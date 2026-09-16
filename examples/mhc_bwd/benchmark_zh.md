@@ -44,6 +44,7 @@ kernel 按 tilesize 行分 block。host 适配器 `sinkhorn_bwd` 对非整除 se
 | tail 修复 | `sinkhorn_bwd` 适配器 host pad | 非整除 seqlen 不再越界（原实现会静默越界读写） |
 | shape 测试 | 1 -> 6 个用例（seqlen 100-512，n_stream 8/16/32）| 6/6 通过 |
 | 尝试：双 V 核逐 tile | 改成 [NS, NS] 逐 tile buffer + vid 0/1 分工 | 否决：慢 12-23%，批量宽指令更优 |
+| dispatch 削减 | matvec 的 "+x" 外提出逐 tile 循环（2 次全块更新替代 2*tilesize 次）；跳过初始 `A @ 0` matvec（直接 r0 = b） | seqlen 2048/4096 快 3.1%（交错 A/B 两轮平均）；1024 以下在噪声内 |
 
 双 V 核逐 tile 方案还暴露了两个 codegen 限制（均已绕开但得不偿失）：[1] 元素
 UB buffer 的 `T.copy` 触发 aicore exception（507015）；`T.Parallel` 更新携带
@@ -56,8 +57,8 @@ UB buffer 的 `T.copy` 触发 aicore exception（507015）；`T.Parallel` 更新
 | 256 | 1.12 ms | 8.85 ms | **7.88x** |
 | 512 | 1.08 ms | 9.32 ms | **8.61x** |
 | 1024 | 1.15 ms | 9.12 ms | **7.91x** |
-| 2048 | 2.02 ms | 9.19 ms | **4.55x** |
-| 4096 | 4.03 ms | 9.04 ms | **2.24x** |
+| 2048 | 1.95 ms | 9.19 ms | **4.71x** |
+| 4096 | 3.90 ms | 9.04 ms | **2.32x** |
 
 说明：
 

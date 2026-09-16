@@ -45,6 +45,7 @@ solution degenerates to exactly zero grads, and the padded rows are trimmed off.
 | tail fix | host pad in `sinkhorn_bwd` adapter | Non-divisible seqlen safe (was silent out-of-bounds read/write) |
 | shape tests | 1 -> 6 cases (seqlen 100-512, n_stream 8/16/32) | 6/6 passed |
 | attempted: dual-V-core per-tile | restructure to per-tile [NS, NS] buffers + vid 0/1 split | rejected: +12-23% slower, batched ops win |
+| dispatch trim | hoist matvec "+x" out of the per-tile loop (2 whole-block updates instead of 2*tilesize), skip the initial `A @ 0` matvec (r0 = b directly) | -3.1% @ seqlen 2048/4096 (interleaved A/B, 2 rounds averaged); within noise below 1024 |
 
 The dual-V-core per-tile variant also exposed two codegen limits, both worked
 around but not worth the perf cost: `T.copy` on a [1]-element UB buffer faults
@@ -59,8 +60,8 @@ batched design needs neither.
 | 256 | 1.12 ms | 8.85 ms | **7.88x** |
 | 512 | 1.08 ms | 9.32 ms | **8.61x** |
 | 1024 | 1.15 ms | 9.12 ms | **7.91x** |
-| 2048 | 2.02 ms | 9.19 ms | **4.55x** |
-| 4096 | 4.03 ms | 9.04 ms | **2.24x** |
+| 2048 | 1.95 ms | 9.19 ms | **4.71x** |
+| 4096 | 3.90 ms | 9.04 ms | **2.32x** |
 
 Notes:
 - The kernel is dispatch-bound below seqlen=1024 on 910B3 (~1.1 ms fixed
