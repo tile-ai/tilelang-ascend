@@ -32,7 +32,7 @@ more than the 2-slot window. Without the V->C free leg the AIC can set the
 same ready flag again before the AIVs consumed the previous set (the FFTS
 flags are binary semaphores — the two sets collapse and the AIV hangs forever
 in WAIT_FLAG_DEV), which surfaces as 507014 cross-core timeouts when several
-processes share one card and the AIVs get descheduled.
+processes share one card and the AIVs get descheduled. 
 """
 
 import tilelang
