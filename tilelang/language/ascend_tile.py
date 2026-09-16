@@ -2374,16 +2374,31 @@ def clamp_min(
     )
 
 
+def _clamp_bound_arg(val):
+    """Convert a clamp bound to the appropriate TIR argument.
+
+    If *val* is a Buffer or BufferRegion, return its read access pointer so
+    the codegen can detect a tensor bound (CallNode) vs a scalar bound
+    (PrimExpr).  Otherwise return *val* unchanged.
+    """
+    if isinstance(val, BufferRegion):
+        ptr, _ = _handle_buffer_region(val, "r")
+        return ptr
+    if isinstance(val, Buffer):
+        return val.access_ptr("r")
+    return val
+
+
 def clamp(
     out: Buffer | BufferRegion,
     buffer: Buffer | BufferRegion,
-    min_scalar: PrimExpr,
-    max_scalar: PrimExpr,
-    count: PrimExpr,
+    min_val: PrimExpr | Buffer | BufferRegion,
+    max_val: PrimExpr | Buffer | BufferRegion,
+    count: PrimExpr | None = None,
     *,
     tmp: Buffer | BufferRegion | None = None,
 ):  # noqa: F821
-    """Clamp UB elements to the inclusive ``[min_scalar, max_scalar]`` range.
+    """Clamp UB elements to the inclusive ``[min_val, max_val]`` range.
 
     ``out`` and ``buffer`` may be one- or two-dimensional UB buffers or
     contiguous buffer regions and may be the same object for an in-place
@@ -2392,25 +2407,31 @@ def clamp(
     to the first ``count`` elements; PTO currently requires ``count`` to equal
     the selected tile extent.
 
+    ``min_val`` and ``max_val`` may be scalar expressions or UB buffers /
+    buffer regions of the same dtype and element count as ``buffer``.
+
     Args:
         out: Destination UB buffer or contiguous buffer region.
         buffer: Source UB buffer or contiguous buffer region.
-        min_scalar: Inclusive lower bound, convertible to ``buffer.dtype``.
-        max_scalar: Inclusive upper bound, convertible to ``buffer.dtype``.
-            This must be greater than or equal to ``min_scalar``.
-        count: Number of leading elements to clamp. This must not exceed the
+        min_val: Inclusive lower bound. May be a scalar expression convertible
+            to ``buffer.dtype``, or a UB buffer / buffer region.
+        max_val: Inclusive upper bound. May be a scalar expression convertible
+            to ``buffer.dtype``, or a UB buffer / buffer region.
+            This must be greater than or equal to ``min_val``.
+        count: Number of leading elements to clamp. When omitted, the total
+            element count of ``buffer`` is used. This must not exceed the
             number of accessible source or destination elements.
-        tmp: Optional explicit UB scratch storage for PTO. It must be a
-            one-dimensional, static, contiguous fixed-width scalar buffer in
-            ``shared.ub``, or an equivalent 32-byte-aligned buffer region, with
-            at least as many bytes as the selected source region. Its dtype is
-            ignored and lowering reinterprets the storage as ``buffer.dtype``.
-            When omitted, lowering allocates the required space. AscendC needs
-            no workspace and elides this operand.
+        tmp: Optional complete UB scratch storage. Its scalar dtype is
+            reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         tvm.tir.Call: Intrinsic call for the selected Ascend backend.
     """
+    if count is None:
+        if isinstance(buffer, BufferRegion):
+            count = math.prod(r.extent for r in buffer.region)
+        else:
+            count = math.prod(buffer.shape)
     if isinstance(out, BufferRegion):
         out_ptr, _ = _handle_buffer_region(out, "w")
     else:
@@ -2421,14 +2442,17 @@ def clamp(
     else:
         buffer_ptr = buffer.access_ptr("r")
 
+    min_arg = _clamp_bound_arg(min_val)
+    max_arg = _clamp_bound_arg(max_val)
+
     return _call_intrin_with_optional_tmp(
         "clamp",
         [
             f"Clamp<{_dtype(buffer)}>",
             out_ptr,
             buffer_ptr,
-            min_scalar,
-            max_scalar,
+            min_arg,
+            max_arg,
             count,
         ],
         3,
