@@ -40,7 +40,12 @@ def sparse_attention_fwd(
     assert dim == tilelang.math.next_power_of_2(dim), f"haven't check padding correctness yet, dim={dim}"
     assert rope_dim == tilelang.math.next_power_of_2(rope_dim), f"haven't check padding correctness yet, dim={rope_dim}"
     assert is_causal, "non-casual is not supported"
-    assert topk % n_base_size == 0, "otherwise will load some index=0 thus causing wrong kv to be loaded"
+    assert topk > 0, f"topk must be positive, got {topk}"
+    assert topk % (2 * n_base_size) == 0, (
+        f"topk ({topk}) must be a multiple of {2 * n_base_size}: the T.Pipelined(num_stages=2) "
+        "kernel loop runs two n_base_size blocks per pipeline group and silently drops the "
+        "tail block when topk // n_base_size is odd"
+    )
 
     # NOTE: ascend only support exp interface instead of exp2
     sm_scale = (1.0 / (dim + rope_dim)) ** 0.5 if scale is None else scale
@@ -381,7 +386,8 @@ def sparse_attn_tilelang(
     print("actual_q_len=", actual_seq_lengths_query)
     print("actual_kv_len=", actual_seq_lengths_kv)
     print("block_table=", block_table.shape)
-    kernel = sparse_attention_fwd(q_heads=128, dim=512, rope_dim=64, topk=2048, scale=scale_value, core_num=24, block_size=block_size)
+    topk = sparse_indices.shape[-1]
+    kernel = sparse_attention_fwd(q_heads=128, dim=512, rope_dim=64, topk=topk, scale=scale_value, core_num=24, block_size=block_size)
     output = kernel(query, key_value, sparse_indices, actual_seq_lengths_query, actual_seq_lengths_kv, block_table)
     output = output.squeeze(0)
     print(type(output))
