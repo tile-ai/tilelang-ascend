@@ -956,18 +956,23 @@ def test_reduce_zero_workspace_paths_elide_explicit_and_implicit_tmp():
     assert len(call.args) == 4
     assert bool(call.args[3])
 
-    for case_id, kwargs in [
-        ("narrow-row", {"real_shape": [4, 4]}),
-        ("half-sum", {"dtype": "float16"}),
-    ]:
-        for arena_bytes in [0, None]:
-            reduced = _inject(_reduce_program(arena_bytes, **kwargs), "ascendc")
-            reduce_call = _collect_calls(reduced, "tl.ascend_reduce")[0]
-            assert not any(isinstance(arg, tir.Call) and arg.op.name == "tir.tvm_access_ptr" for arg in reduce_call.args[3:]), (
-                case_id,
-                arena_bytes,
-            )
-            assert "tmp_ub" not in _allocated_buffer_names(reduced), (case_id, arena_bytes)
+    # narrow-row reduce keeps the WholeReduce* zero-workspace path.
+    for arena_bytes in [0, None]:
+        reduced = _inject(_reduce_program(arena_bytes, real_shape=[4, 4]), "ascendc")
+        reduce_call = _collect_calls(reduced, "tl.ascend_reduce")[0]
+        assert not any(isinstance(arg, tir.Call) and arg.op.name == "tir.tvm_access_ptr" for arg in reduce_call.args[3:]), (arena_bytes,)
+        assert "tmp_ub" not in _allocated_buffer_names(reduced), (arena_bytes,)
+
+
+def test_ascendc_half_sum_reduce_needs_widen_workspace():
+    # float16 sum lowers through a float32 widening (Cast -> ReduceSum<float>
+    # -> Cast), so it now requires a workspace sized for the widened source
+    # plus the float32 partial destination (issues #1683 / #754).
+    func = _inject(_reduce_program(None, dtype="float16"), "ascendc")
+    call = _collect_calls(func, "tl.ascend_reduce")[0]
+    assert call.args[3].args[1].name == "tmp_ub"
+    # (8, 64) tile: 8*64 float32 source (2048 B, aligned) + 8 float32 partials.
+    assert int(call.args[3].args[3]) == 2048 + 32
 
 
 @pytest.mark.parametrize(

@@ -661,11 +661,16 @@ def ref_bwd(Q, K, V, dO, lse, is_causal=False, groups=1):
 # --- Host-side bwd pipeline: 3 sub-kernel serial launch ---
 
 
-def run_bwd(Q, K, V, dO, lse, Delta, is_causal=False, groups=1, block_M=64, block_N=64):
+def run_bwd(Q, K, V, dO, lse, Delta, is_causal=False, groups=1, block_M=64, block_N=64, dim_qk=None):
     """Host-side bwd pipeline: 3 sub-kernel serial launch.
 
     Note: block_N may be overridden by kernel auto-select
     (block_N=128 when seq_len%128==0 and dim_qk_padded<=192).
+
+    Args:
+        dim_qk: logical (unpadded) D_qk for softmax scale computation.
+            If None, inferred from Q.shape[-1] (assumes Q is already padded
+            and dim_qk == dim_qk_padded, i.e. no padding was needed).
 
     Phase 1: GEMM1 + GEMM3 -> ws_s, ws_dp (GM fp32)
     Phase 2: softmax recompute + dS -> ws_p, ws_ds, ws_p_delta, ws_ds_delta (GM fp16)
@@ -674,15 +679,16 @@ def run_bwd(Q, K, V, dO, lse, Delta, is_causal=False, groups=1, block_M=64, bloc
     Returns: dQ_fp16, dK_fp16, dV_fp16, dQ_fp32, dK_fp32, dV_fp32
     """
     batch, heads, seq_len, dim_qk_padded = Q.shape
-    dim_qk = dim_qk_padded
+    if dim_qk is None:
+        dim_qk = dim_qk_padded
     _, H_kv, _, dim_v = V.shape
 
-    # Phase 1: GEMM1 + GEMM3 -> ws_s, ws_dp
-    phase1_mod = flashattn_bwd_gemm_s_dp(batch, heads, seq_len, dim_qk, dim_v, groups, is_causal, block_M, block_N)
+    # Phase 1: GEMM1 + GEMM3 -> ws_s, ws_dp (uses dim_qk_padded for buffer shapes)
+    phase1_mod = flashattn_bwd_gemm_s_dp(batch, heads, seq_len, dim_qk_padded, dim_v, groups, is_causal, block_M, block_N)
     ws_s, ws_dp = phase1_mod(Q, K, V, dO)
     torch.npu.synchronize()
 
-    # Phase 2: softmax + dS -> ws_p, ws_ds, ws_p_delta, ws_ds_delta
+    # Phase 2: softmax + dS (uses logical dim_qk so sm_scale = 1/sqrt(dim_qk) is correct)
     phase2_mod = flashattn_bwd_softmax_ds(batch, heads, seq_len, dim_qk, dim_v, groups, is_causal, block_M, block_N)
     ws_p, ws_ds, ws_p_delta, ws_ds_delta = phase2_mod(ws_s, ws_dp, lse, Delta)
     torch.npu.synchronize()
@@ -692,7 +698,7 @@ def run_bwd(Q, K, V, dO, lse, Delta, is_causal=False, groups=1, block_M=64, bloc
     dK = torch.zeros(batch, H_kv, seq_len, dim_qk_padded, dtype=torch.float32, device=Q.device)
     dV = torch.zeros(batch, H_kv, seq_len, dim_v, dtype=torch.float32, device=Q.device)
 
-    phase3_mod = flashattn_bwd_gemm_dv_dk_dq(batch, heads, seq_len, dim_qk, dim_v, groups, is_causal, block_M, block_N)
+    phase3_mod = flashattn_bwd_gemm_dv_dk_dq(batch, heads, seq_len, dim_qk_padded, dim_v, groups, is_causal, block_M, block_N)
     phase3_mod(Q, K, dO, ws_p, ws_ds, ws_p_delta, ws_ds_delta, dQ, dK, dV)
     torch.npu.synchronize()
 
@@ -756,13 +762,20 @@ class _attention(torch.autograd.Function):
         block_M = ctx.block_M
         block_N_bwd = ctx.block_N_bwd
 
+        # Materialize non-contiguous gradient (e.g. from output.sum().backward()
+        # which produces a zero-stride view). TileLang JIT requires contiguous input.
+        if not do.is_contiguous():
+            do = do.contiguous()
+
         # Preprocess: Delta = sum(O * dO, dim=-1)
         prep_mod = flashattn_bwd_preprocess(B, H, N, D_v, blk=32)
         delta = prep_mod(o, do)
         torch.npu.synchronize()
 
         # bwd pipeline: 3 sub-kernel serial launch
-        dQ_fp16, dK_fp16, dV_fp16, _, _, _ = run_bwd(q, k, v, do, lse, delta, is_causal, groups, block_M, block_N_bwd)
+        # Pass logical D_qk so phase2 softmax scale = 1/sqrt(D_qk) is correct
+        # (not 1/sqrt(D_qk_padded) which would be wrong when D_qk is not 16-aligned).
+        dQ_fp16, dK_fp16, dV_fp16, _, _, _ = run_bwd(q, k, v, do, lse, delta, is_causal, groups, block_M, block_N_bwd, dim_qk=D_qk)
 
         # Slice to original D_qk (remove padding)
         return dQ_fp16[..., :D_qk], dK_fp16[..., :D_qk], dV_fp16, None, None

@@ -484,13 +484,13 @@ for script in "${all_scripts[@]}"; do
         fi
 
         # 结果判定逻辑
-        # 判定条件：
-        # 1. 原有正则匹配 (KERNEL OUTPUT MATCH 或 TEST PASSED!)
-        # 2. OR (是自定义任务 且 退出码为 0)
+        # 1. 进程必须正常退出
+        # 2. 任务还必须匹配 KERNEL OUTPUT MATCH 或 TEST PASSED!
         last_line=$(echo "$output" | tail -n 1)
-        if [[ "$output" =~ [Kk][Ee][Rr][Nn][Ee][Ll][[:space:]][Oo][Uu][Tt][Pp][Uu][Tt][[:space:]][Mm][Aa][Tt][Cc][Hh] ]] || \
-           [[ "$output" =~ [Tt][Ee][Ss][Tt][[:space:]][Pp][Aa][Ss][Ss][Ee][Dd][!] ]] || \
-           [[ "$script" == CUSTOM_TASK::* && $exit_code -eq 0 ]]; then
+        if (( exit_code == 0 )) && {
+            [[ "$output" =~ [Kk][Ee][Rr][Nn][Ee][Ll][[:space:]][Oo][Uu][Tt][Pp][Uu][Tt][[:space:]][Mm][Aa][Tt][Cc][Hh] ]] ||
+            [[ "$output" =~ [Tt][Ee][Ss][Tt][[:space:]][Pp][Aa][Ss][Ss][Ee][Dd][!] ]]
+        }; then
             echo "[PASSED] $current_script_ref"
             touch "$temp_dir/pass_$total_scripts"
         else
@@ -513,6 +513,10 @@ wait # 等待所有任务完成
 passed_scripts=$(ls "$temp_dir" | grep "pass_" | wc -l)
 failed_scripts=$((total_scripts - passed_scripts))
 rm -rf "$temp_dir" # 清理计数文件
+bench_exit_code=0
+if (( failed_scripts > 0 )); then
+    bench_exit_code=1
+fi
 
 echo -e "\n====================================="
 echo "Execution Summary"
@@ -527,7 +531,10 @@ if [ "$SKIP_PYTEST" = true ]; then
     echo -e "\n====================================="
     echo "Skipping pytest (only examples/ .py/.md/.png files modified)"
     echo "====================================="
-    exit $operator_exit_code
+    if (( operator_exit_code != 0 )); then
+        exit "$operator_exit_code"
+    fi
+    exit "$bench_exit_code"
 fi
 
 echo -e "\n====================================="
@@ -661,7 +668,10 @@ echo "====================================="
 # 清理临时文件
 rm -f pytest_output.log
 
-if [ "$pytest_exit_code" -eq 0 ]; then
-    exit $operator_exit_code
+if (( pytest_exit_code != 0 )); then
+    exit "$pytest_exit_code"
 fi
-exit $pytest_exit_code
+if (( operator_exit_code != 0 )); then
+    exit "$operator_exit_code"
+fi
+exit "$bench_exit_code"

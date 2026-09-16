@@ -512,7 +512,10 @@ private:
         // compare: dst_size = math.prod(src0_extent)
         "tl.ascend_compare", "tl.ascend_compare_scalar",
         // sin/cos: size = math.prod(src_extent), assert size_0 == size_2
-        "tl.ascend_sin", "tl.ascend_cos", "tl.ascend_fill"};
+        "tl.ascend_sin", "tl.ascend_cos", "tl.ascend_fill",
+        // cast/mul_add_dst/silu: last arg is the element count, all buffer
+        // extents must match (see tilelang/language/ascend_tile.py)
+        "tl.ascend_cast", "tl.ascend_mul_add_dst", "tl.ascend_silu"};
     return tile_ops.find(op_name) != tile_ops.end();
   }
 

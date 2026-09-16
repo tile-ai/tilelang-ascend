@@ -653,6 +653,78 @@ def test_gqa_bwd_boundary():
     return True, []
 
 
+def test_gqa_bwd_regression():
+    """Regression tests for issue #1669.
+
+    1. D_qk=129 (non-16-aligned): verify softmax scale uses logical D_qk,
+       not padded dim_qk_padded=144.
+    2. output.sum().backward(): verify PyTorch Autograd compatibility
+       with non-contiguous gradient (zero-stride view from sum()).
+    """
+    print("\n" + "=" * 60)
+    print("[Regression] Issue #1669: non-16-aligned D_qk + Autograd compatibility")
+    print("=" * 60)
+
+    all_passed = True
+
+    # --- Regression 1: D_qk=129 (non-16-aligned) ---
+    print("\n--- Regression 1: D_qk=129 (padded to 144) ---")
+    B, H, groups, N, D_qk, D_v = 1, 4, 2, 128, 129, 128
+    H_kv = H // groups
+    torch.manual_seed(42)
+    Q_cpu = torch.randn(B, H, N, D_qk, dtype=torch.float16)
+    K_cpu = torch.randn(B, H_kv, N, D_qk, dtype=torch.float16)
+    V_cpu = torch.randn(B, H_kv, N, D_v, dtype=torch.float16)
+    dO_cpu = torch.randn(B, H, N, D_v, dtype=torch.float16)
+
+    # Use public Autograd wrapper (tests padding + scale fix end-to-end)
+    from example_gqa_bwd import attention
+
+    Q_npu = Q_cpu.to("npu").requires_grad_(True)
+    K_npu = K_cpu.to("npu").requires_grad_(True)
+    V_npu = V_cpu.to("npu").requires_grad_(True)
+    dO_npu = dO_cpu.to("npu")
+
+    output = attention(Q_npu, K_npu, V_npu, False, groups)
+    output.backward(dO_npu)
+    torch.npu.synchronize()
+
+    # Golden (CPU) — uses original D_qk=129 for scale
+    _, lse_ref = ref_fwd(Q_cpu, K_cpu, V_cpu, False, groups)
+    dQ_ref, dK_ref, dV_ref = ref_bwd(Q_cpu, K_cpu, V_cpu, dO_cpu, lse_ref, False, groups)
+
+    dQ_grad = Q_npu.grad
+    dK_grad = K_npu.grad
+    dV_grad = V_npu.grad
+
+    for name, actual, golden in [("dQ", dQ_grad, dQ_ref), ("dK", dK_grad, dK_ref), ("dV", dV_grad, dV_ref)]:
+        passed, ratio, max_abs = check_precision(actual, golden, "float16")
+        status = "[PRECISION_PASS]" if passed else "[PRECISION_FAIL]"
+        print(f"  {name}: {status} ratio={ratio:.4f} max_abs={max_abs:.3e}")
+        if not passed:
+            all_passed = False
+
+    # --- Regression 2: output.sum().backward() (non-contiguous gradient) ---
+    print("\n--- Regression 2: output.sum().backward() (zero-stride gradient) ---")
+    Q_npu2 = Q_cpu.to("npu")
+    K_npu2 = K_cpu.to("npu")
+    V_npu2 = V_cpu.to("npu")
+    Q_npu2.requires_grad_(True)
+    K_npu2.requires_grad_(True)
+    V_npu2.requires_grad_(True)
+
+    try:
+        output2 = attention(Q_npu2, K_npu2, V_npu2, False, groups)
+        output2.sum().backward()
+        torch.npu.synchronize()
+        print("  output.sum().backward(): [PASS] no contiguous error")
+    except Exception as e:
+        print(f"  output.sum().backward(): [FAIL] {type(e).__name__}: {e}")
+        all_passed = False
+
+    return all_passed, []
+
+
 # --- msprof kernel-level profiling (--level msprof) ---
 
 _MSPROF_TARGET_SCRIPT = """\
@@ -993,6 +1065,10 @@ def main():
     if args.level in ("boundary", "all", "full"):
         test_gqa_bwd_boundary()
         # Boundary failures are non-blocking
+
+    if args.level in ("all", "full"):
+        passed, _ = test_gqa_bwd_regression()
+        overall_passed = overall_passed and passed
 
     print(f"\n{'=' * 60}")
     if overall_passed:

@@ -595,9 +595,11 @@ def _native_reduce_marker(kind, *, target="ascendc", dtype="float", clear=True, 
             ("min", "col"): "TCOLMIN(",
         }[(kind, direction)]
 
-    # AscendC uses a dedicated helper for clear=true float16 sum reductions.
+    # AscendC widens clear=true float16 sum reductions to float32
+    # (Cast -> ReduceSum<float> -> Cast), since CANN ReduceSum<half> is
+    # rejected by a static_assert.
     if kind == "sum" and dtype == "float16" and clear:
-        return "tl::ascend::reduce_sum_half<"
+        return "tl::ascend::reduce_sum<float"
 
     return f"tl::ascend::reduce_{kind}<"
 
