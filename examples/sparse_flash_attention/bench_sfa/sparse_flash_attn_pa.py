@@ -284,7 +284,9 @@ def sparse_attention_fwd(
                             T.set_flag("v", "mte3", 6 + i_i % 2)
                             T.wait_flag("v", "mte3", 6 + i_i % 2)
 
-                            T.copy(acc_s_half[i_i % 2, :, :], workspace_4[cid, vid * m_base_size_v : vid * m_base_size_v + m_base_size_v, :])
+                            T.copy(
+                                acc_s_half[i_i % 2, :, :], workspace_4[cid, vid * m_base_size_v : vid * m_base_size_v + m_base_size_v, :]
+                            )
                             # return acc_s_half to Vector once MTE3 has finished reading it
                             T.set_flag("mte3", "v", 6 + i_i % 2)
 
