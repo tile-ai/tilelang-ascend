@@ -408,7 +408,7 @@ def mhc_pre(residual, fn, hc_scale, hc_base, rms_eps, hc_pre_eps, hc_sinkhorn_ep
 
     # Fused Kernel A2+B1: sqrsum + RMSNorm
     pad_hc_mult3 = calc_pad(hc_mult3, MIN_BLOCK)
-    gemm_out = gemm_out_padded[:n, :pad_hc_mult3].contiguous()
+    gemm_out = gemm_out_padded[:n]
     mixes_padded = mhc_pre_sqrsum_rmsnorm(hc_mult * hidden, pad_hc_mult3, hc_mult, hidden, rms_eps)(x_flat, gemm_out)
     mixes = mixes_padded[:n, :hc_mult3].contiguous()
 
@@ -417,14 +417,9 @@ def mhc_pre(residual, fn, hc_scale, hc_base, rms_eps, hc_pre_eps, hc_sinkhorn_ep
         hc_mult, hidden, sinkhorn_repeat, hc_pre_eps, hc_sinkhorn_eps, hc_post_mult_value
     )(mixes, hc_scale, hc_base, residual)
 
-    # B2 outputs padded shapes (hc_pad), trim to actual hc
-    post_mix = post_mix[:, :hc_mult].contiguous()
-    comb_mix = comb_mix[:, :, :hc_mult].contiguous()
-
     layer_input = layer_input_padded[:n, :hidden]
 
-    post_mix_out = post_mix.unsqueeze(-1)
-    return post_mix_out, comb_mix, layer_input
+    return post_mix.unsqueeze(-1), comb_mix, layer_input
 
 
 # ============================================================
