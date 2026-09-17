@@ -2301,14 +2301,31 @@ def run_test_clear(M, N, block_M, block_N, dtype, target):
     assert_close_npu(b, ref_b, dtype, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16", "bfloat16", "int32", "int16", "uint16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        "float",
+        pytest.param("float16", marks=pytest.mark.low_priority),
+        pytest.param("bfloat16", marks=pytest.mark.low_priority),
+        pytest.param("int32", marks=pytest.mark.low_priority),
+        pytest.param("int16", marks=pytest.mark.low_priority),
+        pytest.param("uint16", marks=pytest.mark.low_priority),
+    ],
+)
+@pytest.mark.parametrize(
+    "target",
+    [
+        "ascendc",
+        pytest.param("pto", marks=pytest.mark.low_priority),
+    ],
+)
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_clear(dtype, target, shape):
     M, N = shape
     run_test_clear(M, N, 64, 32, dtype, target=target)
 
 
+@pytest.mark.low_priority
 @pytest.mark.parametrize("dtype", ["int8", "uint8"])
 @pytest.mark.parametrize("target", ["pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
@@ -2352,8 +2369,21 @@ def run_test_clear_1d(N, block_N, dtype, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16", "int32"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        "float",
+        pytest.param("float16", marks=pytest.mark.low_priority),
+        pytest.param("int32", marks=pytest.mark.low_priority),
+    ],
+)
+@pytest.mark.parametrize(
+    "target",
+    [
+        "ascendc",
+        pytest.param("pto", marks=pytest.mark.low_priority),
+    ],
+)
 def test_clear_1d(dtype, target):
     run_test_clear_1d(1024, 128, dtype, target=target)
 
@@ -2390,8 +2420,20 @@ def run_test_clear_buffer_region(M, N, block_M, block_N, dtype, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        "float",
+        pytest.param("float16", marks=pytest.mark.low_priority),
+    ],
+)
+@pytest.mark.parametrize(
+    "target",
+    [
+        "ascendc",
+        pytest.param("pto", marks=pytest.mark.low_priority),
+    ],
+)
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_clear_buffer_region(dtype, target, shape):
     M, N = shape
