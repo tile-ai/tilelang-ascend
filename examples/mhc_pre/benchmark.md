@@ -57,7 +57,7 @@ partitioning (bid = cid * 2 + vid).
 | pass_configs | add TL_ASCEND_TAIL_MASK | Enable pad_value for in-kernel tail |
 | fn prepack | prepare_fn + fn_packed | Avoid repeated cast/transpose at inference |
 | remove _kernel_cache | drop _get_kernel/_KERNEL_BUILDERS dict, call jit kernels directly | tilelang.jit already caches kernels in-memory; -34 lines, no perf impact |
-| review: developer mode | drop manual T.Scope("C"/"V"), alloc_L1/L0C -> alloc_shared/fragment | combineCV builds scopes automatically, no perf regression, cleaner code |
+| developer mode | drop manual T.Scope("C"/"V"), alloc_L1/L0C -> alloc_shared/fragment | combineCV builds scopes automatically, no perf regression, cleaner code |
 | shape test expansion | 11 -> 17 shapes (add hc 5/6/7, n 1024/2048, h 7168) | Full hc 1-8 + mid/large shape coverage |
 
 ## 5. Final Performance (E2E, do_bench, warmup=20, rep=100, 5-run average, prepacked fn)
@@ -72,9 +72,7 @@ Small shape (512x2560) is slower than CANN due to 3-kernel launch overhead.
 Large shapes benefit from fused pipeline. 4096x2560 improved from 0.96x to 1.40x
 after kernel fusion.
 
-## 6. Developer Mode & Pipeline Advantage Analysis
-
-### 6.1 Where the pipeline advantage comes from
+## 6. Pipeline Advantage Analysis
 
 The E2E win over a per-op baseline (eager CANN ops or an ascendc-style
 5-kernel chain) comes from four sources, in order of impact:
@@ -89,32 +87,6 @@ The E2E win over a per-op baseline (eager CANN ops or an ascendc-style
 Fusion dominates: the intermediate tensors of a 5-op chain are small but their
 launch + GM round-trip cost is fixed per token-block, so removing two launches
 plus two GM round-trips is what moved 4096x2560 from 0.96x to 1.40x vs CANN.
-
-### 6.2 Developer mode (alloc_shared, no manual T.Scope)
-
-Per review, with `TL_ASCEND_AUTO_CV_COMBINE` enabled the manual `T.Scope("C"/"V")`
-wrappers are unnecessary. The kernels now follow the developer-mode convention:
-
-- GEMM operands: `T.alloc_shared` (L1/UB placement decided by InferAllocScope);
-  accumulator: `T.alloc_fragment` (L0C), same as `examples/developer_mode/gemm_developer.py`.
-- Vector kernels: no manual scope; `T.alloc_shared`/`T.alloc_ub` mixed freely,
-  cross-scope placement resolved by the pass instead of by hand.
-- Sync: `TL_ASCEND_AUTO_SYNC` inserts barriers; no `T.set_flag`/`T.wait_flag` pairs.
-
-What this buys (inferred from the pass pipeline, section 4):
-
-| Mechanism | Effect |
-|-----------|--------|
-| combineCV + AUTO_SYNC | optimal barrier placement across the fused C/V scope instead of user-forced scope boundaries |
-| InferAllocScope on alloc_shared | per-buffer L1/UB placement by usage; MEMORY_PLANNING can reuse buffers across fused stages |
-| alloc_fragment accumulator | GEMM accumulation stays in L0C, store to GM handled like gemm_developer |
-
-Verified on Ascend 910B3 / CANN 9.2: developer-style code passes all 17 shape
-cases + distinct-eps (section 9) with identical max diff (0.0156). E2E latency
-vs the previous manual-scope version differs by <= 6% in either direction
-(median of 100 reps, run-to-run variance of the same magnitude) — i.e. parity
-within measurement noise on this box, so the simplification costs nothing while
-unblocking the memory planner and scope-inference passes.
 
 ## 7. Kernel Breakdown (n=4096, h=2560, after fusion)
 
