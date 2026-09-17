@@ -152,15 +152,30 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
   auto compute_strideN = [](const Buffer &buf,
                             const Array<PrimExpr> &extents) -> PrimExpr {
+    // The GM copy is emitted as a 2D DMA: blockCount rows (the second-to-last
+    // active dim, i.e. the highest dim below the last whose extent != 1) by
+    // blockLen columns (the last dim), with one uniform stride between
+    // consecutive rows. That stride is the product of every buffer dim below
+    // the row dim, so extent-1 dims sitting under the row dim must be folded
+    // into it (e.g. Query[cid, m:m+BM, n2, g*D:(g+1)*D] folds the scalar n2
+    // dim into the stride). But when every leading extent is 1 -- a row slice
+    // like C2[row, 0:N] -- the row dim is the second-to-last dim itself
+    // (blockCount = 1) and the stride is just the last buffer dim: folding the
+    // leading dims in would return the whole buffer size as the stride and
+    // corrupt the DMA (issue #1263).
     PrimExpr strideN = buf->shape[buf->shape.size() - 1];
-    if (extents.size() > 1) {
-      for (int i = extents.size() - 2; i >= 0; --i) {
-        auto *extent = extents[i].as<IntImmNode>();
-        if (!extent || extent->value != 1) {
-          break;
-        }
-        strideN = strideN * buf->shape[i];
+    PrimExpr folded = Integer(1);
+    bool has_row_dim = false;
+    for (int i = static_cast<int>(extents.size()) - 2; i >= 0; --i) {
+      auto *extent = extents[i].as<IntImmNode>();
+      if (!extent || extent->value != 1) {
+        has_row_dim = true;
+        break;
       }
+      folded = folded * buf->shape[i];
+    }
+    if (has_row_dim) {
+      strideN = strideN * folded;
     }
     return strideN;
   };
@@ -676,15 +691,30 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
 
   auto compute_strideN = [](const Buffer &buf,
                             const Array<PrimExpr> &extents) -> PrimExpr {
+    // The GM copy is emitted as a 2D DMA: blockCount rows (the second-to-last
+    // active dim, i.e. the highest dim below the last whose extent != 1) by
+    // blockLen columns (the last dim), with one uniform stride between
+    // consecutive rows. That stride is the product of every buffer dim below
+    // the row dim, so extent-1 dims sitting under the row dim must be folded
+    // into it (e.g. Query[cid, m:m+BM, n2, g*D:(g+1)*D] folds the scalar n2
+    // dim into the stride). But when every leading extent is 1 -- a row slice
+    // like C2[row, 0:N] -- the row dim is the second-to-last dim itself
+    // (blockCount = 1) and the stride is just the last buffer dim: folding the
+    // leading dims in would return the whole buffer size as the stride and
+    // corrupt the DMA (issue #1263).
     PrimExpr strideN = buf->shape[buf->shape.size() - 1];
-    if (extents.size() > 1) {
-      for (int i = extents.size() - 2; i >= 0; --i) {
-        auto *extent = extents[i].as<IntImmNode>();
-        if (!extent || extent->value != 1) {
-          break;
-        }
-        strideN = strideN * buf->shape[i];
+    PrimExpr folded = Integer(1);
+    bool has_row_dim = false;
+    for (int i = static_cast<int>(extents.size()) - 2; i >= 0; --i) {
+      auto *extent = extents[i].as<IntImmNode>();
+      if (!extent || extent->value != 1) {
+        has_row_dim = true;
+        break;
       }
+      folded = folded * buf->shape[i];
+    }
+    if (has_row_dim) {
+      strideN = strideN * folded;
     }
     return strideN;
   };
