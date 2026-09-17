@@ -5,16 +5,24 @@ from types import ModuleType
 
 import pytest
 
-# Large shapes (n >= 1024 at h = 2560, or h = 7168) are marked low_priority:
-# they only run in full/scheduled CI jobs, keeping the per-PR pytest suite
-# fast. The default suite still covers all hc values (1-8), non-divisible h
-# (100), and one mid-size representative (512, 2560, 4).
-_LOW_PRIORITY_CASES = frozenset(
+# Default (per-PR) case set, chosen by which kernel compile keys the cases
+# cover rather than by count, following the moe/quant precedent (#1711):
+# CI runs pytest with --forked, so every case re-compiles its 3 kernels
+# (A1 GEMM, A2+B1, B2+B3) from scratch, and the PR job budget is 60 minutes.
+# The five default cases each cover one distinct compile key:
+#   - hc=1 (smallest hc_mult3=3, padded to 16) and hc=8 (largest hc_mult3=80)
+#     bound the supported hc range 1-8
+#   - h=100 is non-divisible (host pad + kernel tail path) at the main hc=4
+#   - (16, 256, 4) is the mid-size divisible-h path; the operator is migrated
+#     so CI no longer runs the example script and pytest is its only coverage
+#   - test_mhc_pre_distinct_params is its own compile key (distinct eps/mult)
+# n is T.symbolic and does not enter the compile key.
+_DEFAULT_CASES = frozenset(
     {
-        (1024, 2560, 4),
-        (2048, 2560, 4),
-        (4096, 2560, 4),
-        (1024, 7168, 4),
+        (4, 128, 1),
+        (4, 100, 4),
+        (16, 256, 4),
+        (4, 128, 8),
     }
 )
 
@@ -45,7 +53,7 @@ def _mhc_pre_cases() -> list:
             h,
             hc_mult,
             id=f"n{n}_h{h}_hc{hc_mult}",
-            marks=pytest.mark.low_priority if (n, h, hc_mult) in _LOW_PRIORITY_CASES else (),
+            marks=() if (n, h, hc_mult) in _DEFAULT_CASES else pytest.mark.low_priority,
         )
         for (n, h, hc_mult) in shapes
     ]

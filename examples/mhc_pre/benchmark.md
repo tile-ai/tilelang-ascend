@@ -59,7 +59,8 @@ partitioning (bid = cid * 2 + vid).
 | remove _kernel_cache | drop _get_kernel/_KERNEL_BUILDERS dict, call jit kernels directly | tilelang.jit already caches kernels in-memory; -34 lines, no perf impact |
 | developer mode | drop manual T.Scope("C"/"V"), alloc_L1/L0C -> alloc_shared/fragment | combineCV builds scopes automatically, no perf regression, cleaner code |
 | shape test expansion | 11 -> 17 shapes (add hc 5/6/7, n 1024/2048, h 7168) | Full hc 1-8 + mid/large shape coverage |
-| tests moved to pytest | bulk shape tests moved to test_example_mhc_pre.py, registered in operator_test_manifest; example keeps a single simple case | Runs in CI; large shapes marked low_priority only run in full/scheduled jobs |
+| tests moved to pytest | bulk shape tests moved to test_example_mhc_pre.py, registered in operator_test_manifest; example keeps a single simple case | Runs in CI; 18 shapes + distinct-eps, low_priority cases only run in full/scheduled jobs |
+| CI case budget | default (per-PR) set cut to 5 cases chosen by kernel compile key (15 of 42 kernel compiles), the other 12 shapes low_priority | Fixes the Benchmark Tests 60-min timeout: --forked re-compiles every case's 3 kernels, and a manifest change triggers the full CI run; follows the moe/quant precedent (#1711) |
 
 ## 5. Final Performance (E2E, do_bench, warmup=20, rep=100, 5-run average, prepacked fn)
 

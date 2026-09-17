@@ -58,7 +58,8 @@ A1 使用 Cube GEMM。A2+B1 和 B2+B3 使用双 V 核划分（bid = cid * 2 + vi
 | 删 _kernel_cache | 删 _get_kernel/_KERNEL_BUILDERS 字典，直接调用 jit kernel | tilelang.jit 自身按参数内存缓存；-34 行，无性能影响 |
 | developer 模式 | 删手动 T.Scope("C"/"V")，alloc_L1/L0C -> alloc_shared/fragment | combineCV 自动建 scope，无性能回退，代码更简洁 |
 | shape 测试扩展 | 11 -> 17 个 shape（补 hc 5/6/7，n 1024/2048，h 7168）| 覆盖 hc 1-8 全范围与中大 shape |
-| 测试移入 pytest | 批量 shape 测试移至 test_example_mhc_pre.py，注册进 operator_test_manifest；example 只留单 shape 用例 | 纳入 CI；大 shape 标 low_priority 只在全量/定时任务跑 |
+| 测试移入 pytest | 批量 shape 测试移至 test_example_mhc_pre.py，注册进 operator_test_manifest；example 只留单 shape 用例 | 纳入 CI；18 个 shape + distinct-eps，low_priority 用例仅在 full/scheduled 任务跑 |
+| CI 用例预算 | 默认（PR）集按 kernel 编译键压缩到 5 个 case（42 次 kernel 编译中的 15 次），其余 12 个 shape 标 low_priority | 修复 Benchmark Tests 60 分钟超时：--forked 使每个 case 冷编译 3 个 kernel，且 manifest 变更触发全量 CI；参照 moe/quant 先例（#1711） |
 
 ## 5. 最终性能（E2E, do_bench, warmup=20, rep=100, 5 次平均, 预打包 fn）
 
