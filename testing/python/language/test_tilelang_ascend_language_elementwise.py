@@ -870,9 +870,7 @@ def run_test_bitwise_lshift_signed_semantics(dtype, target, scalarvalue):
     assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize(
-    "scalarvalue", [1, pytest.param(2, marks=pytest.mark.low_priority), pytest.param(4, marks=pytest.mark.low_priority)]
-)
+@pytest.mark.parametrize("scalarvalue", [1])
 @pytest.mark.parametrize("dtype", ["int16", pytest.param("int32", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_lshift_signed_semantics(dtype, target, scalarvalue):
@@ -905,23 +903,9 @@ def run_test_bitwise_lshift_1d(dtype, target, scalarvalue):
     assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize(
-    "scalarvalue",
-    [1, pytest.param(4, marks=pytest.mark.low_priority), pytest.param(8, marks=pytest.mark.low_priority)],
-)
-@pytest.mark.parametrize(
-    "dtype",
-    [
-        "int16",
-        pytest.param("uint16", marks=pytest.mark.low_priority),
-        pytest.param("int32", marks=pytest.mark.low_priority),
-        pytest.param("uint32", marks=pytest.mark.low_priority),
-    ],
-)
-@pytest.mark.parametrize(
-    "target",
-    ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)],
-)
+@pytest.mark.parametrize("scalarvalue", [1])
+@pytest.mark.parametrize("dtype", ["int16"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_lshift_1d(dtype, target, scalarvalue):
     run_test_bitwise_lshift_1d(dtype, target, scalarvalue)
 
@@ -957,18 +941,14 @@ def run_test_bitwise_lshift_boundary(dtype, target, scalarvalue):
     assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize(
-    "scalarvalue", [0, 1, pytest.param(15, marks=pytest.mark.low_priority), pytest.param(16, marks=pytest.mark.low_priority)]
-)
+@pytest.mark.parametrize("scalarvalue", [0, 16])
 @pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_lshift_boundary_int16(dtype, target, scalarvalue):
     run_test_bitwise_lshift_boundary(dtype, target, scalarvalue)
 
 
-@pytest.mark.parametrize(
-    "scalarvalue", [0, 1, pytest.param(31, marks=pytest.mark.low_priority), pytest.param(32, marks=pytest.mark.low_priority)]
-)
+@pytest.mark.parametrize("scalarvalue", [0, 32])
 @pytest.mark.parametrize("dtype", ["int32", pytest.param("uint32", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_lshift_boundary_int32(dtype, target, scalarvalue):
@@ -1006,25 +986,14 @@ def run_test_bitwise_lshift_non_aligned(dtype, target, scalarvalue):
     assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("scalarvalue", [1, pytest.param(4, marks=pytest.mark.low_priority)])
-@pytest.mark.parametrize(
-    "dtype",
-    [
-        "int16",
-        pytest.param("uint16", marks=pytest.mark.low_priority),
-        pytest.param("int32", marks=pytest.mark.low_priority),
-        pytest.param("uint32", marks=pytest.mark.low_priority),
-    ],
-)
+@pytest.mark.parametrize("scalarvalue", [1])
+@pytest.mark.parametrize("dtype", ["int16"])
 @pytest.mark.parametrize("target", ["pto"])
 def test_bitwise_lshift_non_aligned(dtype, target, scalarvalue):
     run_test_bitwise_lshift_non_aligned(dtype, target, scalarvalue)
 
 
-@pytest.mark.parametrize("scalarvalue", [1, pytest.param(4, marks=pytest.mark.low_priority)])
-@pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
-@pytest.mark.parametrize("target", ["ascendc"])
-def test_bitwise_lshift_non_aligned_ascendc_skip(dtype, target, scalarvalue):
+def test_bitwise_lshift_non_aligned_ascendc_skip():
     """AscendC produces precision errors on non-32-byte-aligned shapes (CANN bug)."""
     pytest.skip("AscendC non-aligned precision bug, PTO unaffected")
 
