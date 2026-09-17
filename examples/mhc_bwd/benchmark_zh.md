@@ -45,6 +45,7 @@ kernel 按 tilesize 行分 block。host 适配器 `sinkhorn_bwd` 对非整除 se
 | shape 测试 | 1 -> 6 个用例（seqlen 100-512，n_stream 8/16/32）| 6/6 通过 |
 | 尝试：双 V 核逐 tile | 改成 [NS, NS] 逐 tile buffer + vid 0/1 分工 | 否决：慢 12-23%，批量宽指令更优 |
 | dispatch 削减 | matvec 的 "+x" 外提出逐 tile 循环（2 次全块更新替代 2*tilesize 次）；跳过初始 `A @ 0` matvec（直接 r0 = b） | seqlen 2048/4096 快 3.1%（交错 A/B 两轮平均）；1024 以下在噪声内 |
+| 测试移入 pytest | 批量 shape 测试移至 test_example_mhc_bwd.py，注册进 operator_test_manifest；example 只留单 shape 简单用例（seqlen=100 非整除，走 pad 路径） | 纳入 CI；共 6 个 shape，默认集按编译键选择（3 个 case = --forked 下 3 次 kernel 编译），其余 3 个 shape 标 low_priority |
 
 双 V 核逐 tile 方案还暴露了两个 codegen 限制（均已绕开但得不偿失）：[1] 元素
 UB buffer 的 `T.copy` 触发 aicore exception（507015）；`T.Parallel` 更新携带

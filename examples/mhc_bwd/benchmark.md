@@ -46,6 +46,7 @@ solution degenerates to exactly zero grads, and the padded rows are trimmed off.
 | shape tests | 1 -> 6 cases (seqlen 100-512, n_stream 8/16/32) | 6/6 passed |
 | attempted: dual-V-core per-tile | restructure to per-tile [NS, NS] buffers + vid 0/1 split | rejected: +12-23% slower, batched ops win |
 | dispatch trim | hoist matvec "+x" out of the per-tile loop (2 whole-block updates instead of 2*tilesize), skip the initial `A @ 0` matvec (r0 = b directly) | -3.1% @ seqlen 2048/4096 (interleaved A/B, 2 rounds averaged); within noise below 1024 |
+| tests moved to pytest | bulk shape tests moved to test_example_mhc_bwd.py, registered in operator_test_manifest; example keeps a single simple case (seqlen=100, non-divisible, pad path) | Runs in CI; 6 shapes total, default set chosen by compile key (3 cases = 3 kernel compiles under --forked), the other 3 shapes low_priority |
 
 The dual-V-core per-tile variant also exposed two codegen limits, both worked
 around but not worth the perf cost: `T.copy` on a [1]-element UB buffer faults

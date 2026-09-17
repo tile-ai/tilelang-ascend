@@ -307,54 +307,21 @@ def generate_test_data(seqlen, n_stream, device="npu"):
 
 def test():
     print("=" * 60)
-    print("MHC BWD (Sinkhorn implicit CG) test (Ascend NPU)")
+    print("MHC BWD (Sinkhorn implicit CG) simple example (Ascend NPU)")
     print("=" * 60)
 
-    iters = 20
-    test_cases = [
-        (256, 16, 8),
-        (100, 16, 8),
-        (250, 16, 8),
-        (512, 16, 8),
-        (256, 32, 8),
-        (250, 8, 8),
-    ]
+    # seqlen=100 is non-divisible by tilesize=8, exercising the host
+    # pad-run-trim adapter path on top of the CG kernel.
+    M = generate_test_data(100, 16)
+    R, P = sinkhorn_forward(M, 20)
+    loss_weight = torch.randn_like(R)
 
-    all_passed = True
-    for seqlen, n_stream, tilesize in test_cases:
-        M = generate_test_data(seqlen, n_stream)
-        R, P = sinkhorn_forward(M, iters)
-        loss_weight = torch.randn_like(R)
+    grad_M_implicit = sinkhorn_bwd(R.detach(), loss_weight, 16, 8)
+    grad_M_ref = sinkhorn_bwd_ref(R.detach().cpu(), loss_weight.cpu(), 16, 8)
+    print(f"grad_M={grad_M_implicit.shape}")
 
-        loss_a = (R * loss_weight).sum()
-        loss_a.backward()
-        grad_M_autograd = M.grad.detach().clone()
-
-        grad_M_implicit = sinkhorn_bwd(R.detach(), loss_weight, n_stream, tilesize)
-
-        grad_M_ref = sinkhorn_bwd_ref(R.detach().cpu(), loss_weight.cpu(), n_stream, tilesize)
-        ref_diff = (grad_M_ref - grad_M_implicit.cpu()).abs()
-        ref_max_diff = ref_diff.max().item()
-
-        abs_diff = (grad_M_autograd.cpu() - grad_M_implicit.cpu()).abs()
-        max_abs_diff = abs_diff.max().item()
-
-        print(f"--- seqlen={seqlen}, n_stream={n_stream}, tilesize={tilesize} ---")
-        print(f"  max_abs_diff = {max_abs_diff:.6e}")
-        print(f"  kernel vs manual-CG ref max_diff = {ref_max_diff:.6e}")
-
-        if max_abs_diff < 1e-3 and ref_max_diff < 1e-5:
-            print("  PASSED")
-        else:
-            print(f"  FAILED (max_abs_diff={max_abs_diff:.6e}, ref_max_diff={ref_max_diff:.6e})")
-            all_passed = False
-
-    print("=" * 60)
-    if all_passed:
-        print("Kernel Output Match!")
-    else:
-        print("Some tests failed.")
-    print("=" * 60)
+    torch.testing.assert_close(grad_M_implicit.cpu(), grad_M_ref.cpu(), rtol=1e-2, atol=1e-2)
+    print("Kernel Output Match!")
 
 
 if __name__ == "__main__":
