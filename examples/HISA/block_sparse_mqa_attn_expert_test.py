@@ -67,7 +67,7 @@ def block_sparse_mqa_attn_return_logits(
     # grid_size is the controllable input. num_pairs is derived from it:
     # each block must cover ceildiv(seq_len, grid_size) tokens, rounded up to
     # whole pairs so that num_tokens_per_kernel == 2*num_pairs. Any tokens
-    # provisioned beyond seq_len are guarded by the `if token_* < seq_len` checks.
+    # provisioned beyond seq_len are guarded by the `if token_*  < seq_len` checks.
     tokens_per_block = (seq_len + grid_size - 1) // grid_size
     num_pairs = (tokens_per_block + 1) // 2
     num_tokens_per_kernel = 2 * num_pairs
