@@ -318,6 +318,16 @@ def atomic_add(
 
     V1 intentionally models Ascend DMA atomic add only: the destination must be
     GM, and the source must be a local tensor region that can be copied out.
+
+    Args:
+        dst: GM destination tensor (Buffer/BufferRegion/BufferLoad). Scope must be
+            ``global``. Supports float16, float32, int16, int32, bfloat16.
+        src: Local source tensor (Buffer/BufferRegion/BufferLoad). Scope must be
+            local (UB/L0C/L1). dtype must match dst for UB->GM; L0C->GM allows
+            dtype mismatch (e.g. L0C float -> GM half).
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call to ``tl.ascend_atomic_add``.
     """
     dst_scope = _atomic_add_scope(dst, "dst")
     src_scope = _atomic_add_scope(src, "src")
@@ -2276,30 +2286,64 @@ def clamp_min(
     )
 
 
+def _clamp_bound_arg(val):
+    """Convert a clamp bound to the appropriate TIR argument.
+
+    If *val* is a Buffer or BufferRegion, return its read access pointer so
+    the codegen can detect a tensor bound (CallNode) vs a scalar bound
+    (PrimExpr).  Otherwise return *val* unchanged.
+    """
+    if isinstance(val, BufferRegion):
+        ptr, _ = _handle_buffer_region(val, "r")
+        return ptr
+    if isinstance(val, Buffer):
+        return val.access_ptr("r")
+    return val
+
+
 def clamp(
     out: Buffer | BufferRegion,
     buffer: Buffer | BufferRegion,
-    min_scalar: PrimExpr,
-    max_scalar: PrimExpr,
-    count: PrimExpr,
+    min_val: PrimExpr | Buffer | BufferRegion,
+    max_val: PrimExpr | Buffer | BufferRegion,
+    count: PrimExpr | None = None,
     *,
     tmp: Buffer | BufferRegion | None = None,
 ):  # noqa: F821
-    """
-    Clip tensor elements to [min_scalar, max_scalar] range, replace out-of-bounds values with boundary values
+    """Clamp UB elements to the inclusive ``[min_val, max_val]`` range.
+
+    ``out`` and ``buffer`` may be one- or two-dimensional UB buffers or
+    contiguous buffer regions and may be the same object for an in-place
+    operation. They must have matching shapes and dtypes. AscendC and PTO
+    support float16, float32, int16, and int32. AscendC applies the operation
+    to the first ``count`` elements; PTO currently requires ``count`` to equal
+    the selected tile extent.
+
+    ``min_val`` and ``max_val`` may be scalar expressions or UB buffers /
+    buffer regions of the same dtype and element count as ``buffer``.
 
     Args:
-        out: The destination buffer where the result will be stored.
-        buffer: The first source operand buffer.
-        min_scalar: The min scalar value
-        max_scalar: The max scalar value
-        count: The size of tensor out
+        out: Destination UB buffer or contiguous buffer region.
+        buffer: Source UB buffer or contiguous buffer region.
+        min_val: Inclusive lower bound. May be a scalar expression convertible
+            to ``buffer.dtype``, or a UB buffer / buffer region.
+        max_val: Inclusive upper bound. May be a scalar expression convertible
+            to ``buffer.dtype``, or a UB buffer / buffer region.
+            This must be greater than or equal to ``min_val``.
+        count: Number of leading elements to clamp. When omitted, the total
+            element count of ``buffer`` is used. This must not exceed the
+            number of accessible source or destination elements.
         tmp: Optional complete UB scratch storage. Its scalar dtype is
             reinterpreted by lowering and has no semantic meaning.
 
     Returns:
-        A TVM intrinsic call that performs the clamp operation.
+        tvm.tir.Call: Intrinsic call for the selected Ascend backend.
     """
+    if count is None:
+        if isinstance(buffer, BufferRegion):
+            count = math.prod(r.extent for r in buffer.region)
+        else:
+            count = math.prod(buffer.shape)
     if isinstance(out, BufferRegion):
         out_ptr, _ = _handle_buffer_region(out, "w")
     else:
@@ -2310,14 +2354,17 @@ def clamp(
     else:
         buffer_ptr = buffer.access_ptr("r")
 
+    min_arg = _clamp_bound_arg(min_val)
+    max_arg = _clamp_bound_arg(max_val)
+
     return _call_intrin_with_optional_tmp(
         "clamp",
         [
             f"Clamp<{_dtype(buffer)}>",
             out_ptr,
             buffer_ptr,
-            min_scalar,
-            max_scalar,
+            min_arg,
+            max_arg,
             count,
         ],
         3,
