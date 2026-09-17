@@ -3438,7 +3438,7 @@ def run_test_bitwise_or(M, N, block_M, block_N, dtype, target):
 
 
 @pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_or(dtype, target, shape):
     M, N = shape
@@ -3502,21 +3502,29 @@ def run_test_bitwise_or_ext(dtype, target):
     assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("dtype", ["int8", "uint8"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        "int16",
+        pytest.param("uint8", marks=pytest.mark.low_priority),
+    ],
+)
+@pytest.mark.parametrize(
+    "target",
+    [
+        "ascendc",
+        pytest.param("pto", marks=pytest.mark.low_priority),
+    ],
+)
 def test_bitwise_or_int8_uint8(dtype, target):
     """int8/uint8 are supported on A2/A3 for both backends."""
     run_test_bitwise_or_ext(dtype, target)
 
 
-@pytest.mark.xfail(
-    reason="int32 on ascendc produces 50% wrong results: CANN OrImpl count-mode "
-    "reinterprets int32 as int16 but sets mask to int32 count, processing only "
-    "half the data. PTO rejects int32 via static_assert(sizeof(T)==2||1)."
-)
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
-def test_bitwise_or_int32(target):
-    run_test_bitwise_or_ext("int32", target)
+def test_bitwise_or_int32_pto_raises():
+    """int32 on pto should fail at compile time (static_assert rejects sizeof(T)==4)."""
+    with pytest.raises(RuntimeError, match="Compilation Failed"):  # noqa: B017
+        run_test_bitwise_or_ext("int32", "pto")
 
 
 def run_test_bitwise_or_scalar(target):
@@ -3545,17 +3553,14 @@ def run_test_bitwise_or_scalar(target):
     tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
 
 
-@pytest.mark.xfail(
-    raises=Exception,
-    reason="Scalar src1 path uses tl.ascend_bitwise_ors which is not registered "
-    "in C++ (no TIR_DEFINE_TL_BUILTIN(ascend_bitwise_ors) in src/op/ascend.cc).",
-)
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
-def test_bitwise_or_scalar_not_registered(target):
-    run_test_bitwise_or_scalar(target)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_bitwise_or_scalar_not_registered_raises(target):
+    """Scalar src1 path uses tl.ascend_bitwise_ors which is not registered in C++."""
+    with pytest.raises(RuntimeError, match="not registered"):  # noqa: B017
+        run_test_bitwise_or_scalar(target)
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_or_buffer_region(target):
     """BufferRegion slices are supported as operands."""
     M, N = 1024, 1024
