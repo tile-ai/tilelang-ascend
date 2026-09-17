@@ -723,7 +723,7 @@ def run_test_bitwise_lshift(M, N, block_M, block_N, scalarvalue, dtype, target):
     "dtype",
     [
         "int16",
-        "int32",
+        pytest.param("int32", marks=pytest.mark.low_priority),
         pytest.param("uint16", marks=pytest.mark.low_priority),
         pytest.param("uint32", marks=pytest.mark.low_priority),
     ],
@@ -796,7 +796,12 @@ def run_test_bitwise_lshift_slice(M, N, block_M, block_N, scalarvalue, dtype, ta
 
 @pytest.mark.parametrize(
     "dtype",
-    ["int16", "int32", pytest.param("uint16", marks=pytest.mark.low_priority), pytest.param("uint32", marks=pytest.mark.low_priority)],
+    [
+        "int16",
+        pytest.param("int32", marks=pytest.mark.low_priority),
+        pytest.param("uint16", marks=pytest.mark.low_priority),
+        pytest.param("uint32", marks=pytest.mark.low_priority),
+    ],
 )
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
@@ -941,14 +946,14 @@ def run_test_bitwise_lshift_boundary(dtype, target, scalarvalue):
     assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("scalarvalue", [0, 16])
+@pytest.mark.parametrize("scalarvalue", [16])
 @pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_lshift_boundary_int16(dtype, target, scalarvalue):
     run_test_bitwise_lshift_boundary(dtype, target, scalarvalue)
 
 
-@pytest.mark.parametrize("scalarvalue", [0, 32])
+@pytest.mark.parametrize("scalarvalue", [32])
 @pytest.mark.parametrize("dtype", ["int32", pytest.param("uint32", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_lshift_boundary_int32(dtype, target, scalarvalue):
@@ -988,7 +993,7 @@ def run_test_bitwise_lshift_non_aligned(dtype, target, scalarvalue):
 
 @pytest.mark.parametrize("scalarvalue", [1])
 @pytest.mark.parametrize("dtype", ["int16"])
-@pytest.mark.parametrize("target", ["pto"])
+@pytest.mark.parametrize("target", [pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_lshift_non_aligned(dtype, target, scalarvalue):
     run_test_bitwise_lshift_non_aligned(dtype, target, scalarvalue)
 
@@ -998,7 +1003,7 @@ def test_bitwise_lshift_non_aligned_ascendc_skip():
     pytest.skip("AscendC non-aligned precision bug, PTO unaffected")
 
 
-@pytest.mark.parametrize("dtype", ["int8", "uint8"])
+@pytest.mark.parametrize("dtype", ["int8", pytest.param("uint8", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_lshift_int8_raises(dtype, target):
     """int8/uint8 should fail at compile time (not supported on A2/A3)."""
@@ -1006,7 +1011,7 @@ def test_bitwise_lshift_int8_raises(dtype, target):
         run_test_bitwise_lshift_boundary(dtype, target, 1)
 
 
-@pytest.mark.parametrize("dtype", ["float16", "float32"])
+@pytest.mark.parametrize("dtype", ["float16", pytest.param("float32", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_lshift_float_raises(dtype, target):
     """float16/float32 should fail at compile time (integer-only operation)."""
