@@ -1391,6 +1391,32 @@ if __name__ == "__main__":
     def _make_rand_w(shape, dtype=torch.float16):
         return _make_rand(shape, dtype).abs()
 
+    def _check_precision(actual, golden, dtype):
+        table = {
+            "float16": (2**-14, 2**-9, 1e-1, 0.99),
+            "bfloat16": (2**-10, 2**-6, 1e0, 0.99),
+            "float32": (2**-16, 2**-10, 1e-2, 0.99),
+            "hifloat32": (2**-16, 2**-10, 1e-2, 0.99),
+            "float8_e4m3": (2**-4, 2**-2, 1e0, 0.99),
+            "float8_e5m2": (2**-3, 2**-1, 1e-1, 0.99),
+        }
+        actual, golden = actual.detach().cpu(), golden.detach().cpu()
+        if dtype in {"int8", "int16", "int32", "int64", "uint8"}:
+            assert torch.equal(actual, golden), "integer output must match exactly"
+            return
+        atol, rtol, max_abs_limit, required_ratio = table[dtype]
+        actual, golden = actual.float(), golden.float()
+        special = ~torch.isfinite(golden)
+        assert torch.equal(torch.isnan(actual[special]), torch.isnan(golden[special]))
+        assert torch.equal(torch.isinf(actual[special]), torch.isinf(golden[special]))
+        finite = torch.isfinite(golden)
+        if not finite.any():
+            return
+        errors = (actual[finite] - golden[finite]).abs()
+        ratio = (errors <= atol + rtol * golden[finite].abs()).float().mean().item()
+        max_abs = errors.max().item()
+        assert ratio >= required_ratio and max_abs <= max_abs_limit, f"matched_ratio={ratio:.4f}, max_abs_error={max_abs:.6e}"
+
     def _check_result(g_idx, g_score_matrix, g_val, tl_idx, tl_val, asq, layout_query, is_pa):
         """AscendC-style 3-step verification (strict per-row).
 
@@ -1468,9 +1494,7 @@ if __name__ == "__main__":
                 if re > thres:
                     step2_fail += 1
 
-        # Step 3: sorted value comparison for ALL rows (matches AscendC check_result)
-        step3_fail = 0
-        step3_total = 0
+        # Step 3: sorted value comparison for all rows using FP16 standard.
         if not is_pa and tl_val is not None:
             g_val_flat = g_val.cpu().to(torch.float32).reshape(-1, K)
             t_val_flat = tl_val.cpu().to(torch.float32).reshape(-1, K)
@@ -1479,27 +1503,14 @@ if __name__ == "__main__":
                 t_sorted, _ = torch.sort(t_val_flat[r], descending=True)
                 g_fp16 = g_sorted.to(torch.float16).float()
                 t_fp16 = t_sorted.to(torch.float16).float()
-                step3_total += K
-                isclose = torch.isclose(
-                    g_fp16,
-                    t_fp16,
-                    rtol=0.005,
-                    atol=0.000025,
-                    equal_nan=True,
-                )
-                step3_fail += (~isclose).sum().item()
+                _check_precision(t_fp16, g_fp16, "float16")
 
-        # Pass logic: Step 2 all diff indices must be within tolerance (no row-level
-        # exemption), Step 3 >= 95% values must pass (matches AscendC pct_thd=0.05).
+        # Step 2 retains the operator-specific top-K index semantics; Step 3 has
+        # already enforced the common float precision standard for every row.
         idx_pass = step2_fail == 0
-        val_pass = True if is_pa else (step3_total == 0 or step3_fail / step3_total < 0.05)
-        ok = idx_pass and val_pass
+        ok = idx_pass
 
         detail = f"diff_rows={diff_rows}/{total_rows}, idx_fail={step2_fail}"
-        if not is_pa and step3_total > 0:
-            val_pct = (1 - step3_fail / step3_total) * 100
-            detail += f", val_pass={val_pct:.2f}%"
-
         return ok, detail
 
     def _build_pa(k_bsnd, act_k, block_size, block_num):

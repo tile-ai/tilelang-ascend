@@ -3,15 +3,41 @@ import tilelang as tl
 from tilelang import DataType, language as T
 import torch
 
+
+def _check_precision(actual, golden):
+    a, g = actual.detach().cpu(), golden.detach().cpu()
+    if a.shape != g.shape:
+        raise AssertionError("shape mismatch")
+    if not a.dtype.is_floating_point:
+        if not torch.equal(a, g):
+            raise AssertionError("integer mismatch")
+        return
+    p = {torch.float16: (2**-14, 2**-9, 1e-1), torch.bfloat16: (2**-10, 2**-6, 1e0), torch.float32: (2**-16, 2**-10, 1e-2)}
+    atol, rtol, cap = p.get(g.dtype, p[torch.float16])
+    a, g = a.float(), g.float()
+    if not (
+        torch.equal(torch.isnan(a), torch.isnan(g))
+        and torch.equal(torch.isposinf(a), torch.isposinf(g))
+        and torch.equal(torch.isneginf(a), torch.isneginf(g))
+    ):
+        raise AssertionError("special values differ")
+    m = torch.isfinite(g)
+    if m.any():
+        e = torch.where(torch.isfinite(a[m]), (a[m] - g[m]).abs(), torch.full_like(g[m], float("inf")))
+        r = (e <= atol + rtol * g[m].abs()).float().mean().item()
+        if r < 0.99 or e.max().item() > cap:
+            raise AssertionError("precision failed")
+
+
 @tl.jit(
     out_idx=[4],
     workspace_idx=[5, 6, 7],
-    pass_configs = {
+    pass_configs={
         tl.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
         tl.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
         tl.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
-        tl.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True
-    }
+        tl.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    },
 )
 def paged_flash_attention_fwd(
     batch: int,
@@ -25,7 +51,6 @@ def paged_flash_attention_fwd(
 ):
     DTYPE = "float16"
     ACCUM_DTYPE = "float"
-    TEMP_DTYPE = "uint8"
     INDICES_DTYPE = "int32"
     CAST_MODE = "CAST_NONE"
     VEC_NUM = 2
@@ -34,7 +59,7 @@ def paged_flash_attention_fwd(
     def bytes_of(dtype: str) -> int:
         return DataType(dtype).bits // 8
 
-    sm_scale = (1.0 / dim)**0.5
+    sm_scale = (1.0 / dim) ** 0.5
 
     q_shape = [batch, heads, seq_len, dim]
     kv_cache_shape = [cache_blocks, block_size, heads, dim]
@@ -48,14 +73,14 @@ def paged_flash_attention_fwd(
 
     @T.prim_func
     def main(
-        Q: T.Tensor(q_shape, DTYPE),              # type: ignore
+        Q: T.Tensor(q_shape, DTYPE),  # type: ignore
         KCache: T.Tensor(kv_cache_shape, DTYPE),  # type: ignore
         VCache: T.Tensor(kv_cache_shape, DTYPE),  # type: ignore
-        block_table: T.Tensor([batch, table_blocks], INDICES_DTYPE),                  # type: ignore
-        Output: T.Tensor(q_shape, DTYPE),         # type: ignore
+        block_table: T.Tensor([batch, table_blocks], INDICES_DTYPE),  # type: ignore
+        Output: T.Tensor(q_shape, DTYPE),  # type: ignore
         workspace_1: T.Tensor([kernel_block_num, block_M, block_size], ACCUM_DTYPE),  # type: ignore
-        workspace_2: T.Tensor([kernel_block_num, block_M, block_size], DTYPE),        # type: ignore
-        workspace_3: T.Tensor([kernel_block_num, block_M, dim], ACCUM_DTYPE),         # type: ignore
+        workspace_2: T.Tensor([kernel_block_num, block_M, block_size], DTYPE),  # type: ignore
+        workspace_3: T.Tensor([kernel_block_num, block_M, dim], ACCUM_DTYPE),  # type: ignore
     ):
         with T.Kernel(kernel_block_num, is_npu=True) as (cid, vid):
             bx = cid % T.ceildiv(seq_len, block_M)
@@ -139,8 +164,10 @@ def paged_flash_attention_fwd(
 
     return main
 
+
 def ceildiv(a: int, b: int) -> int:
     return (a + b - 1) // b
+
 
 def gen_cache(data: torch.Tensor, block_table: torch.LongTensor, block_size: int):
     batch, heads, seq_len, dim = data.shape
@@ -162,25 +189,26 @@ def gen_cache(data: torch.Tensor, block_table: torch.LongTensor, block_size: int
 
 
 def ref_program(q: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tensor, block_table: torch.LongTensor):
-    q = q.to(torch.float32)              # [batch, heads, seq_len, dim]
+    q = q.to(torch.float32)  # [batch, heads, seq_len, dim]
     k_cache = k_cache.to(torch.float32)  # [n_blocks, block_size, heads, dim]
     v_cache = v_cache.to(torch.float32)  # [n_blocks, block_size, heads, dim]
 
     batch, heads, seq_len, dim = q.shape
-    sm_scale = (1.0 / dim)**0.5
+    sm_scale = (1.0 / dim) ** 0.5
 
     o = torch.zeros_like(q, dtype=torch.float32)
 
     for b in range(batch):
-        blocks = block_table[b]    # [table_blocks]
-        k_seq = k_cache[blocks].reshape(-1, heads, dim)[:seq_len]    # [seq_len, heads, dim]
-        v_seq = v_cache[blocks].reshape(-1, heads, dim)[:seq_len]    # [seq_len, heads, dim]
+        blocks = block_table[b]  # [table_blocks]
+        k_seq = k_cache[blocks].reshape(-1, heads, dim)[:seq_len]  # [seq_len, heads, dim]
+        v_seq = v_cache[blocks].reshape(-1, heads, dim)[:seq_len]  # [seq_len, heads, dim]
         for s in range(seq_len):
             q_vec = q[b, :, s, :]  # [heads, dim]
             scores = torch.einsum("hd,shd->hs", q_vec, k_seq) * sm_scale  # [heads, seq_len]
             attn = torch.softmax(scores, dim=-1)
             o[b, :, s, :] = torch.einsum("hs,shd->hd", attn, v_seq)  # [heads, dim]
     return o.to(torch.float16)
+
 
 def check_case(batch: int, heads: int, seq_len: int, dim: int, block_size: int = 128):
     q = torch.randn((batch, heads, seq_len, dim), dtype=torch.float16)
@@ -198,7 +226,8 @@ def check_case(batch: int, heads: int, seq_len: int, dim: int, block_size: int =
 
     ref_output = ref_program(q, k_cache, v_cache, block_table)
 
-    torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
+    _check_precision(output, ref_output)
+
 
 def main(custom_args=None):
     parser = argparse.ArgumentParser(description="Paged Flash Attention Example", add_help=False)
@@ -212,13 +241,14 @@ def main(custom_args=None):
     batch, heads, seq_len, dim = args.batch, args.heads, args.seq_len, args.hidden_dim
 
     tl.cache.clear_cache()
-    torch.set_default_device('npu')
+    torch.set_default_device("npu")
     torch.manual_seed(0)
 
     check_case(batch, heads, seq_len, dim)
 
     print("Paged Flash Attention example passed!")
     print("Kernel Output Match!")
+
 
 if __name__ == "__main__":
     main()

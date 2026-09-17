@@ -5,6 +5,28 @@ import torch
 torch.set_default_device("npu")
 torch.manual_seed(0)
 
+
+def _check_precision(actual, golden):
+    table = {torch.float16: (2**-14, 2**-9, 1e-1), torch.bfloat16: (2**-10, 2**-6, 1e0), torch.float32: (2**-16, 2**-10, 1e-2)}
+    if actual.dtype not in table:
+        return torch.equal(actual, golden), 1.0, 0.0
+    atol, rtol, limit = table[actual.dtype]
+    a, g = actual.detach().float().cpu(), golden.detach().float().cpu()
+    special = ~torch.isfinite(g)
+    if special.any() and (
+        not torch.equal(torch.isnan(a[special]), torch.isnan(g[special]))
+        or not torch.equal(torch.isinf(a[special]), torch.isinf(g[special]))
+    ):
+        return False, 0.0, float("inf")
+    finite = torch.isfinite(g)
+    if not finite.any():
+        return True, 1.0, 0.0
+    err = (a[finite] - g[finite]).abs()
+    ratio = (err <= atol + rtol * g[finite].abs()).float().mean().item()
+    max_err = err.max().item()
+    return ratio >= 0.99 and max_err <= limit, ratio, max_err
+
+
 tilelang.disable_cache()
 
 pass_configs = {tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True}
@@ -212,7 +234,6 @@ def sparse_attention_fwd(
 
                     T.reduce_max(acc_s_ub, m_i, dim=-1)
 
-
                     T.tile.max(m_i, m_i, m_i_prev)
 
                     T.tile.sub(m_i_prev, m_i_prev, m_i)
@@ -225,7 +246,6 @@ def sparse_attention_fwd(
                     T.tile.exp(acc_s_ub, acc_s_ub)
 
                     T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
-
 
                     T.tile.mul(sumexp, sumexp, m_i_prev)  # check
 
@@ -357,6 +377,7 @@ torch.npu.synchronize()
 
 ref_output = ref_sparse_attention_fwd_interface_gqa(q, kv, indices, q_start_s_index, KV_stride)
 torch.npu.synchronize()
-torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
+ok, ratio, max_err = _check_precision(output, ref_output)
+assert ok, f"matched_ratio={ratio:.4f}, max_abs_error={max_err:.3e}"
 
 print("Test Passed!")

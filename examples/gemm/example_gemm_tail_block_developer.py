@@ -2,6 +2,32 @@ import tilelang
 import tilelang.language as T
 import torch
 
+
+def _check_precision(actual, golden, dtype):
+    configs = {
+        "float16": (2**-14, 2**-9, 1e-1, 0.99),
+        "bfloat16": (2**-10, 2**-6, 1.0, 0.99),
+        "float32": (2**-16, 2**-10, 1e-2, 0.99),
+        "hifloat32": (2**-16, 2**-10, 1e-2, 0.99),
+        "float8_e4m3": (2**-4, 2**-2, 1.0, 0.99),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1, 0.99),
+    }
+    if dtype in {"int8", "int16", "int32", "int64", "uint8"}:
+        assert torch.equal(actual.detach().cpu(), golden.detach().cpu()), "integer output mismatch"
+        return
+    atol, rtol, max_limit, ratio_limit = configs[dtype]
+    actual, golden = actual.detach().cpu().float(), golden.detach().cpu().float()
+    assert actual.shape == golden.shape, f"shape mismatch: {actual.shape} != {golden.shape}"
+    assert torch.equal(torch.isnan(actual), torch.isnan(golden)), "NaN positions differ"
+    assert torch.equal(torch.isinf(actual), torch.isinf(golden)), "Inf positions differ"
+    finite = torch.isfinite(golden)
+    if not finite.any():
+        return
+    errors = (actual[finite] - golden[finite]).abs()
+    ratio, maximum = (errors <= atol + rtol * golden[finite].abs()).float().mean().item(), errors.max().item()
+    assert ratio >= ratio_limit and maximum <= max_limit, f"matched_ratio={ratio:.4f}, max_abs_error={maximum:.3e}"
+
+
 tilelang.cache.clear_cache()
 
 pass_configs = {
@@ -58,7 +84,7 @@ for idx, (M, N, K, block_M, block_N, block_K) in enumerate(test_configs, 1):
         c = torch.empty(M, N).half().npu()
         c = func(a, b)
         ref_c = a @ b
-        torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+        _check_precision(c, ref_c, "float16")
         print(f"Passed test case {idx}/{len(test_configs)}: M={M}, N={N}, K={K}")
     except Exception as e:
         print("error message:", e)

@@ -5,6 +5,37 @@ from tilelang import language as T
 import torch
 
 
+def _check_precision(actual, golden):
+    actual, golden = actual.detach().cpu(), golden.detach().cpu()
+    if actual.shape != golden.shape:
+        raise AssertionError("shape mismatch")
+    if not (actual.is_floating_point() or golden.is_floating_point()):
+        if not torch.equal(actual, golden):
+            raise AssertionError("integer mismatch")
+        return
+    table = {
+        "torch.float16": (2**-14, 2**-9, 1e-1),
+        "torch.bfloat16": (2**-10, 2**-6, 1e0),
+        "torch.float32": (2**-16, 2**-10, 1e-2),
+        "hifloat32": (2**-16, 2**-10, 1e-2),
+        "float8_e4m3": (2**-4, 2**-2, 1e0),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1),
+    }
+    name = str(golden.dtype)
+    name = "float8_e4m3" if "float8_e4m3" in name else "float8_e5m2" if "float8_e5m2" in name else name
+    atol, rtol, cap = table.get(name, table["torch.float16"])
+    actual, golden = actual.float(), golden.float()
+    if not (torch.equal(torch.isnan(actual), torch.isnan(golden)) and torch.equal(torch.isinf(actual), torch.isinf(golden))):
+        raise AssertionError("NaN/Inf structure mismatch")
+    finite = torch.isfinite(golden)
+    if not finite.any():
+        return
+    diff = (actual[finite] - golden[finite]).abs()
+    diff = torch.where(torch.isfinite(diff), diff, torch.full_like(diff, float("inf")))
+    if (diff <= atol + rtol * golden[finite].abs()).float().mean().item() < 0.99 or diff.max().item() > cap:
+        raise AssertionError("precision mismatch")
+
+
 def _is_simulator():
     return "OPPROF" in os.environ.get("CAMODEL_CONFIG_PATH", "")
 
@@ -1698,5 +1729,5 @@ if __name__ == "__main__":
         unshared_block_table=unshared_block_table,
         return_parts=False,
     )
-    torch.testing.assert_close(Output, ref_O, rtol=1e-3, atol=1e-3)
+    _check_precision(Output, ref_O)
     print("Kernel Output Match!")
