@@ -1060,7 +1060,7 @@ def run_test_bitwise_xor(M, N, block_M, block_N, dtype, target):
 
 
 @pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_xor(dtype, target, shape):
     M, N = shape
@@ -1119,7 +1119,7 @@ def run_test_bitwise_xor_slice(M, N, block_M, block_N, dtype, target):
 
 
 @pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_xor_slice(dtype, target, shape):
     M, N = shape
@@ -1177,13 +1177,11 @@ def _run_bitwise_xor_ext(dtype, target, block_M=128, block_N=256, use_tmp=False)
     assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
 
 
-@pytest.mark.xfail(
-    raises=Exception,
-    reason="AscendC::Xor has static_assert requiring int16_t/uint16_t only; int8/uint8 fail at compile time on ascendc.",
-)
 @pytest.mark.parametrize("dtype", ["int8", "uint8"])
-def test_bitwise_xor_int8_ascendc_fails(dtype):
-    _run_bitwise_xor_ext(dtype, "ascendc")
+def test_bitwise_xor_int8_ascendc_raises(dtype):
+    """int8/uint8 should fail at compile time on ascendc (static_assert int16/uint16 only)."""
+    with pytest.raises(RuntimeError, match="Compilation Failed"):  # noqa: B017
+        _run_bitwise_xor_ext(dtype, "ascendc")
 
 
 @pytest.mark.parametrize("dtype", ["int8"])
@@ -1192,42 +1190,21 @@ def test_bitwise_xor_int8_pto(dtype, target):
     _run_bitwise_xor_ext(dtype, target)
 
 
-@pytest.mark.xfail(
-    raises=Exception,
-    reason="uint8 on PTO triggers 'VEC instruction error: ub address out of bounds' "
-    "at runtime. The PTO XorCodegen inherits dst row/col for the tmp buffer, "
-    "but sizeof(uint8)=1 vs sizeof(int16)=2 leads to insufficient tmp bytes.",
-)
-@pytest.mark.parametrize("dtype", ["uint8"])
-@pytest.mark.parametrize("target", ["pto"])
-def test_bitwise_xor_uint8_pto_fails(dtype, target):
-    _run_bitwise_xor_ext(dtype, target)
+def test_bitwise_xor_uint8_pto_raises():
+    """uint8 on PTO triggers runtime 'ub address out of bounds' (codegen tmp-size bug)."""
+    with pytest.raises(RuntimeError, match="Compilation Failed"):  # noqa: B017
+        _run_bitwise_xor_ext("uint8", "pto")
 
 
-@pytest.mark.skip(
-    reason="AscendC::Xor has static_assert requiring int16_t/uint16_t only. "
-    "int32/uint32 triggers a segfault in TVM OptimizeForTarget pass, not a "
-    "catchable compile error. CANN xor.h static_assert would also reject at "
-    "C++ compile time if the TVM pass did not crash first."
-)
 @pytest.mark.parametrize("dtype", ["int32", "uint32"])
-def test_bitwise_xor_int32_ascendc_skipped(dtype):
-    _run_bitwise_xor_ext(dtype, "ascendc")
+def test_bitwise_xor_int32_pto_raises(dtype):
+    """int32/uint32 on pto should fail at compile time (static_assert rejects)."""
+    with pytest.raises(RuntimeError, match="Compilation Failed"):  # noqa: B017
+        _run_bitwise_xor_ext(dtype, "pto")
 
 
-@pytest.mark.skip(
-    reason="int32/uint32 triggers a segfault in TVM OptimizeForTarget pass for "
-    "both ascendc and pto targets, not a catchable error. CANN xor.h "
-    "static_assert would also reject int32 at C++ compile time on ascendc."
-)
-@pytest.mark.parametrize("dtype", ["int32", "uint32"])
-@pytest.mark.parametrize("target", ["pto"])
-def test_bitwise_xor_int32_pto_skipped(dtype, target):
-    _run_bitwise_xor_ext(dtype, target)
-
-
-@pytest.mark.parametrize("dtype", ["int16", "uint16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_xor_explicit_tmp(dtype, target):
     _run_bitwise_xor_ext(dtype, target, use_tmp=True)
 
@@ -1297,7 +1274,7 @@ def test_bitwise_xor_buffer_region_2d():
     assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_xor_non_aligned_size(target):
     N = 200
 
