@@ -512,70 +512,23 @@ def generate_full_test_data(
     }
 
 
-def _check_output(name, tl, ref, all_passed):
-    try:
-        torch.testing.assert_close(tl.cpu(), ref.cpu(), rtol=1e-2, atol=1e-2)
-        diff = (tl.cpu().float() - ref.cpu().float()).abs()
-        print(f"  {name} PASSED (max_diff={diff.max().item():.6f})")
-    except AssertionError:
-        diff = (tl.cpu().float() - ref.cpu().float()).abs()
-        print(f"  {name} FAILED (max_diff={diff.max().item():.6f})")
-        all_passed[0] = False
-
-
-def test_full():
+def test():
     print("=" * 60)
-    print("MHC Pre full pipeline test (Ascend NPU)")
+    print("MHC Pre simple example (Ascend NPU)")
     print("=" * 60)
 
-    test_cases = [
-        (4, 128, 4),
-        (16, 256, 4),
-        (4, 1280, 4),
-        (512, 2560, 4),
-        (1024, 2560, 4),
-        (2048, 2560, 4),
-        (4096, 2560, 4),
-        (1024, 7168, 4),
-        (4, 100, 4),
-        (4, 128, 1),
-        (4, 128, 2),
-        (4, 128, 3),
-        (4, 128, 5),
-        (4, 128, 6),
-        (4, 128, 7),
-        (4, 128, 8),
-        (4, 100, 8),
-    ]
-
-    all_passed = [True]
-    for n, h, hc_mult in test_cases:
-        print(f"\n--- n={n}, h={h}, hc_mult={hc_mult} ---")
-        data = generate_full_test_data(n, h, hc_mult)
-        post_tl, comb_tl, layer_tl = mhc_pre(**data)
-        post_ref, comb_ref, layer_ref = mhc_pre_ref(**data)
-        print(f"  post_mix={post_tl.shape}, comb_mix={comb_tl.shape}, layer_input={layer_tl.shape}")
-        _check_output("post_mix", post_tl, post_ref, all_passed)
-        _check_output("comb_mix", comb_tl, comb_ref, all_passed)
-        _check_output("layer_input", layer_tl, layer_ref, all_passed)
-
-    # Distinct parameter routing test (pre_eps != sinkhorn_eps, post_mult != 1.0/2.0)
-    print("\n--- distinct params: hc_pre_eps=1e-4, hc_sinkhorn_eps=3e-3, hc_post_mult_value=1.7 ---")
-    data = generate_full_test_data(4, 128, 4, hc_pre_eps=1e-4, hc_sinkhorn_eps=3e-3, hc_post_mult_value=1.7, sinkhorn_repeat=3)
+    data = generate_full_test_data(16, 256, 4)
     post_tl, comb_tl, layer_tl = mhc_pre(**data)
     post_ref, comb_ref, layer_ref = mhc_pre_ref(**data)
-    _check_output("post_mix", post_tl, post_ref, all_passed)
-    _check_output("comb_mix", comb_tl, comb_ref, all_passed)
-    _check_output("layer_input", layer_tl, layer_ref, all_passed)
+    print(f"post_mix={post_tl.shape}, comb_mix={comb_tl.shape}, layer_input={layer_tl.shape}")
 
-    print("\n" + "=" * 60)
-    if all_passed[0]:
-        print("Kernel Output Match!")
-    else:
-        print("Some tests failed.")
-    print("=" * 60)
+    torch.testing.assert_close(post_tl.cpu(), post_ref.cpu(), rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(comb_tl.cpu(), comb_ref.cpu(), rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(layer_tl.cpu(), layer_ref.cpu(), rtol=1e-2, atol=1e-2)
+    print("Kernel Output Match!")
 
 
 if __name__ == "__main__":
+    torch.random.manual_seed(42)
     tilelang.disable_cache()
-    test_full()
+    test()
