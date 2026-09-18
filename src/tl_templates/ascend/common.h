@@ -272,9 +272,67 @@ CATLASS_DEVICE void
 copy_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
               uint32_t realdstN = 1, uint32_t maskShapeM = srcM,
               uint32_t maskShapeN = srcN) {
-  AscendC::DataCopyExtParams dataCopyParams(
-      maskShapeM, maskShapeN * sizeof(T), (srcN - maskShapeN) * sizeof(T) / 32,
-      (realdstN - maskShapeN) * sizeof(T), 0);
+  // MTE3 (UB -> GM) copy semantics (dav-c220 / dav-c310):
+  //  * the UB source address advances ceil(blockLen / 32) + srcStride whole
+  //    32B blocks per burst - the engine's expression of the system-wide
+  //    "narrow UB rows sit in 32B slots" layout convention (MTE-filled
+  //    buffers and the packed-mask helpers write rows on 32B boundaries), so
+  //    a multi-burst copy is correct whenever the source follows that
+  //    convention, including any srcPitch that is a 32B multiple;
+  //  * the GM-side stride is byte granular - per-burst destination addresses
+  //    need no alignment (a non-32B blockLen itself is fine too, the GM write
+  //    is masked to blockLen bytes; see CopyRemovePad in CANN's
+  //    detect_mat_mul);
+  //  * a single burst may have an arbitrary byte length, but blockLen is a
+  //    16-bit instruction field (CANN MAX_BLOCK_LEN = 65535) and blockCount
+  //    a 12-bit field (max 4095).
+  // What the engine cannot express is a *compactly packed* sub-32B-pitch
+  // source with more than one row (e.g. a V-pipe (M, 1) fp32 keepdim reduce
+  // result written straight back to GM, issue #1682): the 32B slot stepping
+  // then reads past each row. When both sides are packed such a copy is one
+  // contiguous slab, so it is emitted as a single flat burst (up to the
+  // 16-bit length limit). The DataCopyPad stays unconditional and straight-
+  // line: bisheng's automatic cross-pipe dependency sync only covers bare
+  // straight-line intrinsics, and any branch around the call (or GM scalar
+  // stores in a sibling branch) makes it miscompile and deadlock the MTE3
+  // queue on device.
+  constexpr uint32_t kBlockBytes = 32;
+  const uint32_t blockLen = maskShapeN * sizeof(T);
+  const uint32_t srcPitch = srcN * sizeof(T);
+  const uint32_t dstPitch = realdstN * sizeof(T);
+  if (blockLen == 0 || maskShapeM == 0) {
+    return;
+  }
+
+  const bool packed = srcN == maskShapeN && realdstN == maskShapeN;
+  const uint64_t total = static_cast<uint64_t>(maskShapeM) * blockLen;
+  // Fold the flat form and the classic multi-burst form into one parameter
+  // set; the DataCopyPad itself stays in a single straight-line branch.
+  uint32_t blockCount = maskShapeM;
+  uint32_t burstLen = blockLen;
+  uint32_t srcStride = (srcPitch - blockLen) / kBlockBytes;
+  uint32_t dstStride = dstPitch - blockLen;
+  const bool flat = packed && total <= 65535;
+  if (flat) {
+    blockCount = 1;
+    burstLen = static_cast<uint32_t>(total);
+    srcStride = 0;
+    dstStride = 0;
+  }
+  // The DataCopyPad stays unconditional and straight-line: bisheng's
+  // automatic cross-pipe dependency sync only covers straight-line
+  // intrinsics, and any branch around the call (or GM scalar stores in a
+  // sibling branch) makes it miscompile and deadlock the MTE3 queue on
+  // device. The multi-burst form is the historical default for everything
+  // that is not flat: a single row, a 32B-multiple srcPitch (the per-burst
+  // source advance lands exactly on each row) or a sub-32B srcPitch (each
+  // row then sits in its own 32B slot - the packed masks and MTE-filled
+  // narrow buffers follow that convention). A packed sub-32B-pitch source
+  // too large for one flat burst keeps taking the multi-burst form, exactly
+  // as before this change; a scalar fallback cannot live in this function
+  // at all (see above).
+  AscendC::DataCopyExtParams dataCopyParams(blockCount, burstLen, srcStride,
+                                            dstStride, 0);
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams);
 }
 

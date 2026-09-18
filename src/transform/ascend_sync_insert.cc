@@ -1622,7 +1622,13 @@ private:
   }
 
   int AllocateEventId() {
-    event_id_counter_ = (event_id_counter_ + 1) % 8;
+    // Cycle 1..7 and reserve id 0 for the C++ templates (copy_gm_to_ub and
+    // copy_ub_to_gm in tl_templates/ascend/common.h hard-code event id 0 for
+    // their set/wait pairs). Allocating 0 here can interleave a pass-emitted
+    // set/wait of the same (pipe pair, id) with a template-emitted one,
+    // collapsing two sets into one and deadlocking the second wait on
+    // device.
+    event_id_counter_ = event_id_counter_ % 7 + 1;
     return event_id_counter_;
   }
 
