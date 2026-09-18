@@ -334,8 +334,14 @@ shape除了可以是整形常量外，还可以是符号变量的形式表示，
 dtype用于指定Tile的数据类型，支持的类型列表有：
 
 ```
-float16, float32, bfloat16, int8, int16, int32, int64, uint8, uint16, uint32, uint64
+float16, float32, bfloat16, int4, int8, int16, int32, int64, uint8, uint16, uint32, uint64
 ```
+
+`int4` 为半字节打包类型（两个元素共享一个字节，低 nibble 为偶数元素），当前仅支持默认
+`ascendc` target（`pto` target 尚未支持，见 [pto-isa#115](https://gitcode.com/cann/pto-isa/issues/115)），
+可用于 `T.gemm_v0` 的 W4A4（int4×int4→int32）矩阵乘与 `T.tile.cast` 的 fp16→int4 量化，
+暂不支持 `transpose_A` / `transpose_B`。GM 上的 int4 tensor 按行打包：`(M, N)` tensor 的第 r 行
+起始于字节 `r * N / 2`。参考示例：`examples/w4a4_matmul/`。
 
 
 
