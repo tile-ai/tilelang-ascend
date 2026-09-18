@@ -19,6 +19,51 @@ AVALIABLE_TARGETS = {
     "llvm",
 }
 
+ASCEND_PLATFORM_MCPU = {
+    "A2": "dav-2201",
+    "A3": "dav-2201",
+    "A5": "dav-3510",
+}
+
+
+def ascend_mcpu_for_platform(platform: str) -> str:
+    try:
+        return ASCEND_PLATFORM_MCPU[platform]
+    except KeyError as err:
+        raise ValueError(f"Unsupported Ascend platform {platform!r}; expected one of {sorted(ASCEND_PLATFORM_MCPU)}") from err
+
+
+def ascend_platform_from_mcpu(mcpu: str | None) -> str | None:
+    if not mcpu:
+        return None
+    normalized = mcpu.lower()
+    if "3510" in normalized or "950" in normalized or "910_95" in normalized:
+        return "A5"
+    if "2201" in normalized:
+        return "A2/A3"
+    if "910c" in normalized or "910_93" in normalized:
+        return "A3"
+    if "910b" in normalized or "310p" in normalized or "910" in normalized:
+        return "A2"
+    return None
+
+
+def ascend_platform_from_device_name(name: str) -> str | None:
+    normalized = name.upper()
+    if "950" in normalized or "910_95" in normalized or "3510" in normalized:
+        return "A5"
+    if "910_93" in normalized or "910C" in normalized:
+        return "A3"
+    if "910B" in normalized or "310P" in normalized or "910" in normalized:
+        return "A2"
+    return None
+
+
+def validate_ascend_platform_device(platform: str, device_name: str) -> None:
+    runtime_platform = ascend_platform_from_device_name(device_name)
+    if runtime_platform is not None and runtime_platform != platform:
+        raise RuntimeError(f"Ascend runtime device {device_name!r} is {runtime_platform}, but the compiled target platform is {platform}")
+
 
 def check_cuda_availability() -> bool:
     """
@@ -142,14 +187,9 @@ def determine_platform(platform: str = "auto") -> str:
 
     name = name.upper()
 
-    if "910B" in name:
-        return "A2"
-    elif "910_93" in name or "910C" in name:
-        return "A3"
-    elif "950" in name or "910_95" in name:
-        return "A5"
-    elif "910" in name:  # Covers 910A
-        return "A2"
+    detected_platform = ascend_platform_from_device_name(name)
+    if detected_platform is not None:
+        return detected_platform
 
     # Default fallback if detection fails
     return "A3"
