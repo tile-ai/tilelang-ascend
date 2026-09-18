@@ -188,6 +188,107 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     return indices;
   };
 
+  auto compute_valid_extent = [](PrimExpr min_val, PrimExpr extent,
+                                 PrimExpr shape) -> PrimExpr {
+    PrimExpr remaining = shape - min_val;
+    if (remaining.dtype().lanes() > 1) {
+      return extent;
+    }
+    return Select(remaining >= extent, extent,
+                  Select(remaining > 0, remaining, 0));
+  };
+
+  auto find_active_dim_indices =
+      [](const Array<PrimExpr> &extents) -> std::vector<int> {
+    std::vector<int> active_indices;
+    int size = static_cast<int>(extents.size());
+
+    // Traverse from 0 to size-1, find dimensions where extent != 1
+    for (int i = 0; i < size; ++i) {
+      if (auto *int_imm = extents[i].as<IntImmNode>()) {
+        if (int_imm->value != 1) {
+          active_indices.push_back(i);
+        }
+      } else {
+        active_indices.push_back(i);
+      }
+    }
+
+    // The last dimension must always be included in the result
+    if (size >= 1 &&
+        (active_indices.empty() || active_indices.back() != size - 1)) {
+      active_indices.push_back(size - 1);
+    }
+
+    // Special: If extents.size() >= 2 and active_indices.size() == 1,
+    // insert size-2 at the second-to-last position
+    if (size >= 2 && active_indices.size() == 1) {
+      active_indices.insert(active_indices.begin(), size - 2);
+    }
+
+    return active_indices;
+  };
+
+  // A region with more than two active dims (e.g. a 3D block copy) must be
+  // flattened into the 2D (rows x cols) DMA rectangle the copy helpers
+  // model. The flatten is only memory-uniform when every active row dim
+  // except the outermost fully covers the buffer dims it spans (including
+  // any singleton dims in between); then the leading dims simply multiply
+  // the row count -- the "total plane" (d0*d1, d2). Without the fold the
+  // leading dims were silently dropped and the DMA copied only the
+  // last-2-dims rectangle, leaving most of the destination uninitialized.
+  struct FoldedRegion {
+    bool foldable = false;
+    // Row count with the outermost dim tail-clamped (runtime expr).
+    PrimExpr valid_rows;
+    // Full (unclamped) row count of the region, for compile-time templates.
+    PrimExpr full_rows;
+  };
+
+  auto fold_leading_row_dims =
+      [&](const Buffer &buf, const Array<Range> &ranges,
+          const Array<PrimExpr> &extents, const std::vector<int> &active,
+          FoldedRegion &res) {
+        if (active.size() < 3) {
+          return;
+        }
+        // Active row dims: active[0 .. m-2] (outermost first), col:
+        // active[m-1]. A uniform burst pitch requires, for each j in [0, m-3]:
+        //   extents[active[j+1]] == prod(buf->shape[active[j]+1 ..
+        //   active[j+1]])
+        // (the intermediate active dim fully spans its group).
+        for (size_t j = 0; j + 2 < active.size(); ++j) {
+          int lead = active[j];
+          int mid = active[j + 1];
+          PrimExpr group = Integer(1);
+          for (int q = lead + 1; q <= mid; ++q) {
+            group = group * buf->shape[q];
+          }
+          if (!analyzer->CanProveEqual(extents[mid], group)) {
+            return;
+          }
+        }
+        // The outermost dim may be a tail block (clamp it); the intermediate
+        // dims are full, so their extents fold in as-is.
+        PrimExpr rows = compute_valid_extent(ranges[active[0]]->min,
+                                             ranges[active[0]]->extent,
+                                             buf->shape[active[0]]);
+        PrimExpr full_rows = ranges[active[0]]->extent;
+        for (size_t j = 1; j + 1 < active.size(); ++j) {
+          rows = rows * extents[active[j]];
+          full_rows = full_rows * extents[active[j]];
+        }
+        res.foldable = true;
+        res.valid_rows = analyzer->Simplify(rows);
+        res.full_rows = analyzer->Simplify(full_rows);
+      };
+
+  std::vector<int> src_active = find_active_dim_indices(src_extents);
+  std::vector<int> dst_active = find_active_dim_indices(dst_extents);
+  FoldedRegion src_fold, dst_fold;
+  fold_leading_row_dims(src, src_range, src_extents, src_active, src_fold);
+  fold_leading_row_dims(dst, dst_range, dst_extents, dst_active, dst_fold);
+
   struct CopyConfig {
     bool needs_strideN = false;
     bool l0c2gm = false;
@@ -257,7 +358,16 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       }
       ss << gm2ub_tmpl_n;
       if (dst->shape.size() > 1) {
-        ss << ", " << compute_blocklen(dst, dst_extents);
+        // For a folded >2D region the DMA tile is the flattened (rows, cols)
+        // plane, so the template row count (the Duplicate pad size and the
+        // default maskShapeM) is the folded row product, not the buffer's
+        // second-to-last dim. Fall back to the 2D blocklen when the product
+        // is not a compile-time constant.
+        if (dst_fold.foldable && dst_fold.full_rows->IsInstance<IntImmNode>()) {
+          ss << ", " << dst_fold.full_rows;
+        } else {
+          ss << ", " << compute_blocklen(dst, dst_extents);
+        }
       }
       ss << ">";
     } else if (dst.scope() == "global") {
@@ -281,7 +391,15 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       }
       ss << ub2gm_tmpl_n;
       if (src->shape.size() > 1) {
-        ss << ", " << compute_blocklen(src, src_extents);
+        // See copy_gm_to_ub above: a folded >2D region uses the flattened
+        // row product as the template row count. (srcM is only the default
+        // for the explicitly-passed maskShapeM, so this stays cosmetic for
+        // full copies.)
+        if (src_fold.foldable && src_fold.full_rows->IsInstance<IntImmNode>()) {
+          ss << ", " << src_fold.full_rows;
+        } else {
+          ss << ", " << compute_blocklen(src, src_extents);
+        }
       }
       ss << ">";
     } else if (dst.scope() == "shared.l1") {
@@ -407,51 +525,9 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
         tmp_new_buffer.OffsetOf(tmp_new_indices).back(), tmp_len);
   }
 
-  auto compute_valid_extent = [](PrimExpr min_val, PrimExpr extent,
-                                 PrimExpr shape) -> PrimExpr {
-    PrimExpr remaining = shape - min_val;
-    if (remaining.dtype().lanes() > 1) {
-      return extent;
-    }
-    return Select(remaining >= extent, extent,
-                  Select(remaining > 0, remaining, 0));
-  };
-
-  auto find_active_dim_indices =
-      [](const Array<PrimExpr> &extents) -> std::vector<int> {
-    std::vector<int> active_indices;
-    int size = static_cast<int>(extents.size());
-
-    // Traverse from 0 to size-1, find dimensions where extent != 1
-    for (int i = 0; i < size; ++i) {
-      if (auto *int_imm = extents[i].as<IntImmNode>()) {
-        if (int_imm->value != 1) {
-          active_indices.push_back(i);
-        }
-      } else {
-        active_indices.push_back(i);
-      }
-    }
-
-    // The last dimension must always be included in the result
-    if (size >= 1 &&
-        (active_indices.empty() || active_indices.back() != size - 1)) {
-      active_indices.push_back(size - 1);
-    }
-
-    // Special: If extents.size() >= 2 and active_indices.size() == 1,
-    // insert size-2 at the second-to-last position
-    if (size >= 2 && active_indices.size() == 1) {
-      active_indices.insert(active_indices.begin(), size - 2);
-    }
-
-    return active_indices;
-  };
-
   PrimExpr validRow_src, validCol_src, validRow_dst, validCol_dst;
 
   // src: compute validRow and validCol using active dimension indices
-  std::vector<int> src_active = find_active_dim_indices(src_extents);
   if (src_active.size() >= 2) {
     int row_idx = src_active[src_active.size() - 2];
     int col_idx = src_active.back();
@@ -461,6 +537,11 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     validCol_src =
         compute_valid_extent(src_range[col_idx]->min,
                              src_range[col_idx]->extent, src->shape[col_idx]);
+    // Fold the leading active dims into the row count (see
+    // fold_leading_row_dims); valid_rows already includes the row_idx dim.
+    if (src_fold.foldable) {
+      validRow_src = src_fold.valid_rows;
+    }
   } else if (src_active.size() == 1) {
     int col_idx = src_active[0];
     validRow_src = Integer(1);
@@ -473,7 +554,6 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   }
 
   // dst: compute validRow and validCol using active dimension indices
-  std::vector<int> dst_active = find_active_dim_indices(dst_extents);
   if (dst_active.size() >= 2) {
     int row_idx = dst_active[dst_active.size() - 2];
     int col_idx = dst_active.back();
@@ -483,6 +563,11 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     validCol_dst =
         compute_valid_extent(dst_range[col_idx]->min,
                              dst_range[col_idx]->extent, dst->shape[col_idx]);
+    // Fold the leading active dims into the row count (see
+    // fold_leading_row_dims); valid_rows already includes the row_idx dim.
+    if (dst_fold.foldable) {
+      validRow_dst = dst_fold.valid_rows;
+    }
   } else if (dst_active.size() == 1) {
     int col_idx = dst_active[0];
     validRow_dst = Integer(1);
@@ -561,8 +646,19 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     // Physical UB tile dims (row pitch). These trail pad_val and are consumed
     // by AscendTailMaskPropagation to model the tail rect; CopyCodegen prints
     // only the first 4 extra args (strideN, validRow, validCol, pad_val).
+    // For a folded >2D copy the physical tile as seen by the DMA is the
+    // flattened (prod(leading dims), last dim) plane; report that so the
+    // tail-mask model stays consistent with the folded validRow.
     if (dst->shape.size() > 1) {
-      new_args.push_back(dst->shape[dst->shape.size() - 2]);
+      if (dst_fold.foldable) {
+        PrimExpr phys_rows = Integer(1);
+        for (size_t i = 0; i + 1 < dst->shape.size(); ++i) {
+          phys_rows = phys_rows * dst->shape[i];
+        }
+        new_args.push_back(analyzer->Simplify(phys_rows));
+      } else {
+        new_args.push_back(dst->shape[dst->shape.size() - 2]);
+      }
     }
     new_args.push_back(dst->shape[dst->shape.size() - 1]);
   }
@@ -570,8 +666,19 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   if (config.ub2gm) {
     new_args.push_back(validRow_dst);
     new_args.push_back(validCol_dst);
+    // See the gm2ub block above: a folded >2D copy reports the flattened
+    // physical row count so AscendTailMaskPropagation's output hints stay
+    // consistent with the folded validRow.
     if (src->shape.size() > 1) {
-      new_args.push_back(src->shape[src->shape.size() - 2]);
+      if (src_fold.foldable) {
+        PrimExpr phys_rows = Integer(1);
+        for (size_t i = 0; i + 1 < src->shape.size(); ++i) {
+          phys_rows = phys_rows * src->shape[i];
+        }
+        new_args.push_back(analyzer->Simplify(phys_rows));
+      } else {
+        new_args.push_back(src->shape[src->shape.size() - 2]);
+      }
     }
     new_args.push_back(src->shape[src->shape.size() - 1]);
   }
