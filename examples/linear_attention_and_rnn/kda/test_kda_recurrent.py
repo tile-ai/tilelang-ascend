@@ -7,6 +7,7 @@ Four checks, in the order they buy the most confidence:
   [1] the kernel against both goldens (fp16 / bf16 inputs)
   [2] one shot vs segmented with the state relayed through final_state
   [3] an all-zero initial_state must equal passing none at all
+  [4] SEQ == 0 relays the state through untouched
 
 Shape coverage: B=1/4, single and multi head, GVA (HV=2H / 4H), pure decode
 (T=1), very short sequences, one full chunk length, several chunk lengths,
@@ -172,6 +173,34 @@ def test_zero_state():
     return ok
 
 
+def test_empty_sequence():
+    """SEQ == 0 is legal input -- it is what a varlen batch with an empty entry
+    produces, and FLA's fused_recurrent returns early on it.
+
+    This path has no early return and does not need one: the serial scan simply
+    runs zero iterations, so the state reaches the output untouched.  Measured
+    before this test existed, and it was already exact.  The test is here to
+    keep it that way -- the chunkwise entry's early return is precisely where a
+    silent wrong result got in once, by skipping the checks above it.
+    """
+    print("[4] SEQ == 0: no token is consumed, so final_state IS initial_state")
+    B, HV, K, V = 2, 4, 64, 64
+    e = lambda *s, dt=torch.float16: torch.empty(s, device="npu", dtype=dt)  # noqa: E731
+    q0, k0 = e(B, 0, 2, K), e(B, 0, 2, K)
+    v0, b0 = e(B, 0, HV, V), e(B, 0, HV)
+    g0 = e(B, 0, HV, K, dt=torch.float32)
+
+    s0 = (torch.randn(B, HV, K, V, device="npu") * 0.1).float()
+    o, sf = kda_recurrent(q0, k0, v0, g0, b0, initial_state=s0, output_final_state=True)
+    relayed = tuple(o.shape) == (B, 0, HV, V) and torch.equal(sf.cpu(), s0.cpu())
+    print(f"    with a state:    o{tuple(o.shape)}  final_state bit-identical to initial: {relayed}")
+
+    o, sf = kda_recurrent(q0, k0, v0, g0, b0, output_final_state=True)
+    zeroed = tuple(o.shape) == (B, 0, HV, V) and not sf.any().item()
+    print(f"    without a state: o{tuple(o.shape)}  final_state all zero: {zeroed}")
+    return relayed and zeroed
+
+
 def main():
     tilelang.disable_cache()
     torch.manual_seed(0)
@@ -180,6 +209,7 @@ def main():
     ok &= test_kernel_vs_goldens()
     ok &= test_segmented()
     ok &= test_zero_state()
+    ok &= test_empty_sequence()
 
     print()
     if ok:

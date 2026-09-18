@@ -125,6 +125,12 @@ def kda_chunk_fwd(
     B, SEQ, H, K = q.shape
     HV = v.shape[2]
     assert HV % H == 0, "HV must be divisible by H (GVA)"
+    # g is fp32 in the frozen contract and stage 1 asserts it.  The call below
+    # used to pass g.float(), which made that assert unreachable: an fp16 g was
+    # silently widened here instead of being rejected there, so the contract
+    # held only because no caller tested it.  Check once, at the entry, and hand
+    # stage 1 the tensor untouched.
+    assert g.dtype == torch.float32, f"g is the fp32 log-domain gate in the frozen contract, got {g.dtype}"
     if scale is None:
         scale = K**-0.5
 
@@ -187,7 +193,7 @@ def kda_chunk_fwd(
         if not output_final_state:
             return o, None
         if initial_state is not None:
-            sf = initial_state.float().clone()
+            sf = initial_state.clone()  # already asserted fp32 above; .float() here could only be a no-op
         else:
             sf = torch.zeros((n_lead, HV, K, V), device=v.device, dtype=torch.float32)
         return o, sf
@@ -200,7 +206,7 @@ def kda_chunk_fwd(
     # the boundaries have to reach the host somehow.  FLA solves the same
     # problem by carrying a separate cu_seqlens_cpu the whole way down; passing
     # cu_seqlens already on the CPU here has the same effect.
-    G = chunk_cumsum(g.float(), C=C, cu_seqlens=cu_seqlens)  # stage 1
+    G = chunk_cumsum(g, C=C, cu_seqlens=cu_seqlens)  # stage 1
     # BC is stage 2's anchor width and it sets how much stays on the vector
     # unit: the diagonal blocks are BC wide, everything to their left is a
     # cube matmul.  Halving BC halves the vector arithmetic and adds more,

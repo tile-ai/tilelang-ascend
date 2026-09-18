@@ -160,17 +160,40 @@ def kda_recurrent_ker(B, SEQ, H, HV, K, V, scale, dtype="float16", accum_dtype="
     return main
 
 
+_DTYPES = {torch.float16: "float16", torch.bfloat16: "bfloat16"}
+
+
 def kda_recurrent(q, k, v, g, beta, scale=None, initial_state=None, output_final_state=False):
     """Host wrapper.  Semantics match kda_ref.kda_ref."""
     B, SEQ, H, K = q.shape
     HV, V = v.shape[2], v.shape[-1]
+    assert HV % H == 0, "HV must be divisible by H (GVA)"
     assert V % 32 == 0, "the V/2 slice each vector core gets must stay 32B aligned"
+    assert g.dtype == torch.float32, f"g is the fp32 log-domain gate in the frozen contract, got {g.dtype}"
     if scale is None:
         scale = K**-0.5
 
+    # initial_state used to reach the kernel unchecked, and the consequence was
+    # not a late error but a silent wrong answer.  Measured on 910B: a
+    # transposed [B,HV,V,K], a double-width [B,HV,K,2V] and a half-width state
+    # are all ACCEPTED, all finite, and all wrong by 0.019 / 0.030 / 0.022 --
+    # against an output whose own magnitude is ~0.003.  Only a CPU state fails,
+    # and it fails as "SUSPECT REMOTE ERROR" inside torch_npu, naming nothing.
+    # The chunkwise entry (kda_full.kda_chunk_fwd) checks all four; this is the
+    # same contract, and the four lines are deliberately identical to it.
+    if initial_state is not None:
+        want = (B, HV, K, V)
+        got = tuple(initial_state.shape)
+        assert got == want, f"initial_state must be {want}, got {got}"
+        assert initial_state.dtype == torch.float32, f"initial_state must be float32, got {initial_state.dtype}"
+        assert initial_state.device == q.device, f"initial_state is on {initial_state.device}, inputs are on {q.device}"
+        assert initial_state.is_contiguous(), "initial_state must be contiguous"
+
     # An absent initial state is passed as zeros: the kernel reads it
     # unconditionally, which avoids compiling a variant for the optional input.
-    s0 = initial_state.float() if initial_state is not None else torch.zeros((B, HV, K, V), device=q.device, dtype=torch.float)
+    # It is taken as given, not coerced: the assert above already pins it to
+    # fp32, so the .float() that used to stand here could only ever be a no-op.
+    s0 = initial_state if initial_state is not None else torch.zeros((B, HV, K, V), device=q.device, dtype=torch.float)
 
     # Each beta element gets its own 8-fp32 (32B) slot; the reason is in the
     # kernel comment on Beta.  Padding to [B,SEQ,HV,8] and not [B,SEQ,HV+8]:
@@ -188,7 +211,10 @@ def kda_recurrent(q, k, v, g, beta, scale=None, initial_state=None, output_final
     beta_p = torch.zeros((B, SEQ, HV, 8), device=q.device, dtype=torch.float)
     beta_p[..., 0] = beta.float()
 
-    dt = {torch.float16: "float16", torch.bfloat16: "bfloat16"}[q.dtype]
+    # Asserted before it is indexed: a bare lookup fails with KeyError:
+    # torch.float32, which names neither the argument nor the constraint.
+    assert q.dtype in _DTYPES, f"unsupported dtype {q.dtype}; the decode kernel takes fp16 / bf16"
+    dt = _DTYPES[q.dtype]
     o, sf = kda_recurrent_ker(B, SEQ, H, HV, K, V, float(scale), dtype=dt)(q, k, v, g, beta_p, s0)
     return o, (sf if output_final_state else None)
 

@@ -765,8 +765,21 @@ def chunk_h(kt, w, u, g_cumsum, C=64, BV=None, initial_state=None, cu_seqlens=No
     # unconditionally; the same choice as the L0 kernel.  Under varlen the
     # leading axis is the SEQUENCE COUNT, not the batch.
     n_lead = B if cu_seqlens is None else (cu_seqlens.numel() - 1)
-    s0 = initial_state.float() if initial_state is not None else _zero_state(n_lead, HV, K, V, kt.device)
-    assert s0.shape == (n_lead, HV, K, V) and s0.is_contiguous(), "S0 layout"
+    # Asserted, not coerced.  This used to be initial_state.float(), which meant
+    # a direct caller handing in an fp16 state got it silently widened while the
+    # same state through kda_chunk_fwd is rejected -- one tensor, two entries,
+    # two contracts, the same split kkt had on G.  The message names the
+    # expectation and the actual value: "S0 layout" named neither, and under
+    # cu_seqlens the leading axis is the SEQUENCE count, which is the easiest
+    # thing to get wrong about this interface.
+    if initial_state is not None:
+        lead = "batch" if cu_seqlens is None else "SEQUENCE count, not the batch"
+        got = tuple(initial_state.shape)
+        assert got == (n_lead, HV, K, V), f"initial_state must be {(n_lead, HV, K, V)}, got {got}; its leading axis is the {lead}"
+        assert initial_state.dtype == torch.float32, f"initial_state must be float32, got {initial_state.dtype}"
+        assert initial_state.device == kt.device, f"initial_state is on {initial_state.device}, inputs are on {kt.device}"
+        assert initial_state.is_contiguous(), "initial_state must be contiguous"
+    s0 = initial_state if initial_state is not None else _zero_state(n_lead, HV, K, V, kt.device)
 
     # SEQ == 0 slips past the assert above (0 % C == 0) and would launch a
     # zero-block grid over unwritten outputs.  A zero-length sequence is legal

@@ -942,6 +942,10 @@ def chunk_o_ker_varlen(B, SEQ, H, HV, K, V, C, scale, NT_TOTAL, BC=16, dtype="fl
 
 _MSK_CACHE = {}
 
+# Asserted before it is indexed.  A bare lookup fails with KeyError:
+# torch.float32, which names neither the argument nor the constraint.
+_DTYPES = {torch.float16: "float16", torch.bfloat16: "bfloat16"}
+
 
 def _causal_masks(C, device):
     """The inclusive (i >= j) and strict (i > j) [C, C] indicators, built once.
@@ -1047,7 +1051,8 @@ def chunk_o(q, k, vnew, states, G, C=64, BC=16, scale=None, cu_seqlens=None, rou
         route_b = False
     msk_inc, msk_str, msk_bit = _causal_masks(C, q.device)
 
-    dt = {torch.float16: "float16", torch.bfloat16: "bfloat16"}[q.dtype]
+    assert q.dtype in _DTYPES, f"unsupported dtype {q.dtype}; chunk_o takes fp16 / bf16"
+    dt = _DTYPES[q.dtype]
     if cu_seqlens is None:
         ker = chunk_o_ker(B, SEQ, H, HV, K, V, C, float(scale), BC=BC, dtype=dt, route_b=route_b)
         return ker(q, k, vnew, states, G, msk_inc, msk_str, msk_bit)

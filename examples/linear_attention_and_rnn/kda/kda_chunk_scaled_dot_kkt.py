@@ -984,6 +984,10 @@ def kkt_ker_varlen(B, SEQ, H, HV, K, C, NT_TOTAL, BC=16, dtype="float16", accum_
 
 _MSK_CACHE = {}
 
+# Asserted before it is indexed.  A bare lookup fails with KeyError:
+# torch.float32, which names neither the argument nor the constraint.
+_DTYPES = {torch.float16: "float16", torch.bfloat16: "bfloat16"}
+
 
 def _strict_lower(C, device):
     """The strictly-lower [C, C] indicator, built once per (C, device).
@@ -1063,7 +1067,13 @@ def chunk_scaled_dot_kkt(k, G, beta, C=64, BC=16, cu_seqlens=None, route_b=False
     """
     B, SEQ, H, K = k.shape
     HV = G.shape[2]
-    assert G.shape == (B, SEQ, HV, K), f"G must be [B, SEQ, HV, K], got {tuple(G.shape)}"
+    # dtype as well as shape, and asserted rather than coerced.  Both kernel
+    # calls below used to take G.float().  On the pipeline path that is a no-op
+    # (stage 1 returns fp32, so .float() hands back the same object, same
+    # data_ptr -- measured), but it also silently accepted an fp16 G from a
+    # direct caller and cast it, where wy_fast asserts on exactly that input.
+    # One tensor, two stages, two contracts.  This is the wy_fast one.
+    assert G.shape == (B, SEQ, HV, K) and G.dtype == torch.float, f"G must be fp32 [B, SEQ, HV, K], got {tuple(G.shape)} {G.dtype}"
     assert HV % H == 0, "HV must be divisible by H (GVA)"
     assert C % 2 == 0 and C % 16 == 0, "C must be even and 32B-aligned in dtype"
     assert K % 16 == 0, "K must be 32B-aligned in dtype"
@@ -1112,9 +1122,10 @@ def chunk_scaled_dot_kkt(k, G, beta, C=64, BC=16, cu_seqlens=None, route_b=False
 
     # Only the cube operands change dtype under route B, never k or L: handing
     # L back in bf16 would silently convert the five stages downstream.
-    dt = {torch.float16: "float16", torch.bfloat16: "bfloat16"}[k.dtype]
+    assert k.dtype in _DTYPES, f"unsupported dtype {k.dtype}; kkt takes fp16 / bf16"
+    dt = _DTYPES[k.dtype]
     if cu_seqlens is None:
-        return kkt_ker(B, SEQ, H, HV, K, C, BC=BC, dtype=dt, route_b=route_b)(k, G.float(), beta_p, msk)
+        return kkt_ker(B, SEQ, H, HV, K, C, BC=BC, dtype=dt, route_b=route_b)(k, G, beta_p, msk)
 
     bounds = _VL.varlen_bounds(cu_seqlens, q=k, g=G, beta=beta)
     meta = _VL.chunk_meta(bounds, C, k.device)
@@ -1123,7 +1134,7 @@ def chunk_scaled_dot_kkt(k, G, beta, C=64, BC=16, cu_seqlens=None, route_b=False
     # dirty memory back: the output buffer is torch.empty, not zeros.
     assert nt_total > 0, "a non-empty batch must produce at least one chunk"
     assert int(meta[:, _VL.META_ROWS].sum()) == SEQ, "chunk metadata does not cover every token exactly once"
-    return kkt_ker_varlen(B, SEQ, H, HV, K, C, nt_total, BC=BC, dtype=dt, route_b=route_b)(k, G.float(), beta_p, msk, meta)
+    return kkt_ker_varlen(B, SEQ, H, HV, K, C, nt_total, BC=BC, dtype=dt, route_b=route_b)(k, G, beta_p, msk, meta)
 
 
 # Alias matching the stage name used by the GDN pipeline.
