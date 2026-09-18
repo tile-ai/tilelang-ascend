@@ -90,11 +90,11 @@ T.mma(A_L0, B_L0, C_L0, init=True)
 
 ## 2. 归约操作
 
-### T.reduce_sum(buffer, out, dim=-1, clear=True, real_shape=None)
+### T.reduce_sum(buffer, out, dim=-1, clear=True, real_shape=None, *, tmp=None)
 
-### T.reduce_max(buffer, out, dim=-1, clear=True, real_shape=None)
+### T.reduce_max(buffer, out, dim=-1, clear=True, real_shape=None, *, tmp=None)
 
-### T.reduce_min(buffer, out, dim=-1, clear=True, real_shape=None)
+### T.reduce_min(buffer, out, dim=-1, clear=True, real_shape=None, *, tmp=None)
 
 Ascend fast-path reduce 原语，主要服务于 UB tile / slice buffer 场景。
 
@@ -105,6 +105,7 @@ Ascend fast-path reduce 原语，主要服务于 UB tile / slice buffer 场景�
 - `dim`：reduce 轴
 - `clear`：是否在计算前初始化输出
 - `real_shape`：2D slice buffer 的逻辑有效范围；未设置时默认使用物理 buffer 形状
+- `tmp`：可选的 keyword-only UB scratch arena
 
 **当前支持范围**：
 
@@ -148,24 +149,14 @@ T.reduce_max(in_shared, out_shared, dim=-1, real_shape=[4, 4])
 
 ### 临时 workspace arena（`tmp`）
 
-下列公开计算 API 的 `tmp` 都是仅限关键字的可选参数：三个 reduce，以及
-`broadcast`、`sort`、`merge_sort`、`topk`、`gather_mask`、`select`、`gather`、
-`sigmoid`、`sin`、`cos`、`pow`、`bitwise_xor`、`clamp` 系列、`round`、已弃用的
-`bilinear_interpolation` 和两个 experimental ReduceSum API。PTO 不支持
-`bilinear_interpolation`、`sin`、`cos` 或两个 experimental ReduceSum API。
+普通 kernel 优先省略 `tmp`，由编译器管理。只有 Expert 模式需要把某次调用纳入显式 UB
+地址规划时才提供 arena；当前没有公开 size-query，不能凭经验猜测非零容量。通用 arena 的
+支持 API、结构和对齐契约以
+[`docs/language_ref/tilelibrary.md`](../../../../../docs/language_ref/tilelibrary.md#temporary-workspace-arenas)
+为准。`workspace_idx` 是 runtime GM workspace，不是这里的 UB scratch。
 
-显式 `tmp` 是一次调用完整的 target-specific arena。其 backing Buffer 必须是一维、静态、
-连续、定宽标量 dtype 的 `shared.ub` Buffer；BufferRegion 本身也必须一维、静态、位于该
-Buffer 内，且起始字节地址 32B 对齐。dtype 只决定 arena 的字节几何
-（`extent * sizeof(dtype)`）；lowering 在同一字节存储上建立目标所需的 typed view，不做数值
-转换，并保留 region 的字节起点。前端只验证该几何和对齐，非零显式 arena 的容量始终由调用者
-负责。
-
-省略 `tmp` 时由编译器管理。`dav-2201` AscendC 的隐式 workspace 字节数是来自 CANN source
-和定向 sampling 的保守启发式，不是显式 arena 的下限或公开 size-query。目标路径真实不需要
-workspace 时，lowering 会移除 operand，故可传零 extent arena。AscendC 目前不会由 region
-extent 调用 `LocalTensor::SetSize`，所以 region extent 不是严格的 `LocalTensor` 上界；仍须
-提供后端所有访问所需的存储。
+`row_expand_*_experiment` 的 `tmp` 会改变 `src1` 布局，不能套用通用 byte-arena 规则；
+使用前读取同一文档的 row-expand 专节并检查当前 source/test。
 
 ---
 
@@ -300,6 +291,12 @@ Pass 设计详见 `.agents/skills/tilelang-pass-analyzer/references/pass-designs
 | `T.tile.div(dst, src0, src1)` | dst = src0 / src1 | buffer 或 scalar |
 | `T.tile.max(dst, src0, src1)` | dst = max(src0, src1) | buffer 或 scalar |
 | `T.tile.min(dst, src0, src1)` | dst = min(src0, src1) | buffer 或 scalar |
+
+#### Experimental row-expand
+
+`T.tile.row_expand_{mul,sub,div}_experiment` 是受严格布局约束的 fp16/fp32 行广播原语。
+在生成调用前，必须从 canonical language reference 核对 256B 行宽、folded row 范围、
+32B 对齐以及 packed/scalar `src1` 两种形式；不要从普通 `T.tile.mul/sub/div` 推断签名。
 
 ### 4.2 单目运算
 
@@ -582,7 +579,7 @@ else:
 > - 无 tile 指令支持的 dtype（如 int64）：优先 record-aware DMA 或块 DMA +
 >   UB-local reorder，禁止逐元素 strided GM 主路径；**禁止 host 侧拆分/拼回**
 >
-> 性能优化的判断准则见 [tilelang-perf-optimization/references/optimization-guide.md §2.16](../../tilelang-perf-optimization/references/optimization-guide.md#216-特定-dtype-的硬件指令适配dtype-specific-hardware-path-adaptation)。
+> 性能优化的判断准则见 [tilelang-perf-optimization/references/optimization-guide.md §2.16](../../../tilelang-perf-optimization/references/optimization-guide.md#216-特定-dtype-的硬件指令适配dtype-specific-hardware-path-adaptation)。
 
 #### Stride 参数作为 JIT 编译期常量传入 kernel（避免创建 GM tensor）
 
