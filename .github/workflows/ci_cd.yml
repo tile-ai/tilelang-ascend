@@ -490,6 +490,7 @@ jobs:
     timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 360 || 60 }}
     env:
       FULL_BUILD: ${{ github.event_name == 'schedule' || github.event.inputs.full_build == 'true' }}
+      A3_CI_DEVICE_LIST_REPO: ${{ vars.A3_CI_DEVICE_LIST }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -630,9 +631,28 @@ jobs:
 
           NPU_DEVICE_ARGS=()
 
+          A3_MULTICARD=0
+          A3_DEVICE_LIST=""
+
           if [[ "${RUNNER_NAME:-}" == "ascend_cicd_a3" ]]; then
-            NPU_DEVICE_ARGS+=(-e "ASCEND_RT_VISIBLE_DEVICES=0")
-            echo "A3 runner detected: limiting Ascend runtime visibility to logical device 0"
+            A3_DEVICE_LIST="${A3_CI_DEVICE_LIST:-${A3_CI_DEVICE_LIST_REPO:-0}}"
+            if [[ ! "${A3_DEVICE_LIST}" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+              echo "::error::A3_CI_DEVICE_LIST must be a comma-separated list of non-negative integers (e.g. '0,1,2,3')."
+              exit 1
+            fi
+            IFS=',' read -ra _A3_DEVS <<< "${A3_DEVICE_LIST}"
+            _A3_SEEN=""
+            for _d in "${_A3_DEVS[@]}"; do
+              case ",${_A3_SEEN}," in *",${_d},"*) echo "::error::A3_CI_DEVICE_LIST contains duplicate device '${_d}'."; exit 1;; esac
+              _A3_SEEN="${_A3_SEEN},${_d}"
+            done
+            if [ "${#_A3_DEVS[@]}" -gt 1 ]; then
+              A3_MULTICARD=1
+              echo "A3 multi-card mode: ${#_A3_DEVS[@]} device(s) -> ${A3_DEVICE_LIST}"
+            else
+              NPU_DEVICE_ARGS+=(-e "ASCEND_RT_VISIBLE_DEVICES=${_A3_DEVS[0]}")
+              echo "A3 runner detected: limiting Ascend runtime visibility to logical device ${_A3_DEVS[0]}"
+            fi
           fi
 
           docker exec \
@@ -649,6 +669,8 @@ jobs:
             -e RUN_EXAMPLES="$RUN_EXAMPLES" \
             -e RUN_PYTEST_ONLY="$RUN_PYTEST_ONLY" \
             -e PYTEST_MARKERS="$PYTEST_MARKERS" \
+            -e A3_MULTICARD="$A3_MULTICARD" \
+            -e A3_DEVICE_LIST="$A3_DEVICE_LIST" \
             tilelang_x1 \
             bash -c "
               set -e
@@ -685,7 +707,114 @@ jobs:
                 echo 'Applying pytest marker filter: -m '\$PYTEST_MARKERS
               fi
 
-              if [ \"\$RUN_PYTEST_ONLY\" = true ]; then
+              if [ \"\$A3_MULTICARD\" = 1 ]; then
+                IFS=',' read -ra A3_DEVICES <<< \"\$A3_DEVICE_LIST\"
+                FIRST_A3_DEVICE=\"\${A3_DEVICES[0]}\"
+                NUM_A3_SHARDS=\${#A3_DEVICES[@]}
+
+                A3_ACTIVE_PIDS=()
+                A3_TMP_DIRS=()
+                cleanup_a3() {
+                  local p d
+                  for p in \"\${A3_ACTIVE_PIDS[@]:-}\"; do kill \"\$p\" 2>/dev/null || true; done
+                  for d in \"\${A3_TMP_DIRS[@]:-}\"; do rm -rf \"\$d\" 2>/dev/null || true; done
+                }
+                trap cleanup_a3 INT TERM
+
+                run_pytest_shards() {
+                  local label=\"\$1\"; shift
+                  local si p rc=0
+                  local shard_dir=\"\$(mktemp -d /tmp/a3-shards-XXXXXX)\"
+                  local pids=()
+                  A3_TMP_DIRS+=(\"\$shard_dir\")
+                  if [ \"\$#\" -gt 0 ]; then
+                    python3 - \"\$NUM_A3_SHARDS\" \"\$PYTEST_MARKERS\" \"\$shard_dir\" \"\$@\" <<'PY' || { echo \"::error::\${label} sharding failed\"; return 1; }
+          import sys, os, subprocess
+          from collections import Counter
+          num = int(sys.argv[1]); marker = sys.argv[2]; out = sys.argv[3]; files = sys.argv[4:]
+          cmd = [sys.executable, '-m', 'pytest', '--collect-only', '-q', '--disable-warnings'] + (['-m', marker] if marker else []) + files
+          p = subprocess.run(cmd, capture_output=True, text=True)
+          if p.returncode not in (0, 5): print('collect-only failed', file=sys.stderr); sys.exit(1)
+          ids = [l.strip() for l in p.stdout.splitlines() if '::' in l and l.split('::', 1)[0].endswith('.py')]
+          if not ids: print('collection result empty', file=sys.stderr); sys.exit(1)
+          if len(ids) != len(set(ids)): print('duplicate node ids', file=sys.stderr); sys.exit(1)
+          real = {os.path.realpath(f): f for f in files}
+          cnt = Counter(); bad = set()
+          for n in ids:
+              c = n.split('::', 1)[0]
+              ip = real.get(os.path.realpath(os.path.join(os.getcwd(), '..', c)))
+              if ip is None: bad.add(c)
+              else: cnt[ip] += 1
+          if bad: print('unmapped files', file=sys.stderr); sys.exit(1)
+          order = sorted(files, key=lambda f: (-cnt[f], f))
+          loads = [0] * num; buckets = [[] for _ in range(num)]
+          for f in order:
+              s = min(range(num), key=lambda i: loads[i]); buckets[s].append(f); loads[s] += cnt[f]
+          if len(files) >= num and any(not b for b in buckets): print('empty shard', file=sys.stderr); sys.exit(1)
+          os.makedirs(out, exist_ok=True)
+          for i in range(num):
+              open(os.path.join(out, 'shard-' + str(i) + '.lst'), 'w').write(''.join(f + '\n' for f in buckets[i]))
+          print('suite: %d files, %d tests, %d shards' % (len(files), sum(cnt.values()), num))
+          for i in range(num): print('shard %d: files=%d tests=%d' % (i, len(buckets[i]), sum(cnt[f] for f in buckets[i])))
+          PY
+                  fi
+                  for ((si=0; si<NUM_A3_SHARDS; si++)); do
+                    (
+                      export ASCEND_RT_VISIBLE_DEVICES=\"\${A3_DEVICES[si]}\"
+                      if [ -s \"\$shard_dir/shard-\${si}.lst\" ]; then
+                        mapfile -t SHARD_TARGETS < \"\$shard_dir/shard-\${si}.lst\"
+                        exec pytest --forked \"\${SHARD_TARGETS[@]}\" -v -n 8 \"\${PYTEST_MARKER_ARGS[@]}\"
+                      else
+                        echo \"No test files assigned to \${label} shard \${si}\"
+                      fi
+                    ) > \"\${label}-\${si}.log\" 2>&1 &
+                    pids+=(\"\$!\")
+                    A3_ACTIVE_PIDS+=(\"\$!\")
+                  done
+                  for ((si=0; si<NUM_A3_SHARDS; si++)); do
+                    if wait \"\${pids[\$si]}\"; then
+                      echo \"== \${label} shard \${si} (device \${A3_DEVICES[\$si]}) PASSED ==\"
+                      tail -n 2 \"\${label}-\${si}.log\" 2>/dev/null || true
+                    else
+                      rc=1
+                      echo \"== \${label} shard \${si} (device \${A3_DEVICES[\$si]}) FAILED ==\"
+                      cat \"\${label}-\${si}.log\" 2>/dev/null || true
+                    fi
+                  done
+                  rm -rf \"\$shard_dir\"
+                  return \$rc
+                }
+
+                TEST_EXIT_CODE=0
+
+                if [ \"\$RUN_PYTEST_ONLY\" = true ]; then
+                  PYTEST_TARGETS=()
+                  if [ -n \"\$PYTEST_FILES_ARG\" ]; then
+                    for f in \$PYTEST_FILES_ARG; do PYTEST_TARGETS+=(\"../\$f\"); done
+                  else
+                    while IFS= read -r f; do [ -n \"\$f\" ] && PYTEST_TARGETS+=(\"\$f\"); done < <(find ../testing/python -name 'test_*.py' | sort)
+                  fi
+                  run_pytest_shards pytest-shard \"\${PYTEST_TARGETS[@]}\" || TEST_EXIT_CODE=1
+                  cat pytest-shard-*.log > test_output.log
+                elif [ \"\$RUN_EXAMPLES\" = true ]; then
+                  set +e
+                  ASCEND_RT_VISIBLE_DEVICES=\"\$FIRST_A3_DEVICE\" ./bench_test.sh --skip-pytest \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG 2>&1 | tee test_output.log
+                  BENCH_EXIT=\${PIPESTATUS[0]}
+                  set -e
+                  [ \"\$BENCH_EXIT\" -eq 0 ] || TEST_EXIT_CODE=\$BENCH_EXIT
+
+                  if [ \"\$SKIP_PYTEST\" != true ]; then
+                    PYTEST_TARGETS=()
+                    while IFS= read -r f; do [ -n \"\$f\" ] && PYTEST_TARGETS+=(\"\$f\"); done < <(find ../testing/python -name 'test_*.py' | sort)
+                    run_pytest_shards pytest-shard \"\${PYTEST_TARGETS[@]}\" || TEST_EXIT_CODE=1
+                  fi
+
+                  OPERATOR_TARGETS=()
+                  while IFS= read -r ot; do [ -n \"\$ot\" ] && OPERATOR_TARGETS+=(\"../\$ot\"); done < <(python ../scripts/ci/resolve_operator_tests.py list-tests \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG)
+                  run_pytest_shards operator-shard \"\${OPERATOR_TARGETS[@]}\" || TEST_EXIT_CODE=1
+                fi
+                trap - INT TERM
+              elif [ \"\$RUN_PYTEST_ONLY\" = true ]; then
                 # 只跑 pytest（testing/ 修改）
                 if [ -n \"\$PYTEST_FILES_ARG\" ]; then
                   echo 'Running incremental pytest for: '\$PYTEST_FILES_ARG
