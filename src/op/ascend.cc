@@ -1096,12 +1096,12 @@ TIR_DEFINE_TL_BUILTIN(ascend_select)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_leaky_relu)
-    .set_num_inputs(5)
+    .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_axpy)
-    .set_num_inputs(5)
+    .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
@@ -1136,7 +1136,7 @@ TIR_DEFINE_TL_BUILTIN(ascend_transpose)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_createvecindex)
-    .set_num_inputs(3)
+    .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
@@ -1156,7 +1156,7 @@ TIR_DEFINE_TL_BUILTIN(ascend_sort)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_merge_sort)
-    .set_num_inputs(6)
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
@@ -1211,7 +1211,8 @@ TIR_DEFINE_TL_BUILTIN(ascend_gather)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_reduce)
-    .set_num_inputs(4)
+    // tag, dst, src, optional tmp, clear, optional physical row
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
@@ -1388,22 +1389,24 @@ TIR_DEFINE_TL_BUILTIN(ascend_silu)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_clamp_max)
-    .set_num_inputs(6)
+    // The public call has one optional workspace operand, removed by
+    // InjectTmpBuffer for the managed AscendC path.
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_clamp_min)
-    .set_num_inputs(6)
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_clamp)
-    .set_num_inputs(6)
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_round)
-    .set_num_inputs(4)
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
@@ -1492,25 +1495,52 @@ TIR_DEFINE_TL_BUILTIN(ascend_copy_vc_experiment)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
-// Internal tail-aware ops (see ascend.h). Variadic: they carry an AscendC op
-// tag string, buffer pointers, and the runtime tail rect.
+// Internal tail-aware ops (see ascend.h). They carry an AscendC op tag string,
+// buffer pointers, and the runtime tail rectangle.
 TIR_DEFINE_TL_BUILTIN(ascend_tail_unary)
-    .set_num_inputs(-1)
+    .set_num_inputs(6)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_tail_binary)
-    .set_num_inputs(-1)
+    .set_num_inputs(7)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_tail_scalar)
-    .set_num_inputs(-1)
+    .set_num_inputs(7)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_tail_reduce)
-    .set_num_inputs(-1)
+    .set_num_inputs(8)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+#define TL_ASCEND_SEMANTIC_OP(...)
+#define TL_ASCEND_PHYSICAL(selected, selector, dtype_domain, operands,         \
+                           payload, emitter, intrinsic)                        \
+  TIR_DEFINE_TL_BUILTIN(selected)                                              \
+      .set_num_inputs(-1)                                                      \
+      .set_attr<TCallEffectKind>("TCallEffectKind",                            \
+                                 Integer(CallEffectKind::kOpaque));
+#define TL_ASCEND_HELPER(selected, selector, contract)                         \
+  TIR_DEFINE_TL_BUILTIN(selected)                                              \
+      .set_num_inputs(-1)                                                      \
+      .set_attr<TCallEffectKind>("TCallEffectKind",                            \
+                                 Integer(CallEffectKind::kOpaque));
+#include "ascend_vector_mask_ops.inc"
+#undef TL_ASCEND_HELPER
+#undef TL_ASCEND_PHYSICAL
+#undef TL_ASCEND_SEMANTIC_OP
+
+TIR_DEFINE_TL_BUILTIN(ascend_set_mask_mode)
+    .set_num_inputs(1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_set_mask_payload)
+    .set_num_inputs(2)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 

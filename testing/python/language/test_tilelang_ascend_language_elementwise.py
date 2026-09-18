@@ -2168,6 +2168,48 @@ def test_vec_div(dtype, target, shape):
     run_test_vec_div(M, N, 64, 128, dtype, target=target)
 
 
+def test_divs_fp16_preserves_reciprocal_precision():
+    @T.prim_func
+    def main(A: T.Tensor((128,), "float16"), B: T.Tensor((128,), "float16")):
+        with T.Kernel(1, threads=1, is_npu=True):
+            a_ub = T.alloc_ub((128,), "float16")
+            b_ub = T.alloc_ub((128,), "float16")
+            T.copy(A, a_ub)
+            T.tile.div(b_ub, a_ub, 65536.0)
+            T.copy(b_ub, B)
+
+    kernel = tilelang.compile(main, out_idx=[1], target="ascendc", pass_configs=pass_configs)
+    a = torch.full((128,), 65504.0, dtype=torch.float16).npu()
+    expected = (a.cpu().float() / 65536.0).half()
+    torch.testing.assert_close(kernel(a).cpu(), expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "operation,scalar_value,input_value,expected_value",
+    [("div", 65536.0, 65504.0, 0.99951171875), ("sub", 3.5, 2.0, -1.5)],
+)
+def test_transformed_scalar_buffer_preserves_storage_dtype(operation, scalar_value, input_value, expected_value):
+    scalar_op = getattr(T.tile, operation)
+
+    @T.prim_func
+    def main(A: T.Tensor((128,), "float16"), S: T.Tensor((16,), "float32"), B: T.Tensor((128,), "float16")):
+        with T.Kernel(1, threads=1, is_npu=True):
+            a_ub = T.alloc_ub((128,), "float16")
+            s_ub = T.alloc_ub((16,), "float32")
+            b_ub = T.alloc_ub((128,), "float16")
+            T.copy(A, a_ub)
+            T.copy(S, s_ub)
+            scalar_op(b_ub, a_ub, s_ub[3])
+            T.copy(b_ub, B)
+
+    kernel = tilelang.compile(main, out_idx=[2], target="ascendc", pass_configs=pass_configs)
+    a = torch.full((128,), input_value, dtype=torch.float16).npu()
+    scalar = torch.zeros((16,), dtype=torch.float32)
+    scalar[3] = scalar_value
+    expected = torch.full((128,), expected_value, dtype=torch.float16)
+    torch.testing.assert_close(kernel(a, scalar.npu()).cpu(), expected, rtol=0, atol=0)
+
+
 def exp(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
@@ -4430,6 +4472,22 @@ def test_vec_subs(dtype, target, shape):
     M, N = shape
     scalar = 3.0 if dtype in ["float", "float16"] else 3
     run_test_vec_subs(M, N, 128, 256, scalar, dtype, target=target)
+
+
+def test_subs_int16_negates_before_scalar_conversion():
+    @T.prim_func
+    def main(A: T.Tensor((128,), "int16"), B: T.Tensor((128,), "int16")):
+        with T.Kernel(1, threads=1, is_npu=True):
+            a_ub = T.alloc_ub((128,), "int16")
+            b_ub = T.alloc_ub((128,), "int16")
+            T.copy(A, a_ub)
+            T.tile.sub(b_ub, a_ub, 32768.0)
+            T.copy(b_ub, B)
+
+    kernel = tilelang.compile(main, out_idx=[1], target="ascendc", pass_configs=pass_configs)
+    a = torch.zeros((128,), dtype=torch.int16).npu()
+    expected = torch.full((128,), -32768, dtype=torch.int16)
+    torch.testing.assert_close(kernel(a).cpu(), expected, rtol=0, atol=0)
 
 
 def transpose(M, N, block_M, block_N, dtype="int16"):
