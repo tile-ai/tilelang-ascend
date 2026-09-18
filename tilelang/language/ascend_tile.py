@@ -318,6 +318,16 @@ def atomic_add(
 
     V1 intentionally models Ascend DMA atomic add only: the destination must be
     GM, and the source must be a local tensor region that can be copied out.
+
+    Args:
+        dst: GM destination tensor (Buffer/BufferRegion/BufferLoad). Scope must be
+            ``global``. Supports float16, float32, int16, int32, bfloat16.
+        src: Local source tensor (Buffer/BufferRegion/BufferLoad). Scope must be
+            local (UB/L0C/L1). dtype must match dst for UB->GM; L0C->GM allows
+            dtype mismatch (e.g. L0C float -> GM half).
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call to ``tl.ascend_atomic_add``.
     """
     dst_scope = _atomic_add_scope(dst, "dst")
     src_scope = _atomic_add_scope(src, "src")
