@@ -136,6 +136,9 @@ mappings:
   # examples/linear_attention_and_rnn
   examples/linear_attention_and_rnn/opt_gdn_full.py: examples/linear_attention_and_rnn/test_opt_gdn_full.py
 
+  # examples/mhc_pre
+  examples/mhc_pre/example_mhc_pre.py: examples/mhc_pre/test_example_mhc_pre.py
+
   # examples/moe_token_permute
   examples/moe_token_permute/moe_token_permute.py: examples/moe_token_permute/test_moe_token_permute.py
   examples/moe_token_permute/moe_token_permute_grad.py: examples/moe_token_permute/test_moe_token_permute_grad.py
