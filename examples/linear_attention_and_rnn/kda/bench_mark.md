@@ -23,21 +23,29 @@ default column is what a caller who asks for nothing gets:
 
 | H | SEQ | AscendC `safeGate=1` | tileLang default | ratio | tileLang `route_b` + `KDA_WY_FIXEDCORE` | ratio |
 |------|------|------|------|------|------|------|
-| 4 | 4096 | 788.14u ±7.8 | 1422.57u ±3.1 | 55.4% | 854.68u ±4.9 | **92.2%** |
-| 8 | 4096 | 1197.12u ±12.3 | 2457.73u ±9.7 | 48.7% | 1239.85u ±7.4 | **96.6%** |
-| 16 | 4096 | 2010.82u ±14.1 | 4799.50u ±13.8 | 41.9% | 2374.75u ±34.3 | **84.7%** |
-| 32 | 4096 | 3959.94u ±30.5 | 9559.25u ±7.0 | 41.4% | 4820.22u ±17.5 | **82.2%** |
-| 96 | 4096 | 11423.01u ±13.4 | 28239.44u ±39.8 | 40.5% | 14270.49u ±68.4 | **80.0%** |
-| 4 | 8192 | 1493.69u ±18.6 | 2807.97u ±24.7 | 53.2% | 1657.49u ±7.9 | **90.1%** |
-| 4 | 16384 | 2995.36u ±39.7 | 5698.17u ±6.1 | 52.6% | 3369.31u ±50.6 | **88.9%** |
+| 4 | 4096 | 787.97u ±1.3 | 1503.87u ±6.8 | 52.4% | 959.20u ±5.5 | **82.2%** |
+| 8 | 4096 | 1185.17u ±5.4 | 2562.09u ±10.4 | 46.3% | 1387.00u ±15.0 | **85.4%** |
+| 16 | 4096 | 2022.28u ±4.2 | 4920.61u ±20.7 | 41.1% | 2458.28u ±10.4 | **82.3%** |
+| 32 | 4096 | 3984.75u ±1.8 | 9636.67u ±11.4 | 41.4% | 4864.52u ±13.6 | **81.9%** |
+| 96 | 4096 | 11440.46u ±1.9 | 28372.43u ±31.7 | 40.3% | 14298.05u ±38.1 | **80.0%** |
+| 4 | 8192 | 1520.67u ±5.6 | 2948.39u ±6.8 | 51.6% | 1875.96u ±11.1 | **81.1%** |
+| 4 | 16384 | 3040.39u ±2.7 | 5915.94u ±38.8 | 51.4% | 3697.84u ±21.8 | **82.2%** |
 
 `H = 96` is the head count Kimi K3 runs. There the median is 80.0%, and the
-three collections span 79.80% to 80.57% -- it sits *on* the line rather than
+three collections span 79.93% to 80.36% -- it sits *on* the line rather than
 above it, and a batch taken on another day could land either side. The two
 trends either side of it are the more useful reading: the ratio falls with head
-count (96.6% at `H = 8` down to 80.0% at `H = 96`) and holds with sequence
-length (92.2% at 4096, 88.9% at 16384). What degrades this operator is
-parallelism, not work.
+count (85.4% at `H = 8` down to 80.0% at `H = 96`) and holds with sequence
+length (82.2% at 4096, 81.1% at 8192, 82.2% at 16384). What degrades this
+operator is parallelism, not work.
+
+The head-count trend is the weaker of the two. Beta now reaches the kernel in
+the data dtype rather than being widened on the host, and that costs a roughly
+constant 80-220u whatever the shape -- which is a large share of a short
+`route_b` run at `H = 4` and a negligible one at `H = 96`. The ratio at the
+small head counts therefore fell further than the ratio at `H = 96`, which did
+not move at all. The sequence-length trend, read across 4096 / 8192 / 16384 at
+`H = 4`, is now flat to within half a point.
 
 `route_b` is worth more at `H = 96` than at `H = 4` -- 1.96x against 1.63x --
 which is the opposite of what a fixed-cost argument would predict. The reason is
@@ -49,25 +57,26 @@ collection, so no ratio is given:
 
 | H | default | `route_b` |
 |------|------|------|
-| 4 | 1445.55u ±9.5 | 897.42u ±8.0 |
-| 96 | 28380.11u ±2.2 | 14671.21u ±23.2 |
+| 4 | 1516.03u ±13.1 | 988.52u ±5.5 |
+| 96 | 28503.88u ±31.7 | 14785.14u ±11.3 |
 
 bf16 reaches `route_b` through a float32 round trip in stage 6, because the part
-has no bfloat16 vector select. It costs 1.5% end to end at `H = 96` and 3.4% at
-`H = 4`.
+has no bfloat16 vector select. Against the same `route_b` configuration in
+fp16 it costs 1.9% end to end at `H = 96` and 0.6% at `H = 4`.
 
 Per stage at `H = 96`, fp16:
 
 | | cumsum | kkt | solve_tril | wy_fast | chunk_h | chunk_o |
 |------|------|------|------|------|------|------|
-| default | 963.2u | 10084.9u | 1356.9u | 1704.8u | 3106.2u | 11117.1u |
-| `route_b` | 955.7u | 3307.0u | 1353.8u | 1698.5u | 3084.7u | 4053.4u |
-| `+ KDA_WY_FIXEDCORE` | 937.9u | 3326.6u | 1356.9u | **1506.2u** | 3087.8u | 4009.9u |
+| default | 949.7u | 10139.0u | 1351.1u | 1746.7u | 3066.0u | 11104.7u |
+| `route_b` | 955.6u | 3364.3u | 1352.9u | 1749.2u | 3055.0u | 4037.0u |
+| `+ KDA_WY_FIXEDCORE` | 963.6u | 3372.8u | 1351.8u | **1507.8u** | 3051.7u | 4036.1u |
 
 The decode path is reported on its own terms, since the vendor package ships no
 recurrent operator to divide by. At `H = HV = 96`, `K = V = 128`, fp16, one step
-costs 115.50u at `B = 1` and 7152.52u at `B = 64` — linear to within 3%, so it is
-work-bound rather than launch-bound. Its scalar pipe sits at 51.7% against the
+costs 115.62u at `B = 1` and 7156.44u at `B = 64` — 64 single steps would be
+7399.7u, so the batch is 3.3% cheaper than linear rather than cheaper by the
+margin a launch-bound kernel would show. It is work-bound. Its scalar pipe sits at 51.7% against the
 vector pipe's 46.5%, which is the next thing worth optimising there.
 
 **Measurement method.** `msprof` in its full form (`msprof op` returns Task
@@ -105,9 +114,9 @@ its ratio against the reference:
    that turned out to be unnecessary -- mostly a duplicate of something the same
    kernel already did a line above  **--- 1438.16u, 54.8%**
 5. **`route_b`**: the diagonal blocks join the strips on the cube
-   **--- 874.74u, 90.1%**
+   **--- 982.97u, 80.2%**
 6. **`KDA_WY_FIXEDCORE`**: stage 4 on the physical core count rather than the
-   task count  **--- 854.68u, 92.2%**
+   task count  **--- 959.20u, 82.2%**
 
 Notes on the two that carry most of the gain:
 
@@ -147,10 +156,8 @@ each is recorded here so it is not tried again:
   does not remove it. On A5 this bullet would have to be re-measured.
 - **There is no inter-stage gap to recover anyway.** The six launches are
   serialised on one stream, and the five gaps between them measure 2.5-10us each,
-  about 21us against a 14459.51u prefill -- **0.15%**. Fusion would be reclaiming
-  idle that is not there. The vendor operator already
-  overlap; fusion would be removing a cost that is not being
-  paid. The official PyPTO implementation reaches the same conclusion by
+  about 21us against a 14515.37u prefill -- **0.14%**. Fusion would be reclaiming
+  idle that is not there. The official PyPTO implementation reaches the same conclusion by
   construction — it also lands `gk`, `aqk`, `akk`, `w`, `u`, `qg`, `kg`, `v_new`
   and `h` in GM.
 - **Cube-side multi-buffer is correct but worth nothing here.** `aic_mac`
@@ -177,8 +184,8 @@ rewritten until they were.
 
 | Configuration | L1 Residency | Instruction Vectorization | Multi-Buffer | Sync Elimination | CV pipelined | Optimized Sync Frequency | Reduced Instructions | Algorithm to Cube | Redundancy Removal | Performance (`H = 96`) |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| default | × | √ | × | × | × | × | × | strips | √ | 40.5% |
-| `route_b` | × | √ | × | × | × | × | × | strips + diagonal | √ | 79.3% |
+| default | × | √ | × | × | × | × | × | strips | √ | 40.3% |
+| `route_b` | × | √ | × | × | × | × | × | strips + diagonal | √ | 78.8% |
 | `route_b` + `KDA_WY_FIXEDCORE` | × | √ | × | × | × | × | × | strips + diagonal | √ | **80.0%** |
 
 One of the crosses is a measured dead end rather than unstarted work:

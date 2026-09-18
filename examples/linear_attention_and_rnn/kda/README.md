@@ -384,7 +384,7 @@ fallback falls back.
 | Switch | Default | Read at | Effect |
 |---|---|---|---|
 | `KDA_ROUTE_B` | off | call time | Overrides the `route_b` argument in both directions. Forced off under `cu_seqlens`, and asking for it there warns rather than silently returning the route A result. |
-| `KDA_WY_FIXEDCORE` | off | call time | Overrides `wy_fast`'s `fixed_core` argument. Stage 4 with the grid set to the physical core count; worth 192.3u on that stage at `H = 96`. Fixed length only. |
+| `KDA_WY_FIXEDCORE` | off | call time | Overrides `wy_fast`'s `fixed_core` argument. Stage 4 with the grid set to the physical core count; worth 241.4u on that stage at `H = 96`. Fixed length only. |
 | `KDA_SOLVE_CUBE` | **on** | call time | Stage 3's cube solver. Off falls back to the row-wise forward substitution in the same file, which is also the fp32 path. |
 | `KDA_SOLVE_STEPS` | `2` | import time | Doubling steps in stage 3's Neumann series, 1 to 3. The default covers `L^7` and is measured, not picked: `1` (covering `L^3`) fails the keep gate in the pipeline at 8.260e-03 against a 5e-3 tolerance. |
 
@@ -451,7 +451,7 @@ benchmark harness, which has to flip a caller it does not control.
   its Cube-to-Vector scratch by physical core count rather than by logical task
   count, and that was tried here: the grid becomes the core count and each core
   walks its own slice of the tasks. Stage 4 ships it behind `KDA_WY_FIXEDCORE`,
-  where it is worth 192.3u -- 11.3% of that stage -- and takes that stage's own
+  where it is worth 241.4u -- 13.8% of that stage -- and takes that stage's own
   scratch from `[6144, 64, 128] x 2` fp16 (192.00 MiB) to `[20, 64, 128] x 2`
   (640 KiB), the factor 6144/20 = 307.2. Enumerating every stage's
   `workspace_idx` at this shape gives 1.796 GiB across the six, and 7.5 MiB if
