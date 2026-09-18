@@ -143,6 +143,32 @@ def kda_chunk_fwd(
             f"for you, so the cost stays visible."
         )
 
+    # initial_state is the one input nothing fully polices.  chunk_h asserts its
+    # shape and contiguity (kda_chunk_h.py:769) and coerces the dtype with
+    # .float() rather than checking it, but two holes are left and the second is
+    # the one that bites:
+    #   * device is never checked, and nothing that does fail names it.  Measured
+    #     on 910B: alone in a process the call dies inside torch_npu's
+    #     host/device copy; sharing a process with other cases it returns
+    #     "successfully" and an unrelated later .cpu() dies with SUSPECT REMOTE
+    #     ERROR 507057.  The failure site is not even stable, let alone legible;
+    #   * the SEQ == 0 path below returns initial_state.float().clone() straight
+    #     back as the final state WITHOUT reaching chunk_h at all, so a
+    #     wrong-shaped state is echoed to the caller as though it were the
+    #     answer -- a silent wrong result, not an error.
+    # One check here, above both, where B / HV / K / V are already in scope.
+    n_lead = B if cu_seqlens is None else (cu_seqlens.numel() - 1)
+    if initial_state is not None:
+        # fp32 because the state is accumulated in fp32 and comes back in fp32: a
+        # narrower one would be silently upcast and would not round-trip.
+        want = (n_lead, HV, K, v.shape[-1])
+        got = tuple(initial_state.shape)
+        lead = "batch" if cu_seqlens is None else "SEQUENCE count, not the batch"
+        assert got == want, f"initial_state must be {want}, got {got}; its leading axis is the {lead}"
+        assert initial_state.dtype == torch.float32, f"initial_state must be float32, got {initial_state.dtype}"
+        assert initial_state.device == q.device, f"initial_state is on {initial_state.device}, inputs are on {q.device}"
+        assert initial_state.is_contiguous(), "initial_state must be contiguous"
+
     # A zero-length sequence is legal input: it is what a varlen batch with an
     # empty entry produces, and FLA's fused_recurrent returns early on it.  The
     # ceil grid does not save us here -- ceildiv(0, C) is 0, so every one of the
@@ -157,7 +183,6 @@ def kda_chunk_fwd(
     # sequence inside a non-empty batch is handled inside the stages.
     if SEQ == 0:
         V = v.shape[-1]
-        n_lead = B if cu_seqlens is None else (cu_seqlens.numel() - 1)
         o = torch.empty((B, 0, HV, V), device=v.device, dtype=v.dtype)
         if not output_final_state:
             return o, None
