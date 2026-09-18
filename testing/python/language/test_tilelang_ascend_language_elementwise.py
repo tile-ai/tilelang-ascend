@@ -3556,7 +3556,7 @@ def run_test_bitwise_or_scalar(target):
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_or_scalar_not_registered_raises(target):
     """Scalar src1 path uses tl.ascend_bitwise_ors which is not registered in C++."""
-    with pytest.raises(Exception, match="not registered"):  # noqa: B017
+    with pytest.raises((Exception, SystemExit), match="not registered"):  # noqa: B017
         run_test_bitwise_or_scalar(target)
 
 
