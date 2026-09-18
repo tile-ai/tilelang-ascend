@@ -15,6 +15,7 @@
 #endif
 
 #include "shmem.h"
+#include "tl_templates/ascend/reduce_2d_v2.h"
 
 #define CUDART_INF_F 1.0f / 0.0f
 
@@ -490,33 +491,33 @@ reduce_sum_half(LocalTensor<T> const &dstTensor,
 // stride, so one repeat per row with srcRepStride set to the PHYSICAL row width
 // reduces the intended region. One repeat covers at most 256 bytes, which is
 // what bounds the usable width.
-template <typename T>
+template <typename T, bool isSetMask = true>
 CATLASS_DEVICE void
 reduce_max_narrow(LocalTensor<T> const &dstTensor,
                   LocalTensor<T> const &srcTensor, const int32_t mask,
                   const int32_t repeatTime, const int32_t srcRepStride) {
-  AscendC::WholeReduceMax<T>(dstTensor, srcTensor, mask, repeatTime, 1, 1,
-                             srcRepStride,
-                             AscendC::ReduceOrder::ORDER_ONLY_VALUE);
+  AscendC::WholeReduceMax<T, isSetMask>(dstTensor, srcTensor, mask, repeatTime,
+                                        1, 1, srcRepStride,
+                                        AscendC::ReduceOrder::ORDER_ONLY_VALUE);
 }
 
-template <typename T>
+template <typename T, bool isSetMask = true>
 CATLASS_DEVICE void
 reduce_min_narrow(LocalTensor<T> const &dstTensor,
                   LocalTensor<T> const &srcTensor, const int32_t mask,
                   const int32_t repeatTime, const int32_t srcRepStride) {
-  AscendC::WholeReduceMin<T>(dstTensor, srcTensor, mask, repeatTime, 1, 1,
-                             srcRepStride,
-                             AscendC::ReduceOrder::ORDER_ONLY_VALUE);
+  AscendC::WholeReduceMin<T, isSetMask>(dstTensor, srcTensor, mask, repeatTime,
+                                        1, 1, srcRepStride,
+                                        AscendC::ReduceOrder::ORDER_ONLY_VALUE);
 }
 
-template <typename T>
+template <typename T, bool isSetMask = true>
 CATLASS_DEVICE void
 reduce_sum_narrow(LocalTensor<T> const &dstTensor,
                   LocalTensor<T> const &srcTensor, const int32_t mask,
                   const int32_t repeatTime, const int32_t srcRepStride) {
-  AscendC::WholeReduceSum<T>(dstTensor, srcTensor, mask, repeatTime, 1, 1,
-                             srcRepStride);
+  AscendC::WholeReduceSum<T, isSetMask>(dstTensor, srcTensor, mask, repeatTime,
+                                        1, 1, srcRepStride);
 }
 
 template <typename T, uint32_t M, uint32_t N, int32_t dim>
@@ -667,6 +668,20 @@ reduce_min(LocalTensor<T> const &dstTensor, LocalTensor<T> const &srcTensor,
     dstTensor.SetValue(i, reduce_scalar_min_safe(reducedValue, backupValue));
   }
 }
+
+// Expose the helper's Vector pipe to BiSheng automatic synchronization.
+#pragma begin_pipe(V)
+template <typename T, reduce2d_v2::Reduce2DKind Kind, bool Clear, uint32_t M,
+          uint32_t N, int32_t Dim, uint32_t PhysicalRow, bool AllowRepeatZero>
+CATLASS_DEVICE void reduce_2d(LocalTensor<T> const &dstTensor,
+                              LocalTensor<T> const &srcTensor,
+                              LocalTensor<T> const &sharedTmpBuffer) {
+  static_assert(std::is_same_v<T, float> && Dim == -1,
+                "Reduce2D v2 only supports fp32 row reduction");
+  reduce2d_v2::Reduce2D<T, Kind, Clear, M, N, PhysicalRow, AllowRepeatZero>(
+      dstTensor, srcTensor, sharedTmpBuffer);
+}
+#pragma end_pipe
 
 // ===================== Tail-aware vector helpers =========================
 // AscendTailMaskPropagation rewrites vector ops on tail UB tiles to these
@@ -1647,7 +1662,8 @@ Broadcast(const LocalTensor<T> &dst, const LocalTensor<T> &src,
                                                   sharedTmpBuffer);
 }
 
-template <typename T, int32_t dim, int32_t axis, bool isReuseSource = false>
+template <typename T, int32_t dim, int32_t axis, bool isReuseSource = false,
+          bool isSetMask = true>
 CATLASS_DEVICE void
 Broadcast(const LocalTensor<T> &dst, const LocalTensor<T> &src,
           const uint32_t dstShape[dim], const uint32_t srcShape[dim]) {
@@ -1658,14 +1674,25 @@ Broadcast(const LocalTensor<T> &dst, const LocalTensor<T> &src,
     srcSize *= srcShape[i];
   }
   if (srcSize == dstSize) {
-    AscendC::Muls(dst, src, static_cast<T>(1), dstSize);
+    if constexpr (isSetMask) {
+      AscendC::Muls(dst, src, static_cast<T>(1), dstSize);
+    } else {
+      AscendC::Muls<T, false>(dst, src, static_cast<T>(1),
+                              AscendC::MASK_PLACEHOLDER, 1,
+                              AscendC::UnaryRepeatParams());
+    }
     return;
   }
   ASCENDC_ASSERT((srcSize == 1), {
     KERNEL_LOG(KERNEL_ERROR,
                "Workspace-free Broadcast only supports equal or scalar shapes");
   });
-  AscendC::Duplicate(dst, src.GetValue(0), dstSize);
+  if constexpr (isSetMask) {
+    AscendC::Duplicate(dst, src.GetValue(0), dstSize);
+  } else {
+    AscendC::Duplicate<T, false>(dst, src.GetValue(0),
+                                 AscendC::MASK_PLACEHOLDER, 1, 1, 8);
+  }
 }
 
 template <typename T>
@@ -1935,7 +1962,7 @@ CATLASS_DEVICE void
 Fill_experiment(const LocalTensor<T> &dst, const T &scalarValue, uint64_t mask0,
                 const uint8_t repeatTime, const uint16_t dstBlockStride,
                 const uint8_t dstRepeatStride) {
-  uint64_t mask[1] = {mask0};
+  uint64_t mask[2] = {mask0, 0};
   AscendC::Duplicate(dst, scalarValue, mask, repeatTime, dstBlockStride,
                      dstRepeatStride);
 }

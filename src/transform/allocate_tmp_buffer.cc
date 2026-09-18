@@ -16,6 +16,9 @@
 #include <vector>
 
 #include "../op/ascend.h"
+#include "../tl_templates/ascend/reduce_2d_v2.h"
+#include "common/ascend_vector_mask.h"
+#include "common/ascend_vid_reduction.h"
 #include "common/operation_config.h"
 
 namespace tvm {
@@ -51,6 +54,8 @@ struct WorkspaceSpec {
   // needs only its separate clear=False output view.
   int64_t primary_bytes;
   int64_t access_mask;
+  int vid_workspace_divisor{1};
+  int64_t per_vector_bytes{0};
 };
 
 ReduceCallLayout ParseReduceCallLayout(const CallNode *op) {
@@ -388,8 +393,11 @@ int64_t EstimatePTOReduceWorkspaceBytes(const CallNode *call,
   return bytes;
 }
 
-bool AscendCReduceUsesTmp(const CallNode *call) {
+bool AscendCReduceUsesTmp(const CallNode *call, bool use_v2) {
   const ReduceCallLayout layout = ParseReduceCallLayout(call);
+  if (use_v2) {
+    return true;
+  }
   if (layout.physical_row > 0) {
     return false;
   }
@@ -400,14 +408,30 @@ bool AscendCReduceUsesTmp(const CallNode *call) {
   return true;
 }
 
-int64_t
-EstimateAscendCReduceWorkspaceBytes(const CallNode *call,
-                                    const Array<Buffer> &alloc_buffers) {
-  if (!AscendCReduceUsesTmp(call)) {
+int64_t EstimateAscendCReduceWorkspaceBytes(const CallNode *call,
+                                            const Array<Buffer> &alloc_buffers,
+                                            bool use_v2,
+                                            int source_divisor = 1) {
+  if (!AscendCReduceUsesTmp(call, use_v2)) {
     return 0;
   }
 
   const ReduceTemplateInfo info = ParseReduceTemplateInfo(call);
+  const ReduceCallLayout layout = ParseReduceCallLayout(call);
+  if (use_v2) {
+    const int64_t rows = std::max<int64_t>(info.rows / source_divisor, 1);
+    const uint32_t physical_row = static_cast<uint32_t>(
+        layout.physical_row > 0 ? layout.physical_row : info.cols);
+    ICHECK(rows == 1 || physical_row % 8 == 0)
+        << "fp32 Reduce2D physical row must be 32-byte aligned when M > 1";
+    const uint32_t elements = reduce2d_v2::Reduce2DScratchElements(
+        static_cast<uint32_t>(rows), static_cast<uint32_t>(info.cols),
+        physical_row, layout.clear);
+    ICHECK_GT(elements, 0U)
+        << "fp32 Reduce2D plan is illegal for M=" << rows << ", N=" << info.cols
+        << ", physical_row=" << physical_row << ", clear=" << layout.clear;
+    return static_cast<int64_t>(elements) * sizeof(float);
+  }
   const CallNode *src_access_ptr = AsAccessPtr(call->args[2]);
   const auto *src_var = src_access_ptr->args[1].as<VarNode>();
   ICHECK(src_var) << "Expected reduce source data variable.";
@@ -629,14 +653,32 @@ WorkspaceSpec GetPTOWorkspaceSpec(const CallNode *call,
 }
 
 WorkspaceSpec GetAscendCWorkspaceSpec(const CallNode *call,
-                                      const Array<Buffer> &alloc_buffers) {
+                                      const Array<Buffer> &alloc_buffers,
+                                      bool managed_vector_mask,
+                                      const AscendVidReductionInfo &vid) {
   const DataType byte_dtype = DataType::UInt(8);
   if (call->op.same_as(tl::ascend_reduce())) {
-    if (!AscendCReduceUsesTmp(call)) {
+    const ReduceTemplateInfo info = ParseReduceTemplateInfo(call);
+    const bool use_v2 =
+        managed_vector_mask && info.dtype == "float" && info.direction == -1;
+    if (!AscendCReduceUsesTmp(call, use_v2)) {
       return NoWorkspace();
     }
-    return RequireWorkspace(
-        byte_dtype, EstimateAscendCReduceWorkspaceBytes(call, alloc_buffers));
+    const DataType workspace_dtype = use_v2 ? DataType::Float(32) : byte_dtype;
+    WorkspaceSpec spec = RequireWorkspace(
+        workspace_dtype, EstimateAscendCReduceWorkspaceBytes(
+                             call, alloc_buffers, use_v2, vid.source_divisor));
+    if (use_v2) {
+      spec.per_vector_bytes = spec.primary_bytes;
+      spec.vid_workspace_divisor = vid.workspace_divisor;
+      // Reserve the pre-split view: VidReduction will halve zero-offset
+      // workspace views, independently of whether the input itself splits.
+      if (!HasWorkspaceOperand(call, 3) ||
+          GetAccessPtrOffset(call->args[3]) == 0) {
+        spec.primary_bytes *= vid.workspace_divisor;
+      }
+    }
+    return spec;
   }
   if (call->op.same_as(tl::ascend_broadcast())) {
     const int64_t bytes = EstimateAscendCBroadcastWorkspaceBytes(call);
@@ -726,7 +768,9 @@ WorkspaceSpec GetAscendCWorkspaceSpec(const CallNode *call,
 
 WorkspaceSpec GetWorkspaceSpec(const CallNode *call,
                                const Array<Buffer> &alloc_buffers,
-                               const std::string &target) {
+                               const std::string &target,
+                               bool managed_vector_mask,
+                               const AscendVidReductionPlan &vid_plan) {
   const auto *op_node = call->op.as<OpNode>();
   ICHECK(op_node);
   const auto config_it = GetWorkspaceOpConfigs().find(op_node);
@@ -742,7 +786,10 @@ WorkspaceSpec GetWorkspaceSpec(const CallNode *call,
       << "Unsupported workspace target model " << target;
   ICHECK(config_it->second.ascendc_supported)
       << op_node->name << " is not supported by the AscendC backend";
-  return GetAscendCWorkspaceSpec(call, alloc_buffers);
+  const auto it = vid_plan.find(call);
+  const AscendVidReductionInfo vid =
+      it == vid_plan.end() ? AscendVidReductionInfo{} : it->second;
+  return GetAscendCWorkspaceSpec(call, alloc_buffers, managed_vector_mask, vid);
 }
 
 } // namespace
@@ -750,10 +797,14 @@ WorkspaceSpec GetWorkspaceSpec(const CallNode *call,
 class CallNodeCollector : public ExprVisitor, public StmtVisitor {
 public:
   static std::vector<Call> Collect(PrimFunc f, Target target,
-                                   const Array<Buffer> &alloc_buffers) {
+                                   const Array<Buffer> &alloc_buffers,
+                                   bool managed_vector_mask,
+                                   const AscendVidReductionPlan &vid_plan) {
     CallNodeCollector collector;
     collector.target_ = Downcast<String>(target.get()->attrs["model"]);
+    collector.managed_vector_mask_ = managed_vector_mask;
     collector.alloc_buffers_ = alloc_buffers;
+    collector.vid_plan_ = vid_plan;
     return collector.Find(f->body);
   }
 
@@ -770,8 +821,8 @@ private:
       const auto config_it = GetWorkspaceOpConfigs().find(op_node);
       if (config_it != GetWorkspaceOpConfigs().end()) {
         const int64_t tmp_pos = config_it->second.tmp_arg_index;
-        const WorkspaceSpec spec =
-            GetWorkspaceSpec(op, alloc_buffers_, target_);
+        const WorkspaceSpec spec = GetWorkspaceSpec(
+            op, alloc_buffers_, target_, managed_vector_mask_, vid_plan_);
         if (!HasWorkspaceOperand(op, tmp_pos) && spec.requires_workspace) {
           calls_.push_back(GetRef<Call>(op));
         }
@@ -785,7 +836,9 @@ private:
   }
 
   std::vector<Call> calls_;
+  AscendVidReductionPlan vid_plan_;
   std::string target_;
+  bool managed_vector_mask_{false};
   Array<Buffer> alloc_buffers_;
 };
 
@@ -793,12 +846,16 @@ class CallNodeModifier : public StmtExprMutator {
 public:
   static Stmt Modify(PrimFunc f, Target target, Buffer &tmp_buffer,
                      Buffer &reduce_out_tmp_buffer,
-                     const Array<Buffer> &alloc_buffers) {
+                     const Array<Buffer> &alloc_buffers,
+                     bool managed_vector_mask,
+                     const AscendVidReductionPlan &vid_plan) {
     CallNodeModifier modifier;
     modifier.target_ = Downcast<String>(target.get()->attrs["model"]);
+    modifier.managed_vector_mask_ = managed_vector_mask;
     modifier.tmp_buf_ = tmp_buffer;
     modifier.reduce_out_tmp_buf_ = reduce_out_tmp_buffer;
     modifier.alloc_buffers_ = alloc_buffers;
+    modifier.vid_plan_ = vid_plan;
     return modifier.AddTmpArg(f->body);
   }
 
@@ -812,8 +869,8 @@ private:
         const int64_t tmp_buffer_param_offset = config_it->second.tmp_arg_index;
         const bool has_workspace =
             HasWorkspaceOperand(op, tmp_buffer_param_offset);
-        const WorkspaceSpec spec =
-            GetWorkspaceSpec(op, alloc_buffers_, target_);
+        const WorkspaceSpec spec = GetWorkspaceSpec(
+            op, alloc_buffers_, target_, managed_vector_mask_, vid_plan_);
         if (!spec.requires_workspace) {
           return has_workspace
                      ? CallWithoutWorkspaceArgs(op, tmp_buffer_param_offset)
@@ -902,6 +959,32 @@ private:
     // non-empty arena. PTO reduce(clear=False), in contrast, has a
     // TileLang-owned layout whose main/output views are derived here.
     if (target_ != "pto") {
+      // Only the v2 fp32 view has an exact compiler-owned size contract.
+      if (spec.view_dtype == DataType::Float(32)) {
+        ICHECK_GE(GetAccessPtrBytes(op->args[tmp_buffer_param_offset]),
+                  spec.primary_bytes)
+            << "fp32 Reduce2D explicit tmp arena is too small: got "
+            << GetAccessPtrBytes(op->args[tmp_buffer_param_offset])
+            << " bytes, need " << spec.primary_bytes;
+        if (spec.vid_workspace_divisor == 2) {
+          const PrimExpr &arena = op->args[tmp_buffer_param_offset];
+          const auto *data = AsAccessPtr(arena)->args[1].as<VarNode>();
+          const BufferNode *buffer = FindBufferByDataVar(alloc_buffers_, data);
+          ICHECK(buffer) << "Cannot find vid-reduced scratch allocation";
+          int64_t final_bytes = buffer->dtype.bytes();
+          for (size_t i = 0; i < buffer->shape.size(); ++i) {
+            int64_t extent = Downcast<IntImm>(buffer->shape[i])->value;
+            final_bytes *= i == 0 ? std::max<int64_t>(extent / 2, 1) : extent;
+          }
+          ICHECK_LE(GetAccessPtrByteOffset(arena) + spec.per_vector_bytes,
+                    final_bytes)
+              << "fp32 Reduce2D explicit tmp arena exceeds its allocation "
+                 "after vid reduction: need "
+              << spec.per_vector_bytes << " bytes at offset "
+              << GetAccessPtrByteOffset(arena) << ", allocation has "
+              << final_bytes;
+        }
+      }
       return ReplaceWorkspace(
           op, tmp_buffer_param_offset,
           RetypeWorkspace(op->args[tmp_buffer_param_offset], spec));
@@ -1062,8 +1145,10 @@ private:
 
   Buffer tmp_buf_;
   Buffer reduce_out_tmp_buf_;
+  AscendVidReductionPlan vid_plan_;
   Array<Buffer> alloc_buffers_;
   std::string target_;
+  bool managed_vector_mask_{false};
 };
 
 class RootAllocBufferFinder : public StmtVisitor {
@@ -1090,18 +1175,30 @@ private:
 
 class TmpBufferInjector : public StmtExprMutator {
 public:
-  static PrimFunc TmpBufferInject(PrimFunc f, Target target) {
+  static PrimFunc TmpBufferInject(PrimFunc f, Target target,
+                                  bool plan_vid_reduction) {
     TmpBufferInjector injector;
     injector.target_ = Downcast<String>(target.get()->attrs["model"]);
+    // Match instruction selection, including the standalone-pass A3 default
+    // used by the other Ascend passes when npu_platform is absent.
+    const std::string platform =
+        f->GetAttr<String>("npu_platform").value_or(String("A3"));
+    injector.managed_vector_mask_ =
+        UseCompilerManagedVectorMask(target, platform);
     injector.alloc_buffers_ = RootAllocBufferFinder::Find(f->body);
+    if (plan_vid_reduction) {
+      injector.vid_plan_ = AnalyzeAscendVidReduction(f);
+    }
     PrimFuncNode *fptr = f.CopyOnWrite();
-    injector.calls_ =
-        CallNodeCollector::Collect(f, target, injector.alloc_buffers_);
+    injector.calls_ = CallNodeCollector::Collect(
+        f, target, injector.alloc_buffers_, injector.managed_vector_mask_,
+        injector.vid_plan_);
     Stmt new_body = injector.inject(f->body);
     fptr->body = new_body;
-    new_body = CallNodeModifier::Modify(f, target, injector.tmp_buf_,
-                                        injector.reduce_out_tmp_buf_,
-                                        injector.alloc_buffers_);
+    new_body = CallNodeModifier::Modify(
+        f, target, injector.tmp_buf_, injector.reduce_out_tmp_buf_,
+        injector.alloc_buffers_, injector.managed_vector_mask_,
+        injector.vid_plan_);
     fptr->body = new_body;
     return f;
   }
@@ -1196,8 +1293,8 @@ private:
   Array<PrimExpr> GetTmpBufferSize_(Array<Buffer> alloc_buffers) {
     int64_t shape_size = 0;
     for (const Call &call : calls_) {
-      const WorkspaceSpec spec =
-          GetWorkspaceSpec(call.get(), alloc_buffers, target_);
+      const WorkspaceSpec spec = GetWorkspaceSpec(
+          call.get(), alloc_buffers, target_, managed_vector_mask_, vid_plan_);
       ICHECK(spec.requires_workspace);
       shape_size = std::max(shape_size, spec.primary_bytes);
     }
@@ -1207,16 +1304,19 @@ private:
   }
 
   std::string target_;
+  bool managed_vector_mask_{false};
   std::vector<Call> calls_;
+  AscendVidReductionPlan vid_plan_;
   const std::string buffer_name_ = "tmp_ub";
   Buffer tmp_buf_;
   Buffer reduce_out_tmp_buf_;
   Array<Buffer> alloc_buffers_;
 };
 
-tvm::transform::Pass InjectTmpBuffer(Target target) {
+tvm::transform::Pass InjectTmpBuffer(Target target, bool plan_vid_reduction) {
   auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {
-    return TmpBufferInjector::TmpBufferInject(std::move(f), target);
+    return TmpBufferInjector::TmpBufferInject(std::move(f), target,
+                                              plan_vid_reduction);
   };
   return CreatePrimFuncPass(pass_func, 0, "tl.InjectTmpBuffer", {});
 }
