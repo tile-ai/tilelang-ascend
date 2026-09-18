@@ -88,7 +88,10 @@ VEC_NUM = 2
 # this repo do it: the documented figure is 24 and the true one is 20, and
 # copying the documented number cost 68% once.  Only ``fixed_core`` reads it.
 CORE_NUM = 20  # physical AI cores on this part
-BETA_PAD = 8  # beta's padded last dim: 8 fp32 = 32B, the minimum UB alignment
+# One staging row must be a whole 32 B UB block, so its width follows the
+# element: 8 fp32, 16 fp16/bf16.
+BETA_PAD = 8  # fp32 width, kept for the budget function
+_BETA_PAD = {"float16": 16, "bfloat16": 16, "float": 8, "float32": 8}
 
 
 @tilelang.jit(out_idx=[-2, -1], workspace_idx=[-4, -3], pass_configs=pass_configs)
@@ -103,6 +106,7 @@ def wy_fast_ker(B, SEQ, H, HV, K, V, C, BK, BV, dtype="float16", accum_dtype="fl
     bv_num = V // BV
     GRP = HV // H  # value heads per qk head (GVA)
     CV = C // VEC_NUM  # rows of the chunk owned by one vector core
+    BPAD = _BETA_PAD[dtype]  # 32 B of the DATA dtype, not of fp32
     grid = B * HV * chunk_num
 
     @T.prim_func
@@ -117,7 +121,7 @@ def wy_fast_ker(B, SEQ, H, HV, K, V, C, BK, BV, dtype="float16", accum_dtype="fl
         # be bought by materialising a zero-padded [.., 8] tensor on the host is
         # now handled where it belongs, inside the kernel: the UB tile stays
         # BETA_PAD wide and the DMA pads the columns it does not read.
-        Beta: T.Tensor([B, SEQ, HV, 1], accum_dtype),  # type: ignore
+        Beta: T.Tensor([B, SEQ, HV, 1], dtype),  # type: ignore
         G: T.Tensor([B, SEQ, HV, K], accum_dtype),  # type: ignore  chunk-local cumsum
         A: T.Tensor([B, SEQ, HV, C], dtype),  # type: ignore  (I + L)^{-1}
         # Workspaces: the vector cores publish the scaled operands here for the
@@ -140,7 +144,23 @@ def wy_fast_ker(B, SEQ, H, HV, K, V, C, BK, BV, dtype="float16", accum_dtype="fl
             kg_ub = T.alloc_ub([CV, K], accum_dtype)  # beta_i * e^{G} * K
             v_ub = T.alloc_ub([CV, V], accum_dtype)  # beta_i * V
             g_ub = T.alloc_ub([CV, K], accum_dtype)
-            beta8_ub = T.alloc_ub([CV, BETA_PAD], accum_dtype)
+            # beta enters in the DATA dtype: the host does not cast it.  The widening to
+            # accum_dtype happens here, in two steps, because neither of the one-step forms
+            # exists on this part (both measured, not assumed):
+            #   copy_gm_to_ub is templated on a single T, so the DMA cannot widen on the way
+            #     in -- copy_gm_to_ub<half, 8, 32>(float*, half) has no overload.
+            #   reduce_sum_half<T> also takes dst and src at the same T (common.h:457), so
+            #     the reduce cannot widen either.  Reducing in the narrow dtype and widening
+            #     the [CV] vector afterwards was tried and measured IDENTICAL, and it does
+            #     not work for bfloat16 at all: this part has neither a bf16 reduce nor a
+            #     bf16 Add (reduce_sum_v220_impl.h:297, kernel_operator_vec_binary_impl.h:34).
+            # So one extra copy_ub_to_ub and one extra PipeBarrier are the price of keeping
+            # the host out of it.  Measured at H=4 / SEQ=4096, 12 iterations x 3 collections:
+            # +23.6 us on kkt and +43.3 us here, +4.4% on the pipeline against a collection
+            # spread of 12.0 us -- about 12 cycles per execution, in a loop that runs 512
+            # times an iteration.  BPAD is 32 B of the data dtype: 16 fp16/bf16.
+            beta_raw = T.alloc_ub([CV, BPAD], dtype)
+            beta8_ub = T.alloc_ub([CV, BPAD], accum_dtype)
             beta_ub = T.alloc_ub([CV], accum_dtype)  # CV*4 >= 32B for C >= 32
             # Materialised broadcast target for beta along the V axis.  The K
             # axis borrows the already-dead g_ub; the two cannot share one buffer
@@ -191,13 +211,13 @@ def wy_fast_ker(B, SEQ, H, HV, K, V, C, BK, BV, dtype="float16", accum_dtype="fl
                     T.tile.fill(k_half, 0)
                     T.tile.fill(v_half, 0)
                     T.tile.fill(g_ub, 0.0)
-                    T.tile.fill(beta8_ub, 0.0)
+                    T.tile.fill(beta_raw, 0.0)
 
                 if (not RAGGED) or t0 + vid * CV < SEQ:
                     T.copy(Kt[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hq, :], k_half)
                     T.copy(Vt[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hv, :], v_half)
                     T.copy(G[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hv, :], g_ub)
-                    T.copy(Beta[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hv, 0:1], beta8_ub, pad_value=0)
+                    T.copy(Beta[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hv, 0:1], beta_raw, pad_value=0)
                 T.copy(k_half, kg_ub)  # dtype -> fp32
                 T.copy(v_half, v_ub)
 
@@ -211,6 +231,9 @@ def wy_fast_ker(B, SEQ, H, HV, K, V, C, BK, BV, dtype="float16", accum_dtype="fl
                 # zero, load ``Beta[bz, lo:hi, hv, 0:1]`` into this same [CV, 8]
                 # tile instead: a 1-wide GM region makes the DMA pre-fill the
                 # tile with its pad value (0) and then write only column 0.
+                # Widen outside any tail guard, so a skipped block still reduces the
+                # zeros tile.fill / pad_value put in beta_raw, not stale UB.
+                T.copy(beta_raw, beta8_ub)  # dtype -> fp32, the k_half -> kg_ub pattern
                 T.reduce_sum(beta8_ub, beta_ub, dim=-1)
 
                 # One operation per T.Parallel, as the GDN kernels do: compound
@@ -295,6 +318,7 @@ def wy_fast_ker_varlen(B, SEQ, H, HV, K, V, C, BK, BV, NT_TOTAL, dtype="float16"
     bv_num = V // BV
     GRP = HV // H  # value heads per qk head (GVA)
     CV = C // VEC_NUM  # rows of the chunk owned by one vector core
+    BPAD = _BETA_PAD[dtype]  # 32 B of the DATA dtype, not of fp32
     grid = HV * NT_TOTAL  # B is 1 under varlen
 
     @T.prim_func
@@ -309,7 +333,7 @@ def wy_fast_ker_varlen(B, SEQ, H, HV, K, V, C, BK, BV, NT_TOTAL, dtype="float16"
         # be bought by materialising a zero-padded [.., 8] tensor on the host is
         # now handled where it belongs, inside the kernel: the UB tile stays
         # BETA_PAD wide and the DMA pads the columns it does not read.
-        Beta: T.Tensor([B, SEQ, HV, 1], accum_dtype),  # type: ignore
+        Beta: T.Tensor([B, SEQ, HV, 1], dtype),  # type: ignore
         G: T.Tensor([B, SEQ, HV, K], accum_dtype),  # type: ignore  chunk-local cumsum
         A: T.Tensor([B, SEQ, HV, C], dtype),  # type: ignore  (I + L)^{-1}
         # Meta goes HERE, before the workspaces, and the position is not free.
@@ -347,7 +371,23 @@ def wy_fast_ker_varlen(B, SEQ, H, HV, K, V, C, BK, BV, NT_TOTAL, dtype="float16"
             kg_ub = T.alloc_ub([CV, K], accum_dtype)  # beta_i * e^{G} * K
             v_ub = T.alloc_ub([CV, V], accum_dtype)  # beta_i * V
             g_ub = T.alloc_ub([CV, K], accum_dtype)
-            beta8_ub = T.alloc_ub([CV, BETA_PAD], accum_dtype)
+            # beta enters in the DATA dtype: the host does not cast it.  The widening to
+            # accum_dtype happens here, in two steps, because neither of the one-step forms
+            # exists on this part (both measured, not assumed):
+            #   copy_gm_to_ub is templated on a single T, so the DMA cannot widen on the way
+            #     in -- copy_gm_to_ub<half, 8, 32>(float*, half) has no overload.
+            #   reduce_sum_half<T> also takes dst and src at the same T (common.h:457), so
+            #     the reduce cannot widen either.  Reducing in the narrow dtype and widening
+            #     the [CV] vector afterwards was tried and measured IDENTICAL, and it does
+            #     not work for bfloat16 at all: this part has neither a bf16 reduce nor a
+            #     bf16 Add (reduce_sum_v220_impl.h:297, kernel_operator_vec_binary_impl.h:34).
+            # So one extra copy_ub_to_ub and one extra PipeBarrier are the price of keeping
+            # the host out of it.  Measured at H=4 / SEQ=4096, 12 iterations x 3 collections:
+            # +23.6 us on kkt and +43.3 us here, +4.4% on the pipeline against a collection
+            # spread of 12.0 us -- about 12 cycles per execution, in a loop that runs 512
+            # times an iteration.  BPAD is 32 B of the data dtype: 16 fp16/bf16.
+            beta_raw = T.alloc_ub([CV, BPAD], dtype)
+            beta8_ub = T.alloc_ub([CV, BPAD], accum_dtype)
             beta_ub = T.alloc_ub([CV], accum_dtype)  # CV*4 >= 32B for C >= 32
             # Materialised broadcast target for beta along the V axis.  The K
             # axis borrows the already-dead g_ub; the two cannot share one buffer
@@ -404,7 +444,7 @@ def wy_fast_ker_varlen(B, SEQ, H, HV, K, V, C, BK, BV, NT_TOTAL, dtype="float16"
                 T.tile.fill(k_half, 0)
                 T.tile.fill(v_half, 0)
                 T.tile.fill(g_ub, 0.0)
-                T.tile.fill(beta8_ub, 0.0)
+                T.tile.fill(beta_raw, 0.0)
 
                 # Guarded on r_vid, not on a distance to SEQ: under varlen
                 # `t0 + vid * CV < SEQ` is true for nearly every interior block,
@@ -415,7 +455,7 @@ def wy_fast_ker_varlen(B, SEQ, H, HV, K, V, C, BK, BV, NT_TOTAL, dtype="float16"
                     T.copy(Kt[0, t0 + lo : t0 + lo + r_vid, hq, :], k_half)
                     T.copy(Vt[0, t0 + lo : t0 + lo + r_vid, hv, :], v_half)
                     T.copy(G[0, t0 + lo : t0 + lo + r_vid, hv, :], g_ub)
-                    T.copy(Beta[0, t0 + lo : t0 + lo + r_vid, hv, 0:1], beta8_ub, pad_value=0)
+                    T.copy(Beta[0, t0 + lo : t0 + lo + r_vid, hv, 0:1], beta_raw, pad_value=0)
                 T.copy(k_half, kg_ub)  # dtype -> fp32
                 T.copy(v_half, v_ub)
 
@@ -429,6 +469,9 @@ def wy_fast_ker_varlen(B, SEQ, H, HV, K, V, C, BK, BV, NT_TOTAL, dtype="float16"
                 # zero, load ``Beta[bz, lo:hi, hv, 0:1]`` into this same [CV, 8]
                 # tile instead: a 1-wide GM region makes the DMA pre-fill the
                 # tile with its pad value (0) and then write only column 0.
+                # Widen outside any tail guard, so a skipped block still reduces the
+                # zeros tile.fill / pad_value put in beta_raw, not stale UB.
+                T.copy(beta_raw, beta8_ub)  # dtype -> fp32, the k_half -> kg_ub pattern
                 T.reduce_sum(beta8_ub, beta_ub, dim=-1)
 
                 # One operation per T.Parallel, as the GDN kernels do: compound
@@ -518,6 +561,7 @@ def wy_fast_ker_fixed_core(B, SEQ, H, HV, K, V, C, BK, BV, dtype="float16", accu
     bv_num = V // BV
     GRP = HV // H  # value heads per qk head (GVA)
     CV = C // VEC_NUM  # rows of the chunk owned by one vector core
+    BPAD = _BETA_PAD[dtype]  # 32 B of the DATA dtype, not of fp32
     grid = B * HV * chunk_num
 
     # Fixed Core.  The grid is the physical core count and each core walks its
@@ -544,7 +588,7 @@ def wy_fast_ker_fixed_core(B, SEQ, H, HV, K, V, C, BK, BV, dtype="float16", accu
         # be bought by materialising a zero-padded [.., 8] tensor on the host is
         # now handled where it belongs, inside the kernel: the UB tile stays
         # BETA_PAD wide and the DMA pads the columns it does not read.
-        Beta: T.Tensor([B, SEQ, HV, 1], accum_dtype),  # type: ignore
+        Beta: T.Tensor([B, SEQ, HV, 1], dtype),  # type: ignore
         G: T.Tensor([B, SEQ, HV, K], accum_dtype),  # type: ignore  chunk-local cumsum
         A: T.Tensor([B, SEQ, HV, C], dtype),  # type: ignore  (I + L)^{-1}
         # Workspaces: the vector cores publish the scaled operands here for the
@@ -567,7 +611,23 @@ def wy_fast_ker_fixed_core(B, SEQ, H, HV, K, V, C, BK, BV, dtype="float16", accu
             kg_ub = T.alloc_ub([CV, K], accum_dtype)  # beta_i * e^{G} * K
             v_ub = T.alloc_ub([CV, V], accum_dtype)  # beta_i * V
             g_ub = T.alloc_ub([CV, K], accum_dtype)
-            beta8_ub = T.alloc_ub([CV, BETA_PAD], accum_dtype)
+            # beta enters in the DATA dtype: the host does not cast it.  The widening to
+            # accum_dtype happens here, in two steps, because neither of the one-step forms
+            # exists on this part (both measured, not assumed):
+            #   copy_gm_to_ub is templated on a single T, so the DMA cannot widen on the way
+            #     in -- copy_gm_to_ub<half, 8, 32>(float*, half) has no overload.
+            #   reduce_sum_half<T> also takes dst and src at the same T (common.h:457), so
+            #     the reduce cannot widen either.  Reducing in the narrow dtype and widening
+            #     the [CV] vector afterwards was tried and measured IDENTICAL, and it does
+            #     not work for bfloat16 at all: this part has neither a bf16 reduce nor a
+            #     bf16 Add (reduce_sum_v220_impl.h:297, kernel_operator_vec_binary_impl.h:34).
+            # So one extra copy_ub_to_ub and one extra PipeBarrier are the price of keeping
+            # the host out of it.  Measured at H=4 / SEQ=4096, 12 iterations x 3 collections:
+            # +23.6 us on kkt and +43.3 us here, +4.4% on the pipeline against a collection
+            # spread of 12.0 us -- about 12 cycles per execution, in a loop that runs 512
+            # times an iteration.  BPAD is 32 B of the data dtype: 16 fp16/bf16.
+            beta_raw = T.alloc_ub([CV, BPAD], dtype)
+            beta8_ub = T.alloc_ub([CV, BPAD], accum_dtype)
             beta_ub = T.alloc_ub([CV], accum_dtype)  # CV*4 >= 32B for C >= 32
             # Materialised broadcast target for beta along the V axis.  The K
             # axis borrows the already-dead g_ub; the two cannot share one buffer
@@ -626,13 +686,13 @@ def wy_fast_ker_fixed_core(B, SEQ, H, HV, K, V, C, BK, BV, dtype="float16", accu
                             T.tile.fill(k_half, 0)
                             T.tile.fill(v_half, 0)
                             T.tile.fill(g_ub, 0.0)
-                            T.tile.fill(beta8_ub, 0.0)
+                            T.tile.fill(beta_raw, 0.0)
 
                         if (not RAGGED) or t0 + vid * CV < SEQ:
                             T.copy(Kt[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hq, :], k_half)
                             T.copy(Vt[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hv, :], v_half)
                             T.copy(G[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hv, :], g_ub)
-                            T.copy(Beta[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hv, 0:1], beta8_ub, pad_value=0)
+                            T.copy(Beta[bz, t0 + vid * CV : t0 + (vid + 1) * CV, hv, 0:1], beta_raw, pad_value=0)
                         T.copy(k_half, kg_ub)  # dtype -> fp32
                         T.copy(v_half, v_ub)
 
@@ -646,6 +706,9 @@ def wy_fast_ker_fixed_core(B, SEQ, H, HV, K, V, C, BK, BV, dtype="float16", accu
                         # zero, load ``Beta[bz, lo:hi, hv, 0:1]`` into this same [CV, 8]
                         # tile instead: a 1-wide GM region makes the DMA pre-fill the
                         # tile with its pad value (0) and then write only column 0.
+                        # Widen outside any tail guard, so a skipped block still reduces the
+                        # zeros tile.fill / pad_value put in beta_raw, not stale UB.
+                        T.copy(beta_raw, beta8_ub)  # dtype -> fp32, the k_half -> kg_ub pattern
                         T.reduce_sum(beta8_ub, beta_ub, dim=-1)
 
                         # One operation per T.Parallel, as the GDN kernels do: compound
@@ -735,9 +798,10 @@ def wy_fast(k, v, beta, G, A, C, BK=None, BV=None, cu_seqlens=None, fixed_core=F
         A    [B, SEQ, HV, C]  dtype    stage-3 output
         ->   W [B, SEQ, HV, K], U [B, SEQ, HV, V], both in dtype
 
-    The host does no layout surgery: it only pads beta's last dim to 8 (the
-    32B UB alignment the kernel needs) and looks the dtype up.  Everything
-    else is indexed in place by the kernel.
+    The host does no layout surgery and no bulk work: it adds a unit axis to beta
+    (a view) and looks the dtype up.  Both the 32 B UB alignment and the widening
+    to fp32 happen inside the kernel; the host used to do each and no longer does
+    either.
 
     With ``cu_seqlens`` the inputs are a flattened varlen batch (B == 1).  W and
     U keep their layout -- one row per token in flattened order -- so nothing
@@ -775,11 +839,19 @@ def wy_fast(k, v, beta, G, A, C, BK=None, BV=None, cu_seqlens=None, fixed_core=F
             torch.empty((B, 0, HV, V), device=k.device, dtype=k.dtype),
         )
 
-    # beta goes in as the contract has it.  unsqueeze(-1) is a view -- no
-    # allocation, no copy, same data_ptr -- so the host does no bulk work.  The
-    # 32B UB alignment is a property of the hardware, not of the operator's
-    # interface, so it is dealt with inside the kernel.
-    beta_p = beta.float().unsqueeze(-1)
+    # beta goes in exactly as the contract has it: [B, SEQ, HV] in the data dtype,
+    # through a free unsqueeze(-1) -- a view, no allocation, no copy, same
+    # data_ptr.  The host does no bulk work on it at all.
+    #
+    # It used to read beta.float().unsqueeze(-1).  That .float() was a real
+    # allocate-and-cast, measured at 14.5 us a call and FLAT in the data (14.53 us
+    # at H=4 with 16 K elements against 14.06 us at H=96 with 393 K), so it bought
+    # a dispatch rather than moving bytes -- and it never appeared in the
+    # per-stage msprof table, which counts main_kernel rows while this was a
+    # separate Cast op.  Both the 32 B alignment and the widening are hardware
+    # properties, so both now live inside the kernel.  That is not free: see the
+    # note at beta_raw for what it costs and why no cheaper form exists.
+    beta_p = beta.unsqueeze(-1)
 
     dt = _DTYPES[k.dtype]
     # Fixed length only: under varlen the task -> (batch, head, chunk) decode

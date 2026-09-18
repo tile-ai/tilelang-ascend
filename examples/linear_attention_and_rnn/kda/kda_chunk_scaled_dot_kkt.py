@@ -180,7 +180,10 @@ UB_LIMIT = 196352
 # with it.
 ROUTE_B_CLAMP = 80.0
 VEC_NUM = 2  # two vector cores split the C rows
-BETA_PAD = 8  # width of the beta staging tile; CV*8*4 is a multiple of 32 B
+# One staging row must be a whole 32 B UB block, so its width follows the
+# element: 8 fp32, 16 fp16/bf16.
+BETA_PAD = 8  # fp32 width, kept for the budget function
+_BETA_PAD = {"float16": 16, "bfloat16": 16, "float": 8, "float32": 8}
 
 
 def _ub_bytes(C, K, BC, elem):
@@ -206,7 +209,11 @@ def _ub_bytes(C, K, BC, elem):
     # scratch, which grows with instruction width.  Do not widen an instruction on
     # the strength of this number alone -- that mistake has been made twice here
     # already (chunk_o's [32, 128] tile, and widening kkt's reduce_sum to [C, K]).
-    beta = CV * BETA_PAD * 4 + CV * 4 + CV * C * 4
+    # beta_raw (data dtype, the DMA target) + beta8_ub (fp32, widened) + the
+    # [CV] vector + the [CV, C] materialised broadcast.  beta_raw is new: the
+    # host no longer casts beta, so the widening happens here.
+    bpad = 32 // elem
+    beta = CV * bpad * elem + CV * bpad * 4 + CV * 4 + CV * C * 4
     return planes + planes_low + blk + out + small + beta
 
 
@@ -275,6 +282,7 @@ def kkt_ker(B, SEQ, H, HV, K, C, BC=16, dtype="float16", accum_dtype="float", ro
     R = SEQ % C
     RAGGED = R != 0
     CV = C // VEC_NUM
+    BPAD = _BETA_PAD[dtype]  # 32 B of the DATA dtype, not of fp32
     # The cube operand dtype.  Route B is the only reason it can differ from
     # the data dtype: its column operand carries exp of the intra-block gate
     # span, which fp16 cannot hold (e^11.09 against a forget gate spanning 70).
@@ -290,7 +298,7 @@ def kkt_ker(B, SEQ, H, HV, K, C, BC=16, dtype="float16", accum_dtype="float", ro
     def main(
         Kt: T.Tensor([B, SEQ, H, K], dtype),  # type: ignore
         G: T.Tensor([B, SEQ, HV, K], accum_dtype),  # type: ignore
-        Beta: T.Tensor([B, SEQ, HV, 1], accum_dtype),  # type: ignore
+        Beta: T.Tensor([B, SEQ, HV, 1], dtype),  # type: ignore
         Msk: T.Tensor([2 * C, C], accum_dtype),  # type: ignore  strictly lower, i > j
         ws_kr: T.Tensor([NBLK, C, K], wdt),  # type: ignore   row operands
         ws_kf: T.Tensor([NBLK, NB, C, K], wdt),  # type: ignore  column operands
@@ -329,7 +337,23 @@ def kkt_ker(B, SEQ, H, HV, K, C, BC=16, dtype="float16", accum_dtype="float", ro
             # column 0), so the row sum *is* the column-0 extract -- and it ends up
             # in a 1-D buffer, which is the only shape the row broadcast accepts.
             # Same construct as wy_fast, already proven there.
-            beta8_ub = T.alloc_ub([CV, BETA_PAD], accum_dtype)
+            # beta enters in the DATA dtype: the host does not cast it.  The widening to
+            # accum_dtype happens here, in two steps, because neither of the one-step forms
+            # exists on this part (both measured, not assumed):
+            #   copy_gm_to_ub is templated on a single T, so the DMA cannot widen on the way
+            #     in -- copy_gm_to_ub<half, 8, 32>(float*, half) has no overload.
+            #   reduce_sum_half<T> also takes dst and src at the same T (common.h:457), so
+            #     the reduce cannot widen either.  Reducing in the narrow dtype and widening
+            #     the [CV] vector afterwards was tried and measured IDENTICAL, and it does
+            #     not work for bfloat16 at all: this part has neither a bf16 reduce nor a
+            #     bf16 Add (reduce_sum_v220_impl.h:297, kernel_operator_vec_binary_impl.h:34).
+            # So one extra copy_ub_to_ub and one extra PipeBarrier are the price of keeping
+            # the host out of it.  Measured at H=4 / SEQ=4096, 12 iterations x 3 collections:
+            # +23.6 us on kkt and +43.3 us here, +4.4% on the pipeline against a collection
+            # spread of 12.0 us -- about 12 cycles per execution, in a loop that runs 512
+            # times an iteration.  BPAD is 32 B of the data dtype: 16 fp16/bf16.
+            beta_raw = T.alloc_ub([CV, BPAD], dtype)
+            beta8_ub = T.alloc_ub([CV, BPAD], accum_dtype)
             betav_ub = T.alloc_ub([CV], accum_dtype)  # CV*4 >= 32B
             # The row pitch must be exactly C.  Inside T.Parallel(CV, C) the
             # compiler addresses buf[i, j] densely as i*C + j and ignores the
@@ -587,9 +611,12 @@ def kkt_ker(B, SEQ, H, HV, K, C, BC=16, dtype="float16", accum_dtype="float", ro
                     ah_ub[i, j] = ah_ub[i, j] * betab_ub[i, j]
 
                 if RAGGED and bx == chunk_num - 1:
-                    T.tile.fill(beta8_ub, 0.0)
+                    T.tile.fill(beta_raw, 0.0)
                 if (not RAGGED) or base + r0 < SEQ:
-                    T.copy(Beta[bz, base + r0 : base + r0 + CV, hv, 0:1], beta8_ub, pad_value=0)
+                    T.copy(Beta[bz, base + r0 : base + r0 + CV, hv, 0:1], beta_raw, pad_value=0)
+                # Widen outside any tail guard, so a skipped block still reduces the
+                # zeros tile.fill / pad_value put in beta_raw, not stale UB.
+                T.copy(beta_raw, beta8_ub)  # dtype -> fp32, the k_half -> kg_ub pattern
                 T.reduce_sum(beta8_ub, betav_ub, dim=-1)
                 # Then beta, materialised into betab_ub.  A dedicated [CV, C]
                 # tile on top of everything else was tried and did not fit: the
@@ -670,6 +697,7 @@ def kkt_ker_varlen(B, SEQ, H, HV, K, C, NT_TOTAL, BC=16, dtype="float16", accum_
     wdt = "bfloat16" if route_b else dtype
 
     CV = C // VEC_NUM
+    BPAD = _BETA_PAD[dtype]  # 32 B of the DATA dtype, not of fp32
     NB = C // BC
     NBV = NB // VEC_NUM
     NAB = CV // BC
@@ -691,7 +719,7 @@ def kkt_ker_varlen(B, SEQ, H, HV, K, C, NT_TOTAL, BC=16, dtype="float16", accum_
     def main(
         Kt: T.Tensor([B, SEQ, H, K], dtype),  # type: ignore
         G: T.Tensor([B, SEQ, HV, K], accum_dtype),  # type: ignore
-        Beta: T.Tensor([B, SEQ, HV, 1], accum_dtype),  # type: ignore
+        Beta: T.Tensor([B, SEQ, HV, 1], dtype),  # type: ignore
         Msk: T.Tensor([2 * C, C], accum_dtype),  # type: ignore  strictly lower, i > j
         Meta: T.Tensor([NT_TOTAL, _VL.META_COLS], "int32"),  # type: ignore
         ws_kr: T.Tensor([NBLK, C, K], wdt),  # type: ignore   row operands
@@ -732,7 +760,23 @@ def kkt_ker_varlen(B, SEQ, H, HV, K, C, NT_TOTAL, BC=16, dtype="float16", accum_
             # column 0), so the row sum *is* the column-0 extract -- and it ends up
             # in a 1-D buffer, which is the only shape the row broadcast accepts.
             # Same construct as wy_fast, already proven there.
-            beta8_ub = T.alloc_ub([CV, BETA_PAD], accum_dtype)
+            # beta enters in the DATA dtype: the host does not cast it.  The widening to
+            # accum_dtype happens here, in two steps, because neither of the one-step forms
+            # exists on this part (both measured, not assumed):
+            #   copy_gm_to_ub is templated on a single T, so the DMA cannot widen on the way
+            #     in -- copy_gm_to_ub<half, 8, 32>(float*, half) has no overload.
+            #   reduce_sum_half<T> also takes dst and src at the same T (common.h:457), so
+            #     the reduce cannot widen either.  Reducing in the narrow dtype and widening
+            #     the [CV] vector afterwards was tried and measured IDENTICAL, and it does
+            #     not work for bfloat16 at all: this part has neither a bf16 reduce nor a
+            #     bf16 Add (reduce_sum_v220_impl.h:297, kernel_operator_vec_binary_impl.h:34).
+            # So one extra copy_ub_to_ub and one extra PipeBarrier are the price of keeping
+            # the host out of it.  Measured at H=4 / SEQ=4096, 12 iterations x 3 collections:
+            # +23.6 us on kkt and +43.3 us here, +4.4% on the pipeline against a collection
+            # spread of 12.0 us -- about 12 cycles per execution, in a loop that runs 512
+            # times an iteration.  BPAD is 32 B of the data dtype: 16 fp16/bf16.
+            beta_raw = T.alloc_ub([CV, BPAD], dtype)
+            beta8_ub = T.alloc_ub([CV, BPAD], accum_dtype)
             betav_ub = T.alloc_ub([CV], accum_dtype)  # CV*4 >= 32B
             # The row pitch must be exactly C.  Inside T.Parallel(CV, C) the
             # compiler addresses buf[i, j] densely as i*C + j and ignores the
@@ -895,9 +939,12 @@ def kkt_ker_varlen(B, SEQ, H, HV, K, C, NT_TOTAL, BC=16, dtype="float16", accum_
                 for i, j in T.Parallel(CV, C):
                     ah_ub[i, j] = ah_ub[i, j] * betab_ub[i, j]
 
-                T.tile.fill(beta8_ub, 0.0)
+                T.tile.fill(beta_raw, 0.0)
                 if r0 < rows:
-                    T.copy(Beta[0, base + r0 : base + r0 + CV, hv, 0:1], beta8_ub, pad_value=0)
+                    T.copy(Beta[0, base + r0 : base + r0 + CV, hv, 0:1], beta_raw, pad_value=0)
+                # Widen outside any tail guard, so a skipped block still reduces the
+                # zeros tile.fill / pad_value put in beta_raw, not stale UB.
+                T.copy(beta_raw, beta8_ub)  # dtype -> fp32, the k_half -> kg_ub pattern
                 T.reduce_sum(beta8_ub, betav_ub, dim=-1)
                 # Then beta, materialised into betab_ub.  A dedicated [CV, C]
                 # tile on top of everything else was tried and did not fit: the
@@ -1055,7 +1102,11 @@ def chunk_scaled_dot_kkt(k, G, beta, C=64, BC=16, cu_seqlens=None, route_b=False
     # last axis to 8 rather than the head axis to HV + 8 is deliberate: the
     # latter starts head hv at byte 4 * hv, which is not a multiple of 32.
     assert beta.shape == (B, SEQ, HV), f"beta must be the contract shape [B, SEQ, HV], got {tuple(beta.shape)}"
-    beta_p = beta.float().unsqueeze(-1)  # a view: no allocation, no copy
+    # A view: no allocation, no copy, same data_ptr.  The host does no bulk work
+    # on beta.  It used to call .float() here (14.5 us a call, flat in the data,
+    # i.e. a dispatch rather than bytes, and invisible in the per-stage msprof
+    # table because it was a separate Cast op); the widening now happens in UB.
+    beta_p = beta.unsqueeze(-1)
 
     msk = _strict_lower(C, k.device)
 
