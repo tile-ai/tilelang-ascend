@@ -1607,6 +1607,59 @@ AICORE PTO_INLINE void copy_ub_to_pipe(
 }
 #endif
 
+// Serial V2C push, selected by the compiler for TILE_LEFT_RIGHT splits whose
+// per-subcore row width is not a multiple of 32B: both subcores would
+// partial-write the same 32B GM DataBlock. Subcore 0 stores its half first;
+// the mode-1 (VEC_SUBCORES_SYNC) rendezvous on PIPE_MTE3 guarantees subcore
+// 0's store has drained before subcore 1 issues its own store. Allocate and
+// ready-notify (mode-2) semantics match TPUSH, so the workspace layout and
+// the Cube-side TPOP are unchanged.
+template <pto::TileSplitAxis SplitAxis, typename Pipe, typename T, int Rows,
+          int Cols, int RowValid = Rows, int ColValid = Cols>
+AICORE PTO_INLINE void copy_ub_to_pipe_serial(
+    Pipe &pipe, TileUbDataND<T, Rows, Cols, RowValid, ColValid> &ub_tile,
+    int32_t sync_flag) {
+  using TileProd = TileUbDataND<T, Rows, Cols, RowValid, ColValid>;
+  // 1. Cross-Core: wait for space (same as TPUSH)
+  if (pipe.prod.getAllocateStatus() &&
+      Pipe::shouldWaitFree(pipe.prod.tileIndex)) {
+    pipe.prod.allocate();
+  }
+  // 2. Subcore 0 stores its half
+  if (get_subblockid() == 0) {
+    pipe.prod.template push<TileProd, SplitAxis>(pipe.fifo, ub_tile);
+  }
+  // 3. Rendezvous: the set is enqueued on PIPE_MTE3 after subcore 0's store,
+  //    so the matched wait guarantees that store has drained.
+  set_cross_flag<PIPE_MTE3>(sync_flag, 1);
+  wait_cross_flag(sync_flag);
+  // 4. Subcore 1 stores its half
+  if (get_subblockid() != 0) {
+    pipe.prod.template push<TileProd, SplitAxis>(pipe.fifo, ub_tile);
+  }
+  pipe.prod.tileIndex++;
+  // 5. Cross-Core: commit & signal (same mode-2 ready notify as TPUSH)
+  if (pipe.prod.getRecordStatus()) {
+    pipe.prod.record();
+  }
+}
+
+// Serial variant with tmp buffer (A2/A3 form): tmp is only consumed by the
+// A5 ND->Nz path, so it is ignored here, mirroring copy_ub_to_pipe above.
+template <pto::TileSplitAxis SplitAxis, typename Pipe, typename T, int SrcRows,
+          int SrcCols, int DstRows, int DstCols, int SrcRowValid = SrcRows,
+          int SrcColValid = SrcCols, int DstRowValid = DstRows,
+          int DstColValid = DstCols>
+AICORE PTO_INLINE void copy_ub_to_pipe_serial(
+    Pipe &pipe,
+    TileUbDataND<T, SrcRows, SrcCols, SrcRowValid, SrcColValid> &ub_tile,
+    TileUbDataND<T, DstRows, DstCols, DstRowValid, DstColValid> &tmp_tile,
+    int32_t sync_flag) {
+  (void)tmp_tile;
+  copy_ub_to_pipe_serial<SplitAxis, Pipe, T, SrcRows, SrcCols, SrcRowValid,
+                         SrcColValid>(pipe, ub_tile, sync_flag);
+}
+
 template <pto::TileSplitAxis SplitAxis, typename Pipe>
 AICORE PTO_INLINE void free_pipe(Pipe &pipe) {
   pto::TFREE<Pipe, SplitAxis>(pipe);

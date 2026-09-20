@@ -124,6 +124,10 @@ public:
     bool has_tmp = false;
     int tmp_M_val = 0;
     int tmp_N_val = 0;
+    // >= 0 (from PASS attr) when the V2C TILE_LEFT_RIGHT producer push must be
+    // serialized (per-subcore row width not a 32B multiple): lowered to
+    // copy_ub_to_pipe_serial with this mode-1 rendezvous flag appended.
+    int sync_flag_id = -1;
     // Computed by codegen
     std::string pipe_type_name;
     std::string dir_full;

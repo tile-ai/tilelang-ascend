@@ -514,11 +514,16 @@ def test_ub_to_l1_special_shapes(target, platform):
 
     if target == "pto":
         if platform != "A5":
-            M, N, K = 16, 16, 16
+            # LEFT_RIGHT V2C: per-AIV row width is K/2 * 2B. K=16/48 are not
+            # 32B multiples and require the serial push; K=32/64 stay on the
+            # normal push (issue #1661).
+            for K in (16, 32, 48, 64):
+                print(f"Case: {M = }, {N = }, {K = }")
+                _ub_to_l1_case(_ub_to_l1_kernel_lr, M=M, N=N, K=K, target=target, expert=False)
         else:
             M, N, K = 16, 16, 32
-        print(f"Case: {M = }, {N = }, {K = }")
-        _ub_to_l1_case(_ub_to_l1_kernel_lr, M=M, N=N, K=K, target=target, expert=False)
+            print(f"Case: {M = }, {N = }, {K = }")
+            _ub_to_l1_case(_ub_to_l1_kernel_lr, M=M, N=N, K=K, target=target, expert=False)
 
 
 @target_skip_ascendc_in_A5
