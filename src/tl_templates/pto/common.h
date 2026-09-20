@@ -1616,9 +1616,10 @@ AICORE PTO_INLINE void copy_ub_to_pipe(
 // the Cube-side TPOP are unchanged.
 template <pto::TileSplitAxis SplitAxis, typename Pipe, typename T, int Rows,
           int Cols, int RowValid = Rows, int ColValid = Cols>
-AICORE PTO_INLINE void copy_ub_to_pipe_serial(
-    Pipe &pipe, TileUbDataND<T, Rows, Cols, RowValid, ColValid> &ub_tile,
-    int32_t sync_flag) {
+AICORE PTO_INLINE void
+copy_ub_to_pipe_serial(Pipe &pipe,
+                       TileUbDataND<T, Rows, Cols, RowValid, ColValid> &ub_tile,
+                       int32_t sync_flag) {
   using TileProd = TileUbDataND<T, Rows, Cols, RowValid, ColValid>;
   // 1. Cross-Core: wait for space (same as TPUSH)
   if (pipe.prod.getAllocateStatus() &&
