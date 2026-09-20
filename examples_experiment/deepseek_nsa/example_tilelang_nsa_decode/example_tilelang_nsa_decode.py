@@ -51,6 +51,18 @@ def nsa_decode(batch, seq_len, query_heads, kv_head_num, dim, selected_blocks, b
     G = query_heads // kv_head_num
     assert G >= 16, f"G={G} must be >= 16 for L0C fractal"
     assert G % 2 == 0, f"G={G} must be even for vid split"
+    # block_size alignment: the implementation uses BS//2 for vid row split
+    # (k_rows_ub / v_rows_ub / bs_off / vid_start) and BS//8 for the uint8
+    # packed bitmask (mask_2d_ub, 1 bit per element) consumed by
+    # T.tile.compare / T.tile.select. A non-multiple-of-8 BS would make
+    # BS//8 truncate the last row of the mask and likely fail AscendC
+    # lowering (CompareScalar selMask requires an integer byte count).
+    # BS % 8 == 0 also implies BS % 2 == 0, so the vid split is covered.
+    assert block_size % 8 == 0, (
+        f"block_size={block_size} must be a multiple of 8: "
+        f"vid row split uses BS//2 and uint8 packed mask uses BS//8 "
+        f"(T.tile.compare requires integer BS//8, and BS%8==0 implies BS%2==0)."
+    )
 
     dtype = "float16"
     accum_dtype = "float32"
