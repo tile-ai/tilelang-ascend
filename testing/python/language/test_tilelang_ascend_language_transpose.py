@@ -57,22 +57,6 @@ def transpose_kernel(M, N, dtype="float16"):
     return main
 
 
-def transpose_inplace_kernel(M, dtype="float16"):
-    @T.prim_func
-    def main(
-        A: T.Tensor((M, M), dtype),  # type: ignore
-        B: T.Tensor((M, M), dtype),  # type: ignore
-    ):
-        with T.Kernel(1, is_npu=True) as (cid, vid):
-            a_ub = T.alloc_ub((M, M), dtype)
-
-            T.copy(A, a_ub)
-            T.tile.transpose(a_ub, a_ub)
-            T.copy(a_ub, B)
-
-    return main
-
-
 def run_test_transpose(M, N, dtype, target):
     torch.manual_seed(0)
     tilelang.cache.clear_cache()
@@ -271,24 +255,15 @@ def test_transpose_non_aligned_raises(shape, dtype):
 
 
 # -----------------------------------------------------------------------------
-# In-place transpose (dst == src): confirmed unsupported — raises ValueError
-# at compile time. The existing 32-byte alignment check also rejects H/W=1
-# for float16 (1*2 % 32 != 0) and empty/1D buffers.
+# In-place transpose is rejected by the public frontend before TIR parsing.
 # -----------------------------------------------------------------------------
 @pytest.mark.low_priority
 @pytest.mark.parametrize("dtype", ["float16", "float32"])
-@pytest.mark.parametrize("target", ["ascendc"])
 @pytest.mark.parametrize("shape", [(16, 16), (32, 32)])
-def test_transpose_inplace_rejected(dtype, target, shape):
-    M, _ = shape
-    tilelang.cache.clear_cache()
+def test_transpose_inplace_rejected(dtype, shape):
+    buffer = tir.decl_buffer(shape, dtype, scope="shared.ub")
     with pytest.raises(ValueError, match="does not support in-place"):
-        tilelang.compile(
-            transpose_inplace_kernel(M, dtype),
-            out_idx=[-1],
-            pass_configs=PASS_CONFIGS,
-            target=target,
-        )
+        T.tile.transpose(buffer, buffer)
 
 
 # -----------------------------------------------------------------------------

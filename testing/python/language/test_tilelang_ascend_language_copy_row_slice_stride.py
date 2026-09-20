@@ -59,7 +59,7 @@ DTYPE = "float32"
 F_BM, F_N2, F_G, F_D = 4, 3, 2, 64
 
 PASS_CONFIGS = {
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: False,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
@@ -121,6 +121,11 @@ def _fold_kernel():
     return fold_middle_scalar
 
 
+def _kernel_source(program, target):
+    with tilelang.transform.PassContext(opt_level=3, config=PASS_CONFIGS):
+        return tilelang.lower(program, target=target).kernel_source
+
+
 def _ascendc_copy_strides(source):
     """Extract strideN (the first runtime arg after the two tensor operands)
     from every GM copy / atomic-add call in generated AscendC source.
@@ -143,7 +148,7 @@ def _ascendc_copy_strides(source):
 def test_row_slice_copy_stride_codegen_ascendc():
     """Row-slice GM<->UB copies must use the row width (128) as strideN, not
     the whole-buffer size (32*128 for C2, 2*8*128 for CP)."""
-    source = tilelang.lower(_scatter_kernel(), target="ascendc").kernel_source
+    source = _kernel_source(_scatter_kernel(), "ascendc")
     strides = _ascendc_copy_strides(source)
     # CP gm2ub, C2 gm2ub, C2 ub2gm.
     assert len(strides) == 3, f"expected 3 GM copy calls, got {len(strides)}: {strides}"
@@ -154,7 +159,7 @@ def test_row_slice_copy_stride_codegen_ascendc():
 
 def test_row_slice_atomic_add_stride_codegen_ascendc():
     """The AscendAtomicAdd fallback path shares the same strideN logic."""
-    source = tilelang.lower(_atomic_kernel(), target="ascendc").kernel_source
+    source = _kernel_source(_atomic_kernel(), "ascendc")
     strides = _ascendc_copy_strides(source)
     assert len(strides) == 2, f"expected 2 GM calls, got {len(strides)}: {strides}"
     assert strides == [BLOCK_N, BLOCK_N], f"row-slice atomic-add strideN must be {BLOCK_N}, got {strides}"
@@ -163,7 +168,7 @@ def test_row_slice_atomic_add_stride_codegen_ascendc():
 def test_fold_middle_scalar_stride_codegen_ascendc():
     """An extent-1 dim between the row dim and the column dim must still be
     folded into the stride: for Q[1, BM, N2, G*D] the stride is N2*G*D."""
-    source = tilelang.lower(_fold_kernel(), target="ascendc").kernel_source
+    source = _kernel_source(_fold_kernel(), "ascendc")
     strides = _ascendc_copy_strides(source)
     assert len(strides) == 2, f"expected 2 GM copy calls, got {len(strides)}: {strides}"
     # gm2ub folds the scalar N2 dim below the row dim; ub2gm into O folds the
@@ -180,7 +185,7 @@ def test_row_slice_copy_stride_codegen(target):
     the buffer's true row-major strides, while the pre-fix whole-buffer stride
     merged the entire buffer into one flat dim (the row-pitch slot held the
     total element count instead of the row width)."""
-    source = tilelang.lower(_scatter_kernel(), target=target).kernel_source
+    source = _kernel_source(_scatter_kernel(), target)
     if target == "ascendc":
         assert _ascendc_copy_strides(source) == [BLOCK_N] * 3
     else:
@@ -198,7 +203,7 @@ def test_row_slice_copy_stride_codegen(target):
 def test_fold_middle_scalar_stride_codegen(target):
     """The fold pattern's strides keep the folded pitch (Q: N2*G*D = 384
     between rows; O: G*D = 128) instead of a last-dim-only stride."""
-    source = tilelang.lower(_fold_kernel(), target=target).kernel_source
+    source = _kernel_source(_fold_kernel(), target)
     if target == "ascendc":
         assert _ascendc_copy_strides(source) == [F_N2 * F_G * F_D, F_G * F_D]
     else:

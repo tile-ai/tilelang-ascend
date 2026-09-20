@@ -1134,9 +1134,7 @@ def sub(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | 
     Notes:
         - dst and src0 must have equal sizes; all tensor operands must share
           the same dtype, while a scalar src1 is auto-cast to the buffer dtype.
-        - Supported dtypes: float16, float32, int16, int32. A BufferLoad src1
-          with int16/int32 is supported on the pto backend only (ascendc fails
-          to compile).
+        - Supported dtypes: float16, float32, int16, int32.
         - A scalar src1 is applied via `AscendC::Adds(dst, src0, -src1)`.
         - A scalar is supported as src1 (right operand) only: subtraction is
           non-commutative, so `scalar - buffer` (e.g. `2.0 - buf`) cannot be

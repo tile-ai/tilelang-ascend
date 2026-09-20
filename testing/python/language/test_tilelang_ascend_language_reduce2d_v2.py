@@ -130,7 +130,10 @@ def test_fp32_row_reduce_tmp_arena_sized_for_each_vector(explicit):
         compile_flags=["--cce-auto-sync=off", "-O3"],
     )
     source = compiled.get_kernel_source()
-    assert "reduce2d_v2::Reduce2DKind::kMax, true, 2, 8, -1, 8, true" in source
+    # The final template argument is platform-specific (A3 enables
+    # AllowRepeatZero, while A2/A5 disable it).  This regression protects the
+    # per-Vector scratch shape, so stop the match before that independent flag.
+    assert "reduce2d_v2::Reduce2DKind::kMax, true, 2, 8, -1, 8," in source
     if explicit:
         assert "GetWithOffset<float>(72," in source
 

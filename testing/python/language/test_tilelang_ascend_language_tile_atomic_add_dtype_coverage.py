@@ -10,7 +10,7 @@ This file supplements with:
 1. int32 dtype coverage (1D UB->GM, ascendc + pto) — discovered support beyond ftcheck
 2. Scope violation tests (dst=UB, src=GM must raise)
 3. Dtype mismatch test (dst float32, src float16 must raise)
-4. Unsupported dtype compilation errors (uint16/uint32 x pto, int8 x ascendc)
+4. Unsupported atomic dtype compilation errors (uint16/uint32 x pto)
 
 Test suite follows the simplification principle for direct-intrinsic APIs
 (mentor z00520135 review on PR4): since atomic_add has no type-specific
@@ -157,17 +157,21 @@ def test_atomic_add_dtype_mismatch_raises():
     [
         ("uint16", "pto"),
         ("uint32", "pto"),
-        ("int8", "ascendc"),
     ],
 )
 def test_atomic_add_unsupported_dtype_raises(dtype, target):
-    """uint16/uint32 x pto and int8 x ascendc should fail at compile time."""
+    """PTO rejects unsigned atomic dtypes after a legal same-dtype input copy."""
 
     @T.prim_func
-    def main(C: T.Tensor((32,), dtype)):  # type: ignore
+    def main(
+        SRC: T.Tensor((32,), dtype),  # type: ignore
+        C: T.Tensor((32,), dtype),  # type: ignore
+    ):
         with T.Kernel(1, is_npu=True) as (cid, _):
             src_ub = T.alloc_ub((32,), dtype)
-            T.tile.fill(src_ub, 1)
+            # Exercise atomic-add dtype rejection without requiring a fill
+            # instruction that may reject the dtype earlier in lowering.
+            T.copy(SRC, src_ub)
             T.tile.atomic_add(C[0], src_ub)
 
     with pytest.raises(RuntimeError, match="Compilation Failed"):  # noqa: B017

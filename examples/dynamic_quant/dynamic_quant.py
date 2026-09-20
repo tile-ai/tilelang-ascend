@@ -25,6 +25,7 @@ CAST_MODE_LOW2HIGH = "CAST_NONE"
 CAST_MODE_HIGH2LOW = "CAST_RINT"
 
 pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
