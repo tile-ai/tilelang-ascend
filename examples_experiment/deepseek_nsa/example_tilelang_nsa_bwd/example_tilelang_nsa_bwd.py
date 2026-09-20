@@ -141,6 +141,18 @@ def nsa_fwd(
     Uses T.tile.exp (natural log domain); scale = 1/sqrt(D) (no log2(e)).
     LSE fix: m_i is already scaled, so no additional sm_scale multiplication.
     """
+    # block_size alignment: implementation uses BS//2 for vid row split
+    # (hm = G//2, v_row = vid*hm) and BS//8 for uint8 packed bitmask
+    # (compare_result = [hm * BS // 8], consumed by T.tile.compare/select).
+    # Non-multiple-of-8 BS would truncate the mask and fail AscendC lowering
+    # (CompareScalar selMask requires integer BS//8; 256B alignment on top).
+    # BS % 8 == 0 implies BS % 2 == 0, so the vid split is also covered.
+    assert block_size % 8 == 0, (
+        f"block_size={block_size} must be a multiple of 8: "
+        f"vid split uses BS//2 (hm=G//2) and packed mask uses BS//8 "
+        f"(T.tile.compare requires integer BS//8; BS%8==0 implies BS%2==0)."
+    )
+
     sm_scale = (1.0 / dim) ** 0.5
     G = groups
     S = selected_blocks
@@ -341,6 +353,16 @@ def nsa_bwd_single(batch, seq_len, heads, heads_kv, dim, groups, block_size):
     Constraint: NS=1 required for correctness (Delta computed per-iter from
     single K block's P and dsT; for NS>1 would need cross-block sum).
     """
+    # block_size alignment: implementation uses BS//8 for uint8 packed bitmask
+    # (compare_result = [BS * G // 8], consumed by T.tile.compare/select for
+    # causal masking). Non-multiple-of-8 BS would truncate the mask and fail
+    # AscendC lowering (CompareScalar selMask requires integer BS//8).
+    # bwd_single uses threads=1 (no vid split), so only BS//8 matters here;
+    # keeping the same constraint as fwd for consistency.
+    assert block_size % 8 == 0, (
+        f"block_size={block_size} must be a multiple of 8: packed mask uses BS//8 (T.tile.compare requires integer BS//8)."
+    )
+
     sm_scale = (1.0 / dim) ** 0.5
     G = groups
     BS = block_size

@@ -624,6 +624,66 @@ def test_nsa_bwd_l2():
         )
 
     ok &= _run_exception("l2_zero_seqlen", _zero_seqlen, (AssertionError, RuntimeError, ValueError))
+
+    # D-EXC-BLOCKSIZE: block_size not a multiple of 8.
+    # Implementation uses BS//2 for vid row split (fwd) and BS//8 for uint8
+    # packed bitmask (fwd + bwd, consumed by T.tile.compare/select).
+    # Non-multiple-of-8 BS must be rejected at kernel entry (assert) before
+    # reaching AscendC lowering where mask truncation would fail opaquely.
+    def _bad_block_size_odd():
+        # BS=7: odd, non-multiple of 8 — should hit the new assert in nsa_fwd.
+        BS_bad = 7
+        T_match = BS_bad  # NS=1 constraint: T in [BS, 2*BS-1]
+        q_bad = torch.randn(B, T_match, HQ, D, dtype=torch.float16, device="npu")
+        k_bad = torch.randn(B, T_match, H, D, dtype=torch.float16, device="npu")
+        v_bad = torch.randn(B, T_match, H, D, dtype=torch.float16, device="npu")
+        bi_bad = torch.zeros(B, T_match, H, S, dtype=torch.int32, device="npu")
+        bc_bad = torch.ones(B, T_match, H, dtype=torch.int32, device="npu")
+        _run_nsa_pipeline(
+            q_bad,
+            k_bad,
+            v_bad,
+            q_bad,
+            bi_bad,
+            bc_bad,
+            B,
+            T_match,
+            H,
+            HQ,
+            D,
+            S,
+            BS_bad,
+        )
+
+    ok &= _run_exception("l2_illegal_block_size_odd", _bad_block_size_odd, (AssertionError,))
+
+    def _bad_block_size_even():
+        # BS=6: even but not a multiple of 8 — BS//2 works but BS//8 truncates.
+        # This is the core case reviewer flagged (silent mask truncation risk).
+        BS_bad = 6
+        T_match = BS_bad
+        q_bad = torch.randn(B, T_match, HQ, D, dtype=torch.float16, device="npu")
+        k_bad = torch.randn(B, T_match, H, D, dtype=torch.float16, device="npu")
+        v_bad = torch.randn(B, T_match, H, D, dtype=torch.float16, device="npu")
+        bi_bad = torch.zeros(B, T_match, H, S, dtype=torch.int32, device="npu")
+        bc_bad = torch.ones(B, T_match, H, dtype=torch.int32, device="npu")
+        _run_nsa_pipeline(
+            q_bad,
+            k_bad,
+            v_bad,
+            q_bad,
+            bi_bad,
+            bc_bad,
+            B,
+            T_match,
+            H,
+            HQ,
+            D,
+            S,
+            BS_bad,
+        )
+
+    ok &= _run_exception("l2_illegal_block_size_even", _bad_block_size_even, (AssertionError,))
     return ok
 
 
