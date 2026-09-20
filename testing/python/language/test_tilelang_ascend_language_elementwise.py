@@ -1489,113 +1489,229 @@ def test_cast_scale(dtype, target, shape):
     run_test_cast_scale(M, N, 16, 16, "CAST_RINT", 4096, 1.0, target)
 
 
-def clamp(M, N, block_M, block_N, max_val, min_val, dtype="float16"):
-    m_num = M // block_M
-    n_num = N // block_N
-    num_blocks = m_num * n_num
+_TILE_CLAMP_INPUT_PATTERN = [-20, -3, -2, -1, 0, 1, 2, 3, 4, 20]
+_TILE_CLAMP_TORCH_DTYPES = {
+    "float": torch.float32,
+    "float16": torch.float16,
+    "int16": torch.int16,
+    "int32": torch.int32,
+}
 
-    VEC_NUM = 2
 
+def _tile_clamp_numel(shape):
+    result = 1
+    for extent in shape:
+        result *= extent
+    return result
+
+
+def _tile_clamp_input(shape, dtype):
+    numel = _tile_clamp_numel(shape)
+    repeat = (numel + len(_TILE_CLAMP_INPUT_PATTERN) - 1) // len(_TILE_CLAMP_INPUT_PATTERN)
+    return torch.tensor(_TILE_CLAMP_INPUT_PATTERN, dtype=_TILE_CLAMP_TORCH_DTYPES[dtype]).repeat(repeat)[:numel].reshape(shape)
+
+
+def tile_clamp_kernel(shape, dtype, count, inplace=False):
     @T.prim_func
     def main(
-        input: T.Tensor((M, N), dtype),  # type: ignore
-        output: T.Tensor((M, N), dtype),  # type: ignore
+        A: T.Tensor(shape, dtype),  # type: ignore
+        B: T.Tensor(shape, dtype),  # type: ignore
     ):
-        with T.Kernel(num_blocks, is_npu=True) as (cid, vid):
-            bx = cid // n_num
-            by = cid % n_num
-
-            block_size = block_M * block_N // VEC_NUM
-            in_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            out_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-
-            T.copy(input[bx * block_M + vid * block_M // VEC_NUM, by * block_N], in_ub)
-
-            T.tile.clamp(out_ub, in_ub, min_val, max_val, block_size)
-
-            T.copy(out_ub, output[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            src_ub = T.alloc_ub(shape, dtype)
+            dst_ub = src_ub if inplace else T.alloc_ub(shape, dtype)
+            if vid == 0:
+                T.copy(A, src_ub)
+                if not inplace:
+                    T.tile.fill(dst_ub, -99)
+                T.tile.clamp(dst_ub, src_ub, -2, 3, count)
+                T.copy(dst_ub, B)
 
     return main
 
 
-def run_test_clamp(M, N, max_val, min_val, thresh, dtype, target, block_M=64, block_N=64):
-    if min_val > max_val:
-        max_val, min_val = min_val, max_val
+def run_test_tile_clamp(shape, dtype, target, count=None, inplace=False):
+    numel = _tile_clamp_numel(shape)
+    if count is None:
+        count = numel
+    kernel = tilelang.compile(
+        tile_clamp_kernel(shape, dtype, count, inplace),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
+    )
 
-    func = clamp(M, N, block_M, block_N, max_val, min_val, dtype)
-    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-
-    a = (torch.rand(M, N) - 0.5) * 2 * thresh
-    a = a.half().npu() if dtype == "float16" else a.float().npu()
-
-    b = func(a)
-    ref_b = torch.clamp(a, min_val, max_val)
-
-    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
-
-
-@pytest.mark.parametrize("dtype", ["float", "float16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
-def test_clamp(dtype, target):
-    M, N = 1024, 1024
-    thresh = 10000
-    max_val = random.uniform(-thresh, thresh)
-    min_val = random.uniform(-thresh, thresh)
-    run_test_clamp(M, N, max_val, min_val, thresh, dtype, target, block_M=64, block_N=64)
+    input_host = _tile_clamp_input(shape, dtype)
+    expected_host = torch.full_like(input_host, -99)
+    expected_host.reshape(-1)[:count] = torch.clamp(input_host.reshape(-1)[:count], -2, 3)
+    output = kernel(input_host.npu())
+    torch.npu.synchronize()
+    torch.testing.assert_close(output, expected_host.npu(), rtol=0, atol=0)
 
 
-def clamp_slice(M, N, block_M, block_N, max_val, min_val, dtype="float16"):
-    m_num = M // block_M
-    n_num = N // block_N
-    num_blocks = m_num * n_num
+@pytest.mark.parametrize(
+    ("dtype", "target"),
+    [
+        ("float", "ascendc"),
+        pytest.param("float16", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("int16", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("int32", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("float", "pto", marks=pytest.mark.low_priority),
+        pytest.param("int16", "pto", marks=pytest.mark.low_priority),
+    ],
+)
+def test_tile_clamp_full_tile(dtype, target):
+    run_test_tile_clamp((4, 16), dtype, target)
 
-    VEC_NUM = 2
 
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        "float",
+        pytest.param("float16", marks=pytest.mark.low_priority),
+        pytest.param("int16", marks=pytest.mark.low_priority),
+        pytest.param("int32", marks=pytest.mark.low_priority),
+    ],
+)
+@pytest.mark.parametrize(
+    "count",
+    [17, pytest.param(32, marks=pytest.mark.low_priority)],
+)
+def test_tile_clamp_ascendc_partial_count(dtype, count):
+    run_test_tile_clamp((64,), dtype, "ascendc", count=count)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "target"),
+    [
+        ("float", "ascendc"),
+        pytest.param("float16", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("float16", "pto", marks=pytest.mark.low_priority),
+        pytest.param("int32", "pto", marks=pytest.mark.low_priority),
+    ],
+)
+def test_tile_clamp_inplace(dtype, target):
+    run_test_tile_clamp((64,), dtype, target, inplace=True)
+
+
+def tile_clamp_region_kernel(dtype):
     @T.prim_func
     def main(
-        input: T.Tensor((M, N), dtype),  # type: ignore
-        output: T.Tensor((M, N), dtype),  # type: ignore
+        A: T.Tensor((2, 64), dtype),  # type: ignore
+        B: T.Tensor((2, 64), dtype),  # type: ignore
     ):
-        with T.Kernel(num_blocks, is_npu=True) as (cid, vid):
-            bx = cid // n_num
-            by = cid % n_num
-
-            block_size = block_M * block_N // VEC_NUM
-            in_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            out_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            T.copy(input[bx * block_M + vid * block_M // VEC_NUM, by * block_N], in_ub)
-            for i in range(block_M // VEC_NUM):
-                T.tile.clamp(out_ub[i, :], in_ub[i, :], min_val, max_val, block_size)
-
-            T.copy(out_ub, output[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            src_ub = T.alloc_ub((2, 64), dtype)
+            dst_ub = T.alloc_ub((2, 64), dtype)
+            if vid == 0:
+                T.copy(A, src_ub)
+                T.tile.fill(dst_ub, -99)
+                T.tile.clamp(dst_ub[1, :], src_ub[0, :], -2, 3, 64)
+                T.copy(dst_ub, B)
 
     return main
 
 
-def run_test_clamp_slice(M, N, max_val, min_val, thresh, dtype, target, block_M=64, block_N=64):
-    if min_val > max_val:
-        max_val, min_val = min_val, max_val
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_tile_clamp_buffer_region(target):
+    kernel = tilelang.compile(
+        tile_clamp_region_kernel("float16"),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
+    )
+    input_host = _tile_clamp_input((2, 64), "float16")
+    expected_host = torch.full_like(input_host, -99)
+    expected_host[1, :] = torch.clamp(input_host[0, :], -2, 3)
+    output = kernel(input_host.npu())
+    torch.npu.synchronize()
+    torch.testing.assert_close(output, expected_host.npu(), rtol=0, atol=0)
 
-    func = clamp_slice(M, N, block_M, block_N, max_val, min_val, dtype)
-    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = (torch.rand(M, N) - 0.5) * 2 * thresh
-    a = a.half().npu() if dtype == "float16" else a.float().npu()
+def test_tile_clamp_count_omitted():
+    target = "ascendc"
 
-    b = func(a)
-    ref_b = torch.clamp(a, min_val, max_val)
+    @T.prim_func
+    def main(
+        A: T.Tensor((4, 16), "float16"),  # type: ignore
+        B: T.Tensor((4, 16), "float16"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            src_ub = T.alloc_ub((4, 16), "float16")
+            dst_ub = T.alloc_ub((4, 16), "float16")
+            if vid == 0:
+                T.copy(A, src_ub)
+                T.tile.clamp(dst_ub, src_ub, -2, 3)
+                T.copy(dst_ub, B)
 
-    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+    kernel = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    input_host = _tile_clamp_input((4, 16), "float16")
+    expected_host = torch.clamp(input_host, -2, 3)
+    output = kernel(input_host.npu())
+    torch.npu.synchronize()
+    torch.testing.assert_close(output, expected_host.npu(), rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16"])
-@pytest.mark.parametrize("target", ["ascendc"])
-def test_clamp_slice(dtype, target):
-    M, N = 1024, 1024
-    thresh = 10000
-    max_val = random.uniform(-thresh, thresh)
-    min_val = random.uniform(-thresh, thresh)
-    run_test_clamp_slice(M, N, max_val, min_val, thresh, dtype, target, block_M=64, block_N=64)
+@pytest.mark.parametrize(
+    ("dtype", "target"),
+    [
+        ("float", "ascendc"),
+        pytest.param("float16", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("float", "pto", marks=pytest.mark.low_priority),
+        pytest.param("float16", "pto", marks=pytest.mark.low_priority),
+    ],
+)
+def test_tile_clamp_tensor_bounds(dtype, target):
+    @T.prim_func
+    def main(
+        A: T.Tensor((4, 16), dtype),  # type: ignore
+        B: T.Tensor((4, 16), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            src_ub = T.alloc_ub((4, 16), dtype)
+            dst_ub = T.alloc_ub((4, 16), dtype)
+            min_ub = T.alloc_ub((4, 16), dtype)
+            max_ub = T.alloc_ub((4, 16), dtype)
+            if vid == 0:
+                T.copy(A, src_ub)
+                T.tile.fill(min_ub, -2)
+                T.tile.fill(max_ub, 3)
+                T.tile.fill(dst_ub, -99)
+                T.tile.clamp(dst_ub, src_ub, min_ub, max_ub, 64)
+                T.copy(dst_ub, B)
+
+    kernel = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    input_host = _tile_clamp_input((4, 16), dtype)
+    expected_host = torch.full_like(input_host, -99)
+    expected_host = torch.clamp(input_host, -2, 3)
+    output = kernel(input_host.npu())
+    torch.npu.synchronize()
+    torch.testing.assert_close(output, expected_host.npu(), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_tile_clamp_mixed_scalar_tensor(target):
+    @T.prim_func
+    def main(
+        A: T.Tensor((64,), "float16"),  # type: ignore
+        B: T.Tensor((64,), "float16"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            src_ub = T.alloc_ub((64,), "float16")
+            dst_ub = T.alloc_ub((64,), "float16")
+            max_ub = T.alloc_ub((64,), "float16")
+            if vid == 0:
+                T.copy(A, src_ub)
+                T.tile.fill(max_ub, 3)
+                T.tile.clamp(dst_ub, src_ub, -2, max_ub, 64)
+                T.copy(dst_ub, B)
+
+    kernel = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    input_host = _tile_clamp_input((64,), "float16")
+    expected_host = torch.clamp(input_host, -2, 3)
+    output = kernel(input_host.npu())
+    torch.npu.synchronize()
+    torch.testing.assert_close(output, expected_host.npu(), rtol=0, atol=0)
 
 
 def compare(M, N, block_M, block_N, mode, dtype="float", out_dtype="uint8"):
