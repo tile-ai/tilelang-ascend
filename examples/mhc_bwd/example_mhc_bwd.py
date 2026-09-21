@@ -313,7 +313,7 @@ def test():
     # seqlen=100 is non-divisible by tilesize=8, exercising the host
     # pad-run-trim adapter path on top of the CG kernel.
     M = generate_test_data(100, 16)
-    R, P = sinkhorn_forward(M, 20)
+    R, _ = sinkhorn_forward(M, 20)
     loss_weight = torch.randn_like(R)
 
     grad_M_implicit = sinkhorn_bwd(R.detach(), loss_weight, 16, 8)

@@ -74,7 +74,7 @@ def test_mhc_bwd_accuracy(seqlen: int, n_stream: int, tilesize: int) -> None:
     example = _load_mhc_bwd_example()
 
     M = example.generate_test_data(seqlen, n_stream)
-    R, P = example.sinkhorn_forward(M, 20)
+    R, _ = example.sinkhorn_forward(M, 20)
     loss_weight = torch.randn_like(R)
 
     loss_a = (R * loss_weight).sum()
