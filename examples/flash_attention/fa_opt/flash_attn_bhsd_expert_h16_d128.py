@@ -1,6 +1,6 @@
 import argparse
 import tilelang
-from tilelang import DataType, language as T
+from tilelang import language as T
 from tilelang.intrinsics import make_zn_layout, make_nz_layout
 
 import torch
@@ -69,16 +69,25 @@ def flash_attention_fwd(
     SEM_WS3_C2V = 4
     SEM_WS3_V2C = 5
 
-    # Intra-core signal IDs (C Scope)
+    # Local event IDs are allocated per directed pipe pair. Different meanings keep
+    # distinct names even when their directed pairs allow the same numeric ID.
+    # MTE2 <-> MTE1
     SIG_K_L1 = 0
     SIG_P_L1 = 1
     SIG_V_L1 = 2
-    SIG_L0AB = 3  # double-buffer base: slot 0 = SIG_L0AB, slot 1 = SIG_L0AB + 1
-    SIG_L0C = 5  # double-buffer base: slot 0 = SIG_L0C,  slot 1 = SIG_L0C + 1
+    SIG_Q_L1 = 3
 
-    # Intra-core signal IDs (V Scope)
+    # MTE1 <-> M
+    SIG_L0AB = 0  # double-buffer slots 0 and 1
+
+    # M <-> FIX
+    SIG_L0C = 0  # double-buffer slots 0 and 1
+
+    # MTE2 <-> V
     SIG_IO_UB = 0
-    SIG_S_HALF = 1
+
+    # V <-> MTE3
+    SIG_S_HALF = 0
 
     def task_range(cid_val):
         """Return (start, count) for core cid_val."""
@@ -139,6 +148,7 @@ def flash_attention_fwd(
                 T.set_flag("MTE1", "MTE2", SIG_K_L1)
                 T.set_flag("MTE1", "MTE2", SIG_P_L1)
                 T.set_flag("MTE1", "MTE2", SIG_V_L1)
+                T.set_flag("MTE1", "MTE2", SIG_Q_L1)
                 T.set_flag("M", "MTE1", SIG_L0AB)
                 T.set_flag("M", "MTE1", SIG_L0AB + 1)
                 T.set_flag("FIX", "M", SIG_L0C)
@@ -151,8 +161,10 @@ def flash_attention_fwd(
                     bz = task_id // (num_seq_blocks * heads_q)
                     kv_by = by // (heads_q // heads_kv)
 
+                    T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
                     T.copy(Q[bz, by, bx * block_M : (bx + 1) * block_M, :], q_l1)
-                    T.barrier_all()
+                    T.set_flag("MTE2", "MTE1", SIG_Q_L1)
+                    T.wait_flag("MTE2", "MTE1", SIG_Q_L1)
 
                     for k in T.serial(num_outer):
                         _remaining = num_iters - k * num_stages
@@ -229,10 +241,14 @@ def flash_attention_fwd(
 
                         T.set_cross_flag("MTE2", SEM_WS2_C2V)
 
+                    # MTE1 no longer reads q_l1; return it before the next task reloads Q.
+                    T.set_flag("MTE1", "MTE2", SIG_Q_L1)
+
                 # destroy: consume outstanding init-direction flags
                 T.wait_flag("MTE1", "MTE2", SIG_K_L1)
                 T.wait_flag("MTE1", "MTE2", SIG_P_L1)
                 T.wait_flag("MTE1", "MTE2", SIG_V_L1)
+                T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
                 T.wait_flag("M", "MTE1", SIG_L0AB)
                 T.wait_flag("M", "MTE1", SIG_L0AB + 1)
                 T.wait_flag("FIX", "M", SIG_L0C)
@@ -323,11 +339,15 @@ def flash_attention_fwd(
                     T.tile.broadcast(buf_2d, sumexp)
                     T.tile.div(acc_o, acc_o, buf_2d)
 
+                    # Reuse the softmax store buffer only after MTE3 returns ownership.
+                    T.wait_flag("MTE3", "V", SIG_S_HALF)
                     T.copy(acc_o, acc_s_half)
-                    T.barrier_all()
+                    T.set_flag("V", "MTE3", SIG_S_HALF)
+                    T.wait_flag("V", "MTE3", SIG_S_HALF)
                     T.copy(
                         acc_s_half, Output[bz, by, bx * block_M + vid * block_M // 2 : bx * block_M + vid * block_M // 2 + block_M // 2, :]
                     )
+                    T.set_flag("MTE3", "V", SIG_S_HALF)
 
                 # destroy: consume outstanding init-direction flags
                 T.wait_flag("V", "MTE2", SIG_IO_UB)

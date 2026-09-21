@@ -139,6 +139,9 @@ mappings:
   # examples/mhc_bwd
   examples/mhc_bwd/example_mhc_bwd.py: examples/mhc_bwd/test_example_mhc_bwd.py
 
+  # examples/mhc_pre
+  examples/mhc_pre/example_mhc_pre.py: examples/mhc_pre/test_example_mhc_pre.py
+
   # examples/moe_token_permute
   examples/moe_token_permute/moe_token_permute.py: examples/moe_token_permute/test_moe_token_permute.py
   examples/moe_token_permute/moe_token_permute_grad.py: examples/moe_token_permute/test_moe_token_permute_grad.py
@@ -209,6 +212,10 @@ mappings:
 
   # examples/tile_kernels/moe
   examples/tile_kernels/moe/moe_topk_gate.py: examples/tile_kernels/moe/test_moe_topk_gate.py
+  examples/tile_kernels/moe/moe_topk_sum_and_topk_group_idx.py: examples/tile_kernels/moe/test_moe_topk_sum_and_topk_group_idx.py
+
+  # examples/tile_kernels/quant
+  examples/tile_kernels/quant/per_block_cast_lossless_kernel.py: examples/tile_kernels/quant/test_per_block_cast_lossless_kernel.py
 
   # examples/topk_selector
   examples/topk_selector/example_topk_selector.py: examples/topk_selector/test_example_topk_selector.py

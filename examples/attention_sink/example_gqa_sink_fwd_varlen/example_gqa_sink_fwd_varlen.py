@@ -8,7 +8,7 @@ Based on fa_opt multi-buffer pipeline port (flash_attn_bhsd_expert_h16_d128.py):
   - Fixed Core + workspace [core_num, num_stages, ...] (L2 cache residency)
   - Multi-buffer pipeline with 6-flag batched cross-core sync
   - T.mma + L0A/L0B/L0C double-buffer + ZN/NZ layout
-  - Fine-grained intra-core flags (Cube: 7, Vector: 5) replacing barrier_all
+  - Fine-grained intra-core flags with complete buffer ownership
 
 Performance (B=8, H=64, G=16, Sq=Sk=2048, D=128, causal, fp16, 910B3):
   ~12 ms (1.06x GPU baseline 11.4 ms)
@@ -104,23 +104,28 @@ def gqa_sink_fwd(
     FLAG_O_READY = 4  # Cube GEMM2 -> Vector O-accum : O written to ws3
     FLAG_WS3_FREE = 5  # Vector O-accum -> Cube GEMM2 : ws3 consumed (free)
 
-    # Step 3: Intra-core signal IDs (C Scope) — L0 double-buffer pipeline sync.
-    # Separate namespace from cross_flags (set_flag/wait_flag vs
-    # set_cross_flag/wait_cross_flag), matching fa_opt SIG_*.
+    # Local event IDs are allocated per directed pipe pair. Different meanings keep
+    # distinct names even when their directed pairs allow the same numeric ID.
+    # MTE2 <-> MTE1
     SIG_K_L1 = 0  # MTE2 writes k_l1, MTE1 reads it
     SIG_P_L1 = 1  # MTE2 writes acc_s_l1 (P), MTE1 reads it
     SIG_V_L1 = 2  # MTE2 writes v_l1, MTE1 reads it
-    SIG_L0AB = 3  # double-buffer base: slot 0 = SIG_L0AB, slot 1 = SIG_L0AB + 1
-    SIG_L0C = 5  # double-buffer base: slot 0 = SIG_L0C,  slot 1 = SIG_L0C + 1
+    SIG_Q_L1 = 3
 
-    # Step 4: Intra-core signal IDs (V Scope) — fine-grained MTE2/MTE3/V sync.
-    # Separate physical namespace from C-scope IDs (AIV vs AIC). fa_opt uses 2
-    # (SIG_IO_UB/SIG_S_HALF); we need 5 because of mask DMA + O-accum batch.
+    # MTE1 <-> M
+    SIG_L0AB = 0  # double-buffer slots 0 and 1
+
+    # M <-> FIX
+    SIG_L0C = 0  # double-buffer slots 0 and 1
+
+    # MTE2 <-> V
     SIG_IO_UB = 0  # MTE2 writes acc_s_ub_ (ws1->UB), V reads it (axpy)
     SIG_MASK_UB = 1  # MTE2 writes mask_half (Mask->UB), V reads it (cast)
-    SIG_S_HALF = 2  # V writes acc_s_half (cast P), MTE3 reads it (->ws2)
-    SIG_O_UB = 3  # MTE2 writes acc_o_ub (ws3->UB), V reads it (add)
-    SIG_O_HALF = 4  # V writes acc_o_half (cast O), MTE3 reads it (->Output)
+    SIG_O_UB = 2  # MTE2 writes acc_o_ub (ws3->UB), V reads it (add)
+
+    # V <-> MTE3
+    SIG_S_HALF = 0  # V writes acc_s_half (cast P), MTE3 reads it (->ws2)
+    SIG_O_HALF = 1  # V writes acc_o_half (cast O), MTE3 reads it (->Output)
 
     @T.prim_func
     def main(
@@ -245,11 +250,11 @@ def gqa_sink_fwd(
                 # Step 2 init: pretend ws2 is free so the first Vector softmax
                 # batch (k=0) can start writing P before Cube GEMM2 consumes it.
                 T.set_cross_flag("MTE2", FLAG_WS2_FREE)
-                # Step 3 init: pretend consumer already released L0 buffers
-                # (fa_opt L137-145) — enables pipeline start at k=0.
+                # Step 3 init: consumers pre-release the Cube-side buffers.
                 T.set_flag("MTE1", "MTE2", SIG_K_L1)
                 T.set_flag("MTE1", "MTE2", SIG_P_L1)
                 T.set_flag("MTE1", "MTE2", SIG_V_L1)
+                T.set_flag("MTE1", "MTE2", SIG_Q_L1)
                 T.set_flag("M", "MTE1", SIG_L0AB)
                 T.set_flag("M", "MTE1", SIG_L0AB + 1)
                 T.set_flag("FIX", "M", SIG_L0C)
@@ -265,9 +270,11 @@ def gqa_sink_fwd(
                     kv_seqlen = kv_seqlens[bz]
                     kv_head_idx = by // groups
 
-                    # Load Q tile
+                    # Load Q tile and keep MTE1 ownership across all KV batches.
+                    T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
                     T.copy(Q[bz, by, bx * _BM : (bx + 1) * _BM, :], q_l1)
-                    T.barrier_all()
+                    T.set_flag("MTE2", "MTE1", SIG_Q_L1)
+                    T.wait_flag("MTE2", "MTE1", SIG_Q_L1)
 
                     # Causal loop range: skip KV blocks entirely masked by causal
                     # NOTE: T.if_then_else used because Python if/else doesn't
@@ -371,11 +378,14 @@ def gqa_sink_fwd(
                         # ws2 consumed by this GEMM2 batch → free for next Vector
                         T.set_cross_flag("MTE2", FLAG_WS2_FREE)
 
-                # Step 3 destroy: consume outstanding init-direction flags
-                # (fa_opt L232-239) — balances the init set_flags at scope start.
+                    # MTE1 no longer reads q_l1; return it before the next task reloads Q.
+                    T.set_flag("MTE1", "MTE2", SIG_Q_L1)
+
+                # Step 3 destroy: consume outstanding return-direction flags.
                 T.wait_flag("MTE1", "MTE2", SIG_K_L1)
                 T.wait_flag("MTE1", "MTE2", SIG_P_L1)
                 T.wait_flag("MTE1", "MTE2", SIG_V_L1)
+                T.wait_flag("MTE1", "MTE2", SIG_Q_L1)
                 T.wait_flag("M", "MTE1", SIG_L0AB)
                 T.wait_flag("M", "MTE1", SIG_L0AB + 1)
                 T.wait_flag("FIX", "M", SIG_L0C)

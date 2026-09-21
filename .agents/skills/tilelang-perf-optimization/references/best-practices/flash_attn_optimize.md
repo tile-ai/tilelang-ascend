@@ -120,12 +120,18 @@ T.barrier_all()  # 再次所有流水同步
 #### Expert 优化
 
 ```python
-# Intra-core Flag：Cube 核内部流水线同步
-SIG_K_L1 = 0    # K 搬运到 L1 的信号
-SIG_P_L1 = 1    # P 搬运到 L1 的信号
-SIG_V_L1 = 2    # V 搬运到 L1 的信号
-SIG_L0AB = 3    # L0A/L0B 双缓冲基址
-SIG_L0C = 5     # L0C 双缓冲基址
+# Intra-core Flag：每个有向 pipe pair 独立编号
+# MTE2 <-> MTE1
+SIG_K_L1 = 0    # K 的 L1 ownership
+SIG_P_L1 = 1    # P 的 L1 ownership
+SIG_V_L1 = 2    # V 的 L1 ownership
+SIG_Q_L1 = 3    # Q 的持久 L1 ownership
+
+# MTE1 <-> M
+SIG_L0AB = 0    # L0A/L0B 双缓冲基址，使用 ID 0、1
+
+# M <-> FIX
+SIG_L0C = 0     # L0C 双缓冲基址，使用 ID 0、1
 
 # Cross-core Semaphore：Cube ↔ Vector 同步
 SEM_WS1_C2V = 0  # workspace_1 (QK^T) 就绪
@@ -140,6 +146,7 @@ T.set_cross_flag("MTE2", SEM_WS2_C2V)
 T.set_flag("MTE1", "MTE2", SIG_K_L1)
 T.set_flag("MTE1", "MTE2", SIG_P_L1)
 T.set_flag("MTE1", "MTE2", SIG_V_L1)
+T.set_flag("MTE1", "MTE2", SIG_Q_L1)
 T.set_flag("M", "MTE1", SIG_L0AB)
 T.set_flag("M", "MTE1", SIG_L0AB + 1)
 T.set_flag("FIX", "M", SIG_L0C)
@@ -158,7 +165,20 @@ T.set_flag("MTE1", "M", SIG_L0AB + side)  # 通知 L0 数据就绪
 T.wait_flag("MTE1", "M", SIG_L0AB + side)  # 等待 L0 数据就绪
 T.mma(l0a[side, :, :], l0b[side, :, :], l0c[side, :, :], init=True)
 T.set_flag("M", "MTE1", SIG_L0AB + side)  # 通知 L0 缓冲可重用
+
+# 持久化 Q 缓冲也必须形成双向 ownership 闭环。
+T.wait_flag("MTE1", "MTE2", SIG_Q_L1)  # MTE2 等待 q_l1 可写
+T.copy(Q[...], q_l1)
+T.set_flag("MTE2", "MTE1", SIG_Q_L1)   # Q 就绪，交给 MTE1
+T.wait_flag("MTE2", "MTE1", SIG_Q_L1)
+for k in T.serial(num_outer):
+    # 所有从 q_l1 到 L0A 的读取都在这个 ownership 区间内
+    ...
+T.set_flag("MTE1", "MTE2", SIG_Q_L1)   # 全部读取结束，允许下一 task 重载 Q
 ```
+
+作用域退出前，必须用对应方向的 `wait_flag` 消耗每个缓冲区最后归还的 token；初始化、
+每轮 acquire/release 和销毁必须构成完整生命周期。
 
 **收益**：
 - 精确控制数据流，避免不必要的等待
@@ -371,6 +391,9 @@ for _k in T.serial(T.ceildiv(seq_len, block_N)):
 r_factors = T.alloc_ub([num_stages, block_M // 2, 1], accum_dtype)
 sumexp_is = T.alloc_ub([num_stages, block_M // 2, 1], accum_dtype)
 
+# acc_s_half 初始归 V 所有。
+T.set_flag("MTE3", "V", SIG_S_HALF)
+
 for k in T.serial(num_outer):
     # Softmax 批次：计算 num_stages 个分块的 r_factors 和 sumexp_is
     for i in T.serial(batch_iters):
@@ -390,9 +413,13 @@ for k in T.serial(num_outer):
         # 计算 sumexp_is[i] = rowsum(exp(S - m_cur))
         T.reduce_sum(work_ub, sumexp_is[i, :, :], dim=-1)
         
-        # 存储 softmax 后的注意力分数
+        # 存储 softmax 后的注意力分数：V 写 UB，MTE3 读 UB，再归还给 V
+        T.wait_flag("MTE3", "V", SIG_S_HALF)
         T.copy(work_ub, acc_s_half)
+        T.set_flag("V", "MTE3", SIG_S_HALF)
+        T.wait_flag("V", "MTE3", SIG_S_HALF)
         T.copy(acc_s_half, workspace_2[cid, i, ...])
+        T.set_flag("MTE3", "V", SIG_S_HALF)
         if (i + 1) % cross_interval == 0 or i == batch_iters - 1:
             T.set_cross_flag("MTE3", SEM_WS2_V2C)
     
@@ -415,7 +442,14 @@ for k in T.serial(num_outer):
         T.copy(workspace_3[cid, i, ...], io_buf)
         T.copy(io_buf, work_ub)
         T.tile.add(acc_o, acc_o, work_ub)
+
+# 作用域退出前消费最后一次 MTE3 → V 归还。
+T.wait_flag("MTE3", "V", SIG_S_HALF)
 ```
+
+如果最终 Output store 也复用 `acc_s_half`，它必须进入同一个
+`MTE3 → V → MTE3 → V` ownership 闭环。把 `T.barrier_all()` 放在最终 store **之前**，
+只能等待此前已发出的操作，不能保护该 store 的 MTE3 读取不被下一 task 的 V 写覆盖。
 
 **收益**：
 - 批量计算减少同步次数
@@ -494,6 +528,9 @@ T.tile.mul(work_ub, work_ub, sm_scale)    # 计算
 T.copy(work_ub, acc_s_half)               # 结果存储
 ```
 
+复用物理缓冲的前提是完整的 ownership 生命周期。上例中的 `io_buf` 和
+`acc_s_half` 都必须由各自的双向 flag 保护；仅靠源码顺序或 store 前的 barrier 不足以保护下次复用。
+
 **收益**：
 - 减少内存占用
 - 简化数据流管理
@@ -526,7 +563,7 @@ T.copy(work_ub, acc_s_half)               # 结果存储
 
 **权衡**：strided DMA 理论上略慢于连续 DMA，但省下的是整块 Transpose kernel，净收益极大正；实测 main_kernel 未见劣化。
 
-**注意冷启动**：手写 flag 同步的 expert kernel 可能有低概率冷启动竞争，被布局/时序改动暴露。用 `msprof` 或精度校验时以**热身后**（warmup+repeat 的最后一次）的输出为准，连跑多次判稳定，不要被单次冷启动异常误导。
+**正确性要求**：手写 flag 同步的 expert kernel 在任意一次运行中出现数值错误，都应视为同步或数据流缺陷。warmup 只用于稳定性能测量，不能作为忽略首次错误的理由；精度回归应校验每次运行，并通过重复或并发压力测试放大低概率竞态。
 
 #### (b) Sq==1 decode 窄块 kernel
 
@@ -787,20 +824,25 @@ NUM_CORES = torch.npu.get_device_properties(0).cube_core_num
 
 ### Intra-core Flag（Cube 核内部）
 
-| ID | 名称 | 说明 |
-|----|------|------|
-| 0 | SIG_K_L1 | K 搬运到 L1 的信号 |
-| 1 | SIG_P_L1 | P 搬运到 L1 的信号 |
-| 2 | SIG_V_L1 | V 搬运到 L1 的信号 |
-| 3-4 | SIG_L0AB | L0A/L0B 双缓冲（side=0/1） |
-| 5-6 | SIG_L0C | L0C 双缓冲（side=0/1） |
+event ID 的完整身份包含有向 `(src_pipe, dst_pipe)` pair。每个有向 pair 都从
+0 独立编号；反向 pair 是另一个编号空间。同一 ownership slot 通常在正反两个
+pair 中使用相同数字，便于审查；`FREE` 和 `READY` 等不同语义仍应保留独立名称。
+
+| Ownership | 有向 pair | ID | 名称 |
+|-----------|-----------|----|------|
+| K L1 | MTE1→MTE2 / MTE2→MTE1 | 0 | SIG_K_L1 |
+| P L1 | MTE1→MTE2 / MTE2→MTE1 | 1 | SIG_P_L1 |
+| V L1 | MTE1→MTE2 / MTE2→MTE1 | 2 | SIG_V_L1 |
+| Q L1 | MTE1→MTE2 / MTE2→MTE1 | 3 | SIG_Q_L1 |
+| L0AB slot 0/1 | M→MTE1 / MTE1→M | 0-1 | SIG_L0AB |
+| L0C slot 0/1 | FIX→M / M→FIX | 0-1 | SIG_L0C |
 
 ### Intra-core Flag（Vector 核内部）
 
-| ID | 名称 | 说明 |
-|----|------|------|
-| 0 | SIG_IO_UB | IO 缓冲信号 |
-| 1 | SIG_S_HALF | Softmax 结果信号 |
+| Ownership | 有向 pair | ID | 名称 |
+|-----------|-----------|----|------|
+| IO UB | V→MTE2 / MTE2→V | 0 | SIG_IO_UB |
+| fp16 store UB | MTE3→V / V→MTE3 | 0 | SIG_S_HALF |
 
 ### Cross-core Semaphore（Cube ↔ Vector）
 

@@ -1939,7 +1939,6 @@ def cos(M, N, block_M, block_N, dtype="float"):
         A: T.Tensor([M, N], dtype),  # type: ignore
         B: T.Tensor([M, N], dtype),  # type: ignore
     ):
-        T.func_attr({"enable_auto_sync": True})
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
@@ -1989,7 +1988,6 @@ def cos_slice(M, N, block_M, block_N, dtype="float"):
         A: T.Tensor([M, N], dtype),  # type: ignore
         B: T.Tensor([M, N], dtype),  # type: ignore
     ):
-        T.func_attr({"enable_auto_sync": True})
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
@@ -2168,6 +2166,48 @@ def run_test_vec_div(M, N, block_M, block_N, dtype, target):
 def test_vec_div(dtype, target, shape):
     M, N = shape
     run_test_vec_div(M, N, 64, 128, dtype, target=target)
+
+
+def test_divs_fp16_preserves_reciprocal_precision():
+    @T.prim_func
+    def main(A: T.Tensor((128,), "float16"), B: T.Tensor((128,), "float16")):
+        with T.Kernel(1, threads=1, is_npu=True):
+            a_ub = T.alloc_ub((128,), "float16")
+            b_ub = T.alloc_ub((128,), "float16")
+            T.copy(A, a_ub)
+            T.tile.div(b_ub, a_ub, 65536.0)
+            T.copy(b_ub, B)
+
+    kernel = tilelang.compile(main, out_idx=[1], target="ascendc", pass_configs=pass_configs)
+    a = torch.full((128,), 65504.0, dtype=torch.float16).npu()
+    expected = (a.cpu().float() / 65536.0).half()
+    torch.testing.assert_close(kernel(a).cpu(), expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "operation,scalar_value,input_value,expected_value",
+    [("div", 65536.0, 65504.0, 0.99951171875), ("sub", 3.5, 2.0, -1.5)],
+)
+def test_transformed_scalar_buffer_preserves_storage_dtype(operation, scalar_value, input_value, expected_value):
+    scalar_op = getattr(T.tile, operation)
+
+    @T.prim_func
+    def main(A: T.Tensor((128,), "float16"), S: T.Tensor((16,), "float32"), B: T.Tensor((128,), "float16")):
+        with T.Kernel(1, threads=1, is_npu=True):
+            a_ub = T.alloc_ub((128,), "float16")
+            s_ub = T.alloc_ub((16,), "float32")
+            b_ub = T.alloc_ub((128,), "float16")
+            T.copy(A, a_ub)
+            T.copy(S, s_ub)
+            scalar_op(b_ub, a_ub, s_ub[3])
+            T.copy(b_ub, B)
+
+    kernel = tilelang.compile(main, out_idx=[2], target="ascendc", pass_configs=pass_configs)
+    a = torch.full((128,), input_value, dtype=torch.float16).npu()
+    scalar = torch.zeros((16,), dtype=torch.float32)
+    scalar[3] = scalar_value
+    expected = torch.full((128,), expected_value, dtype=torch.float16)
+    torch.testing.assert_close(kernel(a, scalar.npu()).cpu(), expected, rtol=0, atol=0)
 
 
 def exp(M, N, block_M, block_N, dtype="float"):
@@ -3943,7 +3983,6 @@ def sin(M, N, block_M, block_N, dtype="float"):
         A: T.Tensor([M, N], dtype),  # type: ignore
         B: T.Tensor([M, N], dtype),  # type: ignore
     ):
-        T.func_attr({"enable_auto_sync": True})
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
@@ -3992,7 +4031,6 @@ def sin_slice(M, N, block_M, block_N, dtype="float"):
         A: T.Tensor([M, N], dtype),  # type: ignore
         B: T.Tensor([M, N], dtype),  # type: ignore
     ):
-        T.func_attr({"enable_auto_sync": True})
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
@@ -4434,6 +4472,22 @@ def test_vec_subs(dtype, target, shape):
     M, N = shape
     scalar = 3.0 if dtype in ["float", "float16"] else 3
     run_test_vec_subs(M, N, 128, 256, scalar, dtype, target=target)
+
+
+def test_subs_int16_negates_before_scalar_conversion():
+    @T.prim_func
+    def main(A: T.Tensor((128,), "int16"), B: T.Tensor((128,), "int16")):
+        with T.Kernel(1, threads=1, is_npu=True):
+            a_ub = T.alloc_ub((128,), "int16")
+            b_ub = T.alloc_ub((128,), "int16")
+            T.copy(A, a_ub)
+            T.tile.sub(b_ub, a_ub, 32768.0)
+            T.copy(b_ub, B)
+
+    kernel = tilelang.compile(main, out_idx=[1], target="ascendc", pass_configs=pass_configs)
+    a = torch.zeros((128,), dtype=torch.int16).npu()
+    expected = torch.full((128,), -32768, dtype=torch.int16)
+    torch.testing.assert_close(kernel(a).cpu(), expected, rtol=0, atol=0)
 
 
 def transpose(M, N, block_M, block_N, dtype="int16"):
@@ -4881,8 +4935,6 @@ def run_test_reduce_sum(M, N, block_M, block_N, dim, dtype, target):
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_sum(dim, dtype, target):
-    if dtype == "float16":
-        pytest.xfail(reason="float16 reduction sum may overflow")
     M, N = 1024, 64
     run_test_reduce_sum(M, N, 64, 64, dim, dtype, target)
 
@@ -5109,6 +5161,142 @@ def run_test_reduce_runtime_semantics(
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_dim0_runtime_smoke(op, target):
     run_test_reduce_runtime_semantics(op, dim=0, target=target, clear=True)
+
+
+# float16 reduce_sum regression tests. AscendC lowers float16 sum through a
+# float32 widening (Cast -> ReduceSum<float> -> Cast) because the historic
+# WholeReduceSum<half> workaround is wrong for column reductions (issue #1683:
+# its srcRepStride unit is a 32-byte block and cannot express the 2-byte step)
+# and accumulates in f16 precision (issue #754).
+@pytest.mark.parametrize("dim", [0, -1])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_reduce_sum_float16_runtime(dim, target):
+    M, N = 64, 64
+    func = tilelang.compile(
+        reduce_runtime_semantics_kernel(M, N, "sum", dim, dtype="float16"),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
+    )
+
+    # Fixed seed: PTO reduces natively in half precision, and an unseeded
+    # run can draw a near-zero row sum where the relative tolerance is
+    # dominated by the f16 accumulation error.
+    torch.manual_seed(0)
+    a = torch.randn(M, N, dtype=torch.float16).npu()
+    b = func(a)
+    torch.npu.synchronize()
+
+    ref_b = torch.sum(a, dim=1 if dim == -1 else 0)
+    # Both backends reduce through a float32 accumulator, so the result is
+    # bit-accurate up to the final round to half.
+    torch.testing.assert_close(b, ref_b, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize("dim", [0, -1])
+def test_reduce_sum_float16_unaligned_cols_pto(dim):
+    # The widened float32 views over the injected workspace must keep their
+    # physical (32-byte aligned) column count separate from the valid one;
+    # N=5 would otherwise emit a 20-byte row and fail the PTO tile
+    # static_assert. AscendC is not covered here: its native float32 reduce
+    # has the same unaligned-column limitation, so the widened half path
+    # merely matches the platform behavior.
+    M, N = 64, 5
+    func = tilelang.compile(
+        reduce_runtime_semantics_kernel(M, N, "sum", dim, dtype="float16"),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target="pto",
+    )
+
+    torch.manual_seed(0)
+    a = torch.randn(M, N, dtype=torch.float16).npu()
+    b = func(a)
+    torch.npu.synchronize()
+
+    ref_b = torch.sum(a, dim=1 if dim == -1 else 0)
+    torch.testing.assert_close(b, ref_b, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_reduce_sum_float16_slice_dst(target):
+    # The final narrow cast must write the offset-carrying destination view,
+    # not the backing-buffer start (PR #1724 review).
+    @T.prim_func
+    def main(A: T.Tensor((64, 64), "float16"), B: T.Tensor((128,), "float16")):  # type: ignore
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            a_ub = T.alloc_ub((64, 64), "float16")
+            b_ub = T.alloc_ub((128,), "float16")
+            if vid == 0:
+                T.copy(A, a_ub)
+                T.reduce_sum(a_ub, b_ub[32:96], dim=-1)
+                T.copy(b_ub, B)
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    torch.manual_seed(0)
+    a = torch.randn(64, 64, dtype=torch.float16).npu()
+    b = func(a)
+    torch.npu.synchronize()
+
+    ref_b = torch.sum(a, dim=1)
+    torch.testing.assert_close(b[32:96], ref_b, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_reduce_sum_float16_two_reduces_shared_workspace(target):
+    # Memory planning merges the workspaces of the two reduces, so every
+    # widening view must stay uniquely named (PR #1724 review).
+    @T.prim_func
+    def main(
+        A: T.Tensor((64, 64), "float16"),  # type: ignore
+        B: T.Tensor((64,), "float16"),  # type: ignore
+        C: T.Tensor((64,), "float16"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            a_ub = T.alloc_ub((64, 64), "float16")
+            b_ub = T.alloc_ub((64,), "float16")
+            c_ub = T.alloc_ub((64,), "float16")
+            if vid == 0:
+                T.copy(A, a_ub)
+                T.reduce_sum(a_ub, b_ub, dim=-1)
+                T.reduce_sum(a_ub, c_ub, dim=-1)
+                T.copy(b_ub, B)
+                T.copy(c_ub, C)
+
+    func = tilelang.compile(main, out_idx=[1, 2], pass_configs=pass_configs, target=target)
+    torch.manual_seed(0)
+    a = torch.randn(64, 64, dtype=torch.float16).npu()
+    b, c = func(a)
+    torch.npu.synchronize()
+
+    ref_b = torch.sum(a, dim=1)
+    torch.testing.assert_close(b, ref_b, rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(c, ref_b, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize("dim", [0, -1])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_reduce_sum_float16_clear_false(dim, target):
+    # clear=False merges into the destination's current contents; the
+    # widening must seed the float32 partial with the old value (AscendC)
+    # and the merge must fence the pipe before reading the tmp output view
+    # (PTO, PR #1724 review).
+    M, N = 64, 64
+    func = tilelang.compile(
+        reduce_runtime_semantics_kernel(M, N, "sum", dim, dtype="float16", clear=False, init_value=1.25),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
+    )
+
+    torch.manual_seed(0)
+    a = torch.randn(M, N, dtype=torch.float16).npu()
+    b = func(a)
+    torch.npu.synchronize()
+
+    ref_b = torch.sum(a.float(), dim=1 if dim == -1 else 0) + 1.25
+    # The merge adds in half precision, so allow the final round to half.
+    torch.testing.assert_close(b.float(), ref_b, rtol=1e-2, atol=1e-2)
 
 
 @pytest.mark.parametrize(

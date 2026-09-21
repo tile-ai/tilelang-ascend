@@ -140,25 +140,33 @@ In flat pattern, use `T.Pipelined` for inter-core pipeline, and manually impleme
 
 ```python
 # ✅ Recommended: T.Pipelined for inter-core, manual for intra-core
+T.set_flag("MTE1", "MTE2", SIG_K_L1)  # init: k_l1 is free for MTE2
+
 for k in T.Pipelined(num_iters, num_stages=4):
     # T.Pipelined handles inter-core sync automatically
 
     # Manual intra-core double buffering (side = 0, 1)
     for side in T.serial(2):
+        T.wait_flag("MTE1", "MTE2", SIG_K_L1)
         T.copy(K[side], k_l1)
         T.set_flag("MTE2", "MTE1", SIG_K_L1)
-        T.wait_flag("MTE1", "MTE2", SIG_K_L1)
 
+        T.wait_flag("MTE2", "MTE1", SIG_K_L1)
         T.copy(k_l1, l0b[side])
-        T.set_flag("MTE1", "MTE2", SIG_K_L1)
         T.set_flag("MTE1", "M", SIG_L0AB + side)
+        T.set_flag("MTE1", "MTE2", SIG_K_L1)
 
         T.wait_flag("MTE1", "M", SIG_L0AB + side)
         T.wait_flag("FIX", "M", SIG_L0C + side)
         T.mma(l0a[side], l0b[side], l0c[side], init=(side == 0))
         T.set_flag("M", "MTE1", SIG_L0AB + side)
         T.set_flag("M", "FIX", SIG_L0C + side)
+
+T.wait_flag("MTE1", "MTE2", SIG_K_L1)  # destroy: consume final return token
 ```
+
+The two directions form one ownership cycle for the physical `k_l1` region. A barrier or a
+one-way ready flag is insufficient when a later iteration overwrites that region.
 
 Benefits of flat pattern:
 - **Clear separation**: `T.Pipelined` handles inter-core sync, manual code handles intra-core

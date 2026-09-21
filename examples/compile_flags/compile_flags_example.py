@@ -51,6 +51,7 @@ def sigmoid(
     pass_configs = {
         tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
         tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+        tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     }
 
     @tilelang.jit(out_idx=[1], pass_configs=pass_configs, compile_flags=compile_flags)

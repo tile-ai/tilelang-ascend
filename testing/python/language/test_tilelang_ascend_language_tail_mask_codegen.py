@@ -25,6 +25,7 @@ from tilelang.utils.target import determine_platform
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     # Enable the opt-in tail-block scheme (default off) so the tail_* helpers
     # are actually emitted for these tests.
     tilelang.PassConfigKey.TL_ASCEND_TAIL_MASK: True,
@@ -595,9 +596,14 @@ def _native_reduce_marker(kind, *, target="ascendc", dtype="float", clear=True, 
             ("min", "col"): "TCOLMIN(",
         }[(kind, direction)]
 
-    # AscendC uses a dedicated helper for clear=true float16 sum reductions.
+    if dtype in {"float", "float32"} and dim in {-1, 1}:
+        return "tl::ascend::reduce_2d<"
+
+    # AscendC widens clear=true float16 sum reductions to float32
+    # (Cast -> ReduceSum<float> -> Cast), since CANN ReduceSum<half> is
+    # rejected by a static_assert.
     if kind == "sum" and dtype == "float16" and clear:
-        return "tl::ascend::reduce_sum_half<"
+        return "tl::ascend::reduce_sum<float"
 
     return f"tl::ascend::reduce_{kind}<"
 
@@ -782,6 +788,14 @@ def test_mixed_unary_scalar_select_emits_all_tail_paths(target, dtype):
         assert "tl::ascend_pto::compare_scalar(" in src, src
         assert "TSELS(" in src, src
         assert "pto::DYNAMIC" in src, src
+        mask_view = "TileUbDataND<uint8_t, 4, 32, pto::DYNAMIC"
+        assert src.count(mask_view) == 2, src
+        if dtype == "float16":
+            # The planner reuses a half tensor allocation for the short-lived
+            # uint8 predicate in this pipeline.  The mask must retain its
+            # packed, 32-byte-aligned row stride instead of inheriting the
+            # backing half tensor's 64-column shape.
+            assert "TileUbDataND<uint8_t, 4, 64, pto::DYNAMIC" not in src, src
 
 
 @pytest.mark.parametrize("target", TAIL_TARGETS)
