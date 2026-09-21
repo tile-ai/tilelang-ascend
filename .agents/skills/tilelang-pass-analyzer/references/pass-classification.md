@@ -20,33 +20,24 @@
 | Pass | 功能简述 | 配置项 | 核心类 |
 |------|---------|--------|--------|
 | AscendSyncInsert | 自动插入同步指令，确保数据依赖正确 | `tl.ascend_auto_sync` | AscendSyncInsert |
-| AscendSyncInsertVS | 补充 V→V 与 S 相关同步 | `tl.ascend_auto_sync_vs` | AscendSyncInsertVS |
-| CrossCorePipeline | 跨核 (Cube-Vector) 流水线结构重写 | - | CrossCorePipeline |
+| CrossCorePipeline | 跨核 (Cube-Vector) 流水线同步调度 | `tl.ascend_auto_cross_core_sync` | CrossCorePipeline |
 | CombineCV | 分离 Cube/Vector 操作，拆分为两块独立代码 | `tl.ascend_auto_cv_combine` | CVCombineEmitter |
 
-### 3. Resource ownership 与后端验证
-
-| Pass | 功能简述 | 配置项 | 核心类 |
-|------|---------|--------|--------|
-| AscendResourceScopeVerify | 用 CombineCV 共用分类器验证最终 C/V owner，opaque fail closed | - | AscendResourceScopeVerifier |
-
-### 4. 向量化与 Lowering
+### 3. 向量化与 Lowering
 
 | Pass | 功能简述 | 配置项 | 核心类 |
 |------|---------|--------|--------|
 | AscendLowerParallelToVector | Parallel 循环 lowering 为 Vector 指令 | - | AscendLowerParallelToVector |
 | AscendLowerOpaqueBlock | Opaque Block 结构 lowering | - | OpaqueBlockLower |
-| AscendVectorInstructionSelection | A2/A3 AscendC managed semantic op → typed selected terminal | managed target gate | - |
-| AscendVectorMaskLegalize | 按 requires/ensures 修复并复用 Vector mask state | `tl.ascend_vector_mask_reuse` | AscendVectorMaskLegalizer |
 
-### 5. 数据收集与分析
+### 4. 数据收集与分析
 
 | Pass | 功能简述 | 配置项 | 核心类 |
 |------|---------|--------|--------|
 | CollectBufferShapes | 收集 buffer 形状信息 | - | - |
 | BufferShapeCollector | Buffer 形状收集器 | - | - |
 
-### 6. Host 处理
+### 5. Host 处理
 
 | Pass | 功能简述 | 配置项 | 核心类 |
 |------|---------|--------|--------|
@@ -107,20 +98,91 @@
 
 ---
 
-## 三、快速查找指南
+## 三、典型使用场景
 
-本文件只用于按职责检索 Pass；完整执行顺序和条件分支见
-`tilelang-pass-workflow-analyzer/references/pass-pipeline-overview.md`。
+### 场景 1: Ascend NPU GEMM 算子编译
+
+**推荐 Pass 组合：**
+```
+FrontendLegalize
+  → InferAllocScope (推断 buffer scope)
+  → CollectBufferShapes (收集形状)
+  → Flatten2DBuffer (扁平化)
+  → AscendMemoryPlanning (内存规划)
+  → AscendSyncInsert (插入同步)
+  → AscendLowerParallelToVector (lowering)
+  → MakePackedAPI
+```
+
+**配置示例：**
+```python
+PassContext.current().config = {
+    "tl.ascend_memory_planning": True,
+    "tl.ascend_auto_sync": True,
+}
+```
+
+---
+
+### 场景 2: Ascend NPU Vector 算子编译
+
+**推荐 Pass 组合：**
+```
+FrontendLegalize
+  → AscendLowerParallelToVector (Parallel → Vector)
+  → Simplify (简化)
+  → MakePackedAPI
+```
+
+---
+
+### 场景 3: Ascend NPU 跨核流水线
+
+**推荐 Pass 组合：**
+```
+FrontendLegalize
+  → CrossCorePipeline (跨核流水线规划)
+  → CombineCV (分离 Cube/Vector)
+  → AscendMemoryPlanning
+  → AscendSyncInsert
+  → MakePackedAPI
+```
+
+---
+
+## 四、Pass 间协作关系图
+
+### Ascend 平台典型协作链
+
+```
+[数据收集阶段]
+  CollectBufferShapes → Flatten2DBuffer
+         ↓
+[内存规划阶段]
+  InferAllocScope → AscendMemoryPlanning
+         ↓ (输出 address_map)
+[同步插入阶段]
+  AscendSyncInsert (使用 address_map)
+         ↓
+[Lowering 阶段]
+  AscendLowerParallelToVector / AscendLowerOpaqueBlock
+         ↓
+[后端处理]
+  MakePackedAPI
+```
+
+---
+
+## 五、快速查找指南
 
 ### 按功能关键词查找
 
 | 关键词 | 相关 Pass |
 |--------|----------|
 | 内存 / memory | AscendMemoryPlanning, AscendStorageRewrite, FlattenBuffer |
-| 同步 / sync | AscendSyncInsert, AscendSyncInsertVS, CrossCorePipeline |
+| 同步 / sync | AscendSyncInsert, CrossCorePipeline |
 | 流水线 / pipeline | CrossCorePipeline, InjectSoftwarePipeline |
-| 向量化 / vector | AscendLowerParallelToVector, AscendVectorInstructionSelection, AscendVectorMaskLegalize, VectorizeLoop |
-| C/V scope / ownership | CombineCV, AscendResourceScopeVerify |
+| 向量化 / vector | AscendLowerParallelToVector, VectorizeLoop, LoopVectorizeDynamic |
 | Lowering | AscendLowerOpaqueBlock, LowerTileOp |
 | Layout | LayoutInference, InferAllocScope |
 | 简化 / simplify | Simplify |
