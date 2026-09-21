@@ -25,7 +25,7 @@ L0 cases:
   - l0_main_config: B=1, S=32768, H=32, use_g=True (full config, 512 chunks,
     slow compile)
 
-L1 functional cases (13, BLOCKING — all must PASS; deterministic shape
+L1 functional cases (16, BLOCKING — all must PASS; deterministic shape
 generation + D-PARAM coverage):
   - Aligned / tail-1 (S=65) / tail-mid (S=96) / prime (S=127) / edge
     (S=64 + H=1). Non-aligned S follows the host-truncation contract:
@@ -39,10 +39,14 @@ generation + D-PARAM coverage):
     use_initial_state=True, store_final_state=False + save_new_value=False.
   - use_g=False cases strictly limited to BS<=4 (S<=256).
 
-L2 negative cases (3, NON-BLOCKING — illegal inputs should be rejected):
+L2 negative cases (5, BLOCKING — illegal inputs must be rejected):
   - unsupported dtype (float16 K/W/U variant), bad chunk_size (8 < 16
-    fractal minimum), non-aligned DV (DV=65 with block_DV=64, known
-    silent-accept behavior — compile-only probe, not executed).
+    fractal minimum), non-aligned DV (DV=65 with block_DV=64), and the
+    S-split segment-alignment class: chunk_size=192/320 (%16==0 but
+    %128!=0 — without the %128 assert, 192 reads W out of bounds at the
+    compile stage while 320 silently drops the tail rows of the V_new
+    path; both confirmed by a live repro before the fix). Compile-only
+    probes, never executed.
 
 Boundary special-value cases (6, NON-BLOCKING — legal values judged by
 precision, WARN if beyond thresholds):
@@ -937,7 +941,7 @@ def test_chunk_delta_h_l1():
 
 
 # ============================================================================
-# L2: Exception tests — unsupported_dtype is BLOCKING, others WARN
+# L2: Exception tests — all cases BLOCKING (illegal inputs must be rejected)
 # ============================================================================
 
 _L2_BASE = dict(
@@ -1011,6 +1015,27 @@ L2_CASES = [
         # Rejected by the "DV must be a multiple of block_DV" host assert.
         "name": "l2_non_aligned_dv",
         "overrides": {"DV": 65, "block_DV": 64},
+        "expected_exc_types": (AssertionError,),
+        "tags": ["D-EXC-SHAPE"],
+    },
+    {
+        # chunk_size=192 (%16==0 but %128!=0, S-split nseg=1): without the
+        # %128 assert the non-streaming S-split path loads W[..., 128:256]
+        # out of bounds (opaque compile-stage error). S=192 keeps the
+        # S % chunk_size assert quiet so the S-split assert is what fires.
+        "name": "l2_ssplit_non_multiple_192",
+        "overrides": {"S": 192, "chunk_size": 192},
+        "expected_exc_types": (AssertionError,),
+        "tags": ["D-EXC-SHAPE"],
+    },
+    {
+        # chunk_size=320 (%16==0 but %128!=0, S-split nseg=2): without the
+        # %128 assert the kernel compiles AND runs, but silently drops the
+        # tail 64 rows of the V_new path (only nseg*128=256 rows computed,
+        # verified by a live repro before the fix). S=320 keeps the
+        # S % chunk_size assert quiet so the S-split assert is what fires.
+        "name": "l2_ssplit_non_multiple_320",
+        "overrides": {"S": 320, "chunk_size": 320},
         "expected_exc_types": (AssertionError,),
         "tags": ["D-EXC-SHAPE"],
     },
@@ -1145,7 +1170,7 @@ COVERAGE_MANIFEST = {
     "D-SPECIAL-ZERO": 1,
     "D-SPECIAL-DBOUND": 1,
     "D-EXC-DTYPE": 1,
-    "D-EXC-SHAPE": 2,
+    "D-EXC-SHAPE": 4,
 }
 
 # Fusion category: all dimensions are mandatory — no exemptions declared.
