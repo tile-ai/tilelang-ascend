@@ -35,6 +35,7 @@ COVERAGE_MANIFEST = {
     "D-VALRANGE-ASYM": 1,
     "D-EXC-DTYPE": 1,
     "D-EXC-SHAPE": 1,
+    "D-EXC-PARAM": 3,
     "D-DTYPE-bf16": 6,
     "D-DTYPE-fp32": 6,
     "D-PARAM-chunk_size": 1,
@@ -378,6 +379,53 @@ def test_l2_exc_shape():
     return True
 
 
+def test_l2_exc_chunk_size_odd():
+    """Exception: chunk_size=7 (odd, BS%8!=0) must be rejected at kernel entry.
+
+    Guards the review-hardening assert: T.tile.compare/broadcast/cast operate
+    on (BS,BS) fp32 tiles requiring 256B alignment (BS%8==0); without the
+    assert this would only fail at AscendC lowering.
+    """
+    cs = 7
+    try:
+        chunk_scaled_dot_kkt_fwd(B=1, S=64, H=1, DK=64, chunk_size=cs, use_g=True)
+        raise RuntimeError(f"chunk_size={cs} was not rejected at kernel entry")
+    except AssertionError:
+        print(f"[L2_PASS] l2_exc_chunk_size_odd: chunk_size={cs} correctly rejected")
+    return True
+
+
+def test_l2_exc_chunk_size_even():
+    """Exception: chunk_size=60 (even, %4 but not %8) must be rejected.
+
+    Core reviewer-flagged "silent corruption" scenario: BS=60 satisfies
+    BS%4==0 but breaks the 256B alignment (BS%8!=0) required by
+    T.tile.compare/broadcast/cast on (BS,BS) fp32 tiles.
+    """
+    cs = 60
+    try:
+        chunk_scaled_dot_kkt_fwd(B=1, S=64, H=1, DK=64, chunk_size=cs, use_g=True)
+        raise RuntimeError(f"chunk_size={cs} was not rejected at kernel entry")
+    except AssertionError:
+        print(f"[L2_PASS] l2_exc_chunk_size_even: chunk_size={cs} correctly rejected")
+    return True
+
+
+def test_l2_exc_chunk_size_nonstandard():
+    """Exception: chunk_size=128 (%8 satisfied but != 64) must be rejected.
+
+    Shows the semantic constraint (fixed 64) is enforced, not just the
+    256B alignment (BS%8==0) subset.
+    """
+    cs = 128
+    try:
+        chunk_scaled_dot_kkt_fwd(B=1, S=64, H=1, DK=64, chunk_size=cs, use_g=True)
+        raise RuntimeError(f"chunk_size={cs} was not rejected at kernel entry")
+    except AssertionError:
+        print(f"[L2_PASS] l2_exc_chunk_size_nonstandard: chunk_size={cs} correctly rejected")
+    return True
+
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -408,6 +456,9 @@ def main():
         test_l2_prime_shape()
         test_l2_exc_dtype()
         test_l2_exc_shape()
+        test_l2_exc_chunk_size_odd()
+        test_l2_exc_chunk_size_even()
+        test_l2_exc_chunk_size_nonstandard()
 
     if args.level in ("boundary", "all"):
         print("=== Boundary Tests ===")

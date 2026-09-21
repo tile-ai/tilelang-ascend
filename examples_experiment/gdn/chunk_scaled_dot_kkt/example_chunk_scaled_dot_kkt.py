@@ -62,6 +62,8 @@ def chunk_scaled_dot_kkt_fwd(
     Args:
         B, S, H, DK: tensor dims (JIT compile-time params).
         chunk_size: chunk block size, fixed 64 by algorithm semantics.
+            Must be 64 (asserted at entry): T.tile ops on (BS,BS) fp32
+            tiles additionally require 256B alignment (BS%8==0).
         use_g: gating mode (JIT compile-time param; different kernels per value).
         input_dtype: dtype of K (bfloat16).
         output_dtype: dtype of A (bfloat16).
@@ -85,6 +87,17 @@ def chunk_scaled_dot_kkt_fwd(
     block_S = chunk_size
     N = chunks_per_block
     assert N == 4, "static unroll handles exactly 4 chunks per block"
+    # chunk_size constraint (fail-fast, review hardening): the algorithm
+    # semantics fix the chunk size at 64, and T.tile.compare/broadcast/cast
+    # operate on (BS,BS) fp32 tiles requiring 256B alignment (BS%8==0).
+    # Non-conforming values previously only failed at AscendC lowering.
+    assert chunk_size == 64, (
+        f"chunk_size={chunk_size} must be 64: the algorithm semantics fix "
+        f"the chunk size at 64; additionally T.tile.compare/broadcast/cast "
+        f"operate on (BS,BS) fp32 tiles requiring 256B alignment (BS%8==0), "
+        f"and non-conforming values previously only failed at AscendC "
+        f"lowering."
+    )
     num_chunks = S // block_S
     num_chunk_groups = (num_chunks + N - 1) // N
     total_blocks = num_chunk_groups * B * H
