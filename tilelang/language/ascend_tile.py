@@ -776,47 +776,27 @@ def select(
     *,
     tmp: Buffer | BufferRegion | None = None,
 ):
-    """Performs an element-wise Select operation based on a bit-packed mask.
+    """Performs an element-wise Select operation based on a mask.
 
-    Selects elements from `src0` or `src1` based on `selMask` bit values and the
-    specified `selMode`: when selMask.bit[i] == 1, dst[i] = src0[i]; otherwise
-    dst[i] = src1[i].
+    This intrinsic invokes the underlying Ascend implementation to select elements
+    from `src0` or `src1` based on the `selMask` condition and the specified `selMode`,
+    storing the result in `dst`.
 
     Args:
         dst: The destination buffer or buffer region where the result will be stored.
-            Shape must match ``src0``.
-        selMask: The bit-packed uint8 mask buffer. Each bit controls one element
-            (bit=1 selects from src0, bit=0 selects from src1).
-            Element count = data element count / 8.
-        src0: The first source buffer or buffer region (selected when mask bit = 1).
-        src1: The second source operand. Supports tensor (Buffer/BufferRegion),
-            BufferLoad (single element access), or scalar (PrimExpr/float).
-            - When ``selMode`` is ``"VSEL_TENSOR_SCALAR_MODE"``, ``src1`` must be a scalar.
-            - When ``selMode`` is ``"VSEL_TENSOR_TENSOR_MODE"`` or ``"VSEL_CMPMASK_SPR"``,
-              ``src1`` must be a tensor or BufferLoad.
-        selMode: The selection mode string. Determines how ``selMask`` is interpreted
-            and the type of ``src1``. Must be one of:
-            - ``"VSEL_CMPMASK_SPR"``: bit-packed mask, reuses one mask for all elements
-              (max ``256 / sizeof(T)`` elements per call). Typically paired with
-              ``T.tile.compare``.
-            - ``"VSEL_TENSOR_SCALAR_MODE"``: mask is consumed continuously; ``src1`` is a scalar.
-            - ``"VSEL_TENSOR_TENSOR_MODE"``: mask is consumed continuously; ``src1`` is a tensor.
+        selMask: The mask buffer that determines which source to select from.
+        src0: The first source buffer or buffer region.
+        src1: The second source operand. It can be a Buffer (Tensor), a specific
+            BufferLoad, or a scalar value (PrimExpr/float).
+        selMode: The selection mode string. Must be one of:
+            - 'VSEL_CMPMASK_SPR': Select based on compare mask.
+            - 'VSEL_TENSOR_SCALAR_MODE': Select between a tensor and a scalar.
+            - 'VSEL_TENSOR_TENSOR_MODE': Select between two tensors.
         tmp: Optional complete UB scratch storage. Its scalar dtype is
             reinterpreted by lowering and has no semantic meaning.
 
     Returns:
         A TVM intrinsic call that performs the Select operation.
-
-    Note:
-        - Supported dtypes (A2/A3): ``float16``, ``float32`` for dst, src0, src1.
-        - ``selMask`` dtype must be ``uint8``.
-        - ``dst`` and ``src0`` must have the same shape.
-        - When ``src1`` is a tensor, its shape must match ``src0``.
-        - Operand addresses must be 32-byte aligned.
-        - ``"VSEL_CMPMASK_SPR"`` mode caps element count at ``256 / sizeof(T)``
-          (128 for float16, 64 for float32).
-        - ``"VSEL_TENSOR_SCALAR_MODE"`` and ``"VSEL_TENSOR_TENSOR_MODE"`` modes require
-          8KB Unified Buffer temporary space on A2/A3.
     """
 
     def retrieve_shape(object: Buffer | BufferRegion) -> list[int]:
@@ -1762,31 +1742,25 @@ def create_vec_index(dst: Buffer, first_value: PrimExpr):
 
 
 def transpose(dst: Buffer, src: Buffer):
-    """Performs a 2D matrix transposition: dst[i][j] = src[j][i].
+    """Performs a matrix transposition operation.
+
+    This intrinsic invokes the underlying implementation to transpose the source
+    buffer into the destination buffer.
 
     Args:
         dst: The destination buffer, shape [W, H].
-        src: The source buffer, shape [H, W]. Must be 2D with static H and W.
+        src: The source buffer to be transposed, shape [H, W].
 
     Note:
-        - 32-byte alignment: H * sizeof(dtype) and W * sizeof(dtype) must both
-          be multiples of 32. Concretely: B16 (half/int16/uint16/bfloat16)
-          requires H, W multiples of 16; B32 (float/int32/uint32) requires
-          multiples of 8; int8 requires multiples of 32.
-        - Implementation dispatch: (1) H=W=16 with B16 (except bfloat16) uses
-          the AscendC::Transpose hardware instruction; (2) H, W both multiples
-          of 16 with B16/B32 (except bfloat16) uses TransDataTo5HD block
-          transpose; (3) all other cases (int8, bfloat16, int64, or
-          non-16-multiple shapes that still satisfy 32-byte alignment) fall
-          back to scalar element-wise copy.
-        - src and dst must not overlap (in-place transpose is unsupported).
+        H and W must satisfy 32-byte alignment (i.e., H * sizeof(dtype) and
+        W * sizeof(dtype) must be multiples of 32). For B16 (half/int16/uint16)
+        and B32 (float/int32/uint32), this means H and W must be multiples of
+        16; for int8, multiples of 32. Supports B16 and B32 via hardware
+        instruction; int8 and bfloat16 fall back to scalar implementation.
     """
     src_shape = list(src.shape)
     if len(src_shape) < 2:
         raise ValueError(f"transpose requires a 2D source buffer. Got shape: {src_shape}")
-
-    if dst.data == src.data:
-        raise ValueError("transpose does not support in-place operation (dst and src must be different buffers).")
 
     elem_bytes = DataType(src.dtype).bits // 8
     for axis_name, dim in [("H", src_shape[-2]), ("W", src_shape[-1])]:

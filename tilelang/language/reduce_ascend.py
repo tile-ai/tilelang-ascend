@@ -282,8 +282,6 @@ def reduce(
 ):
     """Emit the Ascend fast-path reduce intrinsic for buffers or buffer regions."""
     dtype = _dtype(buffer)
-    if dtype == "float" and dim == -1 and _dtype(out) != dtype:
-        raise TypeError(f"Ascend row reduce source and destination dtypes must match, got {dtype} and {_dtype(out)}")
 
     def _handle_buffer_region(br: BufferRegion, mask):
         bf = br.buffer
@@ -382,17 +380,16 @@ def reduce_max(
             the trailing tile axes 0/1/-1/-2.
         *args: Optional positional compatibility arguments for ``clear`` and
             ``real_shape``.
-        clear: Compile-time bool. True assigns the reduction; False merges
-            with an already initialized ``out``.
+        clear: Whether to initialize ``out`` before reduction. True: initialize
+            out before reduction; False: compare/accumulate on existing out values.
         real_shape: Optional logical 2D shape for sliced UB tiles.
         tmp: Optional complete target-specific scratch storage. It must be a
             one-dimensional, static, contiguous fixed-width scalar buffer in
             ``shared.ub``, or an equivalent 32-byte-aligned buffer region. Its
             dtype is ignored and lowering reinterprets the storage by byte address.
             Zero extent is allowed for backend paths that need no workspace.
-            AscendC fp32 last-axis reductions use the exact Reduce2D scratch
-            requirement and reject undersized explicit arenas. Other paths
-            retain their existing target-specific capacity rules.
+            Compiler heuristics size implicit allocations and internal views;
+            nonzero explicit capacity remains the caller's responsibility.
     """
     parsed_clear, parsed_real_shape = _parse_reduce_optional_args("reduce_max", args, clear=clear, real_shape=real_shape)
     legalized_dim = _legalize_reduce_dim(_get_buffer_extent(buffer), dim)
@@ -428,17 +425,16 @@ def reduce_min(
             the trailing tile axes 0/1/-1/-2.
         *args: Optional positional compatibility arguments for ``clear`` and
             ``real_shape``.
-        clear: Compile-time bool. True assigns the reduction; False merges
-            with an already initialized ``out``.
+        clear: Whether to initialize ``out`` before reduction. True: initialize
+            out before reduction; False: compare/accumulate on existing out values.
         real_shape: Optional logical 2D shape for sliced UB tiles.
         tmp: Optional complete target-specific scratch storage. It must be a
             one-dimensional, static, contiguous fixed-width scalar buffer in
             ``shared.ub``, or an equivalent 32-byte-aligned buffer region. Its
             dtype is ignored and lowering reinterprets the storage by byte address.
             Zero extent is allowed for backend paths that need no workspace.
-            AscendC fp32 last-axis reductions use the exact Reduce2D scratch
-            requirement and reject undersized explicit arenas. Other paths
-            retain their existing target-specific capacity rules.
+            Compiler heuristics size implicit allocations and internal views;
+            nonzero explicit capacity remains the caller's responsibility.
     """
     parsed_clear, parsed_real_shape = _parse_reduce_optional_args("reduce_min", args, clear=clear, real_shape=real_shape)
     legalized_dim = _legalize_reduce_dim(_get_buffer_extent(buffer), dim)
@@ -475,17 +471,16 @@ def reduce_sum(
             the trailing tile axes 0/1/-1/-2.
         *args: Optional positional compatibility arguments for ``clear`` and
             ``real_shape``.
-        clear: Compile-time bool. True assigns the reduction; False merges
-            with an already initialized ``out``.
+        clear: Whether to initialize ``out`` before reduction. True: initialize
+            out to zero before reduction; False: accumulate on existing out values.
         real_shape: Optional logical 2D shape for sliced UB tiles.
         tmp: Optional complete target-specific scratch storage. It must be a
             one-dimensional, static, contiguous fixed-width scalar buffer in
             ``shared.ub``, or an equivalent 32-byte-aligned buffer region. Its
             dtype is ignored and lowering reinterprets the storage by byte address.
             Zero extent is allowed for backend paths that need no workspace.
-            AscendC fp32 last-axis reductions use the exact Reduce2D scratch
-            requirement and reject undersized explicit arenas. Other paths
-            retain their existing target-specific capacity rules.
+            Compiler heuristics size implicit allocations and internal views;
+            nonzero explicit capacity remains the caller's responsibility.
 
     Note:
         On the AscendC backend, float16 ``reduce_sum`` lowers through a

@@ -325,57 +325,7 @@ private:
     return std::move(pinfo);
   }
 
-  static bool HasOnlyEmptyStageBodies(const Stmt &stmt) {
-    if (is_no_op(stmt)) {
-      return true;
-    }
-    if (const auto *seq = stmt.as<SeqStmtNode>()) {
-      for (const Stmt &child : seq->seq) {
-        if (!HasOnlyEmptyStageBodies(child)) {
-          return false;
-        }
-      }
-      return true;
-    }
-    if (const auto *branch = stmt.as<IfThenElseNode>()) {
-      return HasOnlyEmptyStageBodies(branch->then_case) &&
-             (!branch->else_case.defined() ||
-              HasOnlyEmptyStageBodies(branch->else_case.value()));
-    }
-    if (const auto *loop = stmt.as<ForNode>()) {
-      return HasOnlyEmptyStageBodies(loop->body);
-    }
-    if (const auto *loop = stmt.as<WhileNode>()) {
-      return HasOnlyEmptyStageBodies(loop->body);
-    }
-    if (const auto *realize = stmt.as<BlockRealizeNode>()) {
-      return (!realize->block->init.defined() ||
-              HasOnlyEmptyStageBodies(realize->block->init.value())) &&
-             HasOnlyEmptyStageBodies(realize->block->body);
-    }
-    return false;
-  }
-
   Stmt VisitStmt_(const ForNode *loop) final {
-    if (HasOnlyEmptyStageBodies(loop->body)) {
-      // Resource partitioning can leave an opposite-side pipeline with no
-      // stages. Keep its loop, predicates, bounds, and allocations intact;
-      // their evaluation is not proven removable here. Only disable scheduling
-      // so later ordinary cleanup can eliminate work when it is safe.
-      // Visit nested loops too: the injector processes their annotations even
-      // when the enclosing loop no longer requests pipeline scheduling.
-      For result = Downcast<For>(StmtExprMutator::VisitStmt_(loop));
-      Map<String, ObjectRef> annotations = result->annotations;
-      for (const char *key :
-           {"num_stages", "tl_pipeline_order", "tl_pipeline_stage",
-            tir::attr::software_pipeline_order,
-            tir::attr::software_pipeline_stage,
-            tir::attr::software_pipeline_async_stages}) {
-        annotations.erase(key);
-      }
-      result.CopyOnWrite()->annotations = annotations;
-      return result;
-    }
     auto order_anno = loop->annotations.Get("tl_pipeline_order");
     auto stage_anno = loop->annotations.Get("tl_pipeline_stage");
     auto num_stages_anno = loop->annotations.Get("num_stages");
