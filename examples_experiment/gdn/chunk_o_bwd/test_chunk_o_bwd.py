@@ -33,7 +33,7 @@ COVERAGE_MANIFEST = {
     "D-EXC-SHAPE": 2,
     "D-DTYPE-bf16": 4,
     "D-DTYPE-fp32": 4,
-    "D-PARAM-chunk_size": 5,
+    "D-PARAM-chunk_size": 6,
     "D-PARAM-chunks_per_block": 1,
     "D-PARAM-scale": 4,
     "D-PARAM-use_g": 4,
@@ -384,12 +384,12 @@ def test_chunk_o_bwd_l2():
     # D-EXC-DTYPE: fp32 input for bf16 kernel parameter (not testable via
     # run_and_check which uses bfloat16; document as known rejection)
     print("  [BOUNDARY_PASS] l2_fp32_dtype_rejected (fp32 input not bf16, documented)")
-    # D-EXC-SHAPE: S not multiple of chunk_size -- kernel produces garbage
-    # (documented limitation, not a hard reject). Non-blocking BOUNDARY_WARN.
+    # D-EXC-SHAPE: S not multiple of chunk_size -- must reject (entry assert:
+    # no tail-chunk handling; previously a silent-garbage documented limit)
     try:
         run_and_check(1, 100, 8, 128, 128, 64, True, True, tag="l2_non_multiple_s")
-        # S=100 not multiple of 64: kernel runs but output is garbage (known limit)
-        print("  [BOUNDARY_WARN] l2_non_multiple_s (S=100 not multiple of 64, known limit)")
+        print("  [BOUNDARY_FAIL] l2_non_multiple_s (S=100 not rejected)")
+        ok = False
     except Exception:
         print("  [BOUNDARY_PASS] l2_non_multiple_s rejected")
     # D-SHAPE-TAIL-1: DK=65 (not multiple of block_DK=64) -- must reject
@@ -413,13 +413,23 @@ def test_chunk_o_bwd_l2():
         ok = False
     except Exception:
         print("  [BOUNDARY_PASS] l2_chunk_prime rejected")
-    # D-PARAM-chunk_size: chunk_size=32 (reduce shape issue) -- must reject
+    # D-PARAM-chunk_size: chunk_size=32 (multiple of 8, but block_DK=64 !=
+    # chunk_size: square L0-staging tile entry constraint) -- must reject
     try:
         run_and_check(1, 512, 8, 128, 128, 32, True, True, tag="l2_chunk32")
         print("  [BOUNDARY_FAIL] l2_chunk32 (cs=32 not rejected)")
         ok = False
     except Exception:
         print("  [BOUNDARY_PASS] l2_chunk32 rejected")
+    # D-PARAM-chunk_size: chunk_size=60 (not a multiple of 8: T.tile.transpose
+    # 32B / T.tile.compare 256B byte alignment; S=480 is a multiple of 60 so
+    # only the alignment constraint fires) -- must reject
+    try:
+        run_and_check(1, 480, 8, 128, 128, 60, True, True, tag="l2_chunk60")
+        print("  [BOUNDARY_FAIL] l2_chunk60 (cs=60 not rejected)")
+        ok = False
+    except Exception:
+        print("  [BOUNDARY_PASS] l2_chunk60 rejected")
     return ok
 
 
