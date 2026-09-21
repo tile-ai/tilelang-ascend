@@ -183,9 +183,7 @@ def _run_atomic_add_l0c_gemm_case(
     torch.npu.synchronize()
 
     expected_value = num_blocks * block_K  # for every value in c
-    expected = torch.full(
-        (block_M, block_N), expected_value, dtype=torch_out_dtype, device="npu"
-    )
+    expected = torch.full((block_M, block_N), expected_value, dtype=torch_out_dtype, device="npu")
 
     torch.testing.assert_close(c, expected, rtol=1e-3, atol=1e-3)
 
@@ -210,9 +208,7 @@ def test_tile_atomic_add_l0c_gemm_accumulates_multiple_blocks(target, dtype):
         dtype=dtype,
         accum_dtype=accum_dtype,
     )
-    _run_atomic_add_l0c_gemm_case(
-        program, block_M, block_N, block_K, dtype, accum_dtype, num_blocks, target
-    )
+    _run_atomic_add_l0c_gemm_case(program, block_M, block_N, block_K, dtype, accum_dtype, num_blocks, target)
 
 
 @pytest.mark.skipif(
@@ -282,9 +278,7 @@ def test_tile_atomic_add_l0c_int32_to_int32_gemm(target):
         dtype=dtype,
         accum_dtype=accum_dtype,
     )
-    _run_atomic_add_l0c_gemm_case(
-        program, block_M, block_N, block_K, dtype, accum_dtype, num_blocks, target
-    )
+    _run_atomic_add_l0c_gemm_case(program, block_M, block_N, block_K, dtype, accum_dtype, num_blocks, target)
 
 
 @pytest.mark.skipif(
