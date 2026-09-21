@@ -63,10 +63,14 @@ def test_misaligned_const_ub_offset_compile_error():
     multiple) must raise a compile-time error mentioning alignment."""
     func = _ub_dst_offset_kernel(dst_off=1, N=8, dtype="float")
     with pytest.raises(Exception) as exc_info:
-        tilelang.compile(func, out_idx=[-1], pass_configs=VEC_MIN_CONFIGS, target="ascendc")
+        tilelang.compile(
+            func, out_idx=[-1], pass_configs=VEC_MIN_CONFIGS, target="ascendc"
+        )
     msg = str(exc_info.value).lower()
     # The error must mention alignment / 32-byte so the author knows the cause.
-    assert ("align" in msg) or ("32" in msg), f"error message should mention alignment, got: {exc_info.value}"
+    assert ("align" in msg) or ("32" in msg), (
+        f"error message should mention alignment, got: {exc_info.value}"
+    )
 
 
 def test_aligned_const_ub_offset_ok():
@@ -74,7 +78,9 @@ def test_aligned_const_ub_offset_ok():
     compiles and runs correctly."""
     N = 8
     func = _ub_dst_offset_kernel(dst_off=8, N=N, dtype="float")
-    func = tilelang.compile(func, out_idx=[-1], pass_configs=VEC_MIN_CONFIGS, target="ascendc")
+    func = tilelang.compile(
+        func, out_idx=[-1], pass_configs=VEC_MIN_CONFIGS, target="ascendc"
+    )
     torch.manual_seed(0)
     x = torch.randn(N, dtype=torch.float32).npu()
     torch.npu.synchronize()
@@ -83,6 +89,53 @@ def test_aligned_const_ub_offset_ok():
     # The window [8:16) holds X; the rest is whatever the UB held (we only check
     # the copied region).
     torch.testing.assert_close(y[8:16], x, rtol=0, atol=0)
+
+
+def _mixed_dtype_ub_to_ub_kernel(src_off, dst_off):
+    """Make ``copy_ub_to_ub<float, half, 8>`` with explicit UB offsets."""
+
+    @T.prim_func
+    def main(X: T.Tensor((32,), "float"), Y: T.Tensor((32,), "float")):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            src = T.alloc_ub((32,), "float16")
+            dst = T.alloc_ub((32,), "float")
+            T.copy(X, dst)
+            T.copy(src[src_off : src_off + 8], dst[dst_off : dst_off + 8])
+            T.copy(dst, Y)
+
+    return main
+
+
+@pytest.mark.parametrize(
+    ("src_off", "dst_off", "bad_side"),
+    [
+        # half source offset 8 is 16 B; the old implementation used float's
+        # 4-byte width and incorrectly accepted it as 32 B.
+        (8, 0, "src"),
+        # The converse: float destination offset 4 is 16 B while the half
+        # source begins at a legal 32-byte boundary.
+        (16, 4, "dst"),
+    ],
+)
+def test_mixed_dtype_ub_to_ub_checks_each_side(src_off, dst_off, bad_side):
+    with pytest.raises(Exception) as exc_info:
+        tilelang.compile(
+            _mixed_dtype_ub_to_ub_kernel(src_off, dst_off),
+            out_idx=[-1],
+            pass_configs=VEC_MIN_CONFIGS,
+            target="ascendc",
+        )
+    assert bad_side in str(exc_info.value).lower()
+
+
+def test_mixed_dtype_ub_to_ub_accepts_both_aligned_offsets():
+    # half offset 16 and float offset 8 both mean a 32-byte UB base offset.
+    tilelang.compile(
+        _mixed_dtype_ub_to_ub_kernel(src_off=16, dst_off=8),
+        out_idx=[-1],
+        pass_configs=VEC_MIN_CONFIGS,
+        target="ascendc",
+    )
 
 
 if __name__ == "__main__":

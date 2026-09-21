@@ -2900,15 +2900,22 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
     // compile time, naming the buffer, the offset, and the alignment
     // requirement.  Runtime (non-constant) offsets are let through -- they may
     // be aligned at run time, so rejecting them would be a false positive.
-    auto tmpl_dtype_bytes = [](const std::string &opn) -> int {
+    auto tmpl_dtype_bytes = [](const std::string &opn,
+                               size_t dtype_index) -> int {
       auto lt = opn.find('<');
       auto gt = opn.find('>', lt == std::string::npos ? lt : lt + 1);
       if (lt == std::string::npos || gt == std::string::npos)
         return 0;
       std::string t = opn.substr(lt + 1, gt - lt - 1);
+      for (size_t i = 0; i < dtype_index; ++i) {
+        auto comma = t.find(',');
+        if (comma == std::string::npos)
+          return 0;
+        t = t.substr(comma + 1);
+      }
       auto comma = t.find(',');
       if (comma != std::string::npos)
-        t = t.substr(0, comma);
+        t.resize(comma);
       t.erase(std::remove_if(t.begin(), t.end(), ::isspace), t.end());
       if (t == "half" || t == "float16" || t == "bfloat16_t" ||
           t == "int16_t" || t == "uint16_t" || t == "float16_t")
@@ -2922,11 +2929,20 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
         return 8;
       return 0; // unknown dtype -> skip the check (do not false-positive)
     };
-    int elem_bytes = tmpl_dtype_bytes(op_name);
-    if (elem_bytes > 0) {
+    // copy_ub_to_ub is instantiated as <dst_dtype, src_dtype, len>.  Its
+    // offsets are expressed in their respective element types, so using the
+    // first template argument for both sides silently accepts a misaligned
+    // narrow source (and can reject an aligned narrow destination).
+    int dst_elem_bytes = tmpl_dtype_bytes(op_name, 0);
+    int src_elem_bytes = op_name.find("copy_ub_to_ub") != std::string::npos
+                             ? tmpl_dtype_bytes(op_name, 1)
+                             : dst_elem_bytes;
+    if (dst_elem_bytes > 0 || src_elem_bytes > 0) {
       auto check_side_align = [&](const PrimExpr &off_expr,
-                                  const std::string &buf_name,
-                                  const char *side) {
+                                  const std::string &buf_name, const char *side,
+                                  int elem_bytes) {
+        if (elem_bytes <= 0)
+          return; // unknown dtype -> skip this side, never false-positive
         const auto *imm = off_expr.as<IntImmNode>();
         if (imm == nullptr)
           return; // runtime offset -> let through
@@ -2950,9 +2966,9 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
           (op_name.find("copy_ub_to_gm") != std::string::npos) ||
           (op_name.find("copy_ub_to_ub") != std::string::npos);
       if (dst_is_onchip)
-        check_side_align(dst_offset_expr, dst_var_id, "dst");
+        check_side_align(dst_offset_expr, dst_var_id, "dst", dst_elem_bytes);
       if (src_is_onchip)
-        check_side_align(src_offset_expr, src_var_id, "src");
+        check_side_align(src_offset_expr, src_var_id, "src", src_elem_bytes);
     }
 
     this->PrintIndent();
