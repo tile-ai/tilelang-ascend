@@ -114,7 +114,15 @@ def test_tile_atomic_add_2d_region_accumulates_multiple_blocks_after_zeroing_gm(
     _run_atomic_add_case(program, (tile_m, tile_n), dtype, num_blocks, target)
 
 
-def _tile_atomic_add_l0c_gemm_kernel(num_blocks=4, block_M=16, block_N=16, block_K=16, dtype="float16", accum_dtype="float", out_dtype=None):
+def _tile_atomic_add_l0c_gemm_kernel(
+    num_blocks=4,
+    block_M=16,
+    block_N=16,
+    block_K=16,
+    dtype="float16",
+    accum_dtype="float",
+    out_dtype=None,
+):
     """Test L0C atomic_add with GEMM.
 
     ``out_dtype`` is the GM dtype of C; it defaults to ``accum_dtype`` (the L0C
@@ -146,7 +154,17 @@ def _tile_atomic_add_l0c_gemm_kernel(num_blocks=4, block_M=16, block_N=16, block
     return main
 
 
-def _run_atomic_add_l0c_gemm_case(program, block_M, block_N, block_K, dtype, accum_dtype, num_blocks, target, out_dtype=None):
+def _run_atomic_add_l0c_gemm_case(
+    program,
+    block_M,
+    block_N,
+    block_K,
+    dtype,
+    accum_dtype,
+    num_blocks,
+    target,
+    out_dtype=None,
+):
     if out_dtype is None:
         out_dtype = accum_dtype
     kernel = _compile(program, target)
@@ -165,7 +183,9 @@ def _run_atomic_add_l0c_gemm_case(program, block_M, block_N, block_K, dtype, acc
     torch.npu.synchronize()
 
     expected_value = num_blocks * block_K  # for every value in c
-    expected = torch.full((block_M, block_N), expected_value, dtype=torch_out_dtype, device="npu")
+    expected = torch.full(
+        (block_M, block_N), expected_value, dtype=torch_out_dtype, device="npu"
+    )
 
     torch.testing.assert_close(c, expected, rtol=1e-3, atol=1e-3)
 
@@ -190,7 +210,9 @@ def test_tile_atomic_add_l0c_gemm_accumulates_multiple_blocks(target, dtype):
         dtype=dtype,
         accum_dtype=accum_dtype,
     )
-    _run_atomic_add_l0c_gemm_case(program, block_M, block_N, block_K, dtype, accum_dtype, num_blocks, target)
+    _run_atomic_add_l0c_gemm_case(
+        program, block_M, block_N, block_K, dtype, accum_dtype, num_blocks, target
+    )
 
 
 @pytest.mark.skipif(
@@ -222,8 +244,16 @@ def test_tile_atomic_add_l0c_fp32_to_bf16_gemm(target, dtype):
         out_dtype=out_dtype,
     )
     _run_atomic_add_l0c_gemm_case(
-        program, block_M, block_N, block_K, dtype, accum_dtype, num_blocks,
-        target, out_dtype=out_dtype)
+        program,
+        block_M,
+        block_N,
+        block_K,
+        dtype,
+        accum_dtype,
+        num_blocks,
+        target,
+        out_dtype=out_dtype,
+    )
 
 
 @pytest.mark.skipif(
@@ -235,19 +265,12 @@ def test_tile_atomic_add_l0c_int32_to_int32_gemm(target):
     """int8 x int8 GEMM accumulates into an int32 L0C; the int32 -> int32 L0C
     atomic writeback must stay legal (regression: it must not be rejected by
     the L0C dtype-pair check)."""
-    if target == "pto":
-        # Lowering correctly accepts the int32->int32 pair, but the PTO backend
-        # then fails its own tile-layout static_assert (pto_tile.hpp: "Layout
-        # rows/cols must be divisible by inner box rows/cols") for the int32
-        # accumulator tile at this block size.  That is a PTO tile fractal
-        # alignment constraint, unrelated to the atomic_add dtype-pair check
-        # (which the ascendc leg below exercises end to end).
-        pytest.xfail(
-            "PTO backend rejects the int32 L0C tile layout (inner-box "
-            "divisibility static_assert); not a lowering dtype-pair issue")
     num_blocks = 4
-    block_M = 16
-    block_N = 16
+    # PTO's int32 L0C tile uses a 32x32 inner box.  Use a tile valid for both
+    # backends so this remains an end-to-end positive regression, rather than
+    # hiding the PTO leg behind xfail.
+    block_M = 32
+    block_N = 32
     block_K = 32  # int8 fractal needs K >= 32
     dtype = "int8"
     accum_dtype = "int32"
@@ -259,7 +282,9 @@ def test_tile_atomic_add_l0c_int32_to_int32_gemm(target):
         dtype=dtype,
         accum_dtype=accum_dtype,
     )
-    _run_atomic_add_l0c_gemm_case(program, block_M, block_N, block_K, dtype, accum_dtype, num_blocks, target)
+    _run_atomic_add_l0c_gemm_case(
+        program, block_M, block_N, block_K, dtype, accum_dtype, num_blocks, target
+    )
 
 
 @pytest.mark.skipif(

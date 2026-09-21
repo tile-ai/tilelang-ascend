@@ -352,7 +352,10 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     } else {
       ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1];
       if (config.l12l0) {
-        transposeL1 == 0 ? ss << ", false" << ">" : ss << ", true" << ">";
+        transposeL1 == 0 ? ss << ", false"
+                              << ">"
+                         : ss << ", true"
+                              << ">";
       }
       // ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] <<
       // ", "
@@ -754,15 +757,15 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
   // SetAtomicAdd() first converts the L0C value to the destination type DstT
   // (e.g. bf16), then performs the GM atomic add as DstT -- matching AscendC mm
   // enAtomic=1.  So the L0C->GM pair is validated exactly: fp32 L0C may write
-  // back to fp32/fp16/bf16 GM (SetAtomicAdd converts to DstT then adds as DstT),
-  // and int32 L0C (int8xint8 GEMM accumulator) may write back to int32 GM
-  // (Catlass/PTO both support int32->int32 L0C atomic writeback).  Anything
+  // back to fp32/fp16/bf16 GM (SetAtomicAdd converts to DstT then adds as
+  // DstT), and int32 L0C (int8xint8 GEMM accumulator) may write back to int32
+  // GM (Catlass/PTO both support int32->int32 L0C atomic writeback).  Anything
   // else is rejected because the AscendC/PTO backends only express these
   // supported conversions.  The UB branch keeps the exact src == dst dtype
   // check.
   if (src.scope() == "wmma.accumulator") {
     bool supported = false;
-    for (const auto& pair : {
+    for (const auto &pair : {
              std::make_pair(DataType::Float(32), DataType::Float(32)),
              std::make_pair(DataType::Float(32), DataType::Float(16)),
              std::make_pair(DataType::Float(32), DataType::BFloat(16)),
