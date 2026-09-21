@@ -34,9 +34,9 @@ def _run_silu(target, dtype, inplace):
                 with T.Scope("V"):
                     T.copy(X, acc)
                     if inplace:
-                        T.tile.silu(acc, acc)   # in-place：走自动 tmp 中转
+                        T.tile.silu(acc, acc)  # in-place：走自动 tmp 中转
                     else:
-                        T.tile.silu(tmp, acc)   # 非 in-place：3 参直发
+                        T.tile.silu(tmp, acc)  # 非 in-place：3 参直发
                         T.copy(tmp, acc)
                     T.copy(acc, Y)
 
@@ -45,7 +45,7 @@ def _run_silu(target, dtype, inplace):
     torch.manual_seed(0)
     x = torch.randn(N, dtype=torch_dtype)
     got = kernel()(x.npu()).cpu().float()
-    ref = (x.float() * torch.sigmoid(x.float()))
+    ref = x.float() * torch.sigmoid(x.float())
     torch.testing.assert_close(got, ref, rtol=2e-2, atol=2e-3)
 
 

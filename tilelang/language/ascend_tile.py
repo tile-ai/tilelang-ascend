@@ -1349,8 +1349,7 @@ def silu(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):
 
     if _same_ub_storage(dst, src):
         buf = dst.buffer if isinstance(dst, BufferRegion) else dst
-        tmp = _alloc_hidden_ub_tmp("silu", size, buf.dtype,
-                                   next(_silu_inplace_tmp_uid))
+        tmp = _alloc_hidden_ub_tmp("silu", size, buf.dtype, next(_silu_inplace_tmp_uid))
         return tir.call_intrin(
             "handle",
             tir.op.Op.get("tl.ascend_silu"),

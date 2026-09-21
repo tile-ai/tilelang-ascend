@@ -1413,7 +1413,8 @@ TIR_DEFINE_TL_BUILTIN(ascend_sigmoid)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_silu)
-    .set_num_inputs(-1)  // 3: (dst, src, size)；4: in-place 自动 tmp (dst, src, tmp, size)
+    .set_num_inputs(
+        -1) // 3: (dst, src, size)；4: in-place 自动 tmp (dst, src, tmp, size)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
