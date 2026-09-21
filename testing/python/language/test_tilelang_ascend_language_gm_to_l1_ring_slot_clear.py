@@ -102,15 +102,11 @@ def _run_ring_slot_clear(target, M=64, N=64, K=200, CHUNK=80):
                                         T.wait_flag("mte2", "mte1", k % S1)
                                     T.wait_flag("m", "mte1", kk % S2)
                                     T.copy(
-                                        A_L1[
-                                            k % S1, :, kk * BLOCK_K : (kk + 1) * BLOCK_K
-                                        ],
+                                        A_L1[k % S1, :, kk * BLOCK_K : (kk + 1) * BLOCK_K],
                                         A_L0[kk % S2, :, :],
                                     )
                                     T.copy(
-                                        B_L1[
-                                            k % S1, kk * BLOCK_K : (kk + 1) * BLOCK_K, :
-                                        ],
+                                        B_L1[k % S1, kk * BLOCK_K : (kk + 1) * BLOCK_K, :],
                                         B_L0[kk % S2, :, :],
                                     )
                                     if kk == loop_kk - 1:
