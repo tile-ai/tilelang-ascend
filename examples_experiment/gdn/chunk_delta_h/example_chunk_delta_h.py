@@ -176,6 +176,17 @@ def _chunk_delta_h_jit(
             "unroll structures support nseg in {{1, 2, 4, 8}} only "
             "(C in {64..512, 1024}). nseg=16 (C=2048) is not supported."
         )
+        # S-split covers exactly nseg*128 rows: a non-multiple chunk_size
+        # keeps nseg valid via floor division (e.g. 320 -> nseg=2 covers
+        # only 256 of 320 rows) and would silently drop the tail rows from
+        # the V_new output path.
+        if ssplit:
+            assert block_S % 128 == 0, (
+                f"chunk_size={block_S} not a multiple of 128: the S-split "
+                "structure (use_g=True, chunk_size>128) processes "
+                "floor(chunk_size/128) full 128-row segments — the tail rows "
+                "would be silently dropped from the V_new output path"
+            )
 
     @T.prim_func
     def kernel(
@@ -1468,6 +1479,13 @@ def chunk_delta_h(**kwargs):
     _mform = _use_g
     _ssplit = _mform and _block_S > 128
     _n1 = _mform and not _ssplit and _block_S in (64, 128)
+    if _ssplit:
+        assert _chunk_size % 128 == 0, (
+            f"chunk_size={_chunk_size} not a multiple of 128: the S-split "
+            "structure (use_g=True, chunk_size>128) requires full 128-row "
+            "segments — floor(chunk_size/128) segments would silently drop "
+            "the tail rows from the V_new output path"
+        )
     _L0A_BUDGET = 64 * 1024  # 64KB L0A ping-pong budget
     if _n1:
         _l0a_peak = _DK * _block_S * 2 + _DK * _DK * 2
