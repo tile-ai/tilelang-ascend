@@ -21,8 +21,8 @@ import tilelang.language as T
 CORE_NUM = 20
 
 
-def _run_ring_slot_clear(target, M=64, N=64, K=200, CHUNK=80):
-    """intrinsic 风格双 buffer 预取 matmul，K 带尾块（200 = 2*80 + 40）。"""
+def _run_ring_slot_clear(target, M=64, N=64, K=120, CHUNK=80):
+    """双 buffer 预取 matmul，K 尾块为 40（120 = 80 + 40）。"""
     BLOCK_M, BLOCK_N, BLOCK_K = 64, 64, 40
     S1, S2 = 2, 2
     m_num = (M + BLOCK_M - 1) // BLOCK_M
@@ -81,20 +81,26 @@ def _run_ring_slot_clear(target, M=64, N=64, K=200, CHUNK=80):
                             for k in T.serial(loop_k):
                                 if k < loop_k - 1:
                                     T.wait_flag("mte1", "mte2", (k + 1) % S1)
-                                    # 尾块预取进非零偏移 slot：need_clear 必须为 true
+                                    # 尾块预取进非零偏移 slot：need_clear 必须为 true。
+                                    #
+                                    # The GM source ends at K, so model the
+                                    # valid 40-element tail explicitly.  The
+                                    # remaining L1 columns are supplied by
+                                    # copy_gm_to_l1's clear, then consumed by
+                                    # the second 40-wide MMA tile below.
                                     T.copy(
                                         A[
                                             bx * BLOCK_M : (bx + 1) * BLOCK_M,
-                                            (k + 1) * CHUNK : (k + 2) * CHUNK,
+                                            (k + 1) * CHUNK : K,
                                         ],
-                                        A_L1[(k + 1) % S1, :, :],
+                                        A_L1[(k + 1) % S1, :, : K - (k + 1) * CHUNK],
                                     )
                                     T.copy(
                                         B[
-                                            (k + 1) * CHUNK : (k + 2) * CHUNK,
+                                            (k + 1) * CHUNK : K,
                                             by * BLOCK_N : (by + 1) * BLOCK_N,
                                         ],
-                                        B_L1[(k + 1) % S1, :, :],
+                                        B_L1[(k + 1) % S1, : K - (k + 1) * CHUNK, :],
                                     )
                                     T.set_flag("mte2", "mte1", (k + 1) % S1)
                                 for kk in T.serial(loop_kk):
