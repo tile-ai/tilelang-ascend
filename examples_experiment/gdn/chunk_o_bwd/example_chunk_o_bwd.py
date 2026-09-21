@@ -59,12 +59,40 @@ def chunk_o_bwd(
     grid = B * H * NK * num_chunk_groups = 256 (for B=1,S=32768,H=8,DK=128,cpb=32)
     Each block processes chunks_per_block consecutive chunks.
     0 GM workspace, 0 host ATen ops.
+
+    Entry constraints (asserted): chunk_size % 8 == 0 (T.tile.transpose 32B /
+    T.tile.compare 256B byte alignment), chunk_size == block_DK (square
+    L0-staging tile, both use_g paths), S % chunk_size == 0 (no tail-chunk
+    handling).
     """
     block_S = chunk_size
-    # The gate path reuses G_2d_ub as both the col-broadcast target and the
-    # last-row select source, requiring a square gate tile (block_DK == block_S).
-    if use_g:
-        assert block_DK == block_S, "block_DK must equal block_S when use_g=True (G_2d_ub doubles as the col-broadcast target)"
+    # --- Entry constraints (fail fast with clear messages instead of opaque
+    # lowering-stage errors; see TIR tile alignment checks) ---
+    # Alignment: the square (block_S, block_S) fp32 gate/tril tiles feed
+    # T.tile.transpose (row bytes 32B-aligned: block_S * 4 % 32 == 0) and
+    # T.tile.compare (total bytes 256B-aligned: block_S**2 * 4 % 256 == 0),
+    # so block_S must be a multiple of 8.
+    assert chunk_size % 8 == 0, (
+        f"chunk_size={chunk_size} must be a multiple of 8: T.tile.transpose "
+        "requires 32-byte-aligned rows and T.tile.compare requires 256-byte-"
+        "aligned inputs on the (chunk_size, chunk_size) fp32 gate/tril tiles"
+    )
+    # Square-tile constraint, required for BOTH use_g paths (not only the
+    # gate path): Stage-3 L0 staging copies k_l1 (block_S, block_DK) into
+    # k_l0b (block_S, block_S); the gate path additionally reuses G_2d_ub
+    # (block_S, block_DK) as the col-broadcast target and last-row select
+    # source.
+    assert block_DK == block_S, (
+        f"block_DK={block_DK} must equal chunk_size={block_S}: Stage-3 "
+        "L0 staging copies k_l1 (block_S, block_DK) into k_l0b (block_S, "
+        "block_S)"
+    )
+    # No tail-chunk handling: BS = S // block_S would silently drop the
+    # S % chunk_size trailing rows (garbage output).
+    assert S % chunk_size == 0, (
+        f"S={S} must be a multiple of chunk_size={chunk_size}: no tail-chunk "
+        "handling, S % chunk_size trailing rows would be silently dropped"
+    )
     BS = S // block_S
     NK = math.ceil(DK / block_DK)
     num_chunk_groups = math.ceil(BS / chunks_per_block)
