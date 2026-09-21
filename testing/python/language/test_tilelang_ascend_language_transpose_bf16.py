@@ -20,7 +20,10 @@ def build_bf16_transpose2d(batch, H, W):
     @tilelang.jit(out_idx=[1], pass_configs=pass_configs, target="ascendc")
     def kernel():
         @T.prim_func
-        def main(x: T.Tensor((batch, H, W), "bfloat16"), out: T.Tensor((batch, W, H), "bfloat16")):
+        def main(
+            x: T.Tensor((batch, H, W), "bfloat16"),
+            out: T.Tensor((batch, W, H), "bfloat16"),
+        ):
             with T.Kernel(tasks, is_npu=True) as (cid, vid):
                 ub = T.alloc_ub((TH, TW), "bfloat16")
                 ubt = T.alloc_ub((TW, TH), "bfloat16")
@@ -51,8 +54,11 @@ def test_bf16_transpose_uses_hardware_path():
     ref = x.permute(0, 2, 1).contiguous()
     torch.testing.assert_close(got, ref, rtol=0, atol=0)
 
+    # The generated kernel includes the call site only; the hardware intrinsic
+    # lives in tl_templates/ascend/common.h.  Verify that the statically-sized
+    # BF16 specialization is selected (rather than a scalarized transpose).
     source = kernel.get_kernel_source()
-    assert "TransDataTo5HDImpl<MovT>" in source
+    assert "tl::ascend::transpose<bfloat16_t, 64, 64>" in source
 
 
 if __name__ == "__main__":
