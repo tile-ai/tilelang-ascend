@@ -63,14 +63,10 @@ def test_misaligned_const_ub_offset_compile_error():
     multiple) must raise a compile-time error mentioning alignment."""
     func = _ub_dst_offset_kernel(dst_off=1, N=8, dtype="float")
     with pytest.raises(Exception) as exc_info:
-        tilelang.compile(
-            func, out_idx=[-1], pass_configs=VEC_MIN_CONFIGS, target="ascendc"
-        )
+        tilelang.compile(func, out_idx=[-1], pass_configs=VEC_MIN_CONFIGS, target="ascendc")
     msg = str(exc_info.value).lower()
     # The error must mention alignment / 32-byte so the author knows the cause.
-    assert ("align" in msg) or ("32" in msg), (
-        f"error message should mention alignment, got: {exc_info.value}"
-    )
+    assert ("align" in msg) or ("32" in msg), f"error message should mention alignment, got: {exc_info.value}"
 
 
 def test_aligned_const_ub_offset_ok():
@@ -78,9 +74,7 @@ def test_aligned_const_ub_offset_ok():
     compiles and runs correctly."""
     N = 8
     func = _ub_dst_offset_kernel(dst_off=8, N=N, dtype="float")
-    func = tilelang.compile(
-        func, out_idx=[-1], pass_configs=VEC_MIN_CONFIGS, target="ascendc"
-    )
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=VEC_MIN_CONFIGS, target="ascendc")
     torch.manual_seed(0)
     x = torch.randn(N, dtype=torch.float32).npu()
     torch.npu.synchronize()
