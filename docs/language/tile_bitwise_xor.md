@@ -40,7 +40,7 @@ def bitwise_xor(
 | Ascend A2 / A3（Ascend C） | int16, uint16 | 同 dst | 同 dst |
 | Ascend A2 / A3（PTO） | int8, int16, uint16 | 同 dst | 同 dst |
 
-> PTO 后端的 uint8 仅 1D 可用（参见 [Issue #1721](https://github.com/tile-ai/tilelang-ascend/issues/1721)）
+> PTO 后端的 uint8 仅 1D 可用
 
 #### 2.3.2 Shape 支持
 
