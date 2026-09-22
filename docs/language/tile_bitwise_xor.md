@@ -40,6 +40,8 @@ def bitwise_xor(
 | Ascend A2 / A3（Ascend C） | int16, uint16 | 同 dst | 同 dst |
 | Ascend A2 / A3（PTO） | int8, int16, uint16 | 同 dst | 同 dst |
 
+> PTO 后端的 uint8 仅 1D 可用（参见 [Issue #1721](https://github.com/tile-ai/tilelang-ascend/issues/1721)）
+
 #### 2.3.2 Shape 支持
 
 - 支持 1D 和 2D
@@ -49,11 +51,10 @@ def bitwise_xor(
 1. 输入和输出张量必须位于 UB 内存
 2. dst、src0 和 src1 的元素个数必须相同
 3. src0 和 src1 的 dtype 必须与 dst 一致
-4. 仅支持上述 DataType 表中列出的整数类型
-5. src1 仅支持张量，不支持标量
-6. tmp 省略时由框架自动分配；显式传入时必须是一维 UB 张量
-7. dst、src0、src1 和 tmp 的地址不得重叠
-8. 操作数地址需 32 字节对齐（硬件约束）
+4. src1 仅支持张量，不支持标量
+5. tmp 省略时由框架自动分配；显式传入时必须是一维 UB 张量
+6. dst、src0、src1 和 tmp 的地址不得重叠
+7. 操作数地址需 32 字节对齐（硬件约束）
 
 ## 3. 示例代码
 
