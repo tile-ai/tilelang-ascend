@@ -47,11 +47,9 @@ def bitwise_rshift(
 1. 输入和输出张量必须位于 UB 内存
 2. dst 与 src0 的元素个数必须相同
 3. src0 的 dtype 必须与 dst 一致
-4. 仅支持 int16、uint16、int32 和 uint32
-5. scalarValue 仅支持标量，其 dtype 无需与 dst 一致
-6. 当前不支持 `roundEn` 舍入参数
-7. int64 和 uint64 暂不可用，编译会触发异常退出（参见 [Issue #1720](https://github.com/tile-ai/tilelang-ascend/issues/1720)）
-8. 操作数地址需 32 字节对齐（硬件约束）
+4. scalarValue 仅支持标量，其 dtype 无需与 dst 一致
+5. 当前不支持 `roundEn` 舍入参数
+6. 操作数地址需 32 字节对齐（硬件约束）
 
 ## 3. 示例代码
 
