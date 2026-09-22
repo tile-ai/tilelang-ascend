@@ -69,18 +69,18 @@ T.tile.bitwise_xor(dst, src0, src1)
 **示例 2：张量切片按位异或**
 
 ```python
-src0 = T.alloc_ub((128, 256), "int16")
-src1 = T.alloc_ub((128, 256), "int16")
-dst = T.alloc_ub((128, 256), "int16")
-T.tile.bitwise_xor(dst[0:128, 0:256], src0[0:128, 0:256], src1[0:128, 0:256])
+src0 = T.alloc_ub((64, 256), "int16")
+src1 = T.alloc_ub((64, 256), "int16")
+dst = T.alloc_ub((64, 256), "int16")
+T.tile.bitwise_xor(dst[0:64, 0:256], src0[0:64, 0:256], src1[0:64, 0:256])
 ```
 
 **示例 3：显式 tmp 缓冲区**
 
 ```python
-src0 = T.alloc_ub((128, 256), "int16")
-src1 = T.alloc_ub((128, 256), "int16")
-dst = T.alloc_ub((128, 256), "int16")
-tmp = T.alloc_ub((128 * 256 * 2,), "uint8")
+src0 = T.alloc_ub((64, 256), "int16")
+src1 = T.alloc_ub((64, 256), "int16")
+dst = T.alloc_ub((64, 256), "int16")
+tmp = T.alloc_ub((64 * 256 * 2,), "uint8")
 T.tile.bitwise_xor(dst, src0, src1, tmp=tmp)
 ```
