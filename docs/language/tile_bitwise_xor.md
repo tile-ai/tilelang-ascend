@@ -54,8 +54,6 @@ def bitwise_xor(
 6. tmp 省略时由框架自动分配；显式传入时必须是一维 UB 张量
 7. dst、src0、src1 和 tmp 的地址不得重叠
 8. 操作数地址需 32 字节对齐（硬件约束）
-9. PTO 后端的 uint8 暂不可用（参见 [Issue #1721](https://github.com/tile-ai/tilelang-ascend/issues/1721)）
-10. int32 和 uint32 暂不可用，编译会触发异常退出（参见 [Issue #1722](https://github.com/tile-ai/tilelang-ascend/issues/1722)）
 
 ## 3. 示例代码
 
