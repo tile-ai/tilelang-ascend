@@ -44,6 +44,7 @@ def bitwise_not(
 2. dst 与 src0 的元素个数必须相同
 3. src0 的 dtype 必须与 dst 一致
 4. 操作数地址需 32 字节对齐（硬件约束）
+5. Ascend C 后端要求 tile 字节数为 32 的倍数（即满足 32 字节对齐）
 
 ## 3. 示例代码
 
