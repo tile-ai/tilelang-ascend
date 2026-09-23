@@ -46,9 +46,8 @@ def bitwise_or(
 2. dst 与 src0 的元素个数必须相同
 3. 当 src1 为切片时，其元素个数也必须与 dst 相同
 4. src0 和 src1 的 dtype 必须与 dst 一致
-5. 仅支持 int8、uint8、int16 和 uint16
-6. 操作数地址需 32 字节对齐（硬件约束）
-7. 当前 src1 仅支持张量，标量暂不可用（参见 [Issue #177](https://github.com/tile-ai/tilelang-ascend/issues/177)）
+5. 操作数地址需 32 字节对齐（硬件约束）
+6. 当前 src1 仅支持张量，标量暂不可用
 
 ## 3. 示例代码
 
@@ -64,10 +63,10 @@ T.tile.bitwise_or(dst, src0, src1)
 **示例 2：张量切片按位或**
 
 ```python
-src0 = T.alloc_ub((128, 256), "int16")
-src1 = T.alloc_ub((128, 256), "int16")
-dst = T.alloc_ub((128, 256), "int16")
-T.tile.bitwise_or(dst[0:128, 0:256], src0[0:128, 0:256], src1[0:128, 0:256])
+src0 = T.alloc_ub((64, 256), "int16")
+src1 = T.alloc_ub((64, 256), "int16")
+dst = T.alloc_ub((64, 256), "int16")
+T.tile.bitwise_or(dst[0:64, 0:256], src0[0:64, 0:256], src1[0:64, 0:256])
 ```
 
 **示例 3：int8 按位或**
