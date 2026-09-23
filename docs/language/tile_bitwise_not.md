@@ -36,16 +36,15 @@ def bitwise_not(
 
 #### 2.3.2 Shape 支持
 
-- 支持 2D
+- 支持 1D 和 2D
 
 ### 2.4 约束条件
 
 1. 输入和输出张量必须位于 UB 内存
 2. dst 与 src0 的元素个数必须相同
 3. src0 的 dtype 必须与 dst 一致
-4. 仅支持上述 DataType 表中列出的整数类型
-5. 操作数地址需 32 字节对齐（硬件约束）
-6. Ascend C 后端要求 tile 字节数为 32 的倍数，否则可能产生错误结果（参见 [Issue #1717](https://github.com/tile-ai/tilelang-ascend/issues/1717)）
+4. 操作数地址需 32 字节对齐（硬件约束）
+5. Ascend C 后端要求 tile 字节数为 32 的倍数，否则可能产生错误结果
 
 ## 3. 示例代码
 
