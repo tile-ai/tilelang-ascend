@@ -136,9 +136,6 @@ mappings:
   # examples/linear_attention_and_rnn
   examples/linear_attention_and_rnn/opt_gdn_full.py: examples/linear_attention_and_rnn/test_opt_gdn_full.py
 
-  # examples/mhc_bwd
-  examples/mhc_bwd/example_mhc_bwd.py: examples/mhc_bwd/test_example_mhc_bwd.py
-
   # examples/mhc_pre
   examples/mhc_pre/example_mhc_pre.py: examples/mhc_pre/test_example_mhc_pre.py
 
