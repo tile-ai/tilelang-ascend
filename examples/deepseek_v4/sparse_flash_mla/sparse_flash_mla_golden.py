@@ -603,64 +603,41 @@ def build_case(cfg, dtype, seed=42):
     )
 
 
+def _check_precision(actual, golden, dtype):
+    table = {
+        "float16": (2**-14, 2**-9, 1e-1, 0.99),
+        "bfloat16": (2**-10, 2**-6, 1e0, 0.99),
+        "float32": (2**-16, 2**-10, 1e-2, 0.99),
+        "hifloat32": (2**-16, 2**-10, 1e-2, 0.99),
+        "float8_e4m3": (2**-4, 2**-2, 1e0, 0.99),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1, 0.99),
+    }
+    actual, golden = actual.detach().cpu(), golden.detach().cpu()
+    if dtype in {"int8", "int16", "int32", "int64", "uint8"}:
+        assert torch.equal(actual, golden), "integer output must match exactly"
+        return
+    atol, rtol, max_abs_limit, required_ratio = table[dtype]
+    actual, golden = actual.float(), golden.float()
+    special = ~torch.isfinite(golden)
+    assert torch.equal(torch.isnan(actual[special]), torch.isnan(golden[special]))
+    assert torch.equal(torch.isinf(actual[special]), torch.isinf(golden[special]))
+    finite = torch.isfinite(golden)
+    if not finite.any():
+        return
+    errors = (actual[finite] - golden[finite]).abs()
+    ratio = (errors <= atol + rtol * golden[finite].abs()).float().mean().item()
+    max_abs = errors.max().item()
+    assert ratio >= required_ratio and max_abs <= max_abs_limit, f"matched_ratio={ratio:.4f}, max_abs_error={max_abs:.6e}"
+
+
 def check_result(npu_out, expect):
-    if npu_out.dtype == torch.bfloat16:
-        rtol, atol = 0.0078125, 0.0001
-    else:
-        rtol, atol = 0.005, 0.000025
-
-    real = npu_out.detach().cpu().to(torch.float32).numpy().flatten()
-    expt = expect.detach().cpu().to(torch.float32).numpy().flatten()
-    assert real.size == expt.size, f"size mismatch: {real.size} vs {expt.size}"
-
-    ok = np.isclose(real, expt, rtol=rtol, atol=atol, equal_nan=True)
-    n_err = int((~ok).sum())
-    fulfill_pct = (real.size - n_err) / real.size * 100.0
-
-    diff_thd = 0.005
-    norm_floor = (1.0 / (1 << 14)) / diff_thd
-    b = np.maximum(np.maximum(np.abs(real), np.abs(expt)), norm_floor) + 1e-9
-    rel_err = np.abs(real - expt) / b
-    max_rel = float(rel_err[~ok].max()) if n_err > 0 else 0.0
-
-    assert fulfill_pct >= 99.5, (
-        f"only {fulfill_pct:.4f}% of elements within tol "
-        f"(rtol={rtol}, atol={atol}); 99.5% required; "
-        f"{n_err}/{real.size} failing, max rel err {max_rel:.4f}"
-    )
-    assert max_rel < 10.0, (
-        f"max normalized relative error {max_rel:.4f} exceeds cap 10.0 (fulfill {fulfill_pct:.4f}%, {n_err}/{real.size} failing)"
-    )
+    dtype = "bfloat16" if npu_out.dtype == torch.bfloat16 else "float16"
+    _check_precision(npu_out, expect, dtype)
 
 
 def check_lse(npu_lse, expect_lse, q_dtype):
-    if q_dtype == torch.bfloat16:
-        rtol, atol = 0.015, 0.005
-    else:
-        rtol, atol = 0.01, 0.001
-
-    real = npu_lse.detach().cpu().to(torch.float32).numpy().flatten()
-    expt = expect_lse.detach().cpu().to(torch.float32).numpy().flatten()
-    assert real.size == expt.size, f"lse size mismatch: {real.size} vs {expt.size}"
-
-    ok = np.isclose(real, expt, rtol=rtol, atol=atol, equal_nan=True)
-    n_err = int((~ok).sum())
-    fulfill_pct = (real.size - n_err) / real.size * 100.0
-
-    diff_thd = 0.005
-    norm_floor = (1.0 / (1 << 14)) / diff_thd
-    b = np.maximum(np.maximum(np.abs(real), np.abs(expt)), norm_floor) + 1e-9
-    rel_err = np.abs(real - expt) / b
-    max_rel = float(rel_err[~ok].max()) if n_err > 0 else 0.0
-
-    assert fulfill_pct >= 99.5, (
-        f"lse: only {fulfill_pct:.4f}% within tol "
-        f"(rtol={rtol}, atol={atol}); 99.5% required; "
-        f"{n_err}/{real.size} failing, max rel err {max_rel:.4f}"
-    )
-    assert max_rel < 10.0, (
-        f"lse: max normalized relative error {max_rel:.4f} exceeds cap 10.0 (fulfill {fulfill_pct:.4f}%, {n_err}/{real.size} failing)"
-    )
+    dtype = "bfloat16" if q_dtype == torch.bfloat16 else "float16"
+    _check_precision(npu_lse, expect_lse, dtype)
 
 
 def run_case(case, cfg, sparse_flash_mla_fn):

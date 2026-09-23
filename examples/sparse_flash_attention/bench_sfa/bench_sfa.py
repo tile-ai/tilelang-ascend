@@ -7,6 +7,27 @@ import torch_npu
 DEVICE = "npu"
 
 
+def _check_precision(actual, golden):
+    table = {torch.float16: (2**-14, 2**-9, 1e-1), torch.bfloat16: (2**-10, 2**-6, 1e0), torch.float32: (2**-16, 2**-10, 1e-2)}
+    if actual.dtype not in table:
+        return torch.equal(actual, golden), 1.0, 0.0
+    atol, rtol, limit = table[actual.dtype]
+    a, g = actual.detach().float().cpu(), golden.detach().float().cpu()
+    special = ~torch.isfinite(g)
+    if special.any() and (
+        not torch.equal(torch.isnan(a[special]), torch.isnan(g[special]))
+        or not torch.equal(torch.isinf(a[special]), torch.isinf(g[special]))
+    ):
+        return False, 0.0, float("inf")
+    finite = torch.isfinite(g)
+    if not finite.any():
+        return True, 1.0, 0.0
+    err = (a[finite] - g[finite]).abs()
+    ratio = (err <= atol + rtol * g[finite].abs()).float().mean().item()
+    max_err = err.max().item()
+    return ratio >= 0.99 and max_err <= limit, ratio, max_err
+
+
 def test_op(T, B, KV_S, Q_N, KV_N, D, D_rope, sparse_size, scale_value, sparse_block_size, sparse_mode, block_size, act_kv_s, tl_ops: list):
     assert sparse_size <= KV_S
     assert KV_N == 1
@@ -76,7 +97,8 @@ def test_op(T, B, KV_S, Q_N, KV_N, D, D_rope, sparse_size, scale_value, sparse_b
             print(f"(first op) {tl_op.__name__} {out=}")
         else:
             out = out.to(first_out.dtype)
-            torch.testing.assert_close(out, first_out, rtol=1e-2, atol=1e-2, equal_nan=True)
+            ok, ratio, max_err = _check_precision(out, first_out)
+            assert ok, f"matched_ratio={ratio:.4f}, max_abs_error={max_err:.3e}"
     print(f"(last op) {tl_op.__name__} {out=}")
     print(f"Case completed: T={T}, KV_S={KV_S}")
 

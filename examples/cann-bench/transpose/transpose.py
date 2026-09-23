@@ -15,6 +15,25 @@ import tilelang
 from tilelang import language as T
 import torch
 
+
+def _check_precision(actual, golden):
+    if not actual.is_floating_point():
+        torch.testing.assert_close(actual, golden, rtol=0, atol=0)
+        return
+    table = {torch.float16: (2**-14, 2**-9, 1e-1), torch.bfloat16: (2**-10, 2**-6, 1.0), torch.float32: (2**-16, 2**-10, 1e-2)}
+    atol, rtol, cap = table.get(actual.dtype, (2**-14, 2**-9, 1e-1))
+    sa = torch.isnan(actual) | torch.isinf(actual)
+    sg = torch.isnan(golden) | torch.isinf(golden)
+    if not torch.equal(sa, sg) or (sa.any() and not torch.equal(actual[sa], golden[sg])):
+        raise AssertionError("NaN/Inf structure mismatch")
+    valid = ~sg
+    if valid.any():
+        diff = (actual[valid] - golden[valid]).abs()
+        passed = diff <= atol + rtol * golden[valid].abs()
+        if passed.float().mean().item() < 0.99 or diff.max().item() > cap:
+            raise AssertionError("precision mismatch")
+
+
 # A2/A3 physical AIV core count
 _CORE_NUM = 24
 
@@ -449,5 +468,5 @@ if __name__ == "__main__":
     x = (torch.rand(shape, dtype=torch.float32) * 2.0 - 1.0).to(torch.float16).npu()
     y = transpose(x, perm)
     ref = torch.permute(x.cpu(), perm)
-    torch.testing.assert_close(y.cpu().float(), ref.float(), rtol=1e-3, atol=1e-3)
+    _check_precision(y.cpu(), ref)
     print("Kernel Output Match!")

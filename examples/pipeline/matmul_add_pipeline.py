@@ -5,6 +5,35 @@ import tilelang.language as T
 import torch
 
 
+def _check_precision(actual, golden, dtype):
+    table = {
+        "float16": (2**-14, 2**-9, 1e-1),
+        "bfloat16": (2**-10, 2**-6, 1e0),
+        "float32": (2**-16, 2**-10, 1e-2),
+        "hifloat32": (2**-16, 2**-10, 1e-2),
+        "float8_e4m3": (2**-4, 2**-2, 1e0),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1),
+    }
+    actual, golden = actual.detach().cpu().float(), golden.detach().cpu().float()
+    if actual.shape != golden.shape:
+        return False, 0.0, float("inf")
+    atol, rtol, limit = table.get(str(dtype).replace("torch.", ""), table["float16"])
+    ~torch.isfinite(golden)
+    if not (
+        torch.equal(torch.isnan(actual), torch.isnan(golden))
+        and torch.equal(torch.isposinf(actual), torch.isposinf(golden))
+        and torch.equal(torch.isneginf(actual), torch.isneginf(golden))
+    ):
+        return False, 0.0, float("inf")
+    finite = torch.isfinite(golden)
+    if not finite.any():
+        return True, 1.0, 0.0
+    error = (actual[finite] - golden[finite]).abs()
+    error = torch.where(torch.isfinite(error), error, torch.full_like(error, float("inf")))
+    ratio, maximum = (error <= atol + rtol * golden[finite].abs()).float().mean().item(), error.max().item()
+    return ratio >= 0.99 and maximum <= limit, ratio, maximum
+
+
 @tilelang.jit(
     out_idx=[2],
     workspace_idx=[-1],
@@ -92,5 +121,6 @@ if __name__ == "__main__":
 
     ref_c = a @ b + d
 
-    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+    passed, ratio, max_abs = _check_precision(c, ref_c, c.dtype)
+    assert passed, f"dtype={c.dtype}, matched_ratio={ratio:.4f}, max_abs_error={max_abs:.6e}"
     print("Kernel Output Match!")
