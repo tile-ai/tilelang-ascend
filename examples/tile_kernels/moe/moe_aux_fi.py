@@ -45,79 +45,80 @@ def get_aux_fi_kernel(num_topk: int, num_experts: int, num_sms: int):
             ub_pong = T.alloc_ub((BLOCK_TOKENS, num_aligned_topk), INDEX_DTYPE)
             count_ub = T.alloc_ub((1,), FLOAT_DTYPE)
 
-            count_ub[0] = 0.0
+            with T.Scope("V"):
+                count_ub[0] = 0.0
 
-            num_full_chunks = num_tokens // BLOCK_TOKENS
-            tail_tokens = num_tokens % BLOCK_TOKENS
+                num_full_chunks = num_tokens // BLOCK_TOKENS
+                tail_tokens = num_tokens % BLOCK_TOKENS
 
-            # Prologue: preload first block.
-            # Note: all T.copy must use pad_value=-1 to safely pad unaligned edges.
-            if num_full_chunks > 0:
-                T.copy(
-                    topk_idx[0:BLOCK_TOKENS, 0:num_topk],
-                    ub_ping[0:BLOCK_TOKENS, 0:num_aligned_topk],
-                    pad_value=-1,
-                )
-                T.set_flag("MTE2", "S", 0)
-                T.wait_flag("MTE2", "S", 0)
+                # Prologue: preload first block.
+                # Note: all T.copy must use pad_value=-1 to safely pad unaligned edges.
+                if num_full_chunks > 0:
+                    T.copy(
+                        topk_idx[0:BLOCK_TOKENS, 0:num_topk],
+                        ub_ping[0:BLOCK_TOKENS, 0:num_aligned_topk],
+                        pad_value=-1,
+                    )
+                    T.set_flag("MTE2", "S", 0)
+                    T.wait_flag("MTE2", "S", 0)
 
-            # Steady State (pipeline loop).
-            for c in T.serial(num_full_chunks):
-                if c % 2 == 0:
-                    if c + 1 < num_full_chunks:
-                        T.copy(
-                            topk_idx[(c + 1) * BLOCK_TOKENS : (c + 2) * BLOCK_TOKENS, 0:num_topk],
-                            ub_pong[0:BLOCK_TOKENS, 0:num_aligned_topk],
-                            pad_value=-1,
-                        )
-                        T.set_flag("MTE2", "S", 0)
-                        T.wait_flag("MTE2", "S", 0)
+                # Steady State (pipeline loop).
+                for c in T.serial(num_full_chunks):
+                    if c % 2 == 0:
+                        if c + 1 < num_full_chunks:
+                            T.copy(
+                                topk_idx[(c + 1) * BLOCK_TOKENS : (c + 2) * BLOCK_TOKENS, 0:num_topk],
+                                ub_pong[0:BLOCK_TOKENS, 0:num_aligned_topk],
+                                pad_value=-1,
+                            )
+                            T.set_flag("MTE2", "S", 0)
+                            T.wait_flag("MTE2", "S", 0)
 
-                    for i in T.serial(BLOCK_TOKENS):
-                        # Only unroll real num_topk (excluding padding) for max performance.
+                        for i in T.serial(BLOCK_TOKENS):
+                            # Only unroll real num_topk (excluding padding) for max performance.
+                            for j in T.unroll(num_topk):
+                                idx_int32 = T.cast(ub_ping[i, j], INT32_DTYPE)
+                                match_val = T.Select(idx_int32 == cid, T.float32(1.0), T.float32(0.0))
+                                count_ub[0] = count_ub[0] + match_val
+
+                    else:
+                        if c + 1 < num_full_chunks:
+                            T.copy(
+                                topk_idx[(c + 1) * BLOCK_TOKENS : (c + 2) * BLOCK_TOKENS, 0:num_topk],
+                                ub_ping[0:BLOCK_TOKENS, 0:num_aligned_topk],
+                                pad_value=-1,
+                            )
+                            T.set_flag("MTE2", "S", 0)
+                            T.wait_flag("MTE2", "S", 0)
+
+                        for i in T.serial(BLOCK_TOKENS):
+                            for j in T.unroll(num_topk):
+                                idx_int32 = T.cast(ub_pong[i, j], INT32_DTYPE)
+                                match_val = T.Select(idx_int32 == cid, T.float32(1.0), T.float32(0.0))
+                                count_ub[0] = count_ub[0] + match_val
+
+                # Tail Processing.
+                if tail_tokens > 0:
+                    offset = num_full_chunks * BLOCK_TOKENS
+                    T.copy(
+                        topk_idx[offset : offset + tail_tokens, 0:num_topk],
+                        ub_ping[0:tail_tokens, 0:num_aligned_topk],
+                        pad_value=-1,
+                    )
+                    T.set_flag("MTE2", "S", 0)
+                    T.wait_flag("MTE2", "S", 0)
+
+                    for i in T.serial(tail_tokens):
                         for j in T.unroll(num_topk):
                             idx_int32 = T.cast(ub_ping[i, j], INT32_DTYPE)
                             match_val = T.Select(idx_int32 == cid, T.float32(1.0), T.float32(0.0))
                             count_ub[0] = count_ub[0] + match_val
 
-                else:
-                    if c + 1 < num_full_chunks:
-                        T.copy(
-                            topk_idx[(c + 1) * BLOCK_TOKENS : (c + 2) * BLOCK_TOKENS, 0:num_topk],
-                            ub_ping[0:BLOCK_TOKENS, 0:num_aligned_topk],
-                            pad_value=-1,
-                        )
-                        T.set_flag("MTE2", "S", 0)
-                        T.wait_flag("MTE2", "S", 0)
+                # Post-processing: normalization.
+                denom = T.cast(num_tokens, FLOAT_DTYPE) * T.cast(num_aux_topk, FLOAT_DTYPE)
+                count_ub[0] = count_ub[0] * T.cast(num_experts, FLOAT_DTYPE) / denom
 
-                    for i in T.serial(BLOCK_TOKENS):
-                        for j in T.unroll(num_topk):
-                            idx_int32 = T.cast(ub_pong[i, j], INT32_DTYPE)
-                            match_val = T.Select(idx_int32 == cid, T.float32(1.0), T.float32(0.0))
-                            count_ub[0] = count_ub[0] + match_val
-
-            # Tail Processing.
-            if tail_tokens > 0:
-                offset = num_full_chunks * BLOCK_TOKENS
-                T.copy(
-                    topk_idx[offset : offset + tail_tokens, 0:num_topk],
-                    ub_ping[0:tail_tokens, 0:num_aligned_topk],
-                    pad_value=-1,
-                )
-                T.set_flag("MTE2", "S", 0)
-                T.wait_flag("MTE2", "S", 0)
-
-                for i in T.serial(tail_tokens):
-                    for j in T.unroll(num_topk):
-                        idx_int32 = T.cast(ub_ping[i, j], INT32_DTYPE)
-                        match_val = T.Select(idx_int32 == cid, T.float32(1.0), T.float32(0.0))
-                        count_ub[0] = count_ub[0] + match_val
-
-            # Post-processing: normalization.
-            denom = T.cast(num_tokens, FLOAT_DTYPE) * T.cast(num_aux_topk, FLOAT_DTYPE)
-            count_ub[0] = count_ub[0] * T.cast(num_experts, FLOAT_DTYPE) / denom
-
-            T.copy(count_ub[0:1], out[cid : cid + 1])
+                T.copy(count_ub[0:1], out[cid : cid + 1])
 
     return aux_fi_kernel
 

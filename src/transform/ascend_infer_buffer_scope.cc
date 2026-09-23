@@ -639,7 +639,7 @@ private:
   std::unordered_map<const VarNode *, std::string> handle_scope_corrections_;
   std::unordered_map<const VarNode *, Var> var_replacements_;
   std::unique_ptr<BufferUseCollector> collector_;
-  std::unordered_map<const VarNode *, Buffer> buffer_replacements_;
+  std::unordered_map<const BufferNode *, Buffer> buffer_replacements_;
 
   static std::string GetPtrStorageScope(Var buffer_var) {
     if (auto *ptr_type = buffer_var->type_annotation.as<PointerTypeNode>()) {
@@ -670,15 +670,16 @@ private:
   }
 
   bool TryGetRewrittenBuffer(const Buffer &old_buffer, Buffer *new_buffer) {
-    const auto *key = old_buffer->data.get();
+    const auto *data = old_buffer->data.get();
 
     // Check whether this buffer's data Var needs a scope correction.
-    auto scope_it = handle_scope_corrections_.find(key);
+    auto scope_it = handle_scope_corrections_.find(data);
     if (scope_it == handle_scope_corrections_.end())
       return false;
 
-    // If we already created a replacement Buffer for this Var, reuse it.
-    auto repl_it = buffer_replacements_.find(key);
+    // Buffers that alias one data Var may intentionally carry different
+    // shape/dtype descriptors. Reuse only the replacement for this Buffer.
+    auto repl_it = buffer_replacements_.find(old_buffer.get());
     if (repl_it != buffer_replacements_.end()) {
       *new_buffer = repl_it->second;
       return true;
@@ -691,6 +692,7 @@ private:
                          old_buffer->strides, old_buffer->elem_offset,
                          old_buffer->name, old_buffer->data_alignment,
                          old_buffer->offset_factor, old_buffer->buffer_type);
+    buffer_replacements_[old_buffer.get()] = *new_buffer;
     return true;
   }
 
@@ -732,7 +734,7 @@ private:
                    buffer->offset_factor, buffer->buffer_type);
 
         new_alloc_buffers.push_back(new_buffer);
-        buffer_replacements_[handle] = new_buffer;
+        buffer_replacements_[buffer.get()] = new_buffer;
       } else {
         new_alloc_buffers.push_back(buffer);
       }

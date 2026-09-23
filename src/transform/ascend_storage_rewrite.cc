@@ -142,7 +142,9 @@ public:
     // all allocations specify the extent of physical dimensions, and
     // is 1 for flat memory spaces.
     entry.num_physical_dimensions = op->extents.size();
-    alloc_info_[buf] = entry;
+    // Buffer aliases may cause allocation planning to repeat the same data
+    // Var in an inner block.  Keep the outer physical owner.
+    alloc_info_.try_emplace(buf, entry);
 
     StmtExprVisitor::VisitStmt_(op);
   }

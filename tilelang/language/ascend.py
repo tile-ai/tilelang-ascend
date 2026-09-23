@@ -1,6 +1,6 @@
 from __future__ import annotations
 import tilelang.language as T
-from tvm.tir import PrimExpr, Buffer, BufferRegion, Var
+from tvm.tir import PrimExpr, Buffer as _TirBuffer, BufferRegion, Var
 from typing import Union, Literal  # noqa: F401, UP035
 from tvm import DataType, tir
 from tvm._ffi.runtime_ctypes import DataTypeCode
@@ -31,7 +31,7 @@ def _dtype(buf):
     return type_map[buf.dtype]
 
 
-def _legalize_arguments(arg: Buffer | Var):
+def _legalize_arguments(arg: _TirBuffer | Var):
     """Convert let-bound variables to their corresponding buffers.
 
     Args:
@@ -45,7 +45,7 @@ def _legalize_arguments(arg: Buffer | Var):
     return arg
 
 
-def _retrieve_shape(object: Buffer | BufferRegion) -> list[int]:
+def _retrieve_shape(object: _TirBuffer | BufferRegion) -> list[int]:
     """
     Retrieves the shape of a Buffer or a BufferRegion.
 
@@ -62,7 +62,7 @@ def _retrieve_shape(object: Buffer | BufferRegion) -> list[int]:
     Raises:
         ValueError: If the input object type is not supported.
     """
-    if isinstance(object, Buffer):
+    if isinstance(object, _TirBuffer):
         return object.shape
     elif isinstance(object, BufferRegion):
         region = object.region
@@ -74,7 +74,7 @@ def _retrieve_shape(object: Buffer | BufferRegion) -> list[int]:
         raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
 
 
-def _retrieve_ptr(object: Buffer | BufferRegion, access_type: str = "r") -> PrimExpr:
+def _retrieve_ptr(object: _TirBuffer | BufferRegion, access_type: str = "r") -> PrimExpr:
     """
     Retrieves the access pointer (handle) for a Buffer or BufferRegion.
 
@@ -94,7 +94,7 @@ def _retrieve_ptr(object: Buffer | BufferRegion, access_type: str = "r") -> Prim
     Raises:
         ValueError: If the input object type is not supported.
     """
-    if isinstance(object, Buffer):
+    if isinstance(object, _TirBuffer):
         return object.access_ptr(access_type)
     elif isinstance(object, BufferRegion):
         buffer, region = object.buffer, object.region
@@ -126,10 +126,10 @@ def _get_static_int(value: PrimExpr | int) -> int | None:
 
 def _get_tmp_arena_access_ptr(
     op_name: str,
-    tmp: Buffer | BufferRegion,
+    tmp: _TirBuffer | BufferRegion,
 ) -> PrimExpr:
     """Validate a public explicit-tmp arena and return its read/write access pointer."""
-    if not isinstance(tmp, (Buffer, BufferRegion)):
+    if not isinstance(tmp, (_TirBuffer, BufferRegion)):
         raise TypeError(f"{op_name} tmp must be a one-dimensional UB Buffer or BufferRegion, but got {type(tmp).__name__}")
 
     buffer = tmp.buffer if isinstance(tmp, BufferRegion) else tmp
@@ -314,7 +314,7 @@ def sync_all():
     return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_sync_all"))
 
 
-def shmem_put_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+def shmem_put_nbi(dst: _TirBuffer, src: _TirBuffer, nelems: PrimExpr, newPe: PrimExpr):
     """Performs a shmem put nbi operation.
 
     This intrinsic invokes the underlying implementation to copy from the local GM to the newPe GM
@@ -339,7 +339,13 @@ def shmem_put_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
     )
 
 
-def shmem_ub_put_nbi(ub: Buffer, dst: Buffer, nelems: PrimExpr, newPe: PrimExpr, strelem: PrimExpr = 0):
+def shmem_ub_put_nbi(
+    ub: _TirBuffer,
+    dst: _TirBuffer,
+    nelems: PrimExpr,
+    newPe: PrimExpr,
+    strelem: PrimExpr = 0,
+):
     """Performs a shmem ub put nbi operation.
 
     This intrinsic invokes the underlying implementation to copy from the local UB to the newPe GM
@@ -365,7 +371,7 @@ def shmem_ub_put_nbi(ub: Buffer, dst: Buffer, nelems: PrimExpr, newPe: PrimExpr,
     )
 
 
-def shmem_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+def shmem_get_nbi(dst: _TirBuffer, src: _TirBuffer, nelems: PrimExpr, newPe: PrimExpr):
     """Performs a shmem get nbi operation.
 
     This intrinsic invokes the underlying implementation to copy from the newPe GM to the local GM
@@ -390,7 +396,7 @@ def shmem_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
     )
 
 
-def shmem_ub_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+def shmem_ub_get_nbi(dst: _TirBuffer, src: _TirBuffer, nelems: PrimExpr, newPe: PrimExpr):
     """Performs a shmem ub get nbi operation.
 
     This intrinsic invokes the underlying implementation to copy from the newPe GM to the local UB
@@ -552,7 +558,7 @@ def printf(format_str: str, *args):
 
     args_list = list(args)
     for i in range(len(args_list)):
-        if isinstance(args_list[i], Buffer):
+        if isinstance(args_list[i], _TirBuffer):
             args_list[i] = args_list[i].access_ptr("r")
         if isinstance(args_list[i], str):
             args_list[i] = args_list[i].encode("unicode_escape").decode("utf-8")
@@ -579,7 +585,7 @@ def _src_code(source_code: str, *args):
     return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_src_code"), source_code, *args)
 
 
-def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple = ()):
+def dump_tensor(tensor: _TirBuffer, desc: int, dump_size: int, shape_info: tuple = ()):
     """
     Dumps the data of a specific tensor to the host for debugging.
 
@@ -613,12 +619,6 @@ def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple = (
         len(shape_info),
         *shape_info,
     )
-
-
-def reinterpretcast(dst: Buffer, src: Buffer, casttype: str):
-    # return T.call_extern("handle", f"ReinterpretCast", dst.access_ptr("w"), src.access_ptr("r"),
-    #                      casttype)
-    return T.call_intrin("handle", tir.op.Op.get("tl.ascend_reinterpretcast"), dst.access_ptr("w"), src.access_ptr("r"), casttype)
 
 
 def set_deq_scale(scale: PrimExpr):

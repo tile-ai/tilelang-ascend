@@ -1403,6 +1403,10 @@ private:
 
   std::string GetRequiredSyncType(const BufferAccess &prev_access,
                                   const BufferAccess &curr_access) {
+    // Scalar operations are ordered; PIPE_S has no same-pipeline barrier.
+    if (prev_access.pipeline == "PIPE_S" && curr_access.pipeline == "PIPE_S") {
+      return "";
+    }
     if (prev_access.pipeline == curr_access.pipeline &&
         prev_access.pipe_barriers.find("PipeBarrier_" + prev_access.pipeline) ==
             prev_access.pipe_barriers.end()) {
