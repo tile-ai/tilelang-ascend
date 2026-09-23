@@ -4,7 +4,7 @@
 
 将源张量中的每个元素左移指定的标量位数：`dst[i] = src0[i] << scalarValue`
 
-> **移位语义说明**：Ascend A2 / A3（910B3）实测有符号与无符号类型均表现为逻辑左移，即高位丢弃、低位补 0。该结果与 Ascend C 文档对有符号类型的描述存在差异，正在 [Issue #1718](https://github.com/tile-ai/tilelang-ascend/issues/1718) 中跟踪。
+> **移位语义说明**：有符号与无符号类型均执行逻辑左移，即高位丢弃、低位补 0。
 
 ## 2. 函数原型
 
@@ -47,10 +47,9 @@ def bitwise_lshift(
 1. 输入和输出张量必须位于 UB 内存
 2. dst 与 src0 的元素个数必须相同
 3. src0 的 dtype 必须与 dst 一致
-4. 仅支持 int16、uint16、int32 和 uint32
-5. scalarValue 当前仅支持标量；张量位移量暂未开放（参见 [Issue #1719](https://github.com/tile-ai/tilelang-ascend/issues/1719)）
-6. scalarValue 的 dtype 无需与 dst 一致
-7. 操作数地址需 32 字节对齐（硬件约束）
+4. scalarValue 当前仅支持标量，暂不支持张量位移量
+5. scalarValue 的 dtype 无需与 dst 一致
+6. 操作数地址需 32 字节对齐（硬件约束）
 
 ## 3. 示例代码
 
