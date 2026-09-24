@@ -3782,6 +3782,188 @@ def test_rsqrt(dtype, target, shape):
     run_test_rsqrt(M, N, 128, 256, dtype, target=target)
 
 
+_UNARY_INPLACE_OPS = {
+    "exp": T.tile.exp,
+    "ln": T.tile.ln,
+    "abs": T.tile.abs,
+    "sqrt": T.tile.sqrt,
+    "rsqrt": T.tile.rsqrt,
+    "reciprocal": T.tile.reciprocal,
+}
+
+_UNARY_INPLACE_GOLDENS = {
+    "exp": torch.exp,
+    "ln": torch.log,
+    "abs": torch.abs,
+    "sqrt": torch.sqrt,
+    "rsqrt": torch.rsqrt,
+    "reciprocal": torch.reciprocal,
+}
+
+
+def unary_inplace(op_name, N, dtype="float"):
+    op = _UNARY_INPLACE_OPS[op_name]
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((N,), dtype),  # type: ignore
+        B: T.Tensor((N,), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            a_ub = T.alloc_ub((N,), dtype)
+            T.copy(A, a_ub)
+            op(a_ub, a_ub)
+            T.copy(a_ub, B)
+
+    return main
+
+
+def run_test_unary_inplace(op_name, N, dtype, target):
+    func = unary_inplace(op_name, N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    if op_name == "abs":
+        a = torch.randn(N, dtype=torch_dtype).npu()
+    else:
+        a = (torch.rand(N, dtype=torch_dtype) * 3.0 + 0.5).npu()
+
+    torch.npu.synchronize()
+
+    b = func(a)
+
+    ref_b = _UNARY_INPLACE_GOLDENS[op_name](a)
+    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize(
+    "op_name",
+    [
+        "exp",
+        pytest.param("ln", marks=pytest.mark.low_priority),
+        pytest.param("abs", marks=pytest.mark.low_priority),
+        pytest.param("sqrt", marks=pytest.mark.low_priority),
+        pytest.param("rsqrt", marks=pytest.mark.low_priority),
+    ],
+)
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_unary_inplace(op_name, dtype, target):
+    run_test_unary_inplace(op_name, 256, dtype, target)
+
+
+@pytest.mark.low_priority
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+def test_reciprocal_inplace(dtype):
+    run_test_unary_inplace("reciprocal", 256, dtype, "ascendc")
+
+
+def pow_inplace(M, N, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+    VEC_NUM = 2
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
+            T.tile.pow(a_ub, a_ub, b_ub)
+            T.copy(a_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    return main
+
+
+def run_test_pow_inplace(M, N, block_M, block_N, dtype, target):
+    func = pow_inplace(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.rand(M, N, dtype=torch_dtype).npu() + 0.5
+    b = torch.rand(M, N, dtype=torch_dtype).npu() * 8.0 - 4.0
+
+    torch.npu.synchronize()
+
+    c = func(a, b)
+
+    ref_c = torch.pow(a, b)
+    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_pow_inplace(dtype, target):
+    run_test_pow_inplace(256, 256, 64, 64, dtype, target)
+
+
+@pytest.mark.parametrize("dtype,target", [("int16", "ascendc"), ("int32", "pto")])
+def test_pow_unsupported_dtype_raises(dtype, target):
+    @T.prim_func
+    def main(
+        A: T.Tensor((64, 64), dtype),  # type: ignore
+        B: T.Tensor((64, 64), dtype),  # type: ignore
+        C: T.Tensor((64, 64), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            a_ub = T.alloc_ub((64, 64), dtype)
+            b_ub = T.alloc_ub((64, 64), dtype)
+            c_ub = T.alloc_ub((64, 64), dtype)
+            T.copy(A, a_ub)
+            T.copy(B, b_ub)
+            T.tile.pow(c_ub, a_ub, b_ub)
+            T.copy(c_ub, C)
+
+    with pytest.raises(RuntimeError, match="Compilation Failed|Pow only supports"):  # noqa: B017
+        tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+
+@pytest.mark.low_priority
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_pow_special_values(target):
+    @T.prim_func
+    def main(
+        A: T.Tensor((64, 64), "float16"),  # type: ignore
+        B: T.Tensor((64, 64), "float16"),  # type: ignore
+        C: T.Tensor((64, 64), "float16"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            a_ub = T.alloc_ub((64, 64), "float16")
+            b_ub = T.alloc_ub((64, 64), "float16")
+            c_ub = T.alloc_ub((64, 64), "float16")
+            T.copy(A, a_ub)
+            T.copy(B, b_ub)
+            T.tile.pow(c_ub, a_ub, b_ub)
+            T.copy(c_ub, C)
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    a = torch.zeros(64, 64, dtype=torch.float16).npu()
+    b = torch.zeros(64, 64, dtype=torch.float16).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    if target == "ascendc":
+        torch.testing.assert_close(c, torch.pow(a, b), rtol=1e-2, atol=1e-2)
+    else:
+        assert torch.all(torch.isnan(c))
+
+    a = torch.full((64, 64), -2.0, dtype=torch.float16).npu()
+    b = torch.full((64, 64), 3.0, dtype=torch.float16).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    if target == "ascendc":
+        torch.testing.assert_close(c, torch.pow(a, b), rtol=1e-2, atol=1e-2)
+    else:
+        assert torch.all(torch.isnan(c))
+
+
 def vec_select(M, N, block_M, block_N, mode, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
