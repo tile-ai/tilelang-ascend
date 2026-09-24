@@ -86,6 +86,16 @@ from .reduce_ascend import *  # noqa: F401, F403
 from . import ascend_tile as tile  # noqa: F401
 
 
+from .ast.ir import (  # noqa: F401
+    bfloat16,
+    bfloat16x4,
+    bfloat16x8,
+    bfloat16x16,
+    bfloat16x32,
+    bfloat16x64,
+)
+
+
 def symbolic(name: str, dtype: str = "int32"):
     return tir.Var(name, dtype)
 
