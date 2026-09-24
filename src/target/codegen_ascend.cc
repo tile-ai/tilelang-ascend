@@ -599,6 +599,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     AutoFlagOpCodegen(op, "SetFlag");
   } else if (op->op.same_as(tl::ascend_auto_wait_flag())) {
     AutoFlagOpCodegen(op, "WaitFlag");
+  } else if (op->op.same_as(tl::ascend_auto_dcci())) {
+    AutoDcciCodegen(op);
   } else if (op->op.same_as(tl::ascend_auto_set_cross_flag())) {
     AutoSetCrossFlagCodegen(op);
   } else if (op->op.same_as(tl::ascend_auto_wait_cross_flag())) {
@@ -2504,6 +2506,21 @@ void CodeGenTileLangAscend::AutoFlagOpCodegen(const CallNode *op,
   this->stream << "AscendC::" << op_name
                << "<AscendC::HardEvent::" << event_type << ">(" << event_id
                << ");\n";
+}
+
+void CodeGenTileLangAscend::AutoDcciCodegen(const CallNode *op) {
+  // Issue #1304: a scalar GM store goes through a write-back cache that MTE3
+  // DMA bypasses. Clean the whole data cache before the DMA so stale dirty
+  // lines flushed after the DMA cannot clobber freshly written bytes. The
+  // pass only emits this on GM buffers that also receive scalar stores, so
+  // pure-DMA kernels never pay the flush cost.
+  this->PrintIndent();
+  auto tensor = PrintBufferOffset(op->args[0].as<CallNode>(), true);
+  const DataType dtype = GetAccessPtrDtype(op->args[0].as<CallNode>());
+  this->stream << "AscendC::DataCacheCleanAndInvalid<" << getType(dtype)
+               << ", AscendC::CacheLine::ENTIRE_DATA_CACHE, "
+                  "AscendC::DcciDst::CACHELINE_OUT>("
+               << tensor << ");\n";
 }
 
 void CodeGenTileLangAscend::AutoSetCrossFlagCodegen(const CallNode *op) {

@@ -392,6 +392,19 @@ def AscendSyncInsertVS(target: Target, platform: str):
     return _ffi_api.AscendSyncInsertVS(target, platform)  # type: ignore
 
 
+def AscendScalarStoreToDma():
+    """Rewrite contiguous scalar GM store loops into UB staging + one DMA
+    burst, removing the cross-core write-back-cache race of issue #1304.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    ----
+    """
+    return _ffi_api.AscendScalarStoreToDma()  # type: ignore
+
+
 def AscendVectorInstructionSelection(target: Target, platform: str):
     """Select physical Ascend Vector terminals and their mask contracts."""
     return _ffi_api.AscendVectorInstructionSelection(target, platform)  # type: ignore

@@ -228,6 +228,8 @@ TVM_DLL const Op &ascend_auto_set_flag();
 
 TVM_DLL const Op &ascend_auto_wait_flag();
 
+TVM_DLL const Op &ascend_auto_dcci();
+
 TVM_DLL const Op &ascend_auto_set_cross_flag();
 
 TVM_DLL const Op &ascend_auto_wait_cross_flag();

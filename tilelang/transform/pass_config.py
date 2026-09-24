@@ -38,6 +38,10 @@ class PassConfigKey(str, Enum):
     TL_ASCEND_AUTO_SYNC = "tl.ascend_auto_sync"
     """Enable/disable TileLang AscendSyncInsert pass. Default: False"""
 
+    TL_ASCEND_SCALAR_STORE_TO_DMA = "tl.ascend_scalar_store_to_dma"
+    """Enable/disable rewriting contiguous scalar GM store loops into UB
+    staging + one DMA burst (issue #1304 cross-core cache hazard). Default: False"""
+
     TL_ASCEND_AUTO_SYNC_VS = "tl.ascend_auto_sync_vs"
     """Enable/disable TileLang AscendSyncInsertVS pass. Default value setted dynamically according target"""
 

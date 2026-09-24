@@ -71,6 +71,11 @@ public:
       return f;
     }
 
+    // Issue #1304: pre-scan for GM buffers that receive scalar stores, so
+    // that every MTE3 DMA write to them (including the first one, before any
+    // scalar store has been walked) gets the cache-coherence treatment.
+    syncInserter.CollectScalarWrittenGmBuffers(f->body);
+
     auto preprocessed = syncInserter.PreprocessUnrollForLoops(f->body);
 
     Stmt processed_body = syncInserter(preprocessed.first);
@@ -160,7 +165,34 @@ private:
 
     UpdateSyncStatesAfterSync(optimized_syncs);
 
+    // Issue #1304: a GM buffer written by both scalar stores (S pipe, through
+    // a write-back cache) and an MTE3 DMA needs cache-coherence treatment
+    // around the DMA. The scalar store's cache-line fill (read-modify-write)
+    // can snapshot GM before the DMA lands, and the dirty line's later
+    // eviction stamps stale bytes over the freshly copied data. Clean the
+    // destination's first cache line before the DMA and order later scalar
+    // stores behind the DMA (MTE3_S). Only kernels that mix scalar and DMA
+    // writes to the same GM buffer pay this cost; pure-DMA kernels are
+    // unaffected.
+    PrimExpr dcci_buffer;
+    for (const auto &access : current_accesses) {
+      if (access.is_write && access.pipeline == "PIPE_MTE3" &&
+          scalar_written_gm_buffers_.count(access.buffer_name) > 0) {
+        dcci_buffer = FindBufferArgExpr(op, access.buffer_name);
+        break;
+      }
+    }
+    if (dcci_buffer.defined()) {
+      stmts.push_back(CreateDcci(dcci_buffer));
+    }
+
     stmts.push_back(GetRef<Stmt>(op));
+
+    if (dcci_buffer.defined()) {
+      int event_id = AllocateEventId();
+      stmts.push_back(CreateSetFlag("MTE3_S", event_id));
+      stmts.push_back(CreateWaitFlag("MTE3_S", event_id));
+    }
 
     UpdateLatestAccessHistory(current_accesses);
 
@@ -1656,6 +1688,46 @@ private:
     return "";
   }
 
+  // Issue #1304: collect every GM buffer that receives a scalar store
+  // (BufferStore lowers to an S-pipe write through a write-back cache). A
+  // later MTE3 DMA write to one of these buffers races the cache and needs
+  // the coherence treatment in VisitStmt_(EvaluateNode).
+  void CollectScalarWrittenGmBuffers(const Stmt &stmt) {
+    class Collector : public StmtVisitor {
+    public:
+      explicit Collector(AscendSyncInsert *self) : self_(self) {}
+      void VisitStmt_(const BufferStoreNode *op) final {
+        // The buffer var's pointer type annotation carries the storage scope
+        // ("global" for GM tensors, "shared.ub" etc. for on-chip buffers);
+        // address_map_ only covers planned UB buffers, so look it up directly.
+        if (GetPtrStorageScope(op->buffer->data) == "global") {
+          self_->scalar_written_gm_buffers_.insert(op->buffer->data->name_hint);
+        }
+        StmtVisitor::VisitStmt_(op);
+      }
+
+    private:
+      AscendSyncInsert *self_;
+    };
+    Collector collector(this);
+    collector(stmt);
+  }
+
+  // Find the access_ptr argument of the intrinsic call in an EvaluateNode
+  // that references the given buffer.
+  PrimExpr FindBufferArgExpr(const EvaluateNode *op,
+                             const std::string &buffer_name) {
+    if (auto call = op->value.as<CallNode>()) {
+      for (const auto &arg : call->args) {
+        auto info = ExtractBufferInfoFromAccessPtr(arg);
+        if (info.buffer_name == buffer_name) {
+          return arg;
+        }
+      }
+    }
+    return PrimExpr();
+  }
+
   std::vector<std::string> FindRelatedBuffers(const std::string &buffer_name) {
     std::vector<std::string> related;
     int64_t target_addr = GetPhysicalAddress(buffer_name);
@@ -1773,8 +1845,20 @@ private:
   }
 
   int AllocateEventId() {
-    event_id_counter_ = (event_id_counter_ + 1) % 8;
+    // Cycle 1..7 and reserve id 0 for the C++ templates (copy_gm_to_ub and
+    // copy_ub_to_gm in tl_templates/ascend/common.h hard-code event id 0 for
+    // their set/wait pairs). Allocating 0 here can interleave a pass-emitted
+    // set/wait of the same (pipe pair, id) with a template-emitted one,
+    // collapsing two sets into one and deadlocking the second wait on
+    // device.
+    event_id_counter_ = event_id_counter_ % 7 + 1;
     return event_id_counter_;
+  }
+
+  Stmt CreateDcci(const PrimExpr &buffer_ptr) {
+    Array<PrimExpr> args = {buffer_ptr};
+    return Evaluate(
+        Call(DataType::Handle(), Op::Get("tl.ascend_auto_dcci"), args));
   }
 
   Stmt CreatePipeBarrier(const std::string &pipeline) {
@@ -1800,6 +1884,10 @@ private:
 private:
   int event_id_counter_ = 0;
   int current_resource_scope_ = -1;
+  // Issue #1304: GM buffers that receive scalar stores (S-pipe writes through
+  // the write-back cache) anywhere in the kernel. MTE3 DMA writes to these
+  // buffers get the cache-coherence treatment (dcci + MTE3_S).
+  std::set<std::string> scalar_written_gm_buffers_;
   std::unordered_map<std::string, std::string> event_mapping_;
   std::unordered_map<std::string, OperationConfig> operation_config_;
   // Normally one last writer plus the latest reader on each pipe. An optional

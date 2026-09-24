@@ -47,6 +47,11 @@ def allow_vectorize(pass_ctx: PassContext | None = None) -> bool:
 
 
 def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
+    # Rewrite contiguous scalar GM store loops into UB staging + one DMA
+    # burst (issue #1304). Runs before buffer-scope inference and copy
+    # lowering so the synthesized allocation and ascend_copy flow through
+    # the regular pipeline. Self-gates on TL_ASCEND_SCALAR_STORE_TO_DMA.
+    mod = tilelang.transform.AscendScalarStoreToDma()(mod)
     # Workspace sizing must see the same UB scopes as VidReduction.
     mod = tilelang.transform.AscendInferBufferScope()(mod)
     # allocate the tmp buffer for vector api

@@ -198,6 +198,8 @@ private:
 
   void AutoFlagOpCodegen(const CallNode *op, std::string op_name);
 
+  void AutoDcciCodegen(const CallNode *op);
+
   void AutoSetCrossFlagCodegen(const CallNode *op);
 
   void AutoWaitCrossFlagCodegen(const CallNode *op);
