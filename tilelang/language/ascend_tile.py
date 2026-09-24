@@ -1266,10 +1266,25 @@ def sigmoid(
     *,
     tmp: Buffer | BufferRegion | None = None,
 ):
-    """Compute sigmoid, optionally using explicit UB scratch storage.
+    """Performs element-wise Sigmoid activation: dst[i] = 1 / (1 + exp(-src[i])).
 
-    ``tmp`` may use any fixed-width scalar dtype; lowering reinterprets its
-    storage for the selected backend.
+    Args:
+        dst: The destination buffer; it may alias src on ascendc (in-place),
+            but NOT on pto (results are wrong).
+        src: The source, a buffer or a contiguous region of it.
+        tmp: Optional explicit UB scratch storage; allocated automatically when
+            omitted. It may use any fixed-width scalar dtype; lowering
+            reinterprets its storage for the selected backend.
+
+    Notes:
+        - dst and src should have equal element counts (no runtime check;
+          mismatched sizes produce undefined results).
+        - Supported dtypes: float16, float32 (Atlas A2/A3).
+        - Operand addresses must be 32-byte aligned (hardware constraint).
+        - ``tmp`` is optional; a temporary buffer of ``N x sizeof(dtype)``
+          bytes (N = element count) is auto-allocated when not provided.
+        - Special values: sigmoid(0)=0.5, sigmoid(-inf)=0, sigmoid(inf)=1,
+          sigmoid(nan)=nan.
     """
     if isinstance(dst, BufferRegion):
         dst_ptr, buffer_extent = _handle_buffer_region(dst, "w")
@@ -1286,20 +1301,22 @@ def sigmoid(
 
 
 def silu(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):
-    """Performs element-wise SiLU (Swish) activation: dst = src * sigmoid(src).
+    """Performs element-wise SiLU (Swish) activation: dst[i] = src[i] * sigmoid(src[i]).
 
-    SiLU (Sigmoid Linear Unit) is also known as Swish activation function.
+    SiLU (Sigmoid Linear Unit) is also known as Swish activation function:
+    dst[i] = src[i] / (1 + exp(-src[i])).
 
     Args:
         dst: The destination buffer where the result will be stored.
         src: The source buffer.
 
-    Returns:
-        A TVM intrinsic call that performs the Silu operation.
-
-    Note:
-        - Supports data types: half, float (Atlas A2/A3)
-        - SiLU = x * sigmoid(x) = x / (1 + exp(-x))
+    Notes:
+        - dst and src should have equal element counts (no runtime check;
+          mismatched sizes produce undefined results).
+        - Supported dtypes: float16, float32 (Atlas A2/A3).
+        - Operand addresses must be 32-byte aligned (hardware constraint).
+        - Special values follow IEEE semantics: silu(-inf)=nan, silu(inf)=inf,
+          silu(nan)=nan.
     """
     if isinstance(dst, BufferRegion):
         dst_ptr, buffer_extent = _handle_buffer_region(dst, "w")
@@ -1372,11 +1389,16 @@ def rsqrt(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
 
 
 def relu(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
-    """Performs element-wise Rectified Linear Unit (ReLU): dst = max(0, src0).
+    """Performs element-wise Rectified Linear Unit: `dst[i] = max(0, src0[i])`.
 
     Args:
-        dst: The destination buffer.
-        src0: The source buffer.
+        dst: The destination buffer; it may alias src0 (in-place).
+        src0: The source, a buffer or a contiguous region of it.
+
+    Notes:
+        - dst and src0 must have equal element counts.
+        - Supported dtypes: float16, float32.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return unary_op(dst, src0, "relu")
 
@@ -1424,14 +1446,17 @@ def scalar_op(
 
 
 def leaky_relu(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_value: PrimExpr):  # type: ignore  # noqa: F821
-    """Performs element-wise Leaky ReLU activation.
-
-    Formula: dst = src0 if src0 >= 0 else src0 * scalar_value
+    """Performs element-wise Leaky ReLU: dst[i] = src0[i] if src0[i] >= 0 else src0[i] * scalar_value.
 
     Args:
-        dst: The destination buffer.
-        src0: The source buffer.
+        dst: The destination buffer; it may alias src0 (in-place).
+        src0: The source, a buffer or a contiguous region of it.
         scalar_value: The negative slope coefficient.
+
+    Notes:
+        - dst and src0 must have equal element counts.
+        - Supported dtypes: float16, float32.
+        - Operand addresses must be 32-byte aligned (hardware constraint).
     """
     return scalar_op(dst, src0, scalar_value, "leaky_relu")
 

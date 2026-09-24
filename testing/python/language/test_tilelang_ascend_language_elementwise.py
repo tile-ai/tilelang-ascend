@@ -474,6 +474,71 @@ def test_silu(dtype, target, shape):
     run_test_silu(M, N, 128, 128, dtype, target)
 
 
+def activation_inplace(op_name, N, dtype="float"):
+    op = {
+        "relu": T.tile.relu,
+        "sigmoid": T.tile.sigmoid,
+    }[op_name]
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((N,), dtype),  # type: ignore
+        B: T.Tensor((N,), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            a_ub = T.alloc_ub((N,), dtype)
+            T.copy(A, a_ub)
+            op(a_ub, a_ub)
+            T.copy(a_ub, B)
+
+    return main
+
+
+def leaky_relu_inplace(N, alpha, dtype="float"):
+    @T.prim_func
+    def main(
+        A: T.Tensor((N,), dtype),  # type: ignore
+        B: T.Tensor((N,), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            a_ub = T.alloc_ub((N,), dtype)
+            T.copy(A, a_ub)
+            T.tile.leaky_relu(a_ub, a_ub, alpha)
+            T.copy(a_ub, B)
+
+    return main
+
+
+def run_test_activation_inplace(func, golden, N, dtype, target):
+    compiled = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(N, dtype=torch_dtype).npu()
+
+    torch.npu.synchronize()
+
+    b = compiled(a)
+
+    torch.testing.assert_close(b, golden(a), rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_relu_inplace(dtype, target):
+    run_test_activation_inplace(activation_inplace("relu", 256, dtype), torch.relu, 256, dtype, target)
+
+
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_leaky_relu_inplace(dtype, target):
+    run_test_activation_inplace(leaky_relu_inplace(256, 0.1, dtype), lambda a: torch.nn.functional.leaky_relu(a, 0.1), 256, dtype, target)
+
+
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
+def test_sigmoid_inplace(dtype):
+    run_test_activation_inplace(activation_inplace("sigmoid", 256, dtype), torch.sigmoid, 256, dtype, "ascendc")
+
+
 def vec_mul_add_dst(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
