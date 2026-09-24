@@ -31,19 +31,10 @@ def fill(
 
 #### 2.3.1 DataType 支持
 
-以下 dtype 基于 Ascend A2 / A3（910B）真机验证：
-
-| dtype | Ascend C | PTO |
-|-------|----------|-----|
-| float16 | 支持 | 支持 |
-| float32 | 支持 | 支持 |
-| bfloat16 | 支持 | 支持 |
-| int16 | 支持 | 支持 |
-| uint16 | 支持 | 支持 |
-| int32 | 支持 | 支持 |
-| uint32 | 支持 | 支持 |
-| int8 | 不支持 | 支持 |
-| uint8 | 不支持 | 支持 |
+| 平台 / 后端 | buffer | value |
+|-------------|:------:|:-----:|
+| Ascend A2 / A3（Ascend C） | float16, float32, bfloat16, int16, uint16, int32, uint32 | 可转换为 buffer dtype 的标量 |
+| Ascend A2 / A3（PTO） | int8, uint8, float16, float32, bfloat16, int16, uint16, int32, uint32 | 可转换为 buffer dtype 的标量 |
 
 #### 2.3.2 Shape 支持
 
