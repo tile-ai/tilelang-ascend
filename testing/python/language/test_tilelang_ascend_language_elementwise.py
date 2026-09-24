@@ -1055,11 +1055,11 @@ def run_test_bitwise_xor(M, N, block_M, block_N, dtype, target):
         ref_c = torch.bitwise_xor(a_cpu.to(torch.int32), b_cpu.to(torch.int32)).to(torch.uint16).npu()
     else:
         ref_c = torch.bitwise_xor(a_cpu, b_cpu).npu()
-    assert_close_npu(c, ref_c, dtype, rtol=1e-2, atol=1e-2)
+    assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_xor(dtype, target, shape):
     M, N = shape
@@ -1117,12 +1117,190 @@ def run_test_bitwise_xor_slice(M, N, block_M, block_N, dtype, target):
     assert_close_npu(c, ref_c, dtype, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize(
+    "dtype", [pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("uint16", marks=pytest.mark.low_priority)]
+)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_xor_slice(dtype, target, shape):
     M, N = shape
     run_test_bitwise_xor_slice(M, N, 128, 256, dtype, target)
+
+
+# ---- Factcheck: extended bitwise_xor tests ----
+
+_TORCH_INT_DTYPE_XOR = {
+    "int8": torch.int8,
+    "uint8": torch.uint8,
+    "int16": torch.int16,
+    "uint16": torch.uint16,
+    "int32": torch.int32,
+    "uint32": torch.uint32,
+}
+
+
+def _run_bitwise_xor_ext(dtype, target, block_M=128, block_N=256, use_tmp=False):
+    M, N = 1024, 1024
+    VEC_NUM = 2
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
+            if use_tmp:
+                tmp_ub = T.alloc_ub((block_M // VEC_NUM * block_N * 2,), "uint8")
+                T.tile.bitwise_xor(c_ub, a_ub, b_ub, tmp=tmp_ub)
+            else:
+                T.tile.bitwise_xor(c_ub, a_ub, b_ub)
+            T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    td = _TORCH_INT_DTYPE_XOR[dtype]
+    a = torch.randint(0, 100, (M, N), dtype=td).npu()
+    b = torch.randint(0, 100, (M, N), dtype=td).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    a_cpu = a.cpu()
+    b_cpu = b.cpu()
+    ref_c = torch.bitwise_xor(a_cpu.to(torch.int32), b_cpu.to(torch.int32)).to(td).npu()
+    assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("dtype", ["int8", pytest.param("uint8", marks=pytest.mark.low_priority)])
+def test_bitwise_xor_int8_ascendc_raises(dtype):
+    """int8/uint8 should fail at compile time on ascendc (static_assert int16/uint16 only)."""
+    with pytest.raises(RuntimeError, match="Compilation Failed"):  # noqa: B017
+        _run_bitwise_xor_ext(dtype, "ascendc")
+
+
+@pytest.mark.parametrize("dtype", ["int8"])
+@pytest.mark.parametrize("target", [pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_bitwise_xor_int8_pto(dtype, target):
+    _run_bitwise_xor_ext(dtype, target)
+
+
+@pytest.mark.low_priority
+def test_bitwise_xor_uint8_pto_raises():
+    """uint8 on PTO triggers runtime 'ub address out of bounds' (codegen tmp-size bug)."""
+    with pytest.raises(RuntimeError, match="Compilation Failed"):  # noqa: B017
+        _run_bitwise_xor_ext("uint8", "pto")
+
+
+@pytest.mark.parametrize(
+    "dtype", [pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("uint16", marks=pytest.mark.low_priority)]
+)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_bitwise_xor_explicit_tmp(dtype, target):
+    _run_bitwise_xor_ext(dtype, target, use_tmp=True)
+
+
+@pytest.mark.low_priority
+def test_bitwise_xor_1d():
+    N = 256
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((N,), "int16"),  # type: ignore
+        B: T.Tensor((N,), "int16"),  # type: ignore
+        C: T.Tensor((N,), "int16"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((N,), "int16")
+            b_ub = T.alloc_ub((N,), "int16")
+            c_ub = T.alloc_ub((N,), "int16")
+            T.copy(A, a_ub)
+            T.copy(B, b_ub)
+            T.tile.bitwise_xor(c_ub, a_ub, b_ub)
+            T.copy(c_ub, C)
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target="ascendc")
+    a = torch.randint(0, 100, (N,), dtype=torch.int16).npu()
+    b = torch.randint(0, 100, (N,), dtype=torch.int16).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    ref_c = torch.bitwise_xor(a.cpu(), b.cpu()).npu()
+    assert_close_npu(c, ref_c, "int16", rtol=0, atol=0)
+
+
+@pytest.mark.low_priority
+def test_bitwise_xor_buffer_region_2d():
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    VEC_NUM = 2
+    m_num = M // block_M
+    n_num = N // block_N
+    dtype = "int16"
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
+            T.tile.bitwise_xor(
+                c_ub[0 : block_M // VEC_NUM, 0:block_N],
+                a_ub[0 : block_M // VEC_NUM, 0:block_N],
+                b_ub[0 : block_M // VEC_NUM, 0:block_N],
+            )
+            T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target="ascendc")
+    a = torch.randint(0, 100, (M, N), dtype=torch.int16).npu()
+    b = torch.randint(0, 100, (M, N), dtype=torch.int16).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    ref_c = torch.bitwise_xor(a.cpu(), b.cpu()).npu()
+    assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "target", [pytest.param("ascendc", marks=pytest.mark.low_priority), pytest.param("pto", marks=pytest.mark.low_priority)]
+)
+def test_bitwise_xor_non_aligned_size(target):
+    N = 200
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((N,), "int16"),  # type: ignore
+        B: T.Tensor((N,), "int16"),  # type: ignore
+        C: T.Tensor((N,), "int16"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((N,), "int16")
+            b_ub = T.alloc_ub((N,), "int16")
+            c_ub = T.alloc_ub((N,), "int16")
+            T.copy(A, a_ub)
+            T.copy(B, b_ub)
+            T.tile.bitwise_xor(c_ub, a_ub, b_ub)
+            T.copy(c_ub, C)
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    a = torch.randint(0, 100, (N,), dtype=torch.int16).npu()
+    b = torch.randint(0, 100, (N,), dtype=torch.int16).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    ref_c = torch.bitwise_xor(a.cpu(), b.cpu()).npu()
+    assert_close_npu(c, ref_c, "int16", rtol=0, atol=0)
 
 
 def block_reduce_max(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockNum, dtype="float16"):
