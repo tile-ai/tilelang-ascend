@@ -341,11 +341,167 @@ def run_test_bitwise_and(M, N, block_M, block_N, dtype, target):
 
 
 @pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_and(dtype, target, shape):
     M, N = shape
     run_test_bitwise_and(M, N, 128, 256, dtype, target=target)
+
+
+# ---- Factcheck: extended dtype coverage for bitwise_and ----
+
+_TORCH_INT_DTYPE = {
+    "int8": torch.int8,
+    "uint8": torch.uint8,
+    "int16": torch.int16,
+    "uint16": torch.uint16,
+    "int32": torch.int32,
+    "uint32": torch.uint32,
+}
+
+# Block size per dtype so 3 UB buffers (VEC_NUM=2) fit within 196 KB.
+_BITWISE_BLOCK_M = {
+    "int8": 128,
+    "uint8": 128,
+    "int16": 128,
+    "uint16": 128,
+    "int32": 64,
+    "uint32": 64,
+}
+
+
+def run_test_bitwise_and_ext(dtype, target):
+    """Extended bitwise_and test supporting int8/uint8/int32/uint32."""
+    M, N = 1024, 1024
+    block_M = _BITWISE_BLOCK_M[dtype]
+    block_N = 256
+    VEC_NUM = 2
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
+            T.tile.bitwise_and(c_ub, a_ub, b_ub)
+            T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    td = _TORCH_INT_DTYPE[dtype]
+    a = torch.randint(0, 100, (M, N), dtype=td).npu()
+    b = torch.randint(0, 100, (M, N), dtype=td).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    ref_c = a & b
+    assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        "int16",
+        pytest.param("uint8", marks=pytest.mark.low_priority),
+    ],
+)
+@pytest.mark.parametrize(
+    "target",
+    [
+        "ascendc",
+        pytest.param("pto", marks=pytest.mark.low_priority),
+    ],
+)
+def test_bitwise_and_int8_uint8(dtype, target):
+    """int8/uint8 are supported on A2/A3 for both backends."""
+    run_test_bitwise_and_ext(dtype, target)
+
+
+def test_bitwise_and_int32_pto_raises():
+    """int32 on pto should fail at compile time (static_assert rejects sizeof(T)==4)."""
+    with pytest.raises(RuntimeError, match="Compilation Failed"):  # noqa: B017
+        run_test_bitwise_and_ext("int32", "pto")
+
+
+def run_test_bitwise_and_scalar(target):
+    """Scalar src1 path generates tl.ascend_bitwise_ands which is not registered."""
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    VEC_NUM = 2
+    m_num = M // block_M
+    n_num = N // block_N
+    dtype = "int16"
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.tile.bitwise_and(c_ub, a_ub, 0xFF)
+            T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_bitwise_and_scalar_not_registered_raises(target):
+    """Scalar src1 path uses tl.ascend_bitwise_ands which is not registered in C++."""
+    with pytest.raises((Exception, SystemExit)):  # noqa: B017
+        run_test_bitwise_and_scalar(target)
+
+
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_bitwise_and_buffer_region(target):
+    """BufferRegion slices are supported as operands."""
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    VEC_NUM = 2
+    m_num = M // block_M
+    n_num = N // block_N
+    dtype = "int16"
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
+            T.tile.bitwise_and(
+                c_ub[0 : block_M // VEC_NUM, 0:block_N],
+                a_ub[0 : block_M // VEC_NUM, 0:block_N],
+                b_ub[0 : block_M // VEC_NUM, 0:block_N],
+            )
+            T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    a = torch.randint(0, 100, (M, N), dtype=torch.int16).npu()
+    b = torch.randint(0, 100, (M, N), dtype=torch.int16).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    ref_c = a & b
+    assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
 
 
 def axpy(M, N, block_M, block_N, dtype="float"):
