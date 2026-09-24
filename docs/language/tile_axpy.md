@@ -38,12 +38,10 @@ def axpy(
 |------|:---:|:----:|:------------:|
 | Ascend A2 / A3 | float16, float32 | float16, float32 | 与 dst 数据类型兼容的标量表达式 |
 
-`dst` 与 `src0` 的数据类型必须相同。
 
 #### 2.3.2 Shape 支持
 
 - 支持 Buffer 和 BufferRegion，包括二维 Buffer 和一维切片
-- `dst` 与 `src0` 的元素总数必须相同
 
 ### 2.4 约束条件
 
