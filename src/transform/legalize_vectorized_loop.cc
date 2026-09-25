@@ -22,6 +22,7 @@
  * \brief infer the fragment/shared memory layout
  */
 
+#include <tvm/target/target.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/op.h>
 #include <tvm/tir/stmt_functor.h>
@@ -47,8 +48,15 @@ public:
   // Static method to substitute and transform the given PrimFunc
   static PrimFunc Substitute(PrimFunc f) {
     arith::Analyzer analyzer;
+    bool scalarize_nonzero_min = false;
+    if (auto target = f->GetAttr<Target>(tvm::attr::kTarget)) {
+      String model = target.value()->GetAttr<String>("model").value_or("");
+      scalarize_nonzero_min =
+          target.value()->kind->name == "llvm" &&
+          (model == "ascendc" || model == "pto" || model == "auto");
+    }
     // Create an instance of the legalizer with the analyzer
-    LoopVectorizedLegalizer substituter(&analyzer);
+    LoopVectorizedLegalizer substituter(&analyzer, scalarize_nonzero_min);
     // Get a mutable copy of the function node
     PrimFuncNode *fptr = f.CopyOnWrite();
     // Apply the legalizer to the function body
@@ -58,8 +66,9 @@ public:
 
 private:
   // Constructor initializing the base class with the analyzer
-  LoopVectorizedLegalizer(arith::Analyzer *analyzer)
-      : arith::IRMutatorWithAnalyzer(analyzer) {}
+  LoopVectorizedLegalizer(arith::Analyzer *analyzer, bool scalarize_nonzero_min)
+      : arith::IRMutatorWithAnalyzer(analyzer),
+        scalarize_nonzero_min_(scalarize_nonzero_min) {}
 
   // Override the VisitStmt_ method to handle ForNode (loop statements)
   Stmt VisitStmt_(const ForNode *op) final {
@@ -71,9 +80,17 @@ private:
     }
     // Change the loop kind from vectorized to serial
     for_node.CopyOnWrite()->kind = ForKind::kSerial;
+    // Ascend codegen does not support vector values with an offset base. Keep
+    // explicit nonzero-min loops scalar rather than letting VectorizeLoop
+    // reject them (or emit unsupported vector expressions).
+    if (scalarize_nonzero_min_ && !is_zero(for_node->min)) {
+      return for_node;
+    }
     // Apply vectorization transformation to the loop
     return VectorizeLoop(std::move(for_node));
   }
+
+  bool scalarize_nonzero_min_;
 };
 
 // Create a pass that legalizes vectorized loops in the IRModule
