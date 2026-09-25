@@ -1,5 +1,7 @@
 # Cross Entropy Loss - Benchmark & Optimization Path
 
+**English** | [中文](benchmark_summary_zh.md)
+
 ## Optimization Path
 
 ### Baseline (original)
