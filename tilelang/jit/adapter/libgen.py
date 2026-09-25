@@ -165,6 +165,11 @@ class LibraryGenerator:
                 f"-I{TL_ROOT}/3rdparty/shmem/include",
                 f"-I{TL_ROOT}/3rdparty/shmem/src/device",
                 "-DBACKEND_HYBM",
+                # New catlass (>=v2.0) gates all arch-specific tile-copy
+                # specializations behind CATLASS_ARCH; without the define the
+                # GEMM copy templates silently fall back to the unspecialized
+                # primary template and fail to compile.
+                "-DCATLASS_ARCH=3510" if self.platform == "A5" else "-DCATLASS_ARCH=2201",
                 "-I" + TILELANG_TEMPLATE_PATH,
                 f"-L{ASCEND_HOME_PATH}/lib64",
                 "-Wno-macro-redefined",
