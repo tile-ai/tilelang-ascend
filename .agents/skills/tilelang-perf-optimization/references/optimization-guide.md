@@ -22,6 +22,7 @@
   - [2.15 正交轴向量化（Orthogonal Axis Vectorization）](#215-正交轴向量化orthogonal-axis-vectorization)
   - [2.16 特定 dtype 的硬件指令适配（Dtype-Specific Hardware Path Adaptation）](#216-特定-dtype-的硬件指令适配dtype-specific-hardware-path-adaptation)
   - [2.17 离散重排 fallback 的多阶段连续化](#217-离散重排-fallback-的多阶段连续化)
+  - [2.18 host 侧 tiling 优化（reshape 无关型算子的最优 (M, N) 切分）](#218-host-侧-tiling-优化reshape-无关型算子的最优-mn-切分)
 - [三、核间优化](#三核间优化)
 - [四、常见问题速查](#四常见问题速查)
 
@@ -1612,7 +1613,45 @@ kernel 的以下形态：
 - 只验证最终 shape/axes，不验证各 stage 尾块和 batch 边界。
 - 优化失败后静默回退，却报告该优化精度通过或性能有收益。
 
-无端到端收益时保留正确 fallback，并将本优化记录为“不适用/无收益”。
+无端到端收益时保留正确 fallback，并将本优化记录为"不适用/无收益"。
+
+---
+
+### 2.18 host 侧 tiling 优化（reshape 无关型算子的最优 (M, N) 切分）
+
+> **适用条件**：算子满足"对输入做任意 reshape 不改变计算结果"（即计算与数据排列无关，只要元素总数不变结果一致）。这类算子的 kernel 计算时间通常已接近 baseline，性能瓶颈在 **host 侧 adapter 的 tiling 选择**导致的 `num_blocks` 过多。
+
+**与 §2.11/§2.12 的区别**：§2.11 解决单个 (M, N) 的 tile size 选择（UB 预算反推）；§2.12 消除 host 侧不必要的 pad/contiguous 拷贝；本节解决 **多维输入如何选择最优 (M, N) 切分**来最小化 num_blocks。三者互补，可叠加使用。
+
+**核心思路**：满足上述条件的算子，host 侧可以自由选择将高维输入 flatten 为哪一组 (M, N) 来最小化 `num_blocks = ceil(M/block_M) * ceil(N/block_N)`，从而减少 kernel launch 开销和提升核心利用率。
+
+#### 优化方向
+
+**方向 1：放宽小 M 场景的 block_N 上限**
+
+当输入 flatten 后 M 很小（如 1D 输入 M=1），rows_per_vec 也小，单 buffer 占用低，此时 block_N 可以取远大于常规场景的值。应根据 UB 预算动态计算 block_N 上限而非使用固定常量，避免小 M 场景下 num_blocks 不必要的膨胀。
+
+**方向 2：多维输入搜索最优 flatten 切分点**
+
+高维输入（如 3D/4D/5D）flatten 为 2D 时存在多个切分点（`shape[:k]` → M, `shape[k:]` → N）。不同切分导致 M/N 比例不同，进而影响 num_blocks。应在所有可行切分点中搜索 num_blocks 最小的方案，而非固定使用"除最后一维外合并为 M"的默认策略。
+
+#### 零拷贝前提
+
+- 输入 contiguous 时 `reshape` 只改 stride/shape metadata，**不触发物理拷贝**（与 §2.12 零拷贝前提一致）
+- 非 contiguous 时 `.contiguous()` 兜底（会触发拷贝，应避免）
+
+#### 判定指标
+
+`num_blocks = ceil(M/block_M) * ceil(N/block_N)` 是 compute-bound 算子的 kernel 时间可靠代理。block_M 通过 §2.11 的 UB 预算反推，block_N 在对齐约束下搜索最优值。
+
+#### block_N 32B 对齐约束
+
+block_N 必须对齐到 32B（DataCopyNd 粒度硬约束）：fp32→8 elems, fp16/bf16→16 elems。非对齐会导致数据损坏。
+
+#### 反模式
+
+- ❌ host 侧 `F.pad` 补齐到整除 shape（增加额外 device copy 开销，净退化）
+- ❌ kernel 内 stride indexing 处理多维输入（需 kernel 重写 + lowering 改动，host 侧 reshape 零拷贝达到同样效果）
 
 ---
 
