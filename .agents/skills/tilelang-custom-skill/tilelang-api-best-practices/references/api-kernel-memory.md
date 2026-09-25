@@ -67,6 +67,14 @@ with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
 - **cid**：计算任务 ID，范围 [0, block_num)
 - **vid**：Vector 单元索引（0 或 1），C、V 核配比为 1:2
 
+**使用建议**
+
+- 不要只按很小的外层维度切核。如果外层并行度不足，会导致物理核利用率低。
+- 比如当 `B*N` 小但 `S` 很大时，可以考虑 flatten 到 `[B*S*N, D]`，或者把 `S` 维也纳入切分。
+- 一个 kernel 很难同时覆盖小并行度和大并行度场景时，可以做 shape dispatch。
+- 如果外层并行度不足，不要只按小外层维度切 kernel。对于形如 [B,S,N,D] 的逐行向量计算，当 B*N 小或 S 很小时，可以 flatten 为 [B*S*N, D]，让 M 维提供并行度。必要时做 shape dispatch：大 shape 用 tiled pipeline，小 shape 用 flat kernel。
+- 尾块处理优先用 `T.ceildiv(M, block_M)` 作为 m_num，无需 host 侧 padding。手动 pad+slice 会引入额外数据拷贝开销。
+
 ### @jit 装饰器
 
 触发即时编译，将 kernel 编译为 NPU 可执行代码。
@@ -341,6 +349,16 @@ T.copy(
    必要时块 DMA 到 UB 后再做局部重排。
 
 > **设计阶段预警**：设计 4D+ 算子时，如果 `T.copy` 需要在非最内维上做切片搬运，必须在 design.md 中明确说明规避方案。不要假设 `T.copy` 支持任意维度的 strided 切片。
+
+**使用建议**
+
+- 做手动流水时，MTE2 load 阶段应尽量只放 GM→UB 的 `T.copy`。
+- 不要在 load 阶段混入 `T.tile.*` 计算，否则 timeline 上 MTE2/V 阶段会混在一起，访存计算重叠也更难调。
+- 如果 load 后需要预处理，建议先 copy 到独立 load buffer，再在 V 阶段处理。
+- 对连续半区或连续块操作，优先用多段 `T.copy`，通常比 `T.tile.gather` 更简单、更快。
+- 只有真正非连续置换才使用 T.tile.gather。连续半区交换应使用 T.copy 切片 + T.tile.mul/add/sub。规则偶奇交换可用 createvecindex + xor 1 构造 mask。mask 是源 tensor 的字节偏移；源为 float32 时乘 4。
+- 对于 [B,S,N,D] 4D 逐行算子（如 RoPE），优先保持 4D 布局按 (b,n) 外层循环 + S 维 tiling，不要 flatten 到 [M,D]。flatten 会丢失 S 维流水线机会，且需要 host 侧预展开 cos/sin 到 [M,D]。
+- 多输入算子（如 RoPE 的 query+key）可利用 vid 让两个 V 核各处理一个输入（vid=0 处理 Q，vid=1 处理 K），实现 2x 并行。而非两个 V 核处理同一输入的不同行。
 
 ---
 
