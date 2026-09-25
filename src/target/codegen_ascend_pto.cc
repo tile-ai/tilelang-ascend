@@ -1651,6 +1651,19 @@ void CodeGenTileLangAscendPto::CopyPipeCodegen(const CallNode *op,
     func_call.replace(pos, 12, kAscendPtoScope);
   }
 
+  // Serial V2C push (unaligned per-subcore row width): lower the producer to
+  // copy_ub_to_pipe_serial and append the mode-1 rendezvous flag reserved by
+  // ascend_workspace_reduction.cc.
+  bool is_serial_push = is_producer && pipe_info.sync_flag_id >= 0 &&
+                        op_name.find("copy_ub_to_pipe") != std::string::npos;
+  if (is_serial_push) {
+    size_t spos = func_call.find("copy_ub_to_pipe");
+    func_call.replace(spos, std::string("copy_ub_to_pipe").length(),
+                      "copy_ub_to_pipe_serial");
+  }
+  std::string sync_flag_arg =
+      is_serial_push ? ", " + std::to_string(pipe_info.sync_flag_id) : "";
+
   this->PrintIndent();
   bool has_tmp = is_producer && pipe_info.has_tmp && op->args.size() > 4 &&
                  op->args[4].as<CallNode>();
@@ -1665,11 +1678,12 @@ void CodeGenTileLangAscendPto::CopyPipeCodegen(const CallNode *op,
     this->stream << func_call << "<"
                  << "pto::TileSplitAxis::" << SplitAxisToEnumStr(split_axis_val)
                  << ">(" << pipe_id << ", " << src_name << ", " << tmp_name
-                 << ");\n";
+                 << sync_flag_arg << ");\n";
   } else if (is_producer) {
     this->stream << func_call << "<"
                  << "pto::TileSplitAxis::" << SplitAxisToEnumStr(split_axis_val)
-                 << ">(" << pipe_id << ", " << src_name << ");\n";
+                 << ">(" << pipe_id << ", " << src_name << sync_flag_arg
+                 << ");\n";
   } else {
     this->stream << func_call << "<"
                  << "pto::TileSplitAxis::" << SplitAxisToEnumStr(split_axis_val)
@@ -1726,6 +1740,7 @@ void CodeGenTileLangAscendPto::PreScanPipes(const PrimFunc &f) {
       info.has_tmp = Downcast<IntImm>(fields.at("has_tmp"))->value != 0;
       info.tmp_M_val = Downcast<IntImm>(fields.at("tmp_M_val"))->value;
       info.tmp_N_val = Downcast<IntImm>(fields.at("tmp_N_val"))->value;
+      info.sync_flag_id = Downcast<IntImm>(fields.at("sync_flag_id"))->value;
 
       info.pipe_type_name = GetPipeTypeName(info.pipe_id, info.dir_type);
       info.dir_full = "pto::Direction::DIR_" + DirTypeToStr(info.dir_type);
