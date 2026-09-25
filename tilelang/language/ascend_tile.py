@@ -73,6 +73,11 @@ def _get_buffer_info(
 
 
 def _handle_buffer_region(br: BufferRegion, mask):
+    # Plain vector intrinsics only accept a pointer plus a contiguous element
+    # count.  Reject cross-row rectangular windows instead of flattening them
+    # into neighbouring elements.  Explicit 2-D/stride operations use
+    # _handle_buffer_region_2d and opt into their own ABI.
+    _validate_buffer_region_contiguity(br, require_flat_contiguous=True)
     bf = br.buffer
     indices = [x.min for x in br.region]
     offset = bf.offset_of(indices)[0]
