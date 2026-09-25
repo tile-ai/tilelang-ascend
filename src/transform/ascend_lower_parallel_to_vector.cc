@@ -488,14 +488,15 @@ private:
       plan->inner_vec_len = inner_vec_len;
       plan->outer_extent = element_count / inner_vec_len;
 
-      // Try to extract outer variable from the outer index
-      plan->outer_index_var = store->indices[0].as<VarNode>();
-
       // Check if outer index contains the outer dimension variable (for 2D
       // vectorization)
-      plan->is_2d_vectorizable =
+      bool uses_parallel_outer_dim =
           (outer_dim_var_ != nullptr &&
            ContainsVar(store->indices[0], outer_dim_var_));
+      plan->outer_index_var = uses_parallel_outer_dim
+                                  ? outer_dim_var_
+                                  : store->indices[0].as<VarNode>();
+      plan->is_2d_vectorizable = uses_parallel_outer_dim;
       return true;
     }
 
@@ -523,10 +524,13 @@ private:
 
       plan->inner_vec_len = inner_vec_len;
       plan->outer_extent = element_count / inner_vec_len;
-      plan->outer_index_var = store->indices[1].as<VarNode>();
-      plan->is_2d_vectorizable =
+      bool uses_parallel_outer_dim =
           (outer_dim_var_ != nullptr &&
            ContainsVar(store->indices[1], outer_dim_var_));
+      plan->outer_index_var = uses_parallel_outer_dim
+                                  ? outer_dim_var_
+                                  : store->indices[1].as<VarNode>();
+      plan->is_2d_vectorizable = uses_parallel_outer_dim;
       return true;
     }
     return false;
