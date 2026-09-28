@@ -12,9 +12,9 @@ This file supplements with:
 3. Dtype mismatch test (dst float32, src float16 must raise)
 4. Unsupported dtype compilation errors (uint16/uint32 x pto, int8 x ascendc)
 
-Test suite follows the simplification principle for direct-intrinsic APIs
-(mentor z00520135 review on PR4): since atomic_add has no type-specific
-processing logic, only representative dtypes are tested.
+Test suite follows the simplification principle for direct-intrinsic APIs:
+since atomic_add has no type-specific processing logic, only representative
+dtypes are tested.
 """
 
 import pytest

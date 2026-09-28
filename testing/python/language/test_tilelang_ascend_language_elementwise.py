@@ -1682,7 +1682,6 @@ def test_tile_clamp_tensor_bounds(dtype, target):
 
     kernel = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
     input_host = _tile_clamp_input((4, 16), dtype)
-    expected_host = torch.full_like(input_host, -99)
     expected_host = torch.clamp(input_host, -2, 3)
     output = kernel(input_host.npu())
     torch.npu.synchronize()

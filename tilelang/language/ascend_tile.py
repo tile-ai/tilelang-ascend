@@ -323,7 +323,7 @@ def atomic_add(
         dst: GM destination tensor (Buffer/BufferRegion/BufferLoad). Scope must be
             ``global``. Supports float16, float32, int16, int32, bfloat16.
         src: Local source tensor (Buffer/BufferRegion/BufferLoad). Scope must be
-            local (UB/L0C/L1). dtype must match dst.
+            local (UB/L0C). dtype must match dst on all paths.
 
     Returns:
         tvm.tir.Call: A TIR intrinsic call to ``tl.ascend_atomic_add``.
