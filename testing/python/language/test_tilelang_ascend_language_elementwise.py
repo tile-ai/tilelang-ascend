@@ -407,22 +407,11 @@ def run_test_bitwise_and_ext(dtype, target):
     assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize(
-    "dtype",
-    [
-        "int16",
-        pytest.param("uint8", marks=pytest.mark.low_priority),
-    ],
-)
-@pytest.mark.parametrize(
-    "target",
-    [
-        "ascendc",
-        pytest.param("pto", marks=pytest.mark.low_priority),
-    ],
-)
+@pytest.mark.low_priority
+@pytest.mark.parametrize("dtype", ["int8", "uint8"])
+@pytest.mark.parametrize("target", ["pto"])
 def test_bitwise_and_int8_uint8(dtype, target):
-    """int8/uint8 are supported on A2/A3 for both backends."""
+    """int8/uint8 are supported on the PTO backend only."""
     run_test_bitwise_and_ext(dtype, target)
 
 
