@@ -932,6 +932,32 @@ def test_bitwise_not_int32_raises(target):
 
 
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_bitwise_not_1d(target):
+    """1D buffer shape support."""
+    N = 1024
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((N,), "int16"),  # type: ignore
+        B: T.Tensor((N,), "int16"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            src0 = T.alloc_ub((N,), "int16")
+            dst = T.alloc_ub((N,), "int16")
+            if vid == 0:
+                T.copy(A, src0)
+                T.tile.bitwise_not(dst, src0)
+                T.copy(dst, B)
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    a = torch.randint(0, 100, (N,), dtype=torch.int16).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    ref_b = (~a.cpu()).npu()
+    assert_close_npu(b, ref_b, "int16", rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_not_buffer_region(target):
     """BufferRegion slices are supported as operands."""
     M, N = 1024, 1024
