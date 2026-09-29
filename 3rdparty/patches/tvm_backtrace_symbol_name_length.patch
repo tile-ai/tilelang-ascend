@@ -1,0 +1,8 @@
+diff --git a/src/runtime/logging.cc b/src/runtime/logging.cc
+--- a/src/runtime/logging.cc
++++ b/src/runtime/logging.cc
+@@ -85,3 +85,3 @@ void BacktraceSyminfoCallback(void* data, uintptr_t pc, const char* symname, uintptr_t symval,
+   if (symname != nullptr) {
+-    std::string tmp(symname, symsize);
++    std::string tmp(symname);
+     *str = DemangleName(tmp.c_str());

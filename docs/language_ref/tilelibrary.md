@@ -85,24 +85,24 @@ one-dimensional and static, lie within that Buffer, and start at a 32-byte
 aligned byte address. The dtype defines only the arena's byte geometry
 (`extent * sizeof(dtype)`); it does not describe workspace values. Lowering
 creates the target-required typed view over the same bytes without numeric
-conversion and preserves a region's byte address. The frontend validates this
-geometry and alignment, not capacity. PTO and AscendC use target-specific
-conservative heuristics for compiler-managed allocation and internal view
-layout; they are not lower-bound checks. The caller is responsible for every
-nonzero explicit arena's capacity. When the selected target path truly needs no
-workspace, lowering removes the operand and a zero-extent arena is valid. There
-is currently no public size-query API, so conservative over-allocation is
-recommended.
+conversion and preserves a region's byte address. The frontend validates the
+arena's structure and alignment. A2/A3 AscendC static FP32 last-axis reductions
+use the same planner for allocation and the device helper; lowering rejects
+undersized explicit arenas. See the [FP32 row-reduction contract](#static-fp32-row-reductions).
+Other paths retain their target-specific allocation and internal-view heuristics;
+these do not establish a lower bound for nonempty explicit arenas, whose capacity
+remains the caller's responsibility. A path that needs no workspace removes the
+operand and accepts a zero-extent arena. There is no public size-query API.
 
 For the current fixed `dav-2201` AscendC target, compiler-managed sizing uses
 the following policy. Let `S` be source bytes, `N = repeat_times * 32`, and `d`
-be the source element width. The figures are conservative heuristics derived
-from CANN source and targeted sampling, not advertised theoretical minima; they
-are never used to reject a nonempty explicit arena.
+be the source element width. Except for the exact FP32 row-reduction planner,
+the figures are conservative allocation heuristics derived from CANN source and
+targeted sampling, not capacity checks for nonempty explicit arenas.
 
 | API | typed view | implicit bytes | basis |
 | --- | --- | --- | --- |
-| reduce | `uint8` | transitional reduce sizing, at least 32 B; 0 for `physical_row > 0` and half sum with `clear=True` | CANN-source/sampling heuristic |
+| reduce | path-dependent | See [FP32 row-reduction workspace](#static-fp32-row-reductions) | Shared planner for static FP32 rows; existing backend sizing otherwise |
 | sort | source dtype | half: `8*N*d`; float: `2*N*d` | CANN-source/sampling heuristic |
 | topk | source dtype | half: `10*N*d`; float: `4*N*d` | CANN-source/sampling heuristic |
 | bilinear interpolation | `uint8` | `(src0_elements + src1_elements) * 32` | CANN-source/sampling heuristic |
@@ -162,16 +162,76 @@ dimension dim.
   valid when the selected backend path needs no workspace.
 - Omitting `tmp` requests compiler-managed allocation. Supplying it affects
   only that call and prevents hidden workspace allocations for it.
-- The frontend validates the arena structure. Target-specific heuristics size
-  compiler-managed allocations and the PTO `clear=False` view layout, but are
-  not used to reject a nonzero explicit arena. Explicit capacity remains the
-  caller's responsibility. No public size-query API is provided; conservative
-  over-allocation is recommended.
+- Workspace capacity follows the [arena rules](#temporary-workspace-arenas).
+  Static FP32 row reductions have the additional requirements below.
 - For PTO row reduction with `clear=False`, lowering splits the arena into
   non-overlapping main-scratch and reduce-output views over the same data
   variable. The output begins at `align_up(primary_tmp_bytes, 32)`. PTO
   column reduction needs no main scratch; with `clear=False`, its sole view is
   the reduce output at offset zero.
+
+<a id="static-fp32-row-reductions"></a>
+
+### Static FP32 row reductions
+
+These requirements apply to A2/A3 AscendC static FP32 `reduce_sum`, `reduce_max`,
+and `reduce_min` over the last dimension. Other platforms, backends, dtypes, and
+axes retain their existing implementations.
+
+#### Logical width and physical pitch
+
+For an input stored in UB, `M` is the logical row count, `N` is the number of
+participating values per row, and `S` is the physical distance between row
+starts, in FP32 elements. All three must be compile-time constants:
+
+```text
+M > 0, N > 0, S >= N, M == 1 or S % 8 == 0
+```
+
+Unaligned multirow inputs fail during lowering. `N` need not be divisible by
+eight: use `real_shape` to exclude padding already present in the source:
+
+```python
+src = T.alloc_ub((31, 96), "float32")
+dst = T.alloc_ub((31,), "float32")
+T.reduce_max(src, dst, dim=-1, real_shape=[31, 95], clear=True)
+```
+
+Only the first 95 elements of each row contribute. `clear=True` assigns the
+result; `clear=False` combines it with an initialized destination using the
+same operation (max, min, or addition).
+
+#### Buffers and temporary space
+
+Prefer complete UB buffers. Source, destination, and scratch must have
+32-byte-aligned, nonoverlapping bases and own these physical spans:
+
+| Buffer | Required FP32 elements | Access |
+| --- | ---: | --- |
+| Source | `AlignUp(M * S, 8)` | Read-only |
+| Destination | `AlignUp(M, 8)` | Writable, including padding |
+| Scratch | Shared planner's reported requirement | Fully clobberable |
+
+The logical destination contains only `M` results. A source padding block may
+be read to form an intermediate result, but that result cannot contribute to
+the logical reduction. Invalid lanes of the last logical block are masked.
+
+Memory planning aligns allocation bases and total spans; it does not pad
+individual source rows. Embedded regions require the caller to prove base
+alignment, ownership of destination padding, and absence of aliases.
+
+Omit `tmp` for automatic allocation. An explicit `tmp` must be a static,
+contiguous, one-dimensional UB arena with enough bytes and an aligned start.
+Lowering creates the required FP32 view and rejects insufficient capacity.
+There is no public Python scratch-size query.
+
+The shared planner checks instruction-field representability and the
+helper-local UB footprint. The kernel must also fit every other live UB
+allocation within the 196352-byte planner budget. Unsupported static plans
+fail during lowering instead of selecting a runtime fallback.
+
+See the [compiler design](../ascend/row_reduce.md) for instruction selection,
+intermediate layouts, and synchronization within the helper.
 
 T.tile.broadcast
 ----------------

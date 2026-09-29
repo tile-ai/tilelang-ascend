@@ -90,82 +90,24 @@ T.mma(A_L0, B_L0, C_L0, init=True)
 
 ## 2. 归约操作
 
-### T.reduce_sum(buffer, out, dim=-1, clear=True, real_shape=None)
+先确认 target、dtype、归约轴，以及输入是否为带 padding 的 view，再查
+[reduce 公共契约](../../../../../docs/language_ref/tilelibrary.md#treduce_sum--treduce_max--treduce_min)。
+对 A2/A3 AscendC 的静态 FP32 末轴归约，继续检查
+[物理布局与临时空间要求](../../../../../docs/language_ref/tilelibrary.md#static-fp32-row-reductions)。
 
-### T.reduce_max(buffer, out, dim=-1, clear=True, real_shape=None)
-
-### T.reduce_min(buffer, out, dim=-1, clear=True, real_shape=None)
-
-Ascend fast-path reduce 原语，主要服务于 UB tile / slice buffer 场景。
-
-**参数**：
-
-- `buffer`：输入 buffer 或 buffer slice
-- `out`：目的输出 buffer 或 buffer slice
-- `dim`：reduce 轴
-- `clear`：是否在计算前初始化输出
-- `real_shape`：2D slice buffer 的逻辑有效范围；未设置时默认使用物理 buffer 形状
-
-**当前支持范围**：
-
-- 1D buffer：`0 / -1`
-- 2D buffer：`0 / 1 / -1 / -2`
-- 3D buffer：仅支持 trailing-tile 轴 `0 / 1 / -1 / -2`
-
-**`clear` 语义**：
-
-- `clear=True`：先初始化输出，再写入 reduce 结果
-- `clear=False`：将 reduce 结果 merge 到已有输出
-  - `reduce_sum`：`new_out = old_out + reduced_result`
-  - `reduce_max`：`new_out = max(old_out, reduced_result)`
-  - `reduce_min`：`new_out = min(old_out, reduced_result)`
-
-**输出 shape 约束**（以 2D 输入 `[M, N]` 为例）：
-
-- `dim=-1`：输出可为 `[M]` 或 `[M, 1]`
-- `dim=0`：输出可为 `[N]` 或 `[1, N]`
-- 对设置了 `real_shape` 的 2D slice buffer，当前前端还兼容部分 physical-layout 输出形式，例如 `[physical_cols]` 或 `[1, physical_cols]`
-
-**使用建议**：
-
-- `clear` 和 `real_shape` 同时支持关键字传参和兼容的 positional 传参形式
-- 推荐优先使用关键字形式，以获得更清晰的可读性
-- 非法 `dim`、非法 `real_shape`、非法输出 shape 会在前端直接报错，而不是静默进入后端
-
-**典型用法**：
-
-```python
-# Softmax / attention 场景
-T.reduce_max(acc_s_ub, m_i, dim=-1)
-T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1)
-
-# clear=False merge 语义
-T.reduce_sum(acc_s_ub, sumexp_i_ub, dim=-1, clear=False)
-
-# slice buffer + real_shape
-T.reduce_max(in_shared, out_shared, dim=-1, real_shape=[4, 4])
-```
+- 区分逻辑有效宽度与物理行距；不能仅凭 shape 元素总数判断 slice 是否可用。
+- 使用 `clear=False` 前检查已有输出已初始化；默认 C/V 划分不能替代数据同步。
+- 优先让编译器分配 `tmp`；修改显式 arena 时检查字节容量、起点、padding 归属和别名，
+  不要用“非零即可”规避不足的临时空间。
+- 修改 compiler/helper 时再读 [行归约设计](../../../../../docs/ascend/row_reduce.md)，
+  日常算子编写不需要展开内部调度。
 
 ### 临时 workspace arena（`tmp`）
 
-下列公开计算 API 的 `tmp` 都是仅限关键字的可选参数：三个 reduce，以及
-`broadcast`、`sort`、`merge_sort`、`topk`、`gather_mask`、`select`、`gather`、
-`sigmoid`、`sin`、`cos`、`pow`、`bitwise_xor`、`clamp` 系列、`round`、已弃用的
-`bilinear_interpolation` 和两个 experimental ReduceSum API。PTO 不支持
-`bilinear_interpolation`、`sin`、`cos` 或两个 experimental ReduceSum API。
-
-显式 `tmp` 是一次调用完整的 target-specific arena。其 backing Buffer 必须是一维、静态、
-连续、定宽标量 dtype 的 `shared.ub` Buffer；BufferRegion 本身也必须一维、静态、位于该
-Buffer 内，且起始字节地址 32B 对齐。dtype 只决定 arena 的字节几何
-（`extent * sizeof(dtype)`）；lowering 在同一字节存储上建立目标所需的 typed view，不做数值
-转换，并保留 region 的字节起点。前端只验证该几何和对齐，非零显式 arena 的容量始终由调用者
-负责。
-
-省略 `tmp` 时由编译器管理。`dav-2201` AscendC 的隐式 workspace 字节数是来自 CANN source
-和定向 sampling 的保守启发式，不是显式 arena 的下限或公开 size-query。目标路径真实不需要
-workspace 时，lowering 会移除 operand，故可传零 extent arena。AscendC 目前不会由 region
-extent 调用 `LocalTensor::SetSize`，所以 region extent 不是严格的 `LocalTensor` 上界；仍须
-提供后端所有访问所需的存储。
+按 [统一临时空间契约](../../../../../docs/language_ref/tilelibrary.md#temporary-workspace-arenas)
+检查当前操作和后端的需求，不把一种 reduce 的容量规则推广到所有 API。
+诊断时区分结构/对齐错误与容量不足；缩小 arena 后需重新验证其全部使用者。
+不要把 frontend 接受一个 view 当成后端所有访问都被该 view 边界保护。
 
 ---
 
@@ -582,7 +524,7 @@ else:
 > - 无 tile 指令支持的 dtype（如 int64）：优先 record-aware DMA 或块 DMA +
 >   UB-local reorder，禁止逐元素 strided GM 主路径；**禁止 host 侧拆分/拼回**
 >
-> 性能优化的判断准则见 [tilelang-perf-optimization/references/optimization-guide.md §2.16](../../tilelang-perf-optimization/references/optimization-guide.md#216-特定-dtype-的硬件指令适配dtype-specific-hardware-path-adaptation)。
+> 性能优化的判断准则见 [tilelang-perf-optimization/references/optimization-guide.md §2.16](../../../tilelang-perf-optimization/references/optimization-guide.md#216-特定-dtype-的硬件指令适配dtype-specific-hardware-path-adaptation)。
 
 #### Stride 参数作为 JIT 编译期常量传入 kernel（避免创建 GM tensor）
 
@@ -646,7 +588,7 @@ src_ub = T.alloc_ub((tile_n,), "float32")
 T.tile.fill(src_ub, 1.0)
 T.tile.atomic_add(C[0], src_ub)
 ```
-示例中的pass_config只是最小用法。在混合模式或需要自动 C/V 分离时，可以同时开启 `TL_ASCEND_AUTO_CV_COMBINE`；如果存在 C/V 核间依赖，再配合 `TL_ASCEND_AUTO_CV_SYNC`。
+示例沿用默认 C/V 划分；存在跨 C/V 数据依赖时，按[配置指南](../../tilelang-programming-model-guide/SKILL.md#22-按场景选择-pass_configs)检查自动核间同步是否覆盖对应交互。
 
 **L0C -> GM 示例**：
 

@@ -91,5 +91,5 @@ description: TileLang Ascend API 使用最佳实践。提供内存分配、数�
 |-------|------|
 | `TL_ASCEND_AUTO_SYNC: True` | 自动同步插入 |
 | `TL_ASCEND_MEMORY_PLANNING: True` | 自动内存规划 |
-| `TL_ASCEND_AUTO_CV_COMBINE: True` | 自动 CV 分离（核间流水线） |
+| `TL_ASCEND_AUTO_CV_COMBINE: True` | 默认已启用；单侧 kernel 和合法手写 scope 均适用，见[公开配置契约](../../../../docs/language_ref/primitives.md#ascend-compilation-options-and-cv-scopes) |
 | `TL_ASCEND_AUTO_CV_SYNC: True` | 自动核间同步（核间流水线） |
