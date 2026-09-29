@@ -14,13 +14,10 @@ pass_configs = {
 
 
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
-def rms_rope_fused(
-    M, block_M, batch_size, head_dim, rope_dim, head_num, eps, dtype="float16"
-):
+def rms_rope_fused(M, block_M, batch_size, head_dim, rope_dim, head_num, eps, dtype="float16"):
 
     ACC_DTYPE = "float"
     MASK_DTYPE = "uint32"
-    TMP_DTYPE = "uint8"
 
     VEC_NUM = 2
     m_num = M // block_M
@@ -35,7 +32,6 @@ def rms_rope_fused(
         out: T.Tensor((M, head_dim), dtype),  # type: ignore
     ):
         with T.Kernel(m_num, is_npu=True) as (cid, vid):
-
             row_x = cid * block_M + vid * row_per_vec
             row_sin_cos = row_x // head_num
 
@@ -84,7 +80,7 @@ def rms_rope_fused(
             mask_ub_i16 = T.alloc_shared([row_per_vec, rope_dim], "int16")
             mask_ub_f32 = T.alloc_shared([row_per_vec, rope_dim], "float32")
             mask_ub_i32 = T.alloc_shared([row_per_vec, rope_dim], "int32")
-            mask_ub = T.alloc_shared([row_per_vec, rope_dim], MASK_DTYPE)
+            mask_ub = T.view(mask_ub_i32, dtype=MASK_DTYPE)
             idx_ub = T.alloc_shared([row_per_vec, rope_dim], "int32")
             tmp_ub_i16 = T.alloc_shared([row_per_vec, rope_dim], "int16")
             ones_mask_ub = T.alloc_shared([row_per_vec, rope_dim], "int16")
@@ -95,8 +91,6 @@ def rms_rope_fused(
             T.copy(mask_ub_i16, mask_ub_f32)
             T.copy(mask_ub_f32, mask_ub_i32)
             T.tile.mul(mask_ub_i32, mask_ub_i32, 4)
-            T.reinterpretcast(mask_ub, mask_ub_i32, "uint32_t")
-
             sin_mask_ub = T.alloc_ub(rope_dim, ACC_DTYPE)
             T.tile.fill(sin_mask_ub, -1.0)
             for i in T.serial(0, rope_dim // 2):
@@ -143,9 +137,7 @@ def tilelang_rms_rope_fused(q, sin, cos, eps):
     sin = sin.to(device)
     cos = cos.to(device)
 
-    kernel = rms_rope_fused(
-        total_batch, block_M, batch_size, head_dim, rope_dim, head_num, eps
-    )
+    kernel = rms_rope_fused(total_batch, block_M, batch_size, head_dim, rope_dim, head_num, eps)
     q_out = kernel(q, sin, cos)
 
     return q_out.view(org_shape)
@@ -217,9 +209,7 @@ if __name__ == "__main__":
     q_ref = rms_norm_reference(q, head_dim, eps)
 
     q_part = q_ref[..., dim_start:]
-    q_part_out = rope_reference(
-        q_part.to(torch.float32), cos.to(torch.float32), sin.to(torch.float32)
-    )
+    q_part_out = rope_reference(q_part.to(torch.float32), cos.to(torch.float32), sin.to(torch.float32))
     q_ref[..., dim_start:] = q_part_out
 
     # 2. Run TileLang Kernel

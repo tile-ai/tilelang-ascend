@@ -19,13 +19,14 @@ description: TileLang Ascend Developer/Expert 模式选择与 pass_configs 配�
 | **内存分配** | `T.alloc_shared` / `T.alloc_fragment` | `T.alloc_L1` / `T.alloc_ub` / `T.alloc_L0A/L0B/L0C` |
 | **计算表达** | `T.Parallel` + 符号运算 | `T.tile.xxx` 扩展原语 |
 | **作用域** | 编译器自动分离 Cube/Vector | 手动 `with T.Scope("C"/"V")` |
-| **同步** | 编译器自动插入 | 手动 `T.barrier_all` / `T.set_flag` / `T.wait_flag` |
+| **同步** | 编译器自动插入 | 手写 LOCK DSL，由预处理器生成底层 flag |
 | **CV 交互** | 默认消除 workspace+vid（`threads=2` + 片上直连，见 §3.1.1） | 显式 GM `workspace` + 手动 `vid` 二分 |
-| **pass_configs** | **全部开启** | **全部关闭或不设** |
+| **pass_configs** | 按 §2.2 开启相关自动 passes；无显式 scope 时 CombineCV 必开 | 全部关闭或不设 |
 | **适用场景** | 大多数算子，跨平台兼容 | 极致性能优化，需要底层控制 |
 | **示例目录** | `examples/developer_mode/` | `examples/flash_attention/fa_opt/flash_attn_bhsd_expert_*.py` |
 
-**混合模式**：Developer 主体 + 少量 Expert / Ascend 专属 `T.tile.xxx`。使用 Developer 的 pass_configs，不写 `T.Scope` 和手动同步。大多数实际算子使用混合模式。
+**混合模式**：Developer 主体 + 少量 Ascend 专属 `T.tile.xxx`。仍使用 Developer 的
+pass_configs，由编译器生成 resource scope 和同步；不要因为用了 `T.tile.*` 就关闭 CombineCV。
 
 ---
 
@@ -68,33 +69,34 @@ pass_configs = {
 - **开启时**：无需手写 `with T.Scope("C")` / `with T.Scope("V")`，编译器根据 buffer 类型和所用原语自动识别
 - **关闭时**：必须手动用 `T.Scope` 标注每段代码的执行域
 
-> 注意：避免在开启 AUTO_CV_COMBINE 同时手写 `T.Scope`，可能会导致编译器无法正确处理代码
+> 默认选择一种 ownership 写法：自动模式由 CombineCV 生成 scope，手动模式全部显式标注。
+> CombineCV 可以保留已有的同类显式 scope，但不要无必要地混写，更不能做 C/V 冲突嵌套。
 
 #### ④ TL_ASCEND_AUTO_CV_SYNC（自动核间同步）
 
 - **底层 key**：`"tl.ascend_auto_cross_core_sync"`，默认 False
 - **功能**：自动在 Cube Scope 和 Vector Scope 之间插入 `T.set_cross_flag`/`T.wait_cross_flag`
 - **开启时**：无需手写核间同步
-- **关闭时**：必须手动管理核间同步
+- **关闭时**：仅当 kernel 存在 C/V 依赖时，必须手动管理对应核间同步
 
 ### 2.2 按场景选择 pass_configs
 
 | 场景 | AUTO_SYNC | MEMORY_PLANNING | AUTO_CV_COMBINE | AUTO_CV_SYNC | 手动 Scope |
 |------|-----------|-----------------|-----------------|--------------|------------|
-| **纯 Vector 算子**（elementwise, softmax） | ✅ | ✅ | ❌ | ❌ | ❌ |
+| **Developer/Hybrid 纯 Vector**（elementwise, softmax） | ✅ | ✅ | ✅ | ❌ | ❌ |
 | **Developer GEMM**（完全自动） | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **Developer Flash Attention**（核间流水线） | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **Developer CV 融合**（Vector计算+Cube GEMM） | ✅ | ✅ | ✅ | ✅ | ❌ |
-| **混合模式 CV 融合** | ✅ | ✅ | ❌ | ❌ | ✅ |
+| **Expert / 手动 ownership** | 按设计，通常 ❌ | 按设计，通常 ❌ | ❌ | 按设计，通常 ❌ | ✅，所有 resource-specific work |
 
 > **Developer Flash Attention / Developer CV 融合**：默认消除 workspace+vid（`threads=2` + 片上直连），写法见 §3.1.1 与 [mode-examples.md §6](references/mode-examples.md#6-cv-融合--推荐写法消除-workspace--vidthreads2)。
-| **Expert 极致性能** | ❌ | ❌ | ❌ | ❌ | ✅ |
 
 **纯 Vector 算子**（来自 Programming Guide §2.2）：
 ```python
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
 }
 ```
 
@@ -118,13 +120,45 @@ pass_configs = {
 }
 ```
 
+### 2.3 C/V 输入契约
+
+所有 resource-specific Ascend hardware work 都必须有明确 owner，纯 Vector kernel 也不例外：
+
+- `TL_ASCEND_AUTO_CV_COMBINE=True`：CombineCV 用共用分类器生成 C/V scope；适合不手写
+  resource ownership 的 Developer / Hybrid kernel。
+- `TL_ASCEND_AUTO_CV_COMBINE=False`：作者必须把所有资源相关工作放入显式
+  `T.Scope("C")` 或 `T.Scope("V")`；适合 Expert / 手动 ownership。
+- outer 只保留 resource-independent 或两侧共同执行的 control。无法分类的 opaque extern 和
+  raw source 必须放在正确的显式 scope。
+- V→V / C→C 同类嵌套允许；C→V / V→C 冲突嵌套拒绝。
+
+因此，“关闭 CombineCV 但保留无 scope 的纯 Vector kernel”不是受支持的第三种模式。
+完整 compiler contract 见 `docs/ascend/compiler_managed_vector_mask.md` 的
+Resource-scope contract。
+
+### 2.4 Vector mask reuse 安全开关
+
+`TL_ASCEND_VECTOR_MASK_REUSE` 默认 `True`，仅用于 A2/A3 AscendC/auto 的
+compiler-managed Vector mask reuse。设为 `False` 时，每条已选择的 raw terminal 都保守地重建
+完整 required mask；Instruction Selection 和严格 C/V verifier 仍然启用。
+
+把这一项追加到 §2.2 中当前模式已经合法的 `pass_configs`，不要用单项 dict 替换原配置：
+
+```python
+pass_configs[tilelang.PassConfigKey.TL_ASCEND_VECTOR_MASK_REUSE] = False
+```
+
+这个开关用于隔离或临时规避 mask-state contract 问题，不能绕过不支持的 dtype / ABI，也不能
+替代正确的 resource scope。详细语义见 `docs/ascend/compiler_managed_vector_mask.md`。
+
 ---
 
 ## 3. 模式转换规则（Expert → Developer）
 
 ### 3.1 转换步骤
 
-1. **开启 pass_configs**：添加完整 4 个 True 开关
+1. **开启 pass_configs**：按 §2.2 选择；CV kernel 开四项，纯 Vector Developer kernel 开
+   AUTO_SYNC、MEMORY_PLANNING、AUTO_CV_COMBINE
 2. **内存分配**：`T.alloc_L1` → `T.alloc_shared`，`T.alloc_L0C` → `T.alloc_fragment`，`T.alloc_ub` → `T.alloc_shared`
 3. **删除作用域**：移除 `with T.Scope("C")` / `with T.Scope("V")`
 4. **删除同步**：移除 `T.barrier_all()`、`T.set_flag`/`T.wait_flag`、`T.set_cross_flag`/`T.wait_cross_flag`

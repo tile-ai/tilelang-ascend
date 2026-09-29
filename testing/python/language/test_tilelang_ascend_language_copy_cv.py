@@ -171,15 +171,15 @@ def _ub_to_l1_kernel_expert_A2(M=128, N=128, K=128, dtype="float16", accum_dtype
         workspace_1: T.Tensor((M * K * 2), dtype),  # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
-            T._src_code("using Pipe_0_V2C = TPipe<0, pto::Direction::DIR_V2C, 32768, 2>;")
-            T._src_code("Pipe_0_V2C pipe_0_V2C(workspace_1_handle, 0, 32768);")
-
             A_ub = T.alloc_ub((M_half, K), dtype)
             A_l1 = T.alloc_L1((M, K), dtype)
             B_l1 = T.alloc_L1((K, N), dtype)
             C_l0c = T.alloc_L0C((M, N), accum_dtype)
 
             with T.Scope("C"):
+                T._src_code("using Pipe_0_V2C = TPipe<0, pto::Direction::DIR_V2C, 32768, 2>;")
+                T._src_code("Pipe_0_V2C pipe_0_V2C(workspace_1_handle, 0, 32768);")
+
                 # GM → L1
                 T.copy(B, B_l1)
 
@@ -197,6 +197,9 @@ def _ub_to_l1_kernel_expert_A2(M=128, N=128, K=128, dtype="float16", accum_dtype
                 T.copy(C_l0c, C)
 
             with T.Scope("V"):
+                T._src_code("using Pipe_0_V2C = TPipe<0, pto::Direction::DIR_V2C, 32768, 2>;")
+                T._src_code("Pipe_0_V2C pipe_0_V2C(workspace_1_handle, 0, 32768);")
+
                 # GM → UB
                 T.copy(A[vid * M_half : (vid + 1) * M_half, :], A_ub)
 
@@ -221,9 +224,6 @@ def _ub_to_l1_kernel_expert_A5(M=128, N=128, K=128, dtype="float16", accum_dtype
         C: T.Tensor((M, N), dtype),  # type: ignore
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
-            T._src_code("using Pipe_0_V2C = TPipe<0, pto::Direction::DIR_V2C, 32768, 2>;")
-            T._src_code("Pipe_0_V2C pipe_0_V2C(nullptr, 0, 32768);")
-
             A_ub = T.alloc_ub((M_half, K), dtype)
             A_ub_Nz = T.alloc_ub((M_half, K), dtype)
             A_l1 = T.alloc_L1((M, K), dtype)
@@ -231,6 +231,9 @@ def _ub_to_l1_kernel_expert_A5(M=128, N=128, K=128, dtype="float16", accum_dtype
             C_l0c = T.alloc_L0C((M, N), accum_dtype)
 
             with T.Scope("C"):
+                T._src_code("using Pipe_0_V2C = TPipe<0, pto::Direction::DIR_V2C, 32768, 2>;")
+                T._src_code("Pipe_0_V2C pipe_0_V2C(nullptr, 0, 32768);")
+
                 # GM → L1
                 T.copy(B, B_l1)
 
@@ -248,6 +251,9 @@ def _ub_to_l1_kernel_expert_A5(M=128, N=128, K=128, dtype="float16", accum_dtype
                 T.copy(C_l0c, C)
 
             with T.Scope("V"):
+                T._src_code("using Pipe_0_V2C = TPipe<0, pto::Direction::DIR_V2C, 32768, 2>;")
+                T._src_code("Pipe_0_V2C pipe_0_V2C(nullptr, 0, 32768);")
+
                 # GM → UB
                 T.copy(A[vid * M_half : (vid + 1) * M_half, :], A_ub)
 

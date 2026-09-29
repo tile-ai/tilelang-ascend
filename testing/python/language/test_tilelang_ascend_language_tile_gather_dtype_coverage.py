@@ -131,7 +131,7 @@ def test_gather_dtype_mismatch_raises():
             T.tile.gather(c_ub, a_ub, b_ub, 0)
             T.copy(c_ub, C)
 
-    with pytest.raises(RuntimeError, match="Compilation Failed"):  # noqa: B017
+    with pytest.raises(RuntimeError, match="Unsupported AscendC Vector dtype tuple for tl.ascend_gather"):
         tilelang.compile(main, out_idx=[-1], pass_configs=PASS_CONFIGS, target="ascendc")
 
 
@@ -153,7 +153,7 @@ def test_gather_offset_dtype_raises():
             T.tile.gather(c_ub, a_ub, b_ub, 0)
             T.copy(c_ub, C)
 
-    with pytest.raises(RuntimeError, match="Compilation Failed"):  # noqa: B017
+    with pytest.raises(RuntimeError, match="Unsupported AscendC Gather offset dtype; expected uint32"):
         tilelang.compile(main, out_idx=[-1], pass_configs=PASS_CONFIGS, target="ascendc")
 
 

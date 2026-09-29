@@ -124,7 +124,8 @@ def sparse_attention_fwd(
             T.tile.fill(acc_o, 0.0)
             T.tile.fill(sumexp, 0.0)
             T.tile.fill(m_i, -(2.0**30))
-            T.barrier_all()
+            with T.Scope("V"):
+                T.barrier_all()
             for i_i in T.Pipelined(NI, num_stages=2):
                 # cube
                 T.copy(workspace_1[b_i, s_i, h_i, g_i, 0:BI, 0:D], kv_l1)

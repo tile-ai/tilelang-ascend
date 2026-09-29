@@ -13,7 +13,10 @@
 - [tile size 过小导致片上内存浪费](#tile-size-过小导致片上内存浪费)
 - [AIC/AIV 混合算子未开启 CV overlap](#aicaiv-混合算子未开启-cv-overlap)
 - [纯 AIV memory bound 算子未做流水/双 buffer](#纯-aiv-memory-bound-算子未做流水双-buffer)
+- [多行 tile 循环内逐块归约](#多行-tile-循环内逐块归约)
 - [正交轴串行化（Scalar Scan on Parallelizable Axis）](#正交轴串行化scalar-scan-on-parallelizable-axis)
+- [纯 Vector 算子的 AUTO_CV_COMBINE 误分核风险](#纯-vector-算子的-auto_cv_combine-误分核风险)
+- [Vector mask reuse fallback 掩盖精度问题](#vector-mask-reuse-fallback-掩盖精度问题)
 - [评审记录模板](#评审记录模板)
 
 ---
@@ -167,7 +170,9 @@ T.sync_all()
 
 **替代方向**：
 - 删除没有生产者/消费者依赖的同步。
-- 用 `T.set_flag(src, dst, event_id)` / `T.wait_flag(src, dst, event_id)` 约束具体 pipeline 之间的依赖。
+- Developer/Hybrid 优先交给 AUTO_SYNC。新 Expert kernel 用 `impl_tl.py` 的 LOCK DSL 表达
+  定向 buffer ownership；底层 `T.set_flag` / `T.wait_flag` 只用于 generated、low-level 或
+  明确标注的 legacy 代码。
 - AIC/AIV 跨核交互用 `T.set_cross_flag` / `T.wait_cross_flag` 或交给 `T.Pipelined` 自动管理。
 - 对多次任务后才需要一致性的场景，考虑增加同步间隔，参考 `T.Pipelined(..., cross_interval=N)`。
 
@@ -318,6 +323,8 @@ for k in T.serial(loop_k):
 
 ```python
 pass_configs = {
+	tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+	tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 	tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
 	tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
 }
@@ -361,18 +368,21 @@ for i in T.Pipelined(loop_n, num_stages=2):
 
 **替代写法 B：手动双 buffer**
 
-手动双 buffer 只分配双份 buffer 不够，还需要手动控制每个 stage 的同步关系，确保搬入、计算、搬出不会读写同一份未就绪 buffer。下面代码只展示 buffer 轮转位置；实际实现中需要按 pipeline 使用 `T.set_flag` / `T.wait_flag` 明确控制 stage 依赖。
+手动双 buffer 属于 Expert ownership：必须放在显式 `T.Scope("V")`，并在 `impl_tl.py`
+中用 LOCK DSL 表达每个 stage 的 buffer token。只分配双份 buffer 不够；每次复用前都必须完成
+上一位 owner 的归还。下面只展示 V scope 与轮转位置，不是完整同步模板：
 
 ```python
-x_ub = T.alloc_ub([2, block_N], dtype)
-y_ub = T.alloc_ub([2, block_N], dtype)
+with T.Scope("V"):
+    x_ub = T.alloc_ub([2, block_N], dtype)
+    y_ub = T.alloc_ub([2, block_N], dtype)
 
-for i in T.serial(loop_n):
-	side = i % 2
-	# 手动双 buffer 时，需要在每个 stage 之间配套 set_flag / wait_flag。
-	T.copy(x[i, :], x_ub[side, :])
-	T.tile.exp(y_ub[side, :], x_ub[side, :])
-	T.copy(y_ub[side, :], y[i, :])
+    for i in T.serial(loop_n):
+        side = i % 2
+        # ACQ / REL 由 impl_tl.py 的 LOCK DSL 生成。
+        T.copy(x[i, :], x_ub[side, :])
+        T.tile.exp(y_ub[side, :], x_ub[side, :])
+        T.copy(y_ub[side, :], y[i, :])
 ```
 
 **检查点**：
@@ -466,22 +476,38 @@ for j in range(1, L):
 “纯 Vector + AUTO_CV_COMBINE + alloc_var”必然失败的全局规则；仓内也有该组合的正向
 测试。必须先检查生成代码或最小复现，确认变量确实跨核且没有正确传递。
 
-确认发生误分核后，纯 Vector 算子可关闭不需要的 `AUTO_CV_COMBINE`：
+确认发生误分核后，不能只删除 `AUTO_CV_COMBINE` 并保留 outer hardware work。优先修复或报告
+CombineCV / verifier 共用分类器中的错误；若为了诊断或 Expert 回退而关闭 CombineCV，必须把
+全部 Vector 工作移入显式 `T.Scope("V")`：
 
 ```python
 PASS_CONFIGS = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-    # 已通过生成代码确认误分核时，关闭不需要的 AUTO_CV_COMBINE
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: False,
 }
+
+with T.Scope("V"):
+    # 全部 UB load/store、T.tile.* 和 Vector sync work
+    ...
 ```
 
 **检查点**：
 - `get_kernel_source()` 是否只有 `IS_ASCEND_AIV`（纯 Vector）？
 - pass_configs 是否开了 `AUTO_CV_COMBINE`？
 - kernel 内是否使用了 `T.alloc_var`？
-- 三者同时满足 → 检查生成代码中变量定义/使用的核归属；仅在确认误分核后关闭
-  `AUTO_CV_COMBINE`
+- 三者同时满足 → 检查生成代码中变量定义/使用的核归属；优先修 classifier；若关闭
+  `AUTO_CV_COMBINE`，同步补齐显式 V scope
+
+## Vector mask reuse fallback 掩盖精度问题
+
+**识别特征**：默认配置精度失败，而仅加入
+`TL_ASCEND_VECTOR_MASK_REUSE=False` 就恢复。
+
+这通常说明 compiler-managed terminal 的 `requires` / `ensures`、runtime-path 合流或 opaque
+call invalidation 存在 contract 缺口。该开关仍使用同一 selected raw terminal，只是让每条
+terminal 重新建立完整 mask；它适合隔离问题和临时放行，不是永久性能优化，也不会关闭严格
+C/V scope 验证。保留最小复现并修复 compiler contract。
 
 ---
 

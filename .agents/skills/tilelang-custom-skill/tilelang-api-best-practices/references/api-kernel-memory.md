@@ -222,6 +222,40 @@ Ascend NPU 不同存储单元有不同的对齐要求：
 
 分配 Buffer 时需确保不超出上限，并满足对齐要求。
 
+### T.view / T.reshape 决策与迁移检查
+
+公开语义只维护在
+[`T.view / T.reshape` API reference](../../../../../docs/api_docs/T.view.md)。本 skill 只保留
+API 选择和迁移门禁：
+
+| 用户意图 | 决策 |
+| --- | --- |
+| 让同一组 bits 具有另一种 shape/dtype | 使用 `T.view` |
+| 只改变 shape | 使用 `T.reshape` |
+| 改变数值 | 选择 consumer 支持的数值转换原语，不能用 view |
+| 保持分形块一一对应，只改变块内 shape/dtype | 使用 `T.view` |
+| 重新排列 L1/L0 分形块 | 使用真实 layout conversion，不能用 view |
+| 为一个 slice 建立 alias | 当前不支持；不要把 `BufferRegion` 传给 view |
+
+使用前确认 source 是完整、连续、zero-offset 的 Buffer，总 bit 数可静态证明相等。L1/L0
+还必须保持 leading dimensions 和分形块网格；最后再确认使用 view 的 `T.copy`、`T.mma`、
+`T.tile.*` 等操作支持目标 dtype/shape。精确规则和示例只查公开契约，不在 skill 中复制。
+
+迁移已删除的 `T.reinterpretcast` 时，直接将旧 target 名称绑定为 source view，沿用旧
+target 的 TileLang shape/dtype，并删除只为旧接口创建的 allocation。若旧 target 还有其他
+用途或独立的地址/同步关系，则不能机械删除。dtype-changing 路径使用 bitwise oracle，跨
+backend 支持分别验证 AscendC/PTO。
+
+Python `T.reinterpretcast` 与 `tl.ascend_reinterpretcast` TIR Op 不得恢复；AscendC
+`.ReinterpretCast<>()`、C++ `reinterpret_cast` 和 PTO `TRESHAPE` 是内部 lowering，
+不属于公开 API。
+
+`T.decl_buffer(data=...)` 是低层 descriptor 构造入口。普通 whole-storage alias 优先使用
+`T.view`；只有调用者有意承担 descriptor 元数据与后端合法性责任时才使用
+`T.decl_buffer`。
+
+端到端写法参考 [RoPE example](../../../../../examples/pos_embedding/rope.py)。
+
 ---
 
 ## 3. 数据搬运原语
