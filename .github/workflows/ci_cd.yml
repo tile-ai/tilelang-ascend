@@ -474,7 +474,7 @@ jobs:
 
   test:
     name: Benchmark Tests (Ascend NPU)
-    runs-on: [self-hosted, Linux, tilelang-ascend-ci]
+    runs-on: [self-hosted, Linux, x64, tilelang-ascend-ci]
     needs: check_changes
     outputs:
       pass_rate: ${{ steps.check_results.outputs.pass_rate }}
@@ -487,7 +487,7 @@ jobs:
         needs.check_changes.outputs.merged != 'true' &&
         needs.check_changes.outputs.should_skip != 'true'
       )
-    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 360 || 60 }}
+    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 360 || 120 }}
     env:
       FULL_BUILD: ${{ github.event_name == 'schedule' || github.event.inputs.full_build == 'true' }}
     steps:
@@ -501,9 +501,8 @@ jobs:
         id: check_skip_pytest
         if: github.event_name == 'pull_request'
         run: |
-          BASE_REF="${{ github.base_ref }}"
-          git fetch origin $BASE_REF
-          changed_files=$(git diff --name-only origin/$BASE_REF HEAD)
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          changed_files=$(git diff --name-only "$BASE_SHA" HEAD)
           
           skip_pytest=true
           
