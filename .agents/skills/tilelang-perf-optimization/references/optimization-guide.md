@@ -22,6 +22,8 @@
   - [2.15 正交轴向量化（Orthogonal Axis Vectorization）](#215-正交轴向量化orthogonal-axis-vectorization)
   - [2.16 特定 dtype 的硬件指令适配（Dtype-Specific Hardware Path Adaptation）](#216-特定-dtype-的硬件指令适配dtype-specific-hardware-path-adaptation)
   - [2.17 离散重排 fallback 的多阶段连续化](#217-离散重排-fallback-的多阶段连续化)
+  - [2.18 数学等价变形（Mathematical Equivalence Rewriting）](#218-数学等价变形mathematical-equivalence-rewriting)
+  - [2.19 Buffer 数量优化（Buffer Count Reduction）](#219-buffer-数量优化buffer-count-reduction)
 - [三、核间优化](#三核间优化)
 - [四、常见问题速查](#四常见问题速查)
 
@@ -1615,6 +1617,107 @@ kernel 的以下形态：
 无端到端收益时保留正确 fallback，并将本优化记录为“不适用/无收益”。
 
 ---
+
+### 2.18 数学等价变形减少 V pipe 步数（Mathematical Rewriting for Fewer V Ops）
+
+**适用场景**：
+- 算子底层 intrinsic 内部含冗余步骤（如 `Duplicate` 填充常量 buffer 作为 `Div` 分子）
+- 复合函数可以通过数学等价变形拆解为更少或更高效的指令组合
+- 输入值域已知，可以判断变形后是否会溢出
+
+**核心思路**：分析底层 intrinsic 的 V pipe 步骤序列，找到可以通过公式变形消除的冗余步骤。
+
+#### 变形 1：分子为 1 的分式 -> reciprocal
+
+任何形如 `1 / f(x)` 的计算，底层通常拆为 `Duplicate(1.0) -> Div(1, f(x))` 两步、且 `Div` 需要两个操作数 buffer。可以用 `reciprocal(f(x))` 一步替代，in-place 运算，省掉 `Duplicate` 步骤和 1 个 buffer。
+
+**示例**：
+```
+# sigmoid(x) = 1 / (1 + exp(-x))
+# 底层 T.tile.sigmoid: Muls(-1) + Exp + Adds(1) + Duplicate(1) + Div = 5步, 2个buffer
+# 变形后: Muls(-1) + Exp + Adds(1) + Reciprocal = 4步, 1个buffer（in-place）
+```
+
+**泛化**：适用于任何 `1/f(x)` 形式的算子（如 `softplus(x) = log(1+exp(x))` 的中间步骤、`reciprocal` 本身等）。
+
+**精度注意**：`T.tile.reciprocal` 内部使用近似 LUT，精度低于 `Div`。必须按目标 dtype 的 MERE/MARE 标准验证：
+- bf16（阈值 2^-7）：通常满足，余量大
+- fp16（阈值 2^-10）：余量可能不足（实测约 3%），需逐 case 验证
+- fp32（阈值 2^-13）：通常不满足，不推荐
+
+#### 变形 2：改变分子分母位置消除 Muls
+
+当 `f(x) / g(x)` 中 `f(x)` 和 `g(x)` 都含 `exp` 时，可以通过提取公因式改变分子分母，消除额外的取负步骤。
+
+**示例**：
+```
+# sigmoid(x) = 1/(1+exp(-x)) = exp(x)/(1+exp(x))
+# 原式需要 Muls(-1) 来算 exp(-x)
+# 变形后直接 exp(x)，省掉 Muls(-1)
+# exp(x)/(1+exp(x)): Exp + Adds(1) + Div = 3步（原式 5步）
+```
+
+**安全条件**：`exp(x)` 不溢出。原式用 `exp(-x)` 可能在 `x` 很负时溢出（`exp(-(-1000))=exp(1000)=inf`），变形后用 `exp(x)` 在 `x` 很正时溢出。需根据值域判断哪个方向安全：
+- 值域 `[-A, A]`：`exp(A)` 不溢出即可用变形 2
+- 值域含 `+inf`：变形 2 会产生 `inf/(1+inf)=nan`，不能用
+- 值域含 `-inf`：原式 `exp(-(-inf))=exp(inf)=inf`，`1/(1+inf)=0`，原式正确
+
+#### 变形 3：小值域多项式近似
+
+输入值域已知且较小时，用 Taylor 展开的多项式替代含 `exp`/`log`/`trig` 的公式，消除最慢的 V pipe 指令。
+
+**通用方法**：
+1. 确认输入值域 `[lo, hi]`
+2. 计算 Taylor 展开：`f(x) = c0 + c1*x + c2*x^2 + ...`
+3. 用 `T.tile.mul` + `T.tile.add` 实现（Horner 法减少乘法次数）
+4. 验证值域边界处的 MERE/MARE 是否达标
+
+**精度规律**：值域越小，所需阶数越低。`|x| < 0.5` 通常 3 阶足够，`|x| < 0.2` 线性即可。
+
+**泛化**：适用于 `sigmoid`、`tanh`、`softplus`、`gelu`、`silu` 等任何光滑激活函数。
+
+#### 变形 4：常量输入直接 fill
+
+输入值域为单个常量时（如 `value_range=[0, 0]`），跳过全部计算，直接 `T.tile.fill(output, constant_value)`。仅 1 个 V op。
+
+#### 检查清单
+
+- [ ] 已分析底层 intrinsic 的 V pipe 步骤序列（用 `get_kernel_source()` 查看）？
+- [ ] 变形后 V ops 数量是否确实减少？
+- [ ] 已确认输入值域不会导致变形后的溢出？
+- [ ] 已用目标 dtype 的 MERE/MARE 验证精度（reciprocal 精度低于 div）？
+- [ ] 多项式近似是否验证了值域最大 `|x|` 处的精度？
+
+---
+
+### 2.19 Buffer 数量优化（Buffer Count Reduction）
+
+**适用场景**：cast 路径（bf16/int8）产生多个 buffer，UB 预算受限导致 tile 偏小。
+
+**核心思路**：用 in-place 操作替代需要额外操作数 buffer 的操作，减少同时存活的 buffer 数量。
+
+**典型模式**：`Div(dst, src0, src1)` 需要 `src0` 和 `src1` 两个 buffer 同时存活；`Reciprocal(dst, src)` 是 in-place，只需 1 个 buffer。当分式的分子为 1 时，用 `reciprocal` 替代 `div` 可以省掉分子 buffer。
+
+**效果评估**：
+```
+total_ub = sum(每个buffer的bytes_per_elem) * rows_per_vec * block_N
+```
+减少 1 个 fp32 buffer = 省 4 B/elem。在 budget=12500 时省 50000B，允许 tile 增大约 33~50%。
+
+**安全阈值**：`total_ub <= 196352B`（A2/A3 UB），建议留 10% 余量。
+
+#### 检查清单
+
+- [ ] 已列出所有同时存活的 buffer 及其 dtype/大小？
+- [ ] 是否有 div 可以改为 reciprocal？（分子为常量 1 时可以）
+- [ ] 已验证 `total_ub` 不超过 UB 容量且留有余量？
+- [ ] 已在目标硬件（而非仅本地）上验证更大 tile 确实更快？
+
+---
+
+
+
+
 
 ## 三、核间优化
 
