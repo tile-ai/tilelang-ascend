@@ -663,19 +663,19 @@ Var 上生成后端所需 dtype 的 view，不会仅因 dtype 不同再创建 `t
 Buffer；BufferRegion 本身也必须一维、静态、位于该 Buffer 内，且起始字节地址 32B 对齐。它
 表示该次调用完整的 target-specific 临时字节空间；dtype 只决定 arena 的字节几何
 （`extent * sizeof(dtype)`），不表示 workspace 数据类型。lowering 会在同一字节存储上建立目标
-所需的 typed view，不进行数值转换，并保留 region 的实际字节起点。前端只检查几何和对齐；
-AscendC 与 PTO 的 target-specific 保守启发值只用于编译器管理的 allocation 和内部 view 布局，
-不是非零显式 arena 的下限检查。非零显式 arena 的容量由调用者负责。若所选 target 路径真实
-不消费 workspace，lowering 会移除 operand，允许使用零 extent arena。当前不提供公开的
-size-query API，非零需求建议保守地过量分配。
+所需的 typed view，不进行数值转换，并保留 region 的实际字节起点。前端检查结构和对齐。
+A2/A3 AscendC 静态 FP32 末轴归约使用与设备实现相同的 planner 分配空间，并拒绝容量不足的
+显式 arena；具体要求见[语言参考](./language_ref/tilelibrary.md#static-fp32-row-reductions)。
+其余路径保留各后端的分配和内部 view 启发式，非零显式 arena 的容量仍由调用者负责。
+不消费 workspace 的路径会移除 operand，允许零 extent arena。当前不提供公开的 size-query API。
 
 当前固定的 `dav-2201` AscendC target 使用如下隐式分配策略。记 `S` 为源 tensor 字节数，
 `N = repeat_times * 32`，`d` 为源元素字节宽度。这些值是来自 CANN source 和定向 sampling 的
-保守启发式，只用于隐式 allocation；不是公开的理论最小容量，也不会用于拒绝非空显式 arena。
+保守分配启发式，不用于检查非空显式 arena 的容量；静态 FP32 行归约采用精确 planner。
 
 | API | view dtype | 隐式字节数 | 依据 |
 | --- | --- | --- | --- |
-| reduce | `uint8` | 过渡期 reduce 公式且至少 32B；`physical_row > 0` 及 half sum、`clear=True` 为 0 | CANN-source/sampling 保守启发式 |
+| reduce | 依路径确定 | 见 [FP32 行归约临时空间规范](./language_ref/tilelibrary.md#static-fp32-row-reductions) | 静态 FP32 行归约使用共用 planner；其余路径保留后端规则 |
 | sort | 源 dtype | half：`8*N*d`；float：`2*N*d` | CANN-source/sampling 保守启发式 |
 | topk | 源 dtype | half：`10*N*d`；float：`4*N*d` | CANN-source/sampling 保守启发式 |
 | bilinear interpolation | `uint8` | `(src0_elements + src1_elements) * 32` | CANN-source/sampling 保守启发式 |
@@ -760,9 +760,9 @@ extent 调用 `LocalTensor::SetSize`；因此 region extent 尚不构成 AscendC
 - `clear` 和 `real_shape` 同时支持关键字传参和兼容的 positional 传参形式，建议优先使用关键字形式以获得更清晰的可读性。
 - `tmp` 是可选且仅允许关键字传入的完整 target-specific UB scratch arena；这里的 arena 指由一次调用自行划分和使用的一整段临时字节空间。它必须是一维、静态、连续、具有定宽标量 dtype 的 `shared.ub` Buffer，或同类 Buffer 上一维、静态、连续且起始字节地址 32B 对齐的 BufferRegion。其 dtype 不表示 workspace 数据类型；lowering 按字节地址将存储 reinterpret 为目标所需类型。容量按元素个数乘以 dtype 字节宽度计算。后端路径不需要 workspace 时允许 extent 为 0。
 - 未传 `tmp` 时由编译器自动分配；传入 `tmp` 只影响当前调用，该调用不再参与隐藏主 workspace 的分配。
-- 前端只检查 arena 的结构和起始地址对齐。target-specific 保守启发值用于隐式 allocation 和 PTO `clear=False` 的内部 view 布局，但不用于拒绝非零显式 arena；显式容量由调用者负责。当前不提供公开的 size-query API，建议在需要非零 workspace 时保守地过量分配。
+- 临时空间容量遵循前述 arena 规则；静态 FP32 末轴归约的形状、布局和容量要求统一见[语言参考](./language_ref/tilelibrary.md#static-fp32-row-reductions)。
 - PTO 行归约的 `clear=False` lowering 会把同一个 arena 划分为两个互不重叠的 view：主 reduce scratch view，以及从 `align_up(primary_tmp_bytes, 32)` 开始的 reduce-output view。PTO 列归约不需要主 scratch；`clear=False` 时只在 offset 0 创建 reduce-output view。
-- 已知需求为 0 时，lowering 会省略 tmp 参数及其内存访问；例如 PTO broadcast、PTO `dim=0` reduce，以及 AscendC `clear=True` 的 narrow reduce 和 `half` sum 路径。`T.alloc_ub((0,), "uint8")` 和零 extent BufferRegion 可直接用于这些调用，无需用户增加条件分支。
+- 已知需求为 0 时，lowering 会省略 tmp 参数及其内存访问；例如 PTO broadcast、PTO `clear=True` 的 `dim=0` reduce，以及 AscendC `clear=True` 的 FP16 narrow reduce。`T.alloc_ub((0,), "uint8")` 和零 extent BufferRegion 可直接用于这些调用，无需用户增加条件分支。
 
 - `T.reduce_sum(buffer: Buffer, out: Buffer, dim: int = -1, *args, clear: bool = True, real_shape: list[int] | None = None, tmp: Buffer | BufferRegion | None = None)`
 

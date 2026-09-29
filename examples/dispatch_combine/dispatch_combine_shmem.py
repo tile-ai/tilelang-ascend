@@ -1,3 +1,4 @@
+# fmt: off
 import tilelang
 import tilelang.language as T
 import torch
@@ -108,13 +109,13 @@ def moe_dispatch_kernel(
             begin_idx_ub = T.alloc_ub([1], "int32")
             state_reset_floor_ub = T.alloc_ub([status_per_core - 1, ub_float_int32_align], "float")
             receive_count_floor_ub = T.alloc_ub([status_per_core - 1], "int32")
-            cur_vid[0] = (vid + 2 * cid)
             cur_send_token_cnt = Bs * K
             with T.Scope("C"):
                 T.sync_all()       # The number of C cores involved in the sync_all synchronization must match the number of V cores.
                 T.sync_all()
                 T.sync_all()
             with T.Scope("V"):
+                cur_vid[0] = vid + 2 * cid
                 # Send data distributed across cores
                 send_token_num = cur_send_token_cnt // aiv_num
                 remainder_token_num = cur_send_token_cnt % aiv_num
@@ -296,7 +297,7 @@ def moe_combine_kernel(
             assist_ub = T.alloc_ub([token_per_core * assist_size], "int32")
             status_ub = T.alloc_ub([float_align_ub], "float")
             state_ub = T.alloc_ub([K * float_align_ub], "float")
-            work_local_ub = T.alloc_ub([K * float_align_ub], "float")
+            work_local_ub = T.alloc_ub([K * float_align_ub], "float")  # noqa: F841
             state_sum_out = T.alloc_ub([K * float_align_ub], "float")
             state_reset = T.alloc_ub([K * float_align_ub], "float")
             win_data_ub_bfloat = T.alloc_ub([H], "bfloat16")
@@ -306,14 +307,22 @@ def moe_combine_kernel(
             expert_scales_ub = T.alloc_ub([Bs * K], "float")
             cur_vid = T.alloc_ub([1], "int32")
             sum_of_flag = T.alloc_ub([1], "float")
-            cur_vid[0] = vid + 2 * cid
-            # Returned tokens across cores
-            send_token_num = send_token_cnt // aiv_num
-            remainder_send_token_num = send_token_cnt % aiv_num
-            start_send_token_id = send_token_num * cur_vid[0]
-            start_send_token_id = T.if_then_else(cur_vid[0] < remainder_send_token_num, start_send_token_id + cur_vid[0], start_send_token_id + remainder_send_token_num)
-            send_token_num = T.if_then_else(cur_vid[0] < remainder_send_token_num, send_token_num + 1, send_token_num)
             with T.Scope("V"):
+                cur_vid[0] = vid + 2 * cid
+                # Returned tokens across cores
+                send_token_num = send_token_cnt // aiv_num
+                remainder_send_token_num = send_token_cnt % aiv_num
+                start_send_token_id = send_token_num * cur_vid[0]
+                start_send_token_id = T.if_then_else(
+                    cur_vid[0] < remainder_send_token_num,
+                    start_send_token_id + cur_vid[0],
+                    start_send_token_id + remainder_send_token_num,
+                )
+                send_token_num = T.if_then_else(
+                    cur_vid[0] < remainder_send_token_num,
+                    send_token_num + 1,
+                    send_token_num,
+                )
                 T.tile.fill(status_ub, 1.0)
                 T.tile.fill(state_reset, 0.0)
                 T.barrier_all()
@@ -469,3 +478,4 @@ if __name__ == '__main__':
     for p in processes:
         p.join()
     print("All processes completed")
+# fmt: on

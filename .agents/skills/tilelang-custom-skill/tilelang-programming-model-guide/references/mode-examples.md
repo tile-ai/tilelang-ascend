@@ -70,7 +70,7 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
 import tilelang
 import tilelang.language as T
 
-# Expert 模式：无 pass_configs（或全 False）
+# 保留默认 C/V 划分，核内同步由下方 barrier 管理
 @tilelang.jit(out_idx=[-1])
 def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float"):
     m_num = T.ceildiv(M, block_M)
@@ -176,8 +176,8 @@ with T.Kernel(m_num, is_npu=True) as (cid, vid):
 
 ## 6. CV 融合 — 推荐写法：消除 workspace / vid（threads=2）
 
-> **这是 Developer 模式 CV 交互的首选写法。** 把 Cube↔Vector 的数据中转交给编译器（`alloc_shared/fragment` + 四个 `TL_ASCEND_*` pass），不再手写 GM `workspace` 与手动 `vid` 二分。
-> 仅当编译器无法自动覆盖的复杂同步/多版本流水场景，才回退到 [§7 的 workspace+vid 写法](#7-cv-融合--workspace--vid-写法复杂场景兜底)。
+> 本节示范把数据中转与 `vid` 划分交给编译器的可选改写。默认开启 CombineCV 不要求迁移已有 kernel；
+> 保留显式 workspace/vid 的写法见 [§7](#7-cv-融合--workspace--vid-写法复杂场景兜底)，配置选择以 [skill 主文](../SKILL.md#22-按场景选择-pass_configs) 为准。
 
 **已验证参考实现**（旧 vs 新，逐行对照）：
 - 旧（workspace+vid）：`examples/developer_mode/sparse_flash_attn_developer.py`
@@ -187,12 +187,12 @@ with T.Kernel(m_num, is_npu=True) as (cid, vid):
 
 ```
 threads=2  ──►  vid 消除  ──►  workspace 消除
-（T.Kernel 加 threads=2）（去掉手动 vid 轴/偏移）（删 workspace_idx + 片上直连）
+（T.Kernel 加 threads=2）（去掉手动 vid 轴/偏移）（中转改由编译器生成）
 ```
 
 1. **`threads=2`**：在 `T.Kernel` 上声明，由编译器自动把 Vector 工作并行到 2 个核——**这是去掉手动 `vid` 轴的前提**。
 2. **vid 消除**：不再用第二个 kernel 轴手动二分 V 核工作；`v_block` 用整块，索引去掉所有 `vid * ...` 偏移。
-3. **workspace 消除**：在 vid 消除的基础上，Cube↔Vector 改为片上 buffer 直连，删除所有 `workspace_*` 参数与 GM 往返。
+3. **显式 workspace 消除**：片上 buffer 间用一次 `T.copy` 表达搬运，删除对应 workspace 参数；编译器仍可生成 GM 中转。
 
 ### 6.2 改造清单（逐项对照）
 
@@ -204,11 +204,11 @@ threads=2  ──►  vid 消除  ──►  workspace 消除
 | 内存原语 | `alloc_L1` / `alloc_ub` / `alloc_L0C` | `alloc_shared`（L1/UB） / `alloc_fragment`（L0C） |
 | V 块大小 | `v_block = H_per_block // 2` | `v_block = H_per_block` |
 | 循环/索引 | `range(BI//2)`、`... + vid * BI//2`、`vid * v_block : ...` | `range(BI)`、去掉全部 `vid` 偏移 |
-| CV 交互 | 两跳 GM 往返（见下表） | 片上 buffer 一跳直连 |
+| CV 交互 | 显式两次搬运（见下表） | 一次源代码调用，由编译器安排中转 |
 
-**workspace 往返 → 片上直连映射**（凡「片上 buffer ↔ `workspace[cid,...]` ↔ 另一片上 buffer」两跳，合并为片上一跳）：
+**搬运表达的改写**：以下是源代码调用的对应关系，不代表硬件绕过了 GM。
 
-| 语义角色 | 旧（GM 往返） | 新（片上直连） |
+| 语义角色 | 显式 workspace | 编译器管理 workspace |
 |----------|---------------|----------------|
 | Cube 输出 QK^T | `T.copy(acc_s_l0c, ws3[cid,...])` + `T.copy(ws3[cid,vid*..], acc_s_ub_)` | `T.copy(acc_s_l0c, acc_s_ub_)` |
 | Cube 输出 PV | `T.copy(acc_o_l0c, ws5[cid,...])` + `T.copy(ws5[cid,vid*..], acc_o_ub)` | `T.copy(acc_o_l0c, acc_o_ub)` |
@@ -241,13 +241,13 @@ def attn_fwd(...):
             ...
             for i_i in T.serial(NI):
                 T.gemm_v0(q_l1, kv_l1, acc_s_l0c, transpose_B=True, init=True)
-                T.copy(acc_s_l0c, acc_s_ub_)             # L0C → shared 直连（原 ws3 往返）
+                T.copy(acc_s_l0c, acc_s_ub_)             # 编译器安排原 ws3 中转
                 ...
                 for bi_i in range(BI):                   # 整程，无 vid
                     T.copy(KV[..., indices_ub_[bi_i], ...], kv_ub)
-                    T.copy(kv_ub, kv_l1[bi_i, :])        # gather 直连 L1（原 ws1）
+                    T.copy(kv_ub, kv_l1[bi_i, :])        # 编译器安排原 ws1 中转
                 ...
-                T.copy(acc_s_half, acc_s_l1)             # softmax → L1 直连（原 ws4）
+                T.copy(acc_s_half, acc_s_l1)             # 编译器安排原 ws4 中转
             T.copy(acc_o_half, Output[..., H0 : H0 + v_block, :])   # 无 vid 偏移
     return main
 ```
@@ -276,7 +276,7 @@ def attn_fwd(...):
 
 ## 7. CV 融合 — workspace + vid 写法（复杂场景兜底）
 
-> **兜底写法**：仅用于 [§6.6](#66-何时回退到-workspacevid7) 所列复杂场景。常规 Developer CV 融合请优先用 [§6 消除写法](#6-cv-融合--推荐写法消除-workspace--vidthreads2)。
+> 本节保留显式 workspace 与 vid；是否改用 [§6](#6-cv-融合--推荐写法消除-workspace--vidthreads2) 的写法取决于用户的控制需求和验证结果。
 
 CV 融合典型场景：Vector 核解量化 + Cube 核 GEMM。
 
@@ -386,7 +386,7 @@ def w4a8_gemm_cv(M, N, K):
 **必须开启 4 个 pass_configs**：
 - `AUTO_CV_COMBINE`：编译器自动识别 Cube/Vector 操作并分离到不同核
 - `AUTO_CV_SYNC`：编译器自动在 Cube/Vector 写入 workspace 后插入核间同步
-- **不要手写 `T.Scope("C")` / `T.Scope("V")`**（会与 AUTO_CV_COMBINE 冲突）
+- 已有手写 `T.Scope("C")` / `T.Scope("V")` 可以保留；检查其中的操作归属，不必关闭默认的 C/V 划分。
 
 ### 7.3 V 核并行化（避免算力浪费）
 
@@ -406,4 +406,4 @@ Warning: Cube loop times (= X) is not enough to catch up vec loop times (= Y)
 **解读**：
 - Vector 循环次数 = `block_N_2 × k_num`
 - Cube 循环次数 = `k_num`
-- 此警告可忽略，AUTO_CV_SYNC 会确保同步正确
+- 不要仅凭 `AUTO_CV_SYNC` 已开启就忽略警告；检查循环的实际覆盖范围、跨核通知/等待和 workspace 复用，再运行相关形状的正确性测试。

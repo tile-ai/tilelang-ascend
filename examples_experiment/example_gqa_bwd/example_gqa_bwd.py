@@ -21,13 +21,12 @@ from tilelang.intrinsics import make_zn_layout, make_nz_layout
 
 # pass_configs — Developer mode (CV fusion: 4 keys enabled)
 _developer_cv_pass_configs = {
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
-# pass_configs — Developer mode (Vector-only: 2 keys enabled)
+# pass_configs — Developer mode (Vector-only)
 _developer_vector_pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,

@@ -15,8 +15,7 @@ Covers:
   - scalar form (AscendC::Adds/Muls, sub via negated scalar, div via reciprocal):
     float16/float32 default, int16/int32 low_priority
   - BufferLoad scalar form (1D single element):
-    float16/float32 default; int16/int32 add/mul low_priority;
-    sub int16/int32 is ascendc compile-fail -> pto only
+    float16/float32 default; int16/int32 add/sub/mul low_priority
   - 2D whole-row slice regions (BufferRegion, flash-attention style)
   - in-place aliasing (dst==src0 / dst==src1 / src0==src1)
   - size mismatch validation (dst vs src0, src1 BufferRegion) and the
@@ -385,24 +384,11 @@ def test_tile_arith_buffload_int_add_mul(op, dtype, target):
 
 @pytest.mark.usefixtures("setup_random_seed")
 @pytest.mark.low_priority
-@pytest.mark.parametrize("target", [pytest.param("pto", marks=pytest.mark.low_priority)])
-def test_tile_arith_buffload_sub_int(target):
-    """BufferLoad scalar sub with int16 on pto works.
-
-    ascendc is excluded here: its codegen mixes a float scalar with int
-    tensors (codegen_ascend.cc SubsOpCodegen) -> no matching Adds overload.
-    See doc constraint 8 and the separate compile-error test below.
-    """
-    run_test_buffload("sub", 64, 128, 8, "int16", target)
-
-
-@pytest.mark.usefixtures("setup_random_seed")
-@pytest.mark.low_priority
-def test_tile_arith_buffload_sub_int_ascendc_compile_fail():
-    """BufferLoad scalar sub with int16 fails to compile on ascendc."""
-    with pytest.raises(RuntimeError):
-        kernel = binary_buffload_kernel("sub", 64, 128, 8, "int16")
-        tilelang.compile(kernel, out_idx=[-1], pass_configs=PASS_CONFIGS, target="ascendc")
+@pytest.mark.parametrize("dtype", ["int16", "int32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_tile_arith_buffload_sub_int(dtype, target):
+    """BufferLoad scalar subtraction preserves integer dtype on both backends."""
+    run_test_buffload("sub", 64, 128, 8, dtype, target)
 
 
 # -----------------------------------------------------------------------------
