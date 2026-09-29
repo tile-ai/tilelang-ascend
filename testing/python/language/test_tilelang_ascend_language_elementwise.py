@@ -3066,6 +3066,82 @@ def test_vec_max(dtype, target, shape):
     run_test_vec_max(M, N, 64, 128, dtype, target=target)
 
 
+def vec_max_row_region(dtype):
+    @T.prim_func
+    def main(
+        A: T.Tensor((4, 64), dtype),  # type: ignore
+        B: T.Tensor((4, 64), dtype),  # type: ignore
+        C: T.Tensor((4, 64), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            a_ub = T.alloc_ub((4, 64), dtype)
+            b_ub = T.alloc_ub((4, 64), dtype)
+            c_ub = T.alloc_ub((4, 64), dtype)
+            T.copy(A, a_ub)
+            T.copy(B, b_ub)
+            T.tile.max(c_ub[1:3, :], a_ub[1:3, :], b_ub[1:3, :])
+            T.copy(c_ub, C)
+
+    return main
+
+
+def run_test_vec_max_row_region(dtype, target):
+    func = vec_max_row_region(dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(4, 64, dtype=torch_dtype).npu()
+    b = torch.randn(4, 64, dtype=torch_dtype).npu()
+
+    torch.npu.synchronize()
+
+    c = func(a, b)
+
+    ref_c = torch.max(a, b)
+    torch.testing.assert_close(c[1:3, :], ref_c[1:3, :], rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_vec_max_row_region(dtype, target):
+    run_test_vec_max_row_region(dtype, target)
+
+
+def test_binary_op_region_validation():
+    dst = tir.decl_buffer((4, 64), "float32", scope="shared.ub")
+    src0 = tir.decl_buffer((4, 64), "float32", scope="shared.ub")
+    src1 = tir.decl_buffer((4, 64), "float32", scope="shared.ub")
+
+    # Flat-contiguous regions keep the linear vector semantics and are accepted.
+    whole = T.tile.max(dst[:, :], src0[:, :], src1[:, :])
+    assert int(whole.args[3]) == 4 * 64
+    rows = T.tile.max(dst[1:3, :], src0[1:3, :], src1[1:3, :])
+    assert int(rows.args[3]) == 2 * 64
+    single_row = T.tile.max(dst[2, :], src0[2, :], src1[2, :])
+    assert int(single_row.args[3]) == 64
+    row_window = T.tile.max(dst[2, 8:40], src0[2, 8:40], src1[2, 8:40])
+    assert int(row_window.args[3]) == 32
+
+    vec_dst = tir.decl_buffer((256,), "float32", scope="shared.ub")
+    vec_src0 = tir.decl_buffer((256,), "float32", scope="shared.ub")
+    vec_src1 = tir.decl_buffer((256,), "float32", scope="shared.ub")
+    span = T.tile.max(vec_dst[8:40], vec_src0[8:40], vec_src1[8:40])
+    assert int(span.args[3]) == 32
+
+    # Column-offset slices are rejected at trace time instead of silently
+    # producing wrong results (aligned offset) or aicore exception 507015
+    # (unaligned offset). See issue #1680.
+    column_window = r"must be contiguous when flattened"
+    with pytest.raises(ValueError, match=column_window):
+        T.tile.max(dst[:, 8:40], src0[:, 8:40], src1[:, 8:40])
+    with pytest.raises(ValueError, match=column_window):
+        T.tile.max(dst[:, 8:40], src0[:, 8:40], 1.0)
+    with pytest.raises(ValueError, match=column_window):
+        T.tile.max(dst, src0, src1[:, 8:40])
+    with pytest.raises(ValueError, match=column_window):
+        T.tile.add(dst[:, 8:40], src0[:, 8:40], src1[:, 8:40])
+
+
 def vec_maxs(M, N, block_M, block_N, scalar, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
