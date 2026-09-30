@@ -20,9 +20,10 @@ def test_src_code_basic_injection():
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             a_ub = T.alloc_ub((128,), dtype="float16")
-            T.copy(A[cid * 128], a_ub)
-            T._src_code("// Injected by _src_code test")
-            T.copy(a_ub, B[cid * 128])
+            with T.Scope("V"):
+                T.copy(A[cid * 128], a_ub)
+                T._src_code("// Injected by _src_code test")
+                T.copy(a_ub, B[cid * 128])
 
     mod = tilelang.lower(main, target="ascendc")
     source = mod.kernel_source
@@ -40,9 +41,10 @@ def test_src_code_multiline():
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             a_ub = T.alloc_ub((128,), dtype="float16")
-            T.copy(A[cid * 128], a_ub)
-            T._src_code("int var1 = 0;\nint var2 = 1;\n// end of block")
-            T.copy(a_ub, B[cid * 128])
+            with T.Scope("V"):
+                T.copy(A[cid * 128], a_ub)
+                T._src_code("int var1 = 0;\nint var2 = 1;\n// end of block")
+                T.copy(a_ub, B[cid * 128])
 
     mod = tilelang.lower(main, target="ascendc")
     source = mod.kernel_source
@@ -62,9 +64,10 @@ def test_src_code_empty_string():
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             a_ub = T.alloc_ub((128,), dtype="float16")
-            T.copy(A[cid * 128], a_ub)
-            T._src_code("")
-            T.copy(a_ub, B[cid * 128])
+            with T.Scope("V"):
+                T.copy(A[cid * 128], a_ub)
+                T._src_code("")
+                T.copy(a_ub, B[cid * 128])
 
     mod = tilelang.lower(main, target="ascendc")
     source = mod.kernel_source
@@ -82,11 +85,12 @@ def test_src_code_multiple_injections():
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             a_ub = T.alloc_ub((128,), dtype="float16")
-            T._src_code("// MARKER_A")
-            T.copy(A[cid * 128], a_ub)
-            T._src_code("// MARKER_B")
-            T.copy(a_ub, B[cid * 128])
-            T._src_code("// MARKER_C")
+            with T.Scope("V"):
+                T._src_code("// MARKER_A")
+                T.copy(A[cid * 128], a_ub)
+                T._src_code("// MARKER_B")
+                T.copy(a_ub, B[cid * 128])
+                T._src_code("// MARKER_C")
 
     mod = tilelang.lower(main, target="ascendc")
     source = mod.kernel_source
@@ -110,9 +114,10 @@ def test_src_code_pto_backend():
     ):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             a_ub = T.alloc_ub((128,), dtype="float16")
-            T.copy(A[cid * 128], a_ub)
-            T._src_code("// PTO_injected_marker_12345")
-            T.copy(a_ub, B[cid * 128])
+            with T.Scope("V"):
+                T.copy(A[cid * 128], a_ub)
+                T._src_code("// PTO_injected_marker_12345")
+                T.copy(a_ub, B[cid * 128])
 
     mod = tilelang.lower(main, target="pto")
     source = mod.kernel_source
