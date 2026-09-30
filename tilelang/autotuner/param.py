@@ -12,9 +12,9 @@ from pathlib import Path
 
 from tilelang.jit import JITKernel
 from tilelang.utils.target import determine_platform
+from tilelang.utils.file import atomic_copy
 import cloudpickle
 import os
-import shutil
 from tilelang.engine.param import KernelParam
 from tilelang import logger
 import json
@@ -200,7 +200,7 @@ class AutotuneResult:
             src_lib_path = kernel.adapter.libpath
             if verbose:
                 logger.debug(f"Saving kernel library to file: {kernel_lib_path}")
-            shutil.copy(src_lib_path, kernel_lib_path)
+            atomic_copy(src_lib_path, kernel_lib_path)
         except Exception as e:
             logger.error(f"Error saving kernel library to disk: {e}")
 
