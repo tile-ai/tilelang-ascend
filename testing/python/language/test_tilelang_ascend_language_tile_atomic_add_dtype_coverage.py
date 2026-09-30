@@ -12,9 +12,9 @@ This file supplements with:
 3. Dtype mismatch test (dst float32, src float16 must raise)
 4. Unsupported dtype compilation errors (uint16/uint32 x pto, int8 x ascendc)
 
-Test suite follows the simplification principle for direct-intrinsic APIs
-(mentor z00520135 review on PR4): since atomic_add has no type-specific
-processing logic, only representative dtypes are tested.
+Test suite follows the simplification principle for direct-intrinsic APIs:
+since atomic_add has no type-specific processing logic, only representative
+dtypes are tested.
 """
 
 import pytest
@@ -87,7 +87,13 @@ def _run_and_check(program, shape, dtype, num_blocks, target):
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="tile atomic_add correctness requires an Ascend NPU runtime",
 )
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param("ascendc", marks=pytest.mark.low_priority, id="int32-ascendc"),
+        pytest.param("pto", marks=pytest.mark.low_priority, id="int32-pto"),
+    ],
+)
 def test_atomic_add_int32_1d(target):
     num_blocks = 4
     tile_n = 32

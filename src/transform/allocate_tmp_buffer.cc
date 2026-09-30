@@ -99,6 +99,14 @@ bool HasWorkspaceOperand(const CallNode *op, int64_t tmp_pos) {
     return op->args.size() == implicit_arg_count + 1;
   }
 
+  // For ascend_clamp, position 3 may hold a tensor bound (access_ptr)
+  // rather than a workspace operand.  Distinguish by arg count: the
+  // frontend inserts an explicit tmp at position 3 only when the user
+  // provides one, yielding 7 args; without tmp the call has 6 args.
+  if (op->op.same_as(tl::ascend_clamp())) {
+    return op->args.size() == 7U;
+  }
+
   return tmp_pos < static_cast<int64_t>(op->args.size()) &&
          IsExplicitWorkspace(op->args[tmp_pos]);
 }
