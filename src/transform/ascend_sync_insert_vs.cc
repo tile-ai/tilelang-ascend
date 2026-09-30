@@ -760,15 +760,21 @@ private:
     } else if (sync_type.find("PipeBarrier_") == 0) {
       std::string pipeline = sync_type.substr(12);
       if (pipeline == "PIPE_V" && platform_ == "A5") {
-        // A5 does not support pipe_barrier(PIPE_V);
-        // raise error: the range of 1st parameter must be [4, 6]
-        // use V_V event pair
-        int event_id = AllocateEventId();
-        stmts.push_back(CreateSetFlag("V_V", event_id));
-        stmts.push_back(CreateWaitFlag("V_V", event_id));
-      } else {
-        stmts.push_back(CreatePipeBarrier(pipeline));
+        // A5 does not support pipe_barrier(PIPE_V) (its 1st parameter must be
+        // in [4, 6]). A V->V ordering is redundant anyway: the vector pipe is
+        // in-order, so a later vector op never starts before an earlier one
+        // finishes. AscendSyncInsert already drops PipeBarrier_PIPE_V on A5 for
+        // the same reason. Previously this pass instead emitted a
+        // set_flag/wait_flag(PIPE_V, PIPE_V, id) pair; when that pair landed
+        // immediately after a set_flag/wait_flag(PIPE_MTE2, PIPE_V, id) fence
+        // from AscendSyncInsert (a vector op reading one GM-copied and one
+        // just-filled buffer, e.g. examples/activation/tanh.py), the vector
+        // pipe deadlocked on A5 (AI Core stuck at 100% util, host hangs in
+        // aclrtSynchronize). Dropping it, consistent with AscendSyncInsert,
+        // fixes the hang without losing correctness.
+        return;
       }
+      stmts.push_back(CreatePipeBarrier(pipeline));
     } else if (sync_type.find("EventPair_") == 0) {
       std::string event_type = sync_type.substr(10);
       int event_id = AllocateEventId();
