@@ -237,6 +237,16 @@ private:
 
   Stmt VisitStmt_(const AttrStmtNode *op) override {
     if (op->attr_key == "resource_scope") {
+      const int resource_scope =
+          static_cast<int>(Downcast<IntImm>(op->value)->value);
+      if (resource_scope == current_resource_scope_) {
+        // Same-side explicit blocks remain part of the enclosing instruction
+        // stream, including both its latest accesses and outstanding writers.
+        Stmt new_body = VisitStmt(op->body);
+        return AttrStmt(op->node, op->attr_key, op->value, new_body);
+      }
+      const int saved_resource_scope = current_resource_scope_;
+      current_resource_scope_ = resource_scope;
       auto saved_access_history = current_access_history_;
       auto saved_write_history = current_write_history_;
       current_access_history_.clear();
@@ -244,6 +254,7 @@ private:
       Stmt new_body = VisitStmt(op->body);
       current_access_history_ = saved_access_history;
       current_write_history_ = saved_write_history;
+      current_resource_scope_ = saved_resource_scope;
       return AttrStmt(op->node, op->attr_key, op->value, new_body);
     }
     Stmt new_body = VisitStmt(op->body);
@@ -896,6 +907,7 @@ private:
   // ==================== Members ====================
 
   int event_id_counter_ = 0;
+  int current_resource_scope_ = -1;
   bool is_revisit_pass_ = false;
   std::unordered_map<std::string, std::string> event_mapping_;
   std::unordered_map<std::string, OperationConfig> operation_config_;

@@ -100,6 +100,8 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
     mod = tilelang.transform.CrossCorePipeline()(mod)
     mod = tilelang.transform.CombineCV()(mod)
+    # Recompute allocation scopes after C/V partitioning drops buffer uses.
+    mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
     mod = tilelang.transform.PipelinePlanning()(mod)
     mod = tilelang.transform.InjectSoftwarePipeline()(mod)
     mod = tilelang.transform.AscendLowerOpaqueBlock()(mod)
@@ -120,5 +122,7 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     mod = tilelang.transform.AscendMemoryPlanning()(mod)
     mod = tilelang.transform.AscendSyncInsert(target, platform)(mod)
     mod = tilelang.transform.AscendSyncInsertVS(target, platform)(mod)
+    # Verify hardware ownership after synchronization has emitted its calls.
+    mod = tilelang.transform.AscendResourceScopeVerify()(mod)
     # print(mod)
     return mod

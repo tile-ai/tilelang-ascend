@@ -392,6 +392,11 @@ def AscendSyncInsertVS(target: Target, platform: str):
     return _ffi_api.AscendSyncInsertVS(target, platform)  # type: ignore
 
 
+def AscendResourceScopeVerify():
+    """Verify that resource-specific Ascend operations have a C/V owner."""
+    return _ffi_api.AscendResourceScopeVerify()  # type: ignore
+
+
 def CombineCV():
     """CombineCV
 
