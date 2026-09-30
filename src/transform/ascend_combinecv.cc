@@ -831,12 +831,35 @@ public:
 
     bool ascend_auto_combine =
         ctx->GetConfig<Bool>(ascendAutoCombine, Bool(false)).value();
+    bool auto_cross_core_sync =
+        ctx->GetConfig<Bool>(ascendAutoCrossCoreSync, Bool(false)).value();
+    ICHECK(!auto_cross_core_sync || ascend_auto_combine)
+        << "TL_ASCEND_AUTO_CV_SYNC=True requires "
+           "TL_ASCEND_AUTO_CV_COMBINE=True. Enable CombineCV, or disable "
+           "AUTO_CV_SYNC and provide cross-core synchronization manually.";
     if (!ascend_auto_combine) {
       return f;
     }
 
-    substituter.is_auto_cross_core_sync_ =
-        ctx->GetConfig<Bool>(ascendAutoCrossCoreSync, Bool(false)).value();
+    if (auto_cross_core_sync) {
+      tir::PostOrderVisit(f->body, [&](const ObjectRef &obj) {
+        const auto *call = obj.as<CallNode>();
+        if (!call) {
+          return;
+        }
+        const auto *op = call->op.as<OpNode>();
+        if (!op) {
+          return;
+        }
+        // Compiler-generated ascend_auto_* flags use distinct intrinsics.
+        ICHECK(op->name != "tl.ascend_set_cross_flag" &&
+               op->name != "tl.ascend_wait_cross_flag")
+            << "TL_ASCEND_AUTO_CV_SYNC=True cannot be combined with manual "
+               "T.set_cross_flag/T.wait_cross_flag in the same kernel. "
+               "Remove the manual cross-core flags, or disable AUTO_CV_SYNC.";
+      });
+    }
+    substituter.is_auto_cross_core_sync_ = auto_cross_core_sync;
 
     fptr->body = substituter.VisitStmt(f->body);
     return f;
