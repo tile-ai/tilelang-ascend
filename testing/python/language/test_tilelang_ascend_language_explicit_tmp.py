@@ -865,14 +865,53 @@ def test_explicit_arena_capacity_contract():
     assert int(pto_call.args[4].args[2]) == 256
     assert int(pto_call.args[4].args[3]) == 32
 
-    ascendc_func = _inject(_reduce_program(1), "ascendc")
+    ascendc_func = _inject(_reduce_program(576), "ascendc")
     ascendc_call = _collect_calls(ascendc_func, "tl.ascend_reduce")[0]
     assert ascendc_call.args[3].args[1].name == "arena_ub"
-    assert int(ascendc_call.args[3].args[3]) == 1
+    assert ascendc_call.args[3].args[0].dtype == "float32"
+    assert int(ascendc_call.args[3].args[3]) == 144
+
+    with pytest.raises(tvm.error.TVMError, match=r"too small.*575 bytes.*need 576"):
+        _inject(_reduce_program(575), "ascendc")
 
     for model in ["ascendc", "pto"]:
         with pytest.raises(tvm.error.TVMError, match=r"is empty.*non-empty workspace"):
             _inject(_reduce_program(0), model)
+
+
+@pytest.mark.parametrize("platform", ["A2", "A3", "A5"])
+def test_fp32_reduce_workspace_follows_platform(platform):
+    program = _reduce_program(None, shape=(1, 1024)).with_attr("npu_platform", platform)
+    function = _inject(program, "ascendc")
+    workspace = _collect_calls(function, "tl.ascend_reduce")[0].args[3]
+    assert workspace.args[1].type_annotation.element_type.dtype == "uint8"
+    assert workspace.args[0].dtype == ("uint8" if platform == "A5" else "float32")
+    if platform == "A5":
+        # Preserve the legacy sum workspace; v2's smaller scratch is not its ABI.
+        assert int(workspace.args[3]) == 4096
+        narrow = _reduce_program(None, real_shape=[4, 4]).with_attr("npu_platform", platform)
+        assert len(_collect_calls(_inject(narrow, "ascendc"), "tl.ascend_reduce")[0].args) == 5
+        # Legacy explicit arenas keep the caller-owned capacity contract.
+        explicit = _reduce_program(32, shape=(1, 1024)).with_attr("npu_platform", platform)
+        assert int(_collect_calls(_inject(explicit, "ascendc"), "tl.ascend_reduce")[0].args[3].args[3]) == 32
+
+
+def test_fp32_reduce_explicit_typed_arena_preserves_byte_offset_across_platforms():
+    buffers = {
+        "arena": _ub_buffer("arena", (4112,), "float16"),
+        "src": _ub_buffer("src", (1, 1024)),
+        "dst": _ub_buffer("dst", (1,)),
+    }
+    arena = tir.BufferRegion(buffers["arena"], [tvm.ir.Range.from_min_extent(16, 4096)])
+    call = T.reduce_sum(buffers["src"], buffers["dst"], tmp=arena)
+    program = _program_from_calls([(call, 3)], list(buffers.values()), include_arena=True)
+    for platform, dtype in (("A3", "float32"), ("A5", "uint8")):
+        function = _inject(program.with_attr("npu_platform", platform), "ascendc")
+        workspace = _collect_calls(function, "tl.ascend_reduce")[0].args[3]
+        assert workspace.args[0].dtype == dtype
+        itemsize = tvm.DataType(dtype).itemsize()
+        assert int(workspace.args[2]) * itemsize == 32
+        assert int(workspace.args[3]) * itemsize == 8192
 
 
 def test_implicit_pto_reduce_allocations_follow_row_and_column_layouts():
@@ -958,10 +997,15 @@ def test_reduce_zero_workspace_paths_elide_explicit_and_implicit_tmp():
 
     # narrow-row reduce keeps the WholeReduce* zero-workspace path.
     for arena_bytes in [0, None]:
-        reduced = _inject(_reduce_program(arena_bytes, real_shape=[4, 4]), "ascendc")
+        reduced = _inject(_reduce_program(arena_bytes, dtype="float16", real_shape=[4, 4]), "ascendc")
         reduce_call = _collect_calls(reduced, "tl.ascend_reduce")[0]
         assert not any(isinstance(arg, tir.Call) and arg.op.name == "tir.tvm_access_ptr" for arg in reduce_call.args[3:]), (arena_bytes,)
         assert "tmp_ub" not in _allocated_buffer_names(reduced), (arena_bytes,)
+
+    narrow = _inject(_reduce_program(None, real_shape=[4, 4]), "ascendc")
+    narrow_call = _collect_calls(narrow, "tl.ascend_reduce")[0]
+    assert narrow_call.args[3].args[0].dtype == "float32"
+    assert int(narrow_call.args[3].args[3]) > 0
 
 
 def test_ascendc_half_sum_reduce_needs_widen_workspace():
@@ -978,14 +1022,14 @@ def test_ascendc_half_sum_reduce_needs_widen_workspace():
 @pytest.mark.parametrize(
     ("op", "shape", "dim", "expected_bytes"),
     [
-        ("sum", (8, 64), -1, 32),
-        ("sum", (8, 256), -1, 4096),
-        ("max", (8, 32), -1, 256),
-        ("max", (8, 64), -1, 2048),
+        ("sum", (8, 64), -1, 576),
+        ("sum", (8, 256), -1, 2400),
+        ("max", (8, 32), -1, 128),
+        ("max", (8, 64), -1, 576),
         ("sum", (8, 64), 0, 1024),
     ],
 )
-def test_ascendc_implicit_reduce_uses_transitional_heuristic(
+def test_ascendc_implicit_reduce_uses_v2_or_fallback_workspace(
     op,
     shape,
     dim,
@@ -995,7 +1039,10 @@ def test_ascendc_implicit_reduce_uses_transitional_heuristic(
     call = _collect_calls(func, "tl.ascend_reduce")[0]
 
     assert call.args[3].args[1].name == "tmp_ub"
-    assert int(call.args[3].args[3]) == expected_bytes
+    view_dtype = call.args[3].args[0].dtype
+    assert int(call.args[3].args[3]) * tvm.DataType(view_dtype).itemsize() == expected_bytes
+    if dim == -1:
+        assert view_dtype == "float32"
 
 
 @pytest.mark.parametrize(

@@ -392,6 +392,21 @@ def AscendSyncInsertVS(target: Target, platform: str):
     return _ffi_api.AscendSyncInsertVS(target, platform)  # type: ignore
 
 
+def AscendVectorInstructionSelection(target: Target, platform: str):
+    """Select physical Ascend Vector terminals and their mask contracts."""
+    return _ffi_api.AscendVectorInstructionSelection(target, platform)  # type: ignore
+
+
+def AscendVectorMaskLegalize(target: Target, platform: str):
+    """Reuse compatible Ascend Vector mask state before code generation."""
+    return _ffi_api.AscendVectorMaskLegalize(target, platform)  # type: ignore
+
+
+def AscendResourceScopeVerify():
+    """Verify that resource-specific Ascend operations have a C/V owner."""
+    return _ffi_api.AscendResourceScopeVerify()  # type: ignore
+
+
 def CombineCV():
     """CombineCV
 
@@ -545,8 +560,11 @@ def AscendLowerOpaqueBlock():
     return _ffi_api.AscendLowerOpaqueBlock()  # type: ignore
 
 
-def InjectTmpBuffer(target: Target):
+def InjectTmpBuffer(target: Target, plan_vid_reduction: bool = False):
     """InjectTmpBuffer for Ascend
+
+    Set plan_vid_reduction when AscendVidReduction will run afterwards.
+    Buffer scopes must already be inferred in that case.
 
     Returns
     -------
@@ -554,4 +572,4 @@ def InjectTmpBuffer(target: Target):
         The result pass
     ----
     """
-    return _ffi_api.InjectTmpBuffer(target)  # type: ignore
+    return _ffi_api.InjectTmpBuffer(target, plan_vid_reduction)  # type: ignore

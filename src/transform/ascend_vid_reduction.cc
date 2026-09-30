@@ -15,7 +15,9 @@
 #include <tvm/tir/transform.h>
 #include <tvm/tir/utils.h>
 
+#include "../op/ascend.h"
 #include "../op/builtin.h"
+#include "./common/ascend_vid_reduction.h"
 #include "./common/collector.h"
 
 #include <sstream>
@@ -30,6 +32,70 @@ using namespace tir::transform;
 
 class AscendVidReduction : public arith::IRMutatorWithAnalyzer {
 public:
+  static AscendVidReductionPlan Analyze(const PrimFunc &f) {
+    arith::Analyzer analyzer;
+    AscendVidReduction reduction(&analyzer);
+
+    // Reuse the transformation's allocation and skip decisions, while visiting
+    // the original calls so workspace injection can query them by identity.
+    class AnalysisVisitor : public StmtExprVisitor {
+    public:
+      explicit AnalysisVisitor(AscendVidReduction &reduction)
+          : reduction_(reduction) {}
+
+      AscendVidReductionPlan plan;
+
+    private:
+      void VisitStmt_(const AttrStmtNode *op) final {
+        reduction_.ObserveThreadExtent(op);
+        StmtExprVisitor::VisitStmt_(op);
+      }
+
+      void VisitStmt_(const BlockNode *op) final {
+        if (op->name_hint == "root" || reduction_.threads_cnt_ != 2) {
+          StmtExprVisitor::VisitStmt_(op);
+          return;
+        }
+        reduction_.AnalyzeBlockBuffers(op->alloc_buffers, op->body);
+        for (const Buffer &buffer : op->alloc_buffers) {
+          if (reduction_.NeedsVidReduction(buffer)) {
+            reduction_.origin_to_new_buffer_[buffer] = buffer;
+          }
+        }
+        VisitStmt(op->body);
+      }
+
+      void VisitExpr_(const CallNode *op) final {
+        if (op->op.same_as(tl::ascend_reduce())) {
+          AscendVidReductionInfo info;
+          if (reduction_.threads_cnt_ == 2) {
+            if (reduction_.ExtractBufferFromArg(op->args[2]).defined()) {
+              info.source_divisor = 2;
+            }
+            const auto *workspace = op->args[3].as<CallNode>();
+            if (workspace && workspace->op.same_as(builtin::tvm_access_ptr())) {
+              if (reduction_.ExtractBufferFromArg(op->args[3]).defined()) {
+                info.workspace_divisor = 2;
+              }
+            } else {
+              // Implicit scratch is injected as a one-dimensional UB
+              // allocation, so the subsequent pass divides it by two.
+              info.workspace_divisor = 2;
+            }
+          }
+          plan.emplace(op, info);
+        }
+        StmtExprVisitor::VisitExpr_(op);
+      }
+
+      AscendVidReduction &reduction_;
+    };
+
+    AnalysisVisitor visitor(reduction);
+    visitor(f->body);
+    return std::move(visitor.plan);
+  }
+
   static PrimFunc Substitute(PrimFunc f, PassContext ctx) {
     arith::Analyzer analyzer;
     AscendVidReduction substituter(&analyzer);
@@ -1143,7 +1209,7 @@ private:
     return IRMutatorWithAnalyzer::VisitStmt_(op);
   }
 
-  Stmt VisitStmt_(const AttrStmtNode *op) final {
+  void ObserveThreadExtent(const AttrStmtNode *op) {
     if (op->attr_key == tvm::tir::attr::thread_extent) {
       if (const IterVarNode *iter_var_node = op->node.as<IterVarNode>()) {
         IterVar iter_var = GetRef<IterVar>(iter_var_node);
@@ -1153,9 +1219,17 @@ private:
         }
       }
     }
+  }
+
+  Stmt VisitStmt_(const AttrStmtNode *op) final {
+    ObserveThreadExtent(op);
     return IRMutatorWithAnalyzer::VisitStmt_(op);
   }
 };
+
+AscendVidReductionPlan AnalyzeAscendVidReduction(const PrimFunc &func) {
+  return AscendVidReduction::Analyze(func);
+}
 
 tvm::transform::Pass AscendVidReduction() {
   auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {
