@@ -299,6 +299,49 @@ def test_adds(dtype, target, shape):
     run_test_adds(M, N, 64, 32, scalar, dtype, target=target)
 
 
+def max_scalar_from_multidim_buffer(M, N, block_M, block_N, dtype="float16"):
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        S: T.Tensor((2, 8), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+            s_ub = T.alloc_ub((2, 8), dtype)
+            c_ub = T.alloc_ub((block_M, block_N), dtype)
+            T.copy(A, a_ub)
+            T.copy(S, s_ub)
+            # Multi-dim BufferLoad must resolve to S[1, 3], not S.flatten()[1].
+            T.tile.max(c_ub, a_ub, s_ub[1, 3])
+            T.copy(c_ub, C)
+
+    return main
+
+
+@pytest.mark.parametrize("dtype", ["float16", "float"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_binary_scalar_from_multidim_buffer(dtype, target, setup_random_seed):
+    # float16: 8 halves per row exercise the 32B-padded UB row stride;
+    # float: 8 floats per row keep the dense row-major stride.
+    M, N = 128, 128
+    func = max_scalar_from_multidim_buffer(M, N, M, N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+    # Distinct values: s[1, 3] == 11 while s.flatten()[1] == 1.
+    s = torch.arange(16, dtype=torch_dtype).reshape(2, 8).npu()
+
+    c = func(a, s)
+    torch.npu.synchronize()
+
+    ref_true_index = torch.max(a, s[1, 3])
+    ref_first_index = torch.max(a, s.view(-1)[1])
+    assert not torch.allclose(c, ref_first_index)
+    torch.testing.assert_close(c, ref_true_index, rtol=1e-2, atol=1e-2)
+
+
 def bitwise_and(M, N, block_M, block_N, dtype="int16"):
     m_num = M // block_M
     n_num = N // block_N
@@ -1712,6 +1755,50 @@ compare_dtype_target_params = [
 def test_compare(out_dtype, dtype, target, shape):
     M, N = shape
     run_test_compare(M, N, 128, 256, "LT", dtype, out_dtype, target)
+
+
+def compare_scalar_from_multidim_buffer(M, N, block_M, block_N, mode, dtype="float16", out_dtype="uint8"):
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        S: T.Tensor((2, 8), dtype),  # type: ignore
+        C: T.Tensor((M, N // 8), out_dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+            s_ub = T.alloc_ub((2, 8), dtype)
+            c_ub = T.alloc_ub((block_M, block_N // 8), out_dtype)
+            T.copy(A, a_ub)
+            T.copy(S, s_ub)
+            # Multi-dim BufferLoad must resolve to S[1, 3], not S.flatten()[1].
+            T.tile.compare(c_ub, a_ub, s_ub[1, 3], mode)
+            T.copy(c_ub, C)
+
+    return main
+
+
+@pytest.mark.parametrize("dtype", ["float16", "float"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_compare_scalar_from_multidim_buffer(dtype, target, setup_random_seed):
+    # float16: 8 halves per row exercise the 32B-padded UB row stride;
+    # float: 8 floats per row keep the dense row-major stride.
+    M, N = 128, 256
+    func = compare_scalar_from_multidim_buffer(M, N, M, N, "LT", dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+    # Distinct values: s[1, 3] == 11 while s.flatten()[1] == 1.
+    s = torch.arange(16, dtype=torch_dtype).reshape(2, 8).npu()
+
+    c = func(a, s)
+    torch.npu.synchronize()
+
+    ref_c = torch.zeros(M, N // 8, dtype=torch.uint8).npu()
+    ref_true_index = compare_and_set_bits(a, s[1, 3], ref_c, "uint8")
+    ref_first_index = compare_and_set_bits(a, s.view(-1)[1], ref_c, "uint8")
+    assert not torch.equal(c, ref_first_index)
+    torch.testing.assert_close(c, ref_true_index)
 
 
 def compare_slice(M, N, block_M, block_N, mode, dtype="float", out_dtype="uint8"):
