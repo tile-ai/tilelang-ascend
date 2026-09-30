@@ -294,6 +294,16 @@ private:
 
   Stmt VisitStmt_(const AttrStmtNode *op) override {
     if (op->attr_key == "resource_scope") {
+      const int resource_scope =
+          static_cast<int>(Downcast<IntImm>(op->value)->value);
+      if (resource_scope == current_resource_scope_) {
+        // Explicit blocks within the same execution unit share outstanding
+        // accesses. Keep their lexical scopes without resetting dependencies.
+        Stmt new_body = VisitStmt(op->body);
+        return AttrStmt(op->node, op->attr_key, op->value, new_body);
+      }
+      const int saved_resource_scope = current_resource_scope_;
+      current_resource_scope_ = resource_scope;
       auto saved_access_history = current_access_history_;
 
       current_access_history_.clear();
@@ -301,6 +311,7 @@ private:
       Stmt new_body = VisitStmt(op->body);
 
       current_access_history_ = saved_access_history;
+      current_resource_scope_ = saved_resource_scope;
 
       return AttrStmt(op->node, op->attr_key, op->value, new_body);
     } else if (op->attr_key == "unrolled_loop") {
@@ -1403,6 +1414,10 @@ private:
 
   std::string GetRequiredSyncType(const BufferAccess &prev_access,
                                   const BufferAccess &curr_access) {
+    // Scalar operations are ordered; PIPE_S has no same-pipeline barrier.
+    if (prev_access.pipeline == "PIPE_S" && curr_access.pipeline == "PIPE_S") {
+      return "";
+    }
     if (prev_access.pipeline == curr_access.pipeline &&
         prev_access.pipe_barriers.find("PipeBarrier_" + prev_access.pipeline) ==
             prev_access.pipe_barriers.end()) {
@@ -1648,6 +1663,7 @@ private:
 
 private:
   int event_id_counter_ = 0;
+  int current_resource_scope_ = -1;
   std::unordered_map<std::string, std::string> event_mapping_;
   std::unordered_map<std::string, OperationConfig> operation_config_;
   std::unordered_map<std::string, BufferAccess> current_access_history_;

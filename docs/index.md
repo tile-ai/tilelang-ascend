@@ -56,6 +56,13 @@ language_ref/tilelibrary
 
 :::{toctree}
 :maxdepth: 1
+:caption: ASCEND COMPILER
+
+ascend/compiler_managed_vector_mask
+:::
+
+:::{toctree}
+:maxdepth: 1
 :caption: API Reference
 
 api/modules
