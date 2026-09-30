@@ -1638,6 +1638,51 @@ CATLASS_DEVICE void gemmL1(LocalTensor<T1> A, LocalTensor<T1> B,
   }
 }
 
+// im2col：从 L1 的 NC1HWC0 feature map 提取卷积 im2col tile 到 L0A。
+// 翻译自 catlass conv 的 L1->L0A 装载路径（catlass/conv/tile/atlasa2/
+// copy_l1_to_l0a.hpp），底层为 AscendC::LoadData + LoadData3DParamsV2。
+//   dst: L0A tile，逻辑形状 [M, K]，M = 输出位置数（ho*wo 展开），
+//        K = kh*kw*cin（单个 C0 组或多组，见 channelSize 约束）
+//   src: L1 feature map，NC1HWC0 布局 [C1, H, W, C0]
+//   imageShape = (hi, wi)：L1 中 feature map 的实际高宽
+//   posM/posK：目的 tile 起点（LoadData3DParamsV2 mStartPt/kStartPt）
+//   validM/validK：传输长度（mExtension/kExtension）
+// 约束（硬件）：channelSize = validK/(kh*kw) 必须等于 C0 的倍数语义
+// （fp16/bf16: 4/8/16/N*16+4/N*16+8；fp32: 4/N*8/N*8+4）；posK/validK 一般需
+// C0 对齐，posM/validM 一般 16 对齐（覆盖最右/最下分形时可放宽，详见
+// LoadData3DParamsV2 文档）。padding 顺序 [left, right, top, bottom]。
+template <typename T>
+CATLASS_DEVICE void im2col(LocalTensor<T> const &dst, LocalTensor<T> const &src,
+                           uint32_t hi, uint32_t wi, uint32_t kh, uint32_t kw,
+                           uint32_t strideH, uint32_t strideW, uint32_t dilH,
+                           uint32_t dilW, uint8_t padL, uint8_t padR,
+                           uint8_t padT, uint8_t padB, uint32_t posM,
+                           uint32_t posK, uint32_t validM, uint32_t validK) {
+  AscendC::LoadData3DParamsV2<T> loadDataParams;
+  loadDataParams.padList[0] = padL;
+  loadDataParams.padList[1] = padR;
+  loadDataParams.padList[2] = padT;
+  loadDataParams.padList[3] = padB;
+  loadDataParams.l1H = static_cast<uint16_t>(hi);
+  loadDataParams.l1W = static_cast<uint16_t>(wi);
+  // Source channel count (= cin * C0).
+  loadDataParams.channelSize = static_cast<uint16_t>(validK / (kh * kw));
+  loadDataParams.kExtension = static_cast<uint16_t>(validK);
+  loadDataParams.mExtension = static_cast<uint16_t>(validM);
+  loadDataParams.kStartPt = static_cast<uint16_t>(posK);
+  loadDataParams.mStartPt = static_cast<uint16_t>(posM);
+  loadDataParams.strideW = strideW;
+  loadDataParams.strideH = strideH;
+  loadDataParams.filterW = kw;
+  loadDataParams.filterH = kh;
+  loadDataParams.dilationFilterW = dilW;
+  loadDataParams.dilationFilterH = dilH;
+  loadDataParams.enTranspose = false;
+  loadDataParams.enSmallK = false;
+  loadDataParams.padValue = static_cast<T>(0);
+  AscendC::LoadData(dst, src, loadDataParams);
+}
+
 template <typename T, int32_t dim, int32_t axis, bool isReuseSource = false>
 CATLASS_DEVICE void
 Broadcast(const LocalTensor<T> &dst, const LocalTensor<T> &src,
