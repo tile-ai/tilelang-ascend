@@ -274,24 +274,23 @@ copy_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
               uint32_t maskShapeN = srcN) {
   // MTE3 (UB -> GM) copy semantics (dav-c220 / dav-c310):
   //  * per burst the UB source advances ceil(blockLen / 32) + srcStride
-  //    whole 32B blocks - the engine's expression of the system-wide
-  //    "narrow UB rows sit in 32B slots" layout convention (MTE-filled
-  //    buffers and the packed-mask helpers write rows on 32B boundaries);
-  //  * the GM-side stride is byte granular, so per-burst destination
-  //    addresses need no alignment;
-  //  * blockLen is a 16-bit field (max 65535) and blockCount a 12-bit
-  //    field (max 4095).
-  // A compactly packed sub-32B-pitch source with more than one row (e.g. a
-  // V-pipe (M, 1) fp32 keepdim reduce result, issue #1682) cannot be
-  // expressed by that slot stepping; when both sides are packed the copy is
-  // one contiguous slab and is emitted as a single flat burst instead.
-  // bisheng's automatic cross-pipe dependency sync only covers straight-line
-  // code: a GM scalar store beside a DataCopyPad (in particular in a sibling
-  // branch), or a runtime branch around the call, makes it miscompile and
-  // deadlock the MTE3 queue on device. So this helper never falls back to
-  // scalar stores and never puts a DataCopyPad under a runtime branch; what
-  // the engine cannot express at all is rejected by an explicit device
-  // abort below instead of silently corrupting.
+  //    whole 32B blocks - the "narrow UB rows sit in 32B slots" convention
+  //    (MTE-filled buffers and the packed-mask helpers write rows on 32B
+  //    boundaries);
+  //  * the GM-side stride is byte granular - destination addresses need no
+  //    alignment;
+  //  * blockLen is a 16-bit field (max 65535), blockCount a 12-bit field
+  //    (max 4095).
+  // A compact sub-32B-pitch multi-row source (e.g. a V-pipe (M, 1) fp32
+  // keepdim reduce result, issue #1682) breaks that slot stepping; when
+  // both sides are packed the copy is one contiguous slab, emitted as a
+  // single flat burst.
+  // bisheng's cross-pipe dependency sync only covers straight-line code: a
+  // GM scalar store beside a DataCopyPad (notably in a sibling branch) or a
+  // runtime branch around the call makes it miscompile and deadlock the MTE3
+  // queue. So the DataCopyPad below stays straight-line and unconditional,
+  // and what the engine cannot express aborts explicitly instead of
+  // silently corrupting.
   constexpr uint32_t kBlockBytes = 32;
   const uint32_t blockLen = maskShapeN * sizeof(T);
   const uint32_t srcPitch = srcN * sizeof(T);
@@ -304,17 +303,13 @@ copy_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
   const uint64_t total = static_cast<uint64_t>(maskShapeM) * blockLen;
   const bool flat = packed && total <= 65535;
   // A srcPitch >= 32B that is not a 32B multiple (e.g. a compact (M, 10)
-  // fp32 source, 40B rows) can be read by neither DMA form: the multi-burst
-  // advances the UB source by whole 32B blocks, so no srcStride reproduces
-  // the row pitch (the truncated division silently read the wrong rows
-  // before), and per-row single bursts would need 32B-aligned source
-  // addresses, which a compact non-multiple pitch does not give (device:
-  // MTE ADDR_MISALIGN). A scalar fallback would deadlock under bisheng
-  // (see the header comment). Only the single-burst forms (one row, or
-  // both sides packed) are correct here; abort loudly on everything else
-  // instead of corrupting - trap(), the same device abort CANN's own
-  // assert implementation uses (ASCENDC_ASSERT compiles to nothing in a
-  // real device build).
+  // fp32 source, 40B rows) can be read by neither DMA form: no srcStride
+  // makes the multi-burst step such a pitch, and per-row single bursts
+  // would need 32B-aligned sources (device: MTE ADDR_MISALIGN); a scalar
+  // fallback is barred by the bisheng constraint above. Only the
+  // single-burst forms (one row, or both sides packed) are correct - abort
+  // the rest via trap(), since ASCENDC_ASSERT compiles to nothing in a
+  // real device build.
   if constexpr (srcPitch % kBlockBytes != 0 && srcPitch >= kBlockBytes) {
     if (!(maskShapeM == 1 || flat)) {
       trap();
