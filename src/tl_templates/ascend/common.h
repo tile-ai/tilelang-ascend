@@ -273,29 +273,25 @@ copy_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
               uint32_t realdstN = 1, uint32_t maskShapeM = srcM,
               uint32_t maskShapeN = srcN) {
   // MTE3 (UB -> GM) copy semantics (dav-c220 / dav-c310):
-  //  * the UB source address advances ceil(blockLen / 32) + srcStride whole
-  //    32B blocks per burst - the engine's expression of the system-wide
+  //  * per burst the UB source advances ceil(blockLen / 32) + srcStride
+  //    whole 32B blocks - the engine's expression of the system-wide
   //    "narrow UB rows sit in 32B slots" layout convention (MTE-filled
-  //    buffers and the packed-mask helpers write rows on 32B boundaries), so
-  //    a multi-burst copy is correct whenever the source follows that
-  //    convention, including any srcPitch that is a 32B multiple;
-  //  * the GM-side stride is byte granular - per-burst destination addresses
-  //    need no alignment (a non-32B blockLen itself is fine too, the GM write
-  //    is masked to blockLen bytes; see CopyRemovePad in CANN's
-  //    detect_mat_mul);
-  //  * a single burst may have an arbitrary byte length, but blockLen is a
-  //    16-bit instruction field (CANN MAX_BLOCK_LEN = 65535) and blockCount
-  //    a 12-bit field (max 4095).
-  // What the engine cannot express is a *compactly packed* sub-32B-pitch
-  // source with more than one row (e.g. a V-pipe (M, 1) fp32 keepdim reduce
-  // result written straight back to GM, issue #1682): the 32B slot stepping
-  // then reads past each row. When both sides are packed such a copy is one
-  // contiguous slab, so it is emitted as a single flat burst (up to the
-  // 16-bit length limit). The DataCopyPad stays unconditional and straight-
-  // line: bisheng's automatic cross-pipe dependency sync only covers bare
-  // straight-line intrinsics, and any branch around the call (or GM scalar
-  // stores in a sibling branch) makes it miscompile and deadlock the MTE3
-  // queue on device.
+  //    buffers and the packed-mask helpers write rows on 32B boundaries);
+  //  * the GM-side stride is byte granular, so per-burst destination
+  //    addresses need no alignment;
+  //  * blockLen is a 16-bit field (max 65535) and blockCount a 12-bit
+  //    field (max 4095).
+  // A compactly packed sub-32B-pitch source with more than one row (e.g. a
+  // V-pipe (M, 1) fp32 keepdim reduce result, issue #1682) cannot be
+  // expressed by that slot stepping; when both sides are packed the copy is
+  // one contiguous slab and is emitted as a single flat burst instead.
+  // bisheng's automatic cross-pipe dependency sync only covers straight-line
+  // code: a GM scalar store beside a DataCopyPad (in particular in a sibling
+  // branch), or a runtime branch around the call, makes it miscompile and
+  // deadlock the MTE3 queue on device. So this helper never falls back to
+  // scalar stores and never puts a DataCopyPad under a runtime branch; what
+  // the engine cannot express at all is rejected by an explicit device
+  // abort below instead of silently corrupting.
   constexpr uint32_t kBlockBytes = 32;
   const uint32_t blockLen = maskShapeN * sizeof(T);
   const uint32_t srcPitch = srcN * sizeof(T);
@@ -306,31 +302,36 @@ copy_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
 
   const bool packed = srcN == maskShapeN && realdstN == maskShapeN;
   const uint64_t total = static_cast<uint64_t>(maskShapeM) * blockLen;
-  // Fold the flat form and the classic multi-burst form into one parameter
-  // set; the DataCopyPad itself stays in a single straight-line branch.
+  const bool flat = packed && total <= 65535;
+  // A srcPitch >= 32B that is not a 32B multiple (e.g. a compact (M, 10)
+  // fp32 source, 40B rows) can be read by neither DMA form: the multi-burst
+  // advances the UB source by whole 32B blocks, so no srcStride reproduces
+  // the row pitch (the truncated division silently read the wrong rows
+  // before), and per-row single bursts would need 32B-aligned source
+  // addresses, which a compact non-multiple pitch does not give (device:
+  // MTE ADDR_MISALIGN). A scalar fallback would deadlock under bisheng
+  // (see the header comment). Only the single-burst forms (one row, or
+  // both sides packed) are correct here; abort loudly on everything else
+  // instead of corrupting - trap(), the same device abort CANN's own
+  // assert implementation uses (ASCENDC_ASSERT compiles to nothing in a
+  // real device build).
+  if constexpr (srcPitch % kBlockBytes != 0 && srcPitch >= kBlockBytes) {
+    if (!(maskShapeM == 1 || flat)) {
+      trap();
+    }
+  }
+  // Flat form (both sides packed): one burst covers the whole slab.
+  // Everything else keeps the classic multi-burst.
   uint32_t blockCount = maskShapeM;
   uint32_t burstLen = blockLen;
   uint32_t srcStride = (srcPitch - blockLen) / kBlockBytes;
   uint32_t dstStride = dstPitch - blockLen;
-  const bool flat = packed && total <= 65535;
   if (flat) {
     blockCount = 1;
     burstLen = static_cast<uint32_t>(total);
     srcStride = 0;
     dstStride = 0;
   }
-  // The DataCopyPad stays unconditional and straight-line: bisheng's
-  // automatic cross-pipe dependency sync only covers straight-line
-  // intrinsics, and any branch around the call (or GM scalar stores in a
-  // sibling branch) makes it miscompile and deadlock the MTE3 queue on
-  // device. The multi-burst form is the historical default for everything
-  // that is not flat: a single row, a 32B-multiple srcPitch (the per-burst
-  // source advance lands exactly on each row) or a sub-32B srcPitch (each
-  // row then sits in its own 32B slot - the packed masks and MTE-filled
-  // narrow buffers follow that convention). A packed sub-32B-pitch source
-  // too large for one flat burst keeps taking the multi-burst form, exactly
-  // as before this change; a scalar fallback cannot live in this function
-  // at all (see above).
   AscendC::DataCopyExtParams dataCopyParams(blockCount, burstLen, srcStride,
                                             dstStride, 0);
   AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams);
