@@ -7,6 +7,14 @@ Usage:
     python examples_experiment/gdn/wy_fast/test_wy_fast.py --level l0   # L0 precision tests
     python examples_experiment/gdn/wy_fast/test_wy_fast.py --level all  # full suite
 
+Exit code contract (script entry point, run via `python test_wy_fast.py`):
+    L0/L1 precision failures and L2 rejection failures (silently accepted
+    illegal input, or rejection by an unexpected exception type / a message
+    that does not identify the root cause) exit 1; Boundary results are
+    non-blocking (layered-test contract). The suite functions intentionally
+    have NO `test_` prefix — pytest ignores boolean return values, so these
+    are plain script helpers driven by main() which owns the exit code.
+
 Precision: check_precision (mixed-tolerance dual-threshold, bf16: atol=2^-10,
 rtol=2^-6, max_abs_limit=1e0, required=0.99). inf/nan positions are structurally
 compared, not counted in numeric tolerance. For cases where S is not divisible by
@@ -173,7 +181,7 @@ def _run_precision(level, name, B, S, H, DK, DV, chunk_size, seed=1, vrange=(-1,
         return False
 
 
-def test_wy_fast_l0():
+def run_l0_tests():
     """L0 threshold tests: regular shapes (block-aligned)."""
     ok = True
     for name, B, S, H, DK, DV, cs, _tags in L0_CASES:
@@ -181,7 +189,7 @@ def test_wy_fast_l0():
     return ok
 
 
-def test_wy_fast_l1():
+def run_l1_tests():
     """L1 functional tests: parameter combination coverage, incl. S tail/prime/degenerate shapes + DK tail + chunk_size variation."""
     ok = True
     for name, B, S, H, DK, DV, cs, vrange, _tags in L1_CASES:
@@ -190,23 +198,40 @@ def test_wy_fast_l1():
 
 
 # ============================================================================
-# L2: exception tests (negative, non-blocking) — illegal inputs should be rejected
+# L2: exception tests (negative) — illegal inputs should be rejected with the
+# expected exception type and an actionable message
 # ============================================================================
-def _run_exception(name, fn):
-    """L2 single case: fn() feeds illegal input, expected to be rejected by the operator.
+def _run_exception(name, fn, expect_type, expect_msg):
+    """L2 single case: fn() feeds illegal input, REQUIRED to be rejected by the
+    entry validation with the expected exception type and a message that
+    identifies the actual root cause.
 
-    Throws exception -> [BOUNDARY_PASS] (correctly rejected); no throw -> [BOUNDARY_WARN]
-    (silently accepted). Both are non-blocking."""
+    Returns True only for a correct rejection (expected type + actionable
+    message). Both failure modes below count toward the exit code:
+    - silently accepted illegal input (entry validation missing/too weak);
+    - rejection by an unrelated exception (OOM, name error, ...) — must not
+      be reported as a correct rejection.
+    """
     try:
         fn()
     except Exception as e:
-        print(f"[BOUNDARY_PASS] l2 {name}: rejected ({type(e).__name__})")
-        return
-    print(f"[BOUNDARY_WARN] l2 {name}: illegal input not rejected (silently accepted)")
+        if isinstance(e, expect_type) and expect_msg in str(e):
+            print(f"[BOUNDARY_PASS] l2 {name}: rejected ({type(e).__name__})")
+            return True
+        print(
+            f"[BOUNDARY_FAIL] l2 {name}: wrong rejection: expected "
+            f"{expect_type.__name__} containing {expect_msg!r}, got "
+            f"{type(e).__name__}: {str(e)[:120]}"
+        )
+        return False
+    print(f"[BOUNDARY_FAIL] l2 {name}: illegal input NOT rejected (silently accepted)")
+    return False
 
 
-def test_wy_fast_l2():
-    """L2 exception tests: unsupported dtype / illegal shape / illegal chunk_size should be rejected."""
+def run_l2_tests():
+    """L2 exception tests (blocking): unsupported dtype / illegal shape / illegal
+    chunk_size MUST be rejected with the expected exception type and an
+    actionable message."""
 
     def _try_bad_dtype():
         # K passed as float32 instead of bfloat16 — should cause dtype mismatch
@@ -301,12 +326,15 @@ def test_wy_fast_l2():
         torch.npu.synchronize()
         _W, _U = WU[..., DV:], WU[..., :DV]
 
-    _run_exception("dtype_mismatch", _try_bad_dtype)
-    _run_exception("shape_not_aligned", _try_bad_shape)
-    _run_exception("chunk_size_too_small", _try_bad_chunk_size_small)
-    _run_exception("chunk_size_too_large", _try_bad_chunk_size_large)
-    _run_exception("beta_dtype_mismatch", _try_bad_beta_dtype)
-    _run_exception("g_dtype_mismatch", _try_bad_g_dtype)
+    results = [
+        _run_exception("dtype_mismatch", _try_bad_dtype, AssertionError, "K/V must be bfloat16"),
+        _run_exception("shape_not_aligned", _try_bad_shape, AssertionError, "fractal 16 alignment"),
+        _run_exception("chunk_size_too_small", _try_bad_chunk_size_small, AssertionError, "chunk_size must be >= 16"),
+        _run_exception("chunk_size_too_large", _try_bad_chunk_size_large, AssertionError, "chunk_size must be <= 128"),
+        _run_exception("beta_dtype_mismatch", _try_bad_beta_dtype, AssertionError, "Beta must be bfloat16"),
+        _run_exception("g_dtype_mismatch", _try_bad_g_dtype, AssertionError, "G must be float32"),
+    ]
+    return all(results)
 
 
 # ============================================================================
@@ -334,7 +362,7 @@ def _run_boundary(name, dtype, fn):
         print(f"[BOUNDARY_WARN] boundary {name} dtype={dtype}: {type(e).__name__}: {e}")
 
 
-def test_wy_fast_boundary():
+def run_boundary_tests():
     """Boundary tests: INF/NAN/extreme/zero (legal special values), compared by precision standard."""
     B, S, H, DK, DV, cs = 1, 256, 4, 128, 128, 64
     valid_S = (S // cs) * cs
@@ -439,18 +467,20 @@ def main():
     tilelang.disable_cache()  # disable compile cache to avoid stale artifacts
     torch.manual_seed(1)
 
-    blocking_ok = True  # only L0/L1 count toward blocking judgment
+    # L0/L1 precision failures and L2 rejection failures count toward the
+    # exit code; Boundary stays non-blocking (layered-test contract).
+    blocking_ok = True
     if args.level in ("l0", "all"):
-        blocking_ok &= test_wy_fast_l0()
+        blocking_ok &= run_l0_tests()
     if args.level in ("l1", "all"):
-        blocking_ok &= test_wy_fast_l1()
+        blocking_ok &= run_l1_tests()
     if args.level in ("l2", "all"):
-        test_wy_fast_l2()  # L2 negative: non-blocking
+        blocking_ok &= run_l2_tests()  # wrong rejection / silent acceptance FAILs
     if args.level in ("boundary", "all"):
-        test_wy_fast_boundary()  # Boundary precision: non-blocking
+        run_boundary_tests()  # Boundary precision: non-blocking
 
     if blocking_ok:
-        print("Test Passed!")  # L0/L1 all pass; judged by (exit code + this line)
+        print("Test Passed!")  # judged by (exit code + this line)
         sys.exit(0)
     sys.exit(1)
 
