@@ -1,6 +1,6 @@
 from __future__ import annotations
 import tilelang.language as T
-from tvm.ir import Range
+from tvm.ir import Range, PointerType, PrimType
 from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call, IntImm, Ramp
 from tvm import DataType, arith, tir
 from tilelang.language.ascend import _dtype, _get_tmp_arena_access_ptr
@@ -9,6 +9,35 @@ import warnings
 from typing import Any
 
 import math
+import itertools
+
+
+def _same_ub_storage(a: Buffer | BufferRegion, b: Buffer | BufferRegion) -> bool:
+    """Conservative alias check: same backing data var => treat as aliasing.
+
+    Only meant for UB operands of element-wise ops. Region pairs on the same
+    buffer are treated as aliasing even when disjoint (correctness first: the
+    auto-tmp fallback is always safe, just slightly slower).
+    """
+    buf_a = a.buffer if isinstance(a, BufferRegion) else a
+    buf_b = b.buffer if isinstance(b, BufferRegion) else b
+    return bool(buf_a.data.same_as(buf_b.data))
+
+
+_silu_inplace_tmp_uid = itertools.count()
+
+
+def _alloc_hidden_ub_tmp(op_name: str, size: int, dtype: str, uid) -> Buffer:
+    """Allocate a named hidden UB scratch buffer from inside a tile helper.
+
+    TVMScript registers frame allocations wherever they are created during
+    prim_func body evaluation, but buffers not bound to a python variable get
+    an empty name in codegen -- so an explicit PointerType-annotated Var is
+    required (verified by probe: unnamed buffer => ``auto  = ...``).
+    """
+    name = f"{op_name}_inplace_tmp{uid}"
+    var = tir.Var(name, PointerType(PrimType(dtype), "shared.ub"))
+    return T.alloc_buffer([size], dtype, data=var, scope="shared.ub")
 
 
 def _call_intrin_with_optional_tmp(
@@ -1302,6 +1331,9 @@ def silu(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):
     Note:
         - Supports data types: half, float (Atlas A2/A3)
         - SiLU = x * sigmoid(x) = x / (1 + exp(-x))
+        - AscendC::Silu 禁止源/目的地址重叠。in-place 调用（dst 与 src 同一
+          buffer）由前端自动分配隐藏 UB tmp 中转（Silu(tmp, src) +
+          DataCopy(dst, tmp)），对用户透明。
     """
     if isinstance(dst, BufferRegion):
         dst_ptr, buffer_extent = _handle_buffer_region(dst, "w")
@@ -1314,6 +1346,18 @@ def silu(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):
         src_ptr, _ = _handle_buffer_region(src, "r")
     else:
         src_ptr = src.access_ptr("r")
+
+    if _same_ub_storage(dst, src):
+        buf = dst.buffer if isinstance(dst, BufferRegion) else dst
+        tmp = _alloc_hidden_ub_tmp("silu", size, buf.dtype, next(_silu_inplace_tmp_uid))
+        return tir.call_intrin(
+            "handle",
+            tir.op.Op.get("tl.ascend_silu"),
+            dst_ptr,
+            src_ptr,
+            tmp.access_ptr("w"),
+            size,
+        )
     return tir.call_intrin(
         "handle",
         tir.op.Op.get("tl.ascend_silu"),
