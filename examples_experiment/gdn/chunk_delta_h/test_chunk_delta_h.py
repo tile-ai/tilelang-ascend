@@ -1075,9 +1075,7 @@ def run_l2_tests():
     all_ok = True
     for case in L2_CASES:
         print(f"\n[tags] {case['name']}: {', '.join(case['tags'])}")
-        rejected = _l2_compile_probe(
-            case["name"], case["expected_exc_types"], case["expected_msg"], **case["overrides"]
-        )
+        rejected = _l2_compile_probe(case["name"], case["expected_exc_types"], case["expected_msg"], **case["overrides"])
         if not rejected:
             all_ok = False
     return all_ok
