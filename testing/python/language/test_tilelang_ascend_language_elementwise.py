@@ -1976,6 +1976,32 @@ def test_cos(dtype, target):
     run_test_cos(dtype, target)
 
 
+_TRIG_OPS = {
+    "sin": T.tile.sin,
+    "cos": T.tile.cos,
+}
+
+
+@pytest.mark.parametrize("op_name", ["sin", "cos"])
+def test_trig_pto_unsupported_raises(op_name):
+    op = _TRIG_OPS[op_name]
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((256,), "float32"),  # type: ignore
+        B: T.Tensor((256,), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            a_ub = T.alloc_ub((256,), "float32")
+            b_ub = T.alloc_ub((256,), "float32")
+            T.copy(A, a_ub)
+            op(b_ub, a_ub)
+            T.copy(b_ub, B)
+
+    with pytest.raises(RuntimeError, match="not supported by the PTO backend"):  # noqa: B017
+        tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target="pto")
+
+
 def cos_slice(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
