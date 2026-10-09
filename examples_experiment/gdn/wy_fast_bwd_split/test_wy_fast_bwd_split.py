@@ -1,7 +1,7 @@
 """Test file for wy_fast_bwd_split.
 
-L0 (3 cases) + L1 (functional, 11 cases + cache-contract regression) + L2 (negative, 5 cases)
-+ Boundary (4 cases) + main dispatcher with --level support.
+L0 (3 cases) + L1 (functional, 12 cases + cache-contract & DK256 race-stress regressions)
++ L2 (negative, 6 cases) + Boundary (4 cases) + main dispatcher with --level support.
 Strict precision: fp32 (atol=2^-16, rtol=2^-10, max_abs=1e-2, ratio=0.99) for all outputs.
 
 Exit code contract (script entry point, run via `python test_wy_fast_bwd_split.py`):
@@ -138,18 +138,33 @@ L1_CASES = [
     ("l1_valrange_m", 1, 128, 1, 64, 64, 64, 64, 64, 7, 1.5, ["D-VALRANGE-M", "D-SHAPE-ALIGNED"]),
     ("l1_valrange_l", 1, 128, 1, 64, 64, 64, 64, 64, 8, 2.0, ["D-VALRANGE-L"]),
     ("l1_valrange_asym", 1, 128, 1, 64, 64, 64, 64, 64, 9, 1.0, ["D-VALRANGE-ASYM"]),
+    (
+        "l1_dk256_multiblock",
+        1,
+        256,
+        1,
+        256,
+        128,
+        64,
+        128,
+        128,
+        12,
+        1.0,
+        ["D-DTYPE-bf16", "D-SHAPE-MULTIBLOCK-DK"],
+    ),
 ]
 
 COVERAGE_CATEGORY = "Fusion"
 
 COVERAGE_MANIFEST = {
-    "D-DTYPE-bf16": 9,
+    "D-DTYPE-bf16": 10,
     "D-DTYPE-fp32": 1,
     "D-SHAPE-ALIGNED": 5,
     "D-SHAPE-TAIL-1": 1,
     "D-SHAPE-TAIL-MID": 1,
     "D-SHAPE-PRIME": 1,
     "D-SHAPE-EDGE": 1,
+    "D-SHAPE-MULTIBLOCK-DK": 1,
     "D-VALRANGE-S": 1,
     "D-VALRANGE-M": 1,
     "D-VALRANGE-L": 1,
@@ -163,7 +178,7 @@ COVERAGE_MANIFEST = {
     "D-SPECIAL-DBOUND": 1,
     "D-EXC-DTYPE": 1,
     "D-EXC-SHAPE": 1,
-    "D-EXC-PARAM": 3,
+    "D-EXC-PARAM": 4,
 }
 
 COVERAGE_NA = {
@@ -258,6 +273,28 @@ def run_l1_tests():
             print(f"  {tag} cache_cs{cs_i}/{oname}: ratio={ratio:.6f} max_abs={max_err:.6e}")
             if not passed:
                 all_pass = False
+    # DK256 race-stress regression: multi-block DK (nK=2) is the shape class
+    # that exposed the historical in-loop dual-relay race (dk corruption,
+    # timing-regime dependent); same input x 3 runs must stay bit-exact.
+    print("\n--- dk256_race_stress: DK=256 (nK=2), 3x bit-exact ---")
+    K, V, Beta, G, A, dw, du = _prepare(1, 256, 1, 256, 128, 64, seed=12)
+    stress_args = [t.npu() for t in (K, V, Beta, G, A, dw, du)]
+    stress_ok = True
+    base = None
+    for _rep in range(3):
+        r = _run_kernel_pipeline(*stress_args, 1, 256, 1, 256, 128, 64, 128, 128)
+        torch.npu.synchronize()
+        if base is None:
+            base = [x.clone() for x in r]
+        else:
+            for i, oname in enumerate(names):
+                if not torch.equal(base[i], r[i]):
+                    print(f"  [PRECISION_FAIL] dk256_race_stress/{oname}: run-to-run drift (race regression)")
+                    stress_ok = False
+    if stress_ok:
+        print("  [PRECISION_PASS] dk256_race_stress: 3x bit-exact")
+    else:
+        all_pass = False
     return all_pass
 
 
@@ -406,6 +443,29 @@ def run_l2_tests():
             24,
         )
 
+    # D-EXC-PARAM: DV beyond the supported upper bound (128; the Vector
+    # segments' UB working sets overflow beyond it — rejected at entry
+    # instead of a cryptic compile-time AscendMemoryPlanning failure)
+    def test_dv_upper_bound():
+        K, V, Beta, G, A, dw, du = _prepare(1, 256, 1, 64, 256, 64, seed=0)
+        _run_kernel_pipeline(
+            K.to("npu"),
+            V.to("npu"),
+            Beta.to("npu"),
+            G.to("npu"),
+            A.to("npu"),
+            dw.to("npu"),
+            du.to("npu"),
+            1,
+            256,
+            1,
+            64,
+            256,
+            64,
+            64,
+            64,
+        )
+
     results = [
         _run_exception("unsupported_dtype_fp64", test_fp64, AssertionError, "must be bfloat16"),
         _run_exception("illegal_shape_mismatch", test_shape_mismatch, AssertionError, "K/dw must be"),
@@ -416,6 +476,7 @@ def run_l2_tests():
         _run_exception(
             "illegal_block_fractal_alignment", test_block_fractal_alignment, AssertionError, "alignment required for the block sizes"
         ),
+        _run_exception("illegal_dv_upper_bound", test_dv_upper_bound, AssertionError, "exceeds the maximum supported value 128"),
     ]
     return all(results)
 

@@ -1182,6 +1182,16 @@ def _validate_inputs(K, V, Beta, G, A, dw, du, B, S, H, DK, DV, chunk_size, bloc
         f"block_DV={block_DV} (the Cube mma tile N/K dims; a non-16-multiple "
         f"block crashes the aicore at runtime)"
     )
+    # Explicit DV upper bound — for DV > 128 the fused kernel's dv segment
+    # (block_DV capped at 128) becomes a multi-iteration iv loop whose
+    # planner live-interval chain overflows the ~207KB per-core UB budget;
+    # the failure otherwise surfaces only at compile time as a cryptic
+    # AscendMemoryPlanning error. The tested/verified domain is DV <= 128.
+    assert DV <= 128, (
+        f"DV={DV} exceeds the maximum supported value 128: the Vector segments' "
+        f"UB working sets overflow the ~207KB budget beyond DV=128 "
+        f"(supported: multiples of 16 up to 128)"
+    )
     assert K.dtype == V.dtype == A.dtype == dw.dtype == du.dtype == Beta.dtype == torch.bfloat16, (
         f"K/V/A/dw/du/Beta must be bfloat16: K={K.dtype}, V={V.dtype}, A={A.dtype}, dw={dw.dtype}, du={du.dtype}, Beta={Beta.dtype}"
     )
