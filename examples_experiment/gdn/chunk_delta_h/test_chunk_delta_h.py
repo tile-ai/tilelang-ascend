@@ -16,11 +16,9 @@ metric, accepted under the bf16 thresholds.
 
 L0 cases:
   - l0_small_no_g: B=1, S=256, H=8, use_g=False (basic algorithm, 4 chunks;
-    use_g=False with BS>4 is mathematically unstable on the bf16 route — GDN
-    recurrence eigenvalues exceed 1 without gate decay and bf16 quantization
-    is amplified past the threshold at BS>=8; the BS<=4 bound applies on
-    this exact route — S=1024/BS=16 calibration was inherited from the fp32
-    route and was wrong)
+    use_g=False is only stable up to BS<=4 on the bf16 route — without gate
+    decay the GDN recurrence eigenvalues exceed 1 and bf16 quantization is
+    amplified past the threshold at BS>=8)
   - l0_small_g: B=1, S=4096, H=8, use_g=True (gate path, 64 chunks)
   - l0_main_config: B=1, S=32768, H=32, use_g=True (full config, 512 chunks,
     slow compile)
@@ -39,14 +37,14 @@ generation + D-PARAM coverage):
     use_initial_state=True, store_final_state=False + save_new_value=False.
   - use_g=False cases strictly limited to BS<=4 (S<=256).
 
-L2 negative cases (5, BLOCKING — illegal inputs must be rejected):
-  - unsupported dtype (float16 K/W/U variant), bad chunk_size (8 < 16
-    fractal minimum), non-aligned DV (DV=65 with block_DV=64), and the
-    S-split segment-alignment class: chunk_size=192/320 (%16==0 but
-    %128!=0 — without the %128 assert, 192 reads W out of bounds at the
-    compile stage while 320 silently drops the tail rows of the V_new
-    path; both confirmed by a live repro before the fix). Compile-only
-    probes, never executed.
+L2 negative cases (5, BLOCKING — illegal inputs must be rejected with the
+expected exception type AND a message identifying the intended root cause):
+  - unsupported dtype (float16), bad chunk_size (8: not a multiple of 16),
+    non-aligned DV (DV=80 with block_DV=64: fails the DV % block_DV check),
+    and S-split segment alignment (chunk_size=192/320: %16==0 but %128!=0 —
+    the S-split structure covers only nseg*128 rows, so non-multiple chunk
+    sizes would silently drop the tail rows of the V_new output).
+    Compile-only probes, never executed.
 
 Boundary special-value cases (6, NON-BLOCKING — legal values judged by
 precision, WARN if beyond thresholds):
@@ -57,6 +55,15 @@ precision, WARN if beyond thresholds):
 
 Coverage annotations (coverage_check.py): every case carries tags= hitting
 the D-* dimensions of the Fusion category contract (23 required dims).
+
+Exit code contract (script entry point, run via
+`python test_chunk_delta_h.py --level ...`): L0/L1 precision failures and
+L2 rejection failures (silently accepted illegal input, unexpected
+exception type, or a message that does not identify the intended root
+cause) exit 1; Boundary results are non-blocking (layered-test contract).
+The suite functions intentionally have NO `test_` prefix — pytest ignores
+boolean return values, so they are plain script helpers driven by the
+__main__ block which owns the exit code.
 """
 
 import argparse
@@ -623,7 +630,7 @@ def _run_one_case(
         _test_cleanup_tmp_so()
 
 
-def test_chunk_delta_h_l0():
+def run_l0_tests():
     """L0 precision test: run all three L0 cases."""
     torch.manual_seed(0)
     results = []
@@ -916,7 +923,7 @@ L1_CASES = [
 ]
 
 
-def test_chunk_delta_h_l1():
+def run_l1_tests():
     """L1 functional tests: shape/attr/branch coverage (all BLOCKING)."""
     torch.manual_seed(0)
     all_passed = True
@@ -963,14 +970,17 @@ _L2_BASE = dict(
 )
 
 
-def _l2_compile_probe(name, expected_exc_types, **overrides):
+def _l2_compile_probe(name, expected_exc_types, expected_msg, **overrides):
     """Compile-only probe: an illegal config should be REJECTED at compile.
 
-    Returns True if the illegal input is rejected with one of the expected
-    exception types (BOUNDARY_PASS). Returns False otherwise — either the
-    illegal input was silently accepted (BOUNDARY_FAIL: silent accept) or
-    the raised exception was not of the expected type (BOUNDARY_FAIL: wrong
-    exception type). Both False branches are blocking (merged into exit code).
+    Returns True only for a CORRECT rejection: one of the expected exception
+    types AND an exception message containing expected_msg — a same-type
+    rejection raised by an unrelated assert does NOT count (BOUNDARY_PASS).
+    Returns False otherwise — either the illegal input was silently accepted
+    (BOUNDARY_FAIL: silent accept), the raised exception was not of the
+    expected type (BOUNDARY_FAIL: wrong exception type), or the message does
+    not identify the intended root cause (BOUNDARY_FAIL: wrong rejection
+    message). All False branches are blocking (merged into exit code).
 
     The kernel is never EXECUTED for a silently-accepted illegal config
     (OOB risk).
@@ -981,8 +991,15 @@ def _l2_compile_probe(name, expected_exc_types, **overrides):
         chunk_delta_h(**kwargs)
     except expected_exc_types as e:
         msg = str(e).replace("\n", " ")[:140]
-        print(f"[BOUNDARY_PASS] l2 {name}: correctly rejected ({type(e).__name__}: {msg})")
-        return True
+        if expected_msg in str(e):
+            print(f"[BOUNDARY_PASS] l2 {name}: correctly rejected ({type(e).__name__}: {msg})")
+            return True
+        print(
+            f"[BOUNDARY_FAIL] l2 {name}: wrong rejection message (expected "
+            f"{expected_exc_types} containing {expected_msg!r}, got "
+            f"{type(e).__name__}: {msg})"
+        )
+        return False
     except Exception as e:
         msg = str(e).replace("\n", " ")[:140]
         print(f"[BOUNDARY_FAIL] l2 {name}: wrong exception type (expected {expected_exc_types}, got {type(e).__name__}: {msg})")
@@ -992,8 +1009,9 @@ def _l2_compile_probe(name, expected_exc_types, **overrides):
 
 
 # All L2 cases are blocking — illegal inputs must be rejected with the
-# expected exception type (AssertionError from host-side asserts in the
-# kernel factory).
+# expected exception type AND an exception message that identifies the
+# intended root cause (AssertionError from host-side asserts in the kernel
+# factory).
 L2_CASES = [
     {
         # input_dtype=float16 is rejected by the dtype allowlist assert in
@@ -1001,58 +1019,65 @@ L2_CASES = [
         "name": "l2_unsupported_dtype",
         "overrides": {"input_dtype": "float16", "output_dtype": "float16"},
         "expected_exc_types": (AssertionError,),
+        "expected_msg": "unsupported input_dtype='float16'",
         "tags": ["D-EXC-DTYPE"],
     },
     {
-        # chunk_size=8 → block_S=8 < 16 (GEMM fractal M minimum assert).
+        # chunk_size=8 is not a multiple of 16 → rejected by the factory's
+        # fractal-16 alignment assert (the first check this config fails).
         "name": "l2_bad_chunk_size",
         "overrides": {"chunk_size": 8},
         "expected_exc_types": (AssertionError,),
+        "expected_msg": "fractal 16 alignment",
         "tags": ["D-EXC-SHAPE"],
     },
     {
-        # DV=65 with block_DV=64 → DV % block_DV != 0 (alignment assert).
-        # Rejected by the "DV must be a multiple of block_DV" host assert.
+        # DV=80 is a multiple of 16 (passes the fractal-16 check) but not a
+        # multiple of block_DV=64 → rejected by the DV % block_DV assert.
         "name": "l2_non_aligned_dv",
-        "overrides": {"DV": 65, "block_DV": 64},
+        "overrides": {"DV": 80, "block_DV": 64},
         "expected_exc_types": (AssertionError,),
+        "expected_msg": "not a multiple of block_DV=64",
         "tags": ["D-EXC-SHAPE"],
     },
     {
-        # chunk_size=192 (%16==0 but %128!=0, S-split nseg=1): without the
-        # %128 assert the non-streaming S-split path loads W[..., 128:256]
-        # out of bounds (opaque compile-stage error). S=192 keeps the
-        # S % chunk_size assert quiet so the S-split assert is what fires.
+        # chunk_size=192 (%16==0 but %128!=0): the non-streaming S-split
+        # path would load W[..., 128:256] out of bounds. S=192 is a multiple
+        # of chunk_size, so the S % chunk_size check does not fire — the
+        # %128 check is what rejects this config.
         "name": "l2_ssplit_non_multiple_192",
         "overrides": {"S": 192, "chunk_size": 192},
         "expected_exc_types": (AssertionError,),
+        "expected_msg": "not a multiple of 128: the S-split",
         "tags": ["D-EXC-SHAPE"],
     },
     {
-        # chunk_size=320 (%16==0 but %128!=0, S-split nseg=2): without the
-        # %128 assert the kernel compiles AND runs, but silently drops the
-        # tail 64 rows of the V_new path (only nseg*128=256 rows computed,
-        # verified by a live repro before the fix). S=320 keeps the
-        # S % chunk_size assert quiet so the S-split assert is what fires.
+        # chunk_size=320 (%16==0 but %128!=0): floor(320/128)=2 segments
+        # would compute only 256 of 320 rows, silently dropping the tail of
+        # the V_new output — the %128 check rejects this config.
         "name": "l2_ssplit_non_multiple_320",
         "overrides": {"S": 320, "chunk_size": 320},
         "expected_exc_types": (AssertionError,),
+        "expected_msg": "not a multiple of 128: the S-split",
         "tags": ["D-EXC-SHAPE"],
     },
 ]
 
 
-def test_chunk_delta_h_l2():
+def run_l2_tests():
     """L2 negative tests: illegal dtype / shape should be rejected (blocking).
 
     All L2 cases are blocking — the illegal input must be rejected with the
-    expected exception type. Returns True only if all cases correctly reject
-    their illegal input; the result is merged into the main exit code.
+    expected exception type AND a message identifying the intended root
+    cause. Returns True only if all cases correctly reject their illegal
+    input; the result is merged into the main exit code.
     """
     all_ok = True
     for case in L2_CASES:
         print(f"\n[tags] {case['name']}: {', '.join(case['tags'])}")
-        rejected = _l2_compile_probe(case["name"], case["expected_exc_types"], **case["overrides"])
+        rejected = _l2_compile_probe(
+            case["name"], case["expected_exc_types"], case["expected_msg"], **case["overrides"]
+        )
         if not rejected:
             all_ok = False
     return all_ok
@@ -1118,7 +1143,7 @@ _BOUNDARY_CFG = dict(
 _BOUNDARY_WARNINGS = []
 
 
-def test_chunk_delta_h_boundary():
+def run_boundary_tests():
     """Boundary tests: zero / large / asym / inf / nan / dtype-bound.
 
     Legal special values; judged by the same bf16 precision standard —
@@ -1198,16 +1223,16 @@ if __name__ == "__main__":
     blocking_ok = True
 
     if args.level in ("l0", "all"):
-        passed = test_chunk_delta_h_l0()
+        passed = run_l0_tests()
         blocking_ok = blocking_ok and passed
     if args.level in ("l1", "all"):
-        passed = test_chunk_delta_h_l1()
+        passed = run_l1_tests()
         blocking_ok = blocking_ok and passed
     if args.level in ("l2", "all"):
-        l2_ok = test_chunk_delta_h_l2()  # unsupported_dtype now blocking
+        l2_ok = run_l2_tests()
         blocking_ok = blocking_ok and l2_ok
     if args.level in ("boundary", "all"):
-        test_chunk_delta_h_boundary()  # non-blocking
+        run_boundary_tests()  # non-blocking
 
     if blocking_ok:
         print("Test Passed!")
