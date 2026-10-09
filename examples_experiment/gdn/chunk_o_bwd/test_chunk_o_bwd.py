@@ -1,14 +1,19 @@
-"""chunk_o_bwd precision test: L0/L1/L2/Boundary + main(--level).
+"""chunk_o_bwd precision test suite: L0/L1/L2/Boundary, selected via --level.
 
-L0 covers 4 cases: l0_smoke_small, l0_representative, l0_no_gate, l0_no_dw.
-Each case checks dq/dk/dw (bf16) + dg (fp32) against golden via check_precision
-(mixed tolerance dual threshold).
+Usage: python test_chunk_o_bwd.py --level {l0,l1,l2,boundary,all}
 
-Single kernel (bhsd-style block-internal chunk loop, on-chip direct,
-0 GM workspace, 0 host ATen ops, T.copy for fp32->bf16 cast, T.tile.transpose).
+  l0        threshold cases: small smoke, representative large shape,
+            use_g=False, use_dw=False
+  l1        functional cases: mid shapes, asymmetric S, DK tail blocks
+            (DK % block_DK != 0), chunks_per_block variant
+  l2        negative cases (blocking): invalid inputs must be rejected with
+            the exact exception type + message keyword
+  boundary  special gate values (all-zero/INF/NAN/denormal), non-blocking
 
-Golden function and check_precision live in the test file (not the example file).
-The example file only contains the kernel + smoke.
+Every positive case checks dq/dk/dw (bf16) + dg (fp32) against a pure-CPU
+PyTorch golden via check_precision (mixed tolerance, dual threshold). L0/L1/L2
+failures exit 1; boundary WARNs are recorded only. The golden and the checker
+live here; example_chunk_o_bwd.py contains the kernel + a shape smoke test.
 """
 
 import argparse
@@ -23,14 +28,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from example_chunk_o_bwd import _prepare_inputs as _prepare_inputs_example  # noqa: E402
 from example_chunk_o_bwd import chunk_o_bwd  # noqa: E402
 
-# Coverage declarations for coverage_check.py
+# Coverage declarations for coverage_check.py: positive cases declare tags in
+# their config lists; COVERAGE_MANIFEST declares dimensions whose cases carry
+# no machine-readable tags (L2 rejections) as tag -> case count.
 COVERAGE_CATEGORY = "Fusion"
 COVERAGE_MANIFEST = {
     "D-SHAPE-ALIGNED": 3,
     "D-SHAPE-EDGE": 2,
     "D-SPECIAL-ZERO": 1,
     "D-EXC-DTYPE": 1,
-    "D-EXC-SHAPE": 2,
+    "D-EXC-SHAPE": 1,
     "D-DTYPE-bf16": 4,
     "D-DTYPE-fp32": 4,
     "D-PARAM-chunk_size": 6,
@@ -79,7 +86,8 @@ def golden_chunk_o_bwd(
     """PyTorch reference implementation (pure CPU).
 
     Inputs: [B,H,S,D] (bh-major). G stays [B,S,H]. dg_o stays [NK,B,S,H].
-    Host precompute: dO *= scale, dv = -dv.
+    Host precompute: dO *= scale, dv = -dv. DK/DV tail blocks are clamped to
+    the tensor bounds (d1 = min(...), v1 = min(...)).
     """
     B, H, S, DK = Q.shape
     DV = V.shape[-1]
@@ -99,11 +107,13 @@ def golden_chunk_o_bwd(
             for bs in range(BS):
                 s0, s1 = bs * C, (bs + 1) * C
                 for bk in range(NK):
-                    d0, d1 = bk * block_DK, (bk + 1) * block_DK
+                    d0 = bk * block_DK
+                    d1 = min((bk + 1) * block_DK, DK)  # DK tail-block clamp
+                    Wd = d1 - d0  # actual D-column width of this block
                     ds = torch.zeros(C, C, dtype=torch.float32, device="cpu")
-                    dqa = torch.zeros(C, block_DK, dtype=torch.float32, device="cpu")
-                    dka = torch.zeros(C, block_DK, dtype=torch.float32, device="cpu")
-                    dwa = torch.zeros(C, block_DK, dtype=torch.float32, device="cpu")
+                    dqa = torch.zeros(C, Wd, dtype=torch.float32, device="cpu")
+                    dka = torch.zeros(C, Wd, dtype=torch.float32, device="cpu")
+                    dwa = torch.zeros(C, Wd, dtype=torch.float32, device="cpu")
                     for iv in range(math.ceil(DV / block_DV)):
                         v0, v1 = iv * block_DV, min((iv + 1) * block_DV, DV)
                         Vb = Vf[bb, bh, s0:s1, v0:v1]
@@ -126,15 +136,23 @@ def golden_chunk_o_bwd(
                         g_last = float(gb[-1])
                         dg_last_0 = g_last * math.exp(g_last)
                         dqa = dqa * torch.exp(gb).unsqueeze(-1)  # scale in dOf
+                        # Gate masks use select semantics, matching the kernel's
+                        # T.tile.compare + T.tile.select: masks compare directly
+                        # (g_i <= g_j) and masked-out entries become exact 0
+                        # instead of inf*0/NaN*0=NaN artifacts.
                         diff = g_last - gb
-                        mask = (diff <= 0).float()
-                        dka_g = dka * torch.exp(diff).unsqueeze(-1) * mask.unsqueeze(-1)
+                        mask = (g_last <= gb).float()
+                        e_diff = torch.exp(diff).unsqueeze(-1)
+                        dka_g = torch.where(
+                            mask.unsqueeze(-1) > 0, dka * e_diff, torch.zeros_like(dka)
+                        )
                         dg_from_dq = (dqa * qb).sum(-1)
                         dg_from_dk = (dka_g * (-kb)).sum(-1)
                         dg_last_1 = float((dka_g * kb).sum())
                         gd2 = gb.unsqueeze(-1) - gb.unsqueeze(-2)
-                        m2 = (gd2 <= 0).float()
-                        ds_g = ds * torch.exp(gd2) * m2  # scale in dOf
+                        m2 = (gb.unsqueeze(-1) <= gb.unsqueeze(-2)).float()
+                        e_gd2 = torch.exp(gd2)
+                        ds_g = torch.where(m2 > 0, ds * e_gd2, torch.zeros_like(ds))
                         ds_pos = ds_g * (qb @ kb.t())
                         dg1 = ds_pos.sum(1)
                         dg2 = ds_pos.sum(0)
@@ -241,8 +259,7 @@ def run_and_check(B, S, H, DK, DV, chunk_size, use_g, use_dw, tag="l0", chunks_p
 
     ok = True
     checks = [("dq", dq_o, dq_ref, "bfloat16"), ("dk", dk_o, dk_ref, "bfloat16")]
-    # dw check: always check (use_dw=False -> golden dw_o is zeros, kernel
-    # should also output zeros after mul-by-0 propagation to GM write).
+    # dw is always checked: use_dw=False -> both sides output zeros.
     checks.append(("dw", dw_o, dw_ref, "bfloat16"))
     if use_g:
         if use_dw:
@@ -258,7 +275,52 @@ def run_and_check(B, S, H, DK, DV, chunk_size, use_g, use_dw, tag="l0", chunks_p
     return ok
 
 
-def test_chunk_o_bwd_l0():
+def _expect_reject(fn, exc_type, match, name):
+    """Negative test: fn must raise exc_type with `match` in the message."""
+    try:
+        fn()
+    except exc_type as e:
+        msg = str(e)
+        if match not in msg:
+            print(f"  [BOUNDARY_FAIL] {name} wrong error message: {msg!r}")
+            return False
+        print(f"  [BOUNDARY_PASS] {name} rejected ({exc_type.__name__})")
+        return True
+    print(f"  [BOUNDARY_FAIL] {name} not rejected")
+    return False
+
+
+def _call_kernel_with_fp32_q():
+    """L2 helper: call a bf16 kernel with Q as fp32 (the runtime must reject)."""
+    B, S, H, DK, DV, cs = 1, 64, 1, 128, 128, 64
+    scale = DK ** -0.5
+    Q, K, V, h_t, G, G_T, dO, dh, dv, W = _prepare_inputs(B, S, H, DK, DV, cs)
+    core_num = int(torch.npu.get_device_properties("npu").cube_core_num)
+    print("  Compiling single kernel (dtype-mismatch negative case)...")
+    kernel = chunk_o_bwd(
+        B,
+        S,
+        H,
+        DK,
+        DV,
+        "bfloat16",
+        "bfloat16",
+        "float32",
+        "float32",
+        "float32",
+        cs,
+        scale,
+        core_num,
+        True,
+        True,
+        64,
+        128,
+        256,
+    )
+    kernel(Q.float(), K, V, h_t, G, G_T, dO, dh, dv, W)
+
+
+def run_l0_suite():
     """L0 threshold tests (4 cases)."""
     configs = [
         (
@@ -325,8 +387,8 @@ def test_chunk_o_bwd_l0():
     return ok
 
 
-def test_chunk_o_bwd_l1():
-    """L1 functional tests (different S values, all supported shapes)."""
+def run_l1_suite():
+    """L1 functional tests: mid shapes, asymmetric S, DK tail blocks, cpb variant."""
     configs = [
         (
             "l1_valrange_m",
@@ -352,6 +414,32 @@ def test_chunk_o_bwd_l1():
             True,
             ["D-VALRANGE-ASYM", "D-SHAPE-ALIGNED"],
         ),
+        # DK not a multiple of block_DK=64: the last DK block is a tail block
+        # (kernel clamps the D slice; golden mirrors it via d1 = min(...)).
+        (
+            "l1_dk_tail1",
+            1,
+            512,
+            8,
+            65,
+            64,
+            64,
+            True,
+            True,
+            ["D-SHAPE-TAIL-1"],
+        ),
+        (
+            "l1_dk_tail_mid",
+            1,
+            512,
+            8,
+            96,
+            64,
+            64,
+            True,
+            True,
+            ["D-SHAPE-TAIL-MID"],
+        ),
     ]
     ok = True
     for name, B, S, H, DK, DV, cs, ug, udw, tags in configs:
@@ -373,77 +461,143 @@ def test_chunk_o_bwd_l1():
     return ok
 
 
-def test_chunk_o_bwd_l2():
-    """L2 negative tests (blocking -- invalid shapes must be rejected).
+def run_l2_suite():
+    """L2 negative tests (blocking): invalid inputs must be rejected.
 
-    L2 is blocking. Invalid input not rejected -> [BOUNDARY_FAIL] + ok=False.
-    Unexpected exception type -> also FAIL.
+    Each case validates the exact exception type plus a stable message keyword,
+    so unrelated failures (OOM, compile errors, ...) cannot be miscounted as a
+    rejection.
     """
     print("\n[L2] negative tests (blocking)")
     ok = True
-    # D-EXC-DTYPE: fp32 input for bf16 kernel parameter (not testable via
-    # run_and_check which uses bfloat16; document as known rejection)
-    print("  [BOUNDARY_PASS] l2_fp32_dtype_rejected (fp32 input not bf16, documented)")
-    # D-EXC-SHAPE: S not multiple of chunk_size -- must reject (entry assert:
-    # no tail-chunk handling; previously a silent-garbage documented limit)
-    try:
-        run_and_check(1, 100, 8, 128, 128, 64, True, True, tag="l2_non_multiple_s")
-        print("  [BOUNDARY_FAIL] l2_non_multiple_s (S=100 not rejected)")
-        ok = False
-    except Exception:
-        print("  [BOUNDARY_PASS] l2_non_multiple_s rejected")
-    # D-SHAPE-TAIL-1: DK=65 (not multiple of block_DK=64) -- must reject
-    try:
-        run_and_check(1, 512, 8, 65, 64, 64, True, True, tag="l2_dk_tail1")
-        print("  [BOUNDARY_FAIL] l2_dk_tail1 (DK=65 not rejected)")
-        ok = False
-    except Exception:
-        print("  [BOUNDARY_PASS] l2_dk_tail1 rejected")
-    # D-SHAPE-TAIL-MID: DK=96 (not multiple of block_DK=64) -- must reject
-    try:
-        run_and_check(1, 512, 8, 96, 64, 64, True, True, tag="l2_dk_tail_mid")
-        print("  [BOUNDARY_FAIL] l2_dk_tail_mid (DK=96 not rejected)")
-        ok = False
-    except Exception:
-        print("  [BOUNDARY_PASS] l2_dk_tail_mid rejected")
-    # D-SHAPE-PRIME: chunk_size=17 (prime, <64 reduce shape issue) -- must reject
-    try:
-        run_and_check(1, 512, 8, 128, 128, 17, True, True, tag="l2_chunk_prime")
-        print("  [BOUNDARY_FAIL] l2_chunk_prime (cs=17 not rejected)")
-        ok = False
-    except Exception:
-        print("  [BOUNDARY_PASS] l2_chunk_prime rejected")
-    # D-PARAM-chunk_size: chunk_size=32 (multiple of 8, but block_DK=64 !=
-    # chunk_size: square L0-staging tile entry constraint) -- must reject
-    try:
-        run_and_check(1, 512, 8, 128, 128, 32, True, True, tag="l2_chunk32")
-        print("  [BOUNDARY_FAIL] l2_chunk32 (cs=32 not rejected)")
-        ok = False
-    except Exception:
-        print("  [BOUNDARY_PASS] l2_chunk32 rejected")
-    # D-PARAM-chunk_size: chunk_size=60 (not a multiple of 8: T.tile.transpose
-    # 32B / T.tile.compare 256B byte alignment; S=480 is a multiple of 60 so
-    # only the alignment constraint fires) -- must reject
-    try:
-        run_and_check(1, 480, 8, 128, 128, 60, True, True, tag="l2_chunk60")
-        print("  [BOUNDARY_FAIL] l2_chunk60 (cs=60 not rejected)")
-        ok = False
-    except Exception:
-        print("  [BOUNDARY_PASS] l2_chunk60 rejected")
+    # D-EXC-DTYPE: fp32 input for a bf16 kernel parameter.
+    ok &= _expect_reject(
+        _call_kernel_with_fp32_q,
+        ValueError,
+        "Buffer dtype mismatch for parameter Q",
+        "l2_fp32_dtype_rejected",
+    )
+    # D-EXC-SHAPE: S not a multiple of chunk_size (no tail-chunk handling).
+    ok &= _expect_reject(
+        lambda: run_and_check(1, 100, 8, 128, 128, 64, True, True, tag="l2_non_multiple_s"),
+        AssertionError,
+        "must be a multiple of chunk_size",
+        "l2_non_multiple_s",
+    )
+    # D-SHAPE-PRIME: chunk_size=17 breaks the 32B/256B tile byte alignment.
+    ok &= _expect_reject(
+        lambda: run_and_check(1, 512, 8, 128, 128, 17, True, True, tag="l2_chunk_prime"),
+        AssertionError,
+        "must be a multiple of 8",
+        "l2_chunk_prime",
+    )
+    # chunk_size=32: block_DK must equal chunk_size (square L0-staging tile).
+    ok &= _expect_reject(
+        lambda: run_and_check(1, 512, 8, 128, 128, 32, True, True, tag="l2_chunk32"),
+        AssertionError,
+        "must equal chunk_size=",
+        "l2_chunk32",
+    )
+    # chunk_size=60: not a multiple of 8 (S=480 is a multiple of 60, so only
+    # the tile byte alignment constraint fires).
+    ok &= _expect_reject(
+        lambda: run_and_check(1, 480, 8, 128, 128, 60, True, True, tag="l2_chunk60"),
+        AssertionError,
+        "must be a multiple of 8",
+        "l2_chunk60",
+    )
     return ok
 
 
-def test_chunk_o_bwd_boundary():
-    """Boundary tests (non-blocking: special values zero/extreme/INF/NAN/denormal)."""
+def _inject_zero_g(Q, G, S):
+    """D-SPECIAL-ZERO: all-zero gate (exp(0)=1, valid numeric path)."""
+    G.zero_()
+
+
+def _inject_inf_g(Q, G, S):
+    """D-SPECIAL-INF: INF gate values at one time step."""
+    G[:, S // 2, :] = float("inf")
+
+
+def _inject_nan_g(Q, G, S):
+    """D-SPECIAL-NAN: NAN gate values at one time step."""
+    G[:, S // 2, :] = float("nan")
+
+
+def _inject_dbound(Q, G, S):
+    """D-SPECIAL-DBOUND: subnormal-magnitude values (~1e-38, below the 2^-126
+    min-normal of both fp32 and bf16) in the fp32 gate and one bf16 input row."""
+    G[:, S // 2, :] = 1e-38
+    Q[:, :, S // 2, :] = 1e-38
+
+
+def run_boundary_suite():
+    """Boundary tests (non-blocking): special gate values zero/INF/NAN/denormal.
+
+    Kernel+golden runs on a small shape. Special values are injected into the
+    inputs after _prepare_inputs (G_T is then regenerated from the mutated G).
+    Precision FAIL or exception -> [BOUNDARY_WARN] (recorded, non-blocking).
+    """
     print("\n[BOUNDARY] special value tests (non-blocking)")
-    # D-SPECIAL-ZERO: zero G inputs
-    print("  [BOUNDARY_PASS] boundary_zero_g (zero G -> exp(0)=1, valid)")
-    # D-SPECIAL-INF: INF in G
-    print("  [BOUNDARY_PASS] boundary_inf_g (large G -> exp overflow, masked)")
-    # D-SPECIAL-NAN: NAN in G
-    print("  [BOUNDARY_WARN] boundary_nan_g (NAN propagates through exp, expected)")
-    # D-SPECIAL-DBOUND: denormalized/boundary values
-    print("  [BOUNDARY_PASS] boundary_dbound (subnormal inputs handled by bf16)")
+    B, S, H, DK, DV, cs = 1, 64, 1, 128, 128, 64
+    use_g, use_dw = True, True
+    scale = DK ** -0.5
+    core_num = int(torch.npu.get_device_properties("npu").cube_core_num)
+    print(
+        f"  Compiling single kernel (B={B}, S={S}, H={H}, DK={DK}, DV={DV}, "
+        f"cs={cs}, use_g={use_g}, use_dw={use_dw}, boundary suite)..."
+    )
+    kernel = chunk_o_bwd(
+        B,
+        S,
+        H,
+        DK,
+        DV,
+        "bfloat16",
+        "bfloat16",
+        "float32",
+        "float32",
+        "float32",
+        cs,
+        scale,
+        core_num,
+        use_g,
+        use_dw,
+        64,
+        128,
+        256,
+    )
+    cases = [
+        ("boundary_zero_g", _inject_zero_g, ["D-SPECIAL-ZERO"]),
+        ("boundary_inf_g", _inject_inf_g, ["D-SPECIAL-INF"]),
+        ("boundary_nan_g", _inject_nan_g, ["D-SPECIAL-NAN"]),
+        ("boundary_dbound", _inject_dbound, ["D-SPECIAL-DBOUND"]),
+    ]
+    for name, inject, tags in cases:
+        print(f"\n[{name}] tags={tags}")
+        try:
+            Q, K, V, h_t, G, G_T, dO, dh, dv, W = _prepare_inputs(B, S, H, DK, DV, cs)
+            inject(Q, G, S)
+            # Regenerate G_T from the mutated G (same recipe as _prepare_inputs).
+            G_T = G.cpu().permute(0, 2, 1).contiguous().to(G.device)
+            dq_o, dk_o, dw_o, dg_o = kernel(Q, K, V, h_t, G, G_T, dO, dh, dv, W)
+            torch.npu.synchronize()
+            dg_merged = dg_o.cpu().sum(dim=0).permute(0, 2, 1)
+            dq_ref, dk_ref, dw_ref, dg_ref = golden_chunk_o_bwd(
+                Q, K, V, h_t, G, dO, dh, dv, W, cs, scale, use_g, use_dw, 64, 128
+            )
+            checks = [
+                ("dq", dq_o, dq_ref, "bfloat16"),
+                ("dk", dk_o, dk_ref, "bfloat16"),
+                ("dw", dw_o, dw_ref, "bfloat16"),
+                ("dg", dg_merged, dg_ref, "float32"),
+            ]
+            for cname, act, gold, dt in checks:
+                passed, ratio, max_abs = check_precision(act, gold, dt)
+                status = "BOUNDARY_PASS" if passed else "BOUNDARY_WARN"
+                print(f"  [{status}] {name} {cname} ratio={ratio:.4f} max_abs={max_abs:.3e}")
+        except Exception as e:
+            print(f"  [BOUNDARY_WARN] {name} exception: {type(e).__name__}: {e}")
 
 
 def main():
@@ -454,13 +608,13 @@ def main():
     torch.set_default_device("npu")
     blocking_ok = True
     if args.level in ("l0", "all"):
-        blocking_ok &= test_chunk_o_bwd_l0()
+        blocking_ok &= run_l0_suite()
     if args.level in ("l1", "all"):
-        blocking_ok &= test_chunk_o_bwd_l1()
+        blocking_ok &= run_l1_suite()
     if args.level in ("l2", "all"):
-        blocking_ok &= test_chunk_o_bwd_l2()
+        blocking_ok &= run_l2_suite()
     if args.level in ("boundary", "all"):
-        test_chunk_o_bwd_boundary()
+        run_boundary_suite()
     if blocking_ok:
         print("\nTest Passed!")
         sys.exit(0)
