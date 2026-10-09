@@ -375,6 +375,15 @@ def test_gemm_v0_bfloat16_precision(target):
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="gemm_v0 correctness requires an Ascend NPU runtime",
 )
+def test_gemm_v0_float32_ascendc_precision():
+    """FP32 L1-to-L0 loads and MMA must preserve all input elements."""
+    _run_dtype_precision("float32", "float", "ascendc", shape_group="C")
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize(
     "transpose_A,transpose_B",
     [
