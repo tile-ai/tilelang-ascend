@@ -5,6 +5,8 @@ Single-kernel on-chip fusion (bhsd-style block-internal chunk loop), Developer m
 
 Key design:
   - Single @tilelang.jit, grid=256, chunks_per_block=32, 0 GM workspace.
+  - Memory hierarchy: GM <-> L1 (Cube cache) / UB (Vector buffer) -> L0A/L0B -> L0C,
+    all intermediates stay on-chip.
   - block_DK=64, block_DV=128, kL0Size=32, GM layout [B,H,S,D] (bh-major).
   - T.gemm_v0 (NOT T.gemm); no T.Scope/flag/barrier_all (Developer + combineCV).
   - T.mma explicit L0 staging for GEMM1/2 + Stage-3 GEMMs (shared L0A/L0B).
@@ -66,29 +68,26 @@ def chunk_o_bwd(
     handling).
     """
     block_S = chunk_size
-    # --- Entry constraints (fail fast with clear messages instead of opaque
-    # lowering-stage errors; see TIR tile alignment checks) ---
-    # Alignment: the square (block_S, block_S) fp32 gate/tril tiles feed
-    # T.tile.transpose (row bytes 32B-aligned: block_S * 4 % 32 == 0) and
-    # T.tile.compare (total bytes 256B-aligned: block_S**2 * 4 % 256 == 0),
-    # so block_S must be a multiple of 8.
+    # --- Entry constraints (fail fast with clear messages) ---
+    # The (block_S, block_S) fp32 gate/tril tiles feed T.tile.transpose
+    # (32B-aligned rows: block_S * 4 % 32 == 0) and T.tile.compare
+    # (256B-aligned total: block_S**2 * 4 % 256 == 0), so block_S must be a
+    # multiple of 8.
     assert chunk_size % 8 == 0, (
         f"chunk_size={chunk_size} must be a multiple of 8: T.tile.transpose "
         "requires 32-byte-aligned rows and T.tile.compare requires 256-byte-"
         "aligned inputs on the (chunk_size, chunk_size) fp32 gate/tril tiles"
     )
-    # Square-tile constraint, required for BOTH use_g paths (not only the
-    # gate path): Stage-3 L0 staging copies k_l1 (block_S, block_DK) into
-    # k_l0b (block_S, block_S); the gate path additionally reuses G_2d_ub
-    # (block_S, block_DK) as the col-broadcast target and last-row select
-    # source.
+    # Square-tile constraint for BOTH use_g paths: Stage-3 L0 staging copies
+    # k_l1 (block_S, block_DK) into k_l0b (block_S, block_S); the gate path
+    # also reuses G_2d_ub (block_S, block_DK) as a col-broadcast target.
     assert block_DK == block_S, (
         f"block_DK={block_DK} must equal chunk_size={block_S}: Stage-3 "
         "L0 staging copies k_l1 (block_S, block_DK) into k_l0b (block_S, "
         "block_S)"
     )
     # No tail-chunk handling: BS = S // block_S would silently drop the
-    # S % chunk_size trailing rows (garbage output).
+    # S % chunk_size trailing rows.
     assert S % chunk_size == 0, (
         f"S={S} must be a multiple of chunk_size={chunk_size}: no tail-chunk "
         "handling, S % chunk_size trailing rows would be silently dropped"
@@ -98,8 +97,8 @@ def chunk_o_bwd(
     num_chunk_groups = math.ceil(BS / chunks_per_block)
     grid = B * H * NK * num_chunk_groups
     # Batch the per-chunk dg GM write into one DMA per block via a flat UB
-    # staging buffer, zero-initialized before the chunk loop and flushed once
-    # after it. Gated on staging size (<= 8KB).
+    # staging buffer (zero-initialized before the chunk loop, flushed once
+    # after it; gated on staging size <= 8KB).
     dg_batch_write = use_g and chunks_per_block * block_S * 4 <= 8192
     # Declared unconditionally at prim_func top level (length 1 when off).
     dg_batch_len = chunks_per_block * block_S if dg_batch_write else 1
@@ -150,7 +149,7 @@ def chunk_o_bwd(
             v_l0b = T.alloc_L0B((block_DV, block_S), input_dtype)  # [K,N] GEMM1 (V^T)
             h_l0b = T.alloc_L0B(
                 (block_DV, block_DK), input_dtype
-            )  # [K,N] shared GEMM2+GEMM4... (GEMM4 stays gemm_v0, h_l0b for GEMM2 only)
+            )  # [K,N] GEMM2 (dO @ h^T)
 
             # Stage-3 L0A (4 operands, [block_S, block_S] bf16 = 8KB each)
             ds_gated_l0a = T.alloc_L0A((block_S, block_S), output_dtype)
@@ -197,8 +196,7 @@ def chunk_o_bwd(
             dg_final = T.alloc_ub((block_S,), gate_dtype)
             dg_last_0_1d = T.alloc_ub((block_S,), gate_dtype)
             dg_last_1_1d = T.alloc_ub((block_S,), gate_dtype)
-            # 1D scratch for dg_last_0 = g_last * exp(g_last). Shape (block_S,)
-            # matches dg_last_0_1d (block_DK == block_S asserted above).
+            # 1D scratch for dg_last_0 = g_last * exp(g_last).
             exp_g_last_1d = T.alloc_ub((block_S,), gate_dtype)
             # Positive dk-contribution row sums (negated later via 1D sub in dg_final)
             dg_from_dk_1d = T.alloc_ub((block_S,), gate_dtype)
@@ -236,11 +234,11 @@ def chunk_o_bwd(
             tril_mask = T.alloc_ub((block_S, block_S), accum_dtype)
 
             # --- Loop-invariant precomputation (hoisted before chunk loop) ---
-            # use_g=False: tril mask (i >= j), computed once (not overwritten in else branch).
+            # use_g=False: tril mask (i >= j), computed once.
             # use_g=True: last-row mask for dg_last_0 (i == block_S-1), staged
-            # through G_diff_2d (reused later by the ds-gate sub). dg_2 is
-            # dual-use: prologue constant consumed before the first per-chunk
-            # reduce_sum overwrites it.
+            # through G_diff_2d (reused by the ds-gate sub); dg_2 is a prologue
+            # constant consumed before the first per-chunk reduce_sum
+            # overwrites it.
             if not use_g:
                 T.tile.arith_progression(row_1d, 0, 1, block_S)
                 T.tile.arith_progression(col_1d, 0, 1, block_S)
@@ -248,8 +246,7 @@ def chunk_o_bwd(
                 T.tile.broadcast(col_2d, col_1d, axis=0)
                 T.tile.compare(tril_mask, row_2d, col_2d, "GE")
             # Zero-init the batch buffer: invalid-chunk rows hold 0 (matches
-            # golden's torch.zeros semantics), and the fill extends liveness
-            # to the prologue for correct UB placement.
+            # golden torch.zeros semantics).
             if dg_batch_write:
                 T.tile.fill(dg_batch_ub, 0.0)
             if use_g:
@@ -319,12 +316,11 @@ def chunk_o_bwd(
                         # dg_last_0 = g_last * exp(g_last) (last-row mask hoisted before chunk loop)
                         T.tile.select(diff_2d, last_row_mask, G_2d_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
                         T.reduce_sum(diff_2d, dg_last_0_1d, dim=0, clear=True)
-                        # G_last_2d broadcast MUST stay: consumed by the dk-gate
-                        # sub below (diff = g_last - G)
+                        # G_last_2d is consumed by the dk-gate sub below
+                        # (diff = g_last - G).
                         T.tile.broadcast(G_last_2d, dg_last_0_1d, axis=0)
-                        # dg_last_0_1d is already [g_last]*block_DK (all elements
-                        # identical after the dim=0 reduce), so the 2D path
-                        # collapses to 1D ops. Math: g_last * exp(g_last).
+                        # dg_last_0_1d is [g_last]*block_DK (uniform after the
+                        # dim=0 reduce), so 1D ops suffice.
                         T.tile.exp(exp_g_last_1d, dg_last_0_1d)
                         T.tile.mul(dg_last_0_1d, dg_last_0_1d, exp_g_last_1d)
 
@@ -332,10 +328,10 @@ def chunk_o_bwd(
                         T.tile.mul(dg_reduce_tmp, dq_ub, q_ub)
                         T.reduce_sum(dg_reduce_tmp, dg_1, dim=-1, clear=True)
 
-                        # dk gate factors (for dg computation only -- dk_ub stays ungated for output).
-                        # Golden: dk = dk1_ungated + ds_g^T @ q; dk_gated only used for dg.
-                        # Direct tensor-tensor compare: (g_last - G[i]) <= 0 is
-                        # elementwise-equivalent to g_last <= G[i] for finite fp32.
+                        # dk gate factors (dg computation only; dk_ub stays
+                        # ungated for output: dk = dk1 + ds_g^T @ q).
+                        # Direct compare g_last <= G[i] (equivalent to
+                        # (g_last - G[i]) <= 0 for finite fp32).
                         T.tile.compare(mask_2d, G_last_2d, G_2d_ub, "LE")
                         T.tile.sub(diff_2d, G_last_2d, G_2d_ub)
                         T.tile.exp(exp_diff_2d, diff_2d)
@@ -355,11 +351,11 @@ def chunk_o_bwd(
 
                         # dg_from_dk kept positive; negation folded into dg_final as a 1D sub.
 
-                        # ds gate: ds *= exp(Gi - Gj) * mask (scale folded into dO on host)
+                        # ds gate: ds *= exp(Gi - Gj) * mask (scale folded into dO on host).
                         # G_2d_ub already holds broadcast(G_1d_ub, axis=1) from the
                         # dq gate above -- reused here (requires block_DK == block_S).
-                        # Direct tensor-tensor compare: (G[i]-G[j]) <= 0 is
-                        # elementwise-equivalent to G[i] <= G[j] for finite fp32.
+                        # Direct compare G[i] <= G[j] (equivalent to
+                        # (G[i]-G[j]) <= 0 for finite fp32).
                         T.tile.broadcast(G_row_2d, G_1d_ub, axis=0)
                         T.tile.compare(G_diff_mask_2d, G_2d_ub, G_row_2d, "LE")
                         T.tile.sub(G_diff_2d, G_2d_ub, G_row_2d)
