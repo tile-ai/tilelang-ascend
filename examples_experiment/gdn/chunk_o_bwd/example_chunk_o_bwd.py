@@ -147,9 +147,7 @@ def chunk_o_bwd(
             # GEMM1+GEMM2 share A=dO; GEMM6+GEMM7 share B=k; GEMM8+GEMM9 share B=q.
             do_l0a = T.alloc_L0A((block_S, block_DV), input_dtype)  # [M,K] shared GEMM1+GEMM2
             v_l0b = T.alloc_L0B((block_DV, block_S), input_dtype)  # [K,N] GEMM1 (V^T)
-            h_l0b = T.alloc_L0B(
-                (block_DV, block_DK), input_dtype
-            )  # [K,N] GEMM2 (dO @ h^T)
+            h_l0b = T.alloc_L0B((block_DV, block_DK), input_dtype)  # [K,N] GEMM2 (dO @ h^T)
 
             # Stage-3 L0A (4 operands, [block_S, block_S] bf16 = 8KB each)
             ds_gated_l0a = T.alloc_L0A((block_S, block_S), output_dtype)

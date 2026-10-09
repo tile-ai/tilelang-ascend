@@ -143,9 +143,7 @@ def golden_chunk_o_bwd(
                         diff = g_last - gb
                         mask = (g_last <= gb).float()
                         e_diff = torch.exp(diff).unsqueeze(-1)
-                        dka_g = torch.where(
-                            mask.unsqueeze(-1) > 0, dka * e_diff, torch.zeros_like(dka)
-                        )
+                        dka_g = torch.where(mask.unsqueeze(-1) > 0, dka * e_diff, torch.zeros_like(dka))
                         dg_from_dq = (dqa * qb).sum(-1)
                         dg_from_dk = (dka_g * (-kb)).sum(-1)
                         dg_last_1 = float((dka_g * kb).sum())
@@ -293,7 +291,7 @@ def _expect_reject(fn, exc_type, match, name):
 def _call_kernel_with_fp32_q():
     """L2 helper: call a bf16 kernel with Q as fp32 (the runtime must reject)."""
     B, S, H, DK, DV, cs = 1, 64, 1, 128, 128, 64
-    scale = DK ** -0.5
+    scale = DK**-0.5
     Q, K, V, h_t, G, G_T, dO, dh, dv, W = _prepare_inputs(B, S, H, DK, DV, cs)
     core_num = int(torch.npu.get_device_properties("npu").cube_core_num)
     print("  Compiling single kernel (dtype-mismatch negative case)...")
@@ -541,12 +539,9 @@ def run_boundary_suite():
     print("\n[BOUNDARY] special value tests (non-blocking)")
     B, S, H, DK, DV, cs = 1, 64, 1, 128, 128, 64
     use_g, use_dw = True, True
-    scale = DK ** -0.5
+    scale = DK**-0.5
     core_num = int(torch.npu.get_device_properties("npu").cube_core_num)
-    print(
-        f"  Compiling single kernel (B={B}, S={S}, H={H}, DK={DK}, DV={DV}, "
-        f"cs={cs}, use_g={use_g}, use_dw={use_dw}, boundary suite)..."
-    )
+    print(f"  Compiling single kernel (B={B}, S={S}, H={H}, DK={DK}, DV={DV}, cs={cs}, use_g={use_g}, use_dw={use_dw}, boundary suite)...")
     kernel = chunk_o_bwd(
         B,
         S,
@@ -583,9 +578,7 @@ def run_boundary_suite():
             dq_o, dk_o, dw_o, dg_o = kernel(Q, K, V, h_t, G, G_T, dO, dh, dv, W)
             torch.npu.synchronize()
             dg_merged = dg_o.cpu().sum(dim=0).permute(0, 2, 1)
-            dq_ref, dk_ref, dw_ref, dg_ref = golden_chunk_o_bwd(
-                Q, K, V, h_t, G, dO, dh, dv, W, cs, scale, use_g, use_dw, 64, 128
-            )
+            dq_ref, dk_ref, dw_ref, dg_ref = golden_chunk_o_bwd(Q, K, V, h_t, G, dO, dh, dv, W, cs, scale, use_g, use_dw, 64, 128)
             checks = [
                 ("dq", dq_o, dq_ref, "bfloat16"),
                 ("dk", dk_o, dk_ref, "bfloat16"),
