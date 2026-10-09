@@ -65,8 +65,8 @@ def chunk_scaled_dot_kkt_fwd(
             Must be 64 (asserted at entry): T.tile ops on (BS,BS) fp32
             tiles additionally require 256B alignment (BS%8==0).
         use_g: gating mode (JIT compile-time param; different kernels per value).
-        input_dtype: dtype of K (bfloat16).
-        output_dtype: dtype of A (bfloat16).
+        input_dtype: dtype of K. Must be bfloat16 (asserted at entry).
+        output_dtype: dtype of A. Must be bfloat16 (asserted at entry).
         accum_dtype: accumulation dtype (float32). Also Beta dtype.
         block_DK: K-dim block size (default 128). When DK < block_DK, the
             GM->L1 copy zero-pads cols [DK, block_DK).
@@ -80,30 +80,32 @@ def chunk_scaled_dot_kkt_fwd(
 
     Note:
         Beta is loaded as accum_dtype (float32) because the codegen does
-        not support strided bf16 T.copy with pad value. Host-side casts
-        Beta to float32 before .npu(). This is data preparation, not
-        gate/tri_mask pre-computation.
+        not support strided bf16 T.copy with pad value; the host casts
+        Beta to float32 before .npu().
     """
     block_S = chunk_size
     N = chunks_per_block
     assert N == 4, "static unroll handles exactly 4 chunks per block"
-    # chunk_size constraint (fail-fast, review hardening): the algorithm
-    # semantics fix the chunk size at 64, and T.tile.compare/broadcast/cast
-    # operate on (BS,BS) fp32 tiles requiring 256B alignment (BS%8==0).
-    # Non-conforming values previously only failed at AscendC lowering.
+    # Fail fast on unsupported params: the algorithm fixes chunk_size at 64
+    # (T.tile.compare/broadcast/cast on (BS,BS) fp32 tiles also require 256B
+    # alignment, i.e. BS%8==0), and only bfloat16 K/A are validated (Beta/G
+    # are float32 via accum_dtype). Violations would otherwise surface later
+    # as opaque AscendC lowering errors.
     assert chunk_size == 64, (
         f"chunk_size={chunk_size} must be 64: the algorithm semantics fix "
-        f"the chunk size at 64; additionally T.tile.compare/broadcast/cast "
-        f"operate on (BS,BS) fp32 tiles requiring 256B alignment (BS%8==0), "
-        f"and non-conforming values previously only failed at AscendC "
-        f"lowering."
+        f"the chunk size at 64; T.tile.compare/broadcast/cast on (BS,BS) "
+        f"fp32 tiles additionally require 256B alignment (BS%8==0)."
+    )
+    assert input_dtype == "bfloat16" and output_dtype == "bfloat16", (
+        f"input_dtype={input_dtype}, output_dtype={output_dtype}: K/A must "
+        f"be bfloat16 (Beta/G are float32 via accum_dtype); other dtypes "
+        f"are not validated."
     )
     num_chunks = S // block_S
     num_chunk_groups = (num_chunks + N - 1) // N
     total_blocks = num_chunk_groups * B * H
-    # K layout (B,H,S,DK) for contiguous kernel read access. Host permutes
-    # K to (B,H,S,DK) before .npu() (data prep, not gate/tri_mask
-    # pre-computation).
+    # K layout (B,H,S,DK) for contiguous kernel reads; the host permutes
+    # before .npu().
     K_shape = (B, H, S, DK)
     # Beta/G use (B,H,S) layout to enable contiguous 1D T.copy in kernel.
     # (B,S,H) would make the S-dim slice strided; (B,H,S) makes it contiguous.

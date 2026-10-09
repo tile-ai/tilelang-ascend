@@ -2,6 +2,15 @@
 
 Imports kernel from example_chunk_scaled_dot_kkt, includes golden,
 check_precision, and layered test suite (L0/L1/L2/Boundary).
+
+Exit code contract (script entry point, run via `python test_chunk_scaled_dot_kkt.py`):
+    L0/L1 precision failures and L2 rejection failures (silently accepted
+    illegal input, or rejection by an unexpected exception type / a message
+    that does not identify the root cause) exit 1; L2 functional edge cases
+    and Boundary special values are non-blocking (layered-test contract).
+    The suite functions intentionally have NO `test_` prefix — pytest
+    ignores boolean return values, so these are plain script helpers driven
+    by main() which owns the exit code.
 """
 
 import argparse
@@ -16,7 +25,8 @@ import tilelang  # noqa: E402
 from example_chunk_scaled_dot_kkt import chunk_scaled_dot_kkt_fwd  # noqa: E402
 
 # =============================================================================
-# Coverage manifest
+# Coverage manifest: dimensions exercised by the suite (D-EXC-* = illegal
+# inputs that must be rejected; see run_l2_tests)
 # =============================================================================
 COVERAGE_CATEGORY = "Fusion"
 COVERAGE_MANIFEST = {
@@ -170,201 +180,187 @@ def run_and_check(B, S, H, DK, chunk_size, use_g, dtype_str="bfloat16", seed=0):
 
 
 # =============================================================================
-# L0 tests (blocking)
+# L0 tests (threshold, blocking)
 # =============================================================================
-def test_l0_basic_gating():
-    passed, ratio, max_abs = run_and_check(1, 32768, 32, 128, 64, True)
-    status = "PASS" if passed else "FAIL"
-    print(f"[PRECISION_{status}] l0_basic_gating: matched_ratio={ratio:.4f} max_abs_error={max_abs:.3e}")
-    return passed
-
-
-def test_l0_basic_no_gating():
-    passed, ratio, max_abs = run_and_check(1, 32768, 32, 128, 64, False)
-    status = "PASS" if passed else "FAIL"
-    print(f"[PRECISION_{status}] l0_basic_no_gating: matched_ratio={ratio:.4f} max_abs_error={max_abs:.3e}")
-    return passed
-
-
-def test_l0_small_gating():
-    passed, ratio, max_abs = run_and_check(1, 64, 1, 64, 64, True)
-    status = "PASS" if passed else "FAIL"
-    print(f"[PRECISION_{status}] l0_small_gating: matched_ratio={ratio:.4f} max_abs_error={max_abs:.3e}")
-    return passed
+def run_l0_tests():
+    """L0 threshold tests: representative rule shapes, blocking."""
+    print("=== L0 Tests ===")
+    cases = [
+        ("l0_basic_gating", (1, 32768, 32, 128, 64, True)),
+        ("l0_basic_no_gating", (1, 32768, 32, 128, 64, False)),
+        ("l0_small_gating", (1, 64, 1, 64, 64, True)),
+    ]
+    results = []
+    for name, case in cases:
+        passed, ratio, max_abs = run_and_check(*case)
+        status = "PASS" if passed else "FAIL"
+        print(f"[PRECISION_{status}] {name}: matched_ratio={ratio:.4f} max_abs_error={max_abs:.3e}")
+        results.append(passed)
+    return all(results)
 
 
 # =============================================================================
-# L1 tests (functional, non-standard shapes)
+# L1 tests (functional, non-standard shapes; blocking)
 # =============================================================================
-def test_l1_small_no_gating():
-    passed, ratio, max_abs = run_and_check(1, 64, 1, 64, 64, False)
-    status = "PASS" if passed else "FAIL"
-    print(f"[PRECISION_{status}] l1_small_no_gating: matched_ratio={ratio:.4f} max_abs_error={max_abs:.3e}")
-    return passed
-
-
-def test_l1_dk128_gating():
-    passed, ratio, max_abs = run_and_check(1, 128, 4, 128, 64, True)
-    status = "PASS" if passed else "FAIL"
-    print(f"[PRECISION_{status}] l1_dk128_gating: matched_ratio={ratio:.4f} max_abs_error={max_abs:.3e}")
-    return passed
-
-
-def test_l1_multi_chunk():
-    passed, ratio, max_abs = run_and_check(1, 256, 2, 64, 64, True)
-    status = "PASS" if passed else "FAIL"
-    print(f"[PRECISION_{status}] l1_multi_chunk: matched_ratio={ratio:.4f} max_abs_error={max_abs:.3e}")
-    return passed
+def run_l1_tests():
+    """L1 functional tests: non-standard shapes, blocking."""
+    print("=== L1 Tests ===")
+    cases = [
+        ("l1_small_no_gating", (1, 64, 1, 64, 64, False)),
+        ("l1_dk128_gating", (1, 128, 4, 128, 64, True)),
+        ("l1_multi_chunk", (1, 256, 2, 64, 64, True)),
+    ]
+    results = []
+    for name, case in cases:
+        passed, ratio, max_abs = run_and_check(*case)
+        status = "PASS" if passed else "FAIL"
+        print(f"[PRECISION_{status}] {name}: matched_ratio={ratio:.4f} max_abs_error={max_abs:.3e}")
+        results.append(passed)
+    return all(results)
 
 
 # =============================================================================
-# L2 tests (edge cases / negative tests)
+# L2 tests (negative = blocking; functional edge = non-blocking)
 # =============================================================================
-def test_l2_single_chunk():
-    """S=64 single chunk, minimal size."""
-    passed, ratio, max_abs = run_and_check(1, 64, 1, 64, 64, True)
-    print(f"[BOUNDARY_PASS] l2_single_chunk: matched_ratio={ratio:.4f}")
-    return True  # L2 non-blocking
+def run_l2_tests():
+    """L2 negative tests (blocking): illegal inputs MUST be rejected with the
+    expected exception type and an actionable message identifying the root
+    cause. Functional edge cases are non-blocking (layered-test contract)."""
+    print("=== L2 Tests ===")
 
+    def _run_exception(name, fn, expect_type, expect_msg):
+        """L2 negative case: fn() feeds illegal input, REQUIRED to be rejected
+        by the entry validation with the expected exception type and a message
+        that identifies the actual root cause.
 
-def test_l2_batch2():
-    """B=2 batch dimension."""
-    passed, ratio, max_abs = run_and_check(2, 64, 1, 64, 64, True)
-    print(f"[BOUNDARY_PASS] l2_batch2: matched_ratio={ratio:.4f} max_abs={max_abs:.3e}")
-    return True
+        Returns True only for a correct rejection (expected type + actionable
+        message). Both failure modes below count toward the exit code:
+        - silently accepted illegal input (entry validation missing/too weak);
+        - rejection by an unrelated exception (OOM, name error, ...) — must
+          not be reported as a correct rejection.
+        """
+        try:
+            fn()
+        except Exception as e:
+            if isinstance(e, expect_type) and expect_msg in str(e):
+                print(f"  [BOUNDARY_PASS] l2 {name}: rejected ({type(e).__name__})")
+                return True
+            print(
+                f"  [BOUNDARY_FAIL] l2 {name}: wrong rejection: expected "
+                f"{expect_type.__name__} containing {expect_msg!r}, got "
+                f"{type(e).__name__}: {str(e)[:120]}"
+            )
+            return False
+        print(f"  [BOUNDARY_FAIL] l2 {name}: illegal input NOT rejected (silently accepted)")
+        return False
 
+    def _run_edge(name, fn):
+        """L2 functional edge case (non-blocking): WARN on failure or
+        exception, never counts toward the exit code."""
+        try:
+            passed, ratio, max_abs = fn()
+            status = "PASS" if passed else "WARN"
+            print(f"  [BOUNDARY_{status}] l2 {name}: matched_ratio={ratio:.4f} max_abs={max_abs:.3e}")
+        except Exception as e:
+            print(f"  [BOUNDARY_WARN] l2 {name}: {type(e).__name__}: {str(e)[:120]}")
 
-# =============================================================================
-# Boundary tests (special values)
-# =============================================================================
-def test_boundary_beta_zero():
-    """Beta=0 should produce all-zero output."""
-    torch.manual_seed(0)
-    B, S, H, DK, cs = 1, 64, 1, 64, 64
-    K_cpu = torch.randn(B, S, H, DK, dtype=torch.bfloat16)
-    Beta_cpu = torch.zeros(B, S, H, dtype=torch.bfloat16).permute(0, 2, 1).contiguous().to(torch.float32)
-    G_cpu = torch.randn(B, S, H, dtype=torch.float32).permute(0, 2, 1).contiguous()
-    K = K_cpu.permute(0, 2, 1, 3).contiguous().npu()
-    Beta = Beta_cpu.npu()
-    G = G_cpu.npu()
-    kernel = chunk_scaled_dot_kkt_fwd(B=B, S=S, H=H, DK=DK, chunk_size=cs, use_g=True)
-    A = torch.empty(B, H, S, cs, dtype=torch.bfloat16, device="npu")
-    kernel(K, Beta, G, A)
-    torch.npu.synchronize()
-    all_zero = A.abs().max().item() == 0.0
-    status = "PASS" if all_zero else "WARN"
-    print(f"[BOUNDARY_{status}] boundary_beta_zero: all_zero={all_zero}")
-    return True
+    # --- Negative cases (blocking) ---
 
-
-def test_boundary_g_same():
-    """G all same value: G_diff=0, exp(0)=1, mask=(0<=0)&(i>j)=i>j."""
-    torch.manual_seed(0)
-    B, S, H, DK, cs = 1, 64, 1, 64, 64
-    K_cpu = torch.randn(B, S, H, DK, dtype=torch.bfloat16)
-    Beta_cpu = torch.randn(B, S, H, dtype=torch.bfloat16).permute(0, 2, 1).contiguous().to(torch.float32)
-    G_cpu = torch.full((B, S, H), 1.0, dtype=torch.float32).permute(0, 2, 1).contiguous()
-    K = K_cpu.permute(0, 2, 1, 3).contiguous().npu()
-    Beta = Beta_cpu.npu()
-    G = G_cpu.npu()
-    kernel = chunk_scaled_dot_kkt_fwd(B=B, S=S, H=H, DK=DK, chunk_size=cs, use_g=True)
-    A = torch.empty(B, H, S, cs, dtype=torch.bfloat16, device="npu")
-    kernel(K, Beta, G, A)
-    torch.npu.synchronize()
-    A_bsh = A.permute(0, 2, 1, 3).contiguous()
-    Beta_bsh = Beta_cpu.permute(0, 2, 1).contiguous().to(torch.bfloat16)
-    G_bsh = G_cpu.permute(0, 2, 1).contiguous()
-    golden = golden_chunk_scaled_dot_kkt(K_cpu, Beta_bsh, G_bsh, chunk_size=cs, use_g=True)
-    passed, ratio, max_abs = check_precision(A_bsh, golden, "bfloat16")
-    status = "PASS" if passed else "WARN"
-    print(f"[BOUNDARY_{status}] boundary_g_same: matched_ratio={ratio:.4f} max_abs={max_abs:.3e}")
-    return True
-
-
-def test_boundary_k_inf():
-    """K contains Inf values (special value boundary)."""
-    torch.manual_seed(0)
-    B, S, H, DK, cs = 1, 64, 1, 64, 64
-    K_cpu = torch.randn(B, S, H, DK, dtype=torch.bfloat16)
-    K_cpu[0, 0, 0, 0] = float("inf")
-    Beta_cpu = torch.randn(B, S, H, dtype=torch.bfloat16).permute(0, 2, 1).contiguous().to(torch.float32)
-    G_cpu = torch.randn(B, S, H, dtype=torch.float32).permute(0, 2, 1).contiguous()
-    K = K_cpu.permute(0, 2, 1, 3).contiguous().npu()
-    Beta = Beta_cpu.npu()
-    G = G_cpu.npu()
-    try:
-        kernel = chunk_scaled_dot_kkt_fwd(B=B, S=S, H=H, DK=DK, chunk_size=cs, use_g=True)
-        A = torch.empty(B, H, S, cs, dtype=torch.bfloat16, device="npu")
-        kernel(K, Beta, G, A)
-        torch.npu.synchronize()
-        has_inf = torch.isinf(A).any().item()
-        has_nan = torch.isnan(A).any().item()
-        status = "PASS" if not has_nan else "WARN"
-        print(f"[BOUNDARY_{status}] boundary_k_inf: has_inf={has_inf} has_nan={has_nan}")
-    except Exception as e:
-        print(f"[BOUNDARY_WARN] boundary_k_inf: exception {e}")
-    return True
-
-
-def test_boundary_k_nan():
-    """K contains NaN values (special value boundary)."""
-    torch.manual_seed(0)
-    B, S, H, DK, cs = 1, 64, 1, 64, 64
-    K_cpu = torch.randn(B, S, H, DK, dtype=torch.bfloat16)
-    K_cpu[0, 0, 0, 0] = float("nan")
-    Beta_cpu = torch.randn(B, S, H, dtype=torch.bfloat16).permute(0, 2, 1).contiguous().to(torch.float32)
-    G_cpu = torch.randn(B, S, H, dtype=torch.float32).permute(0, 2, 1).contiguous()
-    K = K_cpu.permute(0, 2, 1, 3).contiguous().npu()
-    Beta = Beta_cpu.npu()
-    G = G_cpu.npu()
-    try:
-        kernel = chunk_scaled_dot_kkt_fwd(B=B, S=S, H=H, DK=DK, chunk_size=cs, use_g=True)
-        A = torch.empty(B, H, S, cs, dtype=torch.bfloat16, device="npu")
-        kernel(K, Beta, G, A)
-        torch.npu.synchronize()
-        has_nan = torch.isnan(A).any().item()
-        status = "PASS" if not has_nan else "WARN"
-        print(f"[BOUNDARY_{status}] boundary_k_nan: has_nan={has_nan}")
-    except Exception as e:
-        print(f"[BOUNDARY_WARN] boundary_k_nan: exception {e}")
-    return True
-
-
-def test_l2_prime_shape():
-    """DK=67 (prime) with S=128. Tests DK < block_DK zero-padding path."""
-    try:
-        passed, ratio, max_abs = run_and_check(1, 128, 1, 67, 64, True)
-        status = "PASS" if passed else "WARN"
-        print(f"[BOUNDARY_{status}] l2_prime_shape: DK=67, ratio={ratio:.4f}, max_abs={max_abs:.3e}")
-    except Exception as e:
-        print(f"[BOUNDARY_WARN] l2_prime_shape: DK=67 exception: {type(e).__name__}: {e}")
-    return True
-
-
-def test_l2_exc_dtype():
-    """Exception: unsupported dtype (float16 K) should be rejected."""
-    try:
+    # D-EXC-DTYPE: unsupported K dtype (float16) — only bfloat16 K/A are
+    # validated (Beta/G are float32 via accum_dtype).
+    def exc_dtype():
         chunk_scaled_dot_kkt_fwd(B=1, S=64, H=1, DK=64, chunk_size=64, use_g=True, input_dtype="float16")
-        print("[BOUNDARY_WARN] l2_exc_dtype: float16 K was silently accepted")
-    except Exception:
-        print("[BOUNDARY_PASS] l2_exc_dtype: float16 K correctly rejected")
-    return True
 
+    # D-EXC-PARAM: chunk_size=7 (BS%8!=0) — T.tile.compare/broadcast/cast on
+    # (BS,BS) fp32 tiles require 256B alignment (BS%8==0).
+    def exc_chunk_size_odd():
+        chunk_scaled_dot_kkt_fwd(B=1, S=64, H=1, DK=64, chunk_size=7, use_g=True)
 
-def test_l2_exc_shape():
-    """S not divisible by chunk_size: trailing rows are zero."""
-    torch.manual_seed(0)
-    B, S, H, DK, cs = 1, 65, 1, 64, 64  # S=65, only 1 full chunk (rows 0-63)
-    K_cpu = torch.randn(B, S, H, DK, dtype=torch.bfloat16)
-    Beta_cpu = torch.randn(B, S, H, dtype=torch.bfloat16).permute(0, 2, 1).contiguous().to(torch.float32)
-    G_cpu = torch.randn(B, S, H, dtype=torch.float32).permute(0, 2, 1).contiguous()
-    K = K_cpu.permute(0, 2, 1, 3).contiguous().npu()
-    Beta = Beta_cpu.npu()
-    G = G_cpu.npu()
-    try:
+    # D-EXC-PARAM: chunk_size=60 (satisfies %4 but not %8) — still breaks
+    # the 256B alignment.
+    def exc_chunk_size_even():
+        chunk_scaled_dot_kkt_fwd(B=1, S=64, H=1, DK=64, chunk_size=60, use_g=True)
+
+    # D-EXC-PARAM: chunk_size=128 (alignment satisfied but != 64) — the
+    # constraint is a fixed 64, not just alignment.
+    def exc_chunk_size_nonstandard():
+        chunk_scaled_dot_kkt_fwd(B=1, S=64, H=1, DK=64, chunk_size=128, use_g=True)
+
+    results = [
+        _run_exception("unsupported_dtype_fp16", exc_dtype, AssertionError, "K/A must be bfloat16"),
+        _run_exception("illegal_chunk_size_odd", exc_chunk_size_odd, AssertionError, "must be 64"),
+        _run_exception("illegal_chunk_size_even", exc_chunk_size_even, AssertionError, "must be 64"),
+        _run_exception("illegal_chunk_size_nonstandard", exc_chunk_size_nonstandard, AssertionError, "must be 64"),
+    ]
+
+    # --- Functional edge cases (non-blocking) ---
+
+    def edge_tail_shape():
+        """S=65 not divisible by chunk_size: only full chunks computed,
+        trailing rows stay zero (A pre-zeroed to match golden's zero-pad)."""
+        torch.manual_seed(0)
+        B, S, H, DK, cs = 1, 65, 1, 64, 64
+        K_cpu = torch.randn(B, S, H, DK, dtype=torch.bfloat16)
+        Beta_cpu = torch.randn(B, S, H, dtype=torch.bfloat16).permute(0, 2, 1).contiguous().to(torch.float32)
+        G_cpu = torch.randn(B, S, H, dtype=torch.float32).permute(0, 2, 1).contiguous()
+        K = K_cpu.permute(0, 2, 1, 3).contiguous().npu()
+        Beta = Beta_cpu.npu()
+        G = G_cpu.npu()
         kernel = chunk_scaled_dot_kkt_fwd(B=B, S=S, H=H, DK=DK, chunk_size=cs, use_g=True)
-        # zeros (not empty) so trailing row matches golden's zero-pad
         A = torch.zeros(B, H, S, cs, dtype=torch.bfloat16, device="npu")
+        kernel(K, Beta, G, A)
+        torch.npu.synchronize()
+        A_bsh = A.permute(0, 2, 1, 3).contiguous()
+        Beta_bsh = Beta_cpu.permute(0, 2, 1).contiguous().to(torch.bfloat16)
+        G_bsh = G_cpu.permute(0, 2, 1).contiguous()
+        golden = golden_chunk_scaled_dot_kkt(K_cpu, Beta_bsh, G_bsh, chunk_size=cs, use_g=True)
+        return check_precision(A_bsh, golden, "bfloat16")
+
+    _run_edge("single_chunk", lambda: run_and_check(1, 64, 1, 64, 64, True))
+    _run_edge("batch2", lambda: run_and_check(2, 64, 1, 64, 64, True))
+    _run_edge("prime_shape_dk67", lambda: run_and_check(1, 128, 1, 67, 64, True))
+    _run_edge("tail_shape_s65", edge_tail_shape)
+
+    return all(results)
+
+
+# =============================================================================
+# Boundary tests (special values, non-blocking)
+# =============================================================================
+def run_boundary_tests():
+    """Boundary special-value tests: WARN-only, never blocks the exit code."""
+    print("=== Boundary Tests ===")
+
+    def boundary_beta_zero():
+        """Beta=0 should produce all-zero output."""
+        torch.manual_seed(0)
+        B, S, H, DK, cs = 1, 64, 1, 64, 64
+        K_cpu = torch.randn(B, S, H, DK, dtype=torch.bfloat16)
+        Beta_cpu = torch.zeros(B, S, H, dtype=torch.bfloat16).permute(0, 2, 1).contiguous().to(torch.float32)
+        G_cpu = torch.randn(B, S, H, dtype=torch.float32).permute(0, 2, 1).contiguous()
+        K = K_cpu.permute(0, 2, 1, 3).contiguous().npu()
+        Beta = Beta_cpu.npu()
+        G = G_cpu.npu()
+        kernel = chunk_scaled_dot_kkt_fwd(B=B, S=S, H=H, DK=DK, chunk_size=cs, use_g=True)
+        A = torch.empty(B, H, S, cs, dtype=torch.bfloat16, device="npu")
+        kernel(K, Beta, G, A)
+        torch.npu.synchronize()
+        all_zero = A.abs().max().item() == 0.0
+        status = "PASS" if all_zero else "WARN"
+        print(f"  [BOUNDARY_{status}] boundary beta_zero: all_zero={all_zero}")
+
+    def boundary_g_same():
+        """G all same value: G_diff=0, exp(0)=1, mask=(0<=0)&(i>j)=i>j."""
+        torch.manual_seed(0)
+        B, S, H, DK, cs = 1, 64, 1, 64, 64
+        K_cpu = torch.randn(B, S, H, DK, dtype=torch.bfloat16)
+        Beta_cpu = torch.randn(B, S, H, dtype=torch.bfloat16).permute(0, 2, 1).contiguous().to(torch.float32)
+        G_cpu = torch.full((B, S, H), 1.0, dtype=torch.float32).permute(0, 2, 1).contiguous()
+        K = K_cpu.permute(0, 2, 1, 3).contiguous().npu()
+        Beta = Beta_cpu.npu()
+        G = G_cpu.npu()
+        kernel = chunk_scaled_dot_kkt_fwd(B=B, S=S, H=H, DK=DK, chunk_size=cs, use_g=True)
+        A = torch.empty(B, H, S, cs, dtype=torch.bfloat16, device="npu")
         kernel(K, Beta, G, A)
         torch.npu.synchronize()
         A_bsh = A.permute(0, 2, 1, 3).contiguous()
@@ -373,56 +369,57 @@ def test_l2_exc_shape():
         golden = golden_chunk_scaled_dot_kkt(K_cpu, Beta_bsh, G_bsh, chunk_size=cs, use_g=True)
         passed, ratio, max_abs = check_precision(A_bsh, golden, "bfloat16")
         status = "PASS" if passed else "WARN"
-        print(f"[BOUNDARY_{status}] l2_exc_shape: S=65, ratio={ratio:.4f}, max_abs={max_abs:.3e}")
-    except Exception as e:
-        print(f"[BOUNDARY_WARN] l2_exc_shape: S=65 exception: {type(e).__name__}: {e}")
-    return True
+        print(f"  [BOUNDARY_{status}] boundary g_same: matched_ratio={ratio:.4f} max_abs={max_abs:.3e}")
 
+    def boundary_k_inf():
+        """K contains Inf values (special value boundary)."""
+        torch.manual_seed(0)
+        B, S, H, DK, cs = 1, 64, 1, 64, 64
+        K_cpu = torch.randn(B, S, H, DK, dtype=torch.bfloat16)
+        K_cpu[0, 0, 0, 0] = float("inf")
+        Beta_cpu = torch.randn(B, S, H, dtype=torch.bfloat16).permute(0, 2, 1).contiguous().to(torch.float32)
+        G_cpu = torch.randn(B, S, H, dtype=torch.float32).permute(0, 2, 1).contiguous()
+        K = K_cpu.permute(0, 2, 1, 3).contiguous().npu()
+        Beta = Beta_cpu.npu()
+        G = G_cpu.npu()
+        kernel = chunk_scaled_dot_kkt_fwd(B=B, S=S, H=H, DK=DK, chunk_size=cs, use_g=True)
+        A = torch.empty(B, H, S, cs, dtype=torch.bfloat16, device="npu")
+        kernel(K, Beta, G, A)
+        torch.npu.synchronize()
+        has_inf = torch.isinf(A).any().item()
+        has_nan = torch.isnan(A).any().item()
+        status = "PASS" if not has_nan else "WARN"
+        print(f"  [BOUNDARY_{status}] boundary k_inf: has_inf={has_inf} has_nan={has_nan}")
 
-def test_l2_exc_chunk_size_odd():
-    """Exception: chunk_size=7 (odd, BS%8!=0) must be rejected at kernel entry.
+    def boundary_k_nan():
+        """K contains NaN values (special value boundary)."""
+        torch.manual_seed(0)
+        B, S, H, DK, cs = 1, 64, 1, 64, 64
+        K_cpu = torch.randn(B, S, H, DK, dtype=torch.bfloat16)
+        K_cpu[0, 0, 0, 0] = float("nan")
+        Beta_cpu = torch.randn(B, S, H, dtype=torch.bfloat16).permute(0, 2, 1).contiguous().to(torch.float32)
+        G_cpu = torch.randn(B, S, H, dtype=torch.float32).permute(0, 2, 1).contiguous()
+        K = K_cpu.permute(0, 2, 1, 3).contiguous().npu()
+        Beta = Beta_cpu.npu()
+        G = G_cpu.npu()
+        kernel = chunk_scaled_dot_kkt_fwd(B=B, S=S, H=H, DK=DK, chunk_size=cs, use_g=True)
+        A = torch.empty(B, H, S, cs, dtype=torch.bfloat16, device="npu")
+        kernel(K, Beta, G, A)
+        torch.npu.synchronize()
+        has_nan = torch.isnan(A).any().item()
+        status = "PASS" if not has_nan else "WARN"
+        print(f"  [BOUNDARY_{status}] boundary k_nan: has_nan={has_nan}")
 
-    Guards the review-hardening assert: T.tile.compare/broadcast/cast operate
-    on (BS,BS) fp32 tiles requiring 256B alignment (BS%8==0); without the
-    assert this would only fail at AscendC lowering.
-    """
-    cs = 7
-    try:
-        chunk_scaled_dot_kkt_fwd(B=1, S=64, H=1, DK=64, chunk_size=cs, use_g=True)
-        raise RuntimeError(f"chunk_size={cs} was not rejected at kernel entry")
-    except AssertionError:
-        print(f"[L2_PASS] l2_exc_chunk_size_odd: chunk_size={cs} correctly rejected")
-    return True
-
-
-def test_l2_exc_chunk_size_even():
-    """Exception: chunk_size=60 (even, %4 but not %8) must be rejected.
-
-    Core reviewer-flagged "silent corruption" scenario: BS=60 satisfies
-    BS%4==0 but breaks the 256B alignment (BS%8!=0) required by
-    T.tile.compare/broadcast/cast on (BS,BS) fp32 tiles.
-    """
-    cs = 60
-    try:
-        chunk_scaled_dot_kkt_fwd(B=1, S=64, H=1, DK=64, chunk_size=cs, use_g=True)
-        raise RuntimeError(f"chunk_size={cs} was not rejected at kernel entry")
-    except AssertionError:
-        print(f"[L2_PASS] l2_exc_chunk_size_even: chunk_size={cs} correctly rejected")
-    return True
-
-
-def test_l2_exc_chunk_size_nonstandard():
-    """Exception: chunk_size=128 (%8 satisfied but != 64) must be rejected.
-
-    Shows the semantic constraint (fixed 64) is enforced, not just the
-    256B alignment (BS%8==0) subset.
-    """
-    cs = 128
-    try:
-        chunk_scaled_dot_kkt_fwd(B=1, S=64, H=1, DK=64, chunk_size=cs, use_g=True)
-        raise RuntimeError(f"chunk_size={cs} was not rejected at kernel entry")
-    except AssertionError:
-        print(f"[L2_PASS] l2_exc_chunk_size_nonstandard: chunk_size={cs} correctly rejected")
+    for name, fn in [
+        ("beta_zero", boundary_beta_zero),
+        ("g_same", boundary_g_same),
+        ("k_inf", boundary_k_inf),
+        ("k_nan", boundary_k_nan),
+    ]:
+        try:
+            fn()
+        except Exception as e:
+            print(f"  [BOUNDARY_WARN] boundary {name}: {type(e).__name__}: {str(e)[:120]}")
     return True
 
 
@@ -435,44 +432,20 @@ def main():
     args = parser.parse_args()
 
     tilelang.disable_cache()
-    results = []
-
-    if args.level in ("l0", "all"):
-        print("=== L0 Tests ===")
-        results.append(("l0_basic_gating", test_l0_basic_gating()))
-        results.append(("l0_basic_no_gating", test_l0_basic_no_gating()))
-        results.append(("l0_small_gating", test_l0_small_gating()))
-
-    if args.level in ("l1", "all"):
-        print("=== L1 Tests ===")
-        results.append(("l1_small_no_gating", test_l1_small_no_gating()))
-        results.append(("l1_dk128_gating", test_l1_dk128_gating()))
-        results.append(("l1_multi_chunk", test_l1_multi_chunk()))
-
-    if args.level in ("l2", "all"):
-        print("=== L2 Tests ===")
-        test_l2_single_chunk()
-        test_l2_batch2()
-        test_l2_prime_shape()
-        test_l2_exc_dtype()
-        test_l2_exc_shape()
-        test_l2_exc_chunk_size_odd()
-        test_l2_exc_chunk_size_even()
-        test_l2_exc_chunk_size_nonstandard()
-
+    all_pass = True
+    if args.level in ("l0", "all") and not run_l0_tests():
+        all_pass = False
+    if args.level in ("l1", "all") and not run_l1_tests():
+        all_pass = False
+    if args.level in ("l2", "all") and not run_l2_tests():
+        all_pass = False
     if args.level in ("boundary", "all"):
-        print("=== Boundary Tests ===")
-        test_boundary_beta_zero()
-        test_boundary_g_same()
-        test_boundary_k_inf()
-        test_boundary_k_nan()
-
-    # Check L0/L1 pass
-    l0_l1_pass = all(r[1] for r in results if r[0].startswith(("l0_", "l1_")))
-    if l0_l1_pass:
-        print("\nTest Passed!")
+        run_boundary_tests()
+    print()
+    if all_pass:
+        print("Test Passed!")
     else:
-        print("\nTest FAILED!")
+        print("[PRECISION_FAIL] Some tests failed")
         sys.exit(1)
 
 
