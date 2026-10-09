@@ -21,13 +21,14 @@ the 1-chunk universal):
                            fused body (guard shapes only)
     Fused  k1cv_k2cd_fused  (CV)   k1c + k2a_pre + refine + k2b + k2c + k2d
                              in ONE 1-chunk launch (block = chunk):
-                             intermediates that a multi-launch pipeline
-                             would round-trip through GM are internalized
-                             as in-kernel relays / UB values; K_T is
-                             produced by an in-kernel rider; dk crosses
-                             C->V per-iteration via an explicit
-                             "workspace"-named GM relay (GQA pattern,
-                             per-ik disjoint slices)
+                              intermediates that a multi-launch pipeline
+                              would round-trip through GM are internalized
+                               as in-kernel relays / UB values; K_T is
+                               produced by an in-kernel pre-loop rider
+                               (S8-pre, V-only); dk crosses C->V
+                               per-iteration via an explicit
+                               "workspace"-named GM relay with per-ik
+                               disjoint slices
 
 Programming mode: Developer (alloc_shared/fragment + auto sync) with
 pass_configs = {AUTO_CV_COMBINE, AUTO_CV_SYNC, AUTO_SYNC, MEMORY_PLANNING: True}.
@@ -321,16 +322,31 @@ def k1b_gemm(BH, S, DK, DV, BS, block_DK=64, block_DV=64, core_num=20):
 #               dA_T_l1 -> AT_l0a (L0A names reused from the refine
 #               mmas; the fp32 transpose stays V-side — fp32 L0A
 #               transpose staging hits a codegen NaN bug)
-#   [S8 ik]     per-iteration C-V alternation: inline K_T rider (K bf16
-#               -> cast -> transpose -> kt_workspace GM relay -> K_T_l1
-#               -> K_l0b) + mma6 (init) + mma7 (accumulate) -> dk_frag
-#               -> dk_workspace relay (GQA pattern: the tensor NAME must
-#               contain "workspace" — AscendCombineCV only creates
-#               cross-core sync points for GM copies on workspace-named
-#               buffers; per-ik slices are DISJOINT so no loop-carried
-#               ws WAR) + anchor -> Phase A (dk = dk_beta_g *
-#               (e^G*beta)_row + update). V setup reuses S1's Beta_ub /
-#               G_exp_ub (no reload, no exp recompute)
+#   [S8-pre V]  K_T rider, hoisted OUT of the ik loop (V-only pre-pass):
+#               per ik_pre slice, K bf16 -> cast -> transpose -> one row
+#               block of the kt_workspace GM relay + mul-by-0 drains.
+#               CONSTRAINT: this V->C relay must not live inside the ik
+#               loop — that loop already carries the OPPOSITE-direction
+#               dk C->V relay, and two opposite relay directions sharing
+#               one T.serial domain are not covered by the
+#               statement-level CrossCoreSet/Wait pairing (dk corrupts
+#               for nK >= 2).
+#   [S8 C]      ONE straight-line full-slab readback: kt_workspace row
+#               block -> K_T_l1_big (nK*block_DK, BS), in a SINGLE
+#               set/wait pair — V's SetFlag fires after its whole S8-pre
+#               loop drains, C's WaitFlag lands before this one GM->L1
+#               copy. The single-handshake structure matches the S2/S5/S6
+#               relays.
+#   [S8 ik]     per-iteration C-V alternation, dk direction ONLY: K_T
+#               block staged from the L1 SLAB (L1 row slice -> K_l0b, no
+#               GM read, no cross-core sync) + mma6 (init) + mma7
+#               (accumulate) -> dk_frag -> dk_workspace relay (the tensor
+#               NAME must contain "workspace": AscendCombineCV only
+#               creates cross-core sync points for GM copies on
+#               workspace-named buffers; per-ik slices are DISJOINT so
+#               no loop-carried ws WAR) + anchor -> Phase A
+#               (dk = dk_beta_g * (e^G*beta)_row + update). V setup
+#               reuses S1's Beta_ub / G_exp_ub (no reload, no recompute)
 #   [S9 V]      Phase B k2d combine: A_frag_raw loaded FIRST (MTE3->MTE2
 #               load-order defense), dg_inter / dbeta_inter consumed from
 #               UB, dbeta_k / dg_A_pos / dg_A_neg / dbeta / dg writes,
@@ -377,8 +393,10 @@ def k1cv_k2cd_fused(BH, S, DK, DV, BS, block_DK, block_DV):
         # carry dk_frag to UB; name must contain "workspace"
         dk_workspace: T.Tensor((BH, S, DK), "float"),
         # JIT-allocated GM workspace (index 21): the K_T rider's V->C relay
-        # (GQA workspace_1 pattern — V writes, C reads; per-ik disjoint slices)
-        kt_workspace: T.Tensor((BH, num_chunks * block_DK, nK * BS), "float"),
+        # (V writes the whole per-chunk slab in the S8-pre loop; C reads it
+        # back once, straight-line, before the ik loop. Per-chunk slab is the
+        # contiguous row block [chunk_idx*nK*block_DK, +nK*block_DK) x BS)
+        kt_workspace: T.Tensor((BH, num_chunks * nK * block_DK, BS), "float"),
     ):
         with T.Kernel(block_num, threads=1, is_npu=True) as (cid):
             chunk_idx = cid // BH
@@ -391,7 +409,7 @@ def k1cv_k2cd_fused(BH, S, DK, DV, BS, block_DK, block_DV):
             dtt_l1 = T.alloc_L1((BS, BS), "float")  # S4 dA_tmp_T readback -> mma2 B-op source
             dA_l1 = T.alloc_L1((BS, BS), "float")  # S6 relay dst (dA_final_beta) -> S7 GEMM6 A-op source
             dA_T_l1 = T.alloc_L1((BS, BS), "float")  # S6 relay dst (dA_final_beta_T) -> S7 GEMM7 A-op source
-            K_T_l1 = T.alloc_L1((block_DK, BS), "float")  # S8 rider relay dst (via kt_workspace)
+            K_T_l1_big = T.alloc_L1((nK * block_DK, BS), "float")  # S8 slab relay dst: whole-chunk K_T (per-ik rows)
             A_l0a = T.alloc_L0A((BS, BS), "float")  # S4 mma1 A-op; REUSED S7 GEMM6 A-op
             AT_l0a = T.alloc_L0A((BS, BS), "float")  # S4 mma2 A-op; REUSED S7 GEMM7 A-op
             dm_l0b_T = T.alloc_L0B((BS, BS), "float")  # S4 mma1 B-op staging; re-staged SAME-NAME for mma2
@@ -540,32 +558,44 @@ def k1cv_k2cd_fused(BH, S, DK, DV, BS, block_DK, block_DV):
             # ===== S8: V setup (reuses S1's Beta_ub / G_exp_ub) =====
             T.tile.mul(scale_ub, G_exp_ub, Beta_ub)
             T.tile.broadcast(scale_2d, scale_ub, axis=1)
-            # ===== S8: ik loop — per-iteration C-V alternation =====
-            for ik in T.serial(T.ceildiv(DK, block_DK)):
-                ik_st = ik * block_DK
-                # inline K_T rider
-                T.copy(K_bf16[bh, cs : cs + BS, ik_st : ik_st + block_DK], K_in_ub)
+            # ===== S8-pre: K_T rider hoisted out of the ik loop (V-only) =====
+            # V relays the per-chunk K_T slab (one contiguous row block, one
+            # ik_pre slice per loop iteration); the C side reads the WHOLE slab
+            # back ONCE, straight-line below — a single set/wait pair. Keep
+            # this V->C relay out of the ik loop: that loop already carries
+            # the opposite-direction dk relay, and one flag id must never be
+            # set/waited repeatedly across two different loop domains.
+            kt_row_st = chunk_idx * nK * block_DK
+            for ik_pre in T.serial(T.ceildiv(DK, block_DK)):
+                ik_st_pre = ik_pre * block_DK
+                T.copy(K_bf16[bh, cs : cs + BS, ik_st_pre : ik_st_pre + block_DK], K_in_ub)
                 T.tile.cast(K_fp32_ub, K_in_ub, CAST_LOW2HIGH, BS * block_DK)
                 T.tile.transpose(K_tr_ub, K_fp32_ub)
-                # V->C relay via explicit GM ws, per-ik DISJOINT slices (an
-                # auto-relay inside a loop reuses one ws slot and races for nK >= 2)
+                # V->C relay via explicit GM ws (an auto-relay inside a loop
+                # reuses one ws slot and races for nK >= 2)
                 T.copy(
                     K_tr_ub,
                     kt_workspace[
                         bh,
-                        chunk_idx * block_DK : chunk_idx * block_DK + block_DK,
-                        ik * BS : ik * BS + BS,
+                        kt_row_st + ik_st_pre : kt_row_st + ik_st_pre + block_DK,
+                        :,
                     ],
                 )
-                T.copy(
-                    kt_workspace[
-                        bh,
-                        chunk_idx * block_DK : chunk_idx * block_DK + block_DK,
-                        ik * BS : ik * BS + BS,
-                    ],
-                    K_T_l1,
-                )
-                T.copy(K_T_l1, K_l0b, transpose=True)
+                # iteration-to-iteration WAR guard on the rider's UB chain: the
+                # relay's MTE3 read of K_tr_ub must drain before iteration
+                # ik_pre+1 rewrites the buffers (transpose/cast fully rewrite
+                # them, so the mul-by-0 end-of-life drain is value-safe)
+                T.tile.mul(K_tr_ub, K_tr_ub, 0.0)
+                T.tile.mul(K_fp32_ub, K_fp32_ub, 0.0)
+            # ===== S8 C staging: ONE full-slab relay read (straight-line) =====
+            # kt_workspace's CrossCoreWait lands before this single GM->L1
+            # read; V's SetFlag fires after its whole S8-pre loop drains.
+            T.copy(kt_workspace[bh, kt_row_st : kt_row_st + nK * block_DK, :], K_T_l1_big)
+            # ===== S8: ik loop — single in-loop relay direction (dk C->V) =====
+            for ik in T.serial(T.ceildiv(DK, block_DK)):
+                ik_st = ik * block_DK
+                # C side: K_T block staged from the L1 slab (no GM, no sync)
+                T.copy(K_T_l1_big[ik_st : ik_st + block_DK, :], K_l0b, transpose=True)
                 # GEMM6: dk_beta_scaled = dA_final_beta @ K (beta folded into left operand)
                 T.mma(A_l0a, K_l0b, dk_frag, init=True)
                 # GEMM7 accumulated in place: += dA_final_beta^T @ K

@@ -3,6 +3,14 @@
 L0 (3 cases) + L1 (functional, 11 cases + cache-contract regression) + L2 (negative, 5 cases)
 + Boundary (4 cases) + main dispatcher with --level support.
 Strict precision: fp32 (atol=2^-16, rtol=2^-10, max_abs=1e-2, ratio=0.99) for all outputs.
+
+Exit code contract (script entry point, run via `python test_wy_fast_bwd_split.py`):
+    L0/L1 precision failures and L2 rejection failures (silently accepted
+    illegal input, or rejection by an unexpected exception type / a message
+    that does not identify the root cause) exit 1; Boundary results are
+    non-blocking (layered-test contract). The suite functions intentionally
+    have NO `test_` prefix — pytest ignores boolean return values, so these
+    are plain script helpers driven by main() which owns the exit code.
 """
 
 import argparse
@@ -163,7 +171,7 @@ COVERAGE_NA = {
 }
 
 
-def test_l0():
+def run_l0_tests():
     """L0 threshold tests (3 cases)."""
     print("=== L0 Tests ===")
     cases = [
@@ -199,7 +207,7 @@ def _prepare_asym(B, S, H, DK, DV, cs, seed):
     return K, V, Beta, G, A, dw, du
 
 
-def test_l1():
+def run_l1_tests():
     """L1 functional tests: shape/dtype/value-range/param coverage."""
     print("=== L1 Tests ===")
     all_pass = True
@@ -253,17 +261,37 @@ def test_l1():
     return all_pass
 
 
-def test_l2():
-    """L2 negative tests: illegal inputs should be rejected."""
+def run_l2_tests():
+    """L2 negative tests (blocking): illegal inputs MUST be rejected with the
+    expected exception type and an actionable message identifying the root
+    cause."""
     print("=== L2 Tests ===")
 
-    def _run_exception(name, fn):
+    def _run_exception(name, fn, expect_type, expect_msg):
+        """L2 single case: fn() feeds illegal input, REQUIRED to be rejected by
+        the entry validation with the expected exception type and a message
+        that identifies the actual root cause.
+
+        Returns True only for a correct rejection (expected type + actionable
+        message). Both failure modes below count toward the exit code:
+        - silently accepted illegal input (entry validation missing/too weak);
+        - rejection by an unrelated exception (OOM, name error, ...) — must
+          not be reported as a correct rejection.
+        """
         try:
             fn()
         except Exception as e:
-            print(f"  [BOUNDARY_PASS] l2 {name}: rejected ({type(e).__name__})")
-            return
-        print(f"  [BOUNDARY_WARN] l2 {name}: illegal input silently accepted")
+            if isinstance(e, expect_type) and expect_msg in str(e):
+                print(f"  [BOUNDARY_PASS] l2 {name}: rejected ({type(e).__name__})")
+                return True
+            print(
+                f"  [BOUNDARY_FAIL] l2 {name}: wrong rejection: expected "
+                f"{expect_type.__name__} containing {expect_msg!r}, got "
+                f"{type(e).__name__}: {str(e)[:120]}"
+            )
+            return False
+        print(f"  [BOUNDARY_FAIL] l2 {name}: illegal input NOT rejected (silently accepted)")
+        return False
 
     # D-EXC-DTYPE: float64 inputs (unsupported)
     def test_fp64():
@@ -287,8 +315,6 @@ def test_l2():
             64,
         )
 
-    _run_exception("unsupported_dtype_fp64", test_fp64)
-
     # D-EXC-SHAPE: shape mismatch (DK mismatch between K and dw)
     def test_shape_mismatch():
         K, V, Beta, G, A, dw, du = _prepare(1, 64, 1, 64, 64, 64, seed=0)
@@ -310,8 +336,6 @@ def test_l2():
             64,
             64,
         )
-
-    _run_exception("illegal_shape_mismatch", test_shape_mismatch)
 
     # D-EXC-PARAM: chunk_size not a multiple of 16 (fractal + tile alignment;
     # also rejects non-multiples of 8 that would break T.tile.compare's 256B
@@ -336,8 +360,6 @@ def test_l2():
             64,
         )
 
-    _run_exception("illegal_chunk_size_alignment", test_chunk_size_alignment)
-
     # D-EXC-PARAM: chunk_size beyond the UB-budget upper bound (96 > 80; the
     # Vector kernels' UB working sets overflow beyond BS=80). DK/DV=16 so the
     # L0 budget formulas all pass — only the chunk_size bound rejects.
@@ -360,8 +382,6 @@ def test_l2():
             16,
             16,
         )
-
-    _run_exception("illegal_chunk_size_upper_bound", test_chunk_size_upper_bound)
 
     # D-EXC-PARAM: block sizes not multiples of 16 (the Cube mma tile N/K
     # dims are the block sizes; a non-16-multiple block passes the
@@ -386,11 +406,21 @@ def test_l2():
             24,
         )
 
-    _run_exception("illegal_block_fractal_alignment", test_block_fractal_alignment)
-    return True
+    results = [
+        _run_exception("unsupported_dtype_fp64", test_fp64, AssertionError, "must be bfloat16"),
+        _run_exception("illegal_shape_mismatch", test_shape_mismatch, AssertionError, "K/dw must be"),
+        _run_exception("illegal_chunk_size_alignment", test_chunk_size_alignment, AssertionError, "alignment required: chunk_size"),
+        _run_exception(
+            "illegal_chunk_size_upper_bound", test_chunk_size_upper_bound, AssertionError, "exceeds the maximum supported value 80"
+        ),
+        _run_exception(
+            "illegal_block_fractal_alignment", test_block_fractal_alignment, AssertionError, "alignment required for the block sizes"
+        ),
+    ]
+    return all(results)
 
 
-def test_boundary():
+def run_boundary_tests():
     """Boundary tests: INF/NAN/zero/extreme values (non-blocking)."""
     print("=== Boundary Tests ===")
 
@@ -462,14 +492,14 @@ def main():
     parser.add_argument("--level", default="all", choices=["l0", "l1", "l2", "boundary", "all"])
     args = parser.parse_args()
     all_pass = True
-    if args.level in ("l0", "all") and not test_l0():
+    if args.level in ("l0", "all") and not run_l0_tests():
         all_pass = False
-    if args.level in ("l1", "all") and not test_l1():
+    if args.level in ("l1", "all") and not run_l1_tests():
         all_pass = False
-    if args.level in ("l2", "all"):
-        test_l2()
+    if args.level in ("l2", "all") and not run_l2_tests():
+        all_pass = False
     if args.level in ("boundary", "all"):
-        test_boundary()
+        run_boundary_tests()
     print()
     if all_pass:
         print("Test Passed!")
