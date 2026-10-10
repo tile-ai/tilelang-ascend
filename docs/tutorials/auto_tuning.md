@@ -112,6 +112,12 @@ out_c = result.kernel(a, b)
 ```
 The result object contains optimized kernel implementation which can be used by users directly
 
+`run()` uses the warmup, repetition, and timeout settings from `set_profile_args()`.
+Passing these arguments to `run(...)` updates the corresponding settings; omitted
+arguments retain their current values, including earlier `run` overrides. The effective
+settings identify the cached tuning result and control kernel and reference measurements.
+Changing any of them starts a new measurement unless that exact experiment is cached.
+
 ## Using Carver to Auto-Generate Candidate Configurations
 
 Carver is a lightweight framework for generating and ranking tile configurations (also known as tiling strategies, blocking schemes, or scheduling hints) for common GPU, CPU, and accelerator backends. It helps you explore efficient mappings of loops for operations such as matrix multiplication, elementwise transforms, and other reduction-oriented kernels.
