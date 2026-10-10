@@ -5,7 +5,7 @@ and performance optimization through configuration search.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import tilelang
 from tilelang import tvm as tvm
@@ -14,7 +14,6 @@ from tilelang.version import __version__  # Import early to avoid circular impor
 from tvm.tir import PrimFunc, Var
 from tvm.target import Target
 import inspect
-from functools import partial
 from typing import Callable, Generic, Literal, Any, TypeVar, TYPE_CHECKING
 
 # Python 3.9 compatibility for ParamSpec
@@ -248,8 +247,14 @@ class AutoTuner:
         self._kernel_parameters = k_parameters
         self._function_parameters = f_parameters
 
-    def generate_cache_key(self, parameters: dict[str, Any]) -> AutotuneResult | None:
+    def generate_cache_key(
+        self,
+        parameters: dict[str, Any],
+        profile_args: ProfileArgs | None = None,
+    ) -> str:
         """Generate a cache key for the auto-tuning process."""
+        if profile_args is None:
+            profile_args = self.profile_args
 
         def _normalize_param(value):
             if isinstance(value, Var):
@@ -276,7 +281,7 @@ class AutoTuner:
             "func_source": func_source,
             "configs": self.configs,
             "compile_args": hash(self.compile_args),
-            "profile_args": hash(self.profile_args),
+            "profile_args": hash(profile_args),
         }
         # Sort keys to ensure consistency
         key_string = json.dumps(key_data, sort_keys=True)
@@ -289,18 +294,29 @@ class AutoTuner:
         result = AutotuneResult.load_from_disk(self.cache_dir / key, self.compile_args)
         return result
 
-    def run(self, warmup: int = 25, rep: int = 100, timeout: int = 30):
+    def run(self, warmup: int | None = None, rep: int | None = None, timeout: int | None = None):
         """Run the auto-tuning process.
 
+        Overrides apply only to this call. Omitted values use the settings from
+        `set_profile_args`, which remain unchanged.
+
         Args:
-            warmup: Number of warmup iterations.
-            rep: Number of repetitions for timing.
-            timeout: Maximum time per configuration.
+            warmup: Override the warmup value passed to profiling.
+            rep: Override the repetition value passed to profiling.
+            timeout: Override the configured maximum time per configuration.
 
         Returns:
             AutotuneResult: Results of the auto-tuning process.
         """
         _init_logger_handlers()
+
+        profile_args = self.profile_args
+        profile_args = replace(
+            profile_args,
+            warmup=profile_args.warmup if warmup is None else warmup,
+            rep=profile_args.rep if rep is None else rep,
+            timeout=profile_args.timeout if timeout is None else timeout,
+        )
 
         sig = inspect.signature(self.fn)
         parameters = sig.parameters
@@ -308,7 +324,7 @@ class AutoTuner:
         if isinstance(self.configs, Callable):
             self.configs = self.configs(*self._kernel_parameters)
 
-        key = self.generate_cache_key(parameters)
+        key = self.generate_cache_key(parameters, profile_args=profile_args)
 
         with self._lock:
             if env.is_cache_enabled():
@@ -327,6 +343,8 @@ class AutoTuner:
                     self._memory_cache[key] = result
                     return result
 
+        # Reference timing belongs to this measurement, just like kernel timing.
+        self.ref_latency_cache = None
         best_latency: float = 1e8
         best_config: dict[str, Any] | None = None
         best_kernel: tilelang.JITKernel | None = None
@@ -340,7 +358,6 @@ class AutoTuner:
 
         def target_fn(jit_kernel: tilelang.JITKernel):
             # Unpack the context
-            profile_args = self.profile_args
             supply_type = profile_args.supply_type
             skip_check = profile_args.skip_check
             manual_check_prog = profile_args.manual_check_prog
@@ -411,11 +428,20 @@ class AutoTuner:
                     profiler.assert_allclose(
                         ref_prog, input_tensors=self.jit_input_tensors, rtol=rtol, atol=atol, max_mismatched_ratio=max_mismatched_ratio
                     )
-            latency = profiler.do_bench(warmup=warmup, rep=rep, input_tensors=self.jit_input_tensors)
+            latency = profiler.do_bench(
+                warmup=profile_args.warmup,
+                rep=profile_args.rep,
+                input_tensors=self.jit_input_tensors,
+            )
 
             if self.ref_latency_cache is None and ref_prog is not None:
                 self.ref_input_tensors = ref_input_tensors_supply()
-                self.ref_latency_cache = profiler.do_bench(ref_prog, n_warmup=warmup, n_repeat=rep, input_tensors=self.ref_input_tensors)
+                self.ref_latency_cache = profiler.do_bench(
+                    ref_prog,
+                    n_warmup=profile_args.warmup,
+                    n_repeat=profile_args.rep,
+                    input_tensors=self.ref_input_tensors,
+                )
 
             return latency, self.ref_latency_cache
 
@@ -535,7 +561,7 @@ class AutoTuner:
                 # Cannot ThreadPoolExecutor to enforce timeout on target_fn execution
                 # Because tma init may behave strangely with one thread
                 # latency, ref_latency = target_fn(jit_kernel)
-                latency, ref_latency = run_with_timeout(target_fn, timeout, jit_kernel)
+                latency, ref_latency = run_with_timeout(target_fn, profile_args.timeout, jit_kernel)
             except TimeoutException:
                 logger.warning(f"A timeout occurred while testing config {config}, checkout autotuner.log for more details")
                 continue
@@ -625,6 +651,9 @@ class AutoTuneImpl(Generic[_P, _T]):
         autotuner = (
             AutoTuner(self.jit_impl.func, configs=self.configs)
             .set_profile_args(
+                warmup=self.warmup,
+                rep=self.rep,
+                timeout=self.timeout,
                 supply_type=self.supply_type,
                 ref_prog=self.ref_prog,
                 supply_prog=self.supply_prog,
@@ -646,7 +675,6 @@ class AutoTuneImpl(Generic[_P, _T]):
                 compile_flags=self.jit_impl.compile_flags,
             )
         )
-        autotuner.run = partial(autotuner.run, self.warmup, self.rep, self.timeout)
         return autotuner
 
     def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> JITKernel:
