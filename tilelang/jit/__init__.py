@@ -217,8 +217,13 @@ class _JitImplementation:
             key_kwargs_tuple = tuple(sorted(kwargs.items()))
             key_tune_params_tuple = tuple(sorted(tune_params.items()))
             key = (key_args_tuple, key_kwargs_tuple, key_tune_params_tuple)
+            try:
+                hash(key)
+            except TypeError:
+                # Unhashable parameters can still use the generated-IR compilation cache.
+                key = None
 
-            if key not in self._kernel_cache:
+            if key is None or key not in self._kernel_cache:
                 # Ensure 'func' (the original user function) is used correctly
                 program_result_source = func
                 if isinstance(program_result_source, PrimFunc):
@@ -251,7 +256,9 @@ class _JitImplementation:
                     with open(path.join(self.debug_root_path, program_file), "w") as f:
                         print(program_result.script(), file=f)
 
-                self._kernel_cache[key] = kernel_result
+                if key is not None:
+                    self._kernel_cache[key] = kernel_result
+                return kernel_result
 
             return self._kernel_cache[key]
 
