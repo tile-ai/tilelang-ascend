@@ -2643,6 +2643,7 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
     // K-tail Mmad accumulates stale data from the previous iteration.
     if (op_name.find("copy_gm_to_l1") != std::string::npos) {
       bool need_clear = is_zero(dst_offset_expr);
+      std::string need_clear_expr = need_clear ? "true" : "false";
       if (!need_clear) {
         // Parse the template dims from the op name: "copy_gm_to_l1<T, dstM,
         // dstN>". dstM (rows) decides whether this is a full-row copy; dstM *
@@ -2673,17 +2674,16 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
           const int64_t tile_elems =
               static_cast<int64_t>(dst_m) * static_cast<int64_t>(dst_n);
           if (tail_m == dst_m && tile_elems > 0) {
-            // Prove offset % tile_elems == 0 symbolically: covers both the
-            // constant case (version prologue: 1*tile_elems) and the pipelined
-            // body (k * tile_elems with k runtime).
-            arith::Analyzer analyzer;
-            need_clear = analyzer.CanProve(
-                truncmod(dst_offset_expr,
-                         make_const(dst_offset_expr.dtype(), tile_elems)) == 0);
+            // Ring slot selection is a runtime expression (e.g. (k+1) % S1).
+            // Retain the full-row guard from the pipeline lowering, then emit
+            // the tile-boundary test into the kernel rather than requiring the
+            // host analyzer to prove the symbolic modulus.
+            need_clear_expr = "((" + dst_offset + ") % " +
+                              std::to_string(tile_elems) + " == 0)";
           }
         }
       }
-      this->stream << ", " << (need_clear ? "true" : "false");
+      this->stream << ", " << need_clear_expr;
     }
 
     // copy_l0c_to_gm's unitFlag rides at the end of the argument list rather
