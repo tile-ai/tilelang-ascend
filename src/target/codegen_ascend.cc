@@ -418,20 +418,46 @@ void CodeGenTileLangAscend::PrintStorageScope(const std::string &scope,
 
 void CodeGenTileLangAscend::VisitExpr_(const FloorDivNode *op,
                                        std::ostream &os) {
-  os << "(";
+  // C/C++ integer division truncates toward zero, whereas TIR FloorDiv rounds
+  // toward negative infinity. This expression is emitted both in AICore code
+  // and in the host-side kernel-launch grid, so it cannot call a device-only
+  // helper from common.h.
+  os << "((";
   PrintExpr(op->a, os);
   os << " / ";
   PrintExpr(op->b, os);
-  os << ")";
+  os << ") - (((";
+  PrintExpr(op->a, os);
+  os << " % ";
+  PrintExpr(op->b, os);
+  os << ") != 0 && ((";
+  PrintExpr(op->a, os);
+  os << " % ";
+  PrintExpr(op->b, os);
+  os << ") < 0) != ((";
+  PrintExpr(op->b, os);
+  os << ") < 0)) ? 1 : 0))";
 }
 
 void CodeGenTileLangAscend::VisitExpr_(const FloorModNode *op,
                                        std::ostream &os) {
-  os << "(";
+  os << "((";
   PrintExpr(op->a, os);
   os << " % ";
   PrintExpr(op->b, os);
-  os << ")";
+  os << ") + (((";
+  PrintExpr(op->a, os);
+  os << " % ";
+  PrintExpr(op->b, os);
+  os << ") != 0 && ((";
+  PrintExpr(op->a, os);
+  os << " % ";
+  PrintExpr(op->b, os);
+  os << ") < 0) != ((";
+  PrintExpr(op->b, os);
+  os << ") < 0)) ? (";
+  PrintExpr(op->b, os);
+  os << ") : 0))";
 }
 
 // Emit an INTEGER max/min as a ternary instead of the bare max(a, b) / min(a,
