@@ -17,6 +17,7 @@ from tilelang.jit.adapter import (
 
 from tilelang.profiler import Profiler, TensorSupplyType
 from tilelang.engine.param import KernelParam, CompiledArtifact
+from tilelang.jit.adapter.libgen import resolve_run_mode
 
 
 class JITKernel:
@@ -56,6 +57,7 @@ class JITKernel:
         pass_configs: dict[str, Any] | None = None,
         compile_flags: list[str] | str | None = None,
         from_database: bool = False,
+        run_mode: str | None = None,
     ):
         """
         Initializes a TorchFunction instance.
@@ -93,6 +95,7 @@ class JITKernel:
         self.target = target
         self.target_host = target_host
         self.platform = platform
+        self.run_mode = resolve_run_mode(run_mode)
         self.verbose = verbose
 
         if pass_configs is None:
@@ -137,6 +140,7 @@ class JITKernel:
         execution_backend: Literal["dlpack", "ctypes", "cython"],
         pass_configs: dict[str, Any] | None = None,
         compile_flags: list[str] | str | None = None,
+        run_mode: str | None = None,
     ):
         """
         Alternative constructor to create a TorchFunction directly from a database.
@@ -152,6 +156,7 @@ class JITKernel:
             pass_configs=pass_configs,
             compile_flags=compile_flags,
             from_database=True,
+            run_mode=run_mode,
         )
 
         instance.adapter = instance._create_adapter_from_database(
@@ -283,6 +288,7 @@ class JITKernel:
                 verbose=verbose,
                 pass_configs=pass_configs,
                 compile_flags=self.compile_flags,
+                run_mode=self.run_mode,
             )
         else:
             # Handle invalid backend.
@@ -333,6 +339,7 @@ class JITKernel:
                 kernel_lib_path=kernel_lib_path,
                 pass_configs=pass_configs,
                 compile_flags=compile_flags,
+                run_mode=self.run_mode,
             )
         else:
             # Handle invalid backend.

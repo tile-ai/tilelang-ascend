@@ -42,6 +42,7 @@ from tilelang import env
 from tilelang.autotuner.param import CompileArgs, ProfileArgs, AutotuneResult
 from tilelang.autotuner.capture import get_autotune_inputs
 from tilelang.utils.target import determine_target
+from tilelang.jit.adapter.libgen import resolve_run_mode
 
 
 class TimeoutException(Exception):
@@ -123,6 +124,7 @@ class AutoTuner:
     def __init__(self, fn: Callable, configs):
         self.fn = fn
         self.configs = configs
+        self.compile_args = CompileArgs()
         self.ref_latency_cache = None
         self.jit_input_tensors = None
         self.ref_input_tensors = None
@@ -151,6 +153,7 @@ class AutoTuner:
         verbose: bool = False,
         pass_configs: dict[str, Any] | None = None,
         compile_flags: list[str] | str | None = None,
+        run_mode: str | None = None,
     ):
         """Set compilation arguments for the auto-tuner.
 
@@ -163,6 +166,7 @@ class AutoTuner:
             verbose: Whether to enable verbose output.
             pass_configs: Additional keyword arguments to pass to the Compiler PassContext.
             compile_flags: Extra Bisheng compiler flags. See `tilelang.jit.compile`.
+            run_mode: Runtime to link and load; defaults to `TL_RUN_MODE`.
 
         Returns:
             AutoTuner: Self for method chaining.
@@ -176,6 +180,7 @@ class AutoTuner:
             verbose=verbose,
             pass_configs=pass_configs,
             compile_flags=compile_flags,
+            run_mode=resolve_run_mode(run_mode),
         )
 
         return self
@@ -619,7 +624,7 @@ class AutoTuneImpl(Generic[_P, _T]):
     def __post_init__(self):
         self._tuner_cache = {}
 
-    def get_tunner(self):
+    def get_tunner(self, run_mode: str | None = None):
         # Use the real function from jit_impl, not a placeholder
         assert self.jit_impl.func is not None
         autotuner = (
@@ -644,28 +649,36 @@ class AutoTuneImpl(Generic[_P, _T]):
                 verbose=self.jit_impl.verbose,
                 pass_configs=self.jit_impl.pass_configs,
                 compile_flags=self.jit_impl.compile_flags,
+                run_mode=run_mode,
             )
         )
         autotuner.run = partial(autotuner.run, self.warmup, self.rep, self.timeout)
         return autotuner
 
     def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> JITKernel:
+        run_mode = resolve_run_mode()
         key_args_tuple = args
         key_kwargs_tuple = tuple(sorted(kwargs.items()))
         key = (key_args_tuple, key_kwargs_tuple)
-        if key not in self._tuner_cache:
+        cache_key = (key, run_mode)
+        if cache_key not in self._tuner_cache:
 
             def jit_compile(**config_arg):
                 # Call the wrapper function (which accepts __tune_params)
                 # The wrapper function is stored in jit_impl.wrapper
-                return self.jit_impl.wrapper(*args, **kwargs, __tune_params=config_arg)
+                return self.jit_impl.wrapper(
+                    *args,
+                    **kwargs,
+                    __tune_params=config_arg,
+                    __run_mode=run_mode,
+                )
 
-            autotuner = self.get_tunner()
+            autotuner = self.get_tunner(run_mode=run_mode)
             autotuner.jit_compile = jit_compile
             autotuner.set_kernel_parameters(key, self.jit_impl.signature.parameters)
             artifact = autotuner.run()
-            self._tuner_cache[key] = artifact.kernel
-        return self._tuner_cache[key]
+            self._tuner_cache[cache_key] = artifact.kernel
+        return self._tuner_cache[cache_key]
 
 
 def autotune(  # This is the new public interface

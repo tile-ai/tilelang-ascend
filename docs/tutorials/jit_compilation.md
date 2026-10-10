@@ -8,6 +8,20 @@ TileLang offers two public entry points:
 Both entry points accept `pass_configs` for TileLang compiler passes and
 `compile_flags` for extra Bisheng command-line options.
 
+## NPU and simulator builds
+
+`TL_RUN_MODE=sim` selects camodel libraries; unset or other values retain the NPU
+runtime. The mode is resolved before JIT, kernel, or autotuner cache lookup and
+passed through compilation and disk restoration to the linker and loader. NPU
+and simulator artifacts have separate cache identities.
+
+For direct compilation, `tilelang.compile(program, run_mode="sim", ...)` overrides
+the environment for that build. `AutoTuner.set_compile_args(run_mode="sim", ...)`
+also keeps this resolved mode for compilation and cache restoration. Changing
+`TL_RUN_MODE` later does not change a build that has already resolved its mode.
+These paths use the Ascend Cython execution backend; this does not add support
+for other execution backends.
+
 ## Kernel-scoped Bisheng flags
 
 `compile_flags` accepts `list[str]`, `str`, or `None`:

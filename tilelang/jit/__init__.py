@@ -40,6 +40,7 @@ def compile(
     verbose: bool = False,
     pass_configs: dict[str, Any] | None = None,
     compile_flags: list[str] | str | None = None,
+    run_mode: str | None = None,
 ) -> JITKernel:
     """
     Compile the given TileLang PrimFunc with TVM and build a JITKernel.
@@ -80,14 +81,18 @@ def compile(
         ``TL_PTO_DEBUG`` environment variables, and therefore win (bisheng is
         last-wins for repeated flags). Resolved per kernel; the process
         environment is never mutated.
+    run_mode : str, optional
+        Ascend runtime to link and load: ``npu`` or ``sim``. Defaults to
+        ``TL_RUN_MODE`` (``npu`` when unset). Resolved before cache lookup.
     """
 
     from tilelang.transform.pass_config import process_default_pass_config
-    from tilelang.jit.adapter.libgen import resolve_compile_flags
+    from tilelang.jit.adapter.libgen import resolve_compile_flags, resolve_run_mode
 
     pass_configs = process_default_pass_config(target, pass_configs)
     # Resolve once here so the same flag list feeds both the cache key and codegen.
     compile_flags = resolve_compile_flags(target, pass_configs, compile_flags)
+    run_mode = resolve_run_mode(run_mode)
 
     return cached(
         func=func,
@@ -100,6 +105,7 @@ def compile(
         verbose=verbose,
         pass_configs=pass_configs,
         compile_flags=compile_flags,
+        run_mode=run_mode,
     )
 
 
@@ -210,10 +216,13 @@ class _JitImplementation:
 
         @functools.wraps(func)
         def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Any:
+            from tilelang.jit.adapter.libgen import resolve_run_mode
+
+            run_mode = resolve_run_mode(kwargs.pop("__run_mode", None))
             # Separate out the tuning parameters from the user's kwargs
             tune_params = kwargs.pop("__tune_params", {})
 
-            key_args_tuple = args
+            key_args_tuple = (run_mode, args)
             key_kwargs_tuple = tuple(sorted(kwargs.items()))
             key = (key_args_tuple, key_kwargs_tuple)
 
@@ -238,6 +247,7 @@ class _JitImplementation:
                     verbose=self.verbose,
                     pass_configs=self.pass_configs,
                     compile_flags=self.compile_flags,
+                    run_mode=run_mode,
                 )
 
                 if self.debug_root_path:
