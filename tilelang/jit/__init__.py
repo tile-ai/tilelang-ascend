@@ -83,11 +83,12 @@ def compile(
     """
 
     from tilelang.transform.pass_config import process_default_pass_config
-    from tilelang.jit.adapter.libgen import resolve_compile_flags
+    from tilelang.jit.adapter.libgen import resolve_compile_flags, resolve_run_mode
 
     pass_configs = process_default_pass_config(target, pass_configs)
     # Resolve once here so the same flag list feeds both the cache key and codegen.
     compile_flags = resolve_compile_flags(target, pass_configs, compile_flags)
+    run_mode = resolve_run_mode()
 
     return cached(
         func=func,
@@ -100,6 +101,7 @@ def compile(
         verbose=verbose,
         pass_configs=pass_configs,
         compile_flags=compile_flags,
+        run_mode=run_mode,
     )
 
 
@@ -210,10 +212,13 @@ class _JitImplementation:
 
         @functools.wraps(func)
         def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Any:
+            from tilelang.jit.adapter.libgen import resolve_run_mode
+
+            run_mode = resolve_run_mode()
             # Separate out the tuning parameters from the user's kwargs
             tune_params = kwargs.pop("__tune_params", {})
 
-            key_args_tuple = args
+            key_args_tuple = (run_mode, args)
             key_kwargs_tuple = tuple(sorted(kwargs.items()))
             key = (key_args_tuple, key_kwargs_tuple)
 

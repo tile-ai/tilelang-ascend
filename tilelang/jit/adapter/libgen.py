@@ -110,14 +110,28 @@ def resolve_compile_flags(
     return flags
 
 
+def resolve_run_mode(run_mode: str | None = None) -> str:
+    """Resolve the build mode; only ``sim`` selects the legacy camodel path."""
+    if run_mode is None:
+        run_mode = os.environ.get("TL_RUN_MODE", "npu")
+    return "sim" if run_mode == "sim" else "npu"
+
+
 class LibraryGenerator:
     srcpath: str | None = None
     libpath: str | None = None
     lib_code: str | None = None
 
-    def __init__(self, target: str, platform: str, compile_flags: list[str] | str | None = None):
+    def __init__(
+        self,
+        target: str,
+        platform: str,
+        compile_flags: list[str] | str | None = None,
+        run_mode: str | None = None,
+    ):
         self.target = target
         self.platform = platform
+        self.run_mode = resolve_run_mode(run_mode)
         # Fully-resolved Bisheng flags for this kernel (derived defaults + caller
         # flags). None means a direct/legacy caller: fall back to the derived
         # defaults in compile_lib.
@@ -130,8 +144,7 @@ class LibraryGenerator:
     def load_lib(self, lib_path: str | None = None):
         if lib_path is None:
             lib_path = self.libpath
-        run_mode = os.environ.get("TL_RUN_MODE", "npu")
-        if run_mode == "sim":
+        if self.run_mode == "sim":
             ascend_home = _get_ascend_home_path()
             sim_lib_path = _get_simulator_lib_path(ascend_home, self.platform)
             ld_path = os.environ.get("LD_LIBRARY_PATH", "")
@@ -228,8 +241,7 @@ class LibraryGenerator:
             ]
 
         # --- camodel (simulator) support ---
-        run_mode = os.environ.get("TL_RUN_MODE", "npu")
-        if run_mode == "sim":
+        if self.run_mode == "sim":
             sim_lib_path = _get_simulator_lib_path(ASCEND_HOME_PATH, self.platform)
             # Insert simulator library path before ASCEND_HOME_PATH/lib64 so
             # libruntime_camodel.so takes precedence over libruntime.so.

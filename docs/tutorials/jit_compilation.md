@@ -8,6 +8,22 @@ TileLang offers two public entry points:
 Both entry points accept `pass_configs` for TileLang compiler passes and
 `compile_flags` for extra Bisheng command-line options.
 
+## NPU and simulator cache isolation
+
+Set `TL_RUN_MODE` before starting the process and keep it fixed for that process:
+`sim` selects camodel libraries; unset or other values retain the NPU runtime.
+The Ascend Cython build and cache-restore paths pass the resolved mode to the
+linker and loader. Kernel and autotuner cache keys include the mode, so NPU and
+simulator processes using these paths can share a cache directory without
+reusing each other's artifacts.
+
+The Cython JIT adapter requires the `torch_npu` integration and uses torch NPU
+tensors and streams. For A5 simulation on a host without a physical NPU, use the
+camodel runner described in the
+[programming guide](../TileLang-Ascend%20Programming%20Guide.md).
+That runner initializes the simulator runtime, clears the cache, and builds
+through `tilelang.lower` and `LibraryGenerator`, bypassing the JIT kernel cache.
+
 ## Kernel-scoped Bisheng flags
 
 `compile_flags` accepts `list[str]`, `str`, or `None`:

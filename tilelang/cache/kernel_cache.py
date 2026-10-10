@@ -21,6 +21,7 @@ import logging
 from tilelang.env import TILELANG_CACHE_DIR, is_cache_enabled
 from tilelang.version import __version__
 from tilelang.utils.target import determine_platform
+from tilelang.jit.adapter.libgen import resolve_run_mode
 
 KERNEL_PATH = "kernel.cu"
 WRAPPED_KERNEL_PATH = "wrapped_kernel.cu"
@@ -81,6 +82,7 @@ class KernelCache:
         platform: str = "auto",
         pass_configs: dict = None,
         compile_flags: list[str] | str | None = None,
+        run_mode: str | None = None,
     ) -> str:
         """
         Generates a unique hash key for caching compiled kernels.
@@ -114,6 +116,7 @@ class KernelCache:
             "execution_backend": execution_backend,
             "pass_configs": pass_configs,
             "compile_flags": compile_flags,
+            "run_mode": resolve_run_mode(run_mode),
         }
         key_string = json.dumps(key_data, sort_keys=True)  # Sort keys to ensure consistency
         return sha256(key_string.encode()).hexdigest()  # Use SHA256 to generate hash key
@@ -132,6 +135,7 @@ class KernelCache:
         verbose: bool = False,
         pass_configs: dict = None,
         compile_flags: list[str] | str | None = None,
+        run_mode: str | None = None,
     ) -> JITKernel:
         """
         Caches and reuses compiled kernels to avoid redundant compilation.
@@ -150,6 +154,7 @@ class KernelCache:
             JITKernel: The compiled kernel, either freshly compiled or from cache
         """
         platform = determine_platform(platform)
+        run_mode = resolve_run_mode(run_mode)
 
         if not is_cache_enabled():
             return JITKernel(
@@ -163,6 +168,7 @@ class KernelCache:
                 verbose=verbose,
                 pass_configs=pass_configs,
                 compile_flags=compile_flags,
+                run_mode=run_mode,
             )
 
         key = self._generate_key(
@@ -177,6 +183,7 @@ class KernelCache:
             platform=platform,
             pass_configs=pass_configs,
             compile_flags=compile_flags,
+            run_mode=run_mode,
         )
         with self._lock:
             # First check in-memory cache
@@ -199,6 +206,7 @@ class KernelCache:
                 pass_configs,
                 func,
                 compile_flags,
+                run_mode,
             )
             if kernel is not None:
                 # Populate memory cache with disk result
@@ -217,6 +225,7 @@ class KernelCache:
             verbose=verbose,
             pass_configs=pass_configs,
             compile_flags=compile_flags,
+            run_mode=run_mode,
         )
         if execution_backend == "dlpack":
             self.logger.warning("DLPack backend does not support cache saving to disk.")
@@ -333,6 +342,7 @@ class KernelCache:
         pass_configs: dict = None,
         func: Callable = None,
         compile_flags: list[str] | str | None = None,
+        run_mode: str | None = None,
     ) -> JITKernel:
         """
         Loads a previously compiled kernel from disk cache.
@@ -405,6 +415,7 @@ class KernelCache:
                 execution_backend=execution_backend,
                 pass_configs=pass_configs,
                 compile_flags=compile_flags,
+                run_mode=run_mode,
             )
         else:
             return None

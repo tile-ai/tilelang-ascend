@@ -12,6 +12,7 @@ from pathlib import Path
 
 from tilelang.jit import JITKernel
 from tilelang.utils.target import determine_platform
+from tilelang.jit.adapter.libgen import resolve_run_mode
 import cloudpickle
 import os
 import shutil
@@ -257,6 +258,7 @@ class AutotuneResult:
         if not os.path.exists(cache_path):
             return None
 
+        run_mode = resolve_run_mode()
         kernel_global_source: str | None = None
         kernel_params: list[KernelParam] | None = None
 
@@ -310,6 +312,7 @@ class AutotuneResult:
                 execution_backend=execution_backend,
                 pass_configs=pass_configs,
                 compile_flags=compile_flags,
+                run_mode=run_mode,
             )
         else:
             return None

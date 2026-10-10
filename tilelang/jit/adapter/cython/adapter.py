@@ -223,6 +223,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
         verbose: bool = False,
         pass_configs: dict[str, Any] | None = None,
         compile_flags: list[str] | str | None = None,
+        run_mode: str | None = None,
     ):
         """Initialize the adapter with the given TIR function or module.
 
@@ -258,7 +259,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
         self.verbose = verbose
         self.compile_flags = compile_flags
         self.wrapper = TLWrapper("npu")
-        self.lib_generator = LibraryGenerator(target, platform, compile_flags)
+        self.lib_generator = LibraryGenerator(target, platform, compile_flags, run_mode=run_mode)
 
         self.wrapper.assign_optimized_module(self.ir_module)
         self.wrapper.assign_pass_configs(pass_configs)
@@ -301,6 +302,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
         verbose: bool = False,
         pass_configs: dict[str, Any] | None = None,
         compile_flags: list[str] | str | None = None,
+        run_mode: str | None = None,
     ):
         adapter = cls.__new__(cls)
         adapter.params = params
@@ -327,7 +329,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
         adapter.buffer_device_map = adapter._process_buffer_device()
 
         adapter.verbose = verbose
-        adapter.lib_generator = LibraryGenerator(target, platform, compile_flags)
+        adapter.lib_generator = LibraryGenerator(target, platform, compile_flags, run_mode=run_mode)
         adapter.lib = adapter.lib_generator.load_lib(lib_path=kernel_lib_path)
 
         # adapter.lib.get_last_error.restype = ctypes.c_char_p

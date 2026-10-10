@@ -42,6 +42,7 @@ from tilelang import env
 from tilelang.autotuner.param import CompileArgs, ProfileArgs, AutotuneResult
 from tilelang.autotuner.capture import get_autotune_inputs
 from tilelang.utils.target import determine_target
+from tilelang.jit.adapter.libgen import resolve_run_mode
 
 
 class TimeoutException(Exception):
@@ -272,6 +273,7 @@ class AutoTuner:
         func_source = inspect.getsource(self.fn)
         key_data = {
             "version": __version__,
+            "run_mode": resolve_run_mode(),
             "op_parameters": tuple(op_parameters),
             "func_source": func_source,
             "configs": self.configs,
@@ -650,10 +652,12 @@ class AutoTuneImpl(Generic[_P, _T]):
         return autotuner
 
     def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> JITKernel:
+        run_mode = resolve_run_mode()
         key_args_tuple = args
         key_kwargs_tuple = tuple(sorted(kwargs.items()))
         key = (key_args_tuple, key_kwargs_tuple)
-        if key not in self._tuner_cache:
+        cache_key = (key, run_mode)
+        if cache_key not in self._tuner_cache:
 
             def jit_compile(**config_arg):
                 # Call the wrapper function (which accepts __tune_params)
@@ -664,8 +668,8 @@ class AutoTuneImpl(Generic[_P, _T]):
             autotuner.jit_compile = jit_compile
             autotuner.set_kernel_parameters(key, self.jit_impl.signature.parameters)
             artifact = autotuner.run()
-            self._tuner_cache[key] = artifact.kernel
-        return self._tuner_cache[key]
+            self._tuner_cache[cache_key] = artifact.kernel
+        return self._tuner_cache[cache_key]
 
 
 def autotune(  # This is the new public interface
