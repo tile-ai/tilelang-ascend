@@ -540,6 +540,66 @@ def test_sigmoid_inplace(dtype):
     run_test_activation_inplace(activation_inplace("sigmoid", 256, dtype), torch.sigmoid, 256, dtype, "ascendc")
 
 
+def activation_out_of_place(op_name, N, dtype="float"):
+    op = {
+        "sigmoid": T.tile.sigmoid,
+        "silu": T.tile.silu,
+    }[op_name]
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((N,), dtype),  # type: ignore
+        B: T.Tensor((N,), dtype),  # type: ignore
+        C: T.Tensor((N,), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            a_ub = T.alloc_ub((N,), dtype)
+            b_ub = T.alloc_ub((N,), dtype)
+            T.copy(A, a_ub)
+            op(b_ub, a_ub)
+            T.copy(b_ub, B)
+            T.copy(a_ub, C)
+
+    return main
+
+
+def run_test_src_after_call(func, golden, N, dtype, target):
+    """Check dst correctness and src contents after an out-of-place call.
+
+    AscendC preserves src; PTO rewrites src in place with 1 + exp(-src)
+    (documented backend limitation).
+    """
+    compiled = tilelang.compile(func, out_idx=None, pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(N, dtype=torch_dtype).npu()
+    b = torch.zeros(N, dtype=torch_dtype).npu()
+    c = torch.zeros(N, dtype=torch_dtype).npu()
+
+    torch.npu.synchronize()
+
+    compiled(a, b, c)
+
+    torch.testing.assert_close(b, golden(a), rtol=1e-2, atol=1e-2)
+    if target == "pto":
+        expected_src = 1.0 + torch.exp(-a)
+    else:
+        expected_src = a
+    torch.testing.assert_close(c, expected_src, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_sigmoid_src_after_call(dtype, target):
+    run_test_src_after_call(activation_out_of_place("sigmoid", 256, dtype), torch.sigmoid, 256, dtype, target)
+
+
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_silu_src_after_call(dtype, target):
+    run_test_src_after_call(activation_out_of_place("silu", 256, dtype), lambda a: a * torch.sigmoid(a), 256, dtype, target)
+
+
 def vec_mul_add_dst(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N

@@ -24,8 +24,8 @@ def sigmoid(
 | 参数名 | 输入/输出 | 描述 | 类型 | 必填/可选 |
 |--------|----------|------|------|----------|
 | dst | 输出 | 存放 Sigmoid 运算结果 | 张量（tensor） | 必填 |
-| src | 输入 | 源操作数 | 张量（tensor） | 必填 |
-| tmp | 输入/输出 | 可选显式 UB 临时存储；未提供时由框架自动申请 | 张量（tensor） | 可选（默认 `None`） |
+| src | 输入 | 源操作数；PTO 后端调用后会被改写（见约束条件 6） | 张量（tensor） | 必填 |
+| tmp | 输入/输出 | 可选显式 UB 临时存储（仅 Ascend C 后端使用，见约束条件 4） | 张量（tensor） | 可选（默认 `None`） |
 
 > **类型说明**：
 > - **tensor**：通过 `T.alloc_ub`、`T.alloc_shared` 等分配的缓冲区（Buffer），或其切片（BufferRegion）
@@ -50,9 +50,10 @@ def sigmoid(
 1. dst 与 src 的元素总数应相同
 2. dst 与 src 的 dtype 必须一致（Ascend C 约束）
 3. 操作数地址需 32 字节对齐（硬件约束）
-4. 未提供 `tmp` 时，接口内部使用框架自动申请的临时缓冲区（大小为 `N × sizeof(dtype)` 字节，N 为元素个数），无需用户手动分配
+4. `tmp` 仅在 Ascend C 后端生效：未提供时自动申请临时缓冲区（大小为 `N × sizeof(dtype)` 字节，N 为元素个数），显式传入时使用传入的 buffer；PTO 后端不使用临时缓冲区，显式传入的 `tmp` 会被忽略
 5. 原地运算（dst 与 src 为同一 buffer）仅 ascendc 支持
-6. 特殊值遵循 IEEE 语义：`sigmoid(0)=0.5`、`sigmoid(-inf)=0`、`sigmoid(inf)=1`、`sigmoid(nan)=nan`
+6. PTO 后端调用后 `src` 会被改写，不再保留原始输入数据；如需继续使用原数据，请先将 `src` 复制到其他 buffer（Ascend C 后端 `src` 保持不变）
+7. 特殊值遵循 IEEE 语义：`sigmoid(0)=0.5`、`sigmoid(-inf)=0`、`sigmoid(inf)=1`、`sigmoid(nan)=nan`
 
 ## 3. 示例代码
 

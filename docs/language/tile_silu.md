@@ -22,7 +22,7 @@ def silu(
 | 参数名 | 输入/输出 | 描述 | 类型 | 必填/可选 |
 |--------|----------|------|------|----------|
 | dst | 输出 | 存放 SiLU 运算结果 | 张量（tensor） | 必填 |
-| src | 输入 | 源操作数 | 张量（tensor） | 必填 |
+| src | 输入 | 源操作数；PTO 后端调用后会被改写（见约束条件 5） | 张量（tensor） | 必填 |
 
 > **类型说明**：
 > - **tensor**：通过 `T.alloc_ub`、`T.alloc_shared` 等分配的缓冲区（Buffer），或其切片（BufferRegion）
@@ -47,7 +47,8 @@ def silu(
 2. dst 与 src 的 dtype 必须一致（Ascend C 约束）
 3. 操作数地址需 32 字节对齐（硬件约束）
 4. 不支持原地运算（dst 与 src 为同一 buffer）
-5. 特殊值遵循 IEEE 语义：`silu(0)=0`、`silu(-inf)=nan`（-inf × 0 未定义）、`silu(inf)=inf`、`silu(nan)=nan`
+5. PTO 后端调用后 `src` 会被改写，不再保留原始输入数据；如需继续使用原数据，请先将 `src` 复制到其他 buffer（Ascend C 后端 `src` 保持不变）
+6. 特殊值遵循 IEEE 语义：`silu(0)=0`、`silu(-inf)=nan`（-inf × 0 未定义）、`silu(inf)=inf`、`silu(nan)=nan`
 
 ## 3. 示例代码
 

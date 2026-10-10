@@ -1274,8 +1274,8 @@ def sigmoid(
         dst: The destination buffer; it may alias src on ascendc (in-place),
             but not on pto.
         src: The source, a buffer or a contiguous region of it.
-        tmp: Optional explicit UB scratch storage; allocated automatically when
-            omitted. It may use any fixed-width scalar dtype; lowering
+        tmp: Optional explicit UB scratch storage, used by the AscendC backend
+            only. It may use any fixed-width scalar dtype; lowering
             reinterprets its storage for the selected backend.
 
     Notes:
@@ -1283,8 +1283,14 @@ def sigmoid(
           mismatched sizes produce undefined results).
         - Supported dtypes: float16, float32 (Ascend A2 / A3).
         - Operand addresses must be 32-byte aligned (hardware constraint).
-        - ``tmp`` is optional; a temporary buffer of ``N x sizeof(dtype)``
-          bytes (N = element count) is auto-allocated when not provided.
+        - ``tmp`` applies to the AscendC backend only: a temporary buffer of
+          ``N x sizeof(dtype)`` bytes (N = element count) is auto-allocated
+          when not provided; the PTO backend uses no temporary buffer and
+          ignores an explicitly passed ``tmp``.
+        - On the PTO backend, ``src`` is modified in place by the call and no
+          longer holds the original input; copy it to another buffer first if
+          the data is needed afterwards. The AscendC backend leaves ``src``
+          unchanged.
         - Special values: sigmoid(0)=0.5, sigmoid(-inf)=0, sigmoid(inf)=1,
           sigmoid(nan)=nan.
     """
@@ -1317,6 +1323,10 @@ def silu(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):
           mismatched sizes produce undefined results).
         - Supported dtypes: float16, float32 (Ascend A2 / A3).
         - Operand addresses must be 32-byte aligned (hardware constraint).
+        - On the PTO backend, ``src`` is modified in place by the call and no
+          longer holds the original input; copy it to another buffer first if
+          the data is needed afterwards. The AscendC backend leaves ``src``
+          unchanged.
         - Special values follow IEEE semantics: silu(-inf)=nan, silu(inf)=inf,
           silu(nan)=nan.
     """
