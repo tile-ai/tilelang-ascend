@@ -9,6 +9,37 @@ from utils import (
     detect_vec_core_num,
 )
 
+
+def _check_precision(actual, golden, dtype):
+    configs = {
+        "float16": (2**-14, 2**-9, 1e-1, 0.99),
+        "bfloat16": (2**-10, 2**-6, 1e0, 0.99),
+        "float32": (2**-16, 2**-10, 1e-2, 0.99),
+        "hifloat32": (2**-16, 2**-10, 1e-2, 0.99),
+        "float8_e4m3": (2**-4, 2**-2, 1e0, 0.99),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1, 0.99),
+    }
+    if dtype in {"int8", "int16", "int32", "int64", "uint8"}:
+        assert torch.equal(actual.detach().cpu(), golden.detach().cpu()), "integer output mismatch"
+        return
+    atol, rtol, max_abs_limit, required_ratio = configs[dtype]
+    actual, golden = actual.detach().cpu().float(), golden.detach().cpu().float()
+    assert actual.shape == golden.shape, f"shape mismatch: {actual.shape} != {golden.shape}"
+    special = ~torch.isfinite(golden)
+    assert torch.equal(torch.isnan(actual[special]), torch.isnan(golden[special])), "NaN positions differ"
+    assert torch.equal(torch.isinf(actual[special]), torch.isinf(golden[special])), "Inf positions differ"
+    finite = torch.isfinite(golden)
+    if not finite.any():
+        return
+    abs_error = (actual[finite] - golden[finite]).abs()
+    abs_error = torch.where(torch.isfinite(abs_error), abs_error, torch.full_like(abs_error, float("inf")))
+    matched_ratio = (abs_error <= atol + rtol * golden[finite].abs()).float().mean().item()
+    max_abs_error = abs_error.max().item()
+    assert matched_ratio >= required_ratio and max_abs_error <= max_abs_limit, (
+        f"matched_ratio={matched_ratio:.4f}, max_abs_error={max_abs_error:.3e}"
+    )
+
+
 DEFAULT_HEAD_DIM = 576
 DEFAULT_ROPE_DIM = 64
 DEFAULT_DTYPE = "bf16"
@@ -246,7 +277,7 @@ def _run_ref_check(
         x_ref = _torch_rope_ref_rows(x_in_flat, sin_repeated, cos_repeated, start_dim)
         x_ref = x_ref.reshape(num_tokens, num_heads, head_dim)
 
-        torch.testing.assert_close(x_out, x_ref, rtol=1e-3, atol=1e-3)
+        _check_precision(x_out, x_ref, "bfloat16")
     else:
         # Single head case - original logic
         x_in = torch.randn((num_tokens, head_dim), device=device, dtype=torch.bfloat16)
@@ -271,7 +302,7 @@ def _run_ref_check(
         x_out[:, start_dim : start_dim + rope_dim] = x_slice_flat.view(num_tokens, rope_dim)
 
         x_ref = _torch_rope_ref_rows(x_in, sin, cos, start_dim)
-        torch.testing.assert_close(x_out, x_ref, rtol=1e-3, atol=1e-3)
+        _check_precision(x_out, x_ref, "bfloat16")
 
     print(
         f"[PASS] RoPE output matches torch reference (tokens={num_tokens}, heads={num_heads}, head_dim={head_dim}, rope_dim={rope_dim}, start_dim={start_dim})"

@@ -2,6 +2,7 @@
 set -e
 
 # Generate the device source and compile it into ./kernel_lib.so via the
-# framework's LibraryGenerator (see example_gemm.py), then run the test.
-python example_gemm.py
+# framework's LibraryGenerator (see examples_experiment/gemm_aot/example_gemm.py),
+# then run the test.
+python ../../examples_experiment/gemm_aot/example_gemm.py
 python test_example_gemm.py

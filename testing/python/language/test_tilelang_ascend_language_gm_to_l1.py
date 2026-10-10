@@ -150,7 +150,7 @@ def full_copy_annotated(block_M, block_N, dim, dtype, accum_dtype):
 
 def full_copy_plain(M, N, K, block_M, block_N, K_L1, dtype, accum_dtype):
     """Plain GEMM without layout annotation (default zN), transpose_B=False.
-    Mirrors examples/gemm/example_gemm.py."""
+    Mirrors examples_experiment/gemm/example_gemm.py."""
 
     @T.prim_func
     def main(

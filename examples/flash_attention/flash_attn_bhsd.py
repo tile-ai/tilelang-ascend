@@ -3,9 +3,36 @@ from tilelang import DataType, language as T
 import argparse
 import torch
 
+
+def _check_precision(actual, golden):
+    a, g = actual.detach().cpu(), golden.detach().cpu()
+    if a.shape != g.shape:
+        raise AssertionError("shape mismatch")
+    if not a.dtype.is_floating_point:
+        if not torch.equal(a, g):
+            raise AssertionError("integer mismatch")
+        return
+    table = {torch.float16: (2**-14, 2**-9, 1e-1), torch.bfloat16: (2**-10, 2**-6, 1e0), torch.float32: (2**-16, 2**-10, 1e-2)}
+    atol, rtol, cap = table.get(g.dtype, table[torch.float16])
+    a, g = a.float(), g.float()
+    if not (
+        torch.equal(torch.isnan(a), torch.isnan(g))
+        and torch.equal(torch.isposinf(a), torch.isposinf(g))
+        and torch.equal(torch.isneginf(a), torch.isneginf(g))
+    ):
+        raise AssertionError("special values differ")
+    m = torch.isfinite(g)
+    if m.any():
+        e = torch.where(torch.isfinite(a[m]), (a[m] - g[m]).abs(), torch.full_like(g[m], float("inf")))
+        ratio = (e <= atol + rtol * g[m].abs()).float().mean().item()
+        if ratio < 0.99 or e.max().item() > cap:
+            raise AssertionError(f"precision failed ratio={ratio} max={e.max().item()}")
+
+
 B, S, H, D = 1, 128, 1, 512
 
-@tilelang.jit(out_idx=[3], workspace_idx=[4,5,6])
+
+@tilelang.jit(out_idx=[3], workspace_idx=[4, 5, 6])
 def flash_attention_fwd(
     batch,
     seq_len,
@@ -17,7 +44,7 @@ def flash_attention_fwd(
     dtype = "float16"
     accum_dtype = "float"
 
-    sm_scale = (1.0 / dim)**0.5
+    sm_scale = (1.0 / dim) ** 0.5
 
     shape = [batch, heads, seq_len, dim]
 
@@ -25,13 +52,13 @@ def flash_attention_fwd(
 
     @T.prim_func
     def main(
-            Q: T.Tensor(shape, dtype),       # type: ignore
-            K: T.Tensor(shape, dtype),       # type: ignore
-            V: T.Tensor(shape, dtype),       # type: ignore
-            Output: T.Tensor(shape, dtype),  # type: ignore
-            workspace_1: T.Tensor([block_num, block_M, block_N], accum_dtype),   # type: ignore
-            workspace_2: T.Tensor([block_num, block_M, block_N], dtype),         # type: ignore
-            workspace_3: T.Tensor([block_num, block_M, dim], accum_dtype),       # type: ignore
+        Q: T.Tensor(shape, dtype),  # type: ignore
+        K: T.Tensor(shape, dtype),  # type: ignore
+        V: T.Tensor(shape, dtype),  # type: ignore
+        Output: T.Tensor(shape, dtype),  # type: ignore
+        workspace_1: T.Tensor([block_num, block_M, block_N], accum_dtype),  # type: ignore
+        workspace_2: T.Tensor([block_num, block_M, block_N], dtype),  # type: ignore
+        workspace_3: T.Tensor([block_num, block_M, dim], accum_dtype),  # type: ignore
     ):
         with T.Kernel(block_num, is_npu=True) as (cid, vid):
             bx = cid % (seq_len // block_M)
@@ -59,35 +86,35 @@ def flash_attention_fwd(
             acc_o_ub = T.alloc_ub([block_M // 2, dim], accum_dtype)
             acc_o_half = T.alloc_ub([block_M // 2, dim], dtype)
 
-            T.annotate_address({
-                # L1 address
-                q_l1: 0,
-                k_l1: block_M * dim * DataType(dtype).bits // 8,
-                acc_s_l1: block_M * dim * DataType(dtype).bits // 8,
-                v_l1: block_M * (block_N + dim) * DataType(dtype).bits // 8,
-
-                # L0C address
-                acc_s_l0c: 0,
-                acc_o_l0c: 0,
-
-                ## ub address
-                acc_o: 0,
-                sumexp: 65536,
-                m_i: 65664,
-                acc_s_ub: 66048,
-                m_i_prev: 74240,
-                acc_s_ub_: 74368,
-                sumexp_i_ub: 98944,
-                acc_s_half: 98944,
-                acc_o_ub: 98944,
-                acc_o_half: 98944
-            })
+            T.annotate_address(
+                {
+                    # L1 address
+                    q_l1: 0,
+                    k_l1: block_M * dim * DataType(dtype).bits // 8,
+                    acc_s_l1: block_M * dim * DataType(dtype).bits // 8,
+                    v_l1: block_M * (block_N + dim) * DataType(dtype).bits // 8,
+                    # L0C address
+                    acc_s_l0c: 0,
+                    acc_o_l0c: 0,
+                    ## ub address
+                    acc_o: 0,
+                    sumexp: 65536,
+                    m_i: 65664,
+                    acc_s_ub: 66048,
+                    m_i_prev: 74240,
+                    acc_s_ub_: 74368,
+                    sumexp_i_ub: 98944,
+                    acc_s_half: 98944,
+                    acc_o_ub: 98944,
+                    acc_o_half: 98944,
+                }
+            )
 
             with T.Scope("C"):
-                T.copy(Q[bz, by, bx * block_M:(bx + 1) * block_M, :], q_l1)
+                T.copy(Q[bz, by, bx * block_M : (bx + 1) * block_M, :], q_l1)
                 T.barrier_all()
                 for k in T.serial(T.ceildiv(seq_len, block_N)):
-                    T.copy(K[bz, by, k * block_N:(k + 1) * block_N, :], k_l1)
+                    T.copy(K[bz, by, k * block_N : (k + 1) * block_N, :], k_l1)
                     T.barrier_all()
 
                     T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
@@ -101,7 +128,7 @@ def flash_attention_fwd(
                     T.barrier_all()
 
                     T.copy(workspace_2[cid, :, :], acc_s_l1)
-                    T.copy(V[bz, by, k * block_N:(k + 1) * block_N, :], v_l1)
+                    T.copy(V[bz, by, k * block_N : (k + 1) * block_N, :], v_l1)
                     T.barrier_all()
 
                     T.gemm_v0(acc_s_l1, v_l1, acc_o_l0c, init=True)
@@ -114,10 +141,9 @@ def flash_attention_fwd(
                     T.wait_cross_flag(3)
 
             with T.Scope("V"):
-
                 T.tile.fill(acc_o, 0.0)
                 T.tile.fill(sumexp, 0.0)
-                T.tile.fill(m_i, -2**30)
+                T.tile.fill(m_i, -(2**30))
                 T.barrier_all()
 
                 for _k in T.serial(T.ceildiv(seq_len, block_N)):
@@ -128,9 +154,7 @@ def flash_attention_fwd(
                     T.barrier_all()
 
                     T.wait_cross_flag(0)
-                    T.copy(
-                        workspace_1[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :],
-                        acc_s_ub_)
+                    T.copy(workspace_1[cid, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :], acc_s_ub_)
                     T.barrier_all()
 
                     T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
@@ -176,9 +200,7 @@ def flash_attention_fwd(
                     T.copy(acc_s_ub, acc_s_half)
                     T.barrier_all()
 
-                    T.copy(
-                        acc_s_half,
-                        workspace_2[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :])
+                    T.copy(acc_s_half, workspace_2[cid, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :])
                     T.barrier_all()
 
                     T.set_cross_flag("MTE3", 1)
@@ -186,9 +208,7 @@ def flash_attention_fwd(
                     T.wait_cross_flag(2)
                     T.barrier_all()
 
-                    T.copy(
-                        workspace_3[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :],
-                        acc_o_ub)
+                    T.copy(workspace_3[cid, vid * block_M // 2 : vid * block_M // 2 + block_M // 2, :], acc_o_ub)
                     T.barrier_all()
 
                     T.tile.add(acc_o, acc_o, acc_o_ub)
@@ -204,11 +224,10 @@ def flash_attention_fwd(
 
                 T.copy(acc_o, acc_o_half)
                 T.barrier_all()
-                T.copy(
-                    acc_o_half, Output[bz, by, bx * block_M + vid * block_M // 2:bx * block_M +
-                                       vid * block_M // 2 + block_M // 2, :])
+                T.copy(acc_o_half, Output[bz, by, bx * block_M + vid * block_M // 2 : bx * block_M + vid * block_M // 2 + block_M // 2, :])
 
     return main
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -219,7 +238,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     B, S, H, D = args.B, args.S, args.H, args.D
 
-    torch.set_default_device('npu')
+    torch.set_default_device("npu")
     torch.manual_seed(0)
 
     tilelang.disable_cache()
@@ -231,22 +250,19 @@ if __name__ == "__main__":
         dim=D,
     )
 
-
     def ref_flash_attn(q, k, v):
         q = q.float()
         k = k.float()
         v = v.float()
 
-        acc = torch.einsum("bhsd,bhkd->bhsk", q, k) * (1.0 / q.shape[-1])**0.5
+        acc = torch.einsum("bhsd,bhkd->bhsk", q, k) * (1.0 / q.shape[-1]) ** 0.5
         acc = acc.softmax(dim=-1)
         o = torch.einsum("bhsk,bhkd->bhsd", acc, v)
         return o.to(torch.float16)
 
-
     q = torch.randn((B, H, S, D), dtype=torch.float16)
     k = torch.randn((B, H, S, D), dtype=torch.float16)
     v = torch.randn((B, H, S, D), dtype=torch.float16)
-
 
     torch.npu.synchronize()
     print("init successful!")
@@ -255,6 +271,6 @@ if __name__ == "__main__":
     ref_output = ref_flash_attn(q, k, v)
     torch.npu.synchronize()
 
-    torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
+    _check_precision(output, ref_output)
 
     print("Test Passed!")

@@ -428,7 +428,7 @@ def sparse_attention_fwd(
 )
 ```
 ### T.Parallel
-We have supported [T.parallel](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/docs/tutorials/t_parallel.md), which transforms the parallel iteration space into vectorized operations that are lowered into AscendC vector instructions. Here is an example based on [example_sparse_flash_attn.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/sparse_flash_attention/example_sparse_flash_attn.py):
+We have supported [T.parallel](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/docs/tutorials/t_parallel.md), which transforms the parallel iteration space into vectorized operations that are lowered into AscendC vector instructions. Here is an example based on [example_sparse_flash_attn.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples_experiment/sparse_flash_attention/example_sparse_flash_attn.py):
 
 ```python
 pass_configs = {
@@ -460,7 +460,7 @@ def sparse_attention_fwd(
 ```
 
 ### Auto-allocated Workspace
-We now support [automatic workspace allocation](./docs/tutorials/automatic_workspace_allocation.md), enabling users to call operators without managing workspace or output tensor allocation—they only need to handle input tensors. Refer to [example_sparse_flash_attn.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/sparse_flash_attention/example_sparse_flash_attn.py) for a concrete example.
+We now support [automatic workspace allocation](./docs/tutorials/automatic_workspace_allocation.md), enabling users to call operators without managing workspace or output tensor allocation—they only need to handle input tensors. Refer to [example_sparse_flash_attn.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples_experiment/sparse_flash_attention/example_sparse_flash_attn.py) for a concrete example.
 ```python
 # Specify workspace positions in parameter list via workspace_idx
 @tilelang.jit(out_idx=[3], workspace_idx=[4,5,6,7,8])
@@ -622,7 +622,7 @@ for h_i, j in T.Parallel(v_block, BI):
 
 Here is some examples:
 - [MatmulAddDeveloper](./examples/developer_mode/matmul_add_developer.py)
-- [SparseFlashAttnDeveloperVidReduce](./examples/developer_mode/sparse_flash_attn_developer_vid_reduce.py)
+- [SparseFlashAttnDeveloperVidReduce](./examples_experiment/developer_mode/sparse_flash_attn_developer_vid_reduce.py)
 
 For a more detailed feature introduction, please see:
 - [vid_reduction_and_auto_cv_ratio.md](./docs/tutorials/vid_reduction_and_auto_cv_ratio.md)

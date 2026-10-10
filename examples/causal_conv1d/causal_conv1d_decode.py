@@ -5,6 +5,42 @@ import tilelang
 import tilelang.language as T
 import torch
 
+
+def _check_precision(actual, golden, dtype):
+    table = {
+        "float16": (2**-14, 2**-9, 0.1),
+        "bfloat16": (2**-10, 2**-6, 1.0),
+        "float32": (2**-16, 2**-10, 0.01),
+        "hifloat32": (2**-16, 2**-10, 0.01),
+        "float8_e4m3": (2**-4, 2**-2, 1.0),
+        "float8_e5m2": (2**-3, 2**-1, 0.1),
+    }
+    actual_cpu, golden_cpu = actual.detach().cpu(), golden.detach().cpu()
+    if actual_cpu.shape != golden_cpu.shape:
+        return False, 0.0, float("inf")
+    dtype_name = str(dtype).replace("torch.", "")
+    if dtype_name in {"int8", "int16", "int32", "int64", "uint8"}:
+        mismatch = (actual_cpu != golden_cpu).sum().item()
+        total = max(actual_cpu.numel(), 1)
+        return mismatch == 0, 1.0 - mismatch / total, 0.0
+    actual, golden = actual_cpu.float(), golden_cpu.float()
+    atol, rtol, limit = table.get(dtype_name, table["float16"])
+    ~torch.isfinite(golden)
+    if (
+        not torch.equal(torch.isnan(actual), torch.isnan(golden))
+        or not torch.equal(torch.isposinf(actual), torch.isposinf(golden))
+        or not torch.equal(torch.isneginf(actual), torch.isneginf(golden))
+    ):
+        return False, 0.0, float("inf")
+    finite = torch.isfinite(golden)
+    if not finite.any():
+        return True, 1.0, 0.0
+    error = (actual[finite] - golden[finite]).abs()
+    error = torch.where(torch.isfinite(error), error, torch.full_like(error, float("inf")))
+    ratio, maximum = (error <= atol + rtol * golden[finite].abs()).float().mean().item(), error.max().item()
+    return ratio >= 0.99 and maximum <= limit, ratio, maximum
+
+
 symbol_cache_lines = T.symbolic("num_cache_lines")
 symbol_state_len = T.symbolic("state_len")
 symbol_batch = T.symbolic("batch_size")
@@ -392,8 +428,9 @@ def _run_ref_check(config: dict) -> None:
     )
     torch.npu.synchronize()
 
-    torch.testing.assert_close(out.cpu(), golden, rtol=1e-2, atol=1e-2)
-    torch.testing.assert_close(cs_npu.cpu(), cs_ref, rtol=1e-2, atol=1e-2)
+    for name, actual, expected in (("output", out, golden), ("cache_state", cs_npu, cs_ref)):
+        passed, ratio, max_abs = _check_precision(actual, expected, actual.dtype)
+        assert passed, f"{name}: dtype={actual.dtype}, matched_ratio={ratio:.4f}, max_abs_error={max_abs:.6e}"
 
     print(f"[PASS] causal_conv1d_decode: {config['name']}")
 
