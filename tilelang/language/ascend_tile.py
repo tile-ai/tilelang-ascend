@@ -1271,8 +1271,7 @@ def sigmoid(
     """Performs element-wise Sigmoid activation: dst[i] = 1 / (1 + exp(-src[i])).
 
     Args:
-        dst: The destination buffer; it may alias src on ascendc (in-place),
-            but not on pto.
+        dst: The destination buffer; it must not alias src.
         src: The source, a buffer or a contiguous region of it.
         tmp: Optional explicit UB scratch storage, used by the AscendC backend
             only. It may use any fixed-width scalar dtype; lowering

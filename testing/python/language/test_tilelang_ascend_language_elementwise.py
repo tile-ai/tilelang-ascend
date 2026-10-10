@@ -478,7 +478,6 @@ def test_silu(dtype, target, shape):
 def activation_inplace(op_name, N, dtype="float"):
     op = {
         "relu": T.tile.relu,
-        "sigmoid": T.tile.sigmoid,
     }[op_name]
 
     @T.prim_func
@@ -533,11 +532,6 @@ def test_relu_inplace(dtype, target):
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_leaky_relu_inplace(dtype, target):
     run_test_activation_inplace(leaky_relu_inplace(256, 0.1, dtype), lambda a: torch.nn.functional.leaky_relu(a, 0.1), 256, dtype, target)
-
-
-@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
-def test_sigmoid_inplace(dtype):
-    run_test_activation_inplace(activation_inplace("sigmoid", 256, dtype), torch.sigmoid, 256, dtype, "ascendc")
 
 
 def activation_out_of_place(op_name, N, dtype="float"):
