@@ -88,6 +88,37 @@ AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
   std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);
   std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
   std::tie(this->src_extents, this->dst_extents) = std::tie(ets[0], ets[1]);
+
+  // Guard: reject a source region with more than two active (extent != 1)
+  // dims.  The lowering (find_active_dim_indices in Lower) only honours the
+  // LAST TWO active dims of the source region; a source with >= 3 active dims
+  // (e.g. Q[b, s0:s0+bs, g0:g0+G, :] with extents [1, bs, G, D]) would have its
+  // leading active dim(s) silently dropped -- only the trailing two are DMA'd
+  // and no error is raised.  Turn that silent data loss into an explicit
+  // compile-time error.  A dim counts as active unless its extent is a
+  // compile-time IntImm equal to 1 (symbolic extents are conservatively
+  // active, mirroring find_active_dim_indices).  Only the source side is
+  // checked: destination slices of a 2-D on-chip buffer (L1 row splice) are a
+  // supported pattern, and full-buffer sources (transpose / cross-CV paths)
+  // never exceed two active dims in legal use.
+  {
+    int n_active_src = 0;
+    for (const auto &e : this->src_extents) {
+      if (auto *imm = e.as<IntImmNode>()) {
+        if (imm->value == 1)
+          continue;
+      }
+      n_active_src++;
+    }
+    ICHECK_LE(n_active_src, 2)
+        << "T.copy source region has " << n_active_src
+        << " active dims (extents " << this->src_extents
+        << "); the ascend lowering only supports source regions with at most "
+           "2 active (extent != 1) dims -- leading active dims would be "
+           "silently dropped. Loop over the leading dims and issue one "
+           "2-active-dim copy per iteration (e.g. T.copy(Q[b, s, g0:g0+G, :], "
+           "buf) inside a serial s loop).";
+  }
 }
 
 AscendAtomicAdd::AscendAtomicAdd(Array<PrimExpr> args, BufferMap vmap)
