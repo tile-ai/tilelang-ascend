@@ -95,8 +95,6 @@ def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
 
 
 def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
-    from tilelang.utils.target import check_npu_availability
-
     pass_ctx = tilelang.transform.get_pass_context()
     managed_vector_mask = target.model in {"ascendc", "auto"} and platform in {"A2", "A3"}
     mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
@@ -114,7 +112,9 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     mod = tilelang.transform.FlattenBuffer()(mod)
     mod = tir.transform.Simplify()(mod)
     mod = tilelang.transform.VectorizeLoop(enable_vectorize=allow_vectorize(pass_ctx=pass_ctx))(mod)
-    mod = tilelang.transform.AscendStorageRewrite(is_npu=check_npu_availability())(mod)
+    # Ascend storage reuse is handled by AscendMemoryPlanning, independent of
+    # whether the compilation host can execute NPU kernels.
+    mod = tilelang.transform.AscendStorageRewrite(is_npu=True)(mod)
     mod = tir.transform.UnrollLoop()(mod)
     mod = tir.transform.RenormalizeSplitPattern()(mod)
     mod = tir.transform.Simplify()(mod)

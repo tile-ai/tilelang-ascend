@@ -880,6 +880,29 @@ def test_selection_runs_after_phase_two_and_legalizer_runs_last(monkeypatch):
     assert _setter_counts(result) == (1, 1)
 
 
+@pytest.mark.parametrize("model,platform", [("ascendc", "A2"), ("pto", "A5"), ("auto", "A3")])
+def test_storage_rewrite_policy_is_independent_of_host_npu(monkeypatch, model, platform):
+    from tilelang.utils import target as target_utils
+
+    target = Target({"kind": "llvm", "model": model})
+    storage_rewrite = tilelang.transform.AscendStorageRewrite
+    policies = []
+    outputs = []
+
+    def record_storage_rewrite(is_npu=False):
+        policies.append(is_npu)
+        return storage_rewrite(is_npu=is_npu)
+
+    monkeypatch.setattr(tilelang.transform, "AscendStorageRewrite", record_storage_rewrite)
+    for available in (False, True):
+        monkeypatch.setattr(target_utils, "check_npu_availability", lambda available=available: available)
+        lowered = LowerAndLegalize(IRModule({"main": _two_adds}), target)
+        outputs.append(OptimizeForTarget(lowered, target, platform))
+
+    assert policies == [True, True]
+    assert_structural_equal(outputs[0], outputs[1])
+
+
 def test_resource_scope_is_explicit_nested_and_fail_closed():
     semantic_add = _first_call(_add_fp32, "tl.ascend_add")
     vector_scope = tir.AttrStmt(
