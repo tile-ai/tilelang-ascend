@@ -99,15 +99,21 @@ configs = [
 ### Step 3: Compile and Benchmark
 Configure JIT compilation and benchmarking settings:
 ```python
-autotuner = AutoTuner.from_kernel(
-    kernel=kernel, configs=get_configs(M, N, K, with_roller)).set_compile_args(
+autotuner = (
+    AutoTuner.from_kernel(kernel=kernel, configs=configs)
+    .set_compile_args(
         out_idx=[-1],
+        target="auto",
+    )
+    .set_profile_args(
+        warmup=3,
+        rep=20,
         supply_type=tl.TensorSupplyType.Integer,
         ref_prog=ref_program,
         skip_check=False,
-        target="auto",
     )
-result = autotuner.run(warmup=3, rep=20)
+)
+result = autotuner.run()
 out_c = result.kernel(a, b)
 ```
 The result object contains optimized kernel implementation which can be used by users directly

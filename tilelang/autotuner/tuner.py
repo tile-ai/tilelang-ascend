@@ -251,7 +251,7 @@ class AutoTuner:
         self,
         parameters: dict[str, Any],
         profile_args: ProfileArgs | None = None,
-    ) -> AutotuneResult | None:
+    ) -> str:
         """Generate a cache key for the auto-tuning process."""
         if profile_args is None:
             profile_args = self.profile_args
