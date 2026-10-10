@@ -37,7 +37,7 @@ def load_checker(source):
 
 
 def test_precision_checker():
-    source_path = pathlib.Path(__file__).resolve().parents[2] / "examples/gemm/example_gemm_pto_developer.py"
+    source_path = pathlib.Path(__file__).resolve().parents[2] / "examples_experiment/gemm/example_gemm_pto_developer.py"
     checker = load_checker(source_path.read_text(encoding="utf-8"))
     if checker is None:
         print("TEST PASSED!")

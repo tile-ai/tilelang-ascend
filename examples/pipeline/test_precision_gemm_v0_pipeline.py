@@ -37,7 +37,7 @@ def load_checker(source):
 
 
 def test_precision_checker():
-    source_path = pathlib.Path(__file__).resolve().parents[2] / "examples/pipeline/gemm_v0_pipeline.py"
+    source_path = pathlib.Path(__file__).resolve().parents[2] / "examples_experiment/pipeline/gemm_v0_pipeline.py"
     checker = load_checker(source_path.read_text(encoding="utf-8"))
     if checker is None:
         print("TEST PASSED!")

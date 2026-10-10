@@ -88,3 +88,4 @@ def test_batch_gemm_accuracy() -> None:
 
     passed, ratio, max_abs = _check_precision(actual, expected, actual.dtype)
     assert passed, f"dtype={actual.dtype}, matched_ratio={ratio:.4f}, max_abs_error={max_abs:.6e}"
+    print("TEST PASSED!")

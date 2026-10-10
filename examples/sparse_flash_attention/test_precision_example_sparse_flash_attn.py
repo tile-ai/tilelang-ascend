@@ -37,7 +37,7 @@ def load_checker(source):
 
 
 def test_precision_checker():
-    source_path = pathlib.Path(__file__).resolve().parents[2] / "examples/sparse_flash_attention/example_sparse_flash_attn.py"
+    source_path = pathlib.Path(__file__).resolve().parents[2] / "examples_experiment/sparse_flash_attention/example_sparse_flash_attn.py"
     checker = load_checker(source_path.read_text(encoding="utf-8"))
     if checker is None:
         print("TEST PASSED!")
