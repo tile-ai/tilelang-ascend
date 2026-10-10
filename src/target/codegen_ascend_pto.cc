@@ -1007,7 +1007,7 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
 
     // --- cast ---
   } else if (op->op.same_as(tl::ascend_round())) {
-    CastCodegen(op, "RoundMode::CAST_ROUND");
+    CastCodegen(op, "RoundMode::CAST_RINT");
   } else if (op->op.same_as(tl::ascend_cast())) {
     static const std::unordered_map<std::string, std::string> kCastRoundModes =
         {
