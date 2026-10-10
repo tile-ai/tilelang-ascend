@@ -10,17 +10,16 @@ Both entry points accept `pass_configs` for TileLang compiler passes and
 
 ## NPU and simulator builds
 
-`TL_RUN_MODE=sim` selects camodel libraries; unset or other values retain the NPU
-runtime. The mode is resolved before JIT, kernel, or autotuner cache lookup and
-passed through compilation and disk restoration to the linker and loader. NPU
-and simulator artifacts have separate cache identities.
+Set `TL_RUN_MODE` before starting the process: `sim` selects camodel libraries;
+unset or other values retain the NPU runtime. Compilation and cache restoration
+resolve the mode from the environment at the time of the call and pass it to the
+linker and loader. Kernel and autotuner caches include the mode in their keys,
+so NPU and simulator processes can share a cache directory without reusing each
+other's artifacts.
 
-For direct compilation, `tilelang.compile(program, run_mode="sim", ...)` overrides
-the environment for that build. `AutoTuner.set_compile_args(run_mode="sim", ...)`
-also keeps this resolved mode for compilation and cache restoration. Changing
-`TL_RUN_MODE` later does not change a build that has already resolved its mode.
-These paths use the Ascend Cython execution backend; this does not add support
-for other execution backends.
+This applies to the Ascend Cython execution backend. Keep the mode fixed within
+each process and prepare the simulator environment as described in the
+[programming guide](../TileLang-Ascend%20Programming%20Guide.md).
 
 ## Kernel-scoped Bisheng flags
 

@@ -7,7 +7,7 @@ from tilelang import tvm as tvm
 from tvm.tir import PrimFunc
 from tvm.target import Target
 from typing import Callable, Literal, Any
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from tilelang.jit import JITKernel
@@ -46,7 +46,6 @@ class CompileArgs:
         Refer to `tilelang.PassConfigKey` for supported options.
         compile_flags: Extra Bisheng compiler flags (e.g.
         ``["--cce-auto-sync=off", "-O3"]``). See `tilelang.jit.compile`.
-        run_mode: Resolved runtime used for compilation and cache restoration.
     """
 
     out_idx: list[int] | int | None = None
@@ -57,10 +56,6 @@ class CompileArgs:
     verbose: bool = False
     pass_configs: dict[str, Any] | None = None
     compile_flags: list[str] | str | None = None
-    run_mode: str = field(default_factory=resolve_run_mode)
-
-    def __post_init__(self):
-        object.__setattr__(self, "run_mode", resolve_run_mode(self.run_mode))
 
     def compile_program(self, program: PrimFunc):
         return tilelang.compile(
@@ -72,7 +67,6 @@ class CompileArgs:
             verbose=self.verbose,
             pass_configs=self.pass_configs,
             compile_flags=self.compile_flags,
-            run_mode=self.run_mode,
         )
 
     def __hash__(self):
@@ -86,7 +80,6 @@ class CompileArgs:
             "verbose": self.verbose,
             "pass_configs": json.dumps(self.pass_configs, sort_keys=True) if self.pass_configs else None,
             "compile_flags": json.dumps(self.compile_flags, sort_keys=True) if self.compile_flags else None,
-            "run_mode": self.run_mode,
         }
 
         hash_obj = hashlib.sha256(json.dumps(data, sort_keys=True).encode("utf-8"))
@@ -244,7 +237,6 @@ class AutotuneResult:
         compile_flags: list[str] | str | None = None,
         platform: str = "auto",
         verbose: bool = False,
-        run_mode: str | None = None,
     ) -> JITKernel:
         """
         Loads a previously compiled kernel from disk cache.
@@ -266,6 +258,7 @@ class AutotuneResult:
         if not os.path.exists(cache_path):
             return None
 
+        run_mode = resolve_run_mode()
         kernel_global_source: str | None = None
         kernel_params: list[KernelParam] | None = None
 
@@ -391,7 +384,6 @@ class AutotuneResult:
             func,
             compile_flags=compile_args.compile_flags,
             platform=compile_args.platform,
-            run_mode=compile_args.run_mode,
         )
         if kernel is None:
             return None

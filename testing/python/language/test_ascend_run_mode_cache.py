@@ -1,6 +1,7 @@
 """Ascend cache entries, linker commands and restored libraries share one run mode."""
 
 import importlib
+import inspect
 import json
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -10,6 +11,7 @@ import pytest
 
 import tilelang
 from tilelang.autotuner import param as autotune_param
+from tilelang.autotuner import AutoTuner
 from tilelang.cache import kernel_cache as cache_module
 from tilelang.jit import kernel as kernel_module
 from tilelang.jit.adapter import libgen
@@ -70,13 +72,14 @@ def test_run_mode_partitions_memory_disk_and_uncached_compilation(cache, monkeyp
     assert compiled == ["npu", "sim"]
 
     cache._memory_cache.clear()
-    result = cache.cached(Program(), target="ascendc", platform="A3", run_mode="sim")
+    monkeypatch.setenv("TL_RUN_MODE", "sim")
+    result = compile_kernel()
     assert result.run_mode == "sim"
     assert restored == ["sim"]
     assert compiled == ["npu", "sim"]
 
     monkeypatch.setattr(cache_module, "is_cache_enabled", lambda: False)
-    result = cache.cached(Program(), target="ascendc", platform="A3", run_mode="sim")
+    result = compile_kernel()
     assert result.run_mode == "sim"
     assert compiled == ["npu", "sim", "sim"]
 
@@ -184,27 +187,28 @@ def test_cython_adapter_threads_mode_on_compile_and_restore(monkeypatch, from_da
     assert adapter.lib_generator.run_mode == "sim"
 
 
-def test_jit_local_cache_scopes_mode_and_preserves_snapshot(monkeypatch):
+def test_jit_local_cache_scopes_mode_and_preserves_user_kwargs(monkeypatch):
     jit_module = importlib.import_module("tilelang.jit")
     compiled = []
 
     def compile_program(program, **kwargs):
-        compiled.append(kwargs["run_mode"])
+        assert "run_mode" not in kwargs
+        compiled.append(libgen.resolve_run_mode())
         return object()
 
     monkeypatch.setattr(jit_module, "compile", compile_program)
 
     @tilelang.jit(target="ascendc", platform="A3")
-    def factory(n):
-        monkeypatch.setenv("TL_RUN_MODE", "sim")
+    def factory(n, __run_mode=None):
+        assert __run_mode == "user-value"
         return n
 
     monkeypatch.setenv("TL_RUN_MODE", "npu")
-    npu = factory(16)
+    npu = factory(16, __run_mode="user-value")
     monkeypatch.setenv("TL_RUN_MODE", "sim")
-    sim = factory(16)
+    sim = factory(16, __run_mode="user-value")
     monkeypatch.setenv("TL_RUN_MODE", "npu")
-    assert factory(16) is npu
+    assert factory(16, __run_mode="user-value") is npu
     assert sim is not npu
     assert compiled == ["npu", "sim"]
 
@@ -215,7 +219,8 @@ def test_autotune_local_cache_and_jit_share_mode(monkeypatch):
     tuner_modes = []
 
     def compile_program(program, **kwargs):
-        compiled.append(kwargs["run_mode"])
+        assert "run_mode" not in kwargs
+        compiled.append(libgen.resolve_run_mode())
         return object()
 
     monkeypatch.setattr(jit_module, "compile", compile_program)
@@ -232,9 +237,8 @@ def test_autotune_local_cache_and_jit_share_mode(monkeypatch):
         def run(self):
             return SimpleNamespace(kernel=self.jit_compile(block=32))
 
-    def get_tuner(run_mode=None):
-        tuner_modes.append(run_mode)
-        monkeypatch.setenv("TL_RUN_MODE", "npu" if run_mode == "sim" else "sim")
+    def get_tuner():
+        tuner_modes.append(libgen.resolve_run_mode())
         return Tuner()
 
     monkeypatch.setattr(factory, "get_tunner", get_tuner)
@@ -248,19 +252,20 @@ def test_autotune_local_cache_and_jit_share_mode(monkeypatch):
     assert compiled == tuner_modes == ["npu", "sim"]
 
 
-def test_autotune_compile_and_disk_restore_keep_mode_snapshot(monkeypatch, tmp_path):
-    monkeypatch.setenv("TL_RUN_MODE", "sim")
-    args = autotune_param.CompileArgs(target="ascendc", platform="A3")
-    original_hash = hash(args)
-    monkeypatch.setenv("TL_RUN_MODE", "npu")
-    assert hash(args) == original_hash
-    assert hash(autotune_param.CompileArgs(target="ascendc", platform="A3")) != original_hash
-    assert autotune_param.CompileArgs(run_mode="legacy-value").run_mode == "npu"
+def test_autotune_key_and_disk_restore_resolve_environment_on_call(monkeypatch, tmp_path):
+    def factory(block=32):
+        return Program()
 
-    compiled = {}
-    monkeypatch.setattr(tilelang, "compile", lambda program, **kwargs: compiled.update(kwargs))
-    args.compile_program(Program())
-    assert compiled["run_mode"] == "sim"
+    tuner = AutoTuner(factory, configs=[{"block": 32}])
+    args = autotune_param.CompileArgs(target="ascendc", platform="A3")
+    tuner.compile_args = args
+    parameters = inspect.signature(factory).parameters
+    monkeypatch.setenv("TL_RUN_MODE", "npu")
+    npu_key = tuner.generate_cache_key(parameters)
+    monkeypatch.setenv("TL_RUN_MODE", "sim")
+    sim_key = tuner.generate_cache_key(parameters)
+    assert sim_key != npu_key
+    assert tuner.generate_cache_key(parameters) == sim_key
 
     _write_kernel_files(tmp_path)
     (tmp_path / autotune_param.BEST_CONFIG_PATH).write_text('{"block": 32}')
