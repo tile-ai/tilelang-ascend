@@ -247,8 +247,14 @@ class AutoTuner:
         self._kernel_parameters = k_parameters
         self._function_parameters = f_parameters
 
-    def generate_cache_key(self, parameters: dict[str, Any]) -> AutotuneResult | None:
+    def generate_cache_key(
+        self,
+        parameters: dict[str, Any],
+        profile_args: ProfileArgs | None = None,
+    ) -> AutotuneResult | None:
         """Generate a cache key for the auto-tuning process."""
+        if profile_args is None:
+            profile_args = self.profile_args
 
         def _normalize_param(value):
             if isinstance(value, Var):
@@ -275,7 +281,7 @@ class AutoTuner:
             "func_source": func_source,
             "configs": self.configs,
             "compile_args": hash(self.compile_args),
-            "profile_args": hash(self.profile_args),
+            "profile_args": hash(profile_args),
         }
         # Sort keys to ensure consistency
         key_string = json.dumps(key_data, sort_keys=True)
@@ -291,25 +297,26 @@ class AutoTuner:
     def run(self, warmup: int | None = None, rep: int | None = None, timeout: int | None = None):
         """Run the auto-tuning process.
 
+        Overrides apply only to this call. Omitted values use the settings from
+        `set_profile_args`, which remain unchanged.
+
         Args:
-            warmup: Override the configured number of warmup iterations.
-            rep: Override the configured number of repetitions for timing.
+            warmup: Override the warmup value passed to profiling.
+            rep: Override the repetition value passed to profiling.
             timeout: Override the configured maximum time per configuration.
-                Omitted values retain the current `ProfileArgs` settings,
-                including overrides from previous `run` calls.
 
         Returns:
             AutotuneResult: Results of the auto-tuning process.
         """
         _init_logger_handlers()
 
-        self.profile_args = replace(
-            self.profile_args,
-            warmup=self.profile_args.warmup if warmup is None else warmup,
-            rep=self.profile_args.rep if rep is None else rep,
-            timeout=self.profile_args.timeout if timeout is None else timeout,
-        )
         profile_args = self.profile_args
+        profile_args = replace(
+            profile_args,
+            warmup=profile_args.warmup if warmup is None else warmup,
+            rep=profile_args.rep if rep is None else rep,
+            timeout=profile_args.timeout if timeout is None else timeout,
+        )
 
         sig = inspect.signature(self.fn)
         parameters = sig.parameters
@@ -317,7 +324,7 @@ class AutoTuner:
         if isinstance(self.configs, Callable):
             self.configs = self.configs(*self._kernel_parameters)
 
-        key = self.generate_cache_key(parameters)
+        key = self.generate_cache_key(parameters, profile_args=profile_args)
 
         with self._lock:
             if env.is_cache_enabled():

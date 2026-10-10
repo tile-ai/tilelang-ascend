@@ -56,9 +56,9 @@ def tuner(monkeypatch):
 
     generate_key = autotuner.generate_cache_key
 
-    def record_key(parameters):
-        calls.profiles.append(autotuner.profile_args)
-        return generate_key(parameters)
+    def record_key(parameters, profile_args=None):
+        calls.profiles.append(profile_args)
+        return generate_key(parameters, profile_args=profile_args)
 
     def run_with_timeout(fn, timeout, kernel):
         calls.timeouts.append(timeout)
@@ -86,6 +86,7 @@ def tuner(monkeypatch):
 @pytest.mark.parametrize("field,value", [("warmup", 17), ("rep", 19), ("timeout", 23)])
 def test_effective_profile_controls_cache_and_measurement(tuner, field, value):
     autotuner, calls = tuner
+    configured_profile = autotuner.profile_args
     first = autotuner.run()
     assert autotuner.run() is first
     assert calls.benchmarks == [("kernel", 7, 11), ("reference", 7, 11)]
@@ -93,9 +94,11 @@ def test_effective_profile_controls_cache_and_measurement(tuner, field, value):
 
     second = autotuner.run(**{field: value})
     assert second is not first
-    assert autotuner.run() is second
     effective = calls.profiles[-1]
     assert getattr(effective, field) == value
+    assert autotuner.run(**{field: value}) is second
+    assert autotuner.run() is first
+    assert autotuner.profile_args is configured_profile
     assert calls.benchmarks[-2:] == [
         ("kernel", effective.warmup, effective.rep),
         ("reference", effective.warmup, effective.rep),
@@ -104,19 +107,26 @@ def test_effective_profile_controls_cache_and_measurement(tuner, field, value):
     assert len(set(calls.saved_keys)) == 2
 
 
-def test_run_preserves_positional_and_partial_overrides(tuner):
+def test_run_overrides_apply_only_to_current_call(tuner):
     autotuner, calls = tuner
+    configured_profile = autotuner.profile_args
     autotuner.run(3, 20, 17)
-    autotuner.run(rep=23)
+    partial = autotuner.run(rep=23)
     effective = calls.profiles[-1]
-    assert (effective.warmup, effective.rep, effective.timeout) == (3, 23, 17)
+    assert (effective.warmup, effective.rep, effective.timeout) == (7, 23, 13)
+    assert autotuner.run(None, 23, None) is partial
+    autotuner.run()
+    assert autotuner.profile_args is configured_profile
     assert calls.benchmarks == [
         ("kernel", 3, 20),
         ("reference", 3, 20),
-        ("kernel", 3, 23),
-        ("reference", 3, 23),
+        ("kernel", 7, 23),
+        ("reference", 7, 23),
+        ("kernel", 7, 11),
+        ("reference", 7, 11),
     ]
-    assert calls.timeouts == [17, 17]
+    assert calls.timeouts == [17, 13, 13]
+    assert len(set(calls.saved_keys)) == 3
 
 
 def test_decorator_populates_profile_args():
