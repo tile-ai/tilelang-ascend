@@ -46,7 +46,7 @@ def silu(
 1. dst 与 src 的元素总数应相同
 2. dst 与 src 的 dtype 必须一致（Ascend C 约束）
 3. 操作数地址需 32 字节对齐（硬件约束）
-4. 不支持原地运算（dst 与 src 为同一 buffer）
+4. 不支持原地运算（即不支持 dst 与 src 为同一 buffer）
 5. PTO 后端调用后 `src` 会被改写，不再保留原始输入数据；如需继续使用原数据，请先将 `src` 复制到其他 buffer（Ascend C 后端 `src` 保持不变）
 6. 特殊值遵循 IEEE 语义：`silu(0)=0`、`silu(-inf)=nan`（-inf × 0 未定义）、`silu(inf)=inf`、`silu(nan)=nan`
 

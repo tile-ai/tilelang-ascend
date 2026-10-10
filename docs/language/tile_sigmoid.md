@@ -51,7 +51,7 @@ def sigmoid(
 2. dst 与 src 的 dtype 必须一致（Ascend C 约束）
 3. 操作数地址需 32 字节对齐（硬件约束）
 4. `tmp` 仅在 Ascend C 后端生效：未提供时自动申请临时缓冲区（大小为 `N × sizeof(dtype)` 字节，N 为元素个数），显式传入时使用传入的 buffer；PTO 后端不使用临时缓冲区，显式传入的 `tmp` 会被忽略
-5. 不支持原地运算（dst 与 src 为同一 buffer）
+5. 不支持原地运算（即不支持 dst 与 src 为同一 buffer）
 6. PTO 后端调用后 `src` 会被改写，不再保留原始输入数据；如需继续使用原数据，请先将 `src` 复制到其他 buffer（Ascend C 后端 `src` 保持不变）
 7. 特殊值遵循 IEEE 语义：`sigmoid(0)=0.5`、`sigmoid(-inf)=0`、`sigmoid(inf)=1`、`sigmoid(nan)=nan`
 
