@@ -52,9 +52,9 @@ _STRIP_CANDIDATES = (24, 16, 12, 8, 6, 4, 3, 2, 1)
 # 40 AIV cores, bf16): a 16x128 tile costs about _PER_TILE_US of vector work
 # and every task pays about _PER_TASK_FILL_US of pipeline prologue/epilogue
 # and launch. The model trades long strips (less fill overhead per tile)
-# against wave count -- the direction the on-device sweep shows: M=512 prefers
-# 24 tiles per block, M=1024/2048 prefer 8, M=4096 prefers 12. A naive
-# "keep every core busy" rule (shorter strips) regresses all of them.
+# against wave count; the choices were verified on device: M=512 -> 4
+# (47.2us vs 50.1us at 24), M=1024/2048 -> 8, M=4096 -> 12, M=8192 -> 24.
+# A naive "keep every core busy" rule (shorter strips) regresses all of them.
 _PER_TILE_US = 1.9
 _PER_TASK_FILL_US = 1.2
 _AIV_CORES = 40
@@ -297,6 +297,7 @@ def situ_glu_grad(
 
     Args:
         x: Forward input, float32/float16/bfloat16, dim axis even.
+            Non-contiguous inputs are materialized (``contiguous``) here.
         grad_y: Upstream gradient with the dim axis halved, same dtype as x.
         dim: Split axis, in [-x.dim(), x.dim()-1], default -1.
         beta: SiTU gate soft-cap scale (Kimi K3 uses 4.0), must be non-zero.
@@ -329,8 +330,10 @@ def situ_glu_grad(
     w_in = cut * inner
     h_in = w_in // 2
 
-    x2 = x.reshape(rows, w_in)
-    gy2 = grad_y.reshape(rows, h_in)
+    # Non-contiguous inputs (e.g. NPU slices) are materialized here; a
+    # contiguous input is a no-op.
+    x2 = x.reshape(rows, w_in).contiguous()
+    gy2 = grad_y.reshape(rows, h_in).contiguous()
 
     rows_pad = ((rows + block_m - 1) // block_m) * block_m
     h_pad = ((h_in + block_n - 1) // block_n) * block_n

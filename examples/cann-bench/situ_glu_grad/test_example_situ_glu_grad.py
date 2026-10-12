@@ -150,6 +150,23 @@ def test_situ_glu_grad_l1():
         except Exception as e:  # noqa: BLE001
             print(f"[PRECISION_FAIL] {name}: {type(e).__name__}: {e}")
             ok = False
+    # Non-contiguous inputs (NPU slices) are materialized by the host wrapper.
+    try:
+        base_x = torch.randn(2 * 512, 6144, dtype=torch.bfloat16).npu()
+        base_gy = torch.randn(2 * 512, 3072, dtype=torch.bfloat16).npu()
+        x_nc = base_x[::2]
+        gy_nc = base_gy[::2]
+        out = situ_glu_grad(x_nc, gy_nc, dim=-1, beta=4.0, linear_beta=25.0, activate_left=True)
+        torch.npu.synchronize()
+        golden = golden_situ_glu_grad(x_nc.cpu(), gy_nc.cpu(), dim=-1, beta=4.0, linear_beta=25.0, activate_left=True)
+        passed, ratio, max_abs = check_precision(out, golden.to(out.dtype), "bfloat16")
+        tag = "PASS" if passed else "FAIL"
+        print(f"[PRECISION_{tag}] l1_non_contiguous: shape={tuple(out.shape)} matched_ratio={ratio:.4f} max_abs={max_abs:.3e}")
+        ok &= passed
+    except Exception as e:  # noqa: BLE001
+        print(f"[PRECISION_FAIL] l1_non_contiguous: {type(e).__name__}: {e}")
+        ok = False
+
     assert ok, "L1 functional tests failed"
     return ok
 
