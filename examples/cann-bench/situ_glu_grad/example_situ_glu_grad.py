@@ -45,10 +45,38 @@ _SITU_GLU_GRAD_DTYPES = {
     torch.bfloat16: "bfloat16",
 }
 
-# tiles_per_block candidates, tried in order; the first one that divides the
-# column-tile count and still keeps enough AIV tasks in flight is used
-# (a strip of 1 disables pipelining for awkward shapes).
-_TILES_PER_BLOCK_CANDIDATES = (12, 8, 6, 4, 3, 2, 1)
+# Strip-length candidates for the column-tile software pipeline, longest first.
+_STRIP_CANDIDATES = (24, 16, 12, 8, 6, 4, 3, 2, 1)
+
+# Cost-model constants for _pick_tiles_per_block, calibrated on A2 (910B3,
+# 40 AIV cores, bf16): a 16x128 tile costs about _PER_TILE_US of vector work
+# and every task pays about _PER_TASK_FILL_US of pipeline prologue/epilogue
+# and launch. The model trades long strips (less fill overhead per tile)
+# against wave count -- the direction the on-device sweep shows: M=512 prefers
+# 24 tiles per block, M=1024/2048 prefer 8, M=4096 prefers 12. A naive
+# "keep every core busy" rule (shorter strips) regresses all of them.
+_PER_TILE_US = 1.9
+_PER_TASK_FILL_US = 1.2
+_AIV_CORES = 40
+
+
+def _pick_tiles_per_block(m_num, n_num):
+    """Strip length minimizing the predicted wall time for this shape.
+
+    Candidates are walked longest-first and a strip only replaces the current
+    best when it is at least 0.5% cheaper, so near-ties keep the longer strip
+    (strip length is the more robust choice across shapes).
+    """
+    best_c, best_cost = 1, float("inf")
+    for c in _STRIP_CANDIDATES:
+        if n_num % c:
+            continue
+        tasks = 2 * m_num * (n_num // c)
+        waves = (tasks + _AIV_CORES - 1) // _AIV_CORES
+        cost = waves * (c * _PER_TILE_US + _PER_TASK_FILL_US)
+        if cost < best_cost * 0.995:
+            best_cost, best_c = cost, c
+    return best_c
 
 
 # ========== Golden reference ==========
@@ -278,7 +306,8 @@ def situ_glu_grad(
         block_m / block_n: Kernel tile sizes; shapes not divisible by them are
             zero-padded on the host and the padding is sliced away.
         tiles_per_block: Column tiles per software-pipeline strip. ``None``
-            picks one that divides the column-tile count.
+            picks the strip length that minimizes the predicted wall time
+            (see ``_pick_tiles_per_block``).
 
     Returns:
         grad_x, same shape and dtype as x.
@@ -320,13 +349,7 @@ def situ_glu_grad(
 
     n_num = h_pad // block_n
     if tiles_per_block is None:
-        # Prefer long pipeline strips (fewer waves, less fill/drain), but keep
-        # at least ~32 AIV tasks in flight for small row counts.
-        tiles_per_block = 1
-        for c in _TILES_PER_BLOCK_CANDIDATES:
-            if n_num % c == 0 and 2 * (rows_pad // block_m) * (n_num // c) >= 32:
-                tiles_per_block = c
-                break
+        tiles_per_block = _pick_tiles_per_block(rows_pad // block_m, n_num)
     else:
         assert n_num % tiles_per_block == 0, "tiles_per_block must divide the column-tile count"
 
