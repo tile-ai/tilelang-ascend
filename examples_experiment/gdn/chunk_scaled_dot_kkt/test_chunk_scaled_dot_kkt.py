@@ -107,9 +107,9 @@ def check_precision(actual, golden, dtype):
 def golden_chunk_scaled_dot_kkt(K, Beta, G, chunk_size=64, use_g=True):
     """Pure PyTorch golden reference for precision verification.
 
-    Supports S not divisible by chunk_size: only the first S//chunk_size full
-    chunks are computed (matching the kernel's n_c = S // BS behavior). Any
-    trailing rows [n_c*BS, S) are left as zeros in the output.
+    With S not divisible by chunk_size, only the first S//chunk_size full
+    chunks are computed and trailing rows [n_c*BS, S) are zeros. (The
+    kernel itself rejects non-chunk-aligned S at entry.)
     """
     B, S, H, DK = K.shape
     BS = chunk_size
@@ -159,8 +159,10 @@ def build_inputs(B, S, H, DK, chunk_size, use_g=True, seed=0):
     K = K_cpu.permute(0, 2, 1, 3).contiguous().npu()
     Beta = Beta_cpu.npu()
     G = G_cpu.npu()
-    # Allocate A in (B,H,S,chunk_size) for contiguous kernel write
-    A = torch.empty(B, H, S, chunk_size, dtype=torch.bfloat16, device="npu")
+    # Allocate A in (B,H,S,chunk_size) for contiguous kernel write.
+    # NaN-poisoned: any element the kernel fails to write surfaces as NaN
+    # in the golden comparison (guards against partially-written output).
+    A = torch.full((B, H, S, chunk_size), float("nan"), dtype=torch.bfloat16, device="npu")
     return K, Beta, G, A, K_cpu, Beta_cpu, G_cpu
 
 
@@ -286,40 +288,25 @@ def run_l2_tests():
     def exc_chunk_size_nonstandard():
         chunk_scaled_dot_kkt_fwd(B=1, S=64, H=1, DK=64, chunk_size=128, use_g=True)
 
+    # D-EXC-SHAPE: S=65 (not a multiple of chunk_size=64) — only full
+    # chunks are computed, so the tail row of A would never be written
+    # (uninitialized memory for callers allocating A with torch.empty).
+    def exc_S_unaligned():
+        chunk_scaled_dot_kkt_fwd(B=1, S=65, H=1, DK=64, chunk_size=64, use_g=True)
+
     results = [
         _run_exception("unsupported_dtype_fp16", exc_dtype, AssertionError, "K/A must be bfloat16"),
         _run_exception("illegal_chunk_size_odd", exc_chunk_size_odd, AssertionError, "must be 64"),
         _run_exception("illegal_chunk_size_even", exc_chunk_size_even, AssertionError, "must be 64"),
         _run_exception("illegal_chunk_size_nonstandard", exc_chunk_size_nonstandard, AssertionError, "must be 64"),
+        _run_exception("illegal_S_unaligned", exc_S_unaligned, AssertionError, "multiple of chunk_size"),
     ]
 
     # --- Functional edge cases (non-blocking) ---
 
-    def edge_tail_shape():
-        """S=65 not divisible by chunk_size: only full chunks computed,
-        trailing rows stay zero (A pre-zeroed to match golden's zero-pad)."""
-        torch.manual_seed(0)
-        B, S, H, DK, cs = 1, 65, 1, 64, 64
-        K_cpu = torch.randn(B, S, H, DK, dtype=torch.bfloat16)
-        Beta_cpu = torch.randn(B, S, H, dtype=torch.bfloat16).permute(0, 2, 1).contiguous().to(torch.float32)
-        G_cpu = torch.randn(B, S, H, dtype=torch.float32).permute(0, 2, 1).contiguous()
-        K = K_cpu.permute(0, 2, 1, 3).contiguous().npu()
-        Beta = Beta_cpu.npu()
-        G = G_cpu.npu()
-        kernel = chunk_scaled_dot_kkt_fwd(B=B, S=S, H=H, DK=DK, chunk_size=cs, use_g=True)
-        A = torch.zeros(B, H, S, cs, dtype=torch.bfloat16, device="npu")
-        kernel(K, Beta, G, A)
-        torch.npu.synchronize()
-        A_bsh = A.permute(0, 2, 1, 3).contiguous()
-        Beta_bsh = Beta_cpu.permute(0, 2, 1).contiguous().to(torch.bfloat16)
-        G_bsh = G_cpu.permute(0, 2, 1).contiguous()
-        golden = golden_chunk_scaled_dot_kkt(K_cpu, Beta_bsh, G_bsh, chunk_size=cs, use_g=True)
-        return check_precision(A_bsh, golden, "bfloat16")
-
     _run_edge("single_chunk", lambda: run_and_check(1, 64, 1, 64, 64, True))
     _run_edge("batch2", lambda: run_and_check(2, 64, 1, 64, 64, True))
     _run_edge("prime_shape_dk67", lambda: run_and_check(1, 128, 1, 67, 64, True))
-    _run_edge("tail_shape_s65", edge_tail_shape)
 
     return all(results)
 

@@ -22,7 +22,8 @@ Design highlights:
 - In-place exp: G_diff_2d doubles as the exp result (compare consumes raw
   G_diff before the in-place exp), saving a UB buffer.
 - Tail-group guards: chunks 1/2/3 of the last partial group are runtime-
-  guarded off; chunk 0 is always valid. Works for any S (divisible or not).
+  guarded off; chunk 0 is always valid. S must be a multiple of
+  chunk_size (asserted at entry); non-aligned tail rows are not computed.
 - K layout (B,H,S,DK) and A output (B,H,S,BS) for contiguous kernel access.
 - Beta/G use (B,H,S) layout + Beta fp32 cast (host-side data prep, works
   around codegen strided 3D copy limitation).
@@ -60,7 +61,8 @@ def chunk_scaled_dot_kkt_fwd(
     """Chunk Scaled Dot KKT forward kernel (4-chunk static unroll).
 
     Args:
-        B, S, H, DK: tensor dims (JIT compile-time params).
+        B, S, H, DK: tensor dims (JIT compile-time params). S must be a
+            multiple of chunk_size (asserted at entry).
         chunk_size: chunk block size, fixed 64 by algorithm semantics.
             Must be 64 (asserted at entry): T.tile ops on (BS,BS) fp32
             tiles additionally require 256B alignment (BS%8==0).
@@ -73,7 +75,7 @@ def chunk_scaled_dot_kkt_fwd(
         chunks_per_block: number of consecutive chunks processed per block.
             MUST be 4 (the per-chunk body is statically unrolled). Chunks
             1/2/3 of the last partial group are runtime-guarded off, so
-            any S works.
+            any chunk-aligned S works.
 
     Returns:
         kernel prim_func. Caller pre-allocates A and calls kernel(K, Beta, G, A).
@@ -100,6 +102,15 @@ def chunk_scaled_dot_kkt_fwd(
         f"input_dtype={input_dtype}, output_dtype={output_dtype}: K/A must "
         f"be bfloat16 (Beta/G are float32 via accum_dtype); other dtypes "
         f"are not validated."
+    )
+    # S must be chunk-aligned: only full chunks are computed (num_chunks =
+    # S // block_S), so non-aligned tail rows would never be written and
+    # would leak uninitialized memory into A.
+    assert S % block_S == 0, (
+        f"S={S} must be a multiple of chunk_size={block_S}: the kernel only "
+        f"computes full chunks (num_chunks = S // chunk_size), so with a "
+        f"non-aligned S the tail rows [num_chunks*chunk_size, S) of A are "
+        f"never written and would contain uninitialized memory."
     )
     num_chunks = S // block_S
     num_chunk_groups = (num_chunks + N - 1) // N
