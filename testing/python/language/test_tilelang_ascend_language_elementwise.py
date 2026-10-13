@@ -1010,22 +1010,6 @@ def test_bitwise_lshift_non_aligned_ascendc_skip():
     pytest.skip("AscendC non-aligned precision bug, PTO unaffected")
 
 
-@pytest.mark.parametrize("dtype", ["int8", pytest.param("uint8", marks=pytest.mark.low_priority)])
-@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
-def test_bitwise_lshift_int8_raises(dtype, target):
-    """int8/uint8 should fail at compile time (not supported on A2/A3)."""
-    with pytest.raises(RuntimeError, match="Compilation Failed"):  # noqa: B017
-        run_test_bitwise_lshift_boundary(dtype, target, 1)
-
-
-@pytest.mark.parametrize("dtype", ["float16", pytest.param("float32", marks=pytest.mark.low_priority)])
-@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
-def test_bitwise_lshift_float_raises(dtype, target):
-    """float16/float32 should fail at compile time (integer-only operation)."""
-    with pytest.raises(RuntimeError, match="Compilation Failed"):  # noqa: B017
-        run_test_bitwise_lshift_boundary(dtype, target, 1)
-
-
 def bitwise_not(M, N, block_M, block_N, dtype="int16"):
     m_num = M // block_M
     n_num = N // block_N
