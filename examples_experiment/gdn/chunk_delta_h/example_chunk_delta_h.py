@@ -31,7 +31,10 @@ Golden stays high-precision fp32 GEMM; kernel bf16 quantization gap is the
 precision metric.
 """
 
+import atexit
 import os
+import shutil
+import tempfile
 
 import tilelang
 import tilelang.language as T
@@ -1386,12 +1389,43 @@ def _chunk_delta_h_jit(
 # ============================================================================
 
 
+def _ensure_private_tmpdir():
+    """Pin tempfile to a per-process private directory (idempotent).
+
+    tilelang's JIT emits its intermediate tmp*.cpp/tmp*.so compile artifacts
+    via tempfile (jit/adapter/libgen.py), which honors tempfile.tempdir /
+    TMPDIR. Pinning tempfile to a private directory keeps the stale-artifact
+    cleanup below process-scoped: concurrent test/compile jobs each get
+    their own directory and can never delete each other's artifacts.
+    Sets BOTH tempfile.tempdir (the cached value — overrides any earlier
+    tempfile.gettempdir() call during import) and the TMPDIR env var
+    (inherited by compiler subprocesses). The directory is removed at exit.
+    """
+    claimed = os.environ.get("CHUNK_DELTA_H_PRIVATE_TMPDIR")
+    if claimed and os.path.isdir(claimed):
+        return claimed
+    d = tempfile.mkdtemp(prefix="chunk_delta_h_")
+    os.environ["CHUNK_DELTA_H_PRIVATE_TMPDIR"] = d
+    os.environ["TMPDIR"] = d
+    tempfile.tempdir = d
+    atexit.register(shutil.rmtree, d, ignore_errors=True)
+    return d
+
+
+_PRIVATE_TMP_DIR = _ensure_private_tmpdir()
+
+
 def _cleanup_stale_tmp_so():
-    """Remove stale tilelang temp .so artifacts (/tmp/tmptl_*.so only)."""
+    """Remove THIS process's stale tilelang temp .so artifacts.
+
+    Scoped to the per-process _PRIVATE_TMP_DIR (see _ensure_private_tmpdir)
+    with the real tilelang temp-file pattern tmp*.so — the shared-/tmp files
+    of concurrent jobs are never touched.
+    """
     import glob as _glob
 
     removed = 0
-    for p in _glob.glob("/tmp/tmptl_*.so"):
+    for p in _glob.glob(os.path.join(_PRIVATE_TMP_DIR, "tmp*.so")):
         try:
             os.remove(p)
             removed += 1

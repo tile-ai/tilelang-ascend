@@ -76,6 +76,7 @@ import sys
 import torch
 
 from example_chunk_delta_h import (
+    _PRIVATE_TMP_DIR,
     chunk_delta_h,
     prepare_input,
     prepare_k_gated,
@@ -89,14 +90,24 @@ from example_chunk_delta_h import (
 # Test compile robustness — retry / stderr capture / tmp cleanup
 # ============================================================================
 
+# Per-process private temp dir, claimed by the example module at import
+# time (see example_chunk_delta_h._ensure_private_tmpdir): tilelang's JIT
+# temp artifacts (tmp*.so) land there, so the cleanup below stays
+# process-scoped — concurrent test jobs (bench_test.sh runs up to 8 in
+# parallel) can never delete each other's artifacts.
+_TMP_DIR = _PRIVATE_TMP_DIR
+
 
 def _test_cleanup_tmp_so():
-    """Remove temporary compile artifacts after each test case (NOT .cpp —
-    those are small source files useful for post-mortem; only the compiled
-    .so artifacts accumulate and can poison retries).
+    """Remove THIS process's temporary compile artifacts after each test
+    case (NOT .cpp — those are small source files useful for post-mortem;
+    only the compiled .so artifacts accumulate and can poison retries).
+
+    Scoped to _TMP_DIR only: files under the shared /tmp owned by other
+    concurrent test or compile jobs are never touched.
     """
     removed = 0
-    for p in _glob.glob("/tmp/tmp*.so"):
+    for p in _glob.glob(os.path.join(_TMP_DIR, "tmp*.so")):
         try:
             os.remove(p)
             removed += 1
