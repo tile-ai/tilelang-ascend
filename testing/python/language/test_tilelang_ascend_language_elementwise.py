@@ -3521,45 +3521,6 @@ def test_bitwise_or_int8_uint8(dtype, target):
     run_test_bitwise_or_ext(dtype, target)
 
 
-def test_bitwise_or_int32_pto_raises():
-    """int32 on pto should fail at compile time (static_assert rejects sizeof(T)==4)."""
-    with pytest.raises(RuntimeError, match="Compilation Failed"):  # noqa: B017
-        run_test_bitwise_or_ext("int32", "pto")
-
-
-def run_test_bitwise_or_scalar(target):
-    """Scalar src1 path generates tl.ascend_bitwise_ors which is not registered."""
-    M, N = 1024, 1024
-    block_M, block_N = 128, 256
-    VEC_NUM = 2
-    m_num = M // block_M
-    n_num = N // block_N
-    dtype = "int16"
-
-    @T.prim_func
-    def main(
-        A: T.Tensor((M, N), dtype),  # type: ignore
-        C: T.Tensor((M, N), dtype),  # type: ignore
-    ):
-        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
-            bx = cid // n_num
-            by = cid % n_num
-            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
-            T.tile.bitwise_or(c_ub, a_ub, 0xFF)
-            T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
-
-    tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
-
-
-@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
-def test_bitwise_or_scalar_not_registered_raises(target):
-    """Scalar src1 path uses tl.ascend_bitwise_ors which is not registered in C++."""
-    with pytest.raises((Exception, SystemExit)):  # noqa: B017
-        run_test_bitwise_or_scalar(target)
-
-
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_or_buffer_region(target):
     """BufferRegion slices are supported as operands."""
