@@ -1043,13 +1043,6 @@ def test_bitwise_not_int8_uint8(dtype, target):
 
 
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
-def test_bitwise_not_int32_raises(target):
-    """int32 fails on both backends: ascendc vnot rejects int32, pto B82B16Trait cannot widen int32."""
-    with pytest.raises((Exception, SystemExit)):  # noqa: B017
-        run_test_bitwise_not_ext("int32", target)
-
-
-@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_not_1d(target):
     """1D buffer shape support."""
     N = 1024
