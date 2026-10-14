@@ -51,14 +51,63 @@
 ```
 > `pass_configs`（`AUTO_SYNC`、`MEMORY_PLANNING` 等）是其他优化的**伴随修改**，不是独立步骤。需要改动时在对应优化点内部一并处理（如 Double Buffer 时同步设 `AUTO_SYNC=False`）。
 
+### 1.5 Roofline 瓶颈分析（Vector 核强制前置步骤）
+
+**目的**：在动手优化之前，用 Arithmetic Intensity 判定算子的瓶颈类型，避免在错误维度上用力。Memory-Bound 算子做指令融合、Compute-Bound 算子做 Pass 融合都是方向性错误。
+
+**计算步骤**：
+
+1. **GM 流量统计**：统计 kernel 所有 pass 的 GM 读取/写入总字节数。多 pass 架构要算每遍读取的所有 tensor（含 weight、参数 tile）。
+2. **有效 FLOPs 统计**：统计每次 kernel 执行的浮点操作数（add/mul/cmp 各算 1 FLOP，cast 可近似算 0.5 FLOP）。
+3. **Arithmetic Intensity**：`AI = FLOPs / GM_Bytes`（单位 FLOP/Byte）。
+4. **对照硬件平衡点**：
+
+   | 核类型 | 平衡点 (FLOP/Byte) | 说明 |
+   |--------|-------------------|------|
+   | AIV (Vector) | 10-20 | Vector pipe 单位带宽吞吐 |
+   | AIC (Cube) | 30-50 | Matrix pipe 单位带宽吞吐 |
+   | Mix | 取主路径 | 按实际耗时主导核判定 |
+
+5. **判定结果**：
+
+   | 判定 | 条件 | 主要优化方向 |
+   |------|------|-------------|
+   | 强 Memory-Bound | AI < 平衡点 / 2 | 减少 GM 流量：归约/输出遍数融合、tile 扩展、数据复用 |
+   | 弱 Memory-Bound | 平衡点/2 ≤ AI ≤ 平衡点 | GM 流量 + 计算吞吐并行 |
+   | Compute-Bound | AI > 平衡点 × 2 | 提升计算吞吐：指令融合、分块计算、Double Buffer 重叠 |
+
+6. **理论最小时间**：`T_min = GM_Bytes / HBM_Bandwidth`（910B ≈ 1.6 TB/s）。当前实测时间 / T_min 即为当前效率指标。
+
+**示例**（add_rms_norm_dynamic_quant, 3-pass, M=128, N=4096, fp16）：
+
+- GM 读取：3 pass × (2 input + 1 gamma + 2 scale tensors) × size = 6.12 MB
+- GM 写入：xOut (fp16) + y1Out/y2Out (int8) + 2×scale (fp32) = 1.50 MB
+- 总流量：7.62 MB
+- FLOPs：128 × 4096 × 15 ≈ 7.86 MFLOPS
+- AI ≈ 1.03 → **强 Memory-Bound** → 主攻 GM 流量
+- T_min ≈ 4.8 μs，实测 91.9 μs → 效率仅 5.2%，优化空间巨大
+
+> **约束**：Vector 核必须先做 Roofline 分析后才能选优化方向。Cube 核如果已有明确优化路径（如 GEMM 已知 Compute-Bound），可跳过。
+
 ---
 
 ## 二、核内优化
 
-> **优化顺序**：
-> - **Cube 型算子**：执行 Cube 核内优化（2.1 Split-K 切分策略、2.2 Double Buffer、2.3 MTE2 预取、2.4 Full-Load、2.5 小数据块合并载入）+ 2.9 Fixed Core
-> - **Vector 型算子**：执行 Vector 核内优化（2.2 Double Buffer Vector 侧、2.6 指令向量化、2.7 指令融合、2.8 稀疏访存优化）+ 2.9 Fixed Core；归约维度需分块扫描时额外参考 [归约遍数融合](vector-practices/vector_reduce_pass_fusion.md)
-> - **CV 融合型算子**：先执行 Cube 核内优化 → 再执行 Vector 核内优化 → 最后执行核间优化（见第三章）+ 2.9 Fixed Core
+> **优化顺序（三层优先级框架）**：
+>
+> 先按层推进大跨层顺序（先层内再层间），层内按"§1 优化优先级与算子类型对应"表的三条依赖规则（layout / buffer 数量 / pass_configs）排序。某一层所有优化点不适用则跳过。
+>
+> | 层次 | 定义 | 典型优化项 |
+> |------|------|-----------|
+> | **L0 算法层** | 改变计算等价性/数据流 | Pass 融合（归约遍数 + 输出遍数）、Online 修正公式、数学等价变换 |
+> | **L1 架构层** | 调整 tile 参数/减少 DMA 头开销 | 2.11 UB 预算（block_N/M 扩展）、2.13 多行 Tile 粒度扩展 |
+> | **L2 流水层** | 重叠搬运与计算 | 2.2 Double Buffer、2.3 MTE2 预取（Cube）、T.Pipelined/num_stages |
+> | **L3 细节层** | 不改变结构的指令/配置级微调 | 2.6 指令向量化、2.7 指令融合、2.8 稀疏访存、2.9 Fixed Core、2.10 pass_configs 微调、2.12 Host 侧优化 |
+>
+> 按算子类型选择覆盖范围：
+> - **Cube 型算子**：L0 (GEMM 等价变换) → L1 (2.1 Split-K) → L2 (2.2-2.5) → L3 (2.6-2.12)
+> - **Vector 型算子**：L0 (归约遍数融合，参见 [归约遍数融合](vector-practices/vector_reduce_pass_fusion.md)) → L1 (2.11/2.13) → L2 (2.2) → L3 (2.6-2.12)
+> - **CV 融合型算子**：先 Cube 侧 L0→L3，再 Vector 侧 L0→L3，最后核间优化（见第三章）
 
 ### 2.1 Split-K 切分策略（Cube 核）
 

@@ -63,6 +63,35 @@ print(func.get_kernel_source())
 | `IS_ASCEND_AIV` 出现 | Vector 型 | RoPE、Softmax、Add |
 | 两者均出现 | 混合型 | FlashAttention、SparseFlashAttention |
 
+### Step 2.5: Roofline 瓶颈分析（Vector 核强制，Cube 核建议）
+
+算子类型的判断只回答了"算什么核"，但"优化方向选 GM 流量还是计算吞吐"需要通过 Arithmetic Intensity 判定。跳过这一步容易在 Memory-Bound 算子上做指令融合、或在 Compute-Bound 算子上做 Pass 融合——方向性浪费。
+
+**计算步骤**：
+
+1. **GM 流量统计**：统计 kernel 所有 pass 的 GM 读取/写入总字节数。多 pass 架构要算每遍读取的所有 tensor（含 weight、参数 tile）。
+2. **有效 FLOPs 统计**：统计每次 kernel 执行的浮点操作数（包括 add、mul、cmp 等，cast 可近似算 0.5 FLOP）。
+3. **Arithmetic Intensity**：`AI = FLOPs / GM_Bytes`（单位 FLOP/Byte）。
+4. **对照硬件平衡点**：
+
+   | 核类型 | 平衡点 (FLOP/Byte) | 说明 |
+   |--------|-------------------|------|
+   | AIV (Vector) | 10-20 | Vector pipe 单位带宽吞吐 |
+   | AIC (Cube) | 30-50 | Matrix pipe 单位带宽吞吐 |
+   | Mix | 取主路径 | 按实际耗时主导核判定 |
+
+5. **判定结论**：
+
+   | 判定 | 条件 | 主要优化方向 |
+   |------|------|-------------|
+   | 强 Memory-Bound | AI < 平衡点 / 2 | **减少 GM 流量**：Pass 融合（归约/输出）、block_N 扩展、数据复用 |
+   | 弱 Memory-Bound | 平衡点/2 ≤ AI ≤ 平衡点 | GM 流量和计算吞吐并行 |
+   | Compute-Bound | AI > 平衡点 × 2 | **提升计算吞吐**：指令融合、分块计算、Double Buffer 重叠 |
+
+6. **理论最小时间**：`T_min = GM_Bytes / HBM_Bandwidth`（910B ≈ 1.6 TB/s）。实测时间 / T_min 即为当前效率指标。
+
+**输出位置**：写入 `optimization_log.md` 的 Roofline 分析段落，包含 FLOPs、GM 字节、AI 值、判定结论、理论最小时间、理论最大加速比。Memory-Bound 算子的优化方向全部围绕"减少 GM 流量"展开，后续 Part A 只列出此类优化的适用项；Compute-Bound 算子反过来。
+
 ### Step 3: 识别优化点（强制，禁止与 Step 4 合并）
 
 先读取 `optimization-guide.md` 的目录和各章节标题 + `performance-antipatterns.md` 的各条目标题，根据算子类型（Step 2 判定）和算子实现特征初步筛选出可能适用的优化点清单。再针对每个候选优化点，读取其"适用场景"、"约束"、"使用条件"等描述，确认是否真正适用。如果是 cube 核额外参考 `best-practices/cube_optimization_path.md`，如果是 vector 核额外参考 `vector-practices/` 目录下的文档。
@@ -91,15 +120,37 @@ plan: direct-reuse / repair-kernel-first / new-kernel-first
 
 > **重点**：每节都需读取其"适用场景"和"约束"描述确认是否适用。仅当章节标题明确标注了特定算子类型专属（如"Cube 核"）且当前算子不属于该类型时，才可初步排除；其余所有章节必须读约束确认，不得仅凭标题或算子类型跳过。
 
-**Part B `[ORDER-PLAN]`**：分析依赖关系，排出实施顺序链。依赖分析三条规则：
+**Part B `[ORDER-PLAN]`**：先按**三层优先级框架**确定大跨层执行顺序，每层内按三条依赖规则确定细粒度顺序。
+
+#### 三层优先级框架
+
+改变 kernel 结构的优化必须先做完（因为上层改动会迫使下层返工），稳定代码上的微优化放到最后（避免被上层改动破坏）。如果某层所有优化点都被标记为"不适用"，直接跳到下一层。
+
+| 层次 | 定义 | 典型优化项 | 执行理由 |
+|------|------|-----------|---------|
+| **L0 算法层** | 改变计算等价性、减少扫描遍数、改变数据流 | Pass 融合（归约遍数 + 输出遍数）、Online 修正公式、数学等价变换 | 改变 kernel 结构 → 后续所有预算和循环都需重算 |
+| **L1 架构层** | 调整 tile 参数、减少 DMA 头开销 | block_N/block_M 扩展（UB 预算反推）、多行 Tile 粒度 | 改变循环次数，是 Double Buffer 的前置依赖 |
+| **L2 流水层** | 重叠搬运与计算 | Double Buffer、T.Pipelined、num_stages | 依赖循环结构和 tile 参数已稳定 |
+| **L3 细节层** | 不改变结构的指令/配置级微调 | 指令融合（mul_add_dst、rsqrt）、Fixed Core、pass_configs 微调、Host 侧优化 | 在稳定代码上做微优化，避免被上层改动破坏 |
+
+#### 层内依赖规则
+
+层内按以下三条依赖规则排序：
 1. **布局依赖**：改变 layout 的优化排在依赖此 layout 的优化之前
 2. **数量依赖**：涉及预算的优化排在改变 buffer 数量的优化之后
 3. **配置依赖**：涉及 pass_configs 的优化在相关功能实施后才改动
 
+#### 输出模板
+
+每条输出前加层次标签，便于回溯优化策略的演进：
+
 ```
 [ORDER-PLAN] 实施顺序：
-1. [#N] [名称] — 前置依赖: [无] — 理由: [...]
-2. [#M] [名称] — 前置依赖: [#N] — 理由: [...]
+1. [L0] [#1] Pass 融合 — 前置依赖: [无] — 理由: 最高收益 (33% GM 节省)，改变 kernel 架构
+2. [L1] [#2] block_N 扩展 — 前置依赖: [#1] — 理由: 融合后 UB 占用变化，需重新计算预算
+3. [L2] [#3] Double Buffer — 前置依赖: [#1, #2] — 理由: 需在确定循环结构和 tile 参数后实施
+4. [L3] [#4] 指令融合 mul_add — 前置依赖: [#2] — 理由: 代码结构稳定后做微优化
+5. [L3] [#6] Fixed Core — 前置依赖: [#1-4] — 理由: 不改变 kernel 结构
 ```
 
 ### Step 4: 逐项实施
