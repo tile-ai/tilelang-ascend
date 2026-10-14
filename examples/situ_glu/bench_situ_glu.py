@@ -25,7 +25,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from situ_glu import situ_glu  # noqa: E402
-from test_situ_glu import SUB_M, TORCH_TO_TL_DTYPE, _pick_blocks, run_situ_glu  # noqa: E402
+from test_situ_glu import SUB_M, TORCH_TO_TL_DTYPE, _pick_blocks, golden_situ_glu, run_situ_glu  # noqa: E402
 
 
 def torch_situ_glu_unfused(x):
@@ -65,11 +65,26 @@ def bench_event(fn, iters, warmup=10, rounds=5):
     return results[n // 2] if n % 2 == 1 else 0.5 * (results[n // 2 - 1] + results[n // 2])
 
 
+def correctness_spot_check():
+    """One small end-to-end case vs the CPU golden.
+
+    Doubles as the CI legacy-runner success marker: the runner requires the
+    output to contain "Kernel Output Match" / "Test Passed!".
+    """
+    x = torch.randn(256, 256, dtype=torch.bfloat16)
+    ref = golden_situ_glu(x)
+    out = run_situ_glu(x.npu())
+    torch.npu.synchronize()
+    torch.testing.assert_close(out.cpu(), ref, rtol=1e-2, atol=1e-2)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--iters", type=int, default=100)
     args = parser.parse_args()
     torch.manual_seed(0)
+
+    correctness_spot_check()
 
     cases = [
         ((1024, 2048), torch.bfloat16),
@@ -99,6 +114,8 @@ def main():
         bytes_per_iter = (m * n + m * n // 2) * dtype_size
         gbps = bytes_per_iter / (t_sta * 1e-6) / 1e9
         print(f"{str(shape):>16} {str(dt).split('.')[-1]:>9} {t_wall:>12.4f} {t_sym:>12.2f} {t_sta:>12.2f} {t_ref:>12.2f} {gbps:>9.1f}")
+
+    print("Kernel Output Match!")
 
 
 if __name__ == "__main__":
