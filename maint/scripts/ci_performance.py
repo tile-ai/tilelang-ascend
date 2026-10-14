@@ -3,6 +3,14 @@ import re
 from tabulate import tabulate
 
 import os
+import datetime
+
+# Diagnostic logging
+print(f"=== RUNNER DIAGNOSTIC ===")
+print(f"Timestamp: {datetime.datetime.now()}")
+print(f"Hostname: {os.uname().nodename}")
+print(f"User: {os.getenv('USER', 'unknown')}")
+print(f"=== END DIAGNOSTIC ===")
 
 env = os.environ.copy()
 env["TILELANG_CLEAR_CACHE"] = "1"
