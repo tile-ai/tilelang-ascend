@@ -283,6 +283,13 @@ struct BroadcastInfo {
     // Case 3: 一元操作
     if IsUnaryOp(expr):
         生成 GenerateUnaryVectorCall(op, out, in, count)
+
+    // Case 3.1: 参数为复合表达式的一元操作
+    if MatchTIRUnaryCall(expr, op, operand):
+        校验 operand 与 output dtype 一致且不包含 Cast
+        CreateTempBuffer(operand_tmp)
+        DecomposeExpression(operand → operand_tmp)
+        GenerateUnaryVectorCall(op, operand_tmp → out)
     
     // Case 4: 二元操作
     if IsBinaryOp(expr):
@@ -410,6 +417,7 @@ evaluate(call tl.ascend_add(
 | `test_tilelang_ascend_language_parallel.py` | 基础功能 | 二元操作、一元操作、复合操作、1D操作、广播操作 |
 | `test_tilelang_ascend_language_parallel_auto_copy.py` | GM写入 | 自动UB→GM复制、不同dtype、复杂表达式、L0C输出 |
 | `test_tilelang_ascend_language_parallel_complex.py` | 复杂场景 | 多buffer赋值、链式操作、嵌套计算、多临时buffer |
+| `test_tilelang_ascend_language_parallel_compound_unary.py` | 复合一元操作 | 递归参数分解、双后端codegen、Ascend NPU正确性 |
 | `test_tilelang_ascend_language_parallel_discrete.py` | 离散索引 | gather操作、离散索引访问 |
 
 ### 4.2 测试用例设计
@@ -448,6 +456,8 @@ evaluate(call tl.ascend_add(
 | `test_fused_mul_add` | `a * b + a` | 复合表达式分解、临时buffer |
 | `test_fused_add_mul` | `a * (b + a)` | 右侧复杂→临时buffer |
 | `test_scalar_operation` | `a + 1.0` | Scalar→ascend_adds |
+| `test_compound_unary_codegen_uses_mapped_vector_ops` | `unary(a + eps)` | 先物化参数，再生成一元向量指令 |
+| `test_compound_rsqrt_inside_outer_binary_tree` | `rsqrt(a + eps) * scale + bias` | 复合一元操作作为外层二元子树递归分解 |
 
 #### 4.2.4 广播语义测试
 
@@ -489,6 +499,7 @@ evaluate(call tl.ascend_add(
 针对 Pass 特点，可构造 IR 校验测试验证：
 - 二元操作 IR 变换正确性
 - 复杂表达式分解（Complex-Complex 场景）
+- 复合一元表达式分解（`ascend_adds` 后接 `ascend_rsqrt`，且不残留 `tir.rsqrt`）
 - 广播 IR 生成（`tl.ascend_broadcast` 调用）
 - GM 自动复制（temp_ub allocation + `tl.ascend_copy`）
 
@@ -520,6 +531,7 @@ evaluate(call tl.ascend_add(
 3. **离散索引 fallback**：非简单变量索引（如 `a[idx[i]]`）退回到 serial 循环
 4. **广播限制**：仅支持1D→2D广播，且索引必须是简单变量
 5. **常量要求**：element_count 必须可简化为 IntImm（常量）
+6. **复合一元操作 dtype 限制**：参数表达式与输出必须同 dtype；包含显式 Cast 的参数保守回退
 
 ### 5.4 与其他 Pass 的关系
 
