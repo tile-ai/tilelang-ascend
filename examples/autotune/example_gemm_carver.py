@@ -1,5 +1,4 @@
 import argparse
-import itertools
 
 import tilelang
 import tilelang.language as T
@@ -26,17 +25,18 @@ pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
+
 def get_config() -> list[dict]:
     arch = Ascend()
     carver_template = carver.MatmulTemplate(
-        M = M,
-        N = N,
-        K = K,
+        M=M,
+        N=N,
+        K=K,
         in_dtype="float16",
         accum_dtype="float16",
         out_dtype="float16",
     ).with_arch(arch)
-    
+
     hints = carver_template.recommend_hints(topk=20)
     configs = []
     for hint in hints:
@@ -46,25 +46,44 @@ def get_config() -> list[dict]:
             "K_L1": hint.rstep[0],
         }
         configs.append(config)
-    
+
     return configs
+
 
 def ref_prog(A, B):
     return A @ B
 
+
 def supply_prog(params):
     torch.manual_seed(0)
-    return [
-        torch.randn(M, K).half().npu(),
-        torch.randn(K, N).half().npu()
-    ]
+    return [torch.randn(M, K).half().npu(), torch.randn(K, N).half().npu()]
+
+
+def manual_check_prog(lib_outs, ref_outs):
+    actual, golden = lib_outs[0].detach().cpu().float(), ref_outs[0].detach().cpu().float()
+    if actual.shape != golden.shape:
+        raise AssertionError(f"shape mismatch: {actual.shape} != {golden.shape}")
+    atol, rtol, limit = 2**-14, 2**-9, 1e-1
+    special = ~torch.isfinite(golden)
+    if special.any() and (
+        not torch.equal(torch.isnan(actual[special]), torch.isnan(golden[special]))
+        or not torch.equal(torch.isinf(actual[special]), torch.isinf(golden[special]))
+    ):
+        raise AssertionError("NaN/Inf structure mismatch")
+    finite = torch.isfinite(golden)
+    if not finite.any():
+        return
+    error = (actual[finite] - golden[finite]).abs()
+    error = torch.where(torch.isfinite(error), error, torch.full_like(error, float("inf")))
+    ratio, max_abs = (error <= atol + rtol * golden[finite].abs()).float().mean().item(), error.max().item()
+    assert ratio >= 0.99 and max_abs <= limit, f"matched_ratio={ratio:.4f}, max_abs_error={max_abs:.6e}"
+
 
 @tilelang.autotune(
     configs=get_config(),
     ref_prog=ref_prog,
     supply_prog=supply_prog,
-    atol=1e-2,
-    rtol=1e-2,
+    manual_check_prog=manual_check_prog,
 )
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
 def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"):
@@ -73,9 +92,9 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
 
     @T.prim_func
     def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
+        A: T.Tensor((M, K), dtype),
+        B: T.Tensor((K, N), dtype),
+        C: T.Tensor((M, N), dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
