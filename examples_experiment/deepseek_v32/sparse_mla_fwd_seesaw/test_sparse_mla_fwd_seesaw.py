@@ -3,7 +3,7 @@
 L0: threshold tests (small configs for fast convergence)
 L1: functional coverage (different shapes, topk, causal patterns)
 L2: negative tests (abnormal inputs should be rejected)
-Boundary: extreme values, minimum shape, all-masked query
+Boundary: extreme values, minimum shape, all-masked query (rejection contract)
 
 Usage:
     python test_sparse_mla_fwd_seesaw.py --level l0       # L0 only (fast convergence)
@@ -106,6 +106,9 @@ COVERAGE_MANIFEST = {
         {"name": "l1_custom_sm_scale", "tags": ["D-PARAM-sm_scale"]},
         {"name": "l1_kv_stride2", "tags": ["D-PARAM-kv_stride"]},
         {"name": "l1_heads64", "tags": ["D-EXC-SHAPE", "D-SHAPE-ALIGNED", "D-VALRANGE-S"]},
+        {"name": "l1_builder_sm_scale_applied", "tags": ["D-PARAM-sm_scale"]},
+        {"name": "l1_heads192", "tags": ["D-EXC-SHAPE", "D-SHAPE-ALIGNED", "D-PARAM-heads"]},
+        {"name": "l1_heads256", "tags": ["D-EXC-SHAPE", "D-SHAPE-ALIGNED", "D-PARAM-heads"]},
     ],
     "BOUNDARY_CASES": [
         {"name": "bnd_min_shape", "tags": ["D-SHAPE-EDGE"]},
@@ -332,7 +335,6 @@ def run_l0_suite():
 
     # L0-3: golden_config -- the production target shape
     # B=2,S=4096,SKV=8192,H=128,topk=2048,bf16,q_start=4096
-    # This is the MANDATORY L0 case matching the user's golden config.
     print("\n[L0-3] l0_golden_config: B=2,S=4096,SKV=8192,H=128,topk=2048,q_start=4096")
     r, _ = run_and_check(
         "l0_golden_config",
@@ -631,6 +633,82 @@ def run_l1_suite():
     )
     results.append(("l1_heads64", r))
 
+    # L1-13: sm_scale reaches the kernel. Unit-scale inputs keep softmax far from
+    # uniform so the two scales are numerically distinguishable; at the suite's
+    # default 0.1 scale the scores are tiny and sm_scale is unobservable.
+    print("\n[L1-13] l1_builder_sm_scale_applied: sm_scale=1.0 vs 0.05 (each vs own golden + must differ)")
+    try:
+        torch.manual_seed(42)
+        B, S, SKV, H, TOPK = 1, 4, 64, 128, 64
+        q = torch.randn(B, S, H, 576, dtype=torch.bfloat16).clamp(-10, 10)
+        kv = torch.randn(B, SKV, 1, 576, dtype=torch.bfloat16).clamp(-10, 10)
+        indices = gen_indices(B, S, 1, TOPK, SKV, 63, 1, seed=42)
+        outs = {}
+        per_scale_ok = True
+        for sc in (1.0, 0.05):
+            tl_out, tl_lse = sparse_mla_fwd_interface(q.npu(), kv.npu(), indices.npu(), 63, 1, sm_scale=sc)
+            ref_out, ref_lse = ref_sparse_mla_fwd_interface(q, kv, indices, 63, 1, sm_scale=sc)
+            out_p, out_r, out_m = check_precision(tl_out.cpu(), ref_out, "bfloat16")
+            lse_p, lse_r, lse_m = check_precision(tl_lse.cpu(), ref_lse, "float32")
+            outs[sc] = tl_out.cpu().float()
+            per_scale_ok &= out_p and lse_p
+            print(
+                f"    sm_scale={sc}: Output ratio={out_r:.6f} max={out_m:.4e} {'PASS' if out_p else 'FAIL'}, "
+                f"Lse ratio={lse_r:.6f} max={lse_m:.4e} {'PASS' if lse_p else 'FAIL'}"
+            )
+        # A no-op sm_scale would leave both runs bit-identical.
+        cross = (outs[1.0] - outs[0.05]).abs().max().item()
+        scale_is_live = cross > 1e-2
+        print(
+            f"    |out(sm_scale=1.0) - out(sm_scale=0.05)| max={cross:.4e} -> "
+            f"sm_scale {'APPLIED in kernel' if scale_is_live else 'NOT APPLIED'} [D-PARAM-sm_scale]"
+        )
+        r = bool(per_scale_ok and scale_is_live)
+        if r:
+            print("    [PRECISION_PASS] l1_builder_sm_scale_applied")
+        else:
+            print("    [PRECISION_FAIL] l1_builder_sm_scale_applied")
+    except Exception as e:
+        r = False
+        print(f"  [L1] l1_builder_sm_scale_applied: exception {e} [D-PARAM-sm_scale]")
+    results.append(("l1_builder_sm_scale_applied", r))
+
+    # L1-14: heads=192 -> num_h_blocks = 6 -> HID_TILES = 2 (6 % 4 != 0) ->
+    # num_h_block_pairs = 3, an odd pair count no other case produces.
+    print("\n[L1-14] l1_heads192: B=1,S=4,SKV=512,H=192,topk=128,q_start=255")
+    r, _ = run_and_check(
+        "l1_heads192",
+        1,
+        4,
+        512,
+        192,
+        1,
+        576,
+        512,
+        128,
+        q_start_index_s=255,
+        tags=["D-EXC-SHAPE", "D-SHAPE-ALIGNED", "D-PARAM-heads"],
+    )
+    results.append(("l1_heads192", r))
+
+    # L1-15: heads=256. num_h_blocks = 8 -> HID_TILES = 4 -> num_h_block_pairs = 2:
+    # the HID_TILES=4 / DIM_SPLIT=4 path at a larger head count than heads=128.
+    print("\n[L1-15] l1_heads256: B=1,S=4,SKV=512,H=256,topk=128,q_start=255")
+    r, _ = run_and_check(
+        "l1_heads256",
+        1,
+        4,
+        512,
+        256,
+        1,
+        576,
+        512,
+        128,
+        q_start_index_s=255,
+        tags=["D-EXC-SHAPE", "D-SHAPE-ALIGNED", "D-PARAM-heads"],
+    )
+    results.append(("l1_heads256", r))
+
     all_pass = all(r for _, r in results)
     if all_pass:
         print(f"\n[PRECISION_PASS] All L1 tests passed ({len(results)} cases)")
@@ -869,6 +947,80 @@ def run_l2_suite():
             print(f"  [BOUNDARY_WARN] l2_topk_zero: wrong rejection reason: {e}")
             warnings.append(f"l2_topk_zero: wrong rejection reason: {e}")
 
+    # L2-12: every top-K index of a query row is causally masked; such a row has
+    # no defined softmax and must be rejected.
+    print("\n[L2-12] l2_all_masked_row: q_start=0, all indices > max_kv_i=0")
+    try:
+        torch.manual_seed(42)
+        B, S, SKV, H = 1, 4, 64, 128
+        q = torch.randn(B, S, H, 576, dtype=torch.bfloat16) / 10
+        kv = torch.randn(B, SKV, 1, 576, dtype=torch.bfloat16) / 10
+        indices = torch.randint(1, SKV, (B, S, 1, 64), dtype=torch.int32)
+        sparse_mla_fwd_interface(q.npu(), kv.npu(), indices.npu(), 0, 1)
+        print("  [BOUNDARY_WARN] l2_all_masked_row: expected assert but succeeded")
+        warnings.append("l2_all_masked_row: no assert raised")
+    except AssertionError as e:
+        expected = "causally masked"
+        if expected in str(e):
+            print(f"  [BOUNDARY_PASS] l2_all_masked_row: correctly rejected ({type(e).__name__}, reason matched: '{expected}')")
+        else:
+            print(f"  [BOUNDARY_WARN] l2_all_masked_row: wrong rejection reason: {e}")
+            warnings.append(f"l2_all_masked_row: wrong rejection reason: {e}")
+
+    # L2-13: kv batch != q batch. The kernel indexes KV with the batch id taken
+    # from Q's tile map, so a mismatch must be rejected.
+    print("\n[L2-13] l2_kv_batch_mismatch: q batch=2, kv batch=1")
+    try:
+        torch.manual_seed(42)
+        B, S, SKV, H = 2, 4, 64, 128
+        q = torch.randn(B, S, H, 576, dtype=torch.bfloat16) / 10
+        kv = torch.randn(1, SKV, 1, 576, dtype=torch.bfloat16) / 10
+        indices = torch.randint(0, SKV, (B, S, 1, 64), dtype=torch.int32)
+        sparse_mla_fwd_interface(q.npu(), kv.npu(), indices.npu(), 63, 1)
+        print("  [BOUNDARY_WARN] l2_kv_batch_mismatch: expected assert but succeeded")
+        warnings.append("l2_kv_batch_mismatch: no assert raised")
+    except AssertionError as e:
+        expected = "kv batch (1) must equal q batch (2)"
+        if expected in str(e):
+            print(f"  [BOUNDARY_PASS] l2_kv_batch_mismatch: correctly rejected ({type(e).__name__}, reason matched: '{expected}')")
+        else:
+            print(f"  [BOUNDARY_WARN] l2_kv_batch_mismatch: wrong rejection reason: {e}")
+            warnings.append(f"l2_kv_batch_mismatch: wrong rejection reason: {e}")
+
+    # L2-14: seq_len_kv > 2**24, beyond the range fp32 represents exactly in the
+    # causal-mask compare. Needs an 18 GB KV cache, so it reports SKIPPED rather
+    # than failed when the device cannot allocate it.
+    print("\n[L2-14] l2_seq_len_kv_over_fp32_exact: seq_len_kv = 2**24 + 1")
+    SKV_BIG = 2**24 + 1
+    kv_big = None
+    try:
+        kv_big = torch.empty(1, SKV_BIG, 1, 576, dtype=torch.bfloat16, device="npu")
+    except Exception as e:
+        print(
+            f"  [BOUNDARY_WARN] l2_seq_len_kv_over_fp32_exact: SKIPPED, cannot allocate "
+            f"{SKV_BIG * 576 * 2 / 1024**3:.1f} GB KV cache ({type(e).__name__})"
+        )
+    if kv_big is not None:
+        try:
+            torch.manual_seed(42)
+            q = torch.randn(1, 1, 64, 576, dtype=torch.bfloat16, device="npu") / 10
+            indices = torch.zeros(1, 1, 1, 64, dtype=torch.int32, device="npu")
+            sparse_mla_fwd_interface(q, kv_big, indices, SKV_BIG - 1, 1)
+            print("  [BOUNDARY_WARN] l2_seq_len_kv_over_fp32_exact: expected assert but succeeded")
+            warnings.append("l2_seq_len_kv_over_fp32_exact: no assert raised")
+        except AssertionError as e:
+            expected = "exceeds 16777216"
+            if expected in str(e):
+                print(
+                    f"  [BOUNDARY_PASS] l2_seq_len_kv_over_fp32_exact: correctly rejected ({type(e).__name__}, reason matched: '{expected}')"
+                )
+            else:
+                print(f"  [BOUNDARY_WARN] l2_seq_len_kv_over_fp32_exact: wrong rejection reason: {e}")
+                warnings.append(f"l2_seq_len_kv_over_fp32_exact: wrong rejection reason: {e}")
+        finally:
+            del kv_big
+            torch.npu.empty_cache()
+
     if warnings:
         print(f"\n[BOUNDARY_WARN] L2 warnings: {len(warnings)}")
     else:
@@ -1023,24 +1175,26 @@ def run_boundary_suite():
         print(f"  [BOUNDARY_WARN] bnd_bf16_max: exception {e}")
         warnings.append(f"bnd_bf16_max: {e}")
 
-    # BND-6: all-masked query (q_start=0, all indices > max_kv_i=0)
-    print("\n[BND-6] bnd_all_masked: B=1,S=4,SKV=64,H=128,topk=64,q_start=0")
+    # BND-6: all-masked query (q_start=0, all indices > max_kv_i=0) must be
+    # rejected; the blocking gate for this contract is L2-12.
+    print("\n[BND-6] bnd_all_masked: B=1,S=4,SKV=64,H=128,topk=64,q_start=0 (expect rejection)")
     try:
         B, S, SKV, H = 1, 4, 64, 128
         q = torch.randn(B, S, H, 576, dtype=torch.bfloat16) / 10
         kv = torch.randn(B, SKV, 1, 576, dtype=torch.bfloat16) / 10
         # All indices point to positions > 0 (max_kv_i = 0 for q_start=0)
         indices = torch.randint(1, SKV, (B, S, 1, 64), dtype=torch.int32)
-        tl_out, tl_lse = sparse_mla_fwd_interface(q.npu(), kv.npu(), indices.npu(), 0, 1)
-        ref_out, ref_lse = ref_sparse_mla_fwd_interface(q, kv, indices, 0, 1)
-        out_p, out_r, out_m = check_precision(tl_out.cpu(), ref_out, "bfloat16")
-        if out_p:
-            print(f"  [BOUNDARY_PASS] bnd_all_masked: ratio={out_r:.6f}")
+        sparse_mla_fwd_interface(q.npu(), kv.npu(), indices.npu(), 0, 1)
+        print("  [BOUNDARY_WARN] bnd_all_masked: expected rejection but the kernel ran")
+        warnings.append("bnd_all_masked: no rejection raised")
+    except AssertionError as e:
+        if "causally masked" in str(e):
+            print(f"  [BOUNDARY_PASS] bnd_all_masked: correctly rejected ({type(e).__name__})")
         else:
-            print(f"  [BOUNDARY_WARN] bnd_all_masked: ratio={out_r:.6f} (degenerate case)")
-            warnings.append("bnd_all_masked: precision fail (degenerate)")
+            print(f"  [BOUNDARY_WARN] bnd_all_masked: wrong rejection reason: {e}")
+            warnings.append(f"bnd_all_masked: wrong rejection reason: {e}")
     except Exception as e:
-        print(f"  [BOUNDARY_WARN] bnd_all_masked: exception {e}")
+        print(f"  [BOUNDARY_WARN] bnd_all_masked: unexpected {type(e).__name__}: {e}")
         warnings.append(f"bnd_all_masked: {e}")
 
     if warnings:
