@@ -901,6 +901,14 @@ private:
     if (auto load = expr.as<BufferLoadNode>()) {
       Buffer input_buffer = load->buffer;
 
+      // GenerateAscendCopy currently builds source and destination regions
+      // symmetrically. A rank-changing projection needs rank-aware regions,
+      // so use the scalar serial fallback instead of indexing a shape with the
+      // other buffer's rank.
+      if (input_buffer->shape.size() != output_buffer->shape.size()) {
+        return false;
+      }
+
       // Compact->aligned UB->UB copy (different inner/row width) cannot be
       // lowered to copy_ub_to_ub safely: the strided variant needs 32B-aligned
       // per-row UB addresses (sub-32B compact rows trap the VEC instruction),
