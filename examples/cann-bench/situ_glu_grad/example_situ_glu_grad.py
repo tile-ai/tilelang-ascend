@@ -215,7 +215,7 @@ def situ_glu_grad_kernel(
                 T.tile.mul(sa_ub, t_ub, s_ub)
                 T.tile.mul(sa_ub, sa_ub, beta)
 
-                # up' and d(up')/d(up)
+                # up' and d(up')/d(up), then grad_situ_a = grad_y * up' (reuse upp_ub)
                 if has_linear:
                     # tu = tanh(u / linear_beta) = 2 * sigmoid(2u / linear_beta) - 1
                     T.tile.mul(tu_ub, u_ub, 2.0 / linear_beta)
@@ -225,12 +225,11 @@ def situ_glu_grad_kernel(
                     T.tile.mul(upp_ub, tu_ub, linear_beta)
                     T.tile.mul(dtu_ub, tu_ub, tu_ub)
                     T.tile.sub(dtu_ub, one_ub, dtu_ub)
+                    T.tile.mul(upp_ub, dy_ub, upp_ub)
                 else:
-                    T.copy(u_ub, upp_ub)
-                    T.copy(one_ub, dtu_ub)
-
-                # grad_situ_a = grad_y * up'   (reuse upp_ub)
-                T.tile.mul(upp_ub, dy_ub, upp_ub)
+                    # up' = up and d(up')/d(up) = 1, so grad_situ_a = grad_y * u
+                    # directly; the identity dtu folds into grad_up below.
+                    T.tile.mul(upp_ub, dy_ub, u_ub)
 
                 # grad_gate = grad_situ_a * (s * (1 - t^2) + situ_a * (1 - s))
                 # (beta * t * s * (1 - s) == situ_a * (1 - s), so the bracket
@@ -243,8 +242,10 @@ def situ_glu_grad_kernel(
                 T.tile.add(tmp1_ub, tmp1_ub, tmp2_ub)
                 T.tile.mul(upp_ub, upp_ub, tmp1_ub)  # grad_gate
 
-                # grad_up = grad_y * situ_a * dtu   (sa_ub is consumed here)
-                T.tile.mul(sa_ub, sa_ub, dtu_ub)
+                # grad_up = grad_y * situ_a * dtu   (sa_ub is consumed here).
+                # For the identity branch (dtu == 1) the multiply is implicit.
+                if has_linear:
+                    T.tile.mul(sa_ub, sa_ub, dtu_ub)
                 T.tile.mul(gu_ub, sa_ub, dy_ub)
 
                 # Store: grad_gate -> gate half, grad_up -> up half.
@@ -358,7 +359,6 @@ def situ_glu_grad(
 
     key = (
         rows_pad,
-        2 * h_pad,
         h_pad,
         block_m,
         block_n,
