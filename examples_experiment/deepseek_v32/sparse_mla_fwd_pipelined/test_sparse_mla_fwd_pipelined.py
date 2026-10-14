@@ -1,9 +1,16 @@
-"""Sparse MLA Forward Pipelined — precision test (L0 + L1 + L2 + Boundary).
+"""Sparse MLA Forward Pipelined — layered test suite.
 
-Tests precision against a PyTorch golden implementation using the
-mixed-tolerance check_precision function (bf16 dual-threshold).
-L2 are negative tests: invalid params (block_I / heads / topk) must be
-rejected by early host-side AssertionError at kernel-build entry.
+Levels:
+    l0        precision gate on regular, block-divisible shapes
+    l1        functional coverage: tail shapes, kv_stride > 1, q_start = 0,
+              multi-batch and degenerate shapes
+    l2        negative tests: invalid params must be rejected by a host-side
+              AssertionError at kernel-build entry, plus the KV0 input contract
+    boundary  special values (inf / nan / unclamped / all-zero inputs);
+              reported but non-blocking
+
+Precision is compared against a PyTorch golden implementation using the
+mixed-tolerance dual gate in check_precision.
 
 Usage:
     python test_sparse_mla_fwd_pipelined.py --level l0
@@ -14,12 +21,44 @@ import argparse
 import os
 import sys
 
+import numpy as np
 import tilelang
 import torch
 
 # Import kernel from same directory
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sparse_mla_fwd_pipelined import sparse_mla_fwd_pipelined  # noqa: E402
+from sparse_mla_fwd_pipelined import check_indices_kv0_contract, sparse_mla_fwd_pipelined  # noqa: E402
+
+
+# ============================================================================
+# XFAIL whitelist
+# ============================================================================
+
+# Known framework issues that may be recorded as a non-blocking XFAIL, keyed by
+# test name. Each entry is a tuple of substrings and the exception's
+# "TypeName: message" must contain one of them; anything else is a real failure
+# and is re-raised.
+#
+# An entry is only admissible when the failure has actually been reproduced, is
+# traced to the framework rather than to this kernel, and has a signature
+# specific enough not to match an unrelated error. No case in this suite meets
+# that bar, so the table is empty and every exception fails the gate.
+KNOWN_FRAMEWORK_XFAILS = {}
+
+
+def xfail_or_raise(test_name, exc):
+    """Return True only if `exc` matches a whitelisted known framework issue.
+
+    Any other exception is reported and re-raised, so the gate fails loudly
+    instead of passing silently.
+    """
+    msg = f"{type(exc).__name__}: {exc}"
+    for signature in KNOWN_FRAMEWORK_XFAILS.get(test_name, ()):
+        if signature in msg:
+            print(f"[XFAIL] {test_name}: whitelisted framework issue (matched {signature!r}) — {msg} — non-blocking")
+            return True
+    print(f"[PRECISION_FAIL] {test_name}: unexpected {msg} — not whitelisted for XFAIL, treating as real failure")
+    raise exc
 
 
 # ============================================================================
@@ -68,54 +107,47 @@ def ref_sparse_mla_fwd_interface(q, kv, indices, q_start_index_s, kv_stride=1, s
 
 
 # ============================================================================
-# Precision standard (mixed tolerance dual-threshold)
+# Precision standard
 # ============================================================================
 
-
-def get_precision(dtype):
-    """Return (atol, rtol, max_abs_error_limit, required_matched_ratio)."""
-    fp_table = {
-        "float16": (2**-14, 2**-9, 1e-1, 0.99),
-        "bfloat16": (2**-10, 2**-6, 1e0, 0.99),
-        "float32": (2**-16, 2**-10, 1e-2, 0.99),
-        "hifloat32": (2**-16, 2**-10, 1e-2, 0.99),
-        "float8_e4m3": (2**-4, 2**-2, 1e0, 0.99),
-        "float8_e5m2": (2**-3, 2**-1, 1e-1, 0.99),
-    }
-    int_types = {"int8", "int16", "int32", "int64", "uint8"}
-    if dtype in int_types:
-        return (0.0, 0.0, 0.0, 1.0)
-    return fp_table.get(dtype, (2**-14, 2**-9, 1e-1, 0.99))
+# The kernel computes in bfloat16 with float32 accumulation, so a single
+# mixed-tolerance threshold set applies to every case.
+BF16_ATOL = 2**-10
+BF16_RTOL = 2**-6
+BF16_MAX_ABS_ERR = 1e0
+REQUIRED_MATCHED_RATIO = 0.99
 
 
-def check_precision(actual, golden, dtype):
-    """Mixed tolerance dual-threshold check. Returns (passed, matched_ratio, max_abs_error).
+def check_precision(actual, golden, dtype="bfloat16"):
+    """Compare kernel output against the golden with a mixed-tolerance dual gate.
 
-    Float: matched_ratio >= required AND max_abs_error <= max_abs_error_limit.
-    Int: exact match. inf/nan positions are structurally compared (not counted in ratio).
+    An element counts as matched when |actual - golden| <= atol + rtol * |golden|.
+    The case passes when matched_ratio >= REQUIRED_MATCHED_RATIO and the maximum
+    absolute error <= BF16_MAX_ABS_ERR.
+
+    Positions where the golden is not finite are compared structurally (nan
+    against nan, inf against inf) and excluded from the ratio.
+
+    Returns (passed, matched_ratio, max_abs_error).
     """
-    atol, rtol, max_abs_limit, required_ratio = get_precision(dtype)
-    a = actual.detach().cpu()
-    g = golden.detach().cpu()
-    if atol == 0.0 and rtol == 0.0:  # int exact match
-        mism = (a != g).sum().item()
-        total = max(a.numel(), 1)
-        return mism == 0, 1.0 - mism / total, (0.0 if mism == 0 else float("inf"))
-    a = a.float()
-    g = g.float()
-    # inf/nan structural comparison
+    assert dtype == "bfloat16", f"the kernel produces bfloat16 only, got {dtype!r}"
+    a = actual.detach().cpu().float()
+    g = golden.detach().cpu().float()
+
     special = ~torch.isfinite(g)
     if special.any() and not (
         torch.equal(torch.isnan(a[special]), torch.isnan(g[special])) and torch.equal(torch.isinf(a[special]), torch.isinf(g[special]))
     ):
         return False, 0.0, float("inf")
+
     m = torch.isfinite(g)
     if m.sum().item() == 0:
         return True, 1.0, 0.0
+
     abs_err = (a[m] - g[m]).abs()
-    matched_ratio = (abs_err <= (atol + rtol * g[m].abs())).float().mean().item()
+    matched_ratio = (abs_err <= (BF16_ATOL + BF16_RTOL * g[m].abs())).float().mean().item()
     max_abs_error = abs_err.max().item()
-    passed = (matched_ratio >= required_ratio) and (max_abs_error <= max_abs_limit)
+    passed = (matched_ratio >= REQUIRED_MATCHED_RATIO) and (max_abs_error <= BF16_MAX_ABS_ERR)
     return passed, matched_ratio, max_abs_error
 
 
@@ -127,9 +159,7 @@ def check_precision(actual, golden, dtype):
 def _prepare(
     B, S, SKV, H, HKV, DQK, DV, topk, dtype, q_start_s_index, seed=0, kv_stride=1, clamp_val=10, q_override=None, kv_override=None
 ):
-    """Generate inputs, run kernel, compute golden. Returns (out, ref_out)."""
-    KV_stride = kv_stride
-
+    """Generate inputs, run the kernel and compute the golden. Returns (out, ref_out)."""
     torch.manual_seed(seed)
     if q_override is not None:
         q = q_override
@@ -147,21 +177,27 @@ def _prepare(
 
     q_start_s_index_t = torch.tensor([q_start_s_index], dtype=torch.int32, device="npu")
 
-    # Pad with SKV-1 (valid memory, but > max_kv_i so masked out by causal compare)
+    # Unused slots are padded with SKV-1: a valid address that the causal
+    # comparison always masks out.
     indices = torch.full((B, S, HKV, topk), SKV - 1, dtype=torch.int32, device="npu")
     for b in range(B):
         for t in range(S):
             for h in range(HKV):
-                avail = min(max(1, ((t + q_start_s_index) // KV_stride)), SKV)
+                avail = min(max(1, ((t + q_start_s_index) // kv_stride)), SKV)
                 i_i = torch.randperm(avail)[:topk]
                 indices[b, t, h, : len(i_i)] = i_i
+
+    # The max(1, ...) clamp above guarantees the leading rows contain index 0,
+    # which the kernel requires for rows with an empty causal window. Assert it
+    # explicitly instead of relying on the generator's invariant.
+    check_indices_kv0_contract(indices, kv_stride, q_start_s_index)
 
     kernel = sparse_mla_fwd_pipelined(
         heads=H,
         dim=DV,
         tail_dim=DQK - DV,
         topk=topk,
-        kv_stride=KV_stride,
+        kv_stride=kv_stride,
         kv_group=HKV,
         sm_scale=None,
         is_causal=True,
@@ -169,7 +205,7 @@ def _prepare(
     out = kernel(q, kv, indices, q_start_s_index_t)
     torch.npu.synchronize()
 
-    ref_out = ref_sparse_mla_fwd_interface(q, kv, indices, q_start_s_index, KV_stride)
+    ref_out = ref_sparse_mla_fwd_interface(q, kv, indices, q_start_s_index, kv_stride)
     torch.npu.synchronize()
 
     return out, ref_out
@@ -281,7 +317,7 @@ def run_l1_mla_bf16_s2049():
 
 
 def run_l1_mla_bf16_qstart0():
-    """L1 q_start=0 path: all rows scheduled from s=0 (grid no longer special-cases q_start==0)."""
+    """L1 q_start=0: the first query block starts at absolute position 0."""
     B, S, SKV, H, HKV, DQK, DV, topk = 1, 4096, 8192, 128, 1, 576, 512, 2048
     dtype = torch.bfloat16
     q_start = 0
@@ -316,10 +352,10 @@ def run_l1_mla_kv_stride4():
         return False
 
 
-def run_l1_mla_cp0_kv_stride4():
-    """L1 CP0 + kv_stride=4: q_start=0, kv_stride>1 — the first kv_stride-1 query
-    rows force-valid kv0 and must actually be computed (regression: the old CP0
-    grid shortcut never scheduled rows 0..kv_stride-2, leaving garbage there)."""
+def run_l1_mla_qstart0_kv_stride4():
+    """L1 q_start=0 with kv_stride=4: the leading kv_stride-1 query rows have an
+    empty causal window and attend KV0 only. They must still be scheduled and
+    produce correct output."""
     B, S, SKV, H, HKV, DQK, DV, topk = 1, 64, 256, 128, 1, 576, 512, 256
     dtype = torch.bfloat16
     q_start = 0
@@ -329,19 +365,18 @@ def run_l1_mla_cp0_kv_stride4():
         passed, ratio, max_abs = check_precision(out, ref, "bfloat16")
         tag = "PASS" if passed else "FAIL"
         print(
-            f"[PRECISION_{tag}] l1_mla_cp0_kv_stride4 B={B},S={S},SKV={SKV},H={H},kv_stride=4,q_start=0 "
+            f"[PRECISION_{tag}] l1_mla_qstart0_kv_stride4 B={B},S={S},SKV={SKV},H={H},kv_stride=4,q_start=0 "
             f"matched_ratio={ratio:.4f} max_abs={max_abs:.3e}"
         )
         return passed
     except Exception as e:
-        print(f"[PRECISION_FAIL] l1_mla_cp0_kv_stride4: {e}")
+        print(f"[PRECISION_FAIL] l1_mla_qstart0_kv_stride4: {e}")
         return False
 
 
-def run_l1_mla_cp0_kv_stride4_b2():
-    """L1 CP0 + kv_stride=4 + B=2: multi-batch — no OOB Output overwrite across
-    batch boundaries (regression: tile-decode period desync made pid decode
-    s_i >= seq_len at batch/group seams, corrupting the next batch's rows)."""
+def run_l1_mla_qstart0_kv_stride4_b2():
+    """L1 q_start=0, kv_stride=4, B=2: multi-batch tile decoding must not write
+    Output out of bounds across batch or group boundaries."""
     B, S, SKV, H, HKV, DQK, DV, topk = 2, 64, 256, 128, 1, 576, 512, 256
     dtype = torch.bfloat16
     q_start = 0
@@ -351,20 +386,25 @@ def run_l1_mla_cp0_kv_stride4_b2():
         passed, ratio, max_abs = check_precision(out, ref, "bfloat16")
         tag = "PASS" if passed else "FAIL"
         print(
-            f"[PRECISION_{tag}] l1_mla_cp0_kv_stride4_b2 B={B},S={S},SKV={SKV},H={H},kv_stride=4,q_start=0 "
+            f"[PRECISION_{tag}] l1_mla_qstart0_kv_stride4_b2 B={B},S={S},SKV={SKV},H={H},kv_stride=4,q_start=0 "
             f"matched_ratio={ratio:.4f} max_abs={max_abs:.3e}"
         )
         return passed
     except Exception as e:
-        print(f"[PRECISION_FAIL] l1_mla_cp0_kv_stride4_b2: {e}")
+        print(f"[PRECISION_FAIL] l1_mla_qstart0_kv_stride4_b2: {e}")
         return False
 
 
-def run_l1_mla_cp0_s_lt_kv_stride():
+def run_l1_mla_qstart0_s_lt_kv_stride():
     """L1 degenerate: S=2 < kv_stride=4, q_start=0 — grid total must stay > 0 and
-    every row must compute (each row force-valid kv0 only). If this extreme shape
-    trips a framework issue, record XFAIL (non-blocking); a precision mismatch
-    stays blocking."""
+    every row must compute (each row attends kv0 only, per the KV0 input
+    contract).
+
+    Strict XFAIL: only exceptions whose signature is whitelisted in
+    KNOWN_FRAMEWORK_XFAILS are recorded as non-blocking. Everything else
+    (compile error, runtime error, OOM, ...) is re-raised so the L1 gate fails
+    loudly. A precision mismatch is always blocking.
+    """
     B, S, SKV, H, HKV, DQK, DV, topk = 1, 2, 64, 128, 1, 576, 512, 256
     dtype = torch.bfloat16
     q_start = 0
@@ -374,7 +414,7 @@ def run_l1_mla_cp0_s_lt_kv_stride():
         passed, ratio, max_abs = check_precision(out, ref, "bfloat16")
         tag = "PASS" if passed else "FAIL"
         print(
-            f"[PRECISION_{tag}] l1_mla_cp0_s_lt_kv_stride B={B},S={S},SKV={SKV},H={H},kv_stride=4,q_start=0 "
+            f"[PRECISION_{tag}] l1_mla_qstart0_s_lt_kv_stride B={B},S={S},SKV={SKV},H={H},kv_stride=4,q_start=0 "
             f"matched_ratio={ratio:.4f} max_abs={max_abs:.3e}"
         )
         return passed
@@ -382,9 +422,8 @@ def run_l1_mla_cp0_s_lt_kv_stride():
         # Entry assert fired on a legal config (S < kv_stride is allowed): real
         # bug, must block — re-raise for a loud failure.
         raise
-    except Exception as e:  # noqa: BLE001 — framework-level failure on extreme shape
-        print(f"[XFAIL] l1_mla_cp0_s_lt_kv_stride: framework issue {type(e).__name__}: {e} — recorded, non-blocking")
-        return True
+    except Exception as e:  # noqa: BLE001 — routed through the strict whitelist
+        return xfail_or_raise("l1_mla_qstart0_s_lt_kv_stride", e)
 
 
 def run_sparse_mla_fwd_pipelined_l1():
@@ -393,9 +432,9 @@ def run_sparse_mla_fwd_pipelined_l1():
     ok &= run_l1_mla_bf16_s2049()
     ok &= run_l1_mla_bf16_qstart0()
     ok &= run_l1_mla_kv_stride4()
-    ok &= run_l1_mla_cp0_kv_stride4()
-    ok &= run_l1_mla_cp0_kv_stride4_b2()
-    ok &= run_l1_mla_cp0_s_lt_kv_stride()
+    ok &= run_l1_mla_qstart0_kv_stride4()
+    ok &= run_l1_mla_qstart0_kv_stride4_b2()
+    ok &= run_l1_mla_qstart0_s_lt_kv_stride()
     return ok
 
 
@@ -405,32 +444,44 @@ def run_sparse_mla_fwd_pipelined_l1():
 
 
 def run_sparse_mla_fwd_pipelined_l2():
-    """L2 negative tests: invalid params must be rejected by early host-side
-    AssertionError at kernel-build entry (before any NPU compilation).
+    """L2 negative tests: invalid params must be rejected by a host-side
+    AssertionError at kernel-build entry, before any NPU compilation.
 
-    The @tilelang.jit wrapper executes the factory function body (where the
-    entry asserts live) before calling tilelang.compile(), so an invalid value
-    raises AssertionError immediately and cheaply. A value that is *silently
-    accepted* here would instead fail deep in lowering/codegen (or worse,
-    silently corrupt output) — that late-failure regression is what this
-    test guards against.
+    The @tilelang.jit wrapper runs the factory body (where the entry asserts
+    live) before tilelang.compile(), so an invalid value fails immediately and
+    cheaply. A value that was silently accepted here would instead fail deep in
+    lowering/codegen, or silently corrupt output.
     """
     # Common legal params; each case overrides one param with an invalid value.
     base = dict(heads=128, dim=512, tail_dim=64, topk=256, kv_stride=1, kv_group=1, block_I=128)
 
     cases = [
-        # --- block_I entry constraint ---
-        ("block_I=8 (divisible by 8 but not 64: T.tile.compare 256B alignment)", dict(block_I=8)),
-        ("block_I=64 (multiple of 64 but AscendMemoryPlanning fails)", dict(block_I=64, topk=128)),
+        # --- block_I / topk entry constraints ---
+        ("block_I=8 (divisible by 8 but not 64: T.tile.compare needs 256B alignment)", dict(block_I=8)),
+        ("block_I=64 (multiple of 64 but memory planning fails)", dict(block_I=64, topk=128)),
         ("block_I=100 (not divisible by 8: packed mask under-capacity)", dict(block_I=100, topk=400)),
-        ("block_I=192 (multiple of 64 but compile segfault)", dict(block_I=192, topk=384)),
+        ("block_I=192 (multiple of 64 but compilation crashes)", dict(block_I=192, topk=384)),
         ("topk=100 with block_I=128 (topk % block_I != 0)", dict(topk=100)),
-        ("topk=128 with block_I=128 (NI=1: Ascend codegen L1 address planning fails)", dict(topk=128)),
-        # --- heads/head_kv entry constraint ---
+        ("topk=128 with block_I=128 (NI=1: no L1 address plan for the pipelined KV buffer)", dict(topk=128)),
+        # --- heads / head_kv domain ---
         ("heads=48 (head_kv=48 <= 64, not a power of two -> OOB via padded_H)", dict(heads=48)),
         ("heads=8 (head_kv=8 < 16 -> padded to 16, OOB Q/Output access)", dict(heads=8)),
         ("heads=192, kv_group=2 (head_kv=96 not multiple of 64)", dict(heads=192, kv_group=2)),
         ("heads=384, kv_group=2 (head_kv=192: %64==0 but not pow2, group base offset mismatch)", dict(heads=384, kv_group=2)),
+        # --- heads / kv_group divisibility: a truncated head_kv would leave the
+        #     trailing heads unwritten, i.e. uninitialized Output ---
+        ("heads=65, kv_group=2 (heads % kv_group != 0 -> head_kv=32 truncates, head 64 uninitialized)", dict(heads=65, kv_group=2)),
+        ("heads=100, kv_group=8 (heads % kv_group != 0)", dict(heads=100, kv_group=8)),
+        ("kv_group=0 (must be rejected as a contract error, not ZeroDivisionError)", dict(kv_group=0)),
+        ("kv_group=-1 (must be >= 1)", dict(kv_group=-1)),
+        ("heads=0 (must be >= 1)", dict(heads=0)),
+        # --- kv_stride entry constraint (it is the device-side divisor of
+        #     raw = (q_i + 1) // kv_stride) ---
+        ("kv_stride=0 (would fail late in TVM IR construction with Divide by zero)", dict(kv_stride=0)),
+        ("kv_stride=-1 (negative stride gives a meaningless causal boundary)", dict(kv_stride=-1)),
+        # --- entry type normalization (numpy scalars are valid integers) ---
+        ("heads=128.0 float (not an integer: would silently truncate)", dict(heads=128.0)),
+        ("topk='256' str (not an integer)", dict(topk="256")),
     ]
 
     rejected = 0
@@ -457,6 +508,23 @@ def run_sparse_mla_fwd_pipelined_l2():
         ("heads=128", dict(heads=128)),
         ("heads=64", dict(heads=64)),
         ("heads=32, kv_group=2 (head_kv=16)", dict(heads=32, kv_group=2)),
+        ("heads=128, kv_group=4 (head_kv=32, divisible -> must be accepted)", dict(heads=128, kv_group=4)),
+        ("heads=256, kv_group=4 (head_kv=64, divisible -> must be accepted)", dict(heads=256, kv_group=4)),
+        # numpy scalars are valid integers and must be normalized at entry rather
+        # than failing deep in next_power_of_2 (int.bit_length) or T.Pipelined
+        # (TVM cannot handle a numpy dtype).
+        (
+            "numpy int64 scalars (normalized at entry -> must be accepted)",
+            dict(
+                heads=np.int64(128),
+                dim=np.int64(512),
+                tail_dim=np.int64(64),
+                topk=np.int64(256),
+                kv_stride=np.int64(1),
+                kv_group=np.int64(1),
+                block_I=np.int64(128),
+            ),
+        ),
     ]
     for name, override in positive:
         kwargs = {**base, **override}
@@ -466,11 +534,67 @@ def run_sparse_mla_fwd_pipelined_l2():
         except Exception as e:  # noqa: BLE001
             print(f"[BOUNDARY_WARN] l2_positive: {name} — unexpected {type(e).__name__}: {e}")
 
-    # Rejection-guard result: consumed as BLOCKING by main(). A case that is
-    # not correctly rejected means the entry guard was removed or weakened
-    # (regression), unlike a precision miss on an unsupported input. The
-    # positive-control warnings above stay non-blocking.
+    # Blocking: a case that is not rejected means an entry guard is missing or
+    # weakened, which is a different class of problem from a precision miss on an
+    # unsupported input. The positive-control warnings above stay non-blocking.
     return rejected == total
+
+
+def run_l2_indices_kv0_contract():
+    """L2 test for the early-row KV0 input contract.
+
+    Rows with an empty causal window can only select index 0, so Indices must
+    contain 0 there or the kernel produces NaN while the golden attends KV0.
+    check_indices_kv0_contract makes that requirement explicit; this test
+    verifies the check actually fires.
+
+    Blocking: a verifier that stops detecting violations would reopen the
+    silent-NaN path.
+    """
+    B, S, HKV, topk = 1, 8, 1, 256
+    kv_stride = 4
+    ok = True
+
+    # --- negative: leading rows (t < kv_stride - 1) missing index 0 ---
+    bad = torch.full((B, S, HKV, topk), 5, dtype=torch.int32, device="npu")
+    bad[:, kv_stride - 1 :, :, 0] = 0  # only the non-early rows contain 0
+    try:
+        check_indices_kv0_contract(bad, kv_stride, q_start_index_s=0)
+        print("[BOUNDARY_WARN] l2_kv0_contract: violation NOT detected (verifier is broken)")
+        ok = False
+    except ValueError as e:
+        print(f"[BOUNDARY_PASS] l2_kv0_contract: violation rejected — {str(e).splitlines()[0][:110]}")
+
+    # --- negative: non-raising mode must report the offending rows ---
+    violations = check_indices_kv0_contract(bad, kv_stride, q_start_index_s=0, raise_on_violation=False)
+    expected = [(0, t, 0) for t in range(kv_stride - 1)]
+    if violations == expected:
+        print(f"[BOUNDARY_PASS] l2_kv0_contract: violations reported {violations}")
+    else:
+        print(f"[BOUNDARY_WARN] l2_kv0_contract: expected {expected}, got {violations}")
+        ok = False
+
+    # --- positive: contract satisfied (index 0 present in every early row) ---
+    good = bad.clone()
+    good[:, : kv_stride - 1, :, 0] = 0
+    try:
+        check_indices_kv0_contract(good, kv_stride, q_start_index_s=0)
+        print("[BOUNDARY_PASS] l2_kv0_contract: valid indices accepted")
+    except ValueError as e:
+        print(f"[BOUNDARY_WARN] l2_kv0_contract: valid indices wrongly rejected — {e}")
+        ok = False
+
+    # --- positive: kv_stride=1 has no early rows, so anything is accepted ---
+    any_idx = torch.full((B, S, HKV, topk), 7, dtype=torch.int32, device="npu")
+    try:
+        check_indices_kv0_contract(any_idx, 1, q_start_index_s=0)
+        print("[BOUNDARY_PASS] l2_kv0_contract: kv_stride=1 correctly has no early rows")
+    except ValueError as e:
+        print(f"[BOUNDARY_WARN] l2_kv0_contract: kv_stride=1 wrongly rejected — {e}")
+        ok = False
+
+    print(f"[L2] kv0 contract verifier: {'OK' if ok else 'BROKEN'}")
+    return ok
 
 
 # ============================================================================
@@ -581,9 +705,8 @@ def run_sparse_mla_fwd_pipelined_boundary():
     passed_count = sum(1 for _, p in results if p)
     total = len(results)
     print(f"[BOUNDARY] {passed_count}/{total} passed")
-    # Real result (was hardcoded True). Boundary precision failures stay
-    # non-blocking in main() per the layered-test policy, but the return
-    # value must reflect reality for any caller that checks it.
+    # Boundary failures are non-blocking in main(), but the return value still
+    # reflects the real result for callers that check it.
     return passed_count == total
 
 
@@ -601,21 +724,20 @@ def main():
     torch.set_default_device("npu")
     torch.manual_seed(0)
 
-    blocking_ok = True  # L0/L1 precision + L2 rejection-guard count toward exit code
+    # L0/L1 precision and the L2 guards decide the exit code; Boundary is
+    # reported but non-blocking.
+    blocking_ok = True
     if args.level in ("l0", "all"):
         blocking_ok &= run_sparse_mla_fwd_pipelined_l0()
     if args.level in ("l1", "all"):
         blocking_ok &= run_sparse_mla_fwd_pipelined_l1()
     if args.level in ("l2", "all"):
-        # L2 negative-rejection failures are blocking: "not rejected" means
-        # the entry guard was removed/weakened (regression), not an
-        # unsupported-input precision miss. Positive-control warnings inside
-        # run_..._l2 stay non-blocking.
+        # An invalid param that is not rejected means an entry guard is missing,
+        # which is blocking. Positive-control warnings stay non-blocking.
         blocking_ok &= run_sparse_mla_fwd_pipelined_l2()
+        blocking_ok &= run_l2_indices_kv0_contract()
     if args.level in ("boundary", "all"):
-        # Boundary precision failures stay non-blocking (layered-test
-        # policy): extreme inputs are recorded, not fatal. The gate now
-        # returns its real result for callers that want it.
+        # Extreme inputs are recorded, not fatal.
         run_sparse_mla_fwd_pipelined_boundary()
 
     if blocking_ok:
