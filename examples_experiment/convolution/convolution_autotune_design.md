@@ -187,7 +187,7 @@ def main(
 
 | API | 来源 | 验证状态 |
 |-----|------|---------|
-| `T.prim_func` | `api-kernel-memory.md` §1 | ✅ 已通过 examples/gemm/example_gemm.py 验证 |
+| `T.prim_func` | `api-kernel-memory.md` §1 | ✅ 已通过 examples_experiment/gemm/example_gemm.py 验证 |
 | `T.Tensor((shape), dtype)` | `api-kernel-memory.md` §1 | ✅ 已通过所有 GEMM 示例验证 |
 | `T.Kernel(block_num, is_npu=True) as (cid, _)` | `api-kernel-memory.md` §1 | ✅ 已通过所有 GEMM 示例验证 |
 | `T.alloc_shared(shape, dtype)` | `api-kernel-memory.md` §2 (Developer) | ✅ 已通过 examples/gemm/ 验证 |
@@ -195,7 +195,7 @@ def main(
 | `T.copy(src, dst)` | `api-kernel-memory.md` §3 | ✅ 已通过所有搬运场景验证 |
 | `T.gemm_v0(A, B, C, init)` | `api-compute.md` §1 | ✅ 已通过 examples/gemm/ 验证 |
 | `T.serial(N)` | `api-schedule-sync.md` | ✅ 已通过所有循环场景验证 |
-| `T.ceildiv(a, b)` | `examples/gemm/example_gemm.py:40` | ✅ 已通过 GEMM 示例验证 |
+| `T.ceildiv(a, b)` | `examples_experiment/gemm/example_gemm.py:40` | ✅ 已通过 GEMM 示例验证 |
 | `@tilelang.autotune(configs, ref_prog, supply_prog, atol, rtol)` | `examples/convolution/example_convolution_autotune.py:45-51` | ✅ 本算子已直接使用并验证 |
 
 ---
@@ -227,7 +227,7 @@ def main(
 | 文件路径 | 相似度 | 关键参考点 |
 |----------|--------|-----------|
 | `examples/convolution/example_convolution.py` | **几乎相同** | 非 autotune 版本，核函数结构完全一致 |
-| `examples/gemm/example_gemm.py` | **高度相似** | T.gemm_v0 + alloc_shared + alloc_fragment 模式、K 维 tiling、T.serial 迭代结构 |
+| `examples_experiment/gemm/example_gemm.py` | **高度相似** | T.gemm_v0 + alloc_shared + alloc_fragment 模式、K 维 tiling、T.serial 迭代结构 |
 | `examples/gemm/example_gemm_autotune.py` | **高度相似** | autotune 装饰器用法、configs 生成逻辑 |
 
 ---
