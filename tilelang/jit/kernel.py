@@ -141,6 +141,7 @@ class JITKernel:
         """
         Alternative constructor to create a TorchFunction directly from a database.
         """
+        out_idx, workspace_idx = cls._legalize_user_memory_indices(func, out_idx, workspace_idx)
         instance = cls(
             func=func,
             out_idx=out_idx,
@@ -200,6 +201,19 @@ class JITKernel:
         """
         return self.torch_function(*modify_args, **kwds)
 
+    @staticmethod
+    def _legalize_user_memory_indices(
+        tilelang_func: PrimFunc,
+        out_idx: list[int] | int | None,
+        workspace_idx: list[int] | int | None,
+    ) -> tuple[list[int], list[int]]:
+        """Resolve user-facing indices before lowering can append parameters."""
+        num_params = len(tilelang_func.params)
+        return (
+            BaseKernelAdapter._legalize_memory_idx(out_idx, num_params, "result_idx"),
+            BaseKernelAdapter._legalize_memory_idx(workspace_idx, num_params, "workspace_idx"),
+        )
+
     def _compile_and_create_adapter(self, tilelang_func: PrimFunc, out_idx: list[int], workspace_idx: list[int]) -> BaseKernelAdapter:
         """
         Compiles the given TileLang PrimFunc using TVM and creates a kernel adapter.
@@ -220,6 +234,7 @@ class JITKernel:
 
         execution_backend = self.execution_backend
         pass_configs = self.pass_configs
+        out_idx, workspace_idx = self._legalize_user_memory_indices(tilelang_func, out_idx, workspace_idx)
 
         # Compile the function with TVM, optimizing with shared memory lowering.
         enable_host_codegen = execution_backend == "dlpack"
