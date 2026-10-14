@@ -1,19 +1,24 @@
 """Sparse MLA Forward Pipelined (DeepSeek V3.2 Multi-head Latent Attention).
 
-Developer mode + combineCV. Single kernel, persistent grid.
-Computes O = softmax(Q @ KV^T / sqrt(D)) @ KV[:dim] with sparse KV gather.
+Computes O = softmax(Q @ KV^T * sm_scale + causal_mask) @ KV[:dim], attending
+only the top-K KV rows selected per query block.
+
+Single kernel on a persistent grid, written in Developer mode: the Cube/Vector
+split and all synchronization are handled by the compiler, so the kernel body
+contains no explicit scope or barrier calls.
 
 Design:
-  - Cube: GEMM1 (Q @ KV^T, K=576) + GEMM2 (P @ KV[:dim])
-  - Vector: sparse KV gather + online softmax + output accumulate
-  - Workspace GM relay (4 tensors) for Cube <-> Vector data exchange
-  - Causal mask via T.tile.compare + T.tile.select (uint8 packed bitmask)
-
-All synchronization handled by auto_sync + auto_cv_sync + auto_cv_combine.
+  - Cube:   GEMM1 (Q @ KV^T, K = dim + tail_dim) and GEMM2 (P @ KV[:dim])
+  - Vector: sparse KV gather, online softmax, output accumulation
+  - Four GM workspace tensors relay data between Cube and Vector
+  - Causal mask built with T.tile.compare into a packed uint8 bitmask, then
+    applied with T.tile.select
 """
 
 import tilelang
 import torch
+from numbers import Integral
+
 from tilelang import language as T
 from tilelang.intrinsics import make_zn_layout, make_nz_layout
 
@@ -35,66 +40,80 @@ def sparse_mla_fwd_pipelined(
     kv_group=1,
     sm_scale=None,
     is_causal=True,
-    CP0=True,
     block_I=128,
     core_num=20,
 ):
     """Build the sparse MLA forward kernel.
 
     Args:
-        heads: number of query heads. head_kv = heads // kv_group must be a
-            power of two in [16, 64] (16/32/64) or a multiple of 64 (> 64;
-            with kv_group > 1 it must additionally be a power of two).
-            Other values are rejected at entry (OOB Q/Output access risk).
+        heads: number of query heads. Must be divisible by kv_group, and
+            head_kv = heads // kv_group must be 16, 32 or 64, or a multiple of
+            64 (with kv_group > 1, a power of two).
         dim: V dimension (512).
         tail_dim: rope/PE dimension (64).
-        topk: number of sparse indices (must be a multiple of block_I and
-            >= 2 * block_I, i.e. NI >= 2: NI=1 breaks Ascend codegen L1 address
-            planning for T.Pipelined(1, num_stages=2)).
-        kv_stride: KV stride.
-        kv_group: KV group count (1 for MLA).
-        sm_scale: softmax scale (None => 1/sqrt(dim+tail_dim)).
+        topk: number of sparse indices. Must be a multiple of block_I and
+            at least 2 * block_I.
+        kv_stride: KV stride, >= 1.
+        kv_group: KV group count (1 for MLA). Must divide heads exactly.
+        sm_scale: softmax scale (None => 1 / sqrt(dim + tail_dim)).
         is_causal: must be True.
-        CP0: deprecated, no effect (kept for API compatibility; grid no longer
-            special-cases q_start==0).
-        block_I: indices block size. Must be 128 (the only verified value):
-            block_I % 64 == 0 is structurally required (T.tile.compare on
-            [block_I] fp32 needs 256B alignment, subsuming the BI//8 packed
-            mask and BI//2 vid split), and other multiples of 64 are broken
-            (64 -> AscendMemoryPlanning failure, 192 -> compile segfault).
+        block_I: indices block size. Must be 128.
         core_num: persistent grid size.
 
     Returns:
-        prim_func sparse_mla_fwd_kernel(Q, KV, Indices, q_start_index_s, Output, ws1/ws3/ws4/ws5)
+        prim_func sparse_mla_fwd_kernel(Q, KV, Indices, q_start_index_s, Output,
+        workspace_1/3/4/5)
 
-    Note: Lse is not output (Ascend codegen does not support scalar T.log).
+    Input contract:
+        For every query row t < kv_stride - 1 and every (b, g),
+        Indices[b, t, g, :] must contain 0. Those rows have an empty causal
+        window, so the kernel can only select index 0; if it is absent the whole
+        row is masked to -inf and the output becomes NaN. Call
+        check_indices_kv0_contract() to validate inputs before launching.
+
+    Note:
+        Lse is not produced: Ascend codegen does not support a scalar T.log.
     """
-    assert dim == tilelang.math.next_power_of_2(dim), f"dim must be power of 2, got {dim}"
-    assert tail_dim == tilelang.math.next_power_of_2(tail_dim), f"tail_dim must be power of 2, got {tail_dim}"
+    # Accept any integer type (numpy scalars included) and normalize to int:
+    # next_power_of_2 needs int.bit_length(), and a numpy dtype reaching
+    # T.Pipelined(NI) cannot be handled by TVM.
+    for _name, _val in (
+        ("heads", heads),
+        ("dim", dim),
+        ("tail_dim", tail_dim),
+        ("topk", topk),
+        ("kv_stride", kv_stride),
+        ("kv_group", kv_group),
+        ("block_I", block_I),
+        ("core_num", core_num),
+    ):
+        assert isinstance(_val, Integral), f"{_name} must be an integer, got {type(_val).__name__}: {_val!r}"
+    heads, dim, tail_dim, topk = int(heads), int(dim), int(tail_dim), int(topk)
+    kv_stride, kv_group, block_I, core_num = int(kv_stride), int(kv_group), int(block_I), int(core_num)
+
+    assert dim == tilelang.math.next_power_of_2(dim), f"dim must be a power of 2, got {dim}"
+    assert tail_dim == tilelang.math.next_power_of_2(tail_dim), f"tail_dim must be a power of 2, got {tail_dim}"
     assert is_causal, "non-causal is not supported"
-    assert topk % block_I == 0, "topk must be a multiple of block_I"
 
-    # Constraints documented in the assert message and docstring; see also
-    # codegen_ascend.cc CompareScalarCodegen (256B alignment) and debug_log.
-    assert block_I == 128, (
-        f"block_I must be 128 (only verified value): block_I % 64 == 0 is required "
-        f"by T.tile.compare 256B alignment on [block_I] fp32, and other multiples "
-        f"of 64 (64 -> AscendMemoryPlanning failure, 192 -> compile segfault) are "
-        f"broken; got block_I={block_I}"
-    )
+    # T.tile.compare over a [block_I] fp32 operand requires 256B alignment, which
+    # also covers the BI//8 packed mask and the BI//2 vector split.
+    assert block_I == 128, f"block_I must be 128, got {block_I}"
+    assert topk % block_I == 0, f"topk must be a multiple of block_I, got topk={topk}, block_I={block_I}"
+    # NI >= 2: with a single iteration the pipelined KV buffer gets no L1 address plan.
+    assert topk >= 2 * block_I, f"topk must be >= 2 * block_I, got topk={topk}, block_I={block_I}"
 
-    # NI >= 2 required: topk == block_I (NI=1) breaks Ascend codegen L1 address
-    # planning for T.Pipelined(1, num_stages=2) ("Cannot find pre-allocated
-    # address for buffer: kv_full_l1", codegen_ascend.cc:830). Framework issue
-    # pending; constrained at entry.
-    assert topk >= 2 * block_I, (
-        f"topk must be >= 2 * block_I (NI >= 2): NI=1 fails Ascend codegen L1 "
-        f"address planning for T.Pipelined(1, num_stages=2); got topk={topk}, "
-        f"block_I={block_I}"
-    )
+    assert heads >= 1, f"heads must be >= 1, got {heads}"
+    assert kv_group >= 1, f"kv_group must be >= 1, got {kv_group}"
+    # head_kv sizes padded_H, H_per_block and the grid, so a non-divisible pair
+    # would truncate it and leave the trailing heads unwritten in Output.
+    assert heads % kv_group == 0, f"heads must be divisible by kv_group, got heads={heads}, kv_group={kv_group}"
 
-    # sm_scale has no log2(e) premultiplication (unlike the GPU exp2 version):
-    #     Ascend has no exp2 hardware support, the kernel uses plain T.tile.exp.
+    # kv_stride is the device-side divisor of the causal boundary.
+    assert kv_stride >= 1, f"kv_stride must be >= 1, got {kv_stride}"
+    assert core_num >= 1, f"core_num must be >= 1, got {core_num}"
+
+    # Ascend has no exp2 hardware support, so the kernel uses plain T.tile.exp
+    # and sm_scale carries no log2(e) factor.
     sm_scale = (1.0 / (dim + tail_dim)) ** 0.5 if sm_scale is None else sm_scale
 
     batch = T.symbolic("batch")
@@ -119,29 +138,23 @@ def sparse_mla_fwd_pipelined(
 
     padded_H = max(tilelang.math.next_power_of_2(head_kv), 16)
 
-    # Valid head_kv domain documented in the asserts below and the docstring.
     if head_kv > 64:
-        assert head_kv % 64 == 0, f"head_kv should be a multiple of 64, got {head_kv}"
+        assert head_kv % 64 == 0, f"head_kv must be a multiple of 64 when > 64, got {head_kv}"
         if kv_group > 1:
-            assert head_kv == tilelang.math.next_power_of_2(head_kv), (
-                f"kv_group > 1 requires power-of-two head_kv (group base offset uses padded_H), got head_kv={head_kv}"
-            )
+            # The group base offset is computed from padded_H, so head_kv must
+            # not be padded when several groups share the KV.
+            assert head_kv == tilelang.math.next_power_of_2(head_kv), f"kv_group > 1 requires a power-of-two head_kv, got head_kv={head_kv}"
         REPLICATE_H = head_kv // 64
     else:
-        assert head_kv in (16, 32, 64), (
-            f"head_kv (heads//kv_group) must be one of 16/32/64 when <= 64 "
-            f"(power of two, >= 16); got {head_kv}. Other values cause OOB "
-            f"Q/Output access via padded_H"
-        )
+        # padded_H would round other values up to 16 and read Q / write Output
+        # out of bounds.
+        assert head_kv in (16, 32, 64), f"head_kv must be 16, 32 or 64 when <= 64, got {head_kv}"
         REPLICATE_H = 1
 
     H_per_block = padded_H if REPLICATE_H == 1 else 64
     v_block = H_per_block // 2
 
-    # All seq_len query rows are always scheduled: rows with q_i < kv_stride - 1
-    # attend kv0 only (force-valid), implemented by max_kv_i = max(raw - 1, 0).
-    # Do NOT reintroduce row-skipping grid shortcuts (caused OOB, see debug_log
-    # Attempt 4).
+    # Every query row is scheduled, including rows whose causal window is empty.
     total_tiles_expr = seq_len * REPLICATE_H * batch * kv_group
 
     @T.prim_func
@@ -203,7 +216,10 @@ def sparse_mla_fwd_pipelined(
                     s_i = bx // REPLICATE_H
                     H0 = g_i * padded_H + (bx % REPLICATE_H) * H_per_block
 
-                    # max_kv_i: causal mask boundary.
+                    # Causal boundary: the highest KV position this row may attend.
+                    # Clamped at 0 so that rows with an empty causal window still
+                    # get a well-formed mask; those rows can only select index 0
+                    # (see the input contract in the factory docstring).
                     q_i = q_start_index_s[0] + s_i
                     raw = (q_i + 1) // KV_stride
                     max_kv_i = T.max(raw - 1, 0)
@@ -216,9 +232,9 @@ def sparse_mla_fwd_pipelined(
                     T.tile.fill(sumexp, 0.0)
                     T.tile.fill(m_i, -(2.0**30))
 
-                    # NI loop: GEMM1 -> gather -> softmax -> GEMM2 -> accumulate.
-                    # Cross-queue ordering over ws1/ws3/ws4/ws5 is enforced by
-                    # auto_cv_sync (combineCV pass).
+                    # Per index block: GEMM1 -> gather -> softmax -> GEMM2 ->
+                    # accumulate. Ordering between the Cube and Vector queues over
+                    # the four workspaces is inserted by the compiler.
                     for i_i in T.Pipelined(NI, num_stages=2):
                         # --- Cube: GEMM1 ---
                         T.copy(workspace_1[cid, 0:BI, 0 : D + D_tail], kv_full_l1)
@@ -298,6 +314,67 @@ def sparse_mla_fwd_pipelined(
 
 
 # ============================================================================
+# Input-contract validation
+# ============================================================================
+
+
+def check_indices_kv0_contract(indices, kv_stride, q_start_index_s=0, raise_on_violation=True):
+    """Validate the early-row KV0 input contract required by the kernel.
+
+    Rows with ``t < kv_stride - 1`` have an empty causal window, so the kernel's
+    mask (``indices <= max_kv_i``, clamped to 0) can only select index 0. If 0 is
+    absent from such a row, every score in it is masked to -inf and the output
+    becomes NaN. This check verifies that 0 is present.
+
+    Args:
+        indices: int32 tensor of shape [B, S, kv_group, topk].
+        kv_stride: KV stride passed to the kernel factory.
+        q_start_index_s: scalar or 1-element int32 tensor. Used only to report
+            the absolute row id in the error message.
+        raise_on_violation: raise ValueError on the first violating row
+            (default), or return the list of violating (b, t, g) tuples.
+
+    Returns:
+        Empty list if the contract holds, otherwise the violating (b, t, g)
+        tuples (only when raise_on_violation is False).
+
+    Raises:
+        ValueError: if the contract is violated and raise_on_violation is True.
+    """
+    idx = indices.detach().cpu()
+    if idx.dim() != 4:
+        raise ValueError(f"indices must be 4-D [B, S, kv_group, topk], got shape {tuple(idx.shape)}")
+    B, S, G, _topk = idx.shape
+
+    n_early = max(0, min(int(kv_stride) - 1, S))
+    if n_early == 0:
+        return []  # kv_stride <= 1: no row has an empty causal window
+
+    if torch.is_tensor(q_start_index_s):
+        q_start = int(q_start_index_s.detach().cpu().reshape(-1)[0])
+    else:
+        q_start = int(q_start_index_s or 0)
+
+    has_zero = (idx[:, :n_early] == 0).any(dim=-1)  # [B, n_early, G]
+    bad = (~has_zero).nonzero().tolist()
+    if not bad:
+        return []
+
+    violations = [(int(b), int(t), int(g)) for b, t, g in bad]
+    if raise_on_violation:
+        b, t, g = violations[0]
+        raise ValueError(
+            f"Indices violates the early-row KV0 contract at (b={b}, t={t}, g={g}): "
+            f"row t < kv_stride - 1 (kv_stride={kv_stride}) has an empty causal window, "
+            f"so the kernel can only select index 0, but 0 is absent from "
+            f"Indices[{b}, {t}, {g}, :] (absolute q_i={q_start + t}). Every score in that "
+            f"row would be masked to -inf and the output would become NaN. Inject index 0 "
+            f"into the leading kv_stride - 1 rows. Total violating rows: {len(violations)}."
+        )
+    return violations
+
+
+# ============================================================================
 # Smoke test: compile + run + shape/dtype verification
 # ============================================================================
 
@@ -328,6 +405,10 @@ if __name__ == "__main__":
                 avail = min(max(1, ((t + q_start_s_index) // KV_stride)), SKV)
                 i_i = torch.randperm(avail)[:topk]
                 indices[b, t, h, : len(i_i)] = i_i
+
+    # With kv_stride=1 there are no early rows, so this is a no-op; it shows
+    # where a caller with kv_stride > 1 must validate.
+    check_indices_kv0_contract(indices, KV_stride, q_start_s_index)
 
     kernel = sparse_mla_fwd_pipelined(
         heads=H,
