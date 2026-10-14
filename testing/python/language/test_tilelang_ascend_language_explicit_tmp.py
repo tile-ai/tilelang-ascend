@@ -785,6 +785,8 @@ def test_pto_zero_workspace_apis_elide_an_explicit_empty_arena():
     assert "tmp_ub" not in source
     assert "TSIGMOID" in source
     assert "tl::ascend_pto::pow" in source
+    assert "RoundMode::CAST_RINT" in source
+    assert "RoundMode::CAST_ROUND" not in source
     assert "TGATHER<" in source
 
 
