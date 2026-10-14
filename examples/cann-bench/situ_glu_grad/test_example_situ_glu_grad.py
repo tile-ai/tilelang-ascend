@@ -11,6 +11,10 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from example_situ_glu_grad import golden_situ_glu_grad, situ_glu_grad  # noqa: E402
 
+# pytest collects the test functions without calling main(), so disable the
+# compile cache at import time (also avoids stale kernels across branches).
+tilelang.disable_cache()
+
 # ========== Coverage declarations (for coverage_check.py) ==========
 COVERAGE_CATEGORY = "Vector"
 COVERAGE_MANIFEST = {}
@@ -31,7 +35,7 @@ def get_precision(dtype_str):
         "bfloat16": (2**-10, 2**-6, None, 0.99),
         "float32": (2**-16, 2**-10, None, 0.99),
     }
-    return fp_table.get(dtype_str, (2**-14, 2**-9, None, 0.99))
+    return fp_table.get(dtype_str, fp_table["float16"])
 
 
 def check_precision(actual, golden, dtype_str):
@@ -238,7 +242,6 @@ def main():
     parser.add_argument("--level", default="all", choices=["all", "l0", "l1", "l2", "boundary"])
     args = parser.parse_args()
 
-    tilelang.disable_cache()
     torch.manual_seed(0)
 
     blocking_ok = True
