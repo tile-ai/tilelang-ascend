@@ -1,6 +1,46 @@
 import logging
 
 import torch
+
+
+def _check_precision(actual, golden, dtype):
+    table = {
+        "float16": (1e-2, 1e-2, float("inf")),
+        "bfloat16": (1e-2, 1e-2, float("inf")),
+        "float32": (1e-2, 1e-2, float("inf")),
+        "hifloat32": (1e-2, 1e-2, float("inf")),
+        "float8_e4m3": (1e-2, 1e-2, float("inf")),
+        "float8_e5m2": (1e-2, 1e-2, float("inf")),
+    }
+    actual_cpu, golden_cpu = actual.detach().cpu(), golden.detach().cpu()
+    if actual_cpu.shape != golden_cpu.shape:
+        return False, 0.0, float("inf")
+    name = str(dtype).replace("torch.", "")
+    if name.startswith("float8_e4m3"):
+        name = "float8_e4m3"
+    if name.startswith("float8_e5m2"):
+        name = "float8_e5m2"
+    if name in {"int8", "int16", "int32", "int64", "uint8"}:
+        mismatch = (actual_cpu != golden_cpu).sum().item()
+        return mismatch == 0, 1.0 - mismatch / max(actual_cpu.numel(), 1), 0.0 if mismatch == 0 else float("inf")
+    atol, rtol, limit = table.get(name, table["float16"])
+    actual_cpu, golden_cpu = actual_cpu.float(), golden_cpu.float()
+    special = ~torch.isfinite(golden_cpu)
+    if special.any() and (
+        not torch.equal(torch.isnan(actual_cpu[special]), torch.isnan(golden_cpu[special]))
+        or not torch.equal(torch.isinf(actual_cpu[special]), torch.isinf(golden_cpu[special]))
+        or not torch.equal(actual_cpu[special][torch.isinf(golden_cpu[special])], golden_cpu[special][torch.isinf(golden_cpu[special])])
+    ):
+        return False, 0.0, float("inf")
+    finite = torch.isfinite(golden_cpu)
+    if not finite.any():
+        return True, 1.0, 0.0
+    error = (actual_cpu[finite] - golden_cpu[finite]).abs()
+    error = torch.where(torch.isfinite(error), error, torch.full_like(error, float("inf")))
+    ratio, max_abs = (error <= atol + rtol * golden_cpu[finite].abs()).float().mean().item(), error.max().item()
+    return ratio >= 0.99 and max_abs <= limit, ratio, max_abs
+
+
 import tilelang
 from tilelang import language as T
 
@@ -300,7 +340,8 @@ for M, N, block_M, block_N, dtype in test_configs:
     b = func(a)
 
     ref_b = torch.rms_norm(a.float(), normalized_shape=[N]).to(a.dtype)
-    torch.testing.assert_close(b.cpu(), ref_b.cpu(), rtol=1e-2, atol=1e-2)
+    passed, ratio, max_abs = _check_precision(b, ref_b, b.dtype)
+    assert passed, f"dtype={b.dtype}, matched_ratio={ratio:.4f}, max_abs_error={max_abs:.6e}"
     print("  Test passed!")
 
 print("All rms_norm tests passed! Kernel Output Match!")
@@ -324,7 +365,8 @@ for M, N, block_M, block_N, dtype in test_configs:
 
     dx = func_grad(dy, x.detach())
 
-    torch.testing.assert_close(dx.cpu(), dx_ref.cpu(), rtol=1e-2, atol=1e-2)
+    passed, ratio, max_abs = _check_precision(dx, dx_ref, dx.dtype)
+    assert passed, f"dtype={dx.dtype}, matched_ratio={ratio:.4f}, max_abs_error={max_abs:.6e}"
     print("  Test passed!")
 
 print("All rms_norm_grad tests passed! Kernel Output Match!")

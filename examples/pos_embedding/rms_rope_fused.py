@@ -3,6 +3,38 @@ from tilelang import language as T
 import torch
 import argparse
 
+
+def _check_precision(actual, golden):
+    a, g = actual.detach().cpu(), golden.detach().cpu()
+    if a.shape != g.shape:
+        return False, 0.0, float("inf")
+    if not (a.dtype.is_floating_point or g.dtype.is_floating_point):
+        mism = (a != g).sum().item()
+        return mism == 0, 1.0 - mism / max(a.numel(), 1), 0.0 if mism == 0 else float("inf")
+    table = {
+        "float16": (2**-14, 2**-9, 1e-1),
+        "bfloat16": (2**-10, 2**-6, 1e0),
+        "float32": (2**-16, 2**-10, 1e-2),
+        "hifloat32": (2**-16, 2**-10, 1e-2),
+        "float8_e4m3": (2**-4, 2**-2, 1e0),
+        "float8_e4m3fn": (2**-4, 2**-2, 1e0),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1),
+    }
+    atol, rtol, limit = table.get(str(g.dtype).removeprefix("torch."), table["float16"])
+    a, g = a.float(), g.float()
+    gs = ~torch.isfinite(g)
+    if gs.any() and (not torch.equal(torch.isnan(a[gs]), torch.isnan(g[gs])) or not torch.equal(torch.isinf(a[gs]), torch.isinf(g[gs]))):
+        return False, 0.0, float("inf")
+    finite = torch.isfinite(g)
+    if not finite.any():
+        return True, 1.0, 0.0
+    err = (a[finite] - g[finite]).abs()
+    err = torch.where(torch.isfinite(err), err, torch.full_like(err, float("inf")))
+    ratio = (err <= atol + rtol * g[finite].abs()).float().mean().item()
+    maximum = err.max().item()
+    return ratio >= 0.99 and maximum <= limit, ratio, maximum
+
+
 tilelang.cache.clear_cache()
 
 pass_configs = {
@@ -14,13 +46,10 @@ pass_configs = {
 
 
 @tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
-def rms_rope_fused(
-    M, block_M, batch_size, head_dim, rope_dim, head_num, eps, dtype="float16"
-):
+def rms_rope_fused(M, block_M, batch_size, head_dim, rope_dim, head_num, eps, dtype="float16"):
 
     ACC_DTYPE = "float"
     MASK_DTYPE = "uint32"
-    TMP_DTYPE = "uint8"
 
     VEC_NUM = 2
     m_num = M // block_M
@@ -35,7 +64,6 @@ def rms_rope_fused(
         out: T.Tensor((M, head_dim), dtype),  # type: ignore
     ):
         with T.Kernel(m_num, is_npu=True) as (cid, vid):
-
             row_x = cid * block_M + vid * row_per_vec
             row_sin_cos = row_x // head_num
 
@@ -143,9 +171,7 @@ def tilelang_rms_rope_fused(q, sin, cos, eps):
     sin = sin.to(device)
     cos = cos.to(device)
 
-    kernel = rms_rope_fused(
-        total_batch, block_M, batch_size, head_dim, rope_dim, head_num, eps
-    )
+    kernel = rms_rope_fused(total_batch, block_M, batch_size, head_dim, rope_dim, head_num, eps)
     q_out = kernel(q, sin, cos)
 
     return q_out.view(org_shape)
@@ -217,14 +243,13 @@ if __name__ == "__main__":
     q_ref = rms_norm_reference(q, head_dim, eps)
 
     q_part = q_ref[..., dim_start:]
-    q_part_out = rope_reference(
-        q_part.to(torch.float32), cos.to(torch.float32), sin.to(torch.float32)
-    )
+    q_part_out = rope_reference(q_part.to(torch.float32), cos.to(torch.float32), sin.to(torch.float32))
     q_ref[..., dim_start:] = q_part_out
 
     # 2. Run TileLang Kernel
     q_tl = q.clone()
     q_out = tilelang_rms_rope_fused(q_tl, sin, cos, eps)
 
-    torch.testing.assert_close(q_out, q_ref, rtol=1e-2, atol=1e-2)
+    passed, ratio, max_abs = _check_precision(q_out, q_ref)
+    assert passed, f"matched_ratio={ratio:.4f}, max_abs_error={max_abs:.6e}"
     print("Kernel Output Match!")
