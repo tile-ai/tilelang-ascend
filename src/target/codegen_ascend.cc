@@ -15,6 +15,8 @@
 #include <tvm/tir/expr.h>
 #include <tvm/tir/stmt_functor.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <sstream>
 #include <string>
@@ -2609,6 +2611,86 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
       auto expr = op->args[3 + i];
       std::string var_name = PrintExpr(expr);
       var_names.push_back(var_name);
+    }
+
+    // ---- Address-alignment compile-time error (hardening) ------------------
+    // AscendC DataCopyPad requires the LocalTensor (UB/L1) start address to be
+    // 32-Byte aligned (the GM side has no alignment constraint).  A copy whose
+    // UB/L1 base offset is a compile-time constant that is NOT a 32-Byte
+    // multiple (in the buffer dtype) is a latent correctness bug: the DMA would
+    // operate on a misaligned on-chip base.  Make the violation explicit at
+    // compile time, naming the buffer, the offset, and the alignment
+    // requirement.  Runtime (non-constant) offsets are let through -- they may
+    // be aligned at run time, so rejecting them would be a false positive.
+    auto tmpl_dtype_bytes = [](const std::string &opn,
+                               size_t dtype_index) -> int {
+      auto lt = opn.find('<');
+      auto gt = opn.find('>', lt == std::string::npos ? lt : lt + 1);
+      if (lt == std::string::npos || gt == std::string::npos)
+        return 0;
+      std::string t = opn.substr(lt + 1, gt - lt - 1);
+      for (size_t i = 0; i < dtype_index; ++i) {
+        auto comma = t.find(',');
+        if (comma == std::string::npos)
+          return 0;
+        t = t.substr(comma + 1);
+      }
+      auto comma = t.find(',');
+      if (comma != std::string::npos)
+        t.resize(comma);
+      t.erase(std::remove_if(t.begin(), t.end(), ::isspace), t.end());
+      if (t == "half" || t == "float16" || t == "bfloat16_t" ||
+          t == "int16_t" || t == "uint16_t" || t == "float16_t")
+        return 2;
+      if (t == "float" || t == "float32" || t == "int" || t == "int32_t" ||
+          t == "uint32_t" || t == "uint")
+        return 4;
+      if (t == "int8_t" || t == "uint8_t" || t == "char" || t == "uchar")
+        return 1;
+      if (t == "int64_t" || t == "uint64_t" || t == "double")
+        return 8;
+      return 0; // unknown dtype -> skip the check (do not false-positive)
+    };
+    // copy_ub_to_ub is instantiated as <dst_dtype, src_dtype, len>.  Its
+    // offsets are expressed in their respective element types, so using the
+    // first template argument for both sides silently accepts a misaligned
+    // narrow source (and can reject an aligned narrow destination).
+    int dst_elem_bytes = tmpl_dtype_bytes(op_name, 0);
+    int src_elem_bytes = op_name.find("copy_ub_to_ub") != std::string::npos
+                             ? tmpl_dtype_bytes(op_name, 1)
+                             : dst_elem_bytes;
+    if (dst_elem_bytes > 0 || src_elem_bytes > 0) {
+      auto check_side_align = [&](const PrimExpr &off_expr,
+                                  const std::string &buf_name, const char *side,
+                                  int elem_bytes) {
+        if (elem_bytes <= 0)
+          return; // unknown dtype -> skip this side, never false-positive
+        const auto *imm = off_expr.as<IntImmNode>();
+        if (imm == nullptr)
+          return; // runtime offset -> let through
+        int64_t byte_off = imm->value * elem_bytes;
+        if (byte_off % 32 != 0) {
+          LOG(FATAL) << "Ascend copy alignment violation: the " << side
+                     << " on-chip (UB/L1) base of \"" << op_name
+                     << "\" has a compile-time-constant element offset "
+                     << imm->value << " in buffer \"" << buf_name
+                     << "\" = " << byte_off
+                     << " bytes, which is not a 32-Byte multiple. "
+                        "LocalTensor start addresses must be 32-Byte aligned; "
+                        "pad the offset or use a 32-Byte-aligned window.";
+        }
+      };
+      bool dst_is_onchip =
+          (op_name.find("copy_gm_to_ub") != std::string::npos) ||
+          (op_name.find("copy_gm_to_l1") != std::string::npos) ||
+          (op_name.find("copy_ub_to_ub") != std::string::npos);
+      bool src_is_onchip =
+          (op_name.find("copy_ub_to_gm") != std::string::npos) ||
+          (op_name.find("copy_ub_to_ub") != std::string::npos);
+      if (dst_is_onchip)
+        check_side_align(dst_offset_expr, dst_var_id, "dst", dst_elem_bytes);
+      if (src_is_onchip)
+        check_side_align(src_offset_expr, src_var_id, "src", src_elem_bytes);
     }
 
     this->PrintIndent();
