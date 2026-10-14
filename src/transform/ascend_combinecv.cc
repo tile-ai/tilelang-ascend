@@ -1130,6 +1130,25 @@ class ContextualResourceResolver final : public StmtMutator {
     return VisitWithSharedReads(op, {op->value});
   }
 
+  Stmt VisitStmt_(const AttrStmtNode *op) final {
+    if (op->attr_key == "resource_scope") {
+      const auto *scope_id = op->value.as<IntImmNode>();
+      if (scope_id != nullptr &&
+          (scope_id->value == 0 || scope_id->value == 1)) {
+        bool scope_is_aiv = scope_id->value == 1;
+        if (scope_is_aiv == is_aiv_) {
+          // An explicit T.Scope is authoritative. Keep its body intact so
+          // scope-dependent intrinsics such as manual cross-core set/wait
+          // flags are not reclassified from neighboring operations. The
+          // outer CombineCV wrapper restores the matching resource scope.
+          return op->body;
+        }
+        return Evaluate(0);
+      }
+    }
+    return StmtMutator::VisitStmt_(op);
+  }
+
   Stmt VisitStmt_(const EvaluateNode *op) final {
     Stmt stmt = StmtMutator::VisitStmt_(op);
     if (!IsContextDependentResource(stmt) || !IsConcreteResource(context_)) {
