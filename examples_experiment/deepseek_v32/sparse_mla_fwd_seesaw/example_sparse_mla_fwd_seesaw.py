@@ -7,13 +7,24 @@ Math:
     Lse = log(sumexp) + max_scaled
 
 Sparsity: ``Indices[b, s, 0, :topk]`` selects top-K KV positions per query.
-    KV is split into nope (512) and pe (64) L1 buffers to avoid L1 slicing
-    in T.gemm_v0 (which requires full L1 buffer inputs).
+    KV is split into nope (512) and pe (64) L1 buffers because T.gemm_v0
+    requires full L1 buffer inputs.
 
     GEMM3 (P@V) runs at M = 2 * block_H (one call per head pair) instead of
-    M = block_H (one call per head): the B operand (kv_nope, 128KB per stage)
-    is reloaded from L1 to L0B once per head pair instead of once per head,
-    halving the dominant L1->L0 traffic.
+    M = block_H (one call per head), halving the kv_nope L1->L0B reloads that
+    dominate memory traffic.
+
+Input contract (enforced by ``sparse_mla_fwd_interface``):
+    1. Q, KV and Indices share the same batch size, and Indices shares Q's
+       seq_len: the kernel indexes all three with the batch id and query
+       position taken from Q's tile map.
+    2. Every query row keeps at least one causally-valid KV slot, i.e. one
+       index <= ``(q_start_index_s + s + 1 - kv_stride) // kv_stride``. A fully
+       masked row has no defined softmax.
+    3. Q is passed unscaled; ``sm_scale`` is applied to the fp32 score
+       accumulator inside the kernel.
+    4. ``seq_len_kv <= 2**24``, the integer range fp32 represents exactly (the
+       causal mask compares indices in fp32).
 
 For the layered test suite (L0/L1/L2/Boundary), see
 ``test_sparse_mla_fwd_seesaw.py`` in the same directory.
@@ -65,7 +76,8 @@ def sparse_mla_fwd(
         kv_group:        number of KV groups (must be 1)
         core_num:        number of AI Cube cores
         q_start_index_s: query start position in global sequence
-        sm_scale:        softmax scale (1/sqrt(dim+tail_dim))
+        sm_scale:        softmax scale applied to S inside the kernel
+                         (default 1/sqrt(dim+tail_dim)); Q must be unscaled
         block_I:         KV block size for attention
         block_H:         query head block size
         hid_tiles:       number of hid_blocks per tile
@@ -274,6 +286,10 @@ def sparse_mla_fwd(
                                     acc_s_ub,
                                 )
 
+                                # S * sm_scale, before the mask so masked lanes
+                                # keep the full -(2**30) offset.
+                                T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
+
                                 T.tile.add(acc_s_ub, acc_s_ub, mask_2d)
 
                                 T.reduce_max(acc_s_ub, m_i, dim=-1)
@@ -402,8 +418,8 @@ def sparse_mla_fwd_interface(q, kv, indices, q_start_index_s, kv_stride=1, sm_sc
     assert indices.ndim == 4, f"indices must be 4D, got ndim={indices.ndim}"
 
     batch, seq_len, heads, dqk = q.shape
-    _, seq_len_kv, hk, _ = kv.shape
-    _, _, _, topk = indices.shape
+    kv_batch, seq_len_kv, hk, _ = kv.shape
+    idx_batch, idx_seq, _, topk = indices.shape
 
     dim = 512
     tail_dim = dqk - dim
@@ -418,34 +434,49 @@ def sparse_mla_fwd_interface(q, kv, indices, q_start_index_s, kv_stride=1, sm_sc
     )
     assert kv_stride >= 1, f"kv_stride must be a positive integer (>= 1), got {kv_stride}"
     assert dim % 16 == 0, f"dim must be 16-aligned, got {dim}"
-    assert indices.shape[0] == batch and indices.shape[1] == seq_len
+    # The kernel indexes KV and SafeIdx with the batch id and query position
+    # taken from Q's tile map, so all three batch dims must match.
+    assert kv_batch == batch, f"kv batch ({kv_batch}) must equal q batch ({batch})"
+    assert idx_batch == batch and idx_seq == seq_len, (
+        f"indices leading dims ({idx_batch}, {idx_seq}) must equal q's (batch, seq_len) = ({batch}, {seq_len})"
+    )
 
-    # Degenerate inputs must be rejected before indices.min()/indices.max():
-    # the reductions raise RuntimeError (not AssertionError) on an empty tensor.
-    assert seq_len >= 1, f"seq_len must be >= 1, got {seq_len} (an empty query sequence is meaningless; the tile map divides by seq_len)"
-    assert seq_len_kv >= 1, f"seq_len_kv must be >= 1, got {seq_len_kv} (indices.clamp(0, seq_len_kv - 1) is illegal when seq_len_kv == 0)"
-    assert q_start_index_s >= 0, (
-        f"q_start_index_s must be >= 0, got {q_start_index_s} (the global query start position must be non-negative)"
+    # Degenerate shapes are rejected before indices.min()/max(), which raise
+    # RuntimeError rather than AssertionError on an empty tensor.
+    assert seq_len >= 1, f"seq_len must be >= 1, got {seq_len} (the tile map divides by seq_len)"
+    assert seq_len_kv >= 1, f"seq_len_kv must be >= 1, got {seq_len_kv} (an empty KV cache has no selectable position)"
+    # The causal mask compares indices in fp32, which represents integers exactly
+    # only up to 2**24; beyond that distinct KV positions collapse.
+    FP32_EXACT_INT_LIMIT = 2**24
+    assert seq_len_kv <= FP32_EXACT_INT_LIMIT, (
+        f"seq_len_kv ({seq_len_kv}) exceeds {FP32_EXACT_INT_LIMIT} (2**24), the largest KV "
+        "length whose indices the fp32 causal-mask compare represents exactly"
     )
-    assert topk >= 1, (
-        f"topk must be >= 1, got {topk} (topk == 0 passes the '0 % 128 == 0' "
-        "BLOCK_I derivation and causes an out-of-bounds prefetch in the "
-        "Vector stage during lowering)"
-    )
+    assert q_start_index_s >= 0, f"q_start_index_s must be >= 0, got {q_start_index_s}"
+    assert topk >= 1, f"topk must be >= 1, got {topk} (topk == 0 causes an out-of-bounds prefetch during lowering)"
     assert indices.shape[2] == 1, f"indices kv_group dim must be 1 (HKV == 1), got {indices.shape[2]}"
     idx_min = int(indices.min())
     assert idx_min >= 0, f"indices contain negative values (min = {idx_min}); legal range is [0, {seq_len_kv})"
     idx_max = int(indices.max())
     assert idx_max < seq_len_kv, (
-        f"indices out of range (max = {idx_max} >= seq_len_kv = {seq_len_kv}); "
-        "this operator requires every index to be a legal KV position in "
-        "[0, seq_len_kv). Out-of-range padding/sentinel values are no longer "
-        "supported: when q_start is late they get clamped to seq_len_kv - 1 "
-        "and silently (and wrongly) counted into the softmax"
+        f"indices out of range (max = {idx_max} >= seq_len_kv = {seq_len_kv}); every index must be a legal KV position in [0, seq_len_kv)"
     )
 
-    if sm_scale is None:
-        sm_scale = (1.0 / (dim + tail_dim)) ** 0.5
+    # Every query row needs at least one causally-valid KV slot; a fully masked
+    # row has no defined softmax.
+    q_positions = torch.arange(seq_len, dtype=torch.int64) + q_start_index_s
+    max_kv_i = torch.div(q_positions + 1 - kv_stride, kv_stride, rounding_mode="floor")
+    # Clamped before the int32 cast so an unbounded q_start_index_s cannot wrap;
+    # semantics are preserved because every index is already < seq_len_kv.
+    max_kv_i_dev = max_kv_i.clamp(max=seq_len_kv - 1).to(torch.int32).to(indices.device)
+    row_has_valid = (indices[:, :, 0, :] <= max_kv_i_dev[None, :, None]).any(dim=-1)
+    all_masked = ~row_has_valid.cpu()
+    assert not bool(all_masked.any()), (
+        f"{int(all_masked.sum())} of {batch * seq_len} query row(s) have every top-K index "
+        f"causally masked (first at b={int(all_masked.nonzero()[0][0])}, "
+        f"s={int(all_masked.nonzero()[0][1])}); every row needs at least one index "
+        "<= (q_start_index_s + s + 1 - kv_stride) // kv_stride"
+    )
 
     CORE_NUM = _get_core_num()
     BLOCK_I = 128 if topk % 128 == 0 else 64
@@ -453,9 +484,6 @@ def sparse_mla_fwd_interface(q, kv, indices, q_start_index_s, kv_stride=1, sm_sc
     HID_TILES = 4 if (heads // BLOCK_H) % 4 == 0 else 2
     DIM_SPLIT = 4 if HID_TILES == 4 else 1
     NUM_STAGES = 2
-
-    q_scaled = q * sm_scale
-    safe_idx = indices.clamp(0, seq_len_kv - 1).to(torch.int32)
 
     kernel = sparse_mla_fwd(
         batch,
@@ -469,7 +497,7 @@ def sparse_mla_fwd_interface(q, kv, indices, q_start_index_s, kv_stride=1, sm_sc
         hk,
         CORE_NUM,
         q_start_index_s,
-        1.0,
+        sm_scale,
         BLOCK_I,
         BLOCK_H,
         HID_TILES,
@@ -480,7 +508,8 @@ def sparse_mla_fwd_interface(q, kv, indices, q_start_index_s, kv_stride=1, sm_sc
     if return_kernel:
         return kernel
 
-    out, lse = kernel(q_scaled, kv, safe_idx)
+    # Q is passed unscaled: the kernel applies sm_scale to the fp32 scores.
+    out, lse = kernel(q, kv, indices)
     return out, lse
 
 
