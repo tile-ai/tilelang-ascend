@@ -50,14 +50,12 @@ def chunk_o(
       - chunk_size / block_DK / block_DV: positive multiples of 16
         (T.tile.compare 256B alignment + packed uint8 masks + L0 fractal layout).
       - DK % block_DK == 0 and DV % block_DV == 0: partial tiles are rejected.
-        They would rely on framework bounds-clamping zero-fill; empirically
-        correct on current tilelang (verified 2026-10-15: DK=112/block_DK=64,
-        DV=112/block_DV=64, block_DK=128>DK=64 all ratio=1.0000 vs golden) but
-        deliberately kept out of the contract — DK is the Cube reduction dim,
-        where non-zero-filled clamping would silently corrupt every dot product.
+        DK is the Cube reduction dim, where a partial tile would make every
+        dot product depend on framework bounds-clamping zero-fill; rejecting
+        keeps that silent-corruption surface out of the contract.
       - accum_dtype / gate_dtype: must be "float32" (AscendC cast path limit).
-      - input_dtype: bfloat16 / float16 verified (suite: L0/L1 + l1_fp16);
-        output_dtype: bfloat16 / float32 verified (suite: L0/L1 + l1_fp32_out).
+      - input_dtype: bfloat16 / float16; output_dtype: bfloat16 / float32
+        (both covered by the test suite).
       - core_num: positive int, default 20 (910B3 AI cores).
       - chunks_per_tile: positive int, default 1.
       - UB capacity: the peak simultaneously-live UB footprint (a function of
@@ -67,9 +65,9 @@ def chunk_o(
         reduce chunk_size / block_DV or set use_g=False.
       - S is expected to be a multiple of chunk_size; `_prepare_inputs`
         zero-pads S. Direct calls with non-divisible S produce correct results
-        via framework bounds clamping + tril causality (garbage tail rows only
-        feed clipped output rows or tril-masked columns); re-verified after the
-        sign-mask removal and covered by suite case l1_s_nondiv_direct.
+        via framework bounds clamping + tril causality (out-of-range tail rows
+        only feed clipped output rows or tril-masked columns); covered by
+        suite case l1_s_nondiv_direct.
     """
     if chunk_size <= 0:
         raise ValueError(f"chunk_size must be a positive multiple of 16, got {chunk_size}.")
@@ -92,11 +90,10 @@ def chunk_o(
     if DK % block_DK != 0 or DV % block_DV != 0:
         raise ValueError(
             f"DK must be divisible by block_DK and DV by block_DV, got DK={DK}, "
-            f"block_DK={block_DK}, DV={DV}, block_DV={block_DV}. Partial tiles would "
-            "rely on framework bounds-clamping zero-fill (empirically correct on "
-            "current tilelang, verified 2026-10-15) but are kept out of the "
-            "contract: DK is the Cube reduction dim, where non-zero-filled "
-            "clamping would silently corrupt every dot product."
+            f"block_DK={block_DK}, DV={DV}, block_DV={block_DV}. DK is the Cube "
+            "reduction dim: a partial DK tile would make every dot product "
+            "depend on framework bounds-clamping zero-fill, so partial tiles "
+            "are rejected instead of relying on clamping behavior."
         )
     if accum_dtype != "float32":
         raise ValueError(
@@ -253,16 +250,15 @@ def chunk_o(
                                 T.tile.exp(G_2d_ub, G_2d_ub)
                                 T.tile.mul(O_ub, O_ub, G_2d_ub)
 
-                                # Causal masking uses the lower-triangular mask only
-                                # (i >= j), matching the declared formula
-                                # A = causal_mask((Q @ K^T) * exp(G_i - G_j)) and the
-                                # repo GDN reference (examples/linear_attention_and_rnn/
-                                # gdn/gdn_chunk_o.py). No sign condition on G_i - G_j:
-                                # an increasing gate keeps its legal causal terms.
-                                # (Real GDN gates are cumulative log-decay, i.e.
-                                # non-increasing, so exp(G_i - G_j) <= 1 there;
-                                # arbitrary gates may overflow fp32 exp only when
-                                # G_i - G_j > ~88, and golden overflows identically.)
+                                # A = tril((Q @ K^T) * exp(G_i - G_j)): the causal
+                                # mask is purely lower-triangular (i >= j), same
+                                # semantics as the repo GDN reference
+                                # (examples/linear_attention_and_rnn/gdn/gdn_chunk_o.py).
+                                # Real GDN gates are cumulative log-decay (non-
+                                # increasing), so exp(G_i - G_j) <= 1 inside the
+                                # kept triangle; arbitrary gates may overflow fp32
+                                # exp only when G_i - G_j > ~88 (the golden
+                                # reference overflows identically).
                                 T.tile.sub(G_col_2d, G_col_2d, G_row_2d)
                                 T.tile.exp(G_col_2d, G_col_2d)
                                 T.tile.mul(A_ub, A_ub, G_col_2d)
@@ -338,7 +334,6 @@ if __name__ == "__main__":
     torch.set_default_device("npu")
 
     B, S, H, DK, DV, cs = 1, 32768, 32, 128, 128, 64
-    scale = DK**-0.5
 
     torch.manual_seed(0)
     Q, K, V, HIDDEN, G, G_T, S_act = _prepare_inputs(B, S, H, DK, DV, cs)

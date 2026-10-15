@@ -82,11 +82,9 @@ def golden_chunk_o(Q, K, V, HIDDEN, G, scale, chunk_size=64, use_g=True, output_
         G_diff = Gp.unsqueeze(-1) - Gp.unsqueeze(-2)  # (B, n_c, H, BS, BS)
         exp_G_diff = torch.exp(G_diff)
 
-        # Causal mask only (i >= j) — NO sign condition on G_diff. A
-        # (G_diff <= 0) term would wrongly zero legal causal entries of an
-        # increasing gate (e.g. G=[0,1]: row 1 / col 0 is legal but
-        # G_1-G_0=1>0), matching the repo GDN reference
-        # (examples/linear_attention_and_rnn/gdn/gdn_chunk_o.py: tril only).
+        # Purely causal mask (i >= j), independent of the gate values — same
+        # semantics as the repo GDN reference
+        # (examples/linear_attention_and_rnn/gdn/gdn_chunk_o.py).
         A = A * exp_G_diff
         A = torch.where(lower_tri, A, torch.zeros_like(A))
     else:
@@ -163,9 +161,8 @@ def check_precision(actual, golden, dtype):
     # from the golden by ~1 ulp at the largest elements, so a fixed absolute
     # limit would reject unavoidable output quantization. Floor the limit at
     # 2 ulp of max|golden| (two independent 16-bit roundings + small internal
-    # error). Genuine errors still fail: they miss the per-element rtol ratio
-    # gate by orders of magnitude (e.g. the removed G_diff<=0 sign-mask
-    # semantics scores matched_ratio ~0.02-0.51 on gated cases).
+    # error). Genuine errors still fail: they violate the per-element rtol
+    # ratio gate across many elements, not just the absolute tail.
     out_eps = {"bfloat16": 2.0**-7, "float16": 2.0**-10}.get(dtype)
     if out_eps is not None:
         max_abs_limit = max(max_abs_limit, 2.0 * out_eps * g[m].abs().max().item())
@@ -185,9 +182,9 @@ def _run_and_check(B, S, H, DK, DV, chunk_size, use_g, block_DK, block_DV, label
     """Compile, run, compare against golden, print tri-state marker.
 
     Any exception (compile failure, runtime error, OOM) is a hard failure at
-    every level — there is deliberately NO exception-as-rejection shortcut
-    here; L2 rejection cases must go through `_run_exception`, which requires
-    the exact exception type AND an actionable message fragment.
+    every level. Expected-rejection (L2) cases go through `_run_exception`
+    instead, which requires the exact exception type AND an actionable
+    message fragment.
     """
     out_dtype_str = out_dtype_str or dtype_str
     scale = DK**-0.5
@@ -321,11 +318,11 @@ def run_l1_tests():
     r = _run_and_check(1, 256, 4, 128, 128, 32, True, 128, 128, "l1_chunk32")
     results.append(("l1_chunk32", r))
 
-    print("\n=== L1: fp16 input/output (docstring dtype contract) ===")
+    print("\n=== L1: fp16 input/output ===")
     r = _run_and_check(1, 256, 4, 128, 128, 64, True, 128, 128, "l1_fp16", dtype_str="float16")
     results.append(("l1_fp16", r))
 
-    print("\n=== L1: fp32 output, bf16 input (docstring dtype contract) ===")
+    print("\n=== L1: fp32 output, bf16 input ===")
     r = _run_and_check(1, 256, 4, 128, 128, 64, True, 128, 128, "l1_fp32_out", out_dtype_str="float32")
     results.append(("l1_fp32_out", r))
 
@@ -348,9 +345,10 @@ def run_l1_tests():
     print("\n=== L1: S=100 direct call, no padding (clamping contract) ===")
     # Kernel sees S=100 with chunk_size=64 (BS=ceildiv=2); rows 100..127 are
     # read out-of-bounds via framework bounds clamping. tril causality keeps
-    # garbage out of valid rows: garbage K/V rows j>=100 only feed A[i,j]
-    # with j<=i (masked for i<100), and garbage Q/G rows only feed clipped
-    # output rows. Reference: golden on zero-padded (S=128) inputs, sliced.
+    # out-of-range data away from valid rows: out-of-range K/V rows j>=100
+    # only feed A[i,j] with j<=i (masked for i<100), and out-of-range Q/G
+    # rows only feed clipped output rows. Reference: golden on zero-padded
+    # (S=128) inputs, sliced.
     torch.manual_seed(5)
     Bc, Sc, Hc, DKc, DVc, CSc, S_pad = 1, 100, 1, 64, 64, 64, 128
     scale_c = DKc**-0.5
@@ -423,7 +421,7 @@ def run_l2_tests():
 
     def _try_dk_nondiv():
         # DK=112 % block_DK=64 != 0: partial tile in the Cube reduction dim
-        # (silently-wrong-result class) -> rejected at entry.
+        # -> rejected at entry.
         chunk_o(1, 64, 1, 112, 64, "bfloat16", "bfloat16", "float32", "float32", 64, True, 64, 64)
 
     def _try_dv_nondiv():
