@@ -21,6 +21,7 @@ import logging
 from tilelang.env import TILELANG_CACHE_DIR, is_cache_enabled
 from tilelang.version import __version__
 from tilelang.utils.target import determine_platform
+from tilelang.utils.file import atomic_copy
 
 KERNEL_PATH = "kernel.cu"
 WRAPPED_KERNEL_PATH = "wrapped_kernel.cu"
@@ -300,7 +301,7 @@ class KernelCache:
         try:
             kernel_lib_path = os.path.join(cache_path, KERNEL_LIB_PATH)
             src_lib_path = kernel.adapter.libpath
-            shutil.copy(src_lib_path, kernel_lib_path)
+            atomic_copy(src_lib_path, kernel_lib_path)
         except Exception as e:
             self.logger.error(f"Error saving kernel library to disk: {e}")
 
