@@ -841,7 +841,7 @@ def run_test_bitwise_lshift(M, N, block_M, block_N, scalarvalue, dtype, target):
     "dtype",
     [
         "int16",
-        pytest.param("int32", marks=pytest.mark.low_priority),
+        "int32",
         pytest.param("uint16", marks=pytest.mark.low_priority),
         pytest.param("uint32", marks=pytest.mark.low_priority),
     ],
