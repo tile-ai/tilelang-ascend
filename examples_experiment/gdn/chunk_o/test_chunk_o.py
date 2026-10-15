@@ -178,40 +178,38 @@ def check_precision(actual, golden, dtype):
 # ---------------------------------------------------------------------------
 
 
-def _run_and_check(B, S, H, DK, DV, chunk_size, use_g, block_DK, block_DV, label, dtype_str="bfloat16", level="L0"):
-    """Compile, run, compare against golden, print tri-state marker."""
+_TORCH_DTYPE = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
+
+
+def _run_and_check(B, S, H, DK, DV, chunk_size, use_g, block_DK, block_DV, label, dtype_str="bfloat16", level="L0", out_dtype_str=None):
+    """Compile, run, compare against golden, print tri-state marker.
+
+    Any exception (compile failure, runtime error, OOM) is a hard failure at
+    every level — there is deliberately NO exception-as-rejection shortcut
+    here; L2 rejection cases must go through `_run_exception`, which requires
+    the exact exception type AND an actionable message fragment.
+    """
+    out_dtype_str = out_dtype_str or dtype_str
     scale = DK**-0.5
     torch.manual_seed(42 + zlib.crc32(label.encode()) % 1000)
-    Q, K, V, HIDDEN, G, G_T, S_act = _prepare_inputs(B, S, H, DK, DV, chunk_size)
+    Q, K, V, HIDDEN, G, G_T, S_act = _prepare_inputs(B, S, H, DK, DV, chunk_size, dtype=_TORCH_DTYPE[dtype_str])
 
     try:
-        kernel = chunk_o(B, S_act, H, DK, DV, dtype_str, dtype_str, "float32", "float32", chunk_size, use_g, block_DK, block_DV)
+        kernel = chunk_o(B, S_act, H, DK, DV, dtype_str, out_dtype_str, "float32", "float32", chunk_size, use_g, block_DK, block_DV)
     except Exception as e:
-        if level == "L2":
-            if isinstance(e, (ValueError, TypeError, RuntimeError, AssertionError, ZeroDivisionError)):
-                print(f"  [{label}] [BOUNDARY_PASS] correctly rejected: {type(e).__name__}")
-                return True
-            print(f"  [{label}] [BOUNDARY_FAIL] unexpected exception: {type(e).__name__}: {e}")
-            return False
         print(f"  [{label}] RUNTIME ERROR: {e}")
         return False
 
-    O_golden = golden_chunk_o(Q, K, V, HIDDEN, G, scale, chunk_size=chunk_size, use_g=use_g)
+    O_golden = golden_chunk_o(Q, K, V, HIDDEN, G, scale, chunk_size=chunk_size, use_g=use_g, output_dtype=_TORCH_DTYPE[out_dtype_str])
 
     try:
         O_actual = kernel(Q, K, V, HIDDEN, G_T)
         torch.npu.synchronize()
     except Exception as e:
-        if level == "L2":
-            if isinstance(e, (ValueError, TypeError, RuntimeError, AssertionError, ZeroDivisionError)):
-                print(f"  [{label}] [BOUNDARY_PASS] correctly rejected: {type(e).__name__}")
-                return True
-            print(f"  [{label}] [BOUNDARY_FAIL] unexpected exception: {type(e).__name__}: {e}")
-            return False
         print(f"  [{label}] RUNTIME ERROR: {e}")
         return False
 
-    passed, ratio, max_abs = check_precision(O_actual, O_golden, dtype_str)
+    passed, ratio, max_abs = check_precision(O_actual, O_golden, out_dtype_str)
 
     if level in ("L0", "L1"):
         tag = "PRECISION_PASS" if passed else "PRECISION_FAIL"
@@ -323,6 +321,14 @@ def run_l1_tests():
     r = _run_and_check(1, 256, 4, 128, 128, 32, True, 128, 128, "l1_chunk32")
     results.append(("l1_chunk32", r))
 
+    print("\n=== L1: fp16 input/output (docstring dtype contract) ===")
+    r = _run_and_check(1, 256, 4, 128, 128, 64, True, 128, 128, "l1_fp16", dtype_str="float16")
+    results.append(("l1_fp16", r))
+
+    print("\n=== L1: fp32 output, bf16 input (docstring dtype contract) ===")
+    r = _run_and_check(1, 256, 4, 128, 128, 64, True, 128, 128, "l1_fp32_out", out_dtype_str="float32")
+    results.append(("l1_fp32_out", r))
+
     print("\n=== L1: Custom scale (scale=0.1, use_g=True) ===")
     torch.manual_seed(42)
     Q, K, V, HIDDEN, G, G_T, S_act = _prepare_inputs(1, 256, 4, 128, 128, 64, scale=0.1)
@@ -338,6 +344,43 @@ def run_l1_tests():
     except Exception as e:
         print(f"  [l1_custom_scale] RUNTIME ERROR: {e}")
         results.append(("l1_custom_scale", False))
+
+    print("\n=== L1: S=100 direct call, no padding (clamping contract) ===")
+    # Kernel sees S=100 with chunk_size=64 (BS=ceildiv=2); rows 100..127 are
+    # read out-of-bounds via framework bounds clamping. tril causality keeps
+    # garbage out of valid rows: garbage K/V rows j>=100 only feed A[i,j]
+    # with j<=i (masked for i<100), and garbage Q/G rows only feed clipped
+    # output rows. Reference: golden on zero-padded (S=128) inputs, sliced.
+    torch.manual_seed(5)
+    Bc, Sc, Hc, DKc, DVc, CSc, S_pad = 1, 100, 1, 64, 64, 64, 128
+    scale_c = DKc**-0.5
+    Qp = torch.zeros(Bc, Hc, S_pad, DKc, dtype=torch.bfloat16, device="cpu")
+    Kp = torch.zeros(Bc, Hc, S_pad, DKc, dtype=torch.bfloat16, device="cpu")
+    Vp = torch.zeros(Bc, Hc, S_pad, DVc, dtype=torch.bfloat16, device="cpu")
+    Qp[:, :, :Sc] = torch.randn(Bc, Hc, Sc, DKc, dtype=torch.bfloat16, device="cpu")
+    Kp[:, :, :Sc] = torch.randn(Bc, Hc, Sc, DKc, dtype=torch.bfloat16, device="cpu")
+    Vp[:, :, :Sc] = (torch.randn(Bc, Hc, Sc, DVc, dtype=torch.float32, device="cpu") * scale_c).to(torch.bfloat16)
+    HIDc = (torch.randn(Bc, Hc, 2, DKc, DVc, dtype=torch.float32, device="cpu") * scale_c).to(torch.bfloat16)
+    Gp = torch.zeros(Bc, S_pad, Hc, dtype=torch.float32, device="cpu")
+    Gp[:, :Sc] = torch.randn(Bc, Sc, Hc, dtype=torch.float32, device="cpu")
+    try:
+        ker_c = chunk_o(Bc, Sc, Hc, DKc, DVc, "bfloat16", "bfloat16", "float32", "float32", CSc, True, 64, 64)
+        O_act_c = ker_c(
+            Qp[:, :, :Sc].contiguous().npu(),
+            Kp[:, :, :Sc].contiguous().npu(),
+            Vp[:, :, :Sc].contiguous().npu(),
+            HIDc.npu(),
+            Gp.permute(0, 2, 1)[:, :, :Sc].contiguous().npu(),
+        )
+        torch.npu.synchronize()
+        O_gold_c = golden_chunk_o(Qp.npu(), Kp.npu(), Vp.npu(), HIDc.npu(), Gp.npu(), scale_c, CSc, True)[:, :Sc]
+        p_c, r_c, m_c = check_precision(O_act_c, O_gold_c, "bfloat16")
+        tag = "PRECISION_PASS" if p_c else "PRECISION_FAIL"
+        print(f"  [l1_s_nondiv_direct] [{tag}] ratio={r_c:.4f} max_abs={m_c:.3e}")
+        results.append(("l1_s_nondiv_direct", p_c))
+    except Exception as e:
+        print(f"  [l1_s_nondiv_direct] RUNTIME ERROR: {e}")
+        results.append(("l1_s_nondiv_direct", False))
 
     all_pass = all(r for _, r in results)
     if all_pass:
@@ -378,6 +421,18 @@ def run_l2_tests():
         # the 196,352 B A2/A3 UB limit -> must be rejected at entry.
         chunk_o(1, 128, 1, 128, 128, "bfloat16", "bfloat16", "float32", "float32", 128, True, 128, 128)
 
+    def _try_dk_nondiv():
+        # DK=112 % block_DK=64 != 0: partial tile in the Cube reduction dim
+        # (silently-wrong-result class) -> rejected at entry.
+        chunk_o(1, 64, 1, 112, 64, "bfloat16", "bfloat16", "float32", "float32", 64, True, 64, 64)
+
+    def _try_dv_nondiv():
+        chunk_o(1, 64, 1, 64, 112, "bfloat16", "bfloat16", "float32", "float32", 64, True, 64, 64)
+
+    def _try_block_dk_gt_dk():
+        # block_DK=128 > DK=64 (64 % 128 != 0) -> rejected at entry.
+        chunk_o(1, 64, 1, 64, 64, "bfloat16", "bfloat16", "float32", "float32", 64, True, 128, 64)
+
     def _try_block_dk_100():
         chunk_o(1, 128, 1, 100, 64, "bfloat16", "bfloat16", "float32", "float32", 64, True, 100, 64)
 
@@ -403,6 +458,9 @@ def run_l2_tests():
         _run_exception("l2_chunk_size_40", _try_chunk_size_40, ValueError, "must be a multiple of 16"),
         _run_exception("l2_chunk_size_8", _try_chunk_size_8, ValueError, "must be a multiple of 16"),
         _run_exception("l2_chunk_size_128_ub", _try_chunk_size_128_ub, ValueError, "UB capacity exceeded"),
+        _run_exception("l2_dk_nondiv", _try_dk_nondiv, ValueError, "must be divisible by block_DK"),
+        _run_exception("l2_dv_nondiv", _try_dv_nondiv, ValueError, "must be divisible by block_DK"),
+        _run_exception("l2_block_dk_gt_dk", _try_block_dk_gt_dk, ValueError, "must be divisible by block_DK"),
         _run_exception("l2_block_dk_100", _try_block_dk_100, ValueError, "multiples of 16"),
         _run_exception("l2_block_dv_100", _try_block_dv_100, ValueError, "multiples of 16"),
         _run_exception("l2_core_num_0", _try_core_num_0, ValueError, "core_num must be a positive integer"),

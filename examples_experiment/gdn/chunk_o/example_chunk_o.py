@@ -49,9 +49,15 @@ def chunk_o(
     Contracts (guarded at entry):
       - chunk_size / block_DK / block_DV: positive multiples of 16
         (T.tile.compare 256B alignment + packed uint8 masks + L0 fractal layout).
+      - DK % block_DK == 0 and DV % block_DV == 0: partial tiles are rejected.
+        They would rely on framework bounds-clamping zero-fill; empirically
+        correct on current tilelang (verified 2026-10-15: DK=112/block_DK=64,
+        DV=112/block_DV=64, block_DK=128>DK=64 all ratio=1.0000 vs golden) but
+        deliberately kept out of the contract — DK is the Cube reduction dim,
+        where non-zero-filled clamping would silently corrupt every dot product.
       - accum_dtype / gate_dtype: must be "float32" (AscendC cast path limit).
-      - input_dtype: bfloat16 / float16 verified; output_dtype: bfloat16 /
-        float32 verified.
+      - input_dtype: bfloat16 / float16 verified (suite: L0/L1 + l1_fp16);
+        output_dtype: bfloat16 / float32 verified (suite: L0/L1 + l1_fp32_out).
       - core_num: positive int, default 20 (910B3 AI cores).
       - chunks_per_tile: positive int, default 1.
       - UB capacity: the peak simultaneously-live UB footprint (a function of
@@ -60,9 +66,10 @@ def chunk_o(
         use_g=True, block_DV=128 needs >= 330,240 bytes and is rejected;
         reduce chunk_size / block_DV or set use_g=False.
       - S is expected to be a multiple of chunk_size; `_prepare_inputs`
-        zero-pads S. Direct calls with non-divisible S currently produce
-        correct results via framework bounds clamping (verified 2026-09-21)
-        but this is not a tested contract — prefer padding.
+        zero-pads S. Direct calls with non-divisible S produce correct results
+        via framework bounds clamping + tril causality (garbage tail rows only
+        feed clipped output rows or tril-masked columns); re-verified after the
+        sign-mask removal and covered by suite case l1_s_nondiv_direct.
     """
     if chunk_size <= 0:
         raise ValueError(f"chunk_size must be a positive multiple of 16, got {chunk_size}.")
@@ -81,6 +88,15 @@ def chunk_o(
             f"block_DV={block_DV}. L0A/L0B/L0C fractal layouts require 16-alignment: "
             "non-multiple block_DK crashes the AICore at runtime, and non-multiple block_DV "
             "silently produces garbage results (no error raised)."
+        )
+    if DK % block_DK != 0 or DV % block_DV != 0:
+        raise ValueError(
+            f"DK must be divisible by block_DK and DV by block_DV, got DK={DK}, "
+            f"block_DK={block_DK}, DV={DV}, block_DV={block_DV}. Partial tiles would "
+            "rely on framework bounds-clamping zero-fill (empirically correct on "
+            "current tilelang, verified 2026-10-15) but are kept out of the "
+            "contract: DK is the Cube reduction dim, where non-zero-filled "
+            "clamping would silently corrupt every dot product."
         )
     if accum_dtype != "float32":
         raise ValueError(
@@ -280,7 +296,7 @@ def chunk_o(
     return kernel
 
 
-def _prepare_inputs(B, S, H, DK, DV, chunk_size, scale=None, device="npu"):
+def _prepare_inputs(B, S, H, DK, DV, chunk_size, scale=None, device="npu", dtype=torch.bfloat16):
     """Prepare test inputs on CPU, then H2D.
 
     Q/K/V/HIDDEN are permuted to BHSD layout for contiguous S-dim DMA.
@@ -288,18 +304,20 @@ def _prepare_inputs(B, S, H, DK, DV, chunk_size, scale=None, device="npu"):
     (zero-pad tail) so the kernel always sees a divisible S. Returns S_padded.
 
     Scale folding: V and HIDDEN are pre-scaled by `scale` on the host (fp32
-    multiply then cast to bf16), so the kernel does not apply scale.
+    multiply then cast to `dtype`), so the kernel does not apply scale.
     If `scale` is None, defaults to DK**-0.5 (standard attention scale).
+    `dtype` sets the Q/K/V/HIDDEN element type (bfloat16 or float16); G/G_T
+    are always float32 (gate_dtype contract).
     """
     BS = chunk_size
     n_c = math.ceil(S / BS)
     S_padded = n_c * BS
     if scale is None:
         scale = DK**-0.5
-    Q = torch.randn(B, S_padded, H, DK, dtype=torch.bfloat16, device="cpu")
-    K = torch.randn(B, S_padded, H, DK, dtype=torch.bfloat16, device="cpu")
-    V = (torch.randn(B, S_padded, H, DV, dtype=torch.float32, device="cpu") * scale).to(torch.bfloat16)
-    HIDDEN = (torch.randn(B, n_c, H, DK, DV, dtype=torch.float32, device="cpu") * scale).to(torch.bfloat16)
+    Q = torch.randn(B, S_padded, H, DK, dtype=dtype, device="cpu")
+    K = torch.randn(B, S_padded, H, DK, dtype=dtype, device="cpu")
+    V = (torch.randn(B, S_padded, H, DV, dtype=torch.float32, device="cpu") * scale).to(dtype)
+    HIDDEN = (torch.randn(B, n_c, H, DK, DV, dtype=torch.float32, device="cpu") * scale).to(dtype)
     G_cpu = torch.randn(B, S_padded, H, dtype=torch.float32, device="cpu")
     if S_padded > S:
         Q[:, S:, :, :] = 0
