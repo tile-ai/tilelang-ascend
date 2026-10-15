@@ -54,6 +54,11 @@ def chunk_o(
         float32 verified.
       - core_num: positive int, default 20 (910B3 AI cores).
       - chunks_per_tile: positive int, default 1.
+      - UB capacity: the peak simultaneously-live UB footprint (a function of
+        chunk_size / block_DV / use_g / input_dtype) must fit the A2/A3 UB
+        limit of 196,352 bytes (ASCEND_A2A3_UB_SIZE). E.g. chunk_size=128 with
+        use_g=True, block_DV=128 needs >= 330,240 bytes and is rejected;
+        reduce chunk_size / block_DV or set use_g=False.
       - S is expected to be a multiple of chunk_size; `_prepare_inputs`
         zero-pads S. Direct calls with non-divisible S currently produce
         correct results via framework bounds clamping (verified 2026-09-21)
@@ -92,6 +97,40 @@ def chunk_o(
         raise ValueError(f"core_num must be a positive integer, got {core_num!r}.")
     if not isinstance(chunks_per_tile, int) or chunks_per_tile < 1:
         raise ValueError(f"chunks_per_tile must be a positive integer, got {chunks_per_tile!r}.")
+    # UB capacity guard. Memory planning (TL_ASCEND_MEMORY_PLANNING) can only
+    # reuse buffers whose lifetimes do not overlap, so the peak simultaneously-
+    # live UB footprint is a hard lower bound no pass can optimize away.
+    # Limit: A2/A3 usable UB = 196,352 B (ASCEND_A2A3_UB_SIZE in
+    # src/target/codegen_ascend.cc); A5 has 262,144 B, so the A2/A3 limit is
+    # the conservative one. Per-phase peaks (S = chunk_size, DVb = block_DV;
+    # accum/gate are fp32-enforced above; tril mask is packed uint8, S*(S//8)):
+    #   init : row_1d + col_1d + row_2d + col_2d + tril
+    #          = 8*S^2 + S*(S//8) + 8*S
+    #   gate : O_ub + A_ub + G_2d + G_col + G_row + G_1d + tril   (use_g only)
+    #          = 8*S*DVb + 12*S^2 + S*(S//8) + 4*S
+    #   comp : A_ub + A_cast + A_delta = (8 + in_bytes)*S^2 (+ tril)
+    #   out  : O_ub + AV_ub = 8*S*DVb (+ tril; covers O_ub + output cast too)
+    # E.g. S=128, DVb=128, use_g=True -> gate peak 330,240 B > 196,352 B:
+    # deterministically overflows UB and must be rejected at entry.
+    _dtype_bytes = {"bfloat16": 2, "float16": 2, "float32": 4}
+    in_bytes = _dtype_bytes.get(input_dtype, 2)
+    ub_capacity = 196352
+    tril_bytes = chunk_size * (chunk_size // 8)
+    peak_init = 8 * chunk_size * chunk_size + tril_bytes + 8 * chunk_size
+    peak_comp = (8 + in_bytes) * chunk_size * chunk_size + tril_bytes
+    peak_out = 8 * chunk_size * block_DV + tril_bytes
+    peak_gate = 8 * chunk_size * block_DV + 12 * chunk_size * chunk_size + tril_bytes + 4 * chunk_size if use_g else 0
+    peak_ub = max(peak_init, peak_comp, peak_out, peak_gate)
+    if peak_ub > ub_capacity:
+        raise ValueError(
+            f"UB capacity exceeded: chunk_size={chunk_size}, block_DV={block_DV}, "
+            f"use_g={use_g}, input_dtype={input_dtype!r} requires >= {peak_ub} "
+            f"simultaneously-live UB bytes, over the {ub_capacity}-byte A2/A3 UB "
+            "limit (ASCEND_A2A3_UB_SIZE). Memory planning cannot reuse "
+            "simultaneously-live buffers; with use_g the gate phase alone needs "
+            "8*chunk_size*block_DV + 12*chunk_size^2 bytes (O_ub + A_ub + G_2d + "
+            "G_col + G_row). Reduce chunk_size or block_DV, or set use_g=False."
+        )
     block_S = chunk_size
     BS = (S + block_S - 1) // block_S
     n_chunk_groups = (BS + chunks_per_tile - 1) // chunks_per_tile
@@ -140,7 +179,6 @@ def chunk_o(
             G_2d_ub = T.alloc_ub((block_S, block_DV), gate_dtype)
             G_col_2d = T.alloc_ub((block_S, block_S), gate_dtype)
             G_row_2d = T.alloc_ub((block_S, block_S), gate_dtype)
-            G_diff_mask_2d = T.alloc_ub((block_S, block_S // 8), "uint8")
 
             row_1d = T.alloc_ub((block_S,), accum_dtype)
             col_1d = T.alloc_ub((block_S,), accum_dtype)
@@ -199,13 +237,20 @@ def chunk_o(
                                 T.tile.exp(G_2d_ub, G_2d_ub)
                                 T.tile.mul(O_ub, O_ub, G_2d_ub)
 
-                                # compare before the in-place exp overwrites G_col_2d
+                                # Causal masking uses the lower-triangular mask only
+                                # (i >= j), matching the declared formula
+                                # A = causal_mask((Q @ K^T) * exp(G_i - G_j)) and the
+                                # repo GDN reference (examples/linear_attention_and_rnn/
+                                # gdn/gdn_chunk_o.py). No sign condition on G_i - G_j:
+                                # an increasing gate keeps its legal causal terms.
+                                # (Real GDN gates are cumulative log-decay, i.e.
+                                # non-increasing, so exp(G_i - G_j) <= 1 there;
+                                # arbitrary gates may overflow fp32 exp only when
+                                # G_i - G_j > ~88, and golden overflows identically.)
                                 T.tile.sub(G_col_2d, G_col_2d, G_row_2d)
-                                T.tile.compare(G_diff_mask_2d, G_col_2d, 0.0, "LE")
                                 T.tile.exp(G_col_2d, G_col_2d)
                                 T.tile.mul(A_ub, A_ub, G_col_2d)
-                                T.tile.bitwise_and(G_diff_mask_2d, G_diff_mask_2d, tril_mask)
-                                T.tile.select(A_ub, G_diff_mask_2d, A_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
+                                T.tile.select(A_ub, tril_mask, A_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
                             else:
                                 T.tile.select(A_ub, tril_mask, A_ub, 0.0, "VSEL_TENSOR_SCALAR_MODE")
 
