@@ -39,7 +39,7 @@ def golden_chunk_o(Q, K, V, HIDDEN, G, scale, chunk_size=64, use_g=True, output_
     Per chunk (BS = chunk_size):
       1. O = Q @ HIDDEN  (HIDDEN already includes scale)
       2. A = Q @ K^T
-      3. If use_g: O *= exp(G[i]); A = A*exp(G[i]-G[j]) if (G_diff<=0 and i>=j) else 0
+      3. If use_g: O *= exp(G[i]); A = A*exp(G[i]-G[j]) if i>=j else 0
       4. If not use_g: A = 0 if i<j (lower triangle, i>=j kept)
       5. O += A @ V    (V already includes scale)
     """
@@ -82,9 +82,13 @@ def golden_chunk_o(Q, K, V, HIDDEN, G, scale, chunk_size=64, use_g=True, output_
         G_diff = Gp.unsqueeze(-1) - Gp.unsqueeze(-2)  # (B, n_c, H, BS, BS)
         exp_G_diff = torch.exp(G_diff)
 
-        mask = (G_diff <= 0) & lower_tri
+        # Causal mask only (i >= j) — NO sign condition on G_diff. A
+        # (G_diff <= 0) term would wrongly zero legal causal entries of an
+        # increasing gate (e.g. G=[0,1]: row 1 / col 0 is legal but
+        # G_1-G_0=1>0), matching the repo GDN reference
+        # (examples/linear_attention_and_rnn/gdn/gdn_chunk_o.py: tril only).
         A = A * exp_G_diff
-        A = torch.where(mask, A, torch.zeros_like(A))
+        A = torch.where(lower_tri, A, torch.zeros_like(A))
     else:
         A = torch.where(lower_tri, A, torch.zeros_like(A))
 
@@ -124,7 +128,9 @@ def get_precision(dtype):
 def check_precision(actual, golden, dtype):
     """Precision check: return (passed, matched_ratio, max_abs_error).
 
-    Floating-point dual-gate: matched_ratio >= required AND max_abs_error <= max_abs_error_limit.
+    Floating-point dual-gate: matched_ratio >= required AND max_abs_error <=
+    effective max_abs_error_limit. The absolute limit is magnitude-aware for
+    16-bit outputs: floored at 2 ulp of max|golden| (see below).
     Integer: element-wise exact equality. inf/nan positions are structurally compared
     and excluded from numeric tolerance.
     """
@@ -150,6 +156,19 @@ def check_precision(actual, golden, dtype):
     abs_err = (a[m] - g[m]).abs()  # actual inf/nan => abs_err=inf => element-wise fail
     matched_ratio = (abs_err <= (atol + rtol * g[m].abs())).float().mean().item()
     max_abs_error = abs_err.max().item()
+    # Magnitude-aware absolute gate: a 16-bit output lives on a quantization
+    # grid whose ulp grows with magnitude (bf16: ulp(x) = eps * |x|, eps=2^-7).
+    # When the formula's own dynamic range is large (e.g. exp(G_i - G_j) >> 1
+    # amplification under random gates), even a bit-perfect kernel differs
+    # from the golden by ~1 ulp at the largest elements, so a fixed absolute
+    # limit would reject unavoidable output quantization. Floor the limit at
+    # 2 ulp of max|golden| (two independent 16-bit roundings + small internal
+    # error). Genuine errors still fail: they miss the per-element rtol ratio
+    # gate by orders of magnitude (e.g. the removed G_diff<=0 sign-mask
+    # semantics scores matched_ratio ~0.02-0.51 on gated cases).
+    out_eps = {"bfloat16": 2.0**-7, "float16": 2.0**-10}.get(dtype)
+    if out_eps is not None:
+        max_abs_limit = max(max_abs_limit, 2.0 * out_eps * g[m].abs().max().item())
     passed = (matched_ratio >= required_ratio) and (max_abs_error <= max_abs_limit)
     return passed, matched_ratio, max_abs_error
 
@@ -353,6 +372,12 @@ def run_l2_tests():
     def _try_chunk_size_8():
         chunk_o(1, 64, 1, 64, 64, "bfloat16", "bfloat16", "float32", "float32", 8, True, 64, 64)
 
+    def _try_chunk_size_128_ub():
+        # 16-aligned and legal-looking, but the gated peak UB footprint
+        # (8*128*128 + 12*128^2 + ... = 330,240 B) deterministically exceeds
+        # the 196,352 B A2/A3 UB limit -> must be rejected at entry.
+        chunk_o(1, 128, 1, 128, 128, "bfloat16", "bfloat16", "float32", "float32", 128, True, 128, 128)
+
     def _try_block_dk_100():
         chunk_o(1, 128, 1, 100, 64, "bfloat16", "bfloat16", "float32", "float32", 64, True, 100, 64)
 
@@ -377,6 +402,7 @@ def run_l2_tests():
         _run_exception("l2_chunk_size_33", _try_chunk_size_33, ValueError, "must be a multiple of 16"),
         _run_exception("l2_chunk_size_40", _try_chunk_size_40, ValueError, "must be a multiple of 16"),
         _run_exception("l2_chunk_size_8", _try_chunk_size_8, ValueError, "must be a multiple of 16"),
+        _run_exception("l2_chunk_size_128_ub", _try_chunk_size_128_ub, ValueError, "UB capacity exceeded"),
         _run_exception("l2_block_dk_100", _try_block_dk_100, ValueError, "multiples of 16"),
         _run_exception("l2_block_dv_100", _try_block_dv_100, ValueError, "multiples of 16"),
         _run_exception("l2_core_num_0", _try_core_num_0, ValueError, "core_num must be a positive integer"),
