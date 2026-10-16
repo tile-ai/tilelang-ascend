@@ -36,7 +36,7 @@ y      = situ_a * up'
 | 流水 | 显式 flag 双缓冲：第 mm+1 行块的 MTE2 搬入与第 mm 行块的向量计算、第 mm-1 行块的 MTE3 写回重叠（`set_flag`/`wait_flag`，`elementwise_add_pipeline.py` 模式） | 不开启任何自动同步 pass（自动屏障会串行化循环并与手动 flag 冲突） |
 | shape 策略 | `M`/`N` 默认 symbolic（一次编译服务任意 shape）；传具体 int 得到静态特化（dispatch 更轻） | 兼顾 serving 通用性与固定 shape 部署 |
 | 计算精度 | fp32 中间计算，bf16 回写 `CAST_RINT`（fp16 用 `CAST_NONE`） | 与官方实现内部精度策略一致；非 A2 平台 bf16 必须 CAST_RINT |
-| tanh | `2 * sigmoid(2x) - 1` | 无 tanh tile 原语；数值稳定（大输入正确饱和，不像 exp 差商形式产生 `inf/inf = NaN`） |
+| tanh | `2 * sigmoid(2x) - 1`，\|g\|<1e-3 时混合线性逼近 `tanh(z)≈z` | 无 tanh tile 原语；大输入正确饱和（不产生 `inf/inf = NaN`），小输入经混合保分辨率（纯 sigmoid 组合在 \|z\|<1.2e-7 时量化为 0） |
 | 尾块处理 | ceildiv 网格 + 标量起点全 tile `T.copy`；前端自动把拷贝范围 clamp 到张量边界并对读入补零 | 无 host 侧 padding / 裁剪 |
 | 特化 | (dtype, beta, linear_beta > 0, activate_left) 编译期特化 | `linear_beta <= 0` 分支不含有界 tanh 计算；beta == 1 折叠标量乘 |
 
@@ -65,10 +65,10 @@ shape 采用 LLM FFN 剖面（cut = 2 x hidden）。协议同第 2 节。
 
 | shape | dtype | tilelang | 官方 kernel | 加速比 | tilelang 带宽 | 未融合 torch |
 |---|---|---|---|---|---|---|
-| (4096, 18432) | bf16 | 352.5 us | 727.6 us | 2.06x | 643 GB/s | 1421 us |
-| (8192, 18432) | bf16 | 678.5 us | 1444.0 us | 2.13x | 668 GB/s | 2746 us |
-| (4096, 18432) | fp16 | 348.1 us | 723.1 us | 2.08x | 651 GB/s | 1402 us |
-| (4096, 18432) | fp32 | 520.1 us | 816.6 us | 1.57x | 871 GB/s | 2158 us |
+| (4096, 18432) | bf16 | 419.3 us | 727.6 us | 1.73x | 540 GB/s | 1410 us |
+| (8192, 18432) | bf16 | 804.7 us | 1444.0 us | 1.79x | 563 GB/s | 2765 us |
+| (4096, 18432) | fp16 | 413.1 us | 723.1 us | 1.75x | 548 GB/s | 1393 us |
+| (4096, 18432) | fp32 | 512.3 us | 816.6 us | 1.59x | 884 GB/s | 2165 us |
 
 "未融合 torch" = `chunk + tanh + sigmoid + mul` 的独立 torch 算子组合
 （本算子所替代的融合前形态）。

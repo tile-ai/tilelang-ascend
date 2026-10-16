@@ -37,7 +37,7 @@ y      = situ_a * up'
 | Pipeline | explicit flag-based double buffering: chunk mm+1's MTE2 load overlaps chunk mm's vector math and chunk mm-1's MTE3 store (`set_flag`/`wait_flag`, `elementwise_add_pipeline.py` pattern) | no auto-sync passes are enabled (auto barriers serialize the loop and interfere with manual flags) |
 | Shape policy | `M`/`N` are symbolic by default (one compile serves any shape); concrete ints give a static specialization with lighter dispatch | serving-friendly while allowing fixed-shape deployments |
 | Math | fp32 intermediate compute, `CAST_RINT` write-back for bf16 (`CAST_NONE` for fp16) | matches the official op's internal precision strategy; CAST_RINT is required for bf16 on non-A2 SoCs |
-| tanh | `2 * sigmoid(2x) - 1` | no tanh tile primitive; numerically stable (saturates instead of producing `inf/inf = NaN` for large inputs, unlike the exp-difference form) |
+| tanh | `2 * sigmoid(2x) - 1`, blended with the linear `tanh(z) ~= z` for \|g\| < 1e-3 | no tanh tile primitive; saturates correctly for large inputs (no `inf/inf = NaN`), and the blend preserves resolution for tiny inputs (the pure sigmoid composition quantizes \|z\| < 1.2e-7 to 0) |
 | Tail handling | ceildiv grid + full-tile `T.copy` with scalar start; the frontend clamps copy extents to tensor bounds and zero-pads reads | no host-side padding or cropping |
 | Specialization | compile-time on (dtype, beta, linear_beta > 0, activate_left) | the `linear_beta <= 0` branch computes no bounded-tanh ops; `beta == 1` folds scalar multiplies |
 
@@ -66,10 +66,10 @@ Shapes use the LLM FFN profile (cut = 2 x hidden). Protocol as in Section 2.
 
 | Shape | dtype | tilelang | official kernel | speedup | tilelang BW | unfused torch |
 |---|---|---|---|---|---|---|
-| (4096, 18432) | bf16 | 352.5 us | 727.6 us | 2.06x | 643 GB/s | 1421 us |
-| (8192, 18432) | bf16 | 678.5 us | 1444.0 us | 2.13x | 668 GB/s | 2746 us |
-| (4096, 18432) | fp16 | 348.1 us | 723.1 us | 2.08x | 651 GB/s | 1402 us |
-| (4096, 18432) | fp32 | 520.1 us | 816.6 us | 1.57x | 871 GB/s | 2158 us |
+| (4096, 18432) | bf16 | 419.3 us | 727.6 us | 1.73x | 540 GB/s | 1410 us |
+| (8192, 18432) | bf16 | 804.7 us | 1444.0 us | 1.79x | 563 GB/s | 2765 us |
+| (4096, 18432) | fp16 | 413.1 us | 723.1 us | 1.75x | 548 GB/s | 1393 us |
+| (4096, 18432) | fp32 | 512.3 us | 816.6 us | 1.59x | 884 GB/s | 2165 us |
 
 "unfused torch" = `chunk + tanh + sigmoid + mul` as separate torch ops
 (the pre-fusion form this operator replaces).

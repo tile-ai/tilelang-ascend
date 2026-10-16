@@ -7,8 +7,11 @@ axis and computes:
     up'    = linear_beta * tanh(up / linear_beta)   (linear_beta > 0, else up)
     y      = situ_a * up'
 
-Output shape is (M, N // 2). tanh is composed via the numerically stable
-identity tanh(t) = 2 * sigmoid(2t) - 1 (no T.tile.tanh primitive).
+Output shape is (M, N // 2). tanh is composed via the identity
+tanh(t) = 2 * sigmoid(2t) - 1 (no T.tile.tanh primitive), blended with the
+linear approximation tanh(t) ~= t for |t| < TANH_EPS: the sigmoid composition
+alone quantizes tiny arguments to 0 (fp32 ulp at 0.5), losing e.g.
+tanh(1e-8) entirely; the blend keeps the full fp32 input resolution.
 Reference: CANN ops-nn activation/situ_glu (aclnnSituGlu).
 See benchmark.md / benchmark_zh.md for architecture and measured performance.
 
@@ -33,6 +36,10 @@ from tilelang import language as T
 
 VEC_NUM = 2
 STAGES = 2
+# Below this |argument|, tanh(z) ~= z is exact to fp32 precision (error z^3/3
+# <= 3.3e-10); above it, the sigmoid composition's quantization error (< 6e-8
+# absolute) is under the mixed-tolerance rtol for all dtypes.
+TANH_EPS = 1e-3
 
 
 @tilelang.jit(out_idx=[1])
@@ -89,6 +96,8 @@ def situ_glu(block_M, block_N, beta, linear_beta, activate_left, dtype="float", 
                 y_f = T.alloc_ub((rows_per_vec, block_N), acc_dtype)
                 t_ub = T.alloc_ub((rows_per_vec, block_N), acc_dtype)
                 s_ub = T.alloc_ub((rows_per_vec, block_N), acc_dtype)
+                blend_ub = T.alloc_ub((rows_per_vec, block_N), acc_dtype)
+                mask_ub = T.alloc_ub((rows_per_vec, (block_N + 7) // 8), "uint8")
 
                 with T.Scope("V"):
                     T.set_flag("mte3", "mte2", 0)
@@ -120,6 +129,12 @@ def situ_glu(block_M, block_N, beta, linear_beta, activate_left, dtype="float", 
                         T.tile.sigmoid(t_ub, t_ub)
                         T.tile.mul(t_ub, t_ub, 2.0)
                         T.tile.sub(t_ub, t_ub, 1.0)
+                        # small-argument blend: for |g| < eps*beta the composed tanh
+                        # quantizes to 0 (fp32 ulp at sigmoid 0.5); tanh(g/beta) ~= g/beta
+                        T.tile.abs(blend_ub, gate_f)
+                        T.tile.compare(mask_ub, blend_ub, TANH_EPS * beta, "LT")
+                        T.tile.mul(blend_ub, gate_f, 1.0 / beta)
+                        T.tile.select(t_ub, mask_ub, blend_ub, t_ub, "VSEL_TENSOR_TENSOR_MODE")
                         T.tile.sigmoid(s_ub, gate_f)
                         T.tile.mul(t_ub, t_ub, s_ub)
                         if beta != 1.0:
@@ -131,6 +146,11 @@ def situ_glu(block_M, block_N, beta, linear_beta, activate_left, dtype="float", 
                             T.tile.sigmoid(s_ub, s_ub)
                             T.tile.mul(s_ub, s_ub, 2.0)
                             T.tile.sub(s_ub, s_ub, 1.0)
+                            # same small-argument blend on the up path
+                            T.tile.abs(blend_ub, up_f)
+                            T.tile.compare(mask_ub, blend_ub, TANH_EPS * linear_beta, "LT")
+                            T.tile.mul(blend_ub, up_f, 1.0 / linear_beta)
+                            T.tile.select(s_ub, mask_ub, blend_ub, s_ub, "VSEL_TENSOR_TENSOR_MODE")
                             T.tile.mul(s_ub, s_ub, linear_beta)
                             T.tile.mul(y_f, t_ub, s_ub)
                         else:
@@ -158,6 +178,8 @@ def situ_glu(block_M, block_N, beta, linear_beta, activate_left, dtype="float", 
                 y_io = T.alloc_ub((STAGES, rows_per_vec, block_N), acc_dtype)
                 t_ub = T.alloc_ub((rows_per_vec, block_N), acc_dtype)
                 s_ub = T.alloc_ub((rows_per_vec, block_N), acc_dtype)
+                blend_ub = T.alloc_ub((rows_per_vec, block_N), acc_dtype)
+                mask_ub = T.alloc_ub((rows_per_vec, (block_N + 7) // 8), "uint8")
 
                 with T.Scope("V"):
                     T.set_flag("mte3", "mte2", 0)
@@ -186,6 +208,12 @@ def situ_glu(block_M, block_N, beta, linear_beta, activate_left, dtype="float", 
                         T.tile.sigmoid(t_ub, t_ub)
                         T.tile.mul(t_ub, t_ub, 2.0)
                         T.tile.sub(t_ub, t_ub, 1.0)
+                        # small-argument blend: for |g| < eps*beta the composed tanh
+                        # quantizes to 0 (fp32 ulp at sigmoid 0.5); tanh(g/beta) ~= g/beta
+                        T.tile.abs(blend_ub, gate_io[cur, :, :])
+                        T.tile.compare(mask_ub, blend_ub, TANH_EPS * beta, "LT")
+                        T.tile.mul(blend_ub, gate_io[cur, :, :], 1.0 / beta)
+                        T.tile.select(t_ub, mask_ub, blend_ub, t_ub, "VSEL_TENSOR_TENSOR_MODE")
                         T.tile.sigmoid(s_ub, gate_io[cur, :, :])
                         T.tile.mul(t_ub, t_ub, s_ub)
                         if beta != 1.0:
@@ -197,6 +225,11 @@ def situ_glu(block_M, block_N, beta, linear_beta, activate_left, dtype="float", 
                             T.tile.sigmoid(s_ub, s_ub)
                             T.tile.mul(s_ub, s_ub, 2.0)
                             T.tile.sub(s_ub, s_ub, 1.0)
+                            # same small-argument blend on the up path
+                            T.tile.abs(blend_ub, up_io[cur, :, :])
+                            T.tile.compare(mask_ub, blend_ub, TANH_EPS * linear_beta, "LT")
+                            T.tile.mul(blend_ub, up_io[cur, :, :], 1.0 / linear_beta)
+                            T.tile.select(s_ub, mask_ub, blend_ub, s_ub, "VSEL_TENSOR_TENSOR_MODE")
                             T.tile.mul(s_ub, s_ub, linear_beta)
                             T.tile.mul(y_io[cur, :, :], t_ub, s_ub)
                         else:

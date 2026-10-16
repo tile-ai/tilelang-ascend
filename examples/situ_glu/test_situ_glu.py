@@ -2,11 +2,11 @@
 
 Golden references and test data are prepared entirely on CPU; the runtime
 path is H2D -> TileLang kernel -> D2H only, with no aclnn dependency.
-Layer conventions:
-- L0/L1 precision cases (blocking, part of the exit code):
-  [PRECISION_PASS] / [PRECISION_FAIL]
+Layer conventions (all four layers assert their guarantees so the pytest
+gate fails for real -- pytest ignores boolean return values):
+- L0/L1 precision cases: [PRECISION_PASS] / [PRECISION_FAIL]
 - L2 negative cases (invalid inputs must be rejected) and Boundary
-  special-value cases (non-blocking): [BOUNDARY_PASS] / [BOUNDARY_WARN]
+  special-value cases: [BOUNDARY_PASS] / [BOUNDARY_WARN]
 
 Coverage annotation: L1/L2/Boundary cases carry D-* dimension tags;
 COVERAGE_CATEGORY / COVERAGE_MANIFEST / COVERAGE_NA feed the coverage gate.
@@ -60,9 +60,9 @@ def golden_situ_glu(x, dim=-1, beta=1.0, linear_beta=0.0, activate_left=True):
     gate, up = torch.split(x, h, dim=dim)
     if not activate_left:
         gate, up = up, gate
-    gate = gate.float()
+    gate = gate.double()
     situ_a = beta * torch.tanh(gate / beta) * torch.sigmoid(gate)
-    up = up.float()
+    up = up.double()
     if linear_beta > 0:
         up = linear_beta * torch.tanh(up / linear_beta)
     return (situ_a * up).to(x.dtype)
@@ -138,6 +138,23 @@ def make_special(shape, torch_dtype, specials):
     for frac, val in specials:
         flat[int(frac * (n - 1))] = val
     return flat.reshape(shape).to(torch_dtype)
+
+
+def make_paired(shape, torch_dtype, pairs):
+    """Build an input with explicit (gate, up) values at the same output positions.
+
+    Pairs cycle across ALL rows (gate at column 0, up at column half, so the
+    two values multiply into the same output element). Filling every row keeps
+    the number of affected elements above the matched_ratio gate (>= 1% of the
+    tensor), so a regression cannot hide behind the 99% pass ratio.
+    """
+    x = torch.randn(*shape)
+    half = shape[-1] // 2
+    for r in range(shape[0]):
+        gv, uv = pairs[r % len(pairs)]
+        x[r, 0] = gv
+        x[r, half] = uv
+    return x.to(torch_dtype)
 
 
 # ========== Host adapter: metadata-only validation + merge view + kernel call ==========
@@ -237,6 +254,7 @@ def test_situ_glu_l0():
         except Exception as e:  # noqa: BLE001
             print(f"[PRECISION_FAIL] {name} shape={tuple(shape)}: {e}")
             ok = False
+    assert ok, "L0 precision tests failed"
     return ok
 
 
@@ -322,6 +340,7 @@ def test_situ_glu_l1():
         except Exception as e:  # noqa: BLE001
             print(f"[PRECISION_FAIL] {name} shape={tuple(shape)}: {e}")
             ok = False
+    assert ok, "L1 functional tests failed"
     return ok
 
 
@@ -336,14 +355,15 @@ def _run_exception(name, fn):
         fn()
     except Exception as e:  # noqa: BLE001
         print(f"[BOUNDARY_PASS] l2 {name}: rejected as expected ({type(e).__name__}: {e})")
-        return
+        return True
     print(f"[BOUNDARY_WARN] l2 {name}: invalid input silently accepted")
+    return False
 
 
 def test_situ_glu_l2():
     """L2 negative tests: unsupported dtypes / invalid shapes / invalid
-    parameters must be rejected. Correct raise = PASS, silent = WARN.
-    Report only.
+    parameters must be rejected. Correct raise = PASS; a silently accepted
+    invalid input fails the test.
     """
     # (name, tags, fn)
     l2_cases = [
@@ -357,8 +377,11 @@ def test_situ_glu_l2():
         ("rank_zero_scalar", [], lambda: run_situ_glu(torch.tensor(3.0).npu())),
         ("rank_nine", [], lambda: run_situ_glu(torch.randn(2, 2, 2, 2, 2, 2, 2, 2, 4).npu())),
     ]
+    ok = True
     for name, _tags, fn in l2_cases:
-        _run_exception(name, fn)
+        ok &= _run_exception(name, fn)
+    assert ok, "L2 negative tests failed (some invalid input was silently accepted)"
+    return ok
 
 
 # ========== Boundary: special values (legal extremes, precision-checked, non-blocking) ==========
@@ -367,7 +390,7 @@ def _run_boundary(name, shape, torch_dtype, tags, make_fn, **kwargs):
 
     Checked against the same precision standard as L0/L1 (check_precision,
     per-dtype thresholds): pass -> [BOUNDARY_PASS]; fail or raise ->
-    [BOUNDARY_WARN]. Non-blocking.
+    [BOUNDARY_WARN] and the failure propagates to the caller.
     """
     try:
         x_cpu = make_fn()
@@ -381,8 +404,10 @@ def _run_boundary(name, shape, torch_dtype, tags, make_fn, **kwargs):
             f"dtype={TORCH_TO_TL_DTYPE[torch_dtype]} matched_ratio={ratio:.4f} "
             f"max_abs={max_abs:.3e}"
         )
+        return passed
     except Exception as e:  # noqa: BLE001
         print(f"[BOUNDARY_WARN] boundary {name} shape={tuple(shape)}: {e}")
+        return False
 
 
 def test_situ_glu_boundary():
@@ -444,9 +469,43 @@ def test_situ_glu_boundary():
             {},
         ),
         ("empty_rows", (0, 128), torch.float32, [], lambda: torch.randn(0, 128), {}),
+        # Targeted regression for the tanh small-argument blend: the sigmoid
+        # composition alone quantizes tanh(z) to 0 for |z| < ~1.2e-7 (fp32 ulp
+        # at 0.5), which a huge up value amplifies into a visible error
+        # (gate=1e-8, up=1e8 would yield 0 instead of ~0.5).
+        (
+            "tiny_gate_huge_up",
+            (64, 128),
+            torch.float32,
+            ["D-SPECIAL-DBOUND"],
+            lambda: make_paired((64, 128), torch.float32, [(1e-8, 1e8), (-1e-8, -1e8), (1e-8, -1e8), (5e-8, 1e8), (1e-9, 3.4e38)]),
+            {},
+        ),
+        (
+            "tiny_gate_huge_up_bf16",
+            (64, 128),
+            torch.bfloat16,
+            ["D-SPECIAL-DBOUND"],
+            lambda: make_paired((64, 128), torch.bfloat16, [(1e-8, 1e8), (-1e-8, -1e8)]),
+            {},
+        ),
+        # Up-path blend: up/linear_beta inside the dead zone (|up/lb| < ~2.5e-8
+        # zeroes the composed tanh). beta=100 amplifies situ_a so the y error
+        # (~2e-4) clearly exceeds the fp32 atol.
+        (
+            "tiny_up_bounded",
+            (64, 128),
+            torch.float32,
+            ["D-SPECIAL-DBOUND"],
+            lambda: make_paired((64, 128), torch.float32, [(10.0, 2e-5), (10.0, -2e-5)]),
+            {"beta": 100.0, "linear_beta": 1000.0},
+        ),
     ]
+    ok = True
     for name, shape, torch_dtype, _tags, make_fn, kwargs in boundary_cases:
-        _run_boundary(name, shape, torch_dtype, _tags, make_fn, **kwargs)
+        ok &= _run_boundary(name, shape, torch_dtype, _tags, make_fn, **kwargs)
+    assert ok, "Boundary tests failed"
+    return ok
 
 
 # ========== Main: --level dispatch + exit code ==========
@@ -458,15 +517,19 @@ def main():
     tilelang.disable_cache()  # disable the compile cache to avoid stale artifacts
     torch.manual_seed(0)
 
-    blocking_ok = True  # only L0/L1 affect the blocking verdict
-    if args.level in ("l0", "all"):
-        blocking_ok &= test_situ_glu_l0()
-    if args.level in ("l1", "all"):
-        blocking_ok &= test_situ_glu_l1()
-    if args.level in ("l2", "all"):
-        test_situ_glu_l2()  # L2 negative: reject = PASS, silent = WARN, non-blocking
-    if args.level in ("boundary", "all"):
-        test_situ_glu_boundary()  # Boundary precision: fail = WARN, non-blocking
+    blocking_ok = True  # every executed layer asserts its guarantees
+    try:
+        if args.level in ("l0", "all"):
+            blocking_ok &= test_situ_glu_l0()
+        if args.level in ("l1", "all"):
+            blocking_ok &= test_situ_glu_l1()
+        if args.level in ("l2", "all"):
+            blocking_ok &= test_situ_glu_l2()
+        if args.level in ("boundary", "all"):
+            blocking_ok &= test_situ_glu_boundary()
+    except AssertionError as exc:
+        print(f"Test Failed: {exc}")
+        sys.exit(1)
 
     if blocking_ok:
         print("Test Passed!")  # all L0/L1 passed (exit code + this line are the verdict)
