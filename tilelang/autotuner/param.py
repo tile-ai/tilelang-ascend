@@ -12,9 +12,9 @@ from pathlib import Path
 
 from tilelang.jit import JITKernel
 from tilelang.utils.target import determine_platform
+from tilelang.utils.file import atomic_copy, error_reports_missing_path, is_file_missing
 import cloudpickle
 import os
-import shutil
 from tilelang.engine.param import KernelParam
 from tilelang import logger
 import json
@@ -171,7 +171,13 @@ class AutotuneResult:
             - kernel_lib.so: The compiled kernel library
             - params.pkl: The serialized kernel parameters
         """
-        os.makedirs(cache_path, exist_ok=True)  # Ensure directory exists
+        try:
+            os.makedirs(cache_path, exist_ok=True)  # Ensure directory exists
+        except FileNotFoundError:
+            # The cache directory disappeared while publishing; the compiled
+            # kernel is still usable, so abandon the save without failing.
+            logger.warning("Cache directory disappeared while saving kernel; skipping save: %s", cache_path)
+            return
 
         # Save kernel source code
         try:
@@ -200,7 +206,7 @@ class AutotuneResult:
             src_lib_path = kernel.adapter.libpath
             if verbose:
                 logger.debug(f"Saving kernel library to file: {kernel_lib_path}")
-            shutil.copy(src_lib_path, kernel_lib_path)
+            atomic_copy(src_lib_path, kernel_lib_path)
         except Exception as e:
             logger.error(f"Error saving kernel library to disk: {e}")
 
@@ -293,53 +299,88 @@ class AutotuneResult:
                 logger.error(f"Error loading auto_gm_idx from disk: {e}")
 
         if kernel_global_source and kernel_params:
-            return JITKernel.from_database(
-                func=func,
-                kernel_global_source=kernel_global_source,
-                kernel_lib_path=kernel_lib_path,
-                params=kernel_params,
-                target=target,
-                target_host=target_host,
-                # Resolve "auto" to the concrete platform (respects TL_PLATFORM,
-                # so sim-mode restores load the right simulator lib). workspace_idx
-                # is not tracked by the auto-tuner (it compiles with the default).
-                platform=determine_platform(platform),
-                out_idx=out_idx,
-                workspace_idx=None,
-                auto_gm_idx=auto_gm_idx,
-                execution_backend=execution_backend,
-                pass_configs=pass_configs,
-                compile_flags=compile_flags,
-            )
+            try:
+                return JITKernel.from_database(
+                    func=func,
+                    kernel_global_source=kernel_global_source,
+                    kernel_lib_path=kernel_lib_path,
+                    params=kernel_params,
+                    target=target,
+                    target_host=target_host,
+                    # Resolve "auto" to the concrete platform (respects TL_PLATFORM,
+                    # so sim-mode restores load the right simulator lib). workspace_idx
+                    # is not tracked by the auto-tuner (it compiles with the default).
+                    platform=determine_platform(platform),
+                    out_idx=out_idx,
+                    workspace_idx=None,
+                    auto_gm_idx=auto_gm_idx,
+                    execution_backend=execution_backend,
+                    pass_configs=pass_configs,
+                    compile_flags=compile_flags,
+                )
+            except PermissionError:
+                # The entry is present but unreadable; retuning would hit the
+                # same permission on the save path, so keep the original error.
+                raise
+            except OSError as error:
+                if not error_reports_missing_path(error, kernel_lib_path):
+                    # A dependency, ELF/ABI, or other loader error: not this cache
+                    # entry going missing, so preserve it.
+                    raise
+                if is_file_missing(kernel_lib_path):
+                    logger.warning(
+                        "Cached kernel library %s disappeared while loading; recompiling.",
+                        kernel_lib_path,
+                    )
+                    return None
+                raise
         else:
             return None
 
     def save_to_disk(self, path: Path, verbose: bool = False):
-        if not os.path.exists(path):
-            os.makedirs(path)
+        try:
+            os.makedirs(path, exist_ok=True)
+        except FileNotFoundError:
+            logger.warning("Cache directory disappeared while saving tuning result; skipping save: %s", path)
+            return
 
         # save best config
         if verbose:
             logger.debug(f"Saving best config to file: {path / BEST_CONFIG_PATH}")
-        with open(path / BEST_CONFIG_PATH, "w") as f:
-            json.dump(self.config, f)
+        try:
+            best_config_file = open(path / BEST_CONFIG_PATH, "w")
+        except FileNotFoundError:
+            logger.warning("Cache disappeared while saving tuning result; skipping save: %s", path)
+            return
+        with best_config_file:
+            json.dump(self.config, best_config_file)
 
         # save function
         if verbose:
             logger.debug(f"Saving function to file: {path / FUNCTION_PATH}")
-        with open(path / FUNCTION_PATH, "wb") as f:
-            cloudpickle.dump(self.func, f)
+        try:
+            function_file = open(path / FUNCTION_PATH, "wb")
+        except FileNotFoundError:
+            logger.warning("Cache disappeared while saving tuning result; skipping save: %s", path)
+            return
+        with function_file:
+            cloudpickle.dump(self.func, function_file)
 
         # save ref latency
         if verbose:
             logger.debug(f"Saving latency to file: {path / LATENCY_PATH}")
-        with open(path / LATENCY_PATH, "w") as f:
+        try:
+            latency_file = open(path / LATENCY_PATH, "w")
+        except FileNotFoundError:
+            logger.warning("Cache disappeared while saving tuning result; skipping save: %s", path)
+            return
+        with latency_file:
             json.dump(
                 {
                     "latency": self.latency,
                     "ref_latency": self.ref_latency,
                 },
-                f,
+                latency_file,
             )
 
         # save kernel
@@ -354,20 +395,32 @@ class AutotuneResult:
         # load best config
         if verbose:
             logger.debug(f"Loading best config from file: {path / BEST_CONFIG_PATH}")
-        with open(path / BEST_CONFIG_PATH) as f:
-            config = json.load(f)
+        try:
+            best_config_file = open(path / BEST_CONFIG_PATH)
+        except FileNotFoundError:
+            return None
+        with best_config_file:
+            config = json.load(best_config_file)
 
         # load function
         if verbose:
             logger.debug(f"Loading function from file: {path / FUNCTION_PATH}")
-        with open(path / FUNCTION_PATH, "rb") as f:
-            func = cloudpickle.load(f)
+        try:
+            function_file = open(path / FUNCTION_PATH, "rb")
+        except FileNotFoundError:
+            return None
+        with function_file:
+            func = cloudpickle.load(function_file)
 
         # load latency
         if verbose:
             logger.debug(f"Loading latency from file: {path / LATENCY_PATH}")
-        with open(path / LATENCY_PATH) as f:
-            latency = json.load(f)
+        try:
+            latency_file = open(path / LATENCY_PATH)
+        except FileNotFoundError:
+            return None
+        with latency_file:
+            latency = json.load(latency_file)
             latency, ref_latency = latency["latency"], latency["ref_latency"]
 
         kernel = cls._load_kernel_from_disk(
