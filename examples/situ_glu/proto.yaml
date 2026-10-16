@@ -1,0 +1,32 @@
+operator:
+  name: situ_glu
+  category: Activation
+  formula: |
+    gate, up = split(x, dim)  # h = x.shape[dim] // 2; activate_left=True: gate=x[:h], up=x[h:]; False 反之
+    situ_a = beta * tanh(gate / beta) * sigmoid(gate)
+    up' = linear_beta > 0 ? linear_beta * tanh(up / linear_beta) : up
+    y = situ_a * up'
+  attrs:
+    - name: dim
+      type: Int
+      default: -1
+      required: false
+    - name: beta
+      type: Float
+      default: 1.0
+      required: false
+    - name: linear_beta
+      type: Float
+      default: 0.0
+      required: false
+    - name: activate_left
+      type: Bool
+      default: true
+      required: false
+  inputs:
+    - name: x
+      dtype: [float16, float32, bfloat16]
+  outputs:
+    - name: y
+      dtype: [float16, float32, bfloat16]
+  schema: situ_glu(Tensor x, *, int dim=-1, float beta=1.0, float linear_beta=0.0, bool activate_left=True) -> Tensor y
