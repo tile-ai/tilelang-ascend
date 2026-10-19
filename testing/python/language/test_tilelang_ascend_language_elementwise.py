@@ -967,7 +967,6 @@ def test_bitwise_lshift_boundary_int32(dtype, target, scalarvalue):
 
 
 def run_test_bitwise_lshift_non_aligned(dtype, target, scalarvalue):
-    """Test non-32-byte-aligned shapes for precision issues."""
     M, N = 1024, 100
     block_M, block_N = 128, 100
     VEC_NUM = 2
@@ -1002,12 +1001,6 @@ def run_test_bitwise_lshift_non_aligned(dtype, target, scalarvalue):
 @pytest.mark.parametrize("target", [pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_lshift_non_aligned(dtype, target, scalarvalue):
     run_test_bitwise_lshift_non_aligned(dtype, target, scalarvalue)
-
-
-@pytest.mark.low_priority
-def test_bitwise_lshift_non_aligned_ascendc_skip():
-    """AscendC produces precision errors on non-32-byte-aligned shapes (CANN bug)."""
-    pytest.skip("AscendC non-aligned precision bug, PTO unaffected")
 
 
 def bitwise_not(M, N, block_M, block_N, dtype="int16"):
