@@ -7,8 +7,9 @@
 Fused compressor of the GLM-5.3-Flash sparse-attention indexer. For every pool
 of `pool_size` tokens: per-dimension softmax over `slot_score + ape`, BF16
 rounded pooled K vectors, normalized Hadamard-128 rotation, one FP32
-power-of-two absmax scale per vector, E4M3 quantization and a paged-cache
-write.
+power-of-two absmax scale per vector, E4M3 quantization; the E4M3 rows and the
+scales are emitted to contiguous scratches and the host adapter scatters both
+into the paged caches.
 
 - Input: `slot_k` [P, pool_size, 128] bf16, `slot_score` [P, pool_size, 128]
   bf16, `ape` [pool_size, 128] fp32, `loc` [P] int64, `write_mask` [P] bool
@@ -32,13 +33,13 @@ write.
 
 | Component | Choice | Reason |
 |-----------|--------|--------|
-| Grid / tiling | one 32-pool tile per block, `ceil(P/32)` blocks | 32 pools is the largest UB-fitted tile (P=64 fails memory planning) |
+| Grid / tiling | one 32-pool tile per AIV subcore (each block covers 64 pools, `ceil(P/64)` blocks) | 32 pools is the largest UB-fitted tile (P=64 fails memory planning); both subcores of a block work independently |
 | FP8 path | E4M3 emulated with the ASCEND cast whitelist + integer bit math; `k_cache` as uint8 | A2/A3 has no FP8 data path; bytes match the reference exact |
 | Hadamard | ascending-stride butterfly on contiguous half-slices of a dim-major tile | bit-exact vs the reference, P<=128 keeps compile time sane |
 | Pooling | slot-serial accumulation in slot order | matches the reference summation order |
 | Scale | `2^ceil(log2(absmax/448))` through the fp32 bit field, exact inverse by bit construction (round_scale=True) / plain division (round_scale=False) | reference-identical scales |
-| Host adapter | fold `ape` into scores (fp32), slot-major repack, pad to 32 with inactive rows, scatter scales | numerically identical to the reference in-kernel arithmetic |
-| Scale write | kernel emits scales to a contiguous scratch; the adapter scatters them with one device indexing op | 4-byte scalar GM stores are not cache-line coherent across cores (toolchain disables automatic DCCI for scalar accesses); 128-byte row copies are |
+| Host adapter | fold `ape` into scores (fp32), slot-major repack, pad to 64 rows; implicit `write_mask` skips the mask gathers | numerically identical to the reference in-kernel arithmetic |
+| Cache / scale write | kernel emits the E4M3 rows and scales to two contiguous scratches; the adapter scatters both with one device indexing op each | a device-side per-row scatter loop is serialized by conservative PIPE_ALL barriers emitted around every scalar access (~30% of kernel time); 4-byte scalar GM stores are additionally not cache-line coherent across cores |
 
 ## 4. Performance (kernel-only, graph replay)
 
@@ -47,24 +48,25 @@ all-pools-fit cache, `round_scale=True`.
 
 | P (pools) | kernel (us) | ns / pool |
 |-----------|-------------|-----------|
-| 1,024 | 22.5 | 22.0 |
-| 4,096 | 70.0 | 17.1 |
-| 16,384 | 230.2 | 14.0 |
+| 1,024 | 16.5 | 16.1 |
+| 4,096 | 49.0 | 12.0 |
+| 16,384 | 149.2 | 9.1 |
 
-Scaling follows block occupancy (1,024 pools = 32 blocks < 40 AIVs).
+Scaling follows block occupancy (1,024 pools = 16 blocks, each using both AIV
+subcores; 20 AI cores on this part).
 
 ## 5. End-to-end (host adapter included, wall clock)
 
 | P (pools) | E2E (us) | ns / pool |
 |-----------|----------|-----------|
-| 1,024 | 3,220 | 3,145 |
-| 4,096 | 3,920 | 957 |
-| 16,384 | 6,770 | 413 |
+| 1,024 | 2,200 | 2,148 |
+| 4,096 | 3,135 | 765 |
+| 16,384 | 6,725 | 410 |
 
-E2E is dominated by torch_npu host dispatch (~0.45 ms per op for the 7-8
+E2E is dominated by torch_npu host dispatch (~0.45 ms per op for the
 preparation/scatter ops) in this environment, not by device work; it is not
-part of the kernel contribution. Reducing it (in-kernel ape fold, fewer host
-ops, in-kernel scale placement) is future work.
+part of the kernel contribution. Reducing it (in-kernel `ape` fold, fewer host
+preparation ops) is future work.
 
 ## 6. Accuracy
 

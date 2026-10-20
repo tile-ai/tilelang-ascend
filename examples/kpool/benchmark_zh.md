@@ -7,7 +7,8 @@
 GLM-5.3-Flash 稀疏注意力 indexer 的融合压缩算子。对每个由 `pool_size` 个
 token 组成的 pool：对 `slot_score + ape` 做逐维 softmax 池化、池化向量过
 BF16 边界、归一化 Hadamard-128 旋转、每向量一个 FP32 2 的幂 absmax scale
-的 E4M3 量化，并写入分页 cache。
+的 E4M3 量化；E4M3 行与 scale 写入连续 scratch，由宿主适配器散射进分页
+cache。
 
 - 输入：`slot_k` [P, pool_size, 128] bf16、`slot_score` [P, pool_size, 128]
   bf16、`ape` [pool_size, 128] fp32、`loc` [P] int64、`write_mask` [P] bool
@@ -31,13 +32,13 @@ BF16 边界、归一化 Hadamard-128 旋转、每向量一个 FP32 2 的幂 absm
 
 | 组件 | 选择 | 理由 |
 |-----------|--------|--------|
-| 并行/Tiling | 每 block 处理 32 个 pool，共 `ceil(P/32)` 个 block | 32 是 UB 预算内最大的 tile（P=64 内存规划失败） |
+| 并行/Tiling | 每 AIV 子核处理 32 个 pool（每 block 覆盖 64 个 pool，共 `ceil(P/64)` 个 block） | 32 是 UB 预算内最大的 tile（P=64 内存规划失败）；block 的两个子核独立并行 |
 | FP8 路径 | 用 ASCEND cast 白名单 + 整数位运算模拟 E4M3，`k_cache` 用 uint8 承载 | A2/A3 无 FP8 数据通路；字节与参考完全一致 |
 | Hadamard | 在 dim-major tile 的连续半区上做升序蝶形 | 与参考逐位一致，P<=128 保证编译时间正常 |
 | 池化 | 按 slot 顺序串行累积 | 与参考求和顺序一致 |
 | Scale | 位域法 `2^ceil(log2(absmax/448))`，`round_scale=True` 时逆用位构造精确求出 / `False` 时直接除法 | 与参考 scale 逐位一致 |
-| 宿主适配 | `ape` 折入 scores（fp32）、slot-major 重排、按 32 补齐并用失效行填充、scale 散射 | 与参考的 kernel 内算术数值完全一致 |
-| Scale 写回 | kernel 将 scale 连续写入 scratch，适配器用一次设备侧索引操作散射到 cache | 4 字节标量 GM 写在跨核共享 cache line 时会丢更新（工具链关闭了标量访存自动 DCCI）；128 字节整行拷贝是跨核安全的 |
+| 宿主适配 | `ape` 折入 scores（fp32）、slot-major 重排、按 64 补齐；`write_mask` 为隐含全真时跳过 mask gather | 与参考的 kernel 内算术数值完全一致 |
+| Cache/scale 写回 | kernel 将 E4M3 行与 scale 连续写入两个 scratch，适配器各用一次设备侧索引操作散射进 cache | 设备侧逐行散射循环会被标量访存周围的保守 PIPE_ALL 屏障串行化（约占总 kernel 时间 30%）；且 4 字节标量 GM 写在跨核共享 cache line 时会丢更新 |
 
 ## 4. 性能（kernel-only，图捕获回放）
 
@@ -46,23 +47,24 @@ BF16 边界、归一化 Hadamard-128 旋转、每向量一个 FP32 2 的幂 absm
 
 | P（pool 数） | kernel（us） | ns / pool |
 |-----------|-------------|-----------|
-| 1,024 | 22.5 | 22.0 |
-| 4,096 | 70.0 | 17.1 |
-| 16,384 | 230.2 | 14.0 |
+| 1,024 | 16.5 | 16.1 |
+| 4,096 | 49.0 | 12.0 |
+| 16,384 | 149.2 | 9.1 |
 
-随 block 占用率上升而改善（1,024 个 pool 只有 32 个 block，小于 40 个 AIV）。
+随 block 占用率上升而改善（1,024 个 pool 为 16 个 block，每个 block 使用两
+个 AIV 子核；该部件共 20 个 AI core）。
 
 ## 5. 端到端（含宿主适配，墙钟）
 
 | P（pool 数） | E2E（us） | ns / pool |
 |-----------|----------|-----------|
-| 1,024 | 3,220 | 3,145 |
-| 4,096 | 3,920 | 957 |
-| 16,384 | 6,770 | 413 |
+| 1,024 | 2,200 | 2,148 |
+| 4,096 | 3,135 | 765 |
+| 16,384 | 6,725 | 410 |
 
-本环境下 E2E 主要被 torch_npu 的逐 op 宿主调度开销主导（7-8 个预处理/散射
-op，约 0.45 ms/op），并非设备计算；该部分不属于 kernel 交付本体。后续可优化
-方向：`ape` 内化进 kernel、减少宿主 op 数、scale 在 kernel 内完成落位。
+本环境下 E2E 主要被 torch_npu 的逐 op 宿主调度开销主导（预处理/散射 op 约
+0.45 ms/op），并非设备计算；该部分不属于 kernel 交付本体。后续可优化方向：
+`ape` 内化进 kernel、减少宿主预处理 op 数。
 
 ## 6. 精度
 
