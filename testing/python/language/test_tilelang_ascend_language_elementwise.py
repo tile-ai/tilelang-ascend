@@ -1178,7 +1178,7 @@ def run_test_bitwise_xor(M, N, block_M, block_N, dtype, target):
 
 
 @pytest.mark.parametrize("dtype", ["int16", "uint16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_xor(dtype, target, shape):
     M, N = shape
@@ -1236,8 +1236,10 @@ def run_test_bitwise_xor_slice(M, N, block_M, block_N, dtype, target):
     assert_close_npu(c, ref_c, dtype, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["int16", "uint16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize(
+    "dtype", [pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("uint16", marks=pytest.mark.low_priority)]
+)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_xor_slice(dtype, target, shape):
     M, N = shape
@@ -1296,17 +1298,20 @@ def _run_bitwise_xor_ext(dtype, target, block_M=128, block_N=256, use_tmp=False)
 
 
 @pytest.mark.parametrize("dtype", ["int8"])
-@pytest.mark.parametrize("target", ["pto"])
+@pytest.mark.parametrize("target", [pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_xor_int8_pto(dtype, target):
     _run_bitwise_xor_ext(dtype, target)
 
 
-@pytest.mark.parametrize("dtype", ["int16", "uint16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize(
+    "dtype", [pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("uint16", marks=pytest.mark.low_priority)]
+)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_xor_explicit_tmp(dtype, target):
     _run_bitwise_xor_ext(dtype, target, use_tmp=True)
 
 
+@pytest.mark.low_priority
 def test_bitwise_xor_1d():
     N = 256
 
@@ -1334,6 +1339,7 @@ def test_bitwise_xor_1d():
     assert_close_npu(c, ref_c, "int16", rtol=0, atol=0)
 
 
+@pytest.mark.low_priority
 def test_bitwise_xor_buffer_region_2d():
     M, N = 1024, 1024
     block_M, block_N = 128, 256
@@ -1372,7 +1378,9 @@ def test_bitwise_xor_buffer_region_2d():
     assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize(
+    "target", [pytest.param("ascendc", marks=pytest.mark.low_priority), pytest.param("pto", marks=pytest.mark.low_priority)]
+)
 def test_bitwise_xor_non_aligned_size(target):
     N = 200
 
