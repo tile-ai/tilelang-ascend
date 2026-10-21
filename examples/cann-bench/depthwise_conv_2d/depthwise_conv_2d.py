@@ -635,4 +635,6 @@ if __name__ == "__main__":
         diff = (y.float() - ref.float()).abs().max().item()
         print(f"[SMOKE] {tuple(shape)} {str(dtype).split('.')[-1]} k={k} max_abs={diff:.3e}")
         assert diff <= bounds[dtype], f"smoke test failed: {diff}"
-    print("smoke test passed")
+    # CI pass criterion (examples/bench_test.sh) requires the output to end
+    # with this phrase (or "TEST PASSED!"), same as lstm/gru smoke tests.
+    print("Kernel Output Match!")
