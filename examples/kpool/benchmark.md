@@ -70,6 +70,14 @@ preparation ops) is future work.
 
 ## 6. Accuracy
 
-All tests in `test_example_glm53_kpool_compress.py` pass: every E4M3 byte of
-written rows within 1 ULP of `glm53_kpool_reference` (typically byte-identical),
-scales bit-exact for `round_scale=True`, untouched cache fully preserved.
+All tests in `test_example_glm53_kpool_compress.py` pass. The reference-
+mirroring cases keep the upstream byte-level criterion: every E4M3 byte of
+written rows within 1 ULP of `glm53_kpool_reference` (typically byte-identical).
+The parametrized multi-tile sweep (300/1024/4096/16384 pools, up to 2.1M
+elements per case) bounds each element by one E4M3 code or one per-pool scale
+unit -- the byte-level one-ULP criterion is not statistically stable at these
+element counts, because a rare bf16 pooling-boundary crossing can be amplified
+by Hadamard cancellation on near-zero dims. Measured over 4 shapes x 90 runs
+(~44M elements) multi-code excursions stayed within 0.25 scale units.
+`round_scale=True` scales are bit-exact and untouched cache slots are fully
+preserved in every case.
