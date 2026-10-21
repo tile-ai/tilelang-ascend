@@ -1,3 +1,5 @@
+"""First-generation hand-synchronized Expert Flash Attention example."""
+
 import argparse
 import tilelang
 from tilelang import language as T

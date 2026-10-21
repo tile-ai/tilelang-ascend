@@ -10,6 +10,9 @@ import sys
 from datetime import datetime
 
 
+FA_OPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
 def get_total_time(output_path, op_type_name):
     """
     Parse CSV and extract Total Time(us) only.
@@ -286,12 +289,20 @@ def run_benchmark():
 
     # TileLang script related
     parser.add_argument(
-        "--tl", type=str, default="./flash_attn_bhsd_cc_sync_auto_pipeline_h32_d512.py", help="Path to TileLang python script"
+        "--tl",
+        type=str,
+        default=os.path.join(FA_OPT_DIR, "expert_v2", "kernel.py"),
+        help="Path to TileLang python script",
     )
     parser.add_argument("--kernel-tl", type=str, default="main_kernel", help="Kernel name for TileLang")
 
     # AscendC script related
-    parser.add_argument("--ascendc", type=str, default="./flash_attn_bhsd_ascendc.py", help="Path to AscendC python script")
+    parser.add_argument(
+        "--ascendc",
+        type=str,
+        default=os.path.join(FA_OPT_DIR, "reference", "ascendc.py"),
+        help="Path to AscendC python script",
+    )
     parser.add_argument("--kernel-ascendc", type=str, default="FlashAttentionScore", help="Kernel name for AscendC")
 
     parser.add_argument("--soc-version", type=str, default="Ascend910_9382", help="SoC version for msprof simulator")

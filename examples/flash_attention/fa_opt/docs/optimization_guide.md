@@ -1,6 +1,6 @@
 # CV Fusion Operator Performance Analysis and Tuning Methods
 
-[中文](flash_attention_performance_optimization_zh.md) | **English**
+[中文](optimization_guide_zh.md) | **English**
 
 ## Table of Contents
 
@@ -31,7 +31,7 @@ msprof op --kernel-name="main_kernel" --output=<output_path> python3 xxx.py
 ```
 
 **Example Scripts**:
-- [Batch Testing Script](bench.sh)
+- [Batch Testing Script](../bench.sh)
 
 ### 1.3 Collecting Pipeline Diagrams (Simulator Mode)
 
@@ -327,5 +327,5 @@ Performance below expectations
 ## Appendix: Related Resources
 
 - [T.pipelined Detailed Tutorial](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/docs/tutorials/t_pipelined.md)
-- [TileLang-Ascend Programming Guide](../../../docs/TileLang-Ascend%20Programming%20Guide.md)
+- [TileLang-Ascend Programming Guide](../../../../docs/TileLang-Ascend%20Programming%20Guide.md)
 - [MindStudio Insight Download](https://gitcode.com/Ascend/msinsight/releases/tag_MindStudio_26.0.0-alpha.1)

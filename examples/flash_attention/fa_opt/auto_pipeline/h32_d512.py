@@ -1,3 +1,5 @@
+"""Auto-pipelined Flash Attention example for D=512."""
+
 import argparse
 import tilelang
 from tilelang import DataType, language as T

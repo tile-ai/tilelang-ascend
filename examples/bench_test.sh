@@ -293,7 +293,7 @@ if [ -n "$TEST_DIRS" ] || [ -n "$EXPERIMENT_DIRS" ]; then
     if [[ " ${DIR_ARRAY[*]} " =~ " flash_attention " ]]; then
         fa_dir="./flash_attention/fa_opt"
         if [ -d "$fa_dir" ]; then
-            fa_python_files=$(find "$fa_dir" -maxdepth 1 -name "flash_*.py" | sort)
+            fa_python_files=$(find "$fa_dir" -mindepth 2 -maxdepth 2 -type f -name "*.py" | sort)
             if [ -n "$fa_python_files" ]; then
                 for file in $fa_python_files; do
                     should_skip_python_script "$file" || all_scripts+=("$file")
@@ -325,7 +325,7 @@ else
     # flash_attention/fa_opt 单独处理
     fa_dir="./flash_attention/fa_opt"
     if [ -d "$fa_dir" ]; then
-        fa_python_files=$(find "$fa_dir" -maxdepth 1 -name "flash_*.py" | sort)
+        fa_python_files=$(find "$fa_dir" -mindepth 2 -maxdepth 2 -type f -name "*.py" | sort)
         if [ -n "$fa_python_files" ]; then
             for file in $fa_python_files; do
                 should_skip_python_script "$file" || all_scripts+=("$file")

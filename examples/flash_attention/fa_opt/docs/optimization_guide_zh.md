@@ -1,6 +1,6 @@
 # CV融合算子性能分析与调优方法
 
-[English](flash_attention_performance_optimization.md) | **中文**
+[English](optimization_guide.md) | **中文**
 
 ## 目录
 
@@ -31,7 +31,7 @@ msprof op --kernel-name="main_kernel" --output=<输出路径> python3 xxx.py
 ```
 
 **示例脚本**：
-- [性能对比批量测试脚本](bench.sh)
+- [性能对比批量测试脚本](../bench.sh)
 
 ### 1.3 采集流水图（Simulator 模式）
 
@@ -325,6 +325,7 @@ for i in T.pipelined(outer, num_stages):
 
 ## 附录：相关资源
 
+- [Case study：Expert v2 三槽在线 Softmax 优化历程](../expert_v2/README.md)
 - [T.pipelined 详细教程](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/docs/tutorials/t_pipelined.md)
-- [TileLang-Ascend Programming Guide](../../../docs/TileLang-Ascend%20Programming%20Guide.md)
+- [TileLang-Ascend Programming Guide](../../../../docs/TileLang-Ascend%20Programming%20Guide.md)
 - [MindStudio Insight 下载](https://gitcode.com/Ascend/msinsight/releases/tag_MindStudio_26.0.0-alpha.1)

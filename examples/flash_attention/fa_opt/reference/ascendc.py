@@ -1,3 +1,5 @@
+"""AscendC reference used by the fa_opt comparison harness."""
+
 import argparse
 import torch
 import torch_npu

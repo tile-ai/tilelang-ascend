@@ -1,4 +1,4 @@
-**中文** | [English](bench_mark.md)
+**中文** | [English](benchmark.md)
 
 Flash Attention 是 Transformer 模型中的核心算子，其性能直接影响模型训练和推理效率。
 
@@ -40,14 +40,15 @@ Flash Attention 是 Transformer 模型中的核心算子，其性能直接影响
 
 | 优化项 | L1 内存常驻 | 指令向量化 | 多Buffer | 核内冗余同步消除 | CV pipelined | 优化核间同步下发次数 | 减少指令数 | 性能（A3）|
 |------|:----------:|:----------:|:------------:|:-----------:|:------------------:|:---------:|:---------:|:---------:|
-| flash_attn_bhsd_expert_h16_d128.py | √ | √ | √ | √ | √ | √ | √ | 80% |
-| flash_attn_bhsd_auto_pipeline_h16_d128.py | √ | √ | √ | × | √ | × | √ | 60% |
+| `expert_v1/kernel.py` | √ | √ | √ | √ | √ | √ | √ | 80% |
+| `auto_pipeline/h16_d128.py` | √ | √ | √ | × | √ | × | √ | 60% |
 
 算子实现：https://github.com/tile-ai/tilelang-ascend/tree/ascendc_pto/examples/flash_attention/fa_opt
 
 | 文件名 | 说明 |
 |--------|------|
-| flash_attn_bhsd_expert_h16_d128.py | Expert 模式最佳性能实现（80%） |
-| flash_attn_bhsd_auto_pipeline_h16_d128.py | 混合编程模式实现（60%） |
-| flash_attn_bhsd_ascendc.py | AscendC 原生算子调用脚本 |
+| `expert_v1/kernel.py` | 历史表中实测的 Expert 模式实现（80%） |
+| `expert_v2/kernel.py` | 三槽在线 softmax Expert 实现；详见同目录 README |
+| `auto_pipeline/h16_d128.py` | 混合编程模式实现（60%） |
+| `reference/ascendc.py` | AscendC 原生算子调用脚本 |
 | bench_test.sh | 性能精度测试脚本 |

@@ -1,4 +1,4 @@
-**English** | [中文](bench_mark_zh.md)
+**English** | [中文](benchmark_zh.md)
 
 Flash Attention is a core operator in Transformer models, and its performance directly impacts model training and inference efficiency.
 
@@ -40,14 +40,15 @@ Through systematic optimization, the FA operator achieves 80% of native AscendC 
 
 | Optimization | L1 Residency | Vectorization | Multi-Buffer | Sync Elimination | CV pipelined | Optimized Sync Frequency | Reduced Instructions | Performance (A3)|
 |------|:----------:|:----------:|:------------:|:-----------:|:------------------:|:---------:|:---------:|:---------:|
-| flash_attn_bhsd_expert_h16_d128.py | √ | √ | √ | √ | √ | √ | √ | 80% |
-| flash_attn_bhsd_auto_pipeline_h16_d128.py | √ | √ | √ | × | √ | × | √ | 60% |
+| `expert_v1/kernel.py` | √ | √ | √ | √ | √ | √ | √ | 80% |
+| `auto_pipeline/h16_d128.py` | √ | √ | √ | × | √ | × | √ | 60% |
 
 Operator implementation: https://github.com/tile-ai/tilelang-ascend/tree/ascendc_pto/examples/flash_attention/fa_opt
 
 | File Name | Description |
 |--------|------|
-| flash_attn_bhsd_expert_h16_d128.py | Expert mode best performance implementation (80%) |
-| flash_attn_bhsd_auto_pipeline_h16_d128.py | Hybrid programming mode implementation (60%) |
-| flash_attn_bhsd_ascendc.py | AscendC native operator invocation script |
+| `expert_v1/kernel.py` | Expert-mode implementation measured in the historical table (80%) |
+| `expert_v2/kernel.py` | Three-stage online-softmax Expert implementation; see its colocated README |
+| `auto_pipeline/h16_d128.py` | Hybrid programming mode implementation (60%) |
+| `reference/ascendc.py` | AscendC native operator invocation script |
 | bench_test.sh | Performance and accuracy test script |
