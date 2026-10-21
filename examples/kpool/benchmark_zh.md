@@ -10,13 +10,28 @@ BF16 边界、归一化 Hadamard-128 旋转、每向量一个 FP32 2 的幂 absm
 的 E4M3 量化；E4M3 行与 scale 写入连续 scratch，由宿主适配器散射进分页
 cache。
 
+```
+m[p,d]      = max_s(slot_score[p,s,d] + ape[s,d])
+w[p,s,d]    = exp(slot_score[p,s,d] + ape[s,d] - m[p,d])
+pooled[p,d] = bf16( sum_s w[p,s,d] * slot_k[p,s,d] / sum_s w[p,s,d] )
+r[p,:]      = bf16( hadamard128(pooled[p,:]) * (1 / sqrt(128)) )
+a[p]        = max(1e-4, max_d |r[p,d]|)
+scale[p]    = 2^ceil(log2(a[p] / 448))   （round_scale=True）
+              a[p] / 448                  （round_scale=False）
+q[p,:]      = E4M3(clamp(r[p,:] / scale[p], -448, 448))
+k_cache[loc[p] // page_size, loc[p] % page_size, :] = q[p,:]
+scale_cache[loc[p] // page_size, loc[p] % page_size] = scale[p]
+```
+
+BF16 边界为 round-to-nearest-even；E4M3 编码为 round-half-even、含次正规并
+饱和到 448。
+
 - 输入：`slot_k` [P, pool_size, 128] bf16、`slot_score` [P, pool_size, 128]
   bf16、`ape` [pool_size, 128] fp32、`loc` [P] int64、`write_mask` [P] bool
 - Cache：`k_cache` [num_blocks, page_size, 128] uint8（E4M3 字节位模式）、
   `scale_cache` [num_blocks, page_size] fp32（原地写）
 - 参考实现：tile-ai/tilelang 主仓 `examples/kpool` 的
-  `glm53_kpool_reference`；判定口径：写入行每个 E4M3 字节与参考相差不超过
-  1 ULP，scale 逐位一致
+  `glm53_kpool_reference`；判定口径见 §6
 
 ## 2. 软硬件环境
 

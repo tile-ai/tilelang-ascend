@@ -11,13 +11,28 @@ power-of-two absmax scale per vector, E4M3 quantization; the E4M3 rows and the
 scales are emitted to contiguous scratches and the host adapter scatters both
 into the paged caches.
 
+```
+m[p,d]      = max_s(slot_score[p,s,d] + ape[s,d])
+w[p,s,d]    = exp(slot_score[p,s,d] + ape[s,d] - m[p,d])
+pooled[p,d] = bf16( sum_s w[p,s,d] * slot_k[p,s,d] / sum_s w[p,s,d] )
+r[p,:]      = bf16( hadamard128(pooled[p,:]) * (1 / sqrt(128)) )
+a[p]        = max(1e-4, max_d |r[p,d]|)
+scale[p]    = 2^ceil(log2(a[p] / 448))   (round_scale=True)
+              a[p] / 448                  (round_scale=False)
+q[p,:]      = E4M3(clamp(r[p,:] / scale[p], -448, 448))
+k_cache[loc[p] // page_size, loc[p] % page_size, :] = q[p,:]
+scale_cache[loc[p] // page_size, loc[p] % page_size] = scale[p]
+```
+
+BF16 boundaries round to nearest even; E4M3 encodes round-half-even with
+subnormals and saturates at 448.
+
 - Input: `slot_k` [P, pool_size, 128] bf16, `slot_score` [P, pool_size, 128]
   bf16, `ape` [pool_size, 128] fp32, `loc` [P] int64, `write_mask` [P] bool
 - Cache: `k_cache` [num_blocks, page_size, 128] uint8 (E4M3 byte patterns),
   `scale_cache` [num_blocks, page_size] fp32 (in/out, written in place)
 - Reference: CUDA/ROCm `examples/kpool` in tile-ai/tilelang
-  (`glm53_kpool_reference`); tolerance: every E4M3 byte within 1 ULP of the
-  reference, scales bit-exact
+  (`glm53_kpool_reference`); accuracy criteria in §6
 
 ## 2. Hardware & Software
 
