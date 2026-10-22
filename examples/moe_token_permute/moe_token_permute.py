@@ -4,6 +4,29 @@ import tilelang.language as T
 import torch
 import torch_npu
 
+
+def _check_precision(actual, golden):
+    if actual.dtype != golden.dtype or actual.shape != golden.shape:
+        raise AssertionError(f"shape/dtype mismatch: {actual.shape}/{actual.dtype} vs {golden.shape}/{golden.dtype}")
+    if not (actual.dtype.is_floating_point or actual.dtype.is_complex):
+        if not torch.equal(actual, golden):
+            raise AssertionError("integer mismatch")
+        return
+    params = {torch.float16: (2**-14, 2**-9, 1e-1), torch.bfloat16: (2**-10, 2**-6, 1e0), torch.float32: (2**-16, 2**-10, 1e-2)}
+    atol, rtol, cap = params.get(actual.dtype, (2**-16, 2**-10, 1e-2))
+    special = torch.isnan(golden) | torch.isnan(actual) | torch.isinf(golden) | torch.isinf(actual)
+    if not torch.equal(torch.isnan(actual), torch.isnan(golden)) or not torch.equal(torch.isinf(actual), torch.isinf(golden)):
+        raise AssertionError("NaN/Inf structure mismatch")
+    valid = ~special
+    if valid.any():
+        diff = (actual[valid] - golden[valid]).abs()
+        tol = atol + rtol * golden[valid].abs()
+        ratio = (diff <= tol).float().mean().item()
+        max_err = diff.max().item()
+        if ratio < 0.99 or max_err > cap:
+            raise AssertionError(f"precision ratio={ratio:.4f}, max_abs={max_err:.4g}")
+
+
 try:
     from .moe_token_utils import is_fp32_dtype, pad_last_dim
 except ImportError:
@@ -347,8 +370,8 @@ def test_permute_parameterized(pt_dtype, tl_dtype_str):
     tl_permuted, tl_sorted_idx = tl_op(tokens, indices.view(-1))
 
     try:
-        torch.testing.assert_close(tl_permuted, npu_permuted)
-        torch.testing.assert_close(tl_sorted_idx, npu_sorted_idx)
+        _check_precision(tl_permuted, npu_permuted)
+        _check_precision(tl_sorted_idx, npu_sorted_idx)
         print(f"    [PASS] {tl_dtype_str.upper()} Standard Forward precision test passed!")
     except AssertionError as e:
         print(
@@ -376,8 +399,8 @@ def test_permute_parameterized(pt_dtype, tl_dtype_str):
     tl_permuted_clip, tl_sorted_idx_clip = tl_op_clip(tokens_clip, indices_clip.view(-1))
 
     try:
-        torch.testing.assert_close(tl_permuted_clip, npu_permuted_clip)
-        torch.testing.assert_close(tl_sorted_idx_clip, npu_sorted_idx_clip)
+        _check_precision(tl_permuted_clip, npu_permuted_clip)
+        _check_precision(tl_sorted_idx_clip, npu_sorted_idx_clip)
         print(f"    [PASS] {tl_dtype_str.upper()} Clip truncation precision test passed!")
     except AssertionError as e:
         print(

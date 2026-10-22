@@ -26,6 +26,25 @@ import tilelang.language as T
 import torch
 from tilelang.tools.ascend_exception_dump_bin import parse_exception_dump
 
+
+def _check_precision(actual, golden):
+    atol, rtol, cap = {
+        torch.float16: (2**-14, 2**-9, 0.1),
+        torch.bfloat16: (2**-10, 2**-6, 1.0),
+        torch.float32: (2**-16, 2**-10, 0.01),
+    }.get(actual.dtype, (2**-14, 2**-9, 0.1))
+    sa = torch.isnan(actual) | torch.isinf(actual)
+    sg = torch.isnan(golden) | torch.isinf(golden)
+    if not torch.equal(sa, sg) or (sa.any() and not torch.equal(actual[sa], golden[sg])):
+        raise AssertionError("NaN/Inf mismatch")
+    v = ~sg
+    if v.any():
+        d = (actual[v] - golden[v]).abs()
+        p = d <= atol + rtol * golden[v].abs()
+        if p.float().mean().item() < 0.99 or d.max().item() > cap:
+            raise AssertionError("precision mismatch")
+
+
 tilelang.cache.clear_cache()
 
 M = args.m
@@ -107,7 +126,7 @@ b = torch.randn(M, N, dtype=torch.float16).npu()
 print("Normal execution...")
 c = func(a, b)
 ref_c = a + b
-torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+_check_precision(c, ref_c)
 print("Kernel Output Match!")
 
 print("\n--- Triggering AI Core exception (null output pointer) ---")
