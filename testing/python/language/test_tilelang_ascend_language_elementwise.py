@@ -842,15 +842,15 @@ def run_test_bitwise_lshift(M, N, block_M, block_N, scalarvalue, dtype, target):
     [
         "int16",
         "int32",
-        "uint16",
-        "uint32",
+        pytest.param("uint16", marks=pytest.mark.low_priority),
+        pytest.param("uint32", marks=pytest.mark.low_priority),
     ],
 )
 @pytest.mark.parametrize(
     "target",
     [
         "ascendc",
-        "pto",
+        pytest.param("pto", marks=pytest.mark.low_priority),
     ],
 )
 @pytest.mark.parametrize("shape", [(1024, 1024)])
@@ -1110,13 +1110,13 @@ def run_test_bitwise_rshift_slice(M, N, block_M, block_N, scalarvalue, dtype, ta
 @pytest.mark.parametrize(
     "dtype",
     [
-        "int16",
-        "int32",
-        "uint16",
-        "uint32",
+        pytest.param("int16", marks=pytest.mark.low_priority),
+        pytest.param("int32", marks=pytest.mark.low_priority),
+        pytest.param("uint16", marks=pytest.mark.low_priority),
+        pytest.param("uint32", marks=pytest.mark.low_priority),
     ],
 )
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_rshift_slice(dtype, target, shape):
     M, N = shape
@@ -1168,8 +1168,10 @@ def run_test_bitwise_rshift_signed_semantics(dtype, target, scalarvalue):
 
 
 @pytest.mark.parametrize("scalarvalue", [1])
-@pytest.mark.parametrize("dtype", ["int16", "int32"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize(
+    "dtype", [pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)]
+)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_rshift_signed_semantics(dtype, target, scalarvalue):
     run_test_bitwise_rshift_signed_semantics(dtype, target, scalarvalue)
 
@@ -1200,8 +1202,10 @@ def run_test_bitwise_rshift_unsigned_high_bits(dtype, target, scalarvalue):
 
 
 @pytest.mark.parametrize("scalarvalue", [1])
-@pytest.mark.parametrize("dtype", ["uint16", "uint32"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize(
+    "dtype", [pytest.param("uint16", marks=pytest.mark.low_priority), pytest.param("uint32", marks=pytest.mark.low_priority)]
+)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_rshift_unsigned_high_bits(dtype, target, scalarvalue):
     run_test_bitwise_rshift_unsigned_high_bits(dtype, target, scalarvalue)
 
@@ -1233,8 +1237,8 @@ def run_test_bitwise_rshift_1d(dtype, target, scalarvalue):
 
 
 @pytest.mark.parametrize("scalarvalue", [1])
-@pytest.mark.parametrize("dtype", ["int16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("dtype", [pytest.param("int16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_rshift_1d(dtype, target, scalarvalue):
     run_test_bitwise_rshift_1d(dtype, target, scalarvalue)
 
@@ -1261,15 +1265,19 @@ def run_test_bitwise_rshift_boundary(dtype, target, scalarvalue):
 
 
 @pytest.mark.parametrize("scalarvalue", [16])
-@pytest.mark.parametrize("dtype", ["int16", "uint16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize(
+    "dtype", [pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("uint16", marks=pytest.mark.low_priority)]
+)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_rshift_boundary_int16(dtype, target, scalarvalue):
     run_test_bitwise_rshift_boundary(dtype, target, scalarvalue)
 
 
 @pytest.mark.parametrize("scalarvalue", [32])
-@pytest.mark.parametrize("dtype", ["int32", "uint32"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize(
+    "dtype", [pytest.param("int32", marks=pytest.mark.low_priority), pytest.param("uint32", marks=pytest.mark.low_priority)]
+)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_rshift_boundary_int32(dtype, target, scalarvalue):
     run_test_bitwise_rshift_boundary(dtype, target, scalarvalue)
 
@@ -1293,7 +1301,7 @@ def run_test_bitwise_rshift_non_aligned(dtype, target, scalarvalue):
 
 @pytest.mark.parametrize("scalarvalue", [1])
 @pytest.mark.parametrize("dtype", ["int16"])
-@pytest.mark.parametrize("target", ["pto"])
+@pytest.mark.parametrize("target", [pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_rshift_non_aligned(dtype, target, scalarvalue):
     run_test_bitwise_rshift_non_aligned(dtype, target, scalarvalue)
 
@@ -1349,7 +1357,7 @@ def run_test_bitwise_xor(M, N, block_M, block_N, dtype, target):
     assert_close_npu(c, ref_c, dtype, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["int16", "uint16"])
+@pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_xor(dtype, target, shape):
@@ -1408,7 +1416,7 @@ def run_test_bitwise_xor_slice(M, N, block_M, block_N, dtype, target):
     assert_close_npu(c, ref_c, dtype, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["int16", "uint16"])
+@pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_xor_slice(dtype, target, shape):
