@@ -248,6 +248,9 @@ mappings:
   examples_experiment/dequantize_gemm/example_dequant_gemm_fine_grained.py: examples_experiment/dequantize_gemm/test_example_dequant_gemm_fine_grained.py
   examples_experiment/dequantize_gemm/example_dequant_gemm_w4a8.py: examples_experiment/dequantize_gemm/test_example_dequant_gemm_w4a8.py
 
+  # examples_experiment/dsa
+  examples_experiment/dsa/sparse_mla_topk_reducesum.py: examples_experiment/dsa/test_sparse_mla_topk_reducesum.py
+
   # examples_experiment/gemm_splitk
   examples_experiment/gemm_splitk/example_tilelang_gemm_splitk.py: examples_experiment/gemm_splitk/test_example_tilelang_gemm_splitk.py
 
