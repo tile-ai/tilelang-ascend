@@ -206,6 +206,12 @@ collect_test_scripts() {
             echo "${scripts[@]}"
             return
             ;;
+        "../examples_experiment/gemm_aot")
+            # AOT 示例已迁移到 examples_experiment，由 examples/gemm_aot/run_example_gemm_aot.sh 驱动，
+            # 这里不再直接收集 example_gemm.py。
+            echo "${scripts[@]}"
+            return
+            ;;
         "./flash_attention")
             # 收集主目录的 py 文件（排除 fa_opt）
             local py_files=$(find "$dir" -maxdepth 1 -name "*.py" \
