@@ -25,6 +25,15 @@ Files must be named `tvm_*.patch` to be picked up.
   which is what triggers the crash without this fix. Fixes dynamic `T.tile.fill`
   (issue #1207). Upstream TVM fixed the same thing in a large refactor that cannot
   be cherry-picked into the pinned commit.
+- **`tvm_backtrace_symbol_name_length.patch`** — `BacktraceSyminfoCallback`
+  builds the demangling input from the NUL-terminated `symname` instead of
+  `std::string(symname, symsize)`. libbacktrace's `symsize` is the size of the
+  code symbol, not the length of its name, so the old code read past the name
+  and could run off the end of the mapped string table, turning an expected
+  `ICHECK` / `InternalError` into a SIGSEGV while its backtrace was being
+  built. Upstream TVM's new FFI (apache/tvm #17920, now apache/tvm-ffi) no
+  longer uses `symsize` here, but that code arrives only with the FFI migration
+  and cannot be cherry-picked into the pinned commit.
 
 ## Regenerating a patch after a submodule bump
 

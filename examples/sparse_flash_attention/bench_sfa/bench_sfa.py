@@ -78,10 +78,10 @@ def test_op(T, B, KV_S, Q_N, KV_N, D, D_rope, sparse_size, scale_value, sparse_b
             out = out.to(first_out.dtype)
             torch.testing.assert_close(out, first_out, rtol=1e-2, atol=1e-2, equal_nan=True)
     print(f"(last op) {tl_op.__name__} {out=}")
-    print("[PASSED]")
+    print(f"Case completed: T={T}, KV_S={KV_S}")
 
 
-from sparse_flash_attn_pa import init_test
+from sparse_flash_attn_pa import init_test, sparse_attention_fwd
 
 parser = argparse.ArgumentParser(description="SparseMLA test script")
 parser.add_argument("--file", type=str, default="sparse_flash_attn_pa_no_cv_pipeline", help="The version you want to run")
@@ -103,6 +103,24 @@ else:
 
 init_test()
 tl_ops = [torch_npu.npu_sparse_flash_attention, sparse_attn_tilelang]
+
+
+def test_reject_invalid_topk():
+    # topk must be a positive multiple of 2 * n_base_size (128 by default):
+    # the T.Pipelined(num_stages=2) loop drops the tail block otherwise.
+    # 64: single block (pipeline drains everything); 192: odd block count
+    # (only the first 128 indices would be computed).
+    for bad_topk in (0, 64, 192):
+        try:
+            sparse_attention_fwd(q_heads=128, dim=512, rope_dim=64, topk=bad_topk, scale=0.5, core_num=24, block_size=128)
+        except AssertionError as e:
+            print(f"topk={bad_topk} rejected as expected: {e}")
+        else:
+            raise RuntimeError(f"topk={bad_topk} should have been rejected")
+    print("Invalid topk rejection checks completed")
+
+
+test_reject_invalid_topk()
 test_op(
     T=1,
     B=1,
@@ -151,3 +169,26 @@ test_op(
     act_kv_s=2560,
     tl_ops=tl_ops,
 )
+# non-2048 topk coverage, only for the pipelined version (sparse_flash_attn_pa)
+# whose wrapper derives topk from sparse_indices.shape[-1]; the other versions
+# hard-code topk=2048. Values satisfy the topk % (2 * n_base_size) == 0
+# constraint: 128 is the minimum (single pipeline group), 256 spans two groups.
+if args.file == "sparse_flash_attn_pa":
+    for small_topk in (128, 256):
+        test_op(
+            T=1,
+            B=1,
+            KV_S=2560,
+            Q_N=128,
+            KV_N=1,
+            D=512,
+            D_rope=64,
+            sparse_size=small_topk,
+            scale_value=0.5,
+            sparse_block_size=1,
+            sparse_mode=0,
+            block_size=128,
+            act_kv_s=2560,
+            tl_ops=tl_ops,
+        )
+print("Kernel Output Match!")

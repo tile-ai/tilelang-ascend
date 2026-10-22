@@ -47,9 +47,10 @@ def allow_vectorize(pass_ctx: PassContext | None = None) -> bool:
 
 
 def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
-    # allocate the tmp buffer for vector api
-    mod = tilelang.transform.InjectTmpBuffer(target)(mod)
+    # Workspace sizing must see the same UB scopes as VidReduction.
     mod = tilelang.transform.AscendInferBufferScope()(mod)
+    # allocate the tmp buffer for vector api
+    mod = tilelang.transform.InjectTmpBuffer(target, plan_vid_reduction=True)(mod)
     # Vid reduction
     mod = tilelang.transform.AscendVidReduction()(mod)
     # Collect buffer shape
@@ -97,9 +98,12 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     from tilelang.utils.target import check_npu_availability
 
     pass_ctx = tilelang.transform.get_pass_context()
+    managed_vector_mask = target.model in {"ascendc", "auto"} and platform in {"A2", "A3"}
     mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
     mod = tilelang.transform.CrossCorePipeline()(mod)
     mod = tilelang.transform.CombineCV()(mod)
+    # Recompute allocation scopes after C/V partitioning drops buffer uses.
+    mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
     mod = tilelang.transform.PipelinePlanning()(mod)
     mod = tilelang.transform.InjectSoftwarePipeline()(mod)
     mod = tilelang.transform.AscendLowerOpaqueBlock()(mod)
@@ -120,5 +124,17 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     mod = tilelang.transform.AscendMemoryPlanning()(mod)
     mod = tilelang.transform.AscendSyncInsert(target, platform)(mod)
     mod = tilelang.transform.AscendSyncInsertVS(target, platform)(mod)
+    if managed_vector_mask:
+        # Materialize physical terminals only after every semantic analysis and
+        # rewrite pass has completed. No TIR-transforming pass may run after
+        # mask legalization.
+        mod = tir.transform.Simplify()(mod)
+    # CombineCV or explicit T.Scope annotations must assign every
+    # resource-specific Ascend operation to C or V. Verify after automatic
+    # synchronization has materialized its final hardware calls.
+    mod = tilelang.transform.AscendResourceScopeVerify()(mod)
+    if managed_vector_mask:
+        mod = tilelang.transform.AscendVectorInstructionSelection(target, platform)(mod)
+        mod = tilelang.transform.AscendVectorMaskLegalize(target, platform)(mod)
     # print(mod)
     return mod

@@ -12,14 +12,21 @@
       "id": 2,
       "eval_name": "understand-pass-dependency",
       "prompt": "AscendMemoryPlanning 和 AscendSyncInsert 有什么关系？它们之间传递了什么数据？",
-      "expected_output": "应该展示依赖关系：AscendMemoryPlanning → address_map, size_map → AscendSyncInsert，说明 AscendMemoryPlanning 产生地址和大小信息，AscendSyncInsert 使用这些信息插入同步，强调这是 Phase 2 的关键依赖链。",
+      "expected_output": "应该展示依赖关系：AscendMemoryPlanning → address_map, size_map → AscendSyncInsert / AscendSyncInsertVS，说明两个同步 pass 都消费最终地址和大小信息，并强调任何地址/access rewrite 必须在 MemoryPlanning 前完成。",
       "files": []
     },
     {
       "id": 3,
       "eval_name": "add-new-pass-buffer-optimization",
       "prompt": "我想加一个 Pass 来优化 buffer 的大小，减少内存占用。应该加在哪里？",
-      "expected_output": "应该分析 Pass 功能（内存优化），确定阶段归属（Phase 2），分析依赖关系（需要 buffer_shapess，输出给 AscendMemoryPlanning），推荐位置（Phase 2，在 AscendStorageRewrite 后，AscendMemoryPlanning 前），给出理由和实现建议。",
+      "expected_output": "应该先确认该 Pass 会修改 buffer 定义、大小或访问关系，因此必须位于 AscendMemoryPlanning 前；再根据它所需的 initial_buffer_shapes / logic_buffer_shapes 或 legacy buffer_shapess consumer 和当前 phase.py 选择相邻锚点。不能建议在 MemoryPlanning 后改地址，也不能只凭“内存优化”固定到旧步骤号。",
+      "files": []
+    },
+    {
+      "id": 4,
+      "eval_name": "reject-transform-after-mask-legalize",
+      "prompt": "我想在 AscendVectorMaskLegalize 后再加一次 Simplify 清理 IR，可以吗？",
+      "expected_output": "必须明确回答不可以。MaskLegalize 是 managed A2/A3 AscendC 路径最后一个 TIR transformation；后续 Simplify 可能移动、删除或重写 selected terminal/setter，破坏 Selection 已确定的 ABI 和 mask repair。若需要清理，应放在 AscendResourceScopeVerify/InstructionSelection 前的 final Simplify 位置。",
       "files": []
     }
   ]

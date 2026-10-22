@@ -1,6 +1,5 @@
 import argparse
 
-import os
 import tilelang
 import tilelang.language as T
 import torch
@@ -18,14 +17,12 @@ N = 16
 block_M = 2
 block_N = 16
 
-# TL_PTO_DEBUG=1 enables device-side printf/dump_tensor output.
-# This adds -D_DEBUG and --cce-enable-print compiler flags.
-# It degrades performance; intended for debugging only.
-# See: docs/TileLang-Ascend Programming Guide.md for details.
-os.environ["TL_PTO_DEBUG"] = "1"
 
-
-@tilelang.jit(out_idx=[-1])
+@tilelang.jit(
+    out_idx=[-1],
+    target="ascendc",
+    compile_flags=["-D_DEBUG", "--cce-enable-print"],
+)
 def bitwise_and(M, N, block_M, block_N, dtype="int16"):
     m_num = M // block_M
     n_num = N // block_N
@@ -49,9 +46,14 @@ def bitwise_and(M, N, block_M, block_N, dtype="int16"):
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            T.printf("===========original c_ub:\n")
-            T.dump_tensor(c_ub, 222, block_M // VEC_NUM * block_N, (block_M // VEC_NUM, block_N))
             with T.Scope("V"):
+                T.printf("===========original c_ub:\n")
+                T.dump_tensor(
+                    c_ub,
+                    222,
+                    block_M // VEC_NUM * block_N,
+                    (block_M // VEC_NUM, block_N),
+                )
                 T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
                 T.printf("===========a_ub after copy:\n")
                 T.dump_tensor(a_ub, 222, block_M // VEC_NUM * block_N, (block_M // VEC_NUM, block_N))

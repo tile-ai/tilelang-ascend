@@ -39,7 +39,7 @@ description: "根据 pass-design.md 与 workflow 分析结果生成 TileLang-Asc
 | Pass 名称 | C++ 类名、Python 函数名、注册名 | 从 `pass-design.md` §1.1 读取 |
 | 阶段归属与位置 | `Phase 1 / Phase 2`，以及插入位点 | 从 `pass-design.md` §2 读取 |
 | 父类与核心方法 | `IRMutatorWithAnalyzer` / `StmtExprVisitor` / `StmtExprMutator` 等 | 从 `pass-design.md` §4.1 读取 |
-| 输入/输出 attrs | 上下游数据传递 | 从 `pass-design.md` §2.4、§3 读取 |
+| 输入/输出 attrs 与结构 facts | 上下游数据及 IR contract | 从 `pass-design.md` §2.4、§3 读取 |
 
 > 设计文档 §5「测试方案」本 skill 不消费，仅作为下游测试 skill 的输入保留。
 
@@ -82,27 +82,29 @@ description: "根据 pass-design.md 与 workflow 分析结果生成 TileLang-Asc
 5. **Python 封装现状**：`tilelang/transform/__init__.py`（确认现有命名风格、`_ffi_api` 调用方式）
 6. **相似 Pass 源码**：`pass-design.md` §4.1 指定的参考 Pass，仅读 1–2 个最接近的实现，不得扫整目录
 
-> 信息源冲突时，优先级：`pass-design.md` > `pass-impl-patterns.md` > 相似 Pass 源码 > 自身经验。
+> `pass-design.md` 决定目标行为；当前源码决定真实接口、顺序和约束。两者冲突时停止并修正
+> design，不能用设计文档覆盖已存在的 pipeline invariant。
 
 ### Phase B：生成实现骨架文档（pass-impl-skeleton.md）
 
 骨架文档是「**代码层面的最后一次结构化对齐**」。它比 `pass-design.md` 更落地，但又比真实代码更轻量，目的是在写代码前一次性把以下决策列清楚：
 
-1. **改动文件清单**（含状态：新建 / 修改），**仅限实现侧 4 个文件**：`.cc` / `__init__.py` / `pass_config.py` / `phase.py`
+1. **改动文件清单**：四个基础接入点（`.cc` / `__init__.py` / `pass_config.py` / `phase.py`）
+   加上 design 证明必需的 catalog、公共 header 或 `OperationConfig` supporting files
 2. **C++ 类骨架**：类名、父类、成员变量、构造函数签名、所有要重写的 `VisitStmt_` / `VisitExpr_` 方法签名（不写实现体）
 3. **Substitute 入口流程**：步骤化伪代码（读取 attrs → 构造 mutator → MutateFunc → 设置 attrs）
 4. **辅助类/辅助函数清单**（如 `Detector`、`Analyzer`、`Rewriter` 模式拆分）
-5. **Attr 读写表**：键名 / 类型 / 来源 Pass / 缺失策略
+5. **Attr 与结构事实表**：consumed / produced / invalidated facts、来源/消费者和缺失策略
 6. **注册与配置键**：`TVM_REGISTER_GLOBAL` 完整字符串、可选的 `TVM_REGISTER_PASS_CONFIG_OPTION`
 7. **Python 封装函数签名**：参数、docstring 要点
-8. **Pipeline 接入点**：在 `phase.py` 哪一行（具体到上下游 Pass 名称）
+8. **Pipeline 接入点**：`phase.py` 中 after X / before Y，以及不跨越的结构边界
 9. **最小冒烟验证步骤**：先跑哪一条命令（导入冒烟 / 编译冒烟 / 最小 example 能跑）
 
 > ⚠️ 骨架文档不写测试用例。测试相关内容由后续独立 skill 负责，本骨架里仅在末尾留一行「测试待补由 Pass 测试生成 skill 处理」作为交棒标记。
 
 骨架文档基于 `templates/pass-impl-skeleton-template.md` 填写，输出到 `pass-impl-skeleton.md`。完成后**必须停下来等用户确认**，再进入 Phase C。
 
-> 骨架阶段禁止做的事：写完整 `VisitStmt_` 函数体、动除骨架文档外的任何文件。
+> 骨架阶段禁止写完整 `VisitStmt_` 函数体或修改实现文件。
 
 ### Phase C：落代码
 
@@ -116,6 +118,7 @@ description: "根据 pass-design.md 与 workflow 分析结果生成 TileLang-Asc
 | 4 | `tilelang/engine/phase.py` | 在指定 Pass 前/后插入一行调用 | 视觉对齐上下文，避免插错阶段 |
 
 > 本 skill 不写、不改 `testing/python/` 下任何文件。
+> Catalog、公共 header 和 `OperationConfig` 等 supporting files 只有在骨架已证明必要时修改。
 
 #### 落代码硬约束
 
@@ -123,28 +126,30 @@ description: "根据 pass-design.md 与 workflow 分析结果生成 TileLang-Asc
 - **禁止改动 `tir.transform.*` 等 TVM 原生 Pass**（来自 `tilelang-pass-agents-guide.md` 约束 3）
 - **禁止只改 `.cc` 不改 Python 封装**（约束 4）
 - **禁止把多种职责塞进一个 Pass**（约束 4：功能正交）
-- **配置键缺省值默认 `False`**：新增 Pass 默认不开启，需要走 `pass_configs` 显式启用，除非 `pass-design.md` §4.5 明确写了「默认开启」并给出理由
+- **配置默认值必须显式验证**：从 C++ `GetConfig`、target defaults 和设计语义确认，不能从
+  “Ascend-specific” 推断为 `False`。例如 `tl.ascend_vector_mask_reuse` 默认 `True`，且只控制
+  reuse 策略，不关闭 Selection / Legalize。
 - **Attr 读取必须做 defined() 检查**：缺失时按设计文档的策略处理（报错 / 跳过 / 默认值），不得静默崩溃
 - **C++ 注释保持最小**：仅在 WHY 不直观时写一行（来自仓库总规约）
 
 ### Phase D：最小冒烟验证
 
-本 skill 只做不依赖 UT/ST 的冒烟验证，按优先级顺序执行（完成第一项即可继续，但必须至少做一项）：
+本 skill 不新建 UT/ST，但验证不能停在 import：
 
-1. **导入冒烟**：
+1. **命名与导入冒烟**：
    ```bash
    python -c "import tilelang; from tilelang.transform import <Pass>; print(<Pass>())"
    ```
    验证 Python 封装、`_ffi_api` 注册、C++ 端 `TVM_REGISTER_GLOBAL` 字符串四方一致。
-2. **构建冒烟**（如本地能跑构建）：项目根目录的最小重新构建，验证 C++ 文件能编过。
-3. **Pipeline 冒烟**：跑一条**已存在**的最小 example（如 `examples/elementwise/...`）确认 pipeline 没有因为本 Pass 的接入而崩。
+2. **C++ 重建**：修改编入 shared library 的 C++ 后必须重新构建；环境阻塞时明确报告，不能用 grep 代替。
+3. **现有聚焦回归**：至少运行一个能经过新行为的既有编译或行为测试；没有覆盖时报告永久测试缺口。
 4. **跨文件一致性 grep**：
    ```bash
    grep -n "<PassName>" src/transform/<pass>.cc tilelang/transform/__init__.py tilelang/engine/phase.py
    grep -n "tl.<pass_lower>" src/transform/<pass>.cc tilelang/transform/pass_config.py
    ```
 
-> ⚠️ **本阶段不写、不跑 UT/ST 单测**。如果配套的 `testing/python/` 下已有更早的相关测试，可以顺便跑一下作为额外冒烟，但**禁止为本 Pass 新建任何测试文件**。
+> 本阶段不新建 UT/ST；既有聚焦测试属于必需验证，不是额外可选项。
 
 若验证失败，按以下顺序定位：
 
@@ -173,9 +178,19 @@ description: "根据 pass-design.md 与 workflow 分析结果生成 TileLang-Asc
 | 父类是 `StmtExprMutator` | 不需要 analyzer，直接重写 `VisitStmt_/VisitExpr_` |
 | Pass 有输入 attrs | `f->GetAttr<...>(key)` + `defined()` 检查；缺失策略走设计文档 |
 | Pass 有输出 attrs | 在 `Substitute` 末尾 `f.WithAttrs({{key, value}})` |
-| Pass 是 Ascend 特定 | 加 `is_npu` 判断或仅在 `OptimizeForTarget` 中调用 |
+| Pass 是 target-specific | 根据 consumed/produced IR contract 选择 Phase 1/2，再加精确 target gate |
 | Pass 与现有 Pass 功能重合 | **回退**：在现有 Pass 内做增量改动，不新增 Pass |
-| 设计文档与相似 Pass 实现冲突 | 以设计文档为准；如设计文档不合理，停下来回到 design skill |
+| 设计文档与当前接口或 pipeline invariant 冲突 | 停止，回到 design skill 修正后再实现 |
+
+### Pipeline 尾部硬边界
+
+接入 `phase.py` 前必须读取 workflow skill 的 placement guide，并证明：
+
+- buffer/address/access rewrite 位于 MemoryPlanning 前；
+- memory/pipeline-affecting call 位于 SyncInsert 前并更新所需 OperationConfig；所有
+  hardware-call/sync/scope rewrite 位于 ResourceScopeVerify 前；
+- managed Vector semantic rewrite 位于 InstructionSelection 前；
+- `AscendVectorMaskLegalize` 后没有任何 TIR rewrite。
 
 ---
 
@@ -210,7 +225,7 @@ description: "根据 pass-design.md 与 workflow 分析结果生成 TileLang-Asc
 
 | 修改点 | 立即验证手段 |
 |--------|--------------|
-| 改了 C++ 文件 | 至少 `clang-format` / 本地 build；如时间不允许，至少 grep 注册宏字符串 |
+| 改了 C++ 文件 | `clang-format` + 本地 build；无法 build 时明确阻塞，不能用 grep 冒充 |
 | 改了 Python `__init__.py` | `python -c "from tilelang.transform import <Pass>"` |
 | 改了 `phase.py` | 跑一条最小 example 编译（如 `examples/elementwise/...`）确认 pipeline 不炸 |
 | 改了 `pass_config.py` | grep 一次配置键名，确认与 C++ 字符串完全一致 |

@@ -1,3 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+cd "$script_dir"
+
 python run.py \
   --iter-mode zip \
   --B 2 2 1 \
@@ -6,5 +12,5 @@ python run.py \
   --kv-heads 1 1 1 \
   --D 128 128 128 \
   --log ./log \
-  --tl ./flash_attn_bhsd_auto_pipeline_h16_d128.py \
-  --ascendc ./flash_attn_bhsd_ascendc.py
+  --tl ./auto_pipeline/h16_d128.py \
+  --ascendc ./reference/ascendc.py

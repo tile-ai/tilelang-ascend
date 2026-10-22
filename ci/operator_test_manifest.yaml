@@ -41,6 +41,7 @@ mappings:
   # examples/cann-bench
   examples/cann-bench/cummin/example_cummin.py: examples/cann-bench/cummin/test_example_cummin.py
   examples/cann-bench/group_norm/example_group_norm.py: examples/cann-bench/group_norm/test_example_group_norm.py
+  examples/cann-bench/situ_glu_grad/example_situ_glu_grad.py: examples/cann-bench/situ_glu_grad/test_example_situ_glu_grad.py
 
   # examples/causal_conv1d
   examples/causal_conv1d/causal_conv1d.py: examples/causal_conv1d/test_causal_conv1d.py
@@ -73,10 +74,10 @@ mappings:
   examples/elementwise/setvalue_example.py: examples/elementwise/test_setvalue_example.py
 
   # examples/flash_attention/fa_opt
-  examples/flash_attention/fa_opt/flash_attn_bhsd_ascendc.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_ascendc.py
-  examples/flash_attention/fa_opt/flash_attn_bhsd_auto_pipeline_h16_d128.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_auto_pipeline_h16_d128.py
-  examples/flash_attention/fa_opt/flash_attn_bhsd_auto_pipeline_h32_d512.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_auto_pipeline_h32_d512.py
-  examples/flash_attention/fa_opt/flash_attn_bhsd_expert_h16_d128.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_expert_h16_d128.py
+  examples/flash_attention/fa_opt/reference/ascendc.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_ascendc.py
+  examples/flash_attention/fa_opt/auto_pipeline/h16_d128.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_auto_pipeline_h16_d128.py
+  examples/flash_attention/fa_opt/auto_pipeline/h32_d512.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_auto_pipeline_h32_d512.py
+  examples/flash_attention/fa_opt/expert_v1/kernel.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_expert_h16_d128.py
 
   # examples/flash_attention
   examples/flash_attention/flash_attn_bhsd.py: examples/flash_attention/test_flash_attn_bhsd.py
@@ -206,6 +207,10 @@ mappings:
 
   # examples/tile_kernels/moe
   examples/tile_kernels/moe/moe_topk_gate.py: examples/tile_kernels/moe/test_moe_topk_gate.py
+  examples/tile_kernels/moe/moe_topk_sum_and_topk_group_idx.py: examples/tile_kernels/moe/test_moe_topk_sum_and_topk_group_idx.py
+
+  # examples/tile_kernels/quant
+  examples/tile_kernels/quant/per_block_cast_lossless_kernel.py: examples/tile_kernels/quant/test_per_block_cast_lossless_kernel.py
 
   # examples/topk_selector
   examples/topk_selector/example_topk_selector.py: examples/topk_selector/test_example_topk_selector.py
@@ -214,8 +219,8 @@ mappings:
   examples/unsorted_segment_sum/unsorted_segment_sum.py: examples/unsorted_segment_sum/test_unsorted_segment_sum.py
 
   # examples/xattention
-  examples/xattention/xattention.py: examples/xattention/test_xattention.py
-  examples/xattention/xattention_paged.py: examples/xattention/test_xattention_paged.py
+  examples/xattention/expert_v1/kernel.py: examples/xattention/test_xattention.py
+  examples/xattention/expert_v1/paged.py: examples/xattention/test_xattention_paged.py
 
   # examples/xllm_kernels
   examples/xllm_kernels/fused_gdn_gating.py: examples/xllm_kernels/test_fused_gdn_gating.py

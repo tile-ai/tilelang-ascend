@@ -1,0 +1,15 @@
+diff --git a/src/runtime/logging.cc b/src/runtime/logging.cc
+index 844a8bcf1..a93738bf7 100644
+--- a/src/runtime/logging.cc
++++ b/src/runtime/logging.cc
+@@ -83,7 +83,9 @@ void BacktraceSyminfoCallback(void* data, uintptr_t pc, const char* symname, uin
+   auto str = reinterpret_cast<std::string*>(data);
+ 
+   if (symname != nullptr) {
+-    std::string tmp(symname, symsize);
++    // tilelang-ascend: symsize is the size of the code symbol, not the length of
++    // symname; reading symsize bytes can run past the string table and crash.
++    std::string tmp(symname);
+     *str = DemangleName(tmp.c_str());
+   } else {
+     std::ostringstream s;

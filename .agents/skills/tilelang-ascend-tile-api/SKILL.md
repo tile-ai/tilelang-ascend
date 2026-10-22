@@ -131,13 +131,19 @@ PASS_CONFIGS = {
 
 ## 文档更新
 
-对于面向用户的 API，更新未来用户和 agent 真正会看的文档：
+公开契约只维护一份，其余层次通过链接分工：
 
-- `docs/language_ref/tilelibrary.md`：简短语言参考。
-- `docs/TileLang-Ascend Programming Guide.md`：详细使用指南。
-- `.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-compute.md`：agent 面向的 API 用法说明。
-- `.agents/skills/tilelang-custom-skill/tilelang-programming-model-guide/SKILL.md`：仅当编程模式建议发生变化时更新。
-- 不要为了内部 helper 去更新宽泛文档。
+- `docs/language_ref/tilelibrary.md`：唯一的 user-facing API contract，记录签名、语义、
+  支持范围和拒绝条件。
+- `docs/TileLang-Ascend Programming Guide.md`：只有需要概念解释或完整教程时才更新；链接
+  language reference，不复制参数表。
+- `tilelang-api-best-practices/references/api-compute.md`：只写会改变 Agent 选择或验证方式的
+  门禁，并链接 language reference，不维护第二份 API 手册。
+- `tilelang-programming-model-guide/SKILL.md`：仅当 Developer/Hybrid/Expert 的选择建议变化时更新。
+
+若 API 暴露 `tmp`，先区分通用 byte arena 与会改变 operand layout 的专用 contract；
+`row_expand_*_experiment` 属于后者，不能从相邻 API 推断。内部 helper 不更新宽泛文档。
+Review 纠错应原地替换、合并或删除；净增长必须对应新增的公开行为或 Agent 决策分支。
 
 如果旧文档里有相似但语义不同的全局 API，增加简短提醒，而不是静默改写可能属于 GPU / 主仓教程的示例。
 

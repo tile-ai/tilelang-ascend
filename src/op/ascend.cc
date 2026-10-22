@@ -152,15 +152,30 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
   auto compute_strideN = [](const Buffer &buf,
                             const Array<PrimExpr> &extents) -> PrimExpr {
+    // The GM copy is emitted as a 2D DMA: blockCount rows (the second-to-last
+    // active dim, i.e. the highest dim below the last whose extent != 1) by
+    // blockLen columns (the last dim), with one uniform stride between
+    // consecutive rows. That stride is the product of every buffer dim below
+    // the row dim, so extent-1 dims sitting under the row dim must be folded
+    // into it (e.g. Query[cid, m:m+BM, n2, g*D:(g+1)*D] folds the scalar n2
+    // dim into the stride). But when every leading extent is 1 -- a row slice
+    // like C2[row, 0:N] -- the row dim is the second-to-last dim itself
+    // (blockCount = 1) and the stride is just the last buffer dim: folding the
+    // leading dims in would return the whole buffer size as the stride and
+    // corrupt the DMA (issue #1263).
     PrimExpr strideN = buf->shape[buf->shape.size() - 1];
-    if (extents.size() > 1) {
-      for (int i = extents.size() - 2; i >= 0; --i) {
-        auto *extent = extents[i].as<IntImmNode>();
-        if (!extent || extent->value != 1) {
-          break;
-        }
-        strideN = strideN * buf->shape[i];
+    PrimExpr folded = Integer(1);
+    bool has_row_dim = false;
+    for (int i = static_cast<int>(extents.size()) - 2; i >= 0; --i) {
+      auto *extent = extents[i].as<IntImmNode>();
+      if (!extent || extent->value != 1) {
+        has_row_dim = true;
+        break;
       }
+      folded = folded * buf->shape[i];
+    }
+    if (has_row_dim) {
+      strideN = strideN * folded;
     }
     return strideN;
   };
@@ -676,15 +691,30 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
 
   auto compute_strideN = [](const Buffer &buf,
                             const Array<PrimExpr> &extents) -> PrimExpr {
+    // The GM copy is emitted as a 2D DMA: blockCount rows (the second-to-last
+    // active dim, i.e. the highest dim below the last whose extent != 1) by
+    // blockLen columns (the last dim), with one uniform stride between
+    // consecutive rows. That stride is the product of every buffer dim below
+    // the row dim, so extent-1 dims sitting under the row dim must be folded
+    // into it (e.g. Query[cid, m:m+BM, n2, g*D:(g+1)*D] folds the scalar n2
+    // dim into the stride). But when every leading extent is 1 -- a row slice
+    // like C2[row, 0:N] -- the row dim is the second-to-last dim itself
+    // (blockCount = 1) and the stride is just the last buffer dim: folding the
+    // leading dims in would return the whole buffer size as the stride and
+    // corrupt the DMA (issue #1263).
     PrimExpr strideN = buf->shape[buf->shape.size() - 1];
-    if (extents.size() > 1) {
-      for (int i = extents.size() - 2; i >= 0; --i) {
-        auto *extent = extents[i].as<IntImmNode>();
-        if (!extent || extent->value != 1) {
-          break;
-        }
-        strideN = strideN * buf->shape[i];
+    PrimExpr folded = Integer(1);
+    bool has_row_dim = false;
+    for (int i = static_cast<int>(extents.size()) - 2; i >= 0; --i) {
+      auto *extent = extents[i].as<IntImmNode>();
+      if (!extent || extent->value != 1) {
+        has_row_dim = true;
+        break;
       }
+      folded = folded * buf->shape[i];
+    }
+    if (has_row_dim) {
+      strideN = strideN * folded;
     }
     return strideN;
   };
@@ -1096,12 +1126,12 @@ TIR_DEFINE_TL_BUILTIN(ascend_select)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_leaky_relu)
-    .set_num_inputs(5)
+    .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_axpy)
-    .set_num_inputs(5)
+    .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
@@ -1136,7 +1166,7 @@ TIR_DEFINE_TL_BUILTIN(ascend_transpose)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_createvecindex)
-    .set_num_inputs(3)
+    .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
@@ -1156,7 +1186,7 @@ TIR_DEFINE_TL_BUILTIN(ascend_sort)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_merge_sort)
-    .set_num_inputs(6)
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
@@ -1211,7 +1241,8 @@ TIR_DEFINE_TL_BUILTIN(ascend_gather)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_reduce)
-    .set_num_inputs(4)
+    // tag, dst, src, optional tmp, clear, optional physical row
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
@@ -1388,22 +1419,24 @@ TIR_DEFINE_TL_BUILTIN(ascend_silu)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_clamp_max)
-    .set_num_inputs(6)
+    // The public call has one optional workspace operand, removed by
+    // InjectTmpBuffer for the managed AscendC path.
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_clamp_min)
-    .set_num_inputs(6)
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_clamp)
-    .set_num_inputs(6)
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_round)
-    .set_num_inputs(4)
+    .set_num_inputs(-1)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
@@ -1492,25 +1525,52 @@ TIR_DEFINE_TL_BUILTIN(ascend_copy_vc_experiment)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
-// Internal tail-aware ops (see ascend.h). Variadic: they carry an AscendC op
-// tag string, buffer pointers, and the runtime tail rect.
+// Internal tail-aware ops (see ascend.h). They carry an AscendC op tag string,
+// buffer pointers, and the runtime tail rectangle.
 TIR_DEFINE_TL_BUILTIN(ascend_tail_unary)
-    .set_num_inputs(-1)
+    .set_num_inputs(6)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_tail_binary)
-    .set_num_inputs(-1)
+    .set_num_inputs(7)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_tail_scalar)
-    .set_num_inputs(-1)
+    .set_num_inputs(7)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_tail_reduce)
-    .set_num_inputs(-1)
+    .set_num_inputs(8)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+#define TL_ASCEND_SEMANTIC_OP(...)
+#define TL_ASCEND_PHYSICAL(selected, selector, dtype_domain, operands,         \
+                           payload, emitter, intrinsic)                        \
+  TIR_DEFINE_TL_BUILTIN(selected)                                              \
+      .set_num_inputs(-1)                                                      \
+      .set_attr<TCallEffectKind>("TCallEffectKind",                            \
+                                 Integer(CallEffectKind::kOpaque));
+#define TL_ASCEND_HELPER(selected, selector, contract)                         \
+  TIR_DEFINE_TL_BUILTIN(selected)                                              \
+      .set_num_inputs(-1)                                                      \
+      .set_attr<TCallEffectKind>("TCallEffectKind",                            \
+                                 Integer(CallEffectKind::kOpaque));
+#include "ascend_vector_mask_ops.inc"
+#undef TL_ASCEND_HELPER
+#undef TL_ASCEND_PHYSICAL
+#undef TL_ASCEND_SEMANTIC_OP
+
+TIR_DEFINE_TL_BUILTIN(ascend_set_mask_mode)
+    .set_num_inputs(1)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_set_mask_payload)
+    .set_num_inputs(2)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
