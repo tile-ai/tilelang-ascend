@@ -31,7 +31,7 @@ BF16 边界为 round-to-nearest-even；E4M3 编码为 round-half-even、含次�
 - Cache：`k_cache` [num_blocks, page_size, 128] uint8（E4M3 字节位模式）、
   `scale_cache` [num_blocks, page_size] fp32（原地写）
 - 参考实现：tile-ai/tilelang 主仓 `examples/kpool` 的
-  `glm53_kpool_reference`；判定口径见 §6
+  `glm53_kpool_reference`；判定口径见 §7
 
 ## 2. 软硬件环境
 
@@ -69,7 +69,36 @@ BF16 边界为 round-to-nearest-even；E4M3 编码为 round-half-even、含次�
 随 block 占用率上升而改善（1,024 个 pool 为 16 个 block，每个 block 使用两
 个 AIV 子核；该部件共 20 个 AI core）。
 
-## 5. 端到端（含宿主适配，墙钟）
+## 5. 性能分析（msprof，16,384 pools）
+
+上文性能表的 kernel-only 数字来自 graph replay；下表为同形状的单次 msprof
+`op` 采集（256 blocks、512 个 AIV 子核，profiler 口径 Task Duration
+165.0 us）。该融合算子在昇腾上没有已发布基线，效率用硬件峰值的利用率衡量。
+
+| 指标 | 值 |
+|------|-----|
+| AIV 忙碌（任一管道，对 40 个 AIV 汇总） | 91.7% |
+| AIV Vector 管道 | 61.7% |
+| AIV MTE2（GM -> UB） | 28.0% |
+| AIV Scalar | 19.3% |
+| AIV MTE3（UB -> GM） | 1.3% |
+| Cube 核 | 空闲（0.33 us/block；纯 Vector 算法） |
+
+有效带宽：msprof MTE2/MTE3 计数显示每 pool GM 流量为读 4.77 KB + 写
+0.12 KB，16,384 pools 合计 80.1 MB；对 graph replay 的 kernel 时间
+149.2 us 约为 537 GB/s，约 910B HBM 峰值（1.2 TB/s）的 45%。
+
+解读：
+
+- kernel 是 Vector 管道瓶颈：softmax、254 个蝶形 slice op 与 scale/编码
+  路径让 Vector 管道忙碌 61.7%，MTE2 以 28.0% 重叠；Cube 核参与编译但全程
+  空闲。
+- 随 pool 数近似线性扩展（1,024 → 16,384 pools，ns/pool 16.1 → 9.1），
+  因为更多 block 填满 20 个 AI core。
+- 相对本 PR 首个实现（kernel-only 22.8/70.2/230.2 us）：1.38x / 1.43x /
+  1.54x。
+
+## 6. 端到端（含宿主适配，墙钟）
 
 | P（pool 数） | E2E（us） | ns / pool |
 |-----------|----------|-----------|
@@ -81,7 +110,7 @@ BF16 边界为 round-to-nearest-even；E4M3 编码为 round-half-even、含次�
 0.45 ms/op），并非设备计算；该部分不属于 kernel 交付本体。后续可优化方向：
 `ape` 内化进 kernel、减少宿主预处理 op 数。
 
-## 6. 精度
+## 7. 精度
 
 `test_example_glm53_kpool_compress.py` 全部用例通过。对标主仓的小用例保持上游
 字节级口径：写入行的每个 E4M3 字节与 `glm53_kpool_reference` 相差不超过 1 ULP

@@ -31,8 +31,8 @@ subnormals and saturates at 448.
   bf16, `ape` [pool_size, 128] fp32, `loc` [P] int64, `write_mask` [P] bool
 - Cache: `k_cache` [num_blocks, page_size, 128] uint8 (E4M3 byte patterns),
   `scale_cache` [num_blocks, page_size] fp32 (in/out, written in place)
-- Reference: CUDA/ROCm `examples/kpool` in tile-ai/tilelang
-  (`glm53_kpool_reference`); accuracy criteria in §6
+- Reference: upstream `examples/kpool` in tile-ai/tilelang
+  (`glm53_kpool_reference`); accuracy criteria in §7
 
 ## 2. Hardware & Software
 
@@ -70,7 +70,39 @@ all-pools-fit cache, `round_scale=True`.
 Scaling follows block occupancy (1,024 pools = 16 blocks, each using both AIV
 subcores; 20 AI cores on this part).
 
-## 5. End-to-end (host adapter included, wall clock)
+## 5. Performance Analysis (msprof, 16,384 pools)
+
+The kernel-only numbers above come from graph replay; the pipe breakdown below
+is one msprof `op` capture of the same shape (256 blocks, 512 AIV subcores,
+task duration 165.0 us under the profiler). No published baseline exists for
+this fused operator on Ascend, so efficiency is reported as utilization of the
+hardware peaks.
+
+| Metric | Value |
+|--------|-------|
+| AIV busy (any pipe, aggregated over the 40 AIVs) | 91.7% |
+| AIV vector pipe | 61.7% |
+| AIV MTE2 (GM -> UB) | 28.0% |
+| AIV scalar | 19.3% |
+| AIV MTE3 (UB -> GM) | 1.3% |
+| Cube cores | idle (0.33 us/block; pure Vector algorithm) |
+
+Effective bandwidth: the measured GM traffic is 4.77 KB read + 0.12 KB written
+per pool (msprof MTE2/MTE3 counters), 80.1 MB at 16,384 pools; against the
+graph-replay kernel time of 149.2 us this is ~537 GB/s, ~45% of the 910B HBM
+peak (1.2 TB/s).
+
+Readings:
+
+- The kernel is vector-pipe bound: softmax, the 254 butterfly slice ops and
+  the scale/encode path keep the vector pipe busy 61.7% of the wall clock
+  while MTE2 overlaps at 28.0%; the cube cores are compiled in but idle.
+- Scale-out is linear in the pool count (16.1 -> 9.1 ns/pool from 1,024 to
+  16,384 pools) because more blocks fill the 20 AI cores.
+- Against the first implementation in this PR (22.8/70.2/230.2 us kernel-only):
+  1.38x / 1.43x / 1.54x.
+
+## 6. End-to-end (host adapter included, wall clock)
 
 | P (pools) | E2E (us) | ns / pool |
 |-----------|----------|-----------|
@@ -83,7 +115,7 @@ preparation/scatter ops) in this environment, not by device work; it is not
 part of the kernel contribution. Reducing it (in-kernel `ape` fold, fewer host
 preparation ops) is future work.
 
-## 6. Accuracy
+## 7. Accuracy
 
 All tests in `test_example_glm53_kpool_compress.py` pass. The reference-
 mirroring cases keep the upstream byte-level criterion: every E4M3 byte of

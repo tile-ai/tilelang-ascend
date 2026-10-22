@@ -6,13 +6,15 @@ softmax over `slot_score + ape`, pools the BF16 K vectors with those
 probabilities, rounds the pooled vector through BF16, applies a normalized
 Hadamard-128 rotation, quantizes with one FP32 power-of-two absmax scale per
 vector (optionally plain absmax scale) and scatters the result into a
-caller-owned paged cache. The math matches the CUDA reference
+caller-owned paged cache. The math matches the reference implementation
 (examples/kpool in tile-ai/tilelang) operation for operation.
 
 Cache contract (Ascend port): the reference stores E4M3 values as FP8 tensors.
-Ascend A2/A3 has no FP8 data path, so this port stores the very same E4M3 byte
-patterns in a ``uint8`` ``k_cache`` and keeps ``scale_cache`` as FP32; the byte
-layout is identical to a split of the production interleaved uint8 allocation.
+A2/A3 has no FP8 data path, so this port computes the E4M3 codes with integer
+bit arithmetic (round-half-even, subnormals, saturation to 448 -- no FP8 type
+and no numeric approximation) and stores the resulting byte patterns in a
+``uint8`` ``k_cache`` with a separate FP32 ``scale_cache``; the byte layout is
+identical to a split of the production interleaved uint8 allocation.
 
 Host-side preparation and write-back (numerically identical to the reference):
 
@@ -29,10 +31,10 @@ Host-side preparation and write-back (numerically identical to the reference):
     scatter loop is serialized by conservative PIPE_ALL barriers emitted around
     every scalar access (measured ~30% of kernel time).
 
-Device-side notes: E4M3 conversion is emulated with the Ascend cast whitelist
-plus integer bit manipulation (round-half-even, subnormal handling, saturation
-to 448); the Hadamard butterfly runs on contiguous half-slices of a dim-major
-tile (bit-exact against the reference).
+Device-side notes: E4M3 encoding is exact integer bit arithmetic on the fp32
+bit pattern (round-half-even, subnormal handling, saturation to 448); the
+Hadamard butterfly runs on contiguous half-slices of a dim-major tile
+(bit-exact against the reference).
 
 Mode: Developer pass_configs (auto sync / memory planning) with ``T.alloc_ub``
 buffers and ``T.tile`` vector primitives; pure Vector, one 32-pool tile per
@@ -48,40 +50,52 @@ import torch
 
 GLM53_HEAD_DIM = 128
 GLM53_POOL_SIZE = 4
-_HADAMARD128_SCALE = 1.0 / math.sqrt(GLM53_HEAD_DIM)
-_FP8_MAX = 448.0
+HADAMARD128_SCALE = 1.0 / math.sqrt(GLM53_HEAD_DIM)
+
+# E4M3 encoding constants. fp32 is sign(1) | exp(8, bias 127) | mantissa(23);
+# E4M3 is sign(1) | exp(4, bias 7) | mantissa(3) with subnormal codes 0..7
+# covering magnitudes 2^-9 .. 2^-6 and code 8 = 2^-6.
+E4M3_MAX = 448.0  # largest finite E4M3 magnitude
+E4M3_MAX_CODE = 126  # 0x7E: largest finite code (saturation target)
+E4M3_MIN_NORMAL_CODE = 8  # smallest normal code; magnitudes below 2^-6 are subnormal
+E4M3_SUBNORMAL_SCALE = 2.0**9  # subnormal code = round(|x| * 2^9)
+E4M3_RNE_BIAS = (1 << 19) - 1  # round the 20 discarded mantissa bits to nearest
+E4M3_CODE_BASE = (127 - 7) << 3  # 960: (fp32 exp - E4M3 bias) << 3 mantissa bits
+FP32_MANT_MASK = (1 << 23) - 1  # 0x7FFFFF
+FP32_ONE_BITS = 0x3F800000  # 1.0f, base of the 2^-exp inverse construction
 
 # Pools per device tile. 32 is the largest tile that fits the 192KB UB budget
 # of this structure (P=64 fails memory planning), and 32 also keeps the
 # Hadamard slicing butterfly inside its fast compile regime (P=256 takes >44min).
-_POOL_TILE = 32
-# Pools per device block: one 32-pool tile per AIV subcore.
-_BLOCK_POOLS = 2 * _POOL_TILE
+POOL_TILE = 32
+# Pools per device block: one POOL_TILE per AIV subcore.
+BLOCK_POOLS = 2 * POOL_TILE
 
-_PASS_CONFIGS = {
+PASS_CONFIGS = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
 
 
-@tilelang.jit(pass_configs=_PASS_CONFIGS)
+@tilelang.jit(pass_configs=PASS_CONFIGS)
 def glm53_kpool_compress_kernel(
     num_tiles: int,
     pool_size: int = GLM53_POOL_SIZE,
     head_dim: int = GLM53_HEAD_DIM,
     round_scale: bool = True,
 ):
-    """Build the compress kernel for ``num_tiles`` device blocks of _BLOCK_POOLS pools.
+    """Build the compress kernel for ``num_tiles`` device blocks of BLOCK_POOLS pools.
 
     Inputs (slot-major, padded):
-      K     [pool_size * num_tiles * _BLOCK_POOLS, head_dim] bf16
-      S     [pool_size * num_tiles * _BLOCK_POOLS, head_dim] f32  (scores + ape)
+      K     [pool_size * num_tiles * BLOCK_POOLS, head_dim] bf16
+      S     [pool_size * num_tiles * BLOCK_POOLS, head_dim] f32  (scores + ape)
     Outputs (row-contiguous scratches; the host adapter scatters them into the
     paged caches, see module docstring):
-      ROW_SCRATCH  [num_tiles * _BLOCK_POOLS, head_dim] u8   (E4M3 byte patterns)
-      SC_SCRATCH   [num_tiles * _BLOCK_POOLS] f32            (per-pool scales)
+      ROW_SCRATCH  [num_tiles * BLOCK_POOLS, head_dim] u8   (E4M3 byte patterns)
+      SC_SCRATCH   [num_tiles * BLOCK_POOLS] f32            (per-pool scales)
     """
-    pools = num_tiles * _BLOCK_POOLS
+    pools = num_tiles * BLOCK_POOLS
     rows = pool_size * pools
     dim = head_dim
 
@@ -93,41 +107,41 @@ def glm53_kpool_compress_kernel(
         SC_SCRATCH: T.Tensor((pools,), "float32"),
     ):
         with T.Kernel(num_tiles, is_npu=True) as (cid, vid):
-            base = cid * _BLOCK_POOLS + vid * _POOL_TILE
+            base = cid * BLOCK_POOLS + vid * POOL_TILE
 
-            sf = T.alloc_ub((_POOL_TILE, dim), "float32")
-            m = T.alloc_ub((_POOL_TILE, dim), "float32")
-            denom = T.alloc_ub((_POOL_TILE, dim), "float32")
-            pooled = T.alloc_ub((_POOL_TILE, dim), "float32")
-            kf = T.alloc_ub((_POOL_TILE, dim), "float32")
-            k16 = T.alloc_ub((_POOL_TILE, dim), "bfloat16")
+            sf = T.alloc_ub((POOL_TILE, dim), "float32")
+            m = T.alloc_ub((POOL_TILE, dim), "float32")
+            denom = T.alloc_ub((POOL_TILE, dim), "float32")
+            pooled = T.alloc_ub((POOL_TILE, dim), "float32")
+            kf = T.alloc_ub((POOL_TILE, dim), "float32")
+            k16 = T.alloc_ub((POOL_TILE, dim), "bfloat16")
 
             # 1. softmax pooling over slots (slot-order accumulation)
-            T.copy(S[0 * pools + base : 0 * pools + base + _POOL_TILE, :], m)
+            T.copy(S[0 * pools + base : 0 * pools + base + POOL_TILE, :], m)
             for s in range(1, pool_size):
-                T.copy(S[s * pools + base : s * pools + base + _POOL_TILE, :], sf)
+                T.copy(S[s * pools + base : s * pools + base + POOL_TILE, :], sf)
                 T.tile.max(m, m, sf)
 
             T.tile.fill(denom, 0.0)
             T.tile.fill(pooled, 0.0)
             for s in range(pool_size):
-                T.copy(S[s * pools + base : s * pools + base + _POOL_TILE, :], sf)
+                T.copy(S[s * pools + base : s * pools + base + POOL_TILE, :], sf)
                 T.tile.sub(sf, sf, m)
                 T.tile.exp(sf, sf)
                 T.tile.add(denom, denom, sf)
-                T.copy(K[s * pools + base : s * pools + base + _POOL_TILE, :], k16)
-                T.tile.cast(kf, k16, "CAST_NONE", _POOL_TILE * dim)
+                T.copy(K[s * pools + base : s * pools + base + POOL_TILE, :], k16)
+                T.tile.cast(kf, k16, "CAST_NONE", POOL_TILE * dim)
                 T.tile.mul(kf, kf, sf)
                 T.tile.add(pooled, pooled, kf)
             T.tile.div(pooled, pooled, denom)
 
             # 2. BF16 boundary of the pooled vector
-            T.tile.cast(k16, pooled, "CAST_RINT", _POOL_TILE * dim)
-            T.tile.cast(pooled, k16, "CAST_NONE", _POOL_TILE * dim)
+            T.tile.cast(k16, pooled, "CAST_RINT", POOL_TILE * dim)
+            T.tile.cast(pooled, k16, "CAST_NONE", POOL_TILE * dim)
 
             # 3. normalized Sylvester Hadamard-128 on a dim-major tile
-            dm = T.alloc_ub((dim, _POOL_TILE), "float32")
-            hdm = T.alloc_ub((dim, _POOL_TILE), "float32")
+            dm = T.alloc_ub((dim, POOL_TILE), "float32")
+            hdm = T.alloc_ub((dim, POOL_TILE), "float32")
             T.tile.transpose(dm, pooled)
 
             for i in range(0, 64):
@@ -151,118 +165,130 @@ def glm53_kpool_compress_kernel(
             T.tile.add(hdm[0:64, :], dm[0:64, :], dm[64:128, :])
             T.tile.sub(hdm[64:128, :], dm[0:64, :], dm[64:128, :])
 
-            T.tile.mul(hdm, hdm, _HADAMARD128_SCALE)
-            T.tile.cast(k16, hdm, "CAST_RINT", dim * _POOL_TILE)
-            T.tile.cast(hdm, k16, "CAST_NONE", dim * _POOL_TILE)
+            T.tile.mul(hdm, hdm, HADAMARD128_SCALE)
+            T.tile.cast(k16, hdm, "CAST_RINT", dim * POOL_TILE)
+            T.tile.cast(hdm, k16, "CAST_NONE", dim * POOL_TILE)
 
             # 4. back to pool-major, absmax and scale
-            rot = T.alloc_ub((_POOL_TILE, dim), "float32")
-            absv = T.alloc_ub((_POOL_TILE, dim), "float32")
+            rot = T.alloc_ub((POOL_TILE, dim), "float32")
+            absv = T.alloc_ub((POOL_TILE, dim), "float32")
             T.tile.transpose(rot, hdm)
             T.tile.abs(absv, rot)
-            amax = T.alloc_ub((_POOL_TILE,), "float32")
+            amax = T.alloc_ub((POOL_TILE,), "float32")
             T.reduce_max(absv, amax, dim=-1)
             T.tile.max(amax, amax, 1e-4)
 
-            scale = T.alloc_ub((_POOL_TILE,), "float32")
-            q = T.alloc_ub((_POOL_TILE, dim), "float32")
+            scale = T.alloc_ub((POOL_TILE,), "float32")
+            q = T.alloc_ub((POOL_TILE, dim), "float32")
             if round_scale:
                 # scale = 2^ceil(log2(amax / 448)) through the fp32 bit field
-                z = T.alloc_ub((_POOL_TILE,), "float32")
-                T.tile.div(z, amax, _FP8_MAX)
-                zb = T.alloc_ub((_POOL_TILE,), "int32")
+                z = T.alloc_ub((POOL_TILE,), "float32")
+                T.tile.div(z, amax, E4M3_MAX)
+                zb = T.alloc_ub((POOL_TILE,), "int32")
                 T.reinterpretcast(zb, z, "int32_t")
-                ef = T.alloc_ub((_POOL_TILE,), "int32")
+                ef = T.alloc_ub((POOL_TILE,), "int32")
                 T.tile.bitwise_rshift(ef, zb, 23)
-                mant = T.alloc_ub((_POOL_TILE,), "int32")
+                mant = T.alloc_ub((POOL_TILE,), "int32")
                 T.tile.bitwise_lshift(mant, ef, 23)
                 T.tile.sub(mant, zb, mant)
-                inc = T.alloc_ub((_POOL_TILE,), "int32")
-                T.tile.add(inc, mant, 8388607)
+                inc = T.alloc_ub((POOL_TILE,), "int32")
+                T.tile.add(inc, mant, FP32_MANT_MASK)
                 T.tile.bitwise_rshift(inc, inc, 23)
-                ce = T.alloc_ub((_POOL_TILE,), "int32")
+                ce = T.alloc_ub((POOL_TILE,), "int32")
                 T.tile.sub(ce, ef, 127)
                 T.tile.add(ce, ce, inc)
-                sb = T.alloc_ub((_POOL_TILE,), "int32")
+                sb = T.alloc_ub((POOL_TILE,), "int32")
                 T.tile.add(sb, ce, 127)
                 T.tile.bitwise_lshift(sb, sb, 23)
                 T.reinterpretcast(scale, sb, "float")
 
                 # inv = 2^-ce (exact bit construction, no reciprocal error)
-                sbi = T.alloc_ub((_POOL_TILE,), "int32")
+                sbi = T.alloc_ub((POOL_TILE,), "int32")
                 T.tile.bitwise_lshift(sbi, ce, 23)
                 T.tile.mul(sbi, sbi, -1)
-                T.tile.add(sbi, sbi, 1065353216)
+                T.tile.add(sbi, sbi, FP32_ONE_BITS)
 
-                inv_bits = T.alloc_ub((_POOL_TILE, dim), "int32")
-                inv_full = T.alloc_ub((_POOL_TILE, dim), "float32")
+                inv_bits = T.alloc_ub((POOL_TILE, dim), "int32")
+                inv_full = T.alloc_ub((POOL_TILE, dim), "float32")
                 T.tile.broadcast(inv_bits, sbi)
                 T.reinterpretcast(inv_full, inv_bits, "float")
                 T.tile.mul(q, rot, inv_full)
             else:
-                T.tile.div(scale, amax, _FP8_MAX)
-                scale_full = T.alloc_ub((_POOL_TILE, dim), "float32")
+                T.tile.div(scale, amax, E4M3_MAX)
+                scale_full = T.alloc_ub((POOL_TILE, dim), "float32")
                 T.tile.broadcast(scale_full, scale)
                 T.tile.div(q, rot, scale_full)
 
-            # 5. clamp and E4M3 byte encoding (round-half-even, subnormals)
-            absx = T.alloc_ub((_POOL_TILE, dim), "float32")
+            # 5. clamp and E4M3 byte encoding (round-half-even, subnormals).
+            # This is exact integer bit arithmetic on the fp32 bit pattern; no
+            # FP8 type and no numeric approximation is involved.
+            absx = T.alloc_ub((POOL_TILE, dim), "float32")
             T.tile.abs(absx, q)
-            bits = T.alloc_ub((_POOL_TILE, dim), "int32")
+            bits = T.alloc_ub((POOL_TILE, dim), "int32")
             T.reinterpretcast(bits, absx, "int32_t")
-            y20 = T.alloc_ub((_POOL_TILE, dim), "int32")
-            y21 = T.alloc_ub((_POOL_TILE, dim), "int32")
-            bit20 = T.alloc_ub((_POOL_TILE, dim), "int32")
+            # normal-format code: round the 20 discarded mantissa bits to
+            # nearest-even (E4M3_RNE_BIAS plus the bit-20 tie breaker), keep
+            # exp(4) | mantissa(3) and saturate at the largest finite code.
+            y20 = T.alloc_ub((POOL_TILE, dim), "int32")
+            y21 = T.alloc_ub((POOL_TILE, dim), "int32")
+            bit20 = T.alloc_ub((POOL_TILE, dim), "int32")
             T.tile.bitwise_rshift(y20, bits, 20)
             T.tile.bitwise_rshift(y21, bits, 21)
             T.tile.bitwise_lshift(y21, y21, 1)
             T.tile.sub(bit20, y20, y21)
-            nb = T.alloc_ub((_POOL_TILE, dim), "int32")
-            T.tile.add(nb, bits, 524287)
+            nb = T.alloc_ub((POOL_TILE, dim), "int32")
+            T.tile.add(nb, bits, E4M3_RNE_BIAS)
             T.tile.add(nb, nb, bit20)
             T.tile.bitwise_rshift(nb, nb, 20)
-            T.tile.sub(nb, nb, 960)
-            T.tile.min(nb, nb, 126)
+            T.tile.sub(nb, nb, E4M3_CODE_BASE)
+            T.tile.min(nb, nb, E4M3_MAX_CODE)
 
-            t = T.alloc_ub((_POOL_TILE, dim), "float32")
-            sub = T.alloc_ub((_POOL_TILE, dim), "int32")
-            T.tile.mul(t, absx, 512.0)
-            T.tile.cast(sub, t, "CAST_RINT", _POOL_TILE * dim)
+            # subnormal code: round(|x| * 2^9), clamped to the 0..8 code range
+            t = T.alloc_ub((POOL_TILE, dim), "float32")
+            sub = T.alloc_ub((POOL_TILE, dim), "int32")
+            T.tile.mul(t, absx, E4M3_SUBNORMAL_SCALE)
+            T.tile.cast(sub, t, "CAST_RINT", POOL_TILE * dim)
             T.tile.max(sub, sub, 0)
-            T.tile.min(sub, sub, 8)
+            T.tile.min(sub, sub, E4M3_MIN_NORMAL_CODE)
 
-            mask = T.alloc_ub((_POOL_TILE, dim), "uint8")
-            nbf = T.alloc_ub((_POOL_TILE, dim), "float32")
-            subf = T.alloc_ub((_POOL_TILE, dim), "float32")
-            bm = T.alloc_ub((_POOL_TILE, dim), "float32")
-            T.tile.compare(mask, absx, 0.015625, "LT")
-            T.tile.cast(nbf, nb, "CAST_RINT", _POOL_TILE * dim)
-            T.tile.cast(subf, sub, "CAST_RINT", _POOL_TILE * dim)
-            T.tile.select(bm, mask, subf, nbf, "VSEL_TENSOR_TENSOR_MODE")
+            # |x| < 2^-6 iff the subnormal code exceeds the normal one (both
+            # round-to-nearest, monotone), so the selection is the integer
+            # identity code = nb + max(sub - nb, 0).
+            delta = T.alloc_ub((POOL_TILE, dim), "int32")
+            code = T.alloc_ub((POOL_TILE, dim), "int32")
+            T.tile.sub(delta, sub, nb)
+            T.tile.max(delta, delta, 0)
+            T.tile.add(code, nb, delta)
 
-            qb = T.alloc_ub((_POOL_TILE, dim), "int32")
+            # the sign bit lands in 0x80. The AscendC cast whitelist has no
+            # i32->u8 route, so the byte (an exact 0..254 integer) is widened
+            # to f32 and then carried through f16 to u8 losslessly. The direct
+            # i32->f16 cast is deliberately avoided: it is non-deterministically
+            # wrong on this toolchain (minimal repro: one compiled kernel, same
+            # input, wrong bytes on some runs only).
+            qb = T.alloc_ub((POOL_TILE, dim), "int32")
             T.reinterpretcast(qb, q, "int32_t")
-            sgn = T.alloc_ub((_POOL_TILE, dim), "int32")
-            T.tile.bitwise_rshift(sgn, qb, 31)
-            T.tile.mul(sgn, sgn, -1)
-            sfx = T.alloc_ub((_POOL_TILE, dim), "float32")
-            T.tile.cast(sfx, sgn, "CAST_RINT", _POOL_TILE * dim)
-            T.tile.mul(sfx, sfx, 128.0)
-            val = T.alloc_ub((_POOL_TILE, dim), "float32")
-            T.tile.add(val, bm, sfx)
+            neg = T.alloc_ub((POOL_TILE, dim), "int32")
+            T.tile.bitwise_rshift(neg, qb, 31)
+            hbit = T.alloc_ub((POOL_TILE, dim), "int32")
+            T.tile.mul(hbit, neg, -128)
+            byte_i32 = T.alloc_ub((POOL_TILE, dim), "int32")
+            T.tile.add(byte_i32, code, hbit)
 
-            h8 = T.alloc_ub((_POOL_TILE, dim), "float16")
-            ob = T.alloc_ub((_POOL_TILE, dim), "uint8")
-            T.tile.cast(h8, val, "CAST_NONE", _POOL_TILE * dim)
-            T.tile.cast(ob, h8, "CAST_NONE", _POOL_TILE * dim)
+            byte_f32 = T.alloc_ub((POOL_TILE, dim), "float32")
+            h8 = T.alloc_ub((POOL_TILE, dim), "float16")
+            ob = T.alloc_ub((POOL_TILE, dim), "uint8")
+            T.tile.cast(byte_f32, byte_i32, "CAST_RINT", POOL_TILE * dim)
+            T.tile.cast(h8, byte_f32, "CAST_NONE", POOL_TILE * dim)
+            T.tile.cast(ob, h8, "CAST_NONE", POOL_TILE * dim)
 
             # 6. emit the E4M3 rows and the per-pool scales to the contiguous
             # scratches; the host adapter scatters both into the paged caches.
             # Kept adjacent so the single V_MTE3 dependency gate covers both
             # copies (MTE3 is in-order); see the module docstring for why the
             # scatter is not on the device.
-            T.copy(ob, ROW_SCRATCH[base : base + _POOL_TILE, :])
-            T.copy(scale, SC_SCRATCH[base : base + _POOL_TILE])
+            T.copy(ob, ROW_SCRATCH[base : base + POOL_TILE, :])
+            T.copy(scale, SC_SCRATCH[base : base + POOL_TILE])
 
     return main
 
@@ -413,8 +439,8 @@ def glm53_kpool_compress_and_write_cache(
     if num_pools == 0:
         return
 
-    num_tiles = (num_pools + _BLOCK_POOLS - 1) // _BLOCK_POOLS
-    padded_pools = num_tiles * _BLOCK_POOLS
+    num_tiles = (num_pools + BLOCK_POOLS - 1) // BLOCK_POOLS
+    padded_pools = num_tiles * BLOCK_POOLS
 
     # Host preparation: fold ape into the scores (fp32, reference-identical),
     # repack slot-major and pad each slot block to the device block with zero
@@ -467,7 +493,7 @@ def hadamard128_reference(x: torch.Tensor) -> torch.Tensor:
         pairs[..., 0, :] = left + right
         pairs[..., 1, :] = left - right
         half *= 2
-    return result * _HADAMARD128_SCALE
+    return result * HADAMARD128_SCALE
 
 
 def glm53_kpool_reference(
@@ -491,10 +517,10 @@ def glm53_kpool_reference(
 
     absmax = rotated.abs().amax(dim=1).clamp(min=1e-4)
     if round_scale:
-        scale = torch.exp2(torch.ceil(torch.log2(absmax / _FP8_MAX)))
+        scale = torch.exp2(torch.ceil(torch.log2(absmax / E4M3_MAX)))
     else:
-        scale = absmax / _FP8_MAX
-    quantized = (rotated / scale[:, None]).clamp(-_FP8_MAX, _FP8_MAX).to(torch.float8_e4m3fn)
+        scale = absmax / E4M3_MAX
+    quantized = (rotated / scale[:, None]).clamp(-E4M3_MAX, E4M3_MAX).to(torch.float8_e4m3fn)
     return quantized.view(torch.uint8), scale
 
 

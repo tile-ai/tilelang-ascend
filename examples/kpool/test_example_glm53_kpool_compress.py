@@ -1,6 +1,6 @@
 """GLM-5.3 k-pool compress tests (Ascend port).
 
-Mirrors the CUDA/ROCm test suite of examples/kpool in tile-ai/tilelang:
+Mirrors the reference test suite of examples/kpool in tile-ai/tilelang:
 published geometry, reordered masked cache writes (round_scale on/off),
 implicit all-true mask with the empty-input no-launch path, metadata
 validation, plus a parametrized multi-tile sweep over 300/1024 pools
