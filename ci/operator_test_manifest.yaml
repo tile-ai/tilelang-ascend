@@ -109,6 +109,9 @@ mappings:
   examples/gqa_fwd_varlen/gqa_fwd_varlen.py: examples/gqa_fwd_varlen/test_gqa_fwd_varlen.py
   examples/gqa_fwd_varlen/perf_gqa_fwd_varlen.py: examples/gqa_fwd_varlen/test_perf_gqa_fwd_varlen.py
 
+  # examples/kpool
+  examples/kpool/example_glm53_kpool_compress.py: examples/kpool/test_example_glm53_kpool_compress.py
+
   # examples/lightning_indexer
   examples/lightning_indexer/example_lightning_indexer.py: examples/lightning_indexer/test_example_lightning_indexer.py
   examples/lightning_indexer/example_lightning_indexer_dynamic_shape.py: examples/lightning_indexer/test_example_lightning_indexer_dynamic_shape.py
