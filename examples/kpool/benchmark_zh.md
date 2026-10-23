@@ -48,7 +48,7 @@ BF16 边界为 round-to-nearest-even；E4M3 编码为 round-half-even、含次�
 | 组件 | 选择 | 理由 |
 |-----------|--------|--------|
 | 并行/Tiling | 每 AIV 子核处理 32 个 pool（每 block 覆盖 64 个 pool，共 `ceil(P/64)` 个 block） | 32 是 UB 预算内最大的 tile（P=64 内存规划失败）；block 的两个子核独立并行 |
-| FP8 路径 | 用 ASCEND cast 白名单 + 整数位运算模拟 E4M3，`k_cache` 用 uint8 承载 | A2/A3 无 FP8 数据通路；字节与参考完全一致 |
+| FP8 路径 | 纯整数位运算精确生成 E4M3 码（round-half-even、次正规、饱和 448；无 FP8 类型、无数值近似），`k_cache` 用 uint8 承载 | A2/A3 无 FP8 数据通路；字节与参考完全一致 |
 | Hadamard | 在 dim-major tile 的连续半区上做升序蝶形 | 与参考逐位一致，P<=128 保证编译时间正常 |
 | 池化 | 按 slot 顺序串行累积 | 与参考求和顺序一致 |
 | Scale | 位域法 `2^ceil(log2(absmax/448))`，`round_scale=True` 时逆用位构造精确求出 / `False` 时直接除法 | 与参考 scale 逐位一致 |

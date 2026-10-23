@@ -49,7 +49,7 @@ subnormals and saturates at 448.
 | Component | Choice | Reason |
 |-----------|--------|--------|
 | Grid / tiling | one 32-pool tile per AIV subcore (each block covers 64 pools, `ceil(P/64)` blocks) | 32 pools is the largest UB-fitted tile (P=64 fails memory planning); both subcores of a block work independently |
-| FP8 path | E4M3 emulated with the ASCEND cast whitelist + integer bit math; `k_cache` as uint8 | A2/A3 has no FP8 data path; bytes match the reference exact |
+| FP8 path | E4M3 codes computed with exact integer bit arithmetic (round-half-even, subnormals, saturation to 448; no FP8 type, no numeric approximation); `k_cache` as uint8 | A2/A3 has no FP8 data path; bytes match the reference exact |
 | Hadamard | ascending-stride butterfly on contiguous half-slices of a dim-major tile | bit-exact vs the reference, P<=128 keeps compile time sane |
 | Pooling | slot-serial accumulation in slot order | matches the reference summation order |
 | Scale | `2^ceil(log2(absmax/448))` through the fp32 bit field, exact inverse by bit construction (round_scale=True) / plain division (round_scale=False) | reference-identical scales |
