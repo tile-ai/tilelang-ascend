@@ -46,18 +46,22 @@ class SearchCoverageTest(unittest.TestCase):
             "logic": "ALL",
             "conditions": [{"metric": "kernel_time_us", "operator": "LE", "threshold": 10.0}],
         }
-        record["obligations"] = [{
-            "obligation_id": "O_CASE",
-            "kind": "case_structure",
-            "case_ids": [case_id],
-            "status": "SATISFIED",
-            "candidate_ids": [candidate_id],
-            "case_dispositions": [{
-                "case_id": case_id,
-                "status": "TESTED_PATH",
+        record["obligations"] = [
+            {
+                "obligation_id": "O_CASE",
+                "kind": "case_structure",
+                "case_ids": [case_id],
+                "status": "SATISFIED",
                 "candidate_ids": [candidate_id],
-            }],
-        }]
+                "case_dispositions": [
+                    {
+                        "case_id": case_id,
+                        "status": "TESTED_PATH",
+                        "candidate_ids": [candidate_id],
+                    }
+                ],
+            }
+        ]
         return record
 
     def write_record(self, record: dict) -> Path:
@@ -74,13 +78,17 @@ class SearchCoverageTest(unittest.TestCase):
     def add_convergence(self, record: dict, *, no_target: bool) -> None:
         case = record["cases"][0]
         key = "convergence_evidence" if no_target else "unmet_convergence_evidence"
-        record[key] = {"case_bounds": [{
-            "case_id": case["case_id"],
-            "best_kernel_time_us": case["best_metrics"]["kernel_time_us"],
-            "verified_lower_bound_us": 2.0,
-            "evidence": ["fixtures/lower-bound-analysis.md"],
-            "remaining_gap_explanation": "The remaining launch cost is measured separately.",
-        }]}
+        record[key] = {
+            "case_bounds": [
+                {
+                    "case_id": case["case_id"],
+                    "best_kernel_time_us": case["best_metrics"]["kernel_time_us"],
+                    "verified_lower_bound_us": 2.0,
+                    "evidence": ["fixtures/lower-bound-analysis.md"],
+                    "remaining_gap_explanation": "The remaining launch cost is measured separately.",
+                }
+            ]
+        }
 
     def test_initial_example_is_valid_but_cannot_finish(self) -> None:
         record = self.load_example(final=False)
@@ -194,13 +202,15 @@ class SearchCoverageTest(unittest.TestCase):
         record = self.simple_record()
         for event in record["candidate_events"]:
             physical = event["identity"]["physical_dataflow"]
-            physical.update({
-                "route_kind": "CONTIGUOUS_LOAD_REGISTER_REORDER",
-                "source_access": "CONTIGUOUS",
-                "register_lane_reorder": True,
-                "indexed_lane_access": False,
-                "full_payload_materialization": False,
-            })
+            physical.update(
+                {
+                    "route_kind": "CONTIGUOUS_LOAD_REGISTER_REORDER",
+                    "source_access": "CONTIGUOUS",
+                    "register_lane_reorder": True,
+                    "indexed_lane_access": False,
+                    "full_payload_materialization": False,
+                }
+            )
         self.assert_invalid(record)
 
     def test_new_backend_evidence_does_not_invalidate_earlier_memory_route(self) -> None:
@@ -325,9 +335,13 @@ class SearchCoverageTest(unittest.TestCase):
         record = self.simple_record()
         case = record["cases"][0]
         case["best_metrics"]["semantic_gm_util_pct"] = 50.0
-        case["performance_target"]["conditions"].append({
-            "metric": "semantic_gm_util_pct", "operator": "GE", "threshold": 80.0,
-        })
+        case["performance_target"]["conditions"].append(
+            {
+                "metric": "semantic_gm_util_pct",
+                "operator": "GE",
+                "threshold": 80.0,
+            }
+        )
         with self.assertRaises(GATE.SearchIncomplete):
             self.validate(record, final=True)
         case["performance_target"]["logic"] = "ANY"
@@ -341,9 +355,7 @@ class SearchCoverageTest(unittest.TestCase):
         with self.assertRaises(GATE.ValidationError):
             self.validate(record, final=True, allow_unmet=True)
         self.add_convergence(record, no_target=False)
-        self.assertEqual(
-            self.validate(record, final=True, allow_unmet=True), "UNMET_BUT_CONVERGED"
-        )
+        self.assertEqual(self.validate(record, final=True, allow_unmet=True), "UNMET_BUT_CONVERGED")
 
     def test_no_target_is_not_misreported_as_target_met(self) -> None:
         record = self.simple_record()
@@ -351,9 +363,7 @@ class SearchCoverageTest(unittest.TestCase):
         with self.assertRaises(GATE.ValidationError):
             self.validate(record, final=True)
         self.add_convergence(record, no_target=True)
-        self.assertEqual(
-            self.validate(record, final=True), "CONVERGED_WITHOUT_NUMERIC_TARGET"
-        )
+        self.assertEqual(self.validate(record, final=True), "CONVERGED_WITHOUT_NUMERIC_TARGET")
 
     def test_convergence_cannot_use_another_versions_best_timing(self) -> None:
         record = self.simple_record()
@@ -374,7 +384,9 @@ class SearchCoverageTest(unittest.TestCase):
         path = self.write_record(record)
         good = subprocess.run(
             [sys.executable, str(SCRIPT), str(path), "--final"],
-            text=True, capture_output=True, check=False,
+            text=True,
+            capture_output=True,
+            check=False,
         )
         self.assertEqual(good.returncode, 0, good.stderr)
         self.assertEqual(good.stdout.strip(), "TARGET_MET")
@@ -382,13 +394,17 @@ class SearchCoverageTest(unittest.TestCase):
         self.write_record(record)
         incomplete = subprocess.run(
             [sys.executable, str(SCRIPT), str(path), "--final"],
-            text=True, capture_output=True, check=False,
+            text=True,
+            capture_output=True,
+            check=False,
         )
         self.assertEqual(incomplete.returncode, 2, incomplete.stderr)
         path.write_text("{ invalid json", encoding="utf-8")
         invalid = subprocess.run(
             [sys.executable, str(SCRIPT), str(path)],
-            text=True, capture_output=True, check=False,
+            text=True,
+            capture_output=True,
+            check=False,
         )
         self.assertEqual(invalid.returncode, 1, invalid.stderr)
         self.assertNotIn("Traceback", invalid.stderr)

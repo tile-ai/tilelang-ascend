@@ -154,19 +154,12 @@ def positive_number(value: object) -> bool:
 
 def nonnegative_number(value: object) -> bool:
     return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and (isinstance(value, int) or math.isfinite(value))
-        and value >= 0
+        isinstance(value, (int, float)) and not isinstance(value, bool) and (isinstance(value, int) or math.isfinite(value)) and value >= 0
     )
 
 
 def evidence_list(value: object) -> bool:
-    return (
-        isinstance(value, list)
-        and bool(value)
-        and all(nonempty_text(item) for item in value)
-    )
+    return isinstance(value, list) and bool(value) and all(nonempty_text(item) for item in value)
 
 
 def valid_boundary_value(value: object) -> bool:
@@ -177,20 +170,15 @@ def validate_register_feasibility(case_id: str, source: dict) -> None:
     """A3 register routes require current backend evidence, not A5 assumptions."""
     feasible = source.get("register_window_feasible")
     require(
-        "register_window_feasible" in source
-        and (feasible is None or isinstance(feasible, bool)),
+        "register_window_feasible" in source and (feasible is None or isinstance(feasible, bool)),
         f"case {case_id}: register_window_feasible must be true, false or null",
     )
     if feasible is False:
-        validate_hard_infeasibility(
-            f"case {case_id}/register_window", source.get("register_infeasibility")
-        )
+        validate_hard_infeasibility(f"case {case_id}/register_window", source.get("register_infeasibility"))
     if feasible is not True:
         return
     require(
-        isinstance(source.get("window_vregs"), int)
-        and not isinstance(source["window_vregs"], bool)
-        and source["window_vregs"] > 0,
+        isinstance(source.get("window_vregs"), int) and not isinstance(source["window_vregs"], bool) and source["window_vregs"] > 0,
         f"case {case_id}: feasible register route needs positive window_vregs",
     )
     evidence = source.get("register_feasibility_evidence")
@@ -285,9 +273,7 @@ def validate_hard_infeasibility(owner: str, value: object) -> None:
             nonempty_text(value.get("constraint")),
             f"{owner}: semantic proof needs constraint",
         )
-        require(
-            nonempty_text(value.get("proof")), f"{owner}: semantic proof needs proof"
-        )
+        require(nonempty_text(value.get("proof")), f"{owner}: semantic proof needs proof")
     elif kind == "STRICT_COST_DOMINANCE":
         require(
             value.get("same_payload") is True,
@@ -315,9 +301,7 @@ def validate_performance_target(case: dict) -> bool:
     case_id = case.get("case_id", "<missing>")
     target = case["performance_target"]
     metrics = case["best_metrics"]
-    require(
-        isinstance(metrics, dict), f"case {case_id}: best_metrics must be an object"
-    )
+    require(isinstance(metrics, dict), f"case {case_id}: best_metrics must be an object")
     require(
         positive_number(metrics.get("kernel_time_us")),
         f"case {case_id}: best kernel_time_us must be positive",
@@ -373,11 +357,7 @@ def validate_performance_target(case: dict) -> bool:
             nonnegative_number(metrics.get(metric)),
             f"case {case_id}: best metric {metric} missing or invalid",
         )
-        outcomes.append(
-            metrics[metric] <= threshold
-            if operator == "LE"
-            else metrics[metric] >= threshold
-        )
+        outcomes.append(metrics[metric] <= threshold if operator == "LE" else metrics[metric] >= threshold)
     return any(outcomes) if target["logic"] == "ANY" else all(outcomes)
 
 
@@ -410,26 +390,18 @@ def validate_case(case: dict, obligation_ids: set[str]) -> None:
     )
 
     outer_waves = case["outer_items"] / case["available_cores"]
-    flat_waves = (
-        case["outer_items"]
-        * case["inner_independent_chunks_per_item"]
-        / case["available_cores"]
-    )
+    flat_waves = case["outer_items"] * case["inner_independent_chunks_per_item"] / case["available_cores"]
     require(
         math.isclose(case["outer_task_waves"], outer_waves, rel_tol=1e-3, abs_tol=1e-6),
         f"case {case_id}: outer_task_waves is inconsistent with items/cores",
     )
     require(
-        math.isclose(
-            case["flattened_task_waves"], flat_waves, rel_tol=1e-3, abs_tol=1e-6
-        ),
+        math.isclose(case["flattened_task_waves"], flat_waves, rel_tol=1e-3, abs_tol=1e-6),
         f"case {case_id}: flattened_task_waves is inconsistent with items*chunks/cores",
     )
 
     lower = case["lower_bounds_us"]
-    require(
-        isinstance(lower, dict), f"case {case_id}: lower_bounds_us must be an object"
-    )
+    require(isinstance(lower, dict), f"case {case_id}: lower_bounds_us must be an object")
     for key in ("movement", "compute"):
         require(key in lower, f"case {case_id}: lower_bounds_us missing {key}")
         require(
@@ -441,16 +413,12 @@ def validate_case(case: dict, obligation_ids: set[str]) -> None:
         f"case {case_id}: lower_bound_evidence must explain values or nulls",
     )
     require(
-        isinstance(case["main_pipes"], list)
-        and case["main_pipes"]
-        and all(nonempty_text(item) for item in case["main_pipes"]),
+        isinstance(case["main_pipes"], list) and case["main_pipes"] and all(nonempty_text(item) for item in case["main_pipes"]),
         f"case {case_id}: main_pipes must be a non-empty string list",
     )
     validate_performance_target(case)
     source = case["source_window"]
-    require(
-        isinstance(source, dict), f"case {case_id}: source_window must be an object"
-    )
+    require(isinstance(source, dict), f"case {case_id}: source_window must be an object")
     access_pattern = source.get("access_pattern")
     require(
         access_pattern in ACCESS_PATTERNS,
@@ -481,9 +449,7 @@ def validate_case(case: dict, obligation_ids: set[str]) -> None:
             f"case {case_id}: invalid consumed source bytes",
         )
         require(
-            isinstance(density, (int, float))
-            and not isinstance(density, bool)
-            and 0 < density <= 1,
+            isinstance(density, (int, float)) and not isinstance(density, bool) and 0 < density <= 1,
             f"case {case_id}: invalid source density",
         )
         require(
@@ -567,25 +533,20 @@ def validate_physical_identity(candidate_id: str, identity: dict) -> None:
         )
         require(
             not physical["full_payload_materialization"],
-            f"candidate {candidate_id}: materializing a full intermediate payload is not the "
-            f"direct register route",
+            f"candidate {candidate_id}: materializing a full intermediate payload is not the direct register route",
         )
         require(
             not physical["indexed_lane_access"],
-            f"candidate {candidate_id}: indexed lane reads are memory-indexed, not direct "
-            f"register reorder",
+            f"candidate {candidate_id}: indexed lane reads are memory-indexed, not direct register reorder",
         )
     if route == "MATERIALIZED_TRANSFORM":
         require(
             physical["full_payload_materialization"],
-            f"candidate {candidate_id}: materialized transform must declare the intermediate "
-            f"payload pass",
+            f"candidate {candidate_id}: materialized transform must declare the intermediate payload pass",
         )
 
 
-def validate_granularity_identity(
-    candidate_id: str, identity: dict, applicable_cases: set[str]
-) -> None:
+def validate_granularity_identity(candidate_id: str, identity: dict, applicable_cases: set[str]) -> None:
     facts = identity.get("granularity_facts")
     require(
         isinstance(facts, dict),
@@ -672,9 +633,7 @@ def validate_events(events: list, case_ids: set[str], final: bool) -> tuple[dict
                     f"candidate {candidate_id}: identity missing {axis}",
                 )
         require(
-            isinstance(applicable, list)
-            and applicable
-            and not (set(applicable) - case_ids),
+            isinstance(applicable, list) and applicable and not (set(applicable) - case_ids),
             f"candidate {candidate_id}: applicable_cases must reference known cases",
         )
         require(
@@ -728,8 +687,7 @@ def validate_events(events: list, case_ids: set[str], final: bool) -> tuple[dict
                 )
                 predecessor = created_by_candidate[resumed]
                 require(
-                    identity == predecessor["identity"]
-                    and applicable == predecessor["applicable_cases"],
+                    identity == predecessor["identity"] and applicable == predecessor["applicable_cases"],
                     f"candidate {candidate_id}: resume must preserve identity and applicable_cases",
                 )
                 resumed_by[resumed] = candidate_id
@@ -750,11 +708,7 @@ def validate_events(events: list, case_ids: set[str], final: bool) -> tuple[dict
                 isinstance(case_results, list),
                 f"candidate {candidate_id}: RESULT needs case_results",
             )
-            by_case = {
-                item.get("case_id"): item
-                for item in case_results
-                if isinstance(item, dict)
-            }
+            by_case = {item.get("case_id"): item for item in case_results if isinstance(item, dict)}
             require(
                 len(by_case) == len(case_results),
                 f"candidate {candidate_id}: invalid or duplicate case_results",
@@ -777,8 +731,7 @@ def validate_events(events: list, case_ids: set[str], final: bool) -> tuple[dict
                     measurement = item.get("performance_measurement")
                     require(
                         isinstance(measurement, dict),
-                        f"candidate {candidate_id}/{case_id}: TESTED_PATH needs "
-                        f"performance_measurement",
+                        f"candidate {candidate_id}/{case_id}: TESTED_PATH needs performance_measurement",
                     )
                     require(
                         positive_number(measurement.get("kernel_time_us")),
@@ -788,29 +741,19 @@ def validate_events(events: list, case_ids: set[str], final: bool) -> tuple[dict
                         nonempty_text(measurement.get("artifact")),
                         f"candidate {candidate_id}/{case_id}: performance artifact required",
                     )
-            blocked_cases = [
-                case_id
-                for case_id, item in by_case.items()
-                if item.get("disposition") == "NOT_RUN_BLOCKED"
-            ]
+            blocked_cases = [case_id for case_id, item in by_case.items() if item.get("disposition") == "NOT_RUN_BLOCKED"]
             if result_status == "BLOCKED_BY_ENVIRONMENT":
                 require(
                     blocked_cases,
                     f"candidate {candidate_id}: blocked result needs NOT_RUN_BLOCKED cases",
                 )
-                validate_blocking_evidence(
-                    f"candidate {candidate_id}", event.get("blocking_evidence")
-                )
+                validate_blocking_evidence(f"candidate {candidate_id}", event.get("blocking_evidence"))
             else:
                 require(
                     not blocked_cases,
                     f"candidate {candidate_id}: NOT_RUN_BLOCKED requires BLOCKED_BY_ENVIRONMENT",
                 )
-            tested_cases = [
-                case_id
-                for case_id, item in by_case.items()
-                if item.get("disposition") == "TESTED_PATH"
-            ]
+            tested_cases = [case_id for case_id, item in by_case.items() if item.get("disposition") == "TESTED_PATH"]
             if result_status == "PROMOTED":
                 require(
                     set(tested_cases) == set(applicable),
@@ -822,8 +765,7 @@ def validate_events(events: list, case_ids: set[str], final: bool) -> tuple[dict
             if result_status == "REJECTED_WITH_EVIDENCE" and not tested_cases:
                 require(
                     rejection is not None,
-                    f"candidate {candidate_id}: unexecuted rejection needs structured "
-                    f"rejection_evidence",
+                    f"candidate {candidate_id}: unexecuted rejection needs structured rejection_evidence",
                 )
             result_by_candidate[candidate_id] = event
 
@@ -835,8 +777,7 @@ def validate_events(events: list, case_ids: set[str], final: bool) -> tuple[dict
         unresolved = [
             candidate_id
             for candidate_id, result in result_by_candidate.items()
-            if result["result_status"] == "BLOCKED_BY_ENVIRONMENT"
-            and candidate_id not in resumed_by
+            if result["result_status"] == "BLOCKED_BY_ENVIRONMENT" and candidate_id not in resumed_by
         ]
         require(not unresolved, f"unresolved blocked candidates at final gate: {unresolved}")
     return created_by_candidate, result_by_candidate
@@ -846,10 +787,7 @@ def candidate_tested_case(candidate_id: str, case_id: str, results: dict) -> boo
     result = results.get(candidate_id)
     if result is None:
         return False
-    return any(
-        item["case_id"] == case_id and item["disposition"] == "TESTED_PATH"
-        for item in result["case_results"]
-    )
+    return any(item["case_id"] == case_id and item["disposition"] == "TESTED_PATH" for item in result["case_results"])
 
 
 def validate_disposition(
@@ -874,10 +812,7 @@ def validate_disposition(
         require(candidate_ids, f"{owner}: TESTED_PATH needs a candidate")
         for case_id in valid_cases:
             require(
-                any(
-                    candidate_tested_case(cid, case_id, results)
-                    for cid in candidate_ids
-                ),
+                any(candidate_tested_case(cid, case_id, results) for cid in candidate_ids),
                 f"{owner}: no referenced candidate tested path for {case_id}",
             )
     if status in {"BASELINE_MEASURED", "CLOSED_WITH_EVIDENCE"}:
@@ -894,11 +829,7 @@ def validate_disposition(
             f"{owner}: BLOCKED needs evidence",
         )
         require(
-            any(
-                cid in results
-                and results[cid].get("result_status") == "BLOCKED_BY_ENVIRONMENT"
-                for cid in candidate_ids
-            ),
+            any(cid in results and results[cid].get("result_status") == "BLOCKED_BY_ENVIRONMENT" for cid in candidate_ids),
             f"{owner}: BLOCKED must reference a BLOCKED_BY_ENVIRONMENT result",
         )
     if final:
@@ -922,9 +853,7 @@ def validate_case_dispositions(
         isinstance(dispositions, list),
         f"obligation {oid}: case_dispositions must be a list",
     )
-    by_case = {
-        item.get("case_id"): item for item in dispositions if isinstance(item, dict)
-    }
+    by_case = {item.get("case_id"): item for item in dispositions if isinstance(item, dict)}
     require(
         len(by_case) == len(dispositions),
         f"obligation {oid}: invalid or duplicate case_dispositions",
@@ -956,9 +885,7 @@ def validate_route_plan(
 ) -> None:
     oid = obligation["obligation_id"]
     plan = obligation.get("route_plan")
-    require(
-        isinstance(plan, list) and plan, f"obligation {oid}: route_plan is required"
-    )
+    require(isinstance(plan, list) and plan, f"obligation {oid}: route_plan is required")
     seen_ids: set[str] = set()
     covered_by_route = {route: set() for route in ROUTE_KINDS}
     for item in plan:
@@ -980,9 +907,7 @@ def validate_route_plan(
             isinstance(item_cases, list) and item_cases,
             f"obligation {oid}/{plan_id}: case_ids required",
         )
-        require(
-            set(item_cases) <= linked_cases, f"obligation {oid}/{plan_id}: unknown case"
-        )
+        require(set(item_cases) <= linked_cases, f"obligation {oid}/{plan_id}: unknown case")
         covered_by_route[route].update(item_cases)
         validate_disposition(
             f"obligation {oid}/{plan_id}",
@@ -993,15 +918,9 @@ def validate_route_plan(
             results,
             final,
         )
-        if (
-            route == "CONTIGUOUS_LOAD_REGISTER_REORDER"
-            and item.get("status") == "CLOSED_WITH_EVIDENCE"
-        ):
+        if route == "CONTIGUOUS_LOAD_REGISTER_REORDER" and item.get("status") == "CLOSED_WITH_EVIDENCE":
             feasible_cases = [
-                case_id
-                for case_id in item_cases
-                if case_by_id[case_id]["source_window"].get("register_window_feasible")
-                is True
+                case_id for case_id in item_cases if case_by_id[case_id]["source_window"].get("register_window_feasible") is True
             ]
             if feasible_cases:
                 api_search = item.get("api_search_evidence", {})
@@ -1013,19 +932,16 @@ def validate_route_plan(
                     and api_search["symbols"]
                     and all(nonempty_text(value) for value in api_search["symbols"])
                     and nonempty_text(api_search.get("lowering_finding")),
-                    f"obligation {oid}/{plan_id}: feasible direct route closure needs exact "
-                    f"API/lowering search",
+                    f"obligation {oid}/{plan_id}: feasible direct route closure needs exact API/lowering search",
                 )
         if item.get("status") == "TESTED_PATH":
             for cid in item.get("candidate_ids", []):
                 require(
-                    created[cid]["identity"]["physical_dataflow"]["route_kind"]
-                    == route,
+                    created[cid]["identity"]["physical_dataflow"]["route_kind"] == route,
                     f"obligation {oid}/{plan_id}: candidate {cid} has a different physical route",
                 )
                 require(
-                    created[cid]["identity"]["physical_dataflow"]["writeback_kind"]
-                    == writeback,
+                    created[cid]["identity"]["physical_dataflow"]["writeback_kind"] == writeback,
                     f"obligation {oid}/{plan_id}: candidate {cid} has a different output writeback",
                 )
     for route, covered_cases in covered_by_route.items():
@@ -1045,9 +961,7 @@ def validate_boundary_plan(
 ) -> None:
     oid = obligation["obligation_id"]
     plan = obligation.get("boundary_plan")
-    require(
-        isinstance(plan, list) and plan, f"obligation {oid}: boundary_plan is required"
-    )
+    require(isinstance(plan, list) and plan, f"obligation {oid}: boundary_plan is required")
     seen_ids: set[str] = set()
     covered_by_kind = {kind: set() for kind in BOUNDARY_KINDS}
     for item in plan:
@@ -1059,9 +973,7 @@ def validate_boundary_plan(
             f"obligation {oid}: invalid boundary plan_id",
         )
         seen_ids.add(plan_id)
-        require(
-            kind in BOUNDARY_KINDS, f"obligation {oid}/{plan_id}: invalid boundary_kind"
-        )
+        require(kind in BOUNDARY_KINDS, f"obligation {oid}/{plan_id}: invalid boundary_kind")
         require(
             isinstance(case_values, dict) and case_values,
             f"obligation {oid}/{plan_id}: case_values required",
@@ -1087,12 +999,8 @@ def validate_boundary_plan(
                 matching = [
                     cid
                     for cid in item.get("candidate_ids", [])
-                    if kind
-                    in created[cid]["identity"]["granularity_facts"]["boundary_kinds"]
-                    and created[cid]["identity"]["granularity_facts"][
-                        "values_by_case"
-                    ].get(case_id)
-                    == value
+                    if kind in created[cid]["identity"]["granularity_facts"]["boundary_kinds"]
+                    and created[cid]["identity"]["granularity_facts"]["values_by_case"].get(case_id) == value
                     and candidate_tested_case(cid, case_id, results)
                 ]
                 require(
@@ -1138,9 +1046,7 @@ def validate_interaction_plan(
             writeback in WRITEBACK_KINDS,
             f"obligation {oid}/{plan_id}: invalid writeback_kind",
         )
-        require(
-            kind in BOUNDARY_KINDS, f"obligation {oid}/{plan_id}: invalid boundary_kind"
-        )
+        require(kind in BOUNDARY_KINDS, f"obligation {oid}/{plan_id}: invalid boundary_kind")
         require(
             isinstance(case_values, dict) and case_values,
             f"obligation {oid}/{plan_id}: case_values required",
@@ -1178,8 +1084,7 @@ def validate_interaction_plan(
                         matching.append(cid)
                 require(
                     matching,
-                    f"obligation {oid}/{plan_id}: no candidate tested required combination "
-                    f"for {case_id}",
+                    f"obligation {oid}/{plan_id}: no candidate tested required combination for {case_id}",
                 )
     require(
         covered_cases == linked_cases,
@@ -1201,21 +1106,17 @@ def validate_route_facts(
                 source = case_by_id[case_id]["source_window"]
                 require(
                     source.get("register_window_feasible") is True,
-                    f"candidate {candidate_id}/{case_id}: direct register route is not proven "
-                    f"feasible",
+                    f"candidate {candidate_id}/{case_id}: direct register route is not proven feasible",
                 )
                 validate_register_feasibility(case_id, source)
         changed_from_baseline = any(
-            physical["route_kind"]
-            != case_by_id[case_id]["source_window"]["baseline_route_kind"]
-            or physical["writeback_kind"]
-            != case_by_id[case_id]["source_window"]["baseline_writeback_kind"]
+            physical["route_kind"] != case_by_id[case_id]["source_window"]["baseline_route_kind"]
+            or physical["writeback_kind"] != case_by_id[case_id]["source_window"]["baseline_writeback_kind"]
             for case_id in event["applicable_cases"]
         )
         require(
             physical["route_experiment"] is changed_from_baseline,
-            f"candidate {candidate_id}: route_experiment disagrees with baseline "
-            f"route/writeback facts",
+            f"candidate {candidate_id}: route_experiment disagrees with baseline route/writeback facts",
         )
 
     for case in cases:
@@ -1227,11 +1128,9 @@ def validate_route_facts(
         direct_dispositions = [
             item
             for obligation in obligations
-            if obligation.get("kind") == "physical_dataflow_routes"
-            and case_id in obligation.get("case_ids", [])
+            if obligation.get("kind") == "physical_dataflow_routes" and case_id in obligation.get("case_ids", [])
             for item in obligation.get("route_plan", [])
-            if item.get("route_kind") == "CONTIGUOUS_LOAD_REGISTER_REORDER"
-            and case_id in item.get("case_ids", [])
+            if item.get("route_kind") == "CONTIGUOUS_LOAD_REGISTER_REORDER" and case_id in item.get("case_ids", [])
         ]
         require(
             direct_dispositions,
@@ -1240,22 +1139,14 @@ def validate_route_facts(
 
 
 def validate_convergence_evidence(data: dict, cases: list[dict]) -> None:
-    evidence_key = (
-        "convergence_evidence"
-        if all(case["performance_target"] is None for case in cases)
-        else "unmet_convergence_evidence"
-    )
+    evidence_key = "convergence_evidence" if all(case["performance_target"] is None for case in cases) else "unmet_convergence_evidence"
     convergence = data.get(evidence_key)
     require(isinstance(convergence, dict), f"convergence needs {evidence_key}")
     entries = convergence.get("case_bounds")
     require(isinstance(entries, list), "unmet convergence needs case_bounds")
     by_case = {item.get("case_id"): item for item in entries if isinstance(item, dict)}
-    unmet_cases = {
-        case["case_id"] for case in cases if not validate_performance_target(case)
-    }
-    require(
-        set(by_case) == unmet_cases, "case_bounds must cover every and only unmet case"
-    )
+    unmet_cases = {case["case_id"] for case in cases if not validate_performance_target(case)}
+    require(set(by_case) == unmet_cases, "case_bounds must cover every and only unmet case")
     for case_id, entry in by_case.items():
         require(
             positive_number(entry.get("verified_lower_bound_us")),
@@ -1324,30 +1215,24 @@ def validate(path: Path, final: bool, allow_unmet_convergence: bool) -> str:
 
     targets_met = all(validate_performance_target(case) for case in cases)
     no_numeric_target = all(case["performance_target"] is None for case in cases)
-    strict_closure = (
-        final and not targets_met and (allow_unmet_convergence or no_numeric_target)
-    )
+    strict_closure = final and not targets_met and (allow_unmet_convergence or no_numeric_target)
 
     created, results = validate_events(events, case_ids, final)
     if final:
         for obligation in obligations:
             oid = obligation["obligation_id"]
             require(obligation.get("status") != "BLOCKED", f"obligation {oid}: still BLOCKED")
-            for field in (
-                "case_dispositions", "route_plan", "boundary_plan", "interaction_plan"
-            ):
+            for field in ("case_dispositions", "route_plan", "boundary_plan", "interaction_plan"):
                 items = obligation.get(field, [])
                 require(isinstance(items, list), f"obligation {oid}: {field} must be a list")
                 require(
-                    not any(isinstance(item, dict) and item.get("status") == "BLOCKED"
-                            for item in items),
+                    not any(isinstance(item, dict) and item.get("status") == "BLOCKED" for item in items),
                     f"obligation {oid}: {field} still BLOCKED",
                 )
             pipeline = obligation.get("pipeline_plan", {})
             require(isinstance(pipeline, dict), f"obligation {oid}: invalid pipeline_plan")
             require(
-                not any(isinstance(item, dict) and item.get("status") == "BLOCKED"
-                        for item in pipeline.values()),
+                not any(isinstance(item, dict) and item.get("status") == "BLOCKED" for item in pipeline.values()),
                 f"obligation {oid}: pipeline still BLOCKED",
             )
     obligation_kinds: dict[str, list[dict]] = {}
@@ -1358,17 +1243,13 @@ def validate(path: Path, final: bool, allow_unmet_convergence: bool) -> str:
         linked_cases_list = obligation.get("case_ids")
         candidate_ids_list = obligation.get("candidate_ids")
         require(nonempty_text(kind), f"obligation {oid}: missing kind")
-        require(
-            status in OBLIGATION_STATUSES, f"obligation {oid}: invalid status {status}"
-        )
+        require(status in OBLIGATION_STATUSES, f"obligation {oid}: invalid status {status}")
         require(
             isinstance(linked_cases_list, list) and linked_cases_list,
             f"obligation {oid}: case_ids required",
         )
         linked_cases = set(linked_cases_list)
-        require(
-            not (linked_cases - case_ids), f"obligation {oid}: references unknown cases"
-        )
+        require(not (linked_cases - case_ids), f"obligation {oid}: references unknown cases")
         for linked_case in linked_cases:
             case = next(item for item in cases if item["case_id"] == linked_case)
             require(
@@ -1403,9 +1284,7 @@ def validate(path: Path, final: bool, allow_unmet_convergence: bool) -> str:
                 evidence_list(obligation.get("closure_evidence")),
                 f"obligation {oid}: closure evidence required",
             )
-            validate_hard_infeasibility(
-                f"obligation {oid}", obligation.get("hard_infeasibility")
-            )
+            validate_hard_infeasibility(f"obligation {oid}", obligation.get("hard_infeasibility"))
         if status == "BLOCKED":
             require(
                 candidate_ids_list,
@@ -1416,11 +1295,7 @@ def validate(path: Path, final: bool, allow_unmet_convergence: bool) -> str:
                 f"obligation {oid}: blocking reasons required",
             )
             require(
-                any(
-                    cid in results
-                    and results[cid].get("result_status") == "BLOCKED_BY_ENVIRONMENT"
-                    for cid in candidate_ids_list
-                ),
+                any(cid in results and results[cid].get("result_status") == "BLOCKED_BY_ENVIRONMENT" for cid in candidate_ids_list),
                 f"obligation {oid}: BLOCKED must reference a BLOCKED_BY_ENVIRONMENT result",
             )
         if obligation.get("closure_basis") == "STRICT_COST_DOMINANCE":
@@ -1473,8 +1348,7 @@ def validate(path: Path, final: bool, allow_unmet_convergence: bool) -> str:
             )
             if basis_candidate_id != "B0":
                 require(
-                    linked_cases
-                    <= set(created[basis_candidate_id]["applicable_cases"]),
+                    linked_cases <= set(created[basis_candidate_id]["applicable_cases"]),
                     f"obligation {oid}: basis candidate does not activate every linked case",
                 )
                 if strict_closure:
@@ -1483,12 +1357,8 @@ def validate(path: Path, final: bool, allow_unmet_convergence: bool) -> str:
                             candidate_tested_case(basis_candidate_id, case_id, results),
                             f"obligation {oid}: basis candidate path was not tested for {case_id}",
                         )
-            require(
-                auto in AUTO_STATUSES, f"obligation {oid}: invalid automatic status"
-            )
-            require(
-                manual in MANUAL_STATUSES, f"obligation {oid}: invalid manual status"
-            )
+            require(auto in AUTO_STATUSES, f"obligation {oid}: invalid automatic status")
+            require(manual in MANUAL_STATUSES, f"obligation {oid}: invalid manual status")
             for label, item, realization in (
                 ("automatic", automatic, "AUTOMATIC"),
                 ("manual", manual_plan, "MANUAL"),
@@ -1510,15 +1380,11 @@ def validate(path: Path, final: bool, allow_unmet_convergence: bool) -> str:
                     for case_id in linked_cases:
                         require(
                             any(
-                                created[cid]["identity"]["pipeline_facts"][
-                                    "realization"
-                                ]
-                                == realization
+                                created[cid]["identity"]["pipeline_facts"]["realization"] == realization
                                 and candidate_tested_case(cid, case_id, results)
                                 for cid in candidate_ids
                             ),
-                            f"obligation {oid}: {label} has no actually tested {realization} "
-                            f"candidate for {case_id}",
+                            f"obligation {oid}: {label} has no actually tested {realization} candidate for {case_id}",
                         )
                 if item.get("status") in {"CLOSED_WITH_EVIDENCE", "INAPPLICABLE"}:
                     validate_hard_infeasibility(
@@ -1528,14 +1394,12 @@ def validate(path: Path, final: bool, allow_unmet_convergence: bool) -> str:
             if strict_closure and auto != "COMPLETE":
                 require(
                     manual in {"TESTED", "CLOSED_WITH_EVIDENCE"},
-                    f"obligation {oid}: incomplete automatic pipeline requires manual "
-                    f"trial/evidence",
+                    f"obligation {oid}: incomplete automatic pipeline requires manual trial/evidence",
                 )
             if strict_closure and auto == "COMPLETE":
                 require(
                     manual in {"NOT_NEEDED_AUTO_COMPLETE", "TESTED"},
-                    f"obligation {oid}: complete automatic pipeline needs explicit manual "
-                    f"disposition",
+                    f"obligation {oid}: complete automatic pipeline needs explicit manual disposition",
                 )
         obligation_kinds.setdefault(kind, []).append(obligation)
 
@@ -1546,9 +1410,7 @@ def validate(path: Path, final: bool, allow_unmet_convergence: bool) -> str:
             and case["inner_chunks_independent"]
         ):
             covered = any(
-                obligation["kind"] == "inner_parallel_flatten"
-                and case["case_id"] in obligation["case_ids"]
-                for obligation in obligations
+                obligation["kind"] == "inner_parallel_flatten" and case["case_id"] in obligation["case_ids"] for obligation in obligations
             )
             require(
                 covered,
@@ -1556,49 +1418,32 @@ def validate(path: Path, final: bool, allow_unmet_convergence: bool) -> str:
             )
         if case["source_window"]["access_pattern"] == "INDEXED_OR_REORDERED":
             covered = any(
-                obligation["kind"] == "physical_dataflow_routes"
-                and case["case_id"] in obligation["case_ids"]
-                for obligation in obligations
+                obligation["kind"] == "physical_dataflow_routes" and case["case_id"] in obligation["case_ids"] for obligation in obligations
             )
             require(
                 covered,
                 f"case {case['case_id']}: indexed/reordered access requires physical routes",
             )
 
-    physical_cases = {
-        case_id
-        for obligation in obligation_kinds.get("physical_dataflow_routes", [])
-        for case_id in obligation["case_ids"]
-    }
+    physical_cases = {case_id for obligation in obligation_kinds.get("physical_dataflow_routes", []) for case_id in obligation["case_ids"]}
     granularity_cases = {
-        case_id
-        for obligation in obligation_kinds.get("work_granularity_search", [])
-        for case_id in obligation["case_ids"]
+        case_id for obligation in obligation_kinds.get("work_granularity_search", []) for case_id in obligation["case_ids"]
     }
     interacting_cases = physical_cases & granularity_cases
     if interacting_cases:
         interaction_cases = {
-            case_id
-            for obligation in obligation_kinds.get(
-                "granularity_dataflow_interaction", []
-            )
-            for case_id in obligation["case_ids"]
+            case_id for obligation in obligation_kinds.get("granularity_dataflow_interaction", []) for case_id in obligation["case_ids"]
         }
         require(
             interacting_cases <= interaction_cases,
-            "cases with both granularity and physical-route obligations need "
-            "granularity_dataflow_interaction",
+            "cases with both granularity and physical-route obligations need granularity_dataflow_interaction",
         )
 
     validate_route_facts(cases, obligations, created)
 
     if not targets_met:
         pipeline_obligations = obligation_kinds.get("pipeline_realization", [])
-        pipeline_cases = {
-            case_id
-            for obligation in pipeline_obligations
-            for case_id in obligation["case_ids"]
-        }
+        pipeline_cases = {case_id for obligation in pipeline_obligations for case_id in obligation["case_ids"]}
         for candidate_id, result in results.items():
             if result["result_status"] != "PROMOTED":
                 continue
@@ -1616,8 +1461,7 @@ def validate(path: Path, final: bool, allow_unmet_convergence: bool) -> str:
             }
             require(
                 affected <= reevaluated,
-                f"promoted single-stage candidate {candidate_id} changes admitted pipeline "
-                f"cases; re-evaluate pipeline",
+                f"promoted single-stage candidate {candidate_id} changes admitted pipeline cases; re-evaluate pipeline",
             )
 
     if strict_closure:
@@ -1628,14 +1472,8 @@ def validate(path: Path, final: bool, allow_unmet_convergence: bool) -> str:
                     source.get("register_window_feasible") is not None,
                     f"case {case['case_id']}: register route feasibility remains unresolved",
                 )
-        open_obligations = [
-            item["obligation_id"]
-            for item in obligations
-            if item["status"] in {"PENDING", "ACTIVE", "BLOCKED"}
-        ]
-        require(
-            not open_obligations, f"open obligations at final gate: {open_obligations}"
-        )
+        open_obligations = [item["obligation_id"] for item in obligations if item["status"] in {"PENDING", "ACTIVE", "BLOCKED"}]
+        require(not open_obligations, f"open obligations at final gate: {open_obligations}")
         validate_convergence_evidence(data, cases)
 
     if final and targets_met:
@@ -1643,12 +1481,8 @@ def validate(path: Path, final: bool, allow_unmet_convergence: bool) -> str:
     if strict_closure and no_numeric_target:
         return "CONVERGED_WITHOUT_NUMERIC_TARGET"
     if final and not allow_unmet_convergence:
-        unmet = [
-            case["case_id"] for case in cases if not validate_performance_target(case)
-        ]
-        raise SearchIncomplete(
-            f"performance targets unmet for {unmet}; keep search open"
-        )
+        unmet = [case["case_id"] for case in cases if not validate_performance_target(case)]
+        raise SearchIncomplete(f"performance targets unmet for {unmet}; keep search open")
     if strict_closure:
         return "UNMET_BUT_CONVERGED"
     return "VALID_RECORD"
