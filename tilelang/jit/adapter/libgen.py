@@ -150,9 +150,18 @@ class LibraryGenerator:
         if compile_flags is None:
             compile_flags = resolve_compile_flags(self.target)
         if self.target == "ascendc" or self.target == "auto":
+            # Derive the device architecture from the platform the kernel was built for,
+            # the same way the PTO branch below already does for --cce-aicore-arch.
+            # A hardcoded dav-2201 compiles an A5 kernel without complaint while emitting
+            # different device code: measured on one source, 2 device FUNC symbols and a
+            # 14656-byte .aicore_binary at dav-2201 against 18-19 symbols and ~24000 bytes
+            # at dav-3510. Whether that mismatch is what made a 950DT launch fail is not
+            # established here; a declared A5 platform should not compile for the other
+            # architecture either way.
+            npu_arch = "dav-3510" if self.platform == "A5" else "dav-2201"
             command = [
                 "bisheng",
-                "--npu-arch=dav-2201",
+                f"--npu-arch={npu_arch}",
                 "-std=c++17",
                 "-xasc",
                 f"-I{ASCEND_HOME_PATH}/include",
