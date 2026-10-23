@@ -76,7 +76,9 @@ disable: true
 | 0 | 环境预检 | ✅ 一次性 | `tilelang-env-check` | `env_check_passed=true` |
 | 1 | 算子设计 | ✅ | `tilelang-op-design` | `DESIGN.md` + `proto.yaml` |
 | 2 | 代码实现+测试+精度调试 | ✅ | `tilelang-op-develop` + 内置精度调试方法学 | `{op}.py` + `test_{op}.py` + 精度调试备份 |
-| 3 | 性能调优 | ⭕ 用户确认 | `tilelang-perf-optimization` | `perf_tuning/` |
+| 3 | 性能调优 | ⭕ 用户确认 | `tilelang-perf-optimization` + `tilelang-performance-best-practices` | `perf_tuning/` |
+
+Stage 3 由 `tilelang-op-perf-tuner` 采集性能证据、实施候选并完成复验与回滚；`tilelang-perf-optimization` 只消费证据并输出方案，`tilelang-performance-best-practices` 提供 A2/A3 实现知识。
 
 ## 关键机制
 
@@ -156,7 +158,8 @@ Orchestrator 唯一会反向询问的关键信息：
 |------|------|
 | `/tilelang-op-design` | 只生成 DESIGN.md |
 | `/tilelang-op-develop` | 只生成 kernel 代码 |
-| `/tilelang-perf-optimization` | 只做性能优化分析 |
+| `/tilelang-perf-optimization` | 根据已有精度与性能证据分析优化方案，不采集数据、不修改 kernel |
+| `/tilelang-performance-best-practices` | 查阅 A2/A3 优化知识、适用条件与实现约束 |
 | `/tilelang-env-check` | 单独跑环境检查 |
 
 绕过 orchestrator 时，状态文件不会被写入。

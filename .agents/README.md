@@ -63,7 +63,8 @@ Orchestrator 会自动驱动 3 阶段状态机：
 ```
 /tilelang-op-design          # 只生成 DESIGN.md
 /tilelang-op-develop        # 只生成 kernel 代码
-/tilelang-perf-optimization  # 只做性能优化分析
+/tilelang-perf-optimization  # 根据已有证据分析性能优化方案
+/tilelang-performance-best-practices  # 查阅 A2/A3 性能知识与实现约束
 /tilelang-env-check          # 单独跑环境检查
 ```
 
@@ -232,13 +233,19 @@ Stage 2: 代码实现 + 测试 + 精度调试（一站式）→ @tilelang-op-dev
 
 **关键约束**：优先复用 `examples/` 同类实现，冲突时以 examples > design.md > docs 为准
 
-#### `tilelang-perf-optimization` — 性能分析与优化
+#### `tilelang-perf-optimization` — 性能方案分析
 
-**适用场景**：精度通过后的性能调优，包含瓶颈定位、迭代调优、精度复验
+**适用场景**：精度通过且已有逐 case 性能证据，需要定位瓶颈、设计优化方案。
 
-**核心 6 步**：精度校验 → 性能采集 → 算子类型判断 → 优化实施 → 精度验证 → 效果验证
+**输入与输出**：输入当前 kernel、调用入口、测试约束、精度结果和同口径性能证据；输出 case 分组、资源模型、候选方案及验证计划。证据不足时返回缺失项，不自行采集或修改 kernel。
 
-**你会得到**：性能优化报告 + `perf_tuning/` 目录（含基线、备份、跨轮日志）
+**执行边界**：Stage 3 的数据采集、候选实施、精度复验与采纳/回滚由 `tilelang-op-perf-tuner` 负责，迭代记录保存在 `perf_tuning/`。
+
+#### `tilelang-performance-best-practices` — A2/A3 性能知识库
+
+**适用场景**：制定优化方案、实施候选或评审性能反模式时，按算子族查阅已有经验。
+
+**主要内容**：硬件与 buffer 预算、任务映射、搬运与同步、Vector/Cube 优化、FlashAttention、RoPE、归约、扫描和布局转换；每项知识保留适用条件、API 依据与验证范围。
 
 #### `tilelang-ascend-tile-api` — Tile API 端到端开发
 
