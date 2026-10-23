@@ -22,6 +22,8 @@ optional because their availability depends on the installed profiler, device,
 and requested metric set.
 """
 
+from __future__ import annotations
+
 import argparse
 import csv
 import datetime
@@ -30,7 +32,8 @@ import json
 import os
 import shutil
 import statistics
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any
+from collections.abc import Iterable, Sequence
 
 
 KERNEL_NAME_FIELDS = (
@@ -61,7 +64,7 @@ OPTIONAL_CSV_NAMES = (
 CSV_NAMES = REQUIRED_CSV_NAMES + OPTIONAL_CSV_NAMES
 
 
-def optional_float(val: Any) -> Optional[float]:
+def optional_float(val: Any) -> float | None:
     """Parse one numeric field while preserving missing values as missing."""
     if val is None or str(val).strip() in ("", "N/A", "NA"):
         return None
@@ -76,9 +79,7 @@ def safe_float(val: Any, default: float = 0.0) -> float:
     return default if value is None else value
 
 
-def numeric_values(
-    rows: Sequence[Dict[str, str]], field: str, multiply: float = 1.0
-) -> List[float]:
+def numeric_values(rows: Sequence[dict[str, str]], field: str, multiply: float = 1.0) -> list[float]:
     """Return numeric values for a field without turning NA rows into zeros."""
     values = []
     for row in rows:
@@ -88,21 +89,19 @@ def numeric_values(
     return values
 
 
-def read_csv(path: str) -> List[Dict[str, str]]:
+def read_csv(path: str) -> list[dict[str, str]]:
     if not os.path.exists(path):
         return []
-    with open(path, "r", encoding="utf-8-sig", errors="replace", newline="") as file:
+    with open(path, encoding="utf-8-sig", errors="replace", newline="") as file:
         rows = []
         for row in csv.DictReader(file):
-            rows.append({
-                str(key).strip(): value.strip() if isinstance(value, str) else value
-                for key, value in row.items()
-                if key is not None
-            })
+            rows.append(
+                {str(key).strip(): value.strip() if isinstance(value, str) else value for key, value in row.items() if key is not None}
+            )
         return rows
 
 
-def metric_csv_path(opprof_dir: str, csv_name: str, required: bool = True) -> Optional[str]:
+def metric_csv_path(opprof_dir: str, csv_name: str, required: bool = True) -> str | None:
     """Resolve a fixed CSV name or one timestamp-suffixed CSV."""
     exact = os.path.join(opprof_dir, csv_name)
     if os.path.isfile(exact):
@@ -112,9 +111,7 @@ def metric_csv_path(opprof_dir: str, csv_name: str, required: bool = True) -> Op
     if not matches and not required:
         return None
     if len(matches) != 1:
-        raise ValueError(
-            f"expected one {csv_name} in {opprof_dir}, got {len(matches)}"
-        )
+        raise ValueError(f"expected one {csv_name} in {opprof_dir}, got {len(matches)}")
     return matches[0]
 
 
@@ -142,15 +139,11 @@ def resolve_profile_dir(profile_input_root: str) -> str:
 
     if not candidates:
         required = ", ".join(REQUIRED_CSV_NAMES)
-        raise ValueError(
-            f"no profile directory containing {required} was found under "
-            f"{profile_input_root}"
-        )
+        raise ValueError(f"no profile directory containing {required} was found under {profile_input_root}")
     if len(candidates) > 1:
         formatted = "\n  ".join(candidates)
         raise ValueError(
-            "multiple profile directories were found; pass one explicit launch "
-            f"directory instead of guessing the mapping:\n  {formatted}"
+            f"multiple profile directories were found; pass one explicit launch directory instead of guessing the mapping:\n  {formatted}"
         )
     return candidates[0]
 
@@ -161,19 +154,16 @@ def stat_line(
     fmt: str = ".1f",
     unit: str = "",
     multiply: float = 1.0,
-) -> Optional[str]:
+) -> str | None:
     """Generate a min/avg/max line, omitting an all-zero metric."""
     scaled = [value * multiply for value in values]
     if not scaled or all(abs(value) < 0.001 for value in scaled):
         return None
     suffix = f"    ({unit})" if unit else ""
-    return (
-        f"{'  ' + name:<24s} {min(scaled):>10{fmt}} "
-        f"{statistics.mean(scaled):>10{fmt}} {max(scaled):>10{fmt}}{suffix}"
-    )
+    return f"{'  ' + name:<24s} {min(scaled):>10{fmt}} {statistics.mean(scaled):>10{fmt}} {max(scaled):>10{fmt}}{suffix}"
 
 
-def row_kernel_name(row: Dict[str, str]) -> Optional[str]:
+def row_kernel_name(row: dict[str, str]) -> str | None:
     for field in KERNEL_NAME_FIELDS:
         raw_value = row.get(field)
         value = raw_value.strip() if isinstance(raw_value, str) else ""
@@ -182,7 +172,7 @@ def row_kernel_name(row: Dict[str, str]) -> Optional[str]:
     return None
 
 
-def unique_kernel_names(rows: Iterable[Dict[str, str]]) -> List[str]:
+def unique_kernel_names(rows: Iterable[dict[str, str]]) -> list[str]:
     return sorted({name for row in rows if (name := row_kernel_name(row))})
 
 
@@ -201,22 +191,17 @@ def unique_match(expected: str, names: Sequence[str], source: str) -> str:
     if len(contains) == 1:
         return contains[0]
     if not contains:
-        raise ValueError(
-            f"{source}: kernel '{expected}' not found; available kernels: "
-            f"{', '.join(names) if names else '(none)'}"
-        )
-    raise ValueError(
-        f"{source}: kernel '{expected}' is ambiguous; matches: {', '.join(contains)}"
-    )
+        raise ValueError(f"{source}: kernel '{expected}' not found; available kernels: {', '.join(names) if names else '(none)'}")
+    raise ValueError(f"{source}: kernel '{expected}' is ambiguous; matches: {', '.join(contains)}")
 
 
 def filter_rows_for_kernel(
-    rows: List[Dict[str, str]],
+    rows: list[dict[str, str]],
     expected: str,
     resolved: str,
     source: str,
     raw_kernel_count: int,
-) -> List[Dict[str, str]]:
+) -> list[dict[str, str]]:
     """Filter a CSV by kernel name when it exposes a supported name column."""
     if not rows:
         return []
@@ -224,8 +209,7 @@ def filter_rows_for_kernel(
     if not names:
         if raw_kernel_count > 1:
             raise ValueError(
-                f"{source}: no kernel-name column, but OpBasicInfo.csv contains "
-                f"{raw_kernel_count} kernels; refusing to mix their metrics"
+                f"{source}: no kernel-name column, but OpBasicInfo.csv contains {raw_kernel_count} kernels; refusing to mix their metrics"
             )
         return rows
 
@@ -236,9 +220,7 @@ def filter_rows_for_kernel(
     return filtered
 
 
-def load_kernel_tables(
-    opprof_dir: str, expected: str
-) -> Tuple[Dict[str, List[Dict[str, str]]], str]:
+def load_kernel_tables(opprof_dir: str, expected: str) -> tuple[dict[str, list[dict[str, str]]], str]:
     basic_name = "OpBasicInfo.csv"
     basic_path = metric_csv_path(opprof_dir, basic_name)
     if basic_path is None:
@@ -248,14 +230,11 @@ def load_kernel_tables(
         raise ValueError(f"{basic_name} is missing or empty")
     basic_kernels = unique_kernel_names(basic_rows)
     if not basic_kernels:
-        raise ValueError(
-            f"{basic_name} has no supported kernel-name column; expected one of: "
-            f"{', '.join(KERNEL_NAME_FIELDS)}"
-        )
+        raise ValueError(f"{basic_name} has no supported kernel-name column; expected one of: {', '.join(KERNEL_NAME_FIELDS)}")
 
     resolved = unique_match(expected, basic_kernels, basic_name)
     raw_kernel_count = len(basic_kernels)
-    tables: Dict[str, List[Dict[str, str]]] = {}
+    tables: dict[str, list[dict[str, str]]] = {}
     for csv_name in CSV_NAMES:
         csv_path = metric_csv_path(
             opprof_dir,
@@ -263,29 +242,20 @@ def load_kernel_tables(
             required=csv_name in REQUIRED_CSV_NAMES,
         )
         rows = read_csv(csv_path) if csv_path else []
-        tables[csv_name] = filter_rows_for_kernel(
-            rows, expected, resolved, csv_name, raw_kernel_count
-        )
+        tables[csv_name] = filter_rows_for_kernel(rows, expected, resolved, csv_name, raw_kernel_count)
     return tables, resolved
 
 
-def timed_core_prefixes(rows: Sequence[Dict[str, str]]) -> List[str]:
+def timed_core_prefixes(rows: Sequence[dict[str, str]]) -> list[str]:
     """Return core types that have non-zero profiler timing or counters."""
     timed = []
     for prefix in ("aiv", "aic"):
-        if any(
-            safe_float(value) > 0
-            for row in rows
-            for field, value in row.items()
-            if field.startswith(f"{prefix}_")
-        ):
+        if any(safe_float(value) > 0 for row in rows for field, value in row.items() if field.startswith(f"{prefix}_")):
             timed.append(prefix)
     return timed
 
 
-def rows_for_core_type(
-    rows: Sequence[Dict[str, str]], prefix: str
-) -> List[Dict[str, str]]:
+def rows_for_core_type(rows: Sequence[dict[str, str]], prefix: str) -> list[dict[str, str]]:
     """Select positive-time rows when a table exposes per-core timing."""
     time_field = f"{prefix}_time(us)"
     if not any(optional_float(row.get(time_field)) is not None for row in rows):
@@ -293,7 +263,7 @@ def rows_for_core_type(
     return [row for row in rows if safe_float(row.get(time_field)) > 0]
 
 
-def percentile(values: Sequence[float], fraction: float) -> Optional[float]:
+def percentile(values: Sequence[float], fraction: float) -> float | None:
     """Return one linearly interpolated percentile for a non-empty sequence."""
     if not values:
         return None
@@ -306,35 +276,26 @@ def percentile(values: Sequence[float], fraction: float) -> Optional[float]:
 
 
 def positive_evidence_count(
-    rows: Sequence[Dict[str, str]],
+    rows: Sequence[dict[str, str]],
     prefix: str,
     fields: Sequence[str],
-) -> Optional[Tuple[int, int]]:
+) -> tuple[int, int] | None:
     """Count rows with positive counters without calling them effective cores."""
     selected_rows = rows_for_core_type(rows, prefix)
-    available_fields = [
-        field
-        for field in fields
-        if any(optional_float(row.get(field)) is not None for row in selected_rows)
-    ]
+    available_fields = [field for field in fields if any(optional_float(row.get(field)) is not None for row in selected_rows)]
     if not selected_rows or not available_fields:
         return None
-    positive_rows = sum(
-        any(safe_float(row.get(field)) > 0 for field in available_fields)
-        for row in selected_rows
-    )
+    positive_rows = sum(any(safe_float(row.get(field)) > 0 for field in available_fields) for row in selected_rows)
     return positive_rows, len(selected_rows)
 
 
 def append_work_evidence(
-    lines: List[str],
-    tables: Dict[str, List[Dict[str, str]]],
+    lines: list[str],
+    tables: dict[str, list[dict[str, str]]],
     prefix: str,
 ) -> None:
     """Report observable work counters, not inferred task-bearing cores."""
-    compute_fields = (
-        ("aiv_vec_fops",) if prefix == "aiv" else ("aic_cube_fops",)
-    )
+    compute_fields = ("aiv_vec_fops",) if prefix == "aiv" else ("aic_cube_fops",)
     transfer_fields = (
         ("GM_to_UB_datas(KB)", "UB_to_GM_datas(KB)")
         if prefix == "aiv"
@@ -344,21 +305,17 @@ def append_work_evidence(
         )
     )
     evidence = []
-    compute_count = positive_evidence_count(
-        tables["ArithmeticUtilization.csv"], prefix, compute_fields
-    )
+    compute_count = positive_evidence_count(tables["ArithmeticUtilization.csv"], prefix, compute_fields)
     if compute_count is not None:
         evidence.append(f"FLOP 计数非零={compute_count[0]}/{compute_count[1]}")
-    transfer_count = positive_evidence_count(
-        tables["Memory.csv"], prefix, transfer_fields
-    )
+    transfer_count = positive_evidence_count(tables["Memory.csv"], prefix, transfer_fields)
     if transfer_count is not None:
         evidence.append(f"GM 搬运非零={transfer_count[0]}/{transfer_count[1]}")
     if evidence:
         lines.append("  工作计数证据（不等同于有效任务核）: " + " | ".join(evidence))
 
 
-def archive_csvs(opprof_dir: str, output_dir: str) -> List[str]:
+def archive_csvs(opprof_dir: str, output_dir: str) -> list[str]:
     os.makedirs(output_dir, exist_ok=False)
     copied = []
     for csv_name in CSV_NAMES:
@@ -374,9 +331,7 @@ def archive_csvs(opprof_dir: str, output_dir: str) -> List[str]:
     return copied
 
 
-def append_ratio_and_bandwidth(
-    lines: List[str], rows: Sequence[Dict[str, str]], prefix: str
-) -> None:
+def append_ratio_and_bandwidth(lines: list[str], rows: Sequence[dict[str, str]], prefix: str) -> None:
     if prefix == "aiv":
         ratio_fields = [
             ("vec_ratio%", "aiv_vec_ratio"),
@@ -421,9 +376,7 @@ def append_ratio_and_bandwidth(
             lines.append(line)
 
 
-def append_scalar_breakdown(
-    lines: List[str], rows: Sequence[Dict[str, str]], prefix: str
-) -> None:
+def append_scalar_breakdown(lines: list[str], rows: Sequence[dict[str, str]], prefix: str) -> None:
     fields = [
         ("single", f"{prefix}_scalar_single_time(us)"),
         ("dual", f"{prefix}_scalar_dual_time(us)"),
@@ -432,15 +385,19 @@ def append_scalar_breakdown(
         ("mte3_stall", f"{prefix}_scalar_mte3_stall_time(us)"),
     ]
     if prefix == "aiv":
-        fields.extend([
-            ("vec_stall", "aiv_scalar_vector_stall_time(us)"),
-            ("ub_stall", "aiv_scalar_stall_by_ub_time(us)"),
-        ])
+        fields.extend(
+            [
+                ("vec_stall", "aiv_scalar_vector_stall_time(us)"),
+                ("ub_stall", "aiv_scalar_stall_by_ub_time(us)"),
+            ]
+        )
     else:
-        fields.extend([
-            ("cube_stall", "aic_scalar_cube_stall_time(us)"),
-            ("mte1_stall", "aic_scalar_mte1_stall_time(us)"),
-        ])
+        fields.extend(
+            [
+                ("cube_stall", "aic_scalar_cube_stall_time(us)"),
+                ("mte1_stall", "aic_scalar_mte1_stall_time(us)"),
+            ]
+        )
     fields.append(("wait_ib", f"{prefix}_scalar_wait_ib_time(us)"))
 
     parts = []
@@ -456,7 +413,7 @@ def append_scalar_breakdown(
 
 
 def generate_summary(
-    tables: Dict[str, List[Dict[str, str]]],
+    tables: dict[str, list[dict[str, str]]],
     output_dir: str,
     expected_kernel: str,
     resolved_kernel: str,
@@ -475,31 +432,24 @@ def generate_summary(
     lines.append(f"Resolved Kernel:  {resolved_kernel} | Type: {op_type}")
     if durations:
         lines.append(
-            f"Task Duration(us): min={min(durations):.2f} | avg={duration:.2f} | "
-            f"max={max(durations):.2f} | samples={len(durations)}"
+            f"Task Duration(us): min={min(durations):.2f} | avg={duration:.2f} | max={max(durations):.2f} | samples={len(durations)}"
         )
     if block_dims:
         lines.append(f"BlockDim: {min(block_dims)}..{max(block_dims)}")
     if current_freqs or rated_freqs:
-        current_freq = (
-            f"{statistics.mean(current_freqs):.0f}" if current_freqs else "N/A"
-        )
+        current_freq = f"{statistics.mean(current_freqs):.0f}" if current_freqs else "N/A"
         rated_freq = f"{statistics.mean(rated_freqs):.0f}" if rated_freqs else "N/A"
-        lines.append(
-            f"Freq(avg): {current_freq}/{rated_freq}"
-        )
+        lines.append(f"Freq(avg): {current_freq}/{rated_freq}")
 
     pipe_rows = tables["PipeUtilization.csv"]
     prefixes = timed_core_prefixes(pipe_rows)
-    critical_times: List[float] = []
+    critical_times: list[float] = []
     for prefix in prefixes:
         selected_rows = rows_for_core_type(pipe_rows, prefix)
         core_times = numeric_values(selected_rows, f"{prefix}_time(us)")
         critical_times.extend(core_times)
         lines.append("")
-        lines.append(
-            f"--- PipeUtilization ({prefix.upper()}, {len(selected_rows)} timed subcores) ---"
-        )
+        lines.append(f"--- PipeUtilization ({prefix.upper()}, {len(selected_rows)} timed subcores) ---")
         lines.append(f"  {'':24s} {'min':>10s} {'avg':>10s} {'max':>10s}")
         line = stat_line(f"{prefix}_time(us)", core_times, ".2f")
         if line:
@@ -507,10 +457,7 @@ def generate_summary(
         p50 = percentile(core_times, 0.50)
         p90 = percentile(core_times, 0.90)
         if p50 is not None and p90 is not None:
-            lines.append(
-                f"  计时行耗时分布: p50={p50:.2f}us | p90={p90:.2f}us | "
-                f"max={max(core_times):.2f}us"
-            )
+            lines.append(f"  计时行耗时分布: p50={p50:.2f}us | p90={p90:.2f}us | max={max(core_times):.2f}us")
         append_work_evidence(lines, tables, prefix)
         append_ratio_and_bandwidth(lines, selected_rows, prefix)
         append_scalar_breakdown(lines, selected_rows, prefix)
@@ -521,13 +468,15 @@ def generate_summary(
         critical_path = max(critical_times)
         overhead = max(0.0, duration - critical_path)
         mode = "max(AIV, AIC)" if len(prefixes) == 2 else prefixes[0].upper()
-        lines.extend([
-            "",
-            "--- 关键路径与头开销 ---",
-            f"  计时子核耗时口径: {mode}",
-            f"  Task Duration(avg): {duration:.2f}us | 关键路径: {critical_path:.2f}us | "
-            f"头开销: {overhead:.2f}us ({overhead / duration * 100:.1f}%)",
-        ])
+        lines.extend(
+            [
+                "",
+                "--- 关键路径与头开销 ---",
+                f"  计时子核耗时口径: {mode}",
+                f"  Task Duration(avg): {duration:.2f}us | 关键路径: {critical_path:.2f}us | "
+                f"头开销: {overhead:.2f}us ({overhead / duration * 100:.1f}%)",
+            ]
+        )
 
     mem_rows = tables["Memory.csv"]
     if mem_rows:
@@ -541,13 +490,8 @@ def generate_summary(
             data = numeric_values(mem_rows, data_field)
             if sum(data) > 0:
                 usage = numeric_values(mem_rows, usage_field)
-                usage_text = (
-                    f"{statistics.mean(usage):.2f}%" if usage else "N/A"
-                )
-                lines.append(
-                    f"  {display}: {sum(data):.1f}KB total "
-                    f"({statistics.mean(data):.1f}KB/profiler row), BW usage: {usage_text}"
-                )
+                usage_text = f"{statistics.mean(usage):.2f}%" if usage else "N/A"
+                lines.append(f"  {display}: {sum(data):.1f}KB total ({statistics.mean(data):.1f}KB/profiler row), BW usage: {usage_text}")
         for display, field in [
             ("主存读取", "read_main_memory_datas(KB)"),
             ("主存写入", "write_main_memory_datas(KB)"),
@@ -561,10 +505,7 @@ def generate_summary(
         mte2_instructions += sum(numeric_values(mem_rows, "aic_mte2_instructions"))
         if gm_ub_total > 0 and mte2_instructions > 0:
             average_transfer = gm_ub_total / mte2_instructions
-            lines.append(
-                f"  Avg MTE2 transfer: {average_transfer:.2f}KB "
-                f"({int(mte2_instructions)} instructions total)"
-            )
+            lines.append(f"  Avg MTE2 transfer: {average_transfer:.2f}KB ({int(mte2_instructions)} instructions total)")
 
         for display, field in [
             ("GM→UB avg BW", "aiv_gm_to_ub_bw(GB/s)"),
@@ -629,16 +570,11 @@ def generate_summary(
             ]:
                 values = numeric_values(selected_rows, field)
                 if any(value > 0 for value in values):
-                    parts.append(
-                        f"{display}: avg={statistics.mean(values):.1f}% "
-                        f"(min={min(values):.1f}%, max={max(values):.1f}%)"
-                    )
+                    parts.append(f"{display}: avg={statistics.mean(values):.1f}% (min={min(values):.1f}%, max={max(values):.1f}%)")
             if parts:
                 lines.append(f"  {prefix.upper()}: " + " | ".join(parts))
             hits = sum(numeric_values(selected_rows, f"{prefix}_write_cache_hit"))
-            misses = sum(
-                numeric_values(selected_rows, f"{prefix}_write_cache_miss_allocate")
-            )
+            misses = sum(numeric_values(selected_rows, f"{prefix}_write_cache_miss_allocate"))
             if hits + misses > 0:
                 lines.append(f"  {prefix.upper()} write cache: hit={int(hits)} miss={int(misses)}")
 
@@ -666,7 +602,12 @@ def generate_summary(
             wait_fields = (
                 [("vec_wait", "aiv_vec_wait_ratio"), ("mte2_wait", "aiv_mte2_wait_ratio"), ("mte3_wait", "aiv_mte3_wait_ratio")]
                 if prefix == "aiv"
-                else [("cube_wait", "aic_cube_wait_ratio"), ("mte1_wait", "aic_mte1_wait_ratio"), ("mte2_wait", "aic_mte2_wait_ratio"), ("mte3_wait", "aic_mte3_wait_ratio")]
+                else [
+                    ("cube_wait", "aic_cube_wait_ratio"),
+                    ("mte1_wait", "aic_mte1_wait_ratio"),
+                    ("mte2_wait", "aic_mte2_wait_ratio"),
+                    ("mte3_wait", "aic_mte3_wait_ratio"),
+                ]
             )
             parts = []
             for display, field in wait_fields:
@@ -720,13 +661,15 @@ def generate_summary(
         if cube_parts:
             lines.append("  AIC: " + " | ".join(cube_parts))
 
-    lines.extend([
-        "",
-        "--- 原始数据位置 ---",
-        f"  CSV 文件: {output_dir}/",
-        "  归档文件保持 msprof 原始内容；summary.txt 仅统计 Resolved Kernel。",
-        "  如需逐核详情，请读取对应 CSV 文件并继续使用同一 kernel 过滤条件。",
-    ])
+    lines.extend(
+        [
+            "",
+            "--- 原始数据位置 ---",
+            f"  CSV 文件: {output_dir}/",
+            "  归档文件保持 msprof 原始内容；summary.txt 仅统计 Resolved Kernel。",
+            "  如需逐核详情，请读取对应 CSV 文件并继续使用同一 kernel 过滤条件。",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -768,9 +711,7 @@ def write_metadata(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Archive msprof CSVs and summarize exactly one TileLang kernel."
-    )
+    parser = argparse.ArgumentParser(description="Archive msprof CSVs and summarize exactly one TileLang kernel.")
     parser.add_argument(
         "opprof_dir",
         help="Path to a flat OPPROF root or one explicit nested launch directory",
