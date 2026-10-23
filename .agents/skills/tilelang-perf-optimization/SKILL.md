@@ -1,155 +1,145 @@
 ---
 name: tilelang-perf-optimization
-description: TileLang 算子性能调优与潜在性能劣化模式检查。提供性能数据采集、瓶颈诊断、优化实施、效果验证能力；也用于生成或评审算子时对照常见性能劣化模式示例检查当前 kernel 代码。触发：算子精度通过后需要优化性能、性能不及预期时。
+description: 基于已有精度与性能证据，为 Ascend A2/A3 TileLang 算子分析逐 case 瓶颈、设计 Tiling 和流水候选并输出性能调优方案。适用于精度通过后的性能方案分析；性能采集、代码实施和迭代管理由调用方负责。
 ---
 
-# TileLang 性能优化
+> 平台：Ascend A2/A3（Ascend910B / Ascend910_93，DAV_2201）。本文件及其同目录资源仅用于此平台；相对路径以本文件所在目录为基准。
 
-## 工作流程
+# TileLang A2/A3 算子性能方案分析
 
-```
-Step 1: 基线采集（性能 + 精度）
-  → Step 2: 算子类型判断
-  → Step 3: 阅读参考文档并识别优化点（输出到 optimization_log.md）
-  → Step 4: 逐项实施优化点
-  → Step 5: 效果验证（性能 + 精度）
-```
+本 Skill 只面向当前仓库的 TileLang A2/A3 前端与已选后端。目标是把实测瓶颈转化为可由 TileLang 代码实现和验证的方案，不维护其他编程模型的 API、代码模板或迁移规则。
 
-## 核心约束
+## 职责边界
 
-- **逐项实施**：每次 Edit 只改一个优化点，改完立即验证
-- **精度优先**：精度未通过禁止性能优化
-- **性能验证**：必须使用 `msprof op`，禁止用 Python/Torch 计时
-- **Host 轻量化**：禁止 host 侧全量数据搬运（`F.pad`、`.contiguous()`、`.to(dtype)` 等），必须移入 kernel
+- 本 Skill 负责：基线证据整理、逐 case 瓶颈分析、case 分组、Tiling 与流水候选设计、方案排序和验证设计。
+- 名为 `tilelang-performance-best-practices` 的 Skill 负责：TileLang API、执行域、buffer、模板成熟度、当前后端 lowering 和实现门禁。制定方案时必须同时加载；未安装或无法按名称加载时停止并报告。
+- 当前目标算子、公开接口与测试是产品事实源；实际导入的 TileLang 源码及其 `examples/`、`testing/` 是前端能力事实源。
+- 当前后端接收 TileLang lowering 的结果。底层编译器能表达某项能力，不等于 TileLang 前端已有对应 API。
+- 本 Skill 不直接修改 kernel。用户要求实施时，把通过门禁的方案交给实现阶段。
+- 性能采集、迭代采纳/回滚与最终归档由调用方负责；本技能消费已有证据，缺少数据时返回具体补采需求。保持用户或 DESIGN.md 已确定的 Developer / Expert / 混合模式。
 
-## 参考文档
+由 [Flash 工作流](../tilelang-tuning-flash/SKILL.md) 调用时，额外接收当前 B0/B*/Ci
+身份、已冻结 case、实现/整链约束、用户预算和已有搜索义务。返回方案时关联 case ID、
+已有 obligation ID（或明确建议新建的义务）、六轴候选身份和验证需求；已有失败仅在
+相同结构与上下文下复用。最多三个已准入方案限制当前执行队列，不能删掉未入队义务。
+本 Skill 不写 Flash ledger、不标记晋升或终局；由执行者核验并落盘。
 
-- **优化指南**：[optimization-guide.md](references/optimization-guide.md)
-- **反模式清单**：[performance-antipatterns.md](references/performance-antipatterns.md)
-- **API 用法**：[tilelang-api-best-practices](../tilelang-custom-skill/tilelang-api-best-practices/SKILL.md)
-- **编程模式**：[tilelang-programming-model-guide](../tilelang-custom-skill/tilelang-programming-model-guide/SKILL.md)
-- **cube最佳实践**：[cube_optimization_path.md](references/best-practices/cube_optimization_path.md)
-- **vector最佳实践**：[vector-practices/](references/vector-practices/)
----
+## 必需输入
 
-## 执行步骤
+开始分析前确认以下信息齐全：
 
-### Step 1: 基线采集
+- 待优化的完整 TileLang kernel、dispatch/build 入口和正确性测试。
+- 全部目标 case：case ID、shape、dtype、属性和公开接口约束。
+- 当前代码的精度基线与 当前后端编译状态。
+- 同一设备、环境、warmup、repeat 和并发设置下的逐 case kernel latency。
+- 可获得的 profiling 指标或 trace；没有指标时不得虚构 bound 类型。
 
-在 `examples/{op_name}/` 下查找含 `@tilelang.jit` 的脚本，运行：
+缺少逐 case latency、代码与 case 映射或基线不能正确运行时，先返回数据采集阶段，不输出确定性优化结论。
 
-```bash
-msprof op --kernel-name="main_kernel" --output=./msprof_output python ./examples/{op_name}/<script_name>.py
-```
+## 工作流
 
-精度未通过 → 禁止后续步骤。
+### 1. 固定事实与比较口径
 
-### Step 2: 算子类型判断
+多 launch 的公开算子先核对核名、聚合规则和 case→launch 映射，避免在漏计的基线上制定方案。调用方已接入 `tilelang-op-profiling` 时，按名称加载并传入 A2/A3 平台和设备证据，读取其整链计时说明；该技能尚未提供时消费调用方给出的同等证据，缺失项返回数据采集阶段，不假定该技能已经安装。
 
-**生成翻译后的 Ascend C 代码**：
+1. 记录当前 commit、实际导入的 TileLang 路径、CANN 与实际后端版本、设备和测试命令。
+2. 从测试与 dispatch 还原每个 case 实际进入的 kernel 分支，不能按算子名推测。
+3. 校验 profiling 中的 kernel 来自目标源码，整理全部 case 的基线 latency 与可用指标。
+4. 按 [证据与瓶颈归因](references/evidence-and-diagnosis.md) 区分计算、搬运、标量/调度、并行度和 launch 开销。
 
-在算子脚本中，JIT 编译返回的函数对象调用 `get_kernel_source()` 可获取翻译后的 Ascend C 代码：
+### 2. 按执行路径分组
 
-```python
-func = jit_func(batch=B, seq_len=S, ...)
-print(func.get_kernel_source())
-```
+先按实际计算路径分组，再考虑 shape 大小。推荐顺序：
 
-运行脚本后，从输出中搜索关键字判断算子类型：
+1. 语义路径：elementwise、broadcast、reduction、transpose/gather、GEMM、attention 或 irregular。
+2. dtype 与累加精度。
+3. 当前 dispatch/kernel 分支。
+4. 对齐、尾块、空任务和特殊属性。
+5. 实测瓶颈特征与 shape 规模。
 
-| 判断依据 | 类型 | 典型算子 |
-|---------|------|---------|
-| `IS_ASCEND_AIC` 出现 | Cube 型 | GEMM、MatMul、Linear |
-| `IS_ASCEND_AIV` 出现 | Vector 型 | RoPE、Softmax、Add |
-| 两者均出现 | 混合型 | FlashAttention、SparseFlashAttention |
+每个 case 必须出现在且只出现在一个基线瓶颈组中。分组方法见 [Tiling 与 case 建模](references/tiling-and-cases.md)。
 
-### Step 3: 识别优化点（强制，禁止与 Step 4 合并）
+### 3. 建立当前实现的资源模型
 
-先读取 `optimization-guide.md` 的目录和各章节标题 + `performance-antipatterns.md` 的各条目标题，根据算子类型（Step 2 判定）和算子实现特征初步筛选出可能适用的优化点清单。再针对每个候选优化点，读取其"适用场景"、"约束"、"使用条件"等描述，确认是否真正适用。如果是 cube 核额外参考 `best-practices/cube_optimization_path.md`，如果是 vector 核额外参考 `vector-practices/` 目录下的文档。
+对每个组写出可检查的当前值，而不是先套固定模板：
 
-在 `optimization_log.md` 中输出：
+- 独立任务数、实际核数、每核任务量及负载尾差。
+- tile shape、循环次数、有效元素数和 padded footprint。
+- GM/UB/L1/L0 buffer 大小、buffer versions、常驻数据与安全余量。
+- 每 tile 的读写字节、有效计算量、重复搬运和中间结果生命周期。
+- 输出表达式依赖的逻辑维度，以及不依赖 table、channel、head、output column 等维度的循环不变量和公共子表达式；量化外提或复用前后的逻辑工作量。
+- 对 irregular/标量索引路径分别统计整数乘除/取模、位运算、cast、分支、索引计算和每任务 live state，不能只用 FLOP 代表实际计算成本。
+- `T.Persistent`、`T.Pipelined`、`T.Parallel`、`T.tile.*`、`T.gemm_v0`、`T.mma` 或归约结构的实际使用方式。
+- 按名称加载 [npu-arch](../npu-arch/SKILL.md) 并传入 A2/A3（DAV_2201）和已确认的完整 SoC/NpuArch，复用入口的完整硬件探测证据，记录目标架构、核数和硬件容量，并按 `tilelang-performance-best-practices` 从当前 lowering 核对平台用户可用量、编译器预算和完整 footprint；执行域或 buffer 变化时重算，不能沿用任意安全 cap。
+- 对 Elementwise、gather/scatter 或布局转换，按对应指南建立嵌套任务树、tile 边界和固定有效 payload 的 Vector 物理路线成本；可实施且可能改善瓶颈的路线必须有代表候选或确定的淘汰证据。
+- 多级流水按对应指南记录每个跨迭代 buffer 的生命周期、版本、稳态/尾部范围和总 footprint。
 
-**Part A 优化点清单**：逐条标注适用/不适用 + 原因 + 参考文件行号。`pass_configs` 不是独立优化点，是伴随修改。
+对全部 case 记录 `outer_items`、独立 inner chunks、核数、outer/flattened task waves、单任务 payload、kernel time、搬运/计算下界和主要 pipe，并逐 case 分析粒度边界、完整物理路线和交互组合；planar/scratch 物化不能记为直接 register-resident。未进入最终三个方案的结构方向仍须给出裁决依据，具体状态和落盘格式由调用它的调优工作流管理。
 
-```
-[#1] [名称]（参考: optimization-guide.md L445-L650 §2.13）：[适用/不适用] — [原因]
-```
+只有公式所依赖的硬件容量、对齐和 API 行为已从当前源码或已验证实现确认后，才能给出具体数值参数。
 
-若候选会扩大现有 kernel 的调用域（新增 shape、batch、dtype、尾块或多 stage），
-Part A 必须先写：
+### 4. 生成并筛选候选
 
-```text
-[KERNEL-REUSE-PRECHECK]
-candidate: <优化点及 reference 章节>
-expanded_domain: <新增调用域>
-compatibility_dimensions: <从该章节读取，不自行猜测>
-unknown_or_false: <none/列表>
-plan: direct-reuse / repair-kernel-first / new-kernel-first
-```
+内部混合精度、HF32 和近似指令可列为实验候选，但不得修改参考实现、测试、原容差或公开约定；只有正确性通过且同口径性能提升时才保留。
 
-存在 `unknown/false` 时，ORDER-PLAN 不得写 direct reuse。
+本 Skill 中的优化点、经验和模板是经过总结或验证的候选来源与示例，不构成 TileLang 算子优化空间的穷举或封闭方案集。先依据当前算子源码、全部目标 case、资源模型和 profiling 证据生成候选；可以迁移、组合或扩展本 Skill 中的相似优化原理，也可以提出本 Skill 未收录的候选。命中现有模板不是停止探索的条件；仍须考察与实测瓶颈直接相关、且有 TileLang API 与当前后端 lowering 依据的非模板候选。所有候选都必须有可证伪假设，并经过后续的精度与同口径性能验证；证据不足时按本节门禁标为 `DESIGN_ONLY`。
 
-> **重点**：每节都需读取其"适用场景"和"约束"描述确认是否适用。仅当章节标题明确标注了特定算子类型专属（如"Cube 核"）且当前算子不属于该类型时，才可初步排除；其余所有章节必须读约束确认，不得仅凭标题或算子类型跳过。
+每个候选必须对应一个可证伪假设，例如：
 
-**Part B `[ORDER-PLAN]`**：分析依赖关系，排出实施顺序链。依赖分析三条规则：
-1. **布局依赖**：改变 layout 的优化排在依赖此 layout 的优化之前
-2. **数量依赖**：涉及预算的优化排在改变 buffer 数量的优化之后
-3. **配置依赖**：涉及 pass_configs 的优化在相关功能实施后才改动
+- 将不依赖某输出维度的中间结果外提并在 UB 中复用，消除跨 table/channel/head 的重复计算。
+- 增大或减小 tile，以降低固定开销、提高并行度或控制 buffer 压力。
+- 调整任务到核的映射，减少负载不均或空核。
+- 使用 `T.Persistent`/`T.Pipelined` 与完整的 buffer versions 改善搬算重叠；自动分析不适用时按当前 API 设计手动版本。
+- 在同一执行域消费中间值，减少 GM 往返或重复读取。
+- 为 reduction/GEMM 保留必要的 fp32 状态，并调整分层归约或 K 维流水。
+- 为对齐边界和尾块拆分 dispatch 分支，避免所有 case 承担通用路径成本。
 
-```
-[ORDER-PLAN] 实施顺序：
-1. [#N] [名称] — 前置依赖: [无] — 理由: [...]
-2. [#M] [名称] — 前置依赖: [#N] — 理由: [...]
-```
+候选实施前先按可消除工作量、与实测瓶颈匹配度、覆盖目标差距的可能性、实现风险和验证成本排序。逻辑工作量下降只能作为收益上界；只有同条件实测才能报告实际加速。多个语义等价算术写法若没有 lowering/生成 IR 差异，只保留一个候选。
 
-### Step 4: 逐项实施
+随后先加载名为 `tilelang-performance-best-practices` 的 Skill，并传入平台 A2/A3（DAV_2201），逐项完成以下门禁：
 
-**固定优先级**：先静态分析（对照 `performance-antipatterns.md`），再 P0 Host 侧优化（`optimization-guide.md` §2.12）。P0 完成后 Host 侧只允许零拷贝形状变换。
+1. 在目标仓库同类算子 `.py` / `.tl` 或实际 TileLang 源码中找到 API 和调用结构依据。
+2. 复用 `tilelang-performance-best-practices` bundled reference 时，标注真实 Python 路径及成熟度；只有 `PRODUCTION_REFERENCE` 或重新验证后的 `VERIFIED` 可作为直接复用候选。当前仓库或实际 TileLang 源码中的真实实现不要求先登记到该状态表，但仍须核验 API、lowering、精度与适用范围。
+3. bundled reference 中的 `EXECUTABLE_BASELINE` 只作为正确性起点；`PARTIAL`、`DESIGN_ONLY` 或无可执行 kernel 的资料不得以模板身份进入直接实施方案。若候选另有当前仓库或实际 TileLang 源码证据，应按该直接证据独立判断，不因模板库未收录而自动降级。
+4. 无法确认 lowering、布局或 API 参数时，将候选标为 `DESIGN_ONLY`，不编造 TileLang 写法。
+5. 流水候选必须阅读 `tilelang-performance-best-practices` 的 `references/elementwise/double_buffer_design.md`，写明自动/手动版本选择、所有被版本化的 buffer、调度器可见控制流、生成代码检查点、上板生效判据和顺序稳定性测试。只写 `num_stages=N` 不构成可实施方案。
+6. Elementwise、gather/scatter 或布局转换候选必须阅读 `tilelang-performance-best-practices` 的 A2/A3 资源 `references/elementwise/tiling_task_vector_search.md`，输出 tiling 边界、嵌套任务并行度和 Vector 指令成本；未选的高收益物理路线必须有淘汰证据。
+7. 容量影响 tiling、驻留或流水时必须使用 `npu-arch` 确认硬件资源，并从当前 TileLang lowering 核对编译器预算与预留；附上硬件规格、平台用户可用量、编译器预算与预留、显式/常驻/多版本 footprint 和剩余容量账本。增加一个仅用于初始化或尾部的执行侧操作、cast、scratch 或临时 buffer 也要按最终 kernel IR 重算。
 
-**后续优化点**按 `[ORDER-PLAN]` 逐个实施，每个走 6 子步骤：
+最终最多保留三个已准入方案，状态只能是 `IMPLEMENTABLE` 或 `EXPERIMENT`。尽量让每个方案只验证一个主要假设；互斥 dispatch 分支可合并到同一方案，但必须列出分支条件。`DESIGN_ONLY` 单列为“未准入候选”，说明缺失的 API、lowering 或验证证据；仅在候选依赖 bundled reference 时说明缺失的模板证据。它不占三个方案名额，也不交给实现阶段。方案名额不能删除结构义务；若多个正交轴会改变彼此的连续 payload、固定成本摊销或瓶颈，必须保留组合方案或明确的不可实施证据。
 
-```
-0: ORDER-CHECK → A: Read 文档 → B: Edit 代码 → C: msprof op 验证 → D: 记录结果 → (失败) E: 重读文档修复
-```
+### 5. 输出方案与验证顺序
 
-**门禁**：`[ORDER-CHECK]` 未写禁止 Read；`[IMPL-#N]` 未写禁止 Edit；`[RESULT-#N]` 未写禁止下一个。
+按 [方案与验证](references/plan-and-validation.md) 输出：
 
-Edit 调用方、dispatch 或 planner 前，再写 `[KERNEL-REUSE-AUDIT]` 复核候选章节规定的
-兼容性维度。任一项仍为 unknown/false，先修复或新建 kernel，并单独验证后再扩大调用域。
-不同优化点使用各自 reference 章节的维度，不套用其他优化的专属字段。
+- 基线事实表和逐 case 瓶颈表。
+- 每个方案的证据、假设、具体参数、TileLang 代码改动位置、参考实现、成熟度和适用 case。
+- 精度、当前后端 lowering、逐 case 性能比较及回退条件。
+- 全部 case 覆盖清单；没有证据支持优化时明确写“暂不修改”。
 
-**日志格式**：
-```
-[ORDER-CHECK] 准备实施: [#N] [名称] | 前置依赖: [#1 ✅ / #2 ❌] | 结论: [✅/❌]
-[IMPL-#N] 已阅读 <文件> L行号（§X.X），关键约束: ...
-[KERNEL-REUSE-AUDIT] 依据: <章节> | 维度及结论: <...> | 结论: <reuse/repair/new>
-[SELF-CHECK] 本次 Edit 只涉及 [#N]
-[RESULT-#N] 优化点: [名称] | 精度: [pass/fail] | 性能: [X us] | 对比: [+/-X%]
-```
+## 硬性规则
 
-**Double Buffer 特殊要求**：实施前必须完成 `[DB-ANALYSIS]`（Q1: 循环内有 MTE3？Q2: 有跨迭代累加器？Q3: 选同步方式），未完成禁止写代码。
+- 不把经验阈值当成结论；bound 必须由本轮数据支持。
+- 不遗漏慢 case、尾块 case 或当前失败 case，不用平均值掩盖单 case 退化。
+- 不通过降低 reference 精度、放宽容差、减少测试或 host 侧短路获得通过。
+- 不把底层 IR、编译器内部能力或设计文档写成 TileLang 前端 API。
+- 不把“理论上更快”写成性能收益；只有同条件实测才报告加速比。
+- 候选失败只否决记录中的准确组合；自动版本化失败、某个 tile 的 stage 2 变慢、某种 gather 索引精度失败、planar 物化回退或小 group 收益不足，不得扩大为手动版本化、其他 tile、直接寄存器重排或完整连续单元均不可行。
+- 结构覆盖审计不依赖用户是否给出数值目标：高收益义务必须进入准入方案或有淘汰/不适用证据；存在能减少主瓶颈物理访存、额外物化、提高有效 lane、补足核并行度或完善已准入流水的未裁决路线时，不得声称证据已收敛。
+- 流水一旦由每核迭代数、容量和 MTE/Compute 可重叠性准入，自动失败或部分生效后必须继续裁决手动显式多版本代表；只在自动完整生效或有 API/lowering/容量/依赖的确定证据时关闭。
+- “严格受支配”须附同一有效 payload 的具体指令、访存、转换、物化和同步成本；笼统推测不能关闭候选。
+- 不在方案分析阶段改源码；实现、编译和实测由后续阶段完成。
 
-**最佳实践参考**：
+## 场景
 
-| 算子类型 | 文档 | 核心优化技术 |
-|---------|------|-------------|
-| Vector 型 | [RoPE 优化](references/best-practices/rope-developer-mode.md)、[归约遍数融合](references/vector-practices/vector_reduce_pass_fusion.md) | NPU 内动态生成 Mask、Tile API 向量化、参数简化 |
-| Cube 型 | [GEMM Intrinsic](references/best-practices/gemm_intrinsic_optimize.md) | 多缓冲流水线、细粒度 Flag 同步、MMA intrinsic、L0 分块、负载均衡 |
-| CV 融合型 | [Flash Attention](references/best-practices/flash_attn_optimize.md) | num_stages 流水线、批量 Softmax、Cross-core Semaphore、数据布局优化；**多 shape 适配**（BSND 免转置、Sq==1 decode 窄块、加性 mask 屏蔽变长 Skv） |
+- 已有全部 case 的编译、精度和 profiling 数据：完成分支映射、瓶颈分组并输出最多三个已准入方案；`DESIGN_ONLY` 另列为未准入候选。
+- 只有源码或少量 latency：输出缺失证据和采集计划，不猜测 bound、具体 tile 或加速比。
+- 只有底层编译能力说明、没有当前 TileLang 表达与 lowering 依据：保留为 `DESIGN_ONLY`，不交给直接实施。
 
-### Step 5: 效果验证
+## A2/A3 实现与调用域补充
 
-每个优化点后执行：精度验证 → `msprof op` → 记录 → 对比基线。精度失败时保持优化调试，不撤销。
-
-调试手段：`T.printf`、`T.dump_tensor`、`get_kernel_source()`，详见 [Programming Guide](../../../docs/TileLang-Ascend%20Programming%20Guide.md)。
-
-迭代终止：达到目标或连续 3 次无提升则中断上报。
-
----
-
-## 优化记录
-
-保存在 `examples/{op_name}/perf_tuning/`：
-- `baseline.json` - 基线性能
-- `optimization_log.md` - 优化记录
-- `final_report.md` - 最终报告
+- 使用 [最佳实践入口](../tilelang-performance-best-practices/SKILL.md) 和 [性能关注项](../tilelang-performance-best-practices/references/performance-antipatterns.md) 定位当前平台资料。
+- 当前 `T.Persistent` 负责任务映射，签名不包含 `num_stages`；流水由 `T.Pipelined` 或已验证的手动多版本表达，不把其他版本的注解参数直接移植到本仓库。
+- 支持单文件内嵌 golden/test 与 kernel/test 分离布局；从实际入口确定测试和 dispatch，不为分析改造工程结构。
+- 候选扩大 shape、batch、dtype、尾块或 stage 时，先在方案中记录 kernel 兼容性维度和未知项；存在 unknown/false 时不得直接扩大 dispatch，需先修复或新建 kernel 并设计独立验证。
+- 按布局依赖、buffer 数量/生命周期和配置依赖安排顺序；必要耦合改动作为同一方案。实施、测试和采纳由调用方完成。

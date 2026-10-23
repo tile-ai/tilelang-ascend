@@ -3,7 +3,7 @@
 通过 AI 代理与专家技能，自动完成华为昇腾 NPU 上的 TileLang 算子开发全流程：
 
 ```
-环境预检 → 算子设计 → 代码实现+测试+精度调试（一站式） → （可选）性能调优
+环境预检 → 算子设计 → 代码实现+测试+精度调试（一站式） → （可选）Flash 性能调优
 ```
 
 本仓库为 [OpenCode](https://opencode.ai) 预配置了项目规范（[AGENTS.md](../AGENTS.md)）、专家技能（Skills）和协作代理（Agents），开箱即用。
@@ -35,7 +35,7 @@
 开发对应的 TileLang-Ascend 算子。
 ```
 
-OpenCode 会自动加载项目规范，触发环境预检，编排 3 阶段流程。**唯一需要你确认的两件事**：编程模式（Developer / Expert / 混合）和精度通过后是否需要性能调优。
+OpenCode 会自动加载项目规范，触发环境预检，编排 3 阶段流程。需要明确编程模式（Developer / Expert / 混合）和是否需要性能调优；已有授权会直接沿用。进入 Flash 前还需确认全部性能 case、实际入口和比较约定，数值目标与资源预算可选。
 
 ---
 
@@ -54,7 +54,7 @@ OpenCode 会自动加载项目规范，触发环境预检，编排 3 阶段流�
 ```
 
 Orchestrator 会自动驱动 3 阶段状态机：
-**环境预检 → Stage 1 设计 → Stage 2 实现+测试+精度调试（一站式） → (Stage 3 性能调优)**
+**环境预检 → Stage 1 设计 → Stage 2 实现+测试+精度调试（一站式） → (Stage 3 Flash 调优会话)**
 
 #### 方式二：直接调用 Skill（跳过编排）
 
@@ -63,7 +63,10 @@ Orchestrator 会自动驱动 3 阶段状态机：
 ```
 /tilelang-op-design          # 只生成 DESIGN.md
 /tilelang-op-develop        # 只生成 kernel 代码
-/tilelang-perf-optimization  # 只做性能优化分析
+/tilelang-tuning-flash       # 对已有正确实现执行完整调优会话
+/tilelang-op-profiling       # 采集与分析性能证据
+/tilelang-perf-optimization  # 根据已有证据分析性能优化方案
+/tilelang-performance-best-practices  # 查阅 A2/A3 性能知识与实现约束
 /tilelang-env-check          # 单独跑环境检查
 ```
 
@@ -77,11 +80,13 @@ Orchestrator 会自动驱动 3 阶段状态机：
 继续 softmax 的开发
 ```
 
-Orchestrator 从 `examples/softmax/.orchestrator_state.json` 自动续跑（环境预检不重复执行）。
+Orchestrator 从 `examples/softmax/.orchestrator_state.json` 自动续跑（环境证据仍有效时不重复预检）。Stage 3 通过 `perf_session.run_dir` 恢复原 Flash 会话，先核对输入身份，再继续未完成搜索；不会从头覆盖 B0 或候选记录。用户预算已耗尽时需明确增加预算后才能继续。
 
 ---
 
 ### Claude Code（实验性）
+
+以下为既有实验配置示例。Flash 的多 CLI 注册、路径适配与端到端兼容性验证仍是后续工作，复制目录不代表已完成兼容。
 
 Claude Code 使用不同的目录结构，需要先迁移项目配置：
 
@@ -118,6 +123,7 @@ claude --agent tilelang-op-orchestrator
 | 场景 | 推荐方式 |
 |:---|:---|
 | 完整算子开发（含精度+性能） | Orchestrator Agent |
+| 已有正确实现，只需性能调优 | `tilelang-tuning-flash`，提供入口、完整测试、全部性能 case 和环境 |
 | 仅需 design.md / kernel 代码 | 直接调用 `tilelang-op-design` / `tilelang-op-develop` |
 | Pass 分析与开发 | 直接调用 `tilelang-pass-*` 系列（不走 Orchestrator） |
 | 环境配置 / 调试 | 直接调用 `tilelang-env-check` / `tilelang-error-fixer` |
@@ -152,7 +158,7 @@ claude --agent tilelang-op-orchestrator
 | [tilelang-op-orchestrator](../.opencode/agents/tilelang-op-orchestrator.md) | Primary | 3 阶段状态机、工件门禁、Subagent 调度、设计回退控制、环境预检 |
 | [tilelang-op-analyst](../.opencode/agents/tilelang-op-analyst.md) | Subagent | Stage 1 算子设计（含需求理解、设计回退） |
 | [tilelang-op-developer](../.opencode/agents/tilelang-op-developer.md) | Subagent | Stage 2 一站式：代码实现 + 测试 + 精度调试（通过 mode 区分 first_impl / retry_impl / precision_fix；含 `[DESIGN_ERROR]` 识别） |
-| [tilelang-op-perf-tuner](../.opencode/agents/tilelang-op-perf-tuner.md) | Subagent | Stage 3 性能调优（可选） |
+| [tilelang-op-perf-tuner](../.opencode/agents/tilelang-op-perf-tuner.md) | Subagent | Stage 3 完整 Flash 会话（可选），内部单 Agent 搜索与验证 |
 
 **Orchestrator 状态机**：
 
@@ -172,18 +178,19 @@ Stage 2: 代码实现 + 测试 + 精度调试（一站式）→ @tilelang-op-dev
     ├─ DESIGN_ERROR ────→ 设计回退到 Stage 1
     └─ PRECISION_PASS ──┐
                         ↓
-             ┌── 询问用户是否需要性能调优 ──┐
+             ┌── 核对已有调优授权或询问用户 ──┐
              │                              │
              ↓ 不需要                       ↓ 需要 + 提供调优信息
-          SUCCESS                  Stage 3: 性能调优 → @tilelang-op-perf-tuner
-                                           产物：perf_tuning/
+          SUCCESS                  Stage 3: Flash → @tilelang-op-perf-tuner
+                                           产物：perf_tuning/flash_<run_id>/
                                            ↓
-                                       SUCCESS
+                                  全部门禁通过：SUCCESS
+                                  未完成/阻塞：BLOCKED_*，可恢复
 ```
 
 > **关键特性**：
 > - **Stage 2 一站式**：原"代码实现"和"精度修复"合并为单一阶段，Orchestrator 通过 `mode` 字段控制每次调度语义
-> - **Stage 3 是可选阶段**，由用户在精度通过后主动确认
+> - **Stage 3 是可选阶段**，沿用已有授权或由用户确认；一次委派完整 Flash 会话，无默认调优轮数上限
 > - **设计回退机制**：Developer 在 Stage 2 中可标记 `[DESIGN_ERROR]` 触发回退到 Stage 1 重新设计（不设次数上限）
 > - **环境预检**：一次性通过即可，续跑不重复
 > - **状态文件**：仅 Orchestrator 可写 `.orchestrator_state.json`，Subagent 不得读写
@@ -228,17 +235,37 @@ Stage 2: 代码实现 + 测试 + 精度调试（一站式）→ @tilelang-op-dev
 
 **你需要提供**：design.md 路径（或由 Orchestrator 自动传入）
 
-**你会得到**：单一文件 `example_{op}.py`（含 `@tilelang.jit` kernel + 内嵌 PyTorch golden + **用户指定 shape** 的 test 用例 + main 块）
+**你会得到**：按现有 Stage 2 契约生成 kernel 与测试入口；编排流程采用 `{op}.py` + `test_{op}.py` 分离布局。Flash 也支持已有 `example_{op}.py` 内嵌 golden/test 的算子，不要求为调优重排文件。
 
 **关键约束**：优先复用 `examples/` 同类实现，冲突时以 examples > design.md > docs 为准
 
-#### `tilelang-perf-optimization` — 性能分析与优化
+#### `tilelang-tuning-flash` — 完整性能调优会话
 
-**适用场景**：精度通过后的性能调优，包含瓶颈定位、迭代调优、精度复验
+**适用场景**：已有正确实现，准备性能调优或恢复未完成 run。Flash 是工作组织方式，适用于不同算子。
 
-**核心 6 步**：精度校验 → 性能采集 → 算子类型判断 → 优化实施 → 精度验证 → 效果验证
+**执行方式**：由 perf-tuner（或直接调用时的当前 Agent）统一分析、实施和验证，不再分发分析/实施子 Agent。调用 profiling 的 `collect_only` 接口和现有分析/知识 Skill，建立 B0/B*/Ci 隔离版本与搜索记录。
 
-**你会得到**：性能优化报告 + `perf_tuning/` 目录（含基线、备份、跨轮日志）
+**验证与交付**：候选验证相关 shape，性能比较覆盖全部目标 case；最终执行完整目标 pytest、同口径 B0/B* 复测和搜索终局校验，交付 `final_optimized/`，原工程保持不变。预算耗尽不等于收敛，完整规范见 [SKILL.md](skills/tilelang-tuning-flash/SKILL.md)。
+
+#### `tilelang-op-profiling` — 性能采集与归档
+
+**适用场景**：采集当前源码与全部目标 case 的设备性能证据，核对 kernel/launch 映射，保存原始数据、metadata 和 summary。
+
+**Flash 接口**：`execution_mode: collect_only`，显式传入当前版本身份与独立测量输出目录；不在采集内部启动候选修改或第二套调优循环。已有独立使用方式见 [SKILL.md](skills/tilelang-op-profiling/SKILL.md)。
+
+#### `tilelang-perf-optimization` — 性能方案分析
+
+**适用场景**：精度通过且已有逐 case 性能证据，需要定位瓶颈、设计优化方案。
+
+**输入与输出**：输入当前 kernel、调用入口、测试约束、精度结果和同口径性能证据；输出 case 分组、资源模型、候选方案及验证计划。证据不足时返回缺失项，不自行采集或修改 kernel。
+
+**执行边界**：Stage 3 由 `tilelang-op-perf-tuner` 按 Flash 正文统一控制候选；分析 Skill 返回方案与搜索义务，不负责循环、采集或改源码。记录保存在 `perf_tuning/flash_<run_id>/`。
+
+#### `tilelang-performance-best-practices` — A2/A3 性能知识库
+
+**适用场景**：制定优化方案、实施候选或评审性能反模式时，按算子族查阅已有经验。
+
+**主要内容**：硬件与 buffer 预算、任务映射、搬运与同步、Vector/Cube 优化、FlashAttention、RoPE、归约、扫描和布局转换；每项知识保留适用条件、API 依据与验证范围。
 
 #### `tilelang-ascend-tile-api` — Tile API 端到端开发
 
@@ -359,18 +386,28 @@ Stage 2: 代码实现 + 测试 + 精度调试（一站式）→ @tilelang-op-dev
 ```
 examples/{op}/
 ├── DESIGN.md                              # Stage 1
-├── example_{op}.py                        # Stage 2-3 单一交付文件（@tilelang.jit kernel + 内嵌 golden + 用户指定 shape 的 test 用例 + main）
+├── {op}.py                                # Stage 2 原始 kernel
+├── test_{op}.py                           # Stage 2 golden 与测试；已有单文件布局同样支持
 ├── README.md                              # Stage 2（可选）
 ├── debug_log.md                           # 每次 Subagent 调度追加一条记录
 ├── perf_tuning/                           # Stage 3（仅当用户启用）
-│   ├── baseline_iter{N}.json
-│   ├── {op}_impl_iter{N}_before.py
-│   └── perf_log.md
+│   └── flash_<run_id>/
+│       ├── manifest.json                  # 输入、版本、命令、文件清单与 SHA256
+│       ├── baseline/                      # B0，只读原始基线
+│       ├── working/                       # B*，当前最佳版本
+│       ├── candidates/Ci/                 # 从 B* 隔离创建的候选
+│       ├── profiling/                     # 按 measurement_id/case_id 保存证据
+│       ├── optimization-search-coverage.json
+│       ├── timing.json
+│       ├── final_optimized/               # 仅最终验收通过的交付
+│       └── flash-report.md                # 双状态、停止原因与恢复条件
 ├── history_version/                       # 两类备份
 │   ├── design_rev{N}.md                   # 设计回退备份
 │   └── {op}_impl_s2_attempt{N}.py         # Stage 2 precision_fix 备份
 └── .orchestrator_state.json               # 状态文件（仅 Orchestrator 写）
 ```
+
+Flash 最终结果分两层：`implementation_status` 为 VERIFIED / NO_CHANGE / CANDIDATE / BLOCKED；`performance_status` 为 MET / CONVERGED_WITHOUT_NUMERIC_TARGET / NOT_MET_CONVERGED / NOT_MET_UNFINISHED。只有完整精度、同口径复测、身份和搜索终局门禁通过，主控才完成 Stage 3。实现有收益但搜索未完成仍为 `BLOCKED_PERFORMANCE`；最终精度失败为 `BLOCKED_ACCURACY`，环境故障为 `BLOCKED_ENVIRONMENT`。最终报告明确指向归档交付路径。
 
 ---
 
@@ -403,16 +440,16 @@ examples/{op}/
 <details>
 <summary><b>Stage 3 性能调优为什么是可选的？</b></summary>
 
-实际开发场景中，很多算子只需要功能正确，并不一定追求极致性能。Orchestrator 在精度通过后会**主动询问**：
+实际开发场景中，很多算子只需要功能正确。用户尚未表达调优意向时，Orchestrator 在精度通过后会询问；已有授权则直接沿用：
 
 ```
 softmax 算子精度已通过。是否需要进行性能调优？
 ```
 
 - 你回 "不需要" → 直接 `SUCCESS`，流程结束
-- 你回 "需要" → 继续询问性能调优必要信息（目标类型、目标数值、baseline、shape、噪声阈值、迭代上限），追加写入 DESIGN.md → 进入 Stage 3
+- 你回 "需要" → 补齐实际入口、完整测试、全部性能 case 与比较约定，记录可选数值目标和显式预算 → 进入 Stage 3
 
-这避免了为不需要性能的算子白白消耗 10 轮性能迭代。
+Flash 无默认轮数或连续无收益停止上限。停止需要真实搜索证据；显式预算耗尽时保留未完成状态和恢复条件。
 
 </details>
 
@@ -434,7 +471,7 @@ Developer 在 Stage 2 中识别到这些情形时，会在输出加 `[DESIGN_ERR
 3. analyst 用 `revision` 模式生成新 design（必须有明确的差异化调整）
 4. 重新进入 Stage 2 实现
 
-**不设次数上限**，以最终精度通过为准。死循环风险由 Stage 2/3 自身的 5 次重试上限兜底。
+**不设次数上限**，以最终精度通过为准。Stage 2 仍按自身 5 次 attempt 上限处理运行与精度失败。
 
 </details>
 
@@ -453,13 +490,22 @@ Developer 在 Stage 2 中识别到这些情形时，会在输出加 `[DESIGN_ERR
   "stage2_failure_breakdown": {"runtime_fail": 0, "precision_fail": 1},
   "design_revision_count": 0,
   "perf_tuning_requested": null,
+  "perf_session": {
+    "run_dir": null,
+    "implementation_status": null,
+    "performance_status": null,
+    "report_path": null,
+    "deliverable_dir": null,
+    "stop_reason": null,
+    "resume_condition": null
+  },
   "last_updated": "2026-05-19T..."
 }
 ```
 
 - **仅 Orchestrator 可写**，Subagent 不得读写
 - 中断后续跑：再次对 Orchestrator 提算子名即可
-- 想从头开始：删除该文件
+- Flash 从头开始：明确请求新 run，保留旧状态和工件作为历史，不通过删除记录冒充重新验证
 - **不要手动修改字段**：会破坏门禁校验逻辑
 
 本环境**无专用 `state_transition` 工具**，由 Orchestrator 通过 Read/Write 手动操作 JSON（详见 [orchestrator §状态写入接口](../.opencode/agents/tilelang-op-orchestrator.md)）。
@@ -469,7 +515,7 @@ Developer 在 Stage 2 中识别到这些情形时，会在输出加 `[DESIGN_ERR
 <details>
 <summary><b>其他 AI 工具兼容性</b></summary>
 
-本项目主要支持 [OpenCode](https://opencode.ai)，理论上也可在 [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)、Cursor、Codex 等工具中使用。
+本项目以 [OpenCode](https://opencode.ai) 配置为入口。Claude Code、Cursor、Codex 等 CLI 的 Flash 角色注册与兼容性验证列为后续工作，本次迁移不提供这些 CLI 已可运行的保证。
 
 **Claude Code 目录结构映射**：
 

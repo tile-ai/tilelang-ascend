@@ -579,7 +579,7 @@ else:
 > - 无 tile 指令支持的 dtype（如 int64）：优先 record-aware DMA 或块 DMA +
 >   UB-local reorder，禁止逐元素 strided GM 主路径；**禁止 host 侧拆分/拼回**
 >
-> 性能优化的判断准则见 [tilelang-perf-optimization/references/optimization-guide.md §2.16](../../../tilelang-perf-optimization/references/optimization-guide.md#216-特定-dtype-的硬件指令适配dtype-specific-hardware-path-adaptation)。
+> 性能优化的判断准则见 [A2/A3 dtype 指令适配](../../../tilelang-performance-best-practices/references/conversion/dtype_adaptation.md)。
 
 #### Stride 参数作为 JIT 编译期常量传入 kernel（避免创建 GM tensor）
 
