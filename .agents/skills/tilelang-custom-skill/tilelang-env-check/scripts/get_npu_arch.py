@@ -52,6 +52,7 @@ class HalChipInfo(ctypes.Structure):
 # CANN home 定位（沿用原逻辑）
 # ---------------------------------------------------------------------------
 
+
 def _derive_from_opp_path():
     opp = os.environ.get("ASCEND_OPP_PATH", "")
     if opp and opp.endswith("/opp"):
@@ -117,8 +118,7 @@ def get_cann_home():
             if resolved:
                 return resolved
     raise RuntimeError(
-        "Cannot locate CANN toolkit installation. Set one of: "
-        "ASCEND_TOOLKIT_HOME, ASCEND_HOME, ASCEND_HOME_PATH, ASCEND_CANN_HOME"
+        "Cannot locate CANN toolkit installation. Set one of: ASCEND_TOOLKIT_HOME, ASCEND_HOME, ASCEND_HOME_PATH, ASCEND_CANN_HOME"
     )
 
 
@@ -130,23 +130,22 @@ def get_arch_dir():
 # 层 1：full-soc-version 探测
 # ---------------------------------------------------------------------------
 
+
 def _find_asys():
     """定位 asys 可执行文件：优先 ASCEND_HOME_PATH/tools 下，其次 PATH。"""
     if os.environ.get("ASCEND_HOME_PATH"):
-        cand = os.path.join(
-            os.environ["ASCEND_HOME_PATH"], "tools", "ascend_system_advisor", "asys", "asys"
-        )
+        cand = os.path.join(os.environ["ASCEND_HOME_PATH"], "tools", "ascend_system_advisor", "asys", "asys")
         if os.path.isfile(cand) and os.access(cand, os.X_OK):
             return cand
     for cand in (
-        os.path.join(os.path.expanduser("~"), "Ascend", "tools",
-                     "ascend_system_advisor", "asys", "asys"),
+        os.path.join(os.path.expanduser("~"), "Ascend", "tools", "ascend_system_advisor", "asys", "asys"),
         "/usr/local/Ascend/tools/ascend_system_advisor/asys/asys",
     ):
         if os.path.isfile(cand) and os.access(cand, os.X_OK):
             return cand
     # PATH 中查找（仅返回命令名，交由 subprocess 解析）
     from shutil import which
+
     return which("asys")
 
 
@@ -160,7 +159,9 @@ def _run_asys_hardware(asys_cmd):
     try:
         result = subprocess.run(
             [asys_cmd, "info", "-r=hardware"],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         output = result.stdout if result.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired):
@@ -216,8 +217,7 @@ def probe_full_soc_via_asys():
 
 
 def probe_full_soc_via_dsmi():
-    """备选：DSMI dsmi_get_chip_info（TTK dsmi_interface 模式，单设备查询）。返回 full_soc 或 None。
-    """
+    """备选：DSMI dsmi_get_chip_info（TTK dsmi_interface 模式，单设备查询）。返回 full_soc 或 None。"""
     try:
         dll = ctypes.CDLL("libdrvdsmi_host.so")
         device_count = (ctypes.c_int * 1)()
@@ -260,6 +260,7 @@ def probe_full_soc():
 # 层 2：NpuArch 探测
 # ---------------------------------------------------------------------------
 
+
 def probe_npu_arch_via_asys():
     """首选：asys info -r=hardware 的 Arch Info（部分版本无此字段）。
 
@@ -284,10 +285,11 @@ def probe_npu_arch_via_asys():
 # 层 3：ini 查询（NpuArch 兜底 + short-soc-version / CCE_AIV_version / variant_dir）
 # ---------------------------------------------------------------------------
 
+
 def _ini_has_soc_version(ini_path, full_soc):
     """检查单个 ini 是否含 SoC_version=full_soc 精确行（全文件逐行匹配）。"""
     try:
-        with open(ini_path, "r", errors="ignore") as f:
+        with open(ini_path, errors="ignore") as f:
             for line in f:
                 if line.strip() == f"SoC_version={full_soc}":
                     return True
@@ -314,7 +316,7 @@ def read_ini_fields(ini_path):
     """读取 [version] 段关键字段。"""
     fields = {}
     in_version_section = False
-    with open(ini_path, "r", errors="ignore") as f:
+    with open(ini_path, errors="ignore") as f:
         for line in f:
             line = line.strip()
             if line == "[version]":
@@ -340,6 +342,7 @@ def variant_dir_from_aiv(ccec_aiv_version):
 # 汇总
 # ---------------------------------------------------------------------------
 
+
 def _apply_ini_fields(result, ini_path):
     """将 ini 字段写入 result：short-soc-version / CCE_AIV_version / variant_dir；NpuArch 兜底。"""
     fields = read_ini_fields(ini_path)
@@ -352,9 +355,7 @@ def _apply_ini_fields(result, ini_path):
         if ini_arch:
             result["npu_arch"], result["npu_arch_source"] = ini_arch, "ini"
     elif ini_arch and ini_arch != result["npu_arch"]:
-        result["warnings"].append(
-            f"NpuArch 不一致：asys={result['npu_arch']}，ini={ini_arch}（以 asys 为准，请核对）"
-        )
+        result["warnings"].append(f"NpuArch 不一致：asys={result['npu_arch']}，ini={ini_arch}（以 asys 为准，请核对）")
 
 
 def _probe_npu_count():
@@ -391,8 +392,7 @@ def probe_all():
     probed = probe_full_soc()
     if not probed:
         result["warnings"].append(
-            "full-soc-version 探测失败：asys 与 DSMI 均不可用或无设备。"
-            "请确认已 source CANN 安装目录下的 set_env.sh。"
+            "full-soc-version 探测失败：asys 与 DSMI 均不可用或无设备。请确认已 source CANN 安装目录下的 set_env.sh。"
         )
         result["npu_count"] = _probe_npu_count()
         return result
@@ -416,8 +416,7 @@ def probe_all():
             _apply_ini_fields(result, ini_path)
         else:
             result["warnings"].append(
-                f"platform_config 下无 SoC_version={result['full_soc']} 的 ini，"
-                "short-soc-version/CCE_AIV_version/variant_dir 未知"
+                f"platform_config 下无 SoC_version={result['full_soc']} 的 ini，short-soc-version/CCE_AIV_version/variant_dir 未知"
             )
 
     if not result["npu_arch"]:
@@ -431,26 +430,29 @@ def probe_all():
 # 输出（打印风格参考 lookup_arch_variant.sh：值 + 行尾用途注释，强化记忆）
 # ---------------------------------------------------------------------------
 
+
 def _format_report(r):
     lines = []
     lines.append(f"full-soc-version={r['full_soc']} (source={r['full_soc_source']})")
     if r["npu_arch"] is not None:
-        lines.append(f"NpuArch={r['npu_arch']} (source={r['npu_arch_source']})   "
-                     "# __NPU_ARCH__ 宏分支 / --npu-arch 编译值；读头文件只走该宏分支")
+        lines.append(
+            f"NpuArch={r['npu_arch']} (source={r['npu_arch_source']})   # __NPU_ARCH__ 宏分支 / --npu-arch 编译值；读头文件只走该宏分支"
+        )
     if r["short_soc"]:
-        lines.append(f"short-soc-version={r['short_soc']}   "
-                     "# 算子原型定义 xxx算子_def.cpp 中 AddConfig() 第一个参数（如 "
-                     "this->AICore().AddConfig(\"ascend950\", aicConfig)）")
+        lines.append(
+            f"short-soc-version={r['short_soc']}   "
+            "# 算子原型定义 xxx算子_def.cpp 中 AddConfig() 第一个参数（如 "
+            'this->AICore().AddConfig("ascend950", aicConfig)）'
+        )
     if r["ccec_aiv_version"]:
         lines.append(f"CCE_AIV_version={r['ccec_aiv_version']}")
     if r["variant_dir"]:
-        lines.append(f"variant_dir={r['variant_dir']}   "
-                     f"# 读CANN安装目录下源码时只看 **/{r['variant_dir']}/ 下的文件")
+        lines.append(f"variant_dir={r['variant_dir']}   # 读CANN安装目录下源码时只看 **/{r['variant_dir']}/ 下的文件")
     if r["ini_path"]:
         lines.append(f"ini={r['ini_path']}")
     if r["npu_count"] is not None:
         lines.append(f"npu_count={r['npu_count']}")
-    lines.append("dav-%s" % r["npu_arch"] if r["npu_arch"] else "dav-UNKNOWN")
+    lines.append(f"dav-{r['npu_arch']}" if r["npu_arch"] else "dav-UNKNOWN")
     for w in r["warnings"]:
         lines.append(f"WARNING: {w}")
     return "\n".join(lines)
