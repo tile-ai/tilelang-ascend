@@ -184,8 +184,11 @@ mappings:
   examples/reduce/example_row_reduce_max_slice_buffer.py: examples/reduce/test_example_row_reduce_max_slice_buffer.py
 
   # examples/simple_fusion
-  examples/simple_fusion/matmul_add.py: examples/simple_fusion/test_matmul_add.py
-  examples/simple_fusion/matmul_add_infer_scope.py: examples/simple_fusion/test_matmul_add_infer_scope.py
+  examples/simple_fusion/example_simple_fusion.py: examples/simple_fusion/test_example_simple_fusion.py
+
+  # examples/situ_glu
+  examples/situ_glu/situ_glu.py: examples/situ_glu/test_situ_glu.py
+
 
   # examples/softmax
   examples/softmax/example_online_softmax.py: examples/softmax/test_example_online_softmax.py
