@@ -41,6 +41,7 @@ mappings:
   # examples/cann-bench
   examples/cann-bench/cummin/example_cummin.py: examples/cann-bench/cummin/test_example_cummin.py
   examples/cann-bench/group_norm/example_group_norm.py: examples/cann-bench/group_norm/test_example_group_norm.py
+  examples/cann-bench/situ_glu_grad/example_situ_glu_grad.py: examples/cann-bench/situ_glu_grad/test_example_situ_glu_grad.py
 
   # examples/causal_conv1d
   examples/causal_conv1d/causal_conv1d.py: examples/causal_conv1d/test_causal_conv1d.py
