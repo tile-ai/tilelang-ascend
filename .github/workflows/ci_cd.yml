@@ -263,17 +263,14 @@ jobs:
             
             if [[ "$file" =~ ^tilelang/ ]] || [[ "$file" =~ ^src/ ]] || \
                [[ "$file" =~ CMakeLists\.txt ]] || [[ "$file" =~ requirements ]] || [[ "$file" =~ install_ascend\.sh ]]; then
-              echo "Core file modified: $file - will run full examples + pytest"
-              run_examples=true
-              run_pytest_only=false
+              echo "Core file modified: $file - PR stage runs the tests touched by this PR; the full suite stays on scheduled runs"
+              run_examples=false
+              run_pytest_only=true
               should_skip=false
-              test_dirs_array=()
-              experiment_dirs_array=()
-              pytest_files_array=()
-              pytest_dirs_array=()
-              routed_tests=()
-              routed_example_dirs=()
-              routed_experiment_dirs=()
+              # Keep scanning instead of breaking: testing/ files later in the
+              # diff are the essential PR-stage subset and a core-only PR falls
+              # back to the full pytest suite (pytest_files stays empty).
+              continue
               break
             fi
             
@@ -360,7 +357,12 @@ jobs:
                 echo "Examples root doc file: $file - will skip"
                 continue
               fi
-              # 关键文件（bench_test.sh 等）→ 全量测试
+              # 测试编排脚本本身：格式由 shell 检查覆盖，不触发 NPU 全量测试
+              if [[ "$file" == "examples/bench_test.sh" ]]; then
+                echo "Examples runner script: $file - no NPU tests required"
+                continue
+              fi
+              # 其它根文件 → 全量测试
               echo "Examples root file modified: $file - will run full examples + pytest"
               run_examples=true
               run_pytest_only=false
@@ -376,8 +378,10 @@ jobs:
             fi
             
             # 其他文件（非 docs/images）-> 需要测试
+            # .github/ 下的 CI 配置由 format-check 覆盖，不触发 NPU 全量测试
             if [[ ! "$file" =~ \.md$ ]] && [[ ! "$file" =~ \.png$ ]] && \
                [[ ! "$file" =~ ^docs/ ]] && [[ ! "$file" =~ ^images/ ]] && \
+               [[ ! "$file" =~ ^\.github/ ]] && \
                [[ ! "$file" =~ ^testing/ ]] && [[ ! "$file" =~ ^tilelang/ ]] && \
                [[ ! "$file" =~ ^src/ ]] && [[ ! "$file" =~ ^examples/ ]] && \
                [[ ! "$file" =~ ^examples_experiment/ ]]; then
@@ -397,16 +401,19 @@ jobs:
           done
           
           # 决定 pytest 测试范围
+          # PR 阶段保持精简：核心文件(src/tilelang)与 testing/ 混合改动时，
+          # 只跑 PR 触碰的具体测试文件（必要子集）；大量散布文件或纯 testing/
+          # 目录级改动再扩大到子目录/全量。完整套件由定时全量测试覆盖。
           pytest_files=""
           if [[ ${#pytest_files_array[@]} -gt 0 ]]; then
-            # 如果所有修改在同一个子目录，只跑该子目录
-            if [[ ${#pytest_dirs_array[@]} -eq 1 ]]; then
-              pytest_files="testing/python/${pytest_dirs_array[0]}/"
-              echo "All testing files in same subdir: ${pytest_dirs_array[0]}"
-            elif [[ ${#pytest_files_array[@]} -le 3 ]]; then
-              # 少量文件（≤3），只跑具体文件
+            if [[ ${#pytest_files_array[@]} -le 5 ]]; then
+              # 少量文件（≤5），只跑具体文件
               pytest_files="${pytest_files_array[*]}"
               echo "Few testing files modified: ${pytest_files_array[*]}"
+            elif [[ ${#pytest_dirs_array[@]} -eq 1 ]]; then
+              # 较多文件但都集中在同一个子目录，只跑该子目录
+              pytest_files="testing/python/${pytest_dirs_array[0]}/"
+              echo "All testing files in same subdir: ${pytest_dirs_array[0]}"
             else
               # 多文件散布不同目录，跑全量 pytest
               pytest_files=""
