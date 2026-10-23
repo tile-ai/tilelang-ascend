@@ -290,6 +290,23 @@ T.wait_flag("mte3", "mte2", 1)
 >
 > **自检方法**：每个 `[2, ...]` buffer 必须能找到对应的 `T.copy(GM_buf, ...)` 或 `T.copy(..., GM_buf)` 语句。找不到 → 该 buffer 改为单份。
 
+#### 2.2.2 Pass 1 vs Pass 2 双缓冲可行性差异（两遍扫描算子）
+
+> **适用场景**：RMSNorm / LayerNorm 等两遍扫描算子。
+
+**关键约束**：Pass 1 和 Pass 2 的双缓冲可行性完全不同：
+
+| Pass | MTE3 写回 | 双缓冲可行性 | 原因 |
+|------|----------|------------|------|
+| Pass 2（归一化+写回） | ✅ 有 | **可行** | MTE3 写回后通过 `mte3→mte2` flag 释放 buffer，形成 `MTE2→V→MTE3→MTE2` 完整闭环 |
+| Pass 1（累加统计量） | ❌ 无 | **不可行** | 无 MTE3 中继，`v→mte2` flag 在 AIV Vector 硬件上**不可用**（死锁），只能用 `barrier_all()` |
+
+**AIV Vector 硬件 flag 通道限制**：`mte3→mte2` ✅、`mte2→v` ✅、`v→mte3` ✅、`v→mte2` ❌（不可用，死锁）。
+
+**T.Pipelined 在 Pass 1 的表现**：`AUTO_SYNC=False` 下不自动插入 MTE2→V 同步（全 NaN）；配合 `barrier_all` 时同步所有引擎，无重叠。
+
+> 两遍扫描归一化算子（RMSNorm / LayerNorm 等）基于本节机制的完整优化实践，见 [vector-practices/reduction/two_pass_normalization.md](vector-practices/reduction/two_pass_normalization.md)。
+
 ### 2.3 MTE2 预取优化（Cube 核）
 
 **适用场景**：
@@ -507,6 +524,16 @@ with T.Kernel(core_num, is_npu=True) as (cid, vid):
         ...
         T.copy(result, workspace[cid, :, :])  # workspace[cid] 被复用
 ```
+
+**失效条件**（实测确认）：
+
+| 失效场景 | 原因 | 实测案例 |
+|---------|------|---------|
+| D 极小（≤8）+ S 极大 | 软件循环开销 > launch 节省；硬件 block scheduler 更高效 | RMSNorm D=2 S=1000003：Fixed Core 慢 42% |
+| 每 block 计算量极小 | 软件 `T.serial` scalar 开销占比高 | 同上 |
+| block 间无数据依赖 | 硬件 scheduler 自动流水线化 | Vector 算子 |
+
+> **判断准则**：Fixed Core 适用于"每 block 有大量计算 + workspace 复用"。对"计算量小 + 无依赖"场景会变慢。实测下降 >5% 立即回退。
 
 ### 2.10 pass_configs 调优（最后手段）
 
@@ -1687,3 +1714,13 @@ for i in range(n):
 | reduce_sum 编译报错 `Invalid reduce output shape` | 输出用了 `[rows, 1]` 2D buffer 而非 1D `[rows]` | output 改为 `alloc_ub([rows], dtype)` 纯 1D，见 §2.13 P1 |
 | cpg 较大时 aicore exception（UB 越界） | 固定 block_S=256 导致多行 tile buffer 溢出 UB | 使用 `find_block_S()` 动态计算 + 开启 `MEMORY_PLANNING`，见 §2.13 |
 | `T.copy` 编译报 `StructuralEqual check failed` | 试图用 copy 做 1D↔2D shape 转换 | 改用 `T.tile.fill` 跨维度值传递，见 §2.13 P4 |
+| `mul_add_dst` 性能反不如 `mul+add` | Ascend 910B3/910C 上 `mul_add_dst` 指令延迟可能高于独立 `mul+add` | 实测对比，若 `mul_add_dst` 变慢则回退为 `mul+add`，见 vector-practices/reduction/two_pass_normalization.md 优化 7 |
+| `T.tile.rsqrt` 精度不足（~1e-3） | Ascend 硬件 rsqrt 指令是查表近似，精度约 1e-3 | 加 Newton 迭代 `y1 = y0 * (1.5 - 0.5 * x * y0²)`，精度提升到 ~1e-6，见 vector-practices/reduction/two_pass_normalization.md 优化 4 |
+| UB buffer 命名 `tmp_ub` 导致编译报 "Duplicate buffer name" | `AscendMemoryPlanning` pass 内部临时 buffer 也用 `tmp_ub` 命名 | 避免使用 `tmp_ub`，用语义化命名如 `newton_ub`/`accum_ub`，见 vector-practices/reduction/two_pass_normalization.md 优化 4 |
+| `T.copy(UB→UB)` 性能无提升 | `T.copy(UB→UB)` 生成 `copy_ub_to_ub` 走 MTE2 引擎（非 V），无法与 GM→UB 重叠 | gamma 预加载等 UB→UB 优化无效；保持 GM→UB 原路径，见 vector-practices/reduction/two_pass_normalization.md 优化 6 |
+| cann-bench profiler 报 `OSError: could not get source code` | profiler 子进程清除 `linecache.cache`，`@T.prim_func` 的 `inspect.getsourcelines` 失败 | 在 `_get_kernel` 中调 `_ensure_source_cached()` 预缓存源代码，见 vector-practices/reduction/two_pass_normalization.md 双 kernel 策略 |
+
+---
+
+> 算子类专属优化已按类组织为独立文档，见 [vector-practices/](vector-practices/)（规约类：[reduction/two_pass_normalization.md](vector-practices/reduction/two_pass_normalization.md)）。新增算子类优化请按 `vector-practices/<类别>/<模式>.md` 组织，不再向本文件追加章节。
+
