@@ -52,7 +52,7 @@ BF16 边界为 round-to-nearest-even；E4M3 编码为 round-half-even、含次�
 | Hadamard | 在 dim-major tile 的连续半区上做升序蝶形 | 与参考逐位一致，P<=128 保证编译时间正常 |
 | 池化 | 按 slot 顺序串行累积 | 与参考求和顺序一致 |
 | Scale | 位域法 `2^ceil(log2(absmax/448))`，`round_scale=True` 时逆用位构造精确求出 / `False` 时直接除法 | 与参考 scale 逐位一致 |
-| 宿主适配 | `ape` 折入 scores（fp32）、slot-major 重排、按 64 补齐；`write_mask` 为隐含全真时跳过 mask gather | 与参考的 kernel 内算术数值完全一致 |
+| 宿主适配 | `ape` 折入 scores（fp32）、按 64 补齐（仅 pool 数非 64 倍数时）；kernel 直读 `[P, pool_size, 128]` 原始布局（strided copy），无重排；`write_mask` 为隐含全真时跳过 mask gather | 与参考数值完全一致；strided 读取实测无代价（kernel-only 持平） |
 | Cache/scale 写回 | kernel 将 E4M3 行与 scale 连续写入两个 scratch，适配器各用一次设备侧索引操作散射进 cache | 设备侧逐行散射循环会被标量访存周围的保守 PIPE_ALL 屏障串行化（约占总 kernel 时间 30%）；且 4 字节标量 GM 写在跨核共享 cache line 时会丢更新 |
 
 ## 4. 性能（kernel-only，图捕获回放）
@@ -102,13 +102,18 @@ BF16 边界为 round-to-nearest-even；E4M3 编码为 round-half-even、含次�
 
 | P（pool 数） | E2E（us） | ns / pool |
 |-----------|----------|-----------|
-| 1,024 | 2,200 | 2,148 |
-| 4,096 | 3,135 | 765 |
-| 16,384 | 6,725 | 410 |
+| 1,024 | 1,235 | 1,206 |
+| 4,096 | 1,256 | 307 |
+| 16,384 | 1,800 | 110 |
 
-本环境下 E2E 主要被 torch_npu 的逐 op 宿主调度开销主导（预处理/散射 op 约
-0.45 ms/op），并非设备计算；该部分不属于 kernel 交付本体。后续可优化方向：
-`ape` 内化进 kernel、减少宿主预处理 op 数。
+E2E 此前主要被宿主侧元数据校验主导：int64 的 device `torch.unique` 在
+16,384 pools 下实测约 3.9 ms。适配器现改为一次 D2H 后在 CPU 上做直方图校
+验（与 kernel 启动重叠、且先于任何 cache 写入），散射改用 `index_copy_`，
+并取消了输入重排（kernel 直读调用方布局，strided 读取实测无代价）；E2E
+由 2,194/3,075/6,526 us 降至上表（4 次运行中位数）。剩余墙钟为宿主侧逐调
+用的框架/调度开销，并非设备计算：msprof 下 16,384 pools 单次调用的设备
+op 合计约 0.65 ms（Cast 15 + Add 30 + main_kernel 163 + ScatterUpdate
+413 us）。
 
 ## 7. 精度
 

@@ -53,7 +53,7 @@ subnormals and saturates at 448.
 | Hadamard | ascending-stride butterfly on contiguous half-slices of a dim-major tile | bit-exact vs the reference, P<=128 keeps compile time sane |
 | Pooling | slot-serial accumulation in slot order | matches the reference summation order |
 | Scale | `2^ceil(log2(absmax/448))` through the fp32 bit field, exact inverse by bit construction (round_scale=True) / plain division (round_scale=False) | reference-identical scales |
-| Host adapter | fold `ape` into scores (fp32), slot-major repack, pad to 64 rows; implicit `write_mask` skips the mask gathers | numerically identical to the reference in-kernel arithmetic |
+| Host adapter | fold `ape` into scores (fp32) and pad to 64 rows; the kernel reads the `[P, pool_size, 128]` layout directly (strided copies), no repack; implicit `write_mask` skips the mask gathers | numerically identical to the reference; the strided reads cost nothing measurable (kernel-only unchanged) |
 | Cache / scale write | kernel emits the E4M3 rows and scales to two contiguous scratches; the adapter scatters both with one device indexing op each | a device-side per-row scatter loop is serialized by conservative PIPE_ALL barriers emitted around every scalar access (~30% of kernel time); 4-byte scalar GM stores are additionally not cache-line coherent across cores |
 
 ## 4. Performance (kernel-only, graph replay)
@@ -106,14 +106,20 @@ Readings:
 
 | P (pools) | E2E (us) | ns / pool |
 |-----------|----------|-----------|
-| 1,024 | 2,200 | 2,148 |
-| 4,096 | 3,135 | 765 |
-| 16,384 | 6,725 | 410 |
+| 1,024 | 1,235 | 1,206 |
+| 4,096 | 1,256 | 307 |
+| 16,384 | 1,800 | 110 |
 
-E2E is dominated by torch_npu host dispatch (~0.45 ms per op for the
-preparation/scatter ops) in this environment, not by device work; it is not
-part of the kernel contribution. Reducing it (in-kernel `ape` fold, fewer host
-preparation ops) is future work.
+E2E was dominated by host-side metadata validation: device `torch.unique` on
+int64 measured ~3.9 ms at 16,384 pools. The adapter now validates the active
+slots after one D2H transfer with CPU histogram checks (overlapping the kernel
+launch and completing before any cache write), scatters with `index_copy_`, and
+no longer repacks the inputs -- the kernel reads the caller layout directly
+(strided copies cost nothing measurable) -- so E2E fell from 2,194/3,075/6,526
+us (values are medians of four runs). The remaining wall time is host-side
+per-call launch/dispatch overhead, not device work: under msprof the device ops
+of one call at 16,384 pools sum to ~0.65 ms (Cast 15 + Add 30 + main_kernel
+163 + ScatterUpdate 413 us).
 
 ## 7. Accuracy
 

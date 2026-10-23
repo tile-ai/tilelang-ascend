@@ -18,11 +18,12 @@ identical to a split of the production interleaved uint8 allocation.
 
 Host-side preparation and write-back (numerically identical to the reference):
 
-  - ``ape`` is folded into ``slot_score`` (FP32 add, same expression as the
-    reference), and both tensors are repacked slot-major ([P, 4, D] -> [4P, D])
-    so that every slot slice is a contiguous device copy;
-  - rows are padded to a multiple of the 64-pool device block; padded rows are
-    never scattered into the caches;
+  - ``ape`` is folded into ``slot_score`` (FP32 add, the same expression as the
+    reference) and the kernel reads the caller's [P, 4, D] layout directly
+    (strided copies per slot), so the adapter does no repack;
+  - rows are padded to a multiple of the 64-pool device block (host ``cat``
+    only when the pool count is not a multiple); padded rows are never
+    scattered into the caches;
   - the device kernel writes the E4M3 rows and the per-pool scales to two
     contiguous scratches; the host adapter scatters both into the paged caches
     with one device indexing op each.  Two reasons: 4-byte scalar GM stores are
@@ -87,22 +88,21 @@ def glm53_kpool_compress_kernel(
 ):
     """Build the compress kernel for ``num_tiles`` device blocks of BLOCK_POOLS pools.
 
-    Inputs (slot-major, padded):
-      K     [pool_size * num_tiles * BLOCK_POOLS, head_dim] bf16
-      S     [pool_size * num_tiles * BLOCK_POOLS, head_dim] f32  (scores + ape)
+    Inputs (caller layout, padded pool count):
+      K     [num_tiles * BLOCK_POOLS, pool_size, head_dim] bf16
+      S     [num_tiles * BLOCK_POOLS, pool_size, head_dim] f32  (scores + ape)
     Outputs (row-contiguous scratches; the host adapter scatters them into the
     paged caches, see module docstring):
       ROW_SCRATCH  [num_tiles * BLOCK_POOLS, head_dim] u8   (E4M3 byte patterns)
       SC_SCRATCH   [num_tiles * BLOCK_POOLS] f32            (per-pool scales)
     """
     pools = num_tiles * BLOCK_POOLS
-    rows = pool_size * pools
     dim = head_dim
 
     @T.prim_func
     def main(
-        K: T.Tensor((rows, dim), "bfloat16"),
-        S: T.Tensor((rows, dim), "float32"),
+        K: T.Tensor((pools, pool_size, dim), "bfloat16"),
+        S: T.Tensor((pools, pool_size, dim), "float32"),
         ROW_SCRATCH: T.Tensor((pools, dim), "uint8"),
         SC_SCRATCH: T.Tensor((pools,), "float32"),
     ):
@@ -115,21 +115,21 @@ def glm53_kpool_compress_kernel(
             pooled = T.alloc_ub((POOL_TILE, dim), "float32")
             kf = T.alloc_ub((POOL_TILE, dim), "float32")
             k16 = T.alloc_ub((POOL_TILE, dim), "bfloat16")
-
-            # 1. softmax pooling over slots (slot-order accumulation)
-            T.copy(S[0 * pools + base : 0 * pools + base + POOL_TILE, :], m)
+            # 1. softmax pooling over slots (slot-order accumulation); the
+            # caller's [pool, slot, dim] layout is read with strided copies.
+            T.copy(S[base : base + POOL_TILE, 0, :], m)
             for s in range(1, pool_size):
-                T.copy(S[s * pools + base : s * pools + base + POOL_TILE, :], sf)
+                T.copy(S[base : base + POOL_TILE, s, :], sf)
                 T.tile.max(m, m, sf)
 
             T.tile.fill(denom, 0.0)
             T.tile.fill(pooled, 0.0)
             for s in range(pool_size):
-                T.copy(S[s * pools + base : s * pools + base + POOL_TILE, :], sf)
+                T.copy(S[base : base + POOL_TILE, s, :], sf)
                 T.tile.sub(sf, sf, m)
                 T.tile.exp(sf, sf)
                 T.tile.add(denom, denom, sf)
-                T.copy(K[s * pools + base : s * pools + base + POOL_TILE, :], k16)
+                T.copy(K[base : base + POOL_TILE, s, :], k16)
                 T.tile.cast(kf, k16, "CAST_NONE", POOL_TILE * dim)
                 T.tile.mul(kf, kf, sf)
                 T.tile.add(pooled, pooled, kf)
@@ -391,16 +391,31 @@ def _validate_kpool_inputs(
             raise ValueError("write_mask must be contiguous")
         active_locs = loc[write_mask]
 
-    if active_locs.numel() != 0:
-        cache_slots = k_cache.shape[0] * k_cache.shape[1]
-        min_loc = int(active_locs.min().item())
-        max_loc = int(active_locs.max().item())
-        if min_loc < 0 or max_loc >= cache_slots:
-            raise ValueError(f"active loc values must be in [0, {cache_slots}), got min={min_loc}, max={max_loc}")
-        if torch.unique(active_locs).numel() != active_locs.numel():
-            raise ValueError("active loc values must be unique to avoid concurrent cache writes")
-
     return write_mask, active_locs
+
+
+def _validate_active_locs(active_locs: torch.Tensor, cache_slots: int) -> None:
+    """Range- and uniqueness-check the active cache slots (run after the kernel
+    launch, before the cache scatter: the single D2H transfer then overlaps the
+    kernel, and the caches stay untouched until the checks have passed)."""
+    if active_locs.numel() == 0:
+        return
+    # One D2H transfer, then check on the host: device sort/unique on int64
+    # costs milliseconds at production pool counts (torch_npu unique ~3.9 ms
+    # at 16,384 on this stack), while the CPU histogram path adds ~0.2 ms.
+    # The sorted fallback keeps memory at O(numel) for sparse slot ranges.
+    active_cpu = active_locs.cpu()
+    min_loc = int(active_cpu.min())
+    max_loc = int(active_cpu.max())
+    if min_loc < 0 or max_loc >= cache_slots:
+        raise ValueError(f"active loc values must be in [0, {cache_slots}), got min={min_loc}, max={max_loc}")
+    if max_loc - min_loc + 1 <= 8 * active_cpu.numel():
+        duplicated = int(torch.bincount(active_cpu - min_loc).max()) > 1
+    else:
+        ordered, _ = torch.sort(active_cpu)
+        duplicated = bool((ordered[1:] == ordered[:-1]).any())
+    if duplicated:
+        raise ValueError("active loc values must be unique to avoid concurrent cache writes")
 
 
 def glm53_kpool_compress_and_write_cache(
@@ -420,9 +435,12 @@ def glm53_kpool_compress_and_write_cache(
 
     ``loc`` is a flat physical slot in page-major order. Masked rows may carry
     any sentinel location; only active locations are range- and uniqueness-
-    checked, and masked rows are never scattered into the caches. Validation
-    runs on the host before kernel launch. ``k_cache`` holds E4M3 byte patterns
-    in a uint8 tensor (Ascend port of the reference FP8 contract).
+    checked, and masked rows are never scattered into the caches. Shape/dtype
+    validation runs on the host before kernel launch; the location check runs
+    after the launch and before the cache writes, so its D2H transfer overlaps
+    the kernel while the caches stay untouched on invalid metadata. ``k_cache``
+    holds E4M3 byte patterns in a uint8 tensor (Ascend port of the reference
+    FP8 contract).
     """
     write_mask, active_locs = _validate_kpool_inputs(
         slot_k,
@@ -442,19 +460,14 @@ def glm53_kpool_compress_and_write_cache(
     num_tiles = (num_pools + BLOCK_POOLS - 1) // BLOCK_POOLS
     padded_pools = num_tiles * BLOCK_POOLS
 
-    # Host preparation: fold ape into the scores (fp32, reference-identical),
-    # repack slot-major and pad each slot block to the device block with zero
-    # rows (mirrors the kernel's [slot][padded_pool][dim] layout; padded rows
-    # only ever reach the scratch, never the caches).
+    # Host preparation: fold ape (fp32, reference-identical) and pad the pool
+    # count; the kernel reads the [P, pool_size, head_dim] layout directly.
     scores = slot_score.float() + ape.unsqueeze(0)
-    s2 = scores.permute(1, 0, 2)
-    k2 = slot_k.permute(1, 0, 2)
+    k_in, s_in = slot_k, scores
     if padded_pools != num_pools:
         pad_pools = padded_pools - num_pools
-        s2 = torch.cat([s2, s2.new_zeros(pool_size, pad_pools, head_dim)], dim=1)
-        k2 = torch.cat([k2, k2.new_zeros(pool_size, pad_pools, head_dim)], dim=1)
-    s2 = s2.reshape(pool_size * padded_pools, head_dim).contiguous()
-    k2 = k2.reshape(pool_size * padded_pools, head_dim).contiguous()
+        k_in = torch.cat([slot_k, slot_k.new_zeros(pad_pools, pool_size, head_dim)])
+        s_in = torch.cat([scores, scores.new_zeros(pad_pools, pool_size, head_dim)])
 
     kernel = glm53_kpool_compress_kernel(
         num_tiles,
@@ -464,20 +477,23 @@ def glm53_kpool_compress_and_write_cache(
     )
     row_scratch = torch.empty((padded_pools, head_dim), dtype=torch.uint8, device=slot_k.device)
     sc_scratch = torch.empty(padded_pools, dtype=torch.float32, device=slot_k.device)
-    kernel(k2, s2, row_scratch, sc_scratch)
+    kernel(k_in, s_in, row_scratch, sc_scratch)
+
+    _validate_active_locs(active_locs, k_cache.shape[0] * k_cache.shape[1])
 
     # Scatter the E4M3 rows and the per-pool scales to their physical slots
-    # with one device indexing op each. 4-byte scalar GM stores are not
-    # cache-line coherent across cores on this target (the compiler disables
-    # automatic DCCI for scalar accesses), and a device-side per-row scatter
-    # loop is serialized by conservative PIPE_ALL barriers; both scratch
-    # layouts keep the device work bulk and contiguous.
+    # with one device indexing op each (indices are validated unique, so
+    # index_copy_ -- the fastest scatter primitive here -- is exact). 4-byte
+    # scalar GM stores are not cache-line coherent across cores on this target
+    # (the compiler disables automatic DCCI for scalar accesses), and a
+    # device-side per-row scatter loop is serialized by conservative PIPE_ALL
+    # barriers; both scratch layouts keep the device work bulk and contiguous.
     if write_mask is None:
-        k_cache.view(-1, head_dim)[active_locs] = row_scratch[:num_pools]
-        scale_cache.view(-1)[active_locs] = sc_scratch[:num_pools]
+        k_cache.view(-1, head_dim).index_copy_(0, active_locs, row_scratch[:num_pools])
+        scale_cache.view(-1).index_copy_(0, active_locs, sc_scratch[:num_pools])
     else:
-        k_cache.view(-1, head_dim)[active_locs] = row_scratch[:num_pools][write_mask]
-        scale_cache.view(-1)[active_locs] = sc_scratch[:num_pools][write_mask]
+        k_cache.view(-1, head_dim).index_copy_(0, active_locs, row_scratch[:num_pools][write_mask])
+        scale_cache.view(-1).index_copy_(0, active_locs, sc_scratch[:num_pools][write_mask])
 
 
 def hadamard128_reference(x: torch.Tensor) -> torch.Tensor:
