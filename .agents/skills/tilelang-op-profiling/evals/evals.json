@@ -1,0 +1,23 @@
+{
+  "skill_name": "tilelang-op-profiling",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "请对 examples/gemm/example_gemm_intrinsic.py 的一个 fp16 case 做上板 profiling，并使用现有入口完成性能分析。",
+      "expected_output": "先做正确性和预运行，再使用不带 --soc-version 的 msprof op 采集；归档 metadata、CSV 和 summary，并输出瓶颈证据。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "分析这份 msprof op 结果。目录只有 OpBasicInfo.csv、PipeUtilization.csv 和 Memory.csv，目标 kernel 是 main_kernel。",
+      "expected_output": "接受缺少可选 CSV 的结果，唯一匹配 main_kernel，明确缺失指标，只基于已有数据形成结论。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "比较 baseline 和 iter_001 两轮 TileLang profiling，给出性能变化和下一步建议，但不要改代码。",
+      "expected_output": "校验两轮 case、kernel、设备、预热、launch 和采集方式一致，完成同口径对比并给出性能分析。",
+      "files": []
+    }
+  ]
+}
