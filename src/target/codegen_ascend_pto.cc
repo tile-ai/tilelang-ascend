@@ -2931,6 +2931,18 @@ void CodeGenTileLangAscendPto::BrcbExperimentCodegen(const CallNode *op) {
 }
 
 void CodeGenTileLangAscendPto::BroadcastOpCodegen(const CallNode *op) {
+  // Dynamic access extents must not fall back to the full allocated PTO tile.
+  for (int i = 1; i <= 2; ++i) {
+    const auto *access = op->args[i].as<CallNode>();
+    ICHECK(access && access->args[3].as<IntImmNode>())
+        << "PTO broadcast requires static slice extents";
+  }
+  const size_t dim_index = op->args[3].as<CallNode>() ? 4 : 3;
+  for (size_t i = dim_index + 1; i < op->args.size(); ++i) {
+    ICHECK(op->args[i].as<IntImmNode>())
+        << "PTO broadcast requires static slice extents";
+  }
+
   std::string template_args = PrintExpr(op->args[0]);
 
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
@@ -3480,6 +3492,18 @@ void CodeGenTileLangAscendPto::SiluCodegen(const CallNode *op) {
 }
 
 void CodeGenTileLangAscendPto::MulAddDstCodegen(const CallNode *op) {
+  // GetSliceInfo falls back to the full tile for dynamic extents. MulAddDst
+  // currently uses static PTO tiles, so that fallback would update the tail.
+  ICHECK(op->args[3].as<IntImmNode>())
+      << "PTO mul_add_dst requires static slice extents; use target=ascendc "
+         "for dynamic valid counts";
+  for (int i = 0; i < 3; ++i) {
+    const auto *access = op->args[i].as<CallNode>();
+    ICHECK(access && access->args[3].as<IntImmNode>())
+        << "PTO mul_add_dst requires static slice extents; use target=ascendc "
+           "for dynamic valid counts";
+  }
+
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo src1_shape_info = GetSliceInfo(op->args[2].as<CallNode>());

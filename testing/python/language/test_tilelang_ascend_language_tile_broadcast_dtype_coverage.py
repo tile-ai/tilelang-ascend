@@ -308,3 +308,36 @@ def test_broadcast_1d_uninferable_raises():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-n", "8"])
+
+
+@pytest.mark.parametrize("target", ["ascendc", "auto", "pto"])
+def test_broadcast_static_shape_codegen(target):
+    with tilelang.tvm.transform.PassContext(config=PASS_CONFIGS):
+        artifact = tilelang.lower(_make_2d_axis0("float32"), target=target, platform="A2")
+    assert ("TCOLEXPAND" if target == "pto" else "Broadcast") in artifact.kernel_source
+
+
+# A single-row slice is physically contiguous, but PTO must not round its
+# dynamic valid width up to the full 64-element allocation.
+def _make_symbolic_slice():
+    @T.prim_func
+    def main(A: T.Tensor((2, 64), "float32"), B: T.Tensor((2, 64), "float32")):
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            src = T.alloc_ub((1, 64), "float32")
+            dst = T.alloc_ub((1, 64), "float32")
+            T.copy(A[vid, 0], src)
+            T.copy(B[vid, 0], dst)
+            T.tile.broadcast(dst[0:1, 0 : 64 - vid * 32], src[0:1, 0 : 63 - vid * 32 + 1], axis=0)
+            T.copy(dst, B[vid, 0])
+
+    return main
+
+
+@pytest.mark.parametrize("target", ["ascendc", "auto", "pto"])
+def test_broadcast_symbolic_slice_rejected_by_backend(target):
+    message = "PTO broadcast requires static slice extents" if target == "pto" else "Downcast from .* to IntImm failed"
+    with (
+        tilelang.tvm.transform.PassContext(config=PASS_CONFIGS),
+        pytest.raises(tilelang.tvm.error.TVMError, match=message),
+    ):
+        tilelang.lower(_make_symbolic_slice(), target=target, platform="A2")

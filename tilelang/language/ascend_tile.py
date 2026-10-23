@@ -75,7 +75,8 @@ def _get_buffer_info(
 def _handle_buffer_region(br: BufferRegion, mask):
     bf = br.buffer
     indices = [x.min for x in br.region]
-    offset = bf.offset_of(indices)[0]
+    # offset_of includes elem_offset; access_ptr adds it itself.
+    offset = bf.offset_of(indices)[0] - bf.elem_offset
     extent = [x.extent for x in br.region]
     size_extent = math.prod(extent)
     return bf.access_ptr(mask, offset=offset, extent=size_extent), extent
@@ -164,24 +165,42 @@ def _validate_buffer_region_contiguity(
     *,
     require_flat_contiguous: bool,
 ) -> None:
-    """Reject rectangular regions that cross gaps in a dense row-major buffer.
+    """Reject regions that cannot be accessed with the required layout.
 
+    Flat streams use physical strides, including explicit buffer strides.
     A 2D row operation may use a narrower final-axis window because codegen
-    retains the physical row stride. A flat stream must include the final axis
-    in the same check.
+    retains the physical row stride; its outer dimensions must stay contiguous.
     """
-    regions = br.region if require_flat_contiguous else br.region[:-1]
+    if require_flat_contiguous:
+        # Compare actual physical strides with the selected logical span. A
+        # singleton axis never advances its pointer, so its stride is irrelevant.
+        analyzer = arith.Analyzer()
+        strides = list(br.buffer.strides)
+        if not strides:
+            stride = 1
+            for extent in reversed(br.buffer.shape):
+                strides.insert(0, stride)
+                stride *= extent
+        expected_stride = 1
+        for axis in reversed(range(len(br.region))):
+            extent = br.region[axis].extent
+            if not analyzer.can_prove_equal(extent, 1):
+                if not analyzer.can_prove_equal(strides[axis], expected_stride):
+                    raise ValueError(
+                        "BufferRegion must be contiguous when flattened; "
+                        f"axis {axis} has stride {strides[axis]}, expected {expected_stride}."
+                    )
+                expected_stride *= extent
+        return
+
+    regions = br.region[:-1]
     spans_multiple_entries = False
     for axis, region in enumerate(regions):
         if spans_multiple_entries:
             starts_at_zero = _const_equal(region.min, 0)
             has_full_extent = _const_equal(region.extent, br.buffer.shape[axis])
             if not (starts_at_zero and has_full_extent):
-                if require_flat_contiguous:
-                    requirement = "BufferRegion must be contiguous when flattened"
-                else:
-                    requirement = "BufferRegion outer dimensions must be contiguous"
-                raise ValueError(f"{requirement}; axis {axis} is not selected in full.")
+                raise ValueError(f"BufferRegion outer dimensions must be contiguous; axis {axis} is not selected in full.")
         elif not _is_const_one(region.extent):
             spans_multiple_entries = True
 
@@ -203,13 +222,8 @@ def _handle_buffer_region_2d(
         br,
         require_flat_contiguous=require_flat_contiguous,
     )
-    bf = br.buffer
-    indices = [x.min for x in br.region]
-    offset = bf.offset_of(indices)[0]
-    extent_nd = [x.extent for x in br.region]
-    size_extent = math.prod(extent_nd)
-    extent_2d = _fold_nd_shape_to_2d(extent_nd)
-    return bf.access_ptr(mask, offset=offset, extent=size_extent), extent_2d
+    ptr, extent_nd = _handle_buffer_region(br, mask)
+    return ptr, _fold_nd_shape_to_2d(extent_nd)
 
 
 _ATOMIC_ADD_V1_ERR = "T.tile.atomic_add V1 only supports local tensor -> GM atomic add."
@@ -353,13 +367,15 @@ def fill(buffer: Buffer | BufferRegion, value: PrimExpr):
     """Fill a buffer or buffer region with a specified value.
 
     Args:
-        buffer: Either a TVM buffer or buffer region to be filled
+        buffer: A TVM buffer or a region contiguous when flattened.
+            Fill padded row windows one row at a time.
         value: The value to fill the buffer with
 
     Returns:
         A TVM intrinsic call that performs the fill operation
     """
     if isinstance(buffer, BufferRegion):
+        _validate_buffer_region_contiguity(buffer, require_flat_contiguous=True)
         buffer_ptr, buffer_extent = _handle_buffer_region(buffer, "w")
         size = math.prod(buffer_extent)
     else:
@@ -1531,30 +1547,45 @@ def mul_add_dst(
         - Supports data types: half, float (Atlas A2/A3)
         - Also supports: int16_t, uint16_t, int32_t, uint32_t (Atlas 200I/500 A2)
         - dst acts as both input (accumulator) and output
+        - BufferRegions must be contiguous when flattened.
+        - Element counts must be provably equal for dst and both sources.
+        - Symbolic valid counts require the AscendC backend (also used by auto).
+          PTO requires static slice extents and rejects dynamic counts.
     """
+    for operand in (dst, src0, src1):
+        region = (
+            operand
+            if isinstance(operand, BufferRegion)
+            else BufferRegion(operand, [Range.from_min_extent(0, extent) for extent in operand.shape])
+        )
+        _validate_buffer_region_contiguity(region, require_flat_contiguous=True)
+
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "rw")
     else:
-        dst_ptr = dst.access_ptr("rw")
+        dst_ptr = dst.access_ptr("rw", extent=math.prod(dst.shape))
         dst_extent = dst.shape
 
     if isinstance(src0, BufferRegion):
         src0_ptr, src0_extent = _handle_buffer_region(src0, "r")
     else:
-        src0_ptr = src0.access_ptr("r")
+        src0_ptr = src0.access_ptr("r", extent=math.prod(src0.shape))
         src0_extent = src0.shape
 
     if isinstance(src1, BufferRegion):
         src1_ptr, src1_extent = _handle_buffer_region(src1, "r")
     else:
-        src1_ptr = src1.access_ptr("r")
+        src1_ptr = src1.access_ptr("r", extent=math.prod(src1.shape))
         src1_extent = src1.shape
 
     size_dst = math.prod(dst_extent)
     size_src0 = math.prod(src0_extent)
     size_src1 = math.prod(src1_extent)
 
-    assert size_dst == size_src0 == size_src1, "dst, src0, and src1 must have the same size"
+    analyzer = arith.Analyzer()
+    assert analyzer.can_prove_equal(size_dst, size_src0) and analyzer.can_prove_equal(size_dst, size_src1), (
+        "cannot prove dst, src0, and src1 have the same size"
+    )
 
     return tir.call_intrin(
         "handle",
@@ -2534,15 +2565,46 @@ def broadcast(
         tvm.tir.Call: Intrinsic call for AscendC Broadcast API.
 
     Raises:
-        ValueError: If shapes are incompatible for broadcasting.
+        ValueError: If shape compatibility cannot be proved for broadcasting
+            or a BufferRegion is not contiguous when flattened. Symbolic extents
+            must be provably equal on non-broadcast axes.
     """
+    # A false proof result includes unknown relations; keep rejecting those.
+    analyzer = arith.Analyzer()
+
+    def equal(a, b) -> bool:
+        return analyzer.can_prove_equal(a, b)
+
+    def same_shape(a, b) -> bool:
+        return len(a) == len(b) and all(equal(x, y) for x, y in zip(a, b))
+
+    for operand in (dst, src):
+        region = (
+            operand
+            if isinstance(operand, BufferRegion)
+            else BufferRegion(operand, [Range.from_min_extent(0, extent) for extent in operand.shape])
+        )
+        _validate_buffer_region_contiguity(region, require_flat_contiguous=True)
+
     # --- 1. Extract pointers and shapes ---
-    dst_ptr, dst_extent = _handle_buffer_region(dst, "w") if isinstance(dst, BufferRegion) else (dst.access_ptr("w"), dst.shape)
-    src_ptr, src_extent = _handle_buffer_region(src, "r") if isinstance(src, BufferRegion) else (src.access_ptr("r"), src.shape)
+    dst_ptr, dst_extent = (
+        _handle_buffer_region(dst, "w") if isinstance(dst, BufferRegion) else (dst.access_ptr("w", extent=math.prod(dst.shape)), dst.shape)
+    )
+    src_ptr, src_extent = (
+        _handle_buffer_region(src, "r") if isinstance(src, BufferRegion) else (src.access_ptr("r", extent=math.prod(src.shape)), src.shape)
+    )
     dtype = _dtype(src)
-    # 3D to 2D conversion
-    dst_extent = list(dst_extent)[-2:]
-    src_extent = list(src_extent)[-2:]
+
+    # Only singleton leading axes can be removed without losing elements.
+    # This also permits a single plane selected from a higher-rank buffer.
+    def broadcast_shape(extent):
+        extent = list(extent)
+        if any(not equal(dim, 1) for dim in extent[:-2]):
+            raise ValueError(f"Ascend Broadcast only supports 1D or 2D; leading extents must be provably one, got {extent}.")
+        return extent[-2:]
+
+    dst_extent = broadcast_shape(dst_extent)
+    src_extent = broadcast_shape(src_extent)
 
     dst_dim, src_dim = len(dst_extent), len(src_extent)
     if dst_dim not in [1, 2] or src_dim not in [1, 2]:
@@ -2550,9 +2612,9 @@ def broadcast(
 
     # --- 2. Normalize 1D src to 2D ---
     if src_dim == 1 and dst_dim == 2:
-        if axis == 0 or (axis is None and dst_extent[1] == src_extent[0]):
+        if axis == 0 or (axis is None and equal(dst_extent[1], src_extent[0])):
             src_extent, axis = [1, src_extent[0]], 0
-        elif axis == 1 or (axis is None and dst_extent[0] == src_extent[0]):
+        elif axis == 1 or (axis is None and equal(dst_extent[0], src_extent[0])):
             src_extent, axis = [src_extent[0], 1], 1
         else:
             raise ValueError(f"Cannot broadcast 1D src {src_extent} to 2D dst {dst_extent}, axis={axis}")
@@ -2564,9 +2626,9 @@ def broadcast(
     # --- 3. Auto-infer axis (2D case) ---
     if axis is None:
         if dst_dim == 2:
-            if src_extent[0] == 1 and dst_extent[0] != 1:
+            if equal(src_extent[0], 1) and not equal(dst_extent[0], 1):
                 axis = 0
-            elif src_extent[1] == 1 and dst_extent[1] != 1:
+            elif equal(src_extent[1], 1) and not equal(dst_extent[1], 1):
                 axis = 1
             else:
                 axis = 0  # No broadcast, default axis=0
@@ -2578,24 +2640,24 @@ def broadcast(
         if axis not in [0, 1]:
             raise ValueError(f"axis must be 0 or 1, got {axis}")
 
-        if src_extent[axis] == 1:
+        if equal(src_extent[axis], 1):
             # Broadcast case: validate non-broadcast dimension matches
             other_axis = 1 - axis
-            if src_extent[other_axis] != dst_extent[other_axis]:
+            if not equal(src_extent[other_axis], dst_extent[other_axis]):
                 raise ValueError(
-                    f"Broadcast dimension mismatch: src[{other_axis}]={src_extent[other_axis]} "
-                    f"!= dst[{other_axis}]={dst_extent[other_axis]}"
+                    f"Broadcast dimension mismatch: cannot prove equal: src[{other_axis}]={src_extent[other_axis]} "
+                    f"and dst[{other_axis}]={dst_extent[other_axis]}"
                 )
-        elif src_extent != dst_extent:
+        elif not same_shape(src_extent, dst_extent):
             # No broadcast: shapes must match exactly
-            raise ValueError(f"Shapes must match when src[{axis}] != 1: src={src_extent}, dst={dst_extent}")
+            raise ValueError(f"Cannot prove compatible broadcast shapes: src={src_extent}, dst={dst_extent}, axis={axis}")
     elif dst_dim == 1:
         # 1D case: axis must be 0
         if axis != 0:
             raise ValueError(f"1D broadcast requires axis=0, got axis={axis}")
         # broadcast requires src[0] == 1, otherwise shapes must match
-        if src_extent[0] != 1 and src_extent != dst_extent:
-            raise ValueError(f"1D broadcast requires src[0]=1 or shapes must match: src={src_extent}, dst={dst_extent}")
+        if not equal(src_extent[0], 1) and not same_shape(src_extent, dst_extent):
+            raise ValueError(f"Cannot prove 1D broadcast compatibility (src[0]=1 or equal shapes): src={src_extent}, dst={dst_extent}")
 
     # --- 5. Generate TIR intrinsic call ---
     args = [
