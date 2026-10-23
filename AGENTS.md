@@ -31,6 +31,8 @@
 - `tilelang-error-fixer`：编译 / 运行时错误诊断与修复
 
 #### 性能调优
+- `tilelang-tuning-flash`：A2/A3 完整调优会话，管理隔离候选、搜索覆盖、晋升/回滚和最终完整 pytest 验收
+- `tilelang-op-profiling`：性能采集、kernel/case 映射、摘要与归档；Flash 中使用 `execution_mode: collect_only`
 - `tilelang-perf-optimization`：消费已有精度与性能证据，完成瓶颈分析、case 分组和优化方案；不采集性能数据、不修改 kernel
 - `tilelang-performance-best-practices`：A2/A3 性能知识库，提供优化适用条件、实现约束、算子族参考与反模式检查
 
@@ -52,9 +54,13 @@
 
 - [`@tilelang-op-analyst`](.opencode/agents/tilelang-op-analyst.md) (Stage 1)：调用 `tilelang-op-design` 完成需求理解与设计
 - [`@tilelang-op-developer`](.opencode/agents/tilelang-op-developer.md) (Stage 2)：调用 `tilelang-op-develop` 完成代码实现、测试、精度调试（一站式，attempt 上限 5 次）
-- [`@tilelang-op-perf-tuner`](.opencode/agents/tilelang-op-perf-tuner.md) (Stage 3，**可选**)：负责数据采集、优化实施与复验，调用 `tilelang-perf-optimization` 分析方案，查阅 `tilelang-performance-best-practices` 核对实现约束
+- [`@tilelang-op-perf-tuner`](.opencode/agents/tilelang-op-perf-tuner.md) (Stage 3，**可选**)：一次执行完整 `tilelang-tuning-flash` 会话；内部调用 profiling（collect_only）、optimization 和 best-practices，不另分发分析/实施 Subagent
 
-`DESIGN.md` 非硬性约束——Subagent 在实施中发现设计错误时返回 `[DESIGN_ERROR]`，Orchestrator 回退到 Stage 1 重做（不设次数上限）。新建算子直接对 `@tilelang-op-orchestrator` 描述需求；单独使用某个 skill 可走 `/tilelang-op-design`、`/tilelang-op-develop`、`/tilelang-perf-optimization`、`/tilelang-env-check` 跳过编排层。
+Stage 3 的原工程保持不变；运行记录在 `examples/{op}/perf_tuning/flash_<run_id>/`，验收通过的交付在 `final_optimized/`。主控独占 `.orchestrator_state.json`，通过 `perf_session` 保存会话指针；Flash 管理 run 内搜索记录。没有默认调优轮数上限，用户显式预算耗尽或搜索未完成时返回 `BLOCKED_PERFORMANCE` 并保留恢复条件。
+
+最终结果分别报告 `implementation_status` 与 `performance_status`：实现通过验证不等于性能目标达成。完整精度、最终同口径复测、身份核对及搜索门禁全部通过后才可完成 Stage 3。详见 [Flash 工作流](.agents/skills/tilelang-tuning-flash/SKILL.md) 与 [Agent 接口](.opencode/agents/tilelang-op-perf-tuner.md)。
+
+`DESIGN.md` 非硬性约束——Subagent 在实施中发现设计错误时返回 `[DESIGN_ERROR]`，Orchestrator 回退到 Stage 1 重做（不设次数上限）。新建算子直接对 `@tilelang-op-orchestrator` 描述需求；单独使用某个 skill 可走 `/tilelang-op-design`、`/tilelang-op-develop`、`/tilelang-tuning-flash`、`/tilelang-op-profiling`、`/tilelang-perf-optimization`、`/tilelang-env-check` 跳过编排层。
 
 ---
 
@@ -113,6 +119,7 @@
 8. **代码仓探索必须使用 subagent**
    - 禁止在 primary agent 中大规模探索代码仓
    - 使用 Explore Agent 查找资料，使用 Plan Agent 进行方案设计
+   - **Flash 阶段例外**：Stage 3 已整体委派给 `tilelang-op-perf-tuner`；其内部按 `tilelang-tuning-flash` 单 Agent 执行，允许完成当前调优所必需的源码、历史与 lowering 检查，不再分发探索、分析或实施 Subagent。直接调用 Flash Skill 时同样按该会话边界执行；其他仓库探索仍遵循上述规则。
 
 ---
 

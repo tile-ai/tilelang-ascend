@@ -150,10 +150,10 @@ examples/{op}/
 |------|-------|------------|-----------------|
 | `DESIGN.md` | Stage 1 | Stage 2（含精度调试） | 算子名、计算语义、I/O 规格、编程模式、API 映射、tiling 策略、loop 结构、内存层级、技术约束检测结论、精度容忍度、**L0 门槛测试计划** |
 | `proto.yaml` | Stage 1 | 覆盖门禁（`coverage_check.py --proto`）/ `tilelang-op-test-design` | 算子接口规格：`operator.inputs[].dtype`（派生 D-DTYPE-*）、`operator.attrs[].name`（派生 D-PARAM-*）。由 DESIGN.md §9.3 精度表（dtype 全集）+ §4 派生，每个算子都产出 |
-| `{op}.py` | Stage 2/3 | Stage 2/3 | 纯 `@tilelang.jit` kernel（可 import；`precision_fix` 与 perf 调优只改此文件） |
+| `{op}.py` | Stage 2 | Stage 2/3 | 纯 `@tilelang.jit` kernel；Stage 3 以它建立 B0，在隔离副本调优，原文件保持不变 |
 | `test_{op}.py` | Stage 2 | Stage 2/3 | `from {op} import kernel` + PyTorch golden + **分层测试套件**（L0 按 DESIGN.md 的 L0 计划落地；L1/L2/Boundary 在 L0 通过后由 `tilelang-op-test-design` 场景 B 扩展）+ main 入口（含分层标记输出，`--level` 分发） |
 | `README.md` | Stage 2 | 用户 | 实现说明 |
-| `perf_tuning/` | Stage 3 | 用户 | 性能优化日志、对比数据、最终版本 |
+| `perf_tuning/flash_<run_id>/` | Stage 3 | Orchestrator / 用户 | B0、working、候选、测量、搜索记录、报告与 `final_optimized/`；交付路径以返回的 `deliverable_dir` 为准 |
 | `history_version/` | Stage 1/2 | Orchestrator | 设计回退前 design 备份、精度调试前 kernel 备份 |
 | `.orchestrator_state.json` | Orchestrator | Orchestrator | 全局状态 |
 
@@ -164,7 +164,7 @@ Golden 函数写在 `test_{op}.py` 内（PyTorch 参考实现），与 kernel **
 | 分类 | 工件 | 策略 |
 |------|------|------|
 | 用户工件 | `DESIGN.md`、`proto.yaml` | 优先版本化；设计回退前 `DESIGN.md` 必须备份到 `history_version/design_rev{N}.md`；`proto.yaml` 随 design 重生成同步覆盖 |
-| 自动工件 | `{op}.py`、`test_{op}.py`、`README.md` | 可按阶段结果覆盖；Stage 2 精度调试每次 attempt 前必须把 kernel `{op}.py` 备份到 `history_version/{op}_impl_s2_attempt{N}.py` |
+| 自动工件 | `{op}.py`、`test_{op}.py`、`README.md` | Stage 2 可按阶段结果覆盖；每次精度调试 attempt 前备份 kernel 到 `history_version/{op}_impl_s2_attempt{N}.py`。Stage 3 的修改只发生在 run 内隔离副本，验证后归档交付 |
 
 ---
 
@@ -174,7 +174,7 @@ Golden 函数写在 `test_{op}.py` 内（PyTorch 参考实现），与 kernel **
 |-------|------|----------|--------|----------|
 | 1 | 算子设计（含需求理解） | 调度 Subagent | `@tilelang-op-analyst` | 用户提出算子需求 或 设计回退 |
 | 2 | 代码实现 + 测试 + 精度调试 | 调度 Subagent | `@tilelang-op-developer` | `DESIGN.md` 验证通过 |
-| 3 | 性能调优（**可选**） | 调度 Subagent | `@tilelang-op-perf-tuner` | Stage 2 返回 `[PRECISION_PASS]` 后**主动询问用户**，用户同意且提供必要信息 |
+| 3 | Flash 性能调优（**可选**） | 一次委派完整会话，必要时恢复同一 run | `@tilelang-op-perf-tuner` | Stage 2 返回 `[PRECISION_PASS]`，已有调优授权或经用户确认，且必要信息齐全 |
 
 > Stage 2 一站式承担"生成代码 + 跑测试 + 精度调试"全部职责。Developer 每次 attempt 可能是 `first_impl`（首次生成）/ `retry_impl`（运行失败重试）/ `precision_fix`（精度失败修复），由你通过 `mode` 字段区分。Stage 2 attempt 上限 5 次。
 
@@ -190,7 +190,7 @@ Golden 函数写在 `test_{op}.py` 内（PyTorch 参考实现），与 kernel **
 
 | Developer 返回 | mode（下次调度时） | 路由 |
 |---------------|------------------|------|
-| `[PRECISION_PASS]` | — | `complete_stage(2)` → **二次校验精度**（重新跑全量 `--level all` 确认真实性）→ 询问用户是否需要性能调优（见「Stage 3 用户确认」）。此时 Developer 已在 L0 通过后扩展并跑过 L1/L2/Boundary 全量、**且覆盖门禁 `coverage_check.py` 已全 PASS/N/A**；L2/Boundary 告警仅记录不阻塞 |
+| `[PRECISION_PASS]` | — | `complete_stage(2)` → **二次校验精度**（重新跑全量 `--level all` 确认真实性）→ 核对已有调优授权，必要时询问用户（见「Stage 3 进入前的用户确认」）。此时 Developer 已在 L0 通过后扩展并跑过 L1/L2/Boundary 全量、**且覆盖门禁 `coverage_check.py` 已全 PASS/N/A**；L2/Boundary 告警仅记录不阻塞 |
 | `[PRECISION_FAIL]` | `precision_fix` | Stage 2 内重试（L0 或 L1 未达标）。把失败信息（max_diff、失败用例 shape、层级）作为 `last_failure_summary` 传入。**强制要求 Developer 先备份当前 impl 到 `history_version/{op}_impl_s2_attempt{N}.py` 再做修改** |
 | `[DESIGN_ERROR]` | — | 触发设计回退流程（不计入 retry_count） |
 | 无标记且 exit code ≠ 0 | `retry_impl` | Stage 2 内重试，将 stderr 摘要作为 `last_failure_summary` 传入 |
@@ -268,9 +268,11 @@ Subagent 在 Stage 2 输出中明确返回 `[DESIGN_ERROR]` 标记，并附原�
 |-------|---------|-------------|---------|---------|
 | 1 | 用户需求 | `DESIGN.md` 含算子名、I/O 规格、编程模式、API 映射、tiling 策略、内存层级、同步策略、验证方案（含 **L0 门槛测试计划**）、技术约束检测结论 | 必须字段缺失 / 用户中途取消 | 重试 Stage 1 |
 | 2 | `DESIGN.md`（含 L0 计划）| 真实跑测完成三态判定，且 **L0/L1 全过**（PRECISION_PASS）**且覆盖门禁 `coverage_check.py` 全 PASS/N/A**（无未豁免强制维度 MISS）才视为门禁通过；L2/Boundary 告警不影响门禁 | 编译/运行/精度失败 / 覆盖 MISS / 设计错误 | 分类路由（见上「Stage 2 运行失败子类型路由」） |
-| 3 | `{op}.py` kernel（精度通过） + `test_{op}.py` + 用户调优信息 | 单轮性能迭代完成 | 精度退化 / 性能下降 | 回滚 |
+| 3 | 已通过精度的源码与测试 + 已确定的全部性能 case + Flash run | 完整精度、同口径最终复测、源码身份通过，搜索门禁取得合法终态且交付归档存在（见 Stage 3 结果路由） | 搜索未完成 / 最终精度失败 / 测量或环境阻塞 | 保留 run，按结果路由阻塞或恢复 |
 
-### 门禁失败处理流程（适用于所有 Stage）
+### 门禁失败处理流程（Stage 1 / 2）
+
+Stage 3 使用后文「Stage 3 结果路由」；不通过此处的重新调度循环启动新的 Flash 会话。
 
 你在 `complete_stage(N)` 中自己执行的门禁校验未通过即视为门禁失败。**此时不要写状态文件，更不要自动累加 retry_count 或改写 stage_status**——重试计数完全依赖你显式调用 `fail_stage`。必须按以下 3 步处理，**禁止跳过任何一步直接调度 Subagent，禁止改而对下一个 Stage 执行 `complete_stage`**：
 
@@ -290,24 +292,25 @@ Subagent 在 Stage 2 输出中明确返回 `[DESIGN_ERROR]` 标记，并附原�
 |-------|------|------------|
 | 1 | 3 次 | `BLOCKED_DESIGN` |
 | 2 | 5 次 Subagent 调度（运行失败 + 精度失败合并累计；`DESIGN_ERROR` 触发回退不计入） | 因运行失败超限 → `BLOCKED_IMPL`；因精度失败超限 → `BLOCKED_ACCURACY` |
-| 3 | 10 轮迭代 | `SUCCESS`（附中止原因） |
+| 3 | 完整 Flash 会话；仅应用用户显式预算 | 预算耗尽且搜索未完成 → `BLOCKED_PERFORMANCE`，保留同一 run 的恢复信息 |
 | 设计回退 | 无上限（以最终精度通过为准；死循环由 Stage 2 重试上限兜底） | — |
 
 ### 统一结束态
 
 | 状态 | 含义 |
 |------|------|
-| `SUCCESS` | Stage 3 按中止条件完成 **或** 精度通过后用户表示不需要性能调优 |
+| `SUCCESS` | Stage 3 完整验收且搜索门禁通过，或精度通过后用户表示不需要性能调优；性能是否达标另报 `performance_status` |
 | `BLOCKED_DESIGN` | Stage 1 超限 |
 | `BLOCKED_IMPL` | Stage 2 超限（同时间接覆盖"设计反复回退但实现始终不可行"）|
-| `BLOCKED_ACCURACY` | Stage 3 超限 |
+| `BLOCKED_ACCURACY` | Stage 2 精度重试超限，或 Stage 3 最终完整精度验收失败 |
+| `BLOCKED_PERFORMANCE` | Flash 搜索/证据/交付门禁尚未完成，含用户预算耗尽；不得标为收敛 |
 | `BLOCKED_ENVIRONMENT` | 环境问题阻塞（torch / torch_npu / CANN 版本不达标、子模块修复失败、`quick_verify.py` 反复失败等） |
 
 ---
 
 ## Stage 3 进入前的用户确认
 
-Stage 2 返回 `[PRECISION_PASS]` 后，你**必须**先向用户说明当前状态（算子已精度通过，给出 kernel 路径），**主动询问**："是否需要进行性能调优？"
+Stage 2 返回 `[PRECISION_PASS]` 后，向用户说明当前状态和 kernel 路径。用户已明确要求调优时沿用该授权；尚未表达意向时主动询问："是否需要进行性能调优？"
 
 | 用户回答 | 行为 |
 |---------|------------------|
@@ -317,20 +320,53 @@ Stage 2 返回 `[PRECISION_PASS]` 后，你**必须**先向用户说明当前状
 
 ### 调优必要信息收集
 
-| 字段 | 必填 | 默认值 | 说明 |
-|------|---------|--------|------|
-| 性能目标类型 | ✅ | — | `latency` / `throughput` / `baseline_compare`（与 PyTorch/同类对比）/ `best_effort` |
-| 目标数值 | ⭕ (type=latency/throughput 时必填) | — | 如 `< 100us` 或 `> 10 GFLOPS` |
-| Baseline 路径 | ⭕ (type=baseline_compare 时必填) | — | 对比基线代码路径或 PyTorch API |
-| 测试 shape | ⭕ | DESIGN.md 已有 shape | 性能基准对应的输入规格 |
-| 噪声阈值 | ⭕ | 3% | 覆盖 perf-tuner 默认采纳门槛 |
-| 最大迭代数 | ⭕ | 10 | 覆盖默认迭代上限 |
+复用用户已提供的调优授权和参数；已明确要求调优时不重复询问是否进入 Stage 3。只在必要信息缺失时由你在 Primary 上下文收集，Subagent 不负责向用户提问。
 
-信息收集后**追加**写回 `examples/{op}/DESIGN.md` 的"性能目标"章节（不覆盖既有内容），然后 `start_stage(3)`。
+| 字段 | 要求 | 来源与约束 |
+|------|------|------------|
+| 性能目标 | 数值目标或 `best_effort` | `latency` / `throughput` 需给数值和单位；无数值目标传 `null`，不得自行设阈值 |
+| 对照基线 | 用户要求外部对比时必需 | 明确代码/接口、计时范围及比较规则；外部基线与不可变源码 B0 分开记录 |
+| 全部性能 case | 必需 | 可来自用户已指定的清单或已确认的 DESIGN.md；参数需完整，不能静默从 pytest 挑选或缩减 |
+| 编程模式、target、设备 | 必需 | 沿用已确认的 A3 环境和模式；不得套用 A5 的固定后端协议 |
+| 精度入口与证据 | 必需 | 现有完整 pytest/测试入口、命令和与源码匹配的 Stage 2 精度证据 |
+| 比较约束 | 按已有约定传入 | 汇总方式、噪声和可接受的逐 case 退化；Flash 仍须实测噪声 |
+| 资源预算 | 可选 | 仅用户明确指定时记录；未给为 `null`，不设默认十轮或连续无收益停止计数 |
 
-### Stage 3 中止条件
+将新收集的信息追加到 `DESIGN.md` 的“性能目标”章节，保留原有约定，然后 `start_stage(3)`。
 
-满足任一即结束：① 迭代次数达到用户指定上限（默认 10）；② 连续三次无性能提升；③ 达到用户指定的性能目标（type=latency/throughput/baseline_compare 时）。
+### Stage 3 一次会话调度
+
+每次调度 `@tilelang-op-perf-tuner` 执行完整 Flash 会话，不对每个候选再次分发。调度前在全局状态的 `perf_session` 记录 `run_dir`；首次使用新的 `examples/{op}/perf_tuning/flash_<run_id>`，恢复时传入同一个目录。
+
+传入字段与 [perf-tuner 输入契约](tilelang-op-perf-tuner.md#输入契约) 一致：`operator`、`project_root`、`source_paths`、`entrypoint`、`test_entrypoint`、`full_precision_command`、`baseline_precision_evidence`、`cases`、`programming_mode`、`target`、`device`、`performance_target`、`comparison_policy`、`resource_budget`、`run_dir`、`resume`。缺失关键输入先收集，不能创建空 run 后让执行者猜测。
+
+调度 prompt 明确：完整读取 `tilelang-tuning-flash`；内部不再分发其他 Subagent；不得读写 `.orchestrator_state.json`；原工程保持不变；候选搜索、晋升、回滚和停止由 Flash 工作流统一执行；返回双状态、最终验证、交付路径和恢复条件。
+
+### Stage 3 结果路由
+
+收到结果后只读检查 report、源码/测试清单、完整精度日志、全部 case 的最终 profiling 和归档。复核搜索记录时，从仓库根目录运行：
+
+```bash
+python3 .agents/skills/tilelang-tuning-flash/scripts/validate_optimization_search_coverage.py \
+  "<run_dir>/optimization-search-coverage.json" --final
+```
+
+仅当工作流提供逐 case 未达标收敛证据时使用 `--allow-unmet-convergence`；不得为让命令通过而自动添加该参数。
+
+| 返回/验证结果 | 全局动作 |
+|---------------|----------|
+| `implementation_status` 为 `VERIFIED` 或 `NO_CHANGE`；`final_validation.full_precision`、`same_method_performance`、`source_identity` 均 `PASS`；归档存在；search gate 为下列合法终态 | `complete_stage(3)`，置 `SUCCESS`，报告保留独立的性能目标状态 |
+| `TARGET_MET` | 只能对应 `performance_status=MET` |
+| `CONVERGED_WITHOUT_NUMERIC_TARGET` | 只能对应同名 `performance_status`，输入目标必须为 `null` |
+| `UNMET_BUT_CONVERGED` | 对应 `performance_status=NOT_MET_CONVERGED`；明确目标未达到，不改称目标完成 |
+| `SEARCH_INCOMPLETE`、未决义务、用户预算耗尽、缺失证据/归档或 `CANDIDATE` | 保持 Stage 3 未完成，置 `BLOCKED_PERFORMANCE`，保存 `run_dir`、原因与恢复条件 |
+| 最终完整精度失败 | 置 `BLOCKED_ACCURACY`；不交付失败候选，不把子集精度通过当成完整验收 |
+| 设备、profiler 或工具链故障 | 置 `BLOCKED_ENVIRONMENT`；不能据此关闭搜索义务或写收敛 |
+| 其他 `BLOCKED`，或未能归类的失败 | 置 `BLOCKED_PERFORMANCE`，保留具体原因与恢复条件，不默认完成 |
+
+失败结果用 `block_stage(3, reason)` 保存；不调用 `complete_stage(3)`，不把候选失败次数计入全局重试次数。缺失/矛盾的返回字段按 `BLOCKED_PERFORMANCE` 处理。恢复后可重新委派同一会话，不能为了重试而丢弃 ledger、重置预算或生成新 B0。
+
+原工程未被 Flash 覆盖。最终报告的优化实现路径必须指向 `deliverable_dir`；若需将归档写回源码，这是另一个明确的落地动作，不能在报告中假称已写回。
 
 ---
 
@@ -350,7 +386,15 @@ Stage 2 返回 `[PRECISION_PASS]` 后，你**必须**先向用户说明当前状
   "stage2_failure_breakdown": {"runtime_fail": 0, "precision_fail": 0},
   "design_revision_count": 0,
   "perf_tuning_requested": null,
-  "perf_iteration": {"count": 0, "last_improvement": 0.0, "consecutive_no_improvement": 0},
+  "perf_session": {
+    "run_dir": null,
+    "implementation_status": null,
+    "performance_status": null,
+    "report_path": null,
+    "deliverable_dir": null,
+    "stop_reason": null,
+    "resume_condition": null
+  },
   "last_updated": "2026-05-19T00:00:00Z"
 }
 ```
@@ -360,10 +404,11 @@ Stage 2 返回 `[PRECISION_PASS]` 后，你**必须**先向用户说明当前状
 | 时机 | 调用方式 |
 |------|----------|
 | Stage 开始 | `state_transition(action=start_stage, stage=N)` — 仅用于初始化 stage 1 或失败重试或设计回退 |
-| Stage 成功 | `state_transition(action=complete_stage, stage=N)` — 门禁校验 + 标记完成 + 自动推进到 N+1 |
-| Stage 失败 | `state_transition(action=fail_stage, stage=N)` |
+| Stage 成功 | `state_transition(action=complete_stage, stage=N)` — 门禁校验 + 标记完成；Stage 1/2 推进，Stage 3 完成流程 |
+| Stage 1/2 失败 | `state_transition(action=fail_stage, stage=N)` |
+| Stage 3 阻塞/未完成 | `state_transition(action=block_stage, stage=3)`，保留 run 供恢复 |
 | 设计回退 | `state_transition(action=fail_stage, stage=N, reason=design_error)` + `state_transition(action=start_stage, stage=1)` + `design_revision_count += 1` |
-| Stage 3 迭代 | `perf_iteration.*` |
+| Stage 3 调度与返回 | `perf_session` 仅存会话指针、结果与恢复条件；候选事件由 Flash 写入 run 内 ledger |
 
 ### 状态写入接口（手动 Read/Write 实现）
 
@@ -373,7 +418,8 @@ Stage 2 返回 `[PRECISION_PASS]` 后，你**必须**先向用户说明当前状
 |--------------|-------------|
 | `init` | 状态文件不存在时执行。Write 出初始 JSON：`current_stage=1`、`stage_status={}`、所有 `stage_retry_count=0`、`design_revision_count=0`、`env_check_passed=false` |
 | `start_stage(N)` | 1) Read JSON。2) 校验：若有其他 stage 处于 `in_progress`，先按 `fail_stage` / `complete_stage` 处理。3) 设 `stage_status[N]="in_progress"`、`current_stage=N`。4) Write 回去 |
-| `complete_stage(N)` | 1) **先自己执行 Stage N 的门禁校验**（见各 Stage「门禁校验标准」）。2) 校验**失败**：返回错误信息（**不写状态文件**），按「门禁失败处理流程」处理。3) 校验**通过**：Read → 设 `stage_status[N]="completed"` → 设 `current_stage=N+1`（若 N=4 置 `SUCCESS`）→ Write |
+| `complete_stage(N)` | 1) **先自己执行 Stage N 的门禁校验**（见各 Stage「门禁校验标准」）。2) 校验**失败**：返回错误信息（**不写状态文件**），Stage 1/2 按「门禁失败处理流程」，Stage 3 按「Stage 3 结果路由」处理。3) 校验**通过**：Read → 设 `stage_status[N]="completed"` → 若 N<3 设 `current_stage=N+1`；若 N=3 维持 `current_stage=3` 并置 `SUCCESS` → Write |
+| `block_stage(3, reason)` | Read → `stage_status["3"]="blocked"`、`current_stage=3` → 记录相应 `BLOCKED_*`、`perf_session` 结果/路径/恢复条件 → Write；不增加候选重试计数、不标记 completed |
 | `fail_stage(N, reason?)` | 1) Read JSON。2) 设 `stage_status[N]="failed"`、`stage_retry_count[N] += 1`。3) 若 `reason="design_error"` 额外置 `last_failure_reason="design_error"`。4) Write |
 
 **关键**：`complete_stage` 的门禁校验完全由你执行——读工件文件、核对必需章节/字段。`retry_count` 不会自动累加，只有显式调用 `fail_stage` 才 +1。
@@ -381,7 +427,8 @@ Stage 2 返回 `[PRECISION_PASS]` 后，你**必须**先向用户说明当前状
 ### 推进流程
 
 - **正常**：`start_stage(1)` → [执行] → `complete_stage(1)` → `start_stage(2)` → [执行] → `complete_stage(2)` → ...
-- **失败重试**：`complete_stage(N)` → [门禁失败] → `fail_stage(N)` → `start_stage(N)` → [重试]
+- **Stage 1/2 失败重试**：`complete_stage(N)` → [门禁失败] → `fail_stage(N)` → `start_stage(N)` → [重试]
+- **Stage 3 恢复**：[未完成/阻塞] → `block_stage(3)` → [恢复条件满足] → `start_stage(3)` → [同一 run，resume=true]
 - **设计回退**：[Stage 2 返回 DESIGN_ERROR] → `fail_stage(N, reason=design_error)` → `design_revision_count += 1` → 备份 DESIGN.md 到 `history_version/design_rev{N}.md` → `start_stage(1)`（携带 `design_error_summary` 重新调度 analyst）
 
 ---
@@ -391,6 +438,14 @@ Stage 2 返回 `[PRECISION_PASS]` 后，你**必须**先向用户说明当前状
 1. 优先读取 `.orchestrator_state.json`。
 2. 只回到最近失败或未完成的 Stage。
 3. 尽量复用已验证通过的上游工件。
+
+### Flash 会话恢复与旧状态迁移
+
+- 已有 `perf_session.run_dir`：传入同目录与 `resume=true`。执行者先核对冻结输入、源码/测试 SHA、case、target、设备及测量身份；输入变化时报告差异，不能直接继承旧结论。
+- 环境恢复后继续原 run。历史 `BLOCKED` RESULT 保持不变；恢复候选以新 ID 和 `resumes_candidate_id` 关联旧候选，实际恢复与终局校验由 Flash 处理。保留失败证据；用户预算已经耗尽时，只有用户明确增加预算或改变停止要求才继续，不重置已用额度。
+- 旧状态只有 `perf_iteration` 或旧 `baseline_iter*.json`：保留原字段和历史工件作为审计资料，新增 `perf_session`，从当前可信源码建立新的 Flash run。旧日志不等同于 schema v3 搜索记录，不能补造候选事件或据旧计数宣称收敛。
+- 旧 Stage 3 已完成且用户没有请求继续调优时保持其历史完成结果；用户请求新调优时建立新 run。迁移本身不触发代码改写或性能验证。
+
 
 | 失败类型 | 识别信号 | 恢复动作 |
 |----------|----------|----------|
@@ -417,7 +472,8 @@ Stage 2 返回 `[PRECISION_PASS]` 后，你**必须**先向用户说明当前状
 | 各 Subagent 返回摘要中的 `skills_consulted` 字段 | 各阶段实际查阅过的 skill 路径 |
 | `examples/{op}/debug_log.md` | 每次 attempt 的失败信号、修改内容、错误摘要 |
 | `examples/{op}/history_version/` | 设计回退备份、精度调试备份 |
-| 状态文件 `.orchestrator_state.json` | 各阶段 retry / cycle / revision 计数 |
+| 状态文件 `.orchestrator_state.json` | 各阶段 retry / revision 及 Flash 会话指针 |
+| `perf_session.report_path` 与 run 内搜索记录 | Flash 实际候选、测量、验证、停止和恢复证据 |
 
 ### 必须聚合的 skill 清单（保底）
 
@@ -428,7 +484,9 @@ Stage 2 返回 `[PRECISION_PASS]` 后，你**必须**先向用户说明当前状
 | `tilelang-env-check` | 本次有跑过环境预检 |
 | `tilelang-op-design` | Stage 1 执行过（含设计回退） |
 | `tilelang-op-develop` | Stage 2 执行过任意 attempt |
-| `tilelang-perf-optimization` | Stage 3 执行过任意迭代 |
+| `tilelang-tuning-flash` | Stage 3 执行过 Flash 会话 |
+| `tilelang-op-profiling` | Stage 3 实际采集过性能数据 |
+| `tilelang-perf-optimization` | Stage 3 执行过优化分析 |
 | `tilelang-performance-best-practices` | Stage 3 执行过任意迭代 |
 
 各 Subagent 摘要里的 `skills_consulted` 字段（如查 `tilelang-api-best-practices`、`tilelang-debug-helper` 等）需追加合并。
@@ -476,7 +534,13 @@ Stage 2 返回 `[PRECISION_PASS]` 后，你**必须**先向用户说明当前状
 
 ## 性能结果
 - perf_tuning_requested: yes / no
-- （若 yes）iterations: N    improvement: xx%    stop_reason: <原因>
+- （若 yes）run_dir: <Flash run>    report_path: <报告路径>
+- implementation_status: VERIFIED / NO_CHANGE / CANDIDATE / BLOCKED
+- performance_status: MET / CONVERGED_WITHOUT_NUMERIC_TARGET / NOT_MET_CONVERGED / NOT_MET_UNFINISHED
+- deliverable_dir: <已验证归档；未完成为 null>
+- final_validation: <完整精度、同口径复测、身份及搜索门禁结果>
+- candidate_count: N    improvement: <逐 case 与汇总>    stop_reason: <原因>
+- resume_condition: <未完成时恢复条件>
 - （若 no）skipped: 用户精度通过后表示不需要性能调优
 
 ## 已知问题
@@ -495,7 +559,7 @@ Stage 2 返回 `[PRECISION_PASS]` 后，你**必须**先向用户说明当前状
 
 1. 你是唯一流程 owner，不下放状态机职责。未经过工件门禁验证不得推进到下一阶段。必须如实报告失败、阻塞和未验证项。
 2. 多算子场景下每个算子使用独立目录和独立状态文件。仅你按「状态写入接口」规定流程修改 `.orchestrator_state.json`（用 Write 整文件覆盖，禁止 Edit）；Subagent 一律不得读写。
-3. **绝对禁止自行修复代码或编辑工件**：任何阶段失败时只能重新调度 Subagent、走设计回退流程、或在重试次数耗尽后标记为 BLOCKED。**例外**：门禁校验失败时必须先按「门禁失败处理流程」走完 `fail_stage → start_stage` 再调度 Subagent（对状态文件的写入不属于"自行修复"）。
+3. **绝对禁止自行修复代码或编辑工件**：任何阶段失败时只能重新调度 Subagent、走设计回退流程、或在重试次数耗尽后标记为 BLOCKED。Stage 1/2 门禁失败按「门禁失败处理流程」处理，Stage 3 按「Stage 3 结果路由」保存阻塞与恢复状态（对状态文件的写入不属于"自行修复"）。
 4. **设计回退只能由 Subagent 通过 `[DESIGN_ERROR]` 标记触发**，你不得自行判断主动回退；同样不得忽略该标记继续在原阶段重试。
 5. 调度 Subagent 时必须在 prompt 中明确提醒遵循项目根 [AGENTS.md](../../AGENTS.md) 的 6 项核心原则，特别是"不要凭记忆猜 API"、"从示例入手"、"遵循硬件内存层级"。
 6. Stage 2 的精度调试当前依赖 Developer agent 自身能力，无专属 skill。若后续上线精度调试 skill，应在 Developer agent 配置中追加该 skill，本编排逻辑不变。

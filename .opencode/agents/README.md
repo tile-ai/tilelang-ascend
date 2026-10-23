@@ -4,7 +4,7 @@ disable: true
 
 # TileLang-Ascend 算子开发代理体系
 
-基于 OpenCode 多代理框架的端到端算子开发流程：从需求 → 设计 → 代码实现+测试+精度调试（一站式）→ （可选）性能调优，全程由 Orchestrator 编排，Subagent 在隔离上下文中执行各阶段。
+基于 OpenCode 多代理框架的端到端算子开发流程：从需求 → 设计 → 代码实现+测试+精度调试（一站式）→ （可选）Flash 性能调优，全程由 Orchestrator 编排，Subagent 在隔离上下文中执行各阶段。
 
 ## 适用场景
 
@@ -26,8 +26,11 @@ disable: true
 └─────────┘ └────────────┘ └─────────────┘
    │             │              │
    ▼             ▼              ▼
-[op-design] [op-develop]   [perf-optimization]
-                              ← Skill 层
+[op-design] [op-develop]   [tuning-flash]
+                              ├─ profiling (collect_only)
+                              ├─ perf-optimization
+                              └─ performance-best-practices
+                              ← Skill 层，无新增 Subagent
 ```
 
 | 代理 | 角色 | 职责 |
@@ -35,7 +38,7 @@ disable: true
 | [tilelang-op-orchestrator](tilelang-op-orchestrator.md) | Primary | 3 阶段状态机、工件门禁、Subagent 调度、设计回退、环境预检 |
 | [tilelang-op-analyst](tilelang-op-analyst.md) | Subagent | Stage 1 算子设计（含需求理解、设计回退） |
 | [tilelang-op-developer](tilelang-op-developer.md) | Subagent | Stage 2 一站式：代码生成 + 测试 + 精度调试（含 `[DESIGN_ERROR]` 识别）；通过 mode 字段区分 first_impl / retry_impl / precision_fix |
-| [tilelang-op-perf-tuner](tilelang-op-perf-tuner.md) | Subagent | Stage 3 性能调优（可选，用户确认后触发） |
+| [tilelang-op-perf-tuner](tilelang-op-perf-tuner.md) | Subagent | Stage 3 完整 Flash 会话（可选，已有授权或用户确认后触发） |
 
 ## 三阶段流程
 
@@ -59,14 +62,15 @@ disable: true
     │
     └─ PRECISION_PASS ─→ complete_stage(2)
                             ↓
-                  ┌──── 询问用户 ────┐
+                  ┌── 核对调优授权 ──┐
                   │ 是否需要性能调优？│
                   └─────┬────────┬───┘
                   不需要│        │需要 + 提供调优信息
                        ↓        ↓
-                    SUCCESS   [Stage 3] 性能调优
-                                ↓        产物：perf_tuning/
-                              SUCCESS
+                    SUCCESS   [Stage 3] Flash 完整会话
+                                ↓        产物：perf_tuning/flash_<run_id>/
+                         全部门禁通过：SUCCESS
+                         未完成/阻塞：BLOCKED_*（可恢复）
 ```
 
 ### 阶段对照表
@@ -76,9 +80,11 @@ disable: true
 | 0 | 环境预检 | ✅ 一次性 | `tilelang-env-check` | `env_check_passed=true` |
 | 1 | 算子设计 | ✅ | `tilelang-op-design` | `DESIGN.md` + `proto.yaml` |
 | 2 | 代码实现+测试+精度调试 | ✅ | `tilelang-op-develop` + 内置精度调试方法学 | `{op}.py` + `test_{op}.py` + 精度调试备份 |
-| 3 | 性能调优 | ⭕ 用户确认 | `tilelang-perf-optimization` + `tilelang-performance-best-practices` | `perf_tuning/` |
+| 3 | Flash 性能调优 | ⭕ 用户授权 | `tilelang-tuning-flash`，接入 profiling / optimization / best-practices | `perf_tuning/flash_<run_id>/` |
 
-Stage 3 由 `tilelang-op-perf-tuner` 采集性能证据、实施候选并完成复验与回滚；`tilelang-perf-optimization` 只消费证据并输出方案，`tilelang-performance-best-practices` 提供 A2/A3 实现知识。
+Stage 3 一次委派给 `tilelang-op-perf-tuner` 执行完整 Flash 会话。它按 [Flash 正文](../../.agents/skills/tilelang-tuning-flash/SKILL.md) 在隔离候选中完成搜索、实施和验证，不再分发分析/实施子 Agent。`tilelang-op-profiling` 以 `execution_mode: collect_only` 采集/归档；`tilelang-perf-optimization` 只分析已有证据；`tilelang-performance-best-practices` 提供 A2/A3 实现知识。
+
+候选精度验证覆盖相关 shape，性能测量覆盖全部目标 case；最终执行完整目标 pytest、同口径 B0/B* 复测和搜索终局校验。原工程保持不变，最终交付为 run 内 `final_optimized/`。
 
 ## 关键机制
 
@@ -108,9 +114,9 @@ Orchestrator 在进入 Stage 1 之前自动调用 `tilelang-env-check`，**一�
 
 ### 性能调优用户确认
 
-精度通过后 Orchestrator **主动询问用户**：是否需要性能调优？
+精度通过后，已有调优授权则直接沿用；尚未表达意向时由 Orchestrator 询问是否需要性能调优。
 - 不需要 → 直接置 `SUCCESS`
-- 需要 → 询问调优必要信息（性能目标类型、目标数值、baseline、shape、噪声阈值、迭代上限），追加写入 DESIGN.md → 进入 Stage 3
+- 需要 → 补齐实际入口、完整测试、全部性能 case、环境与比较约定，记录可选目标和显式预算，追加写入 DESIGN.md → 进入 Stage 3
 
 ### 重试与中止规则
 
@@ -118,7 +124,7 @@ Orchestrator 在进入 Stage 1 之前自动调用 `tilelang-env-check`，**一�
 |-------|---------|-----------|
 | 1 设计 | 3 次 | `BLOCKED_DESIGN` |
 | 2 实现+测试+精度调试 | 5 次（运行失败 + 精度失败合并累计；DESIGN_ERROR 不计入） | 因运行失败超限置 `BLOCKED_IMPL`；因精度失败超限置 `BLOCKED_ACCURACY` |
-| 3 性能调优 | 10 轮 / 连续 3 轮无提升 / 达成目标 | `SUCCESS` |
+| 3 Flash 调优 | 无默认轮数/连续无收益上限；仅应用用户显式预算 | 搜索和全部验收门禁通过才 `SUCCESS`；预算耗尽且未完成 → `BLOCKED_PERFORMANCE` |
 | 设计回退 | 无上限（由 Stage 2 retry 上限兜底） | — |
 | 环境预检 | 一次重试 | `BLOCKED_ENVIRONMENT` |
 
@@ -136,7 +142,7 @@ softmax(x_i) = exp(x_i) / sum(exp(x_j))，输入是 [B, N] 的 float16
 
 Orchestrator 唯一会反向询问的关键信息：
 1. **编程模式**（Developer / Expert / 混合）—— 根 [AGENTS.md](../../AGENTS.md) 强制要求
-2. **精度通过后**：是否需要性能调优（可选）
+2. **精度通过后**：是否需要性能调优（可选，沿用已有授权）；缺失时补充完整性能 case、实际测试入口与比较约定
 
 其他字段（精度容忍度、动态轴范围等）有合理默认值，不主动提就用默认。
 
@@ -158,6 +164,8 @@ Orchestrator 唯一会反向询问的关键信息：
 |------|------|
 | `/tilelang-op-design` | 只生成 DESIGN.md |
 | `/tilelang-op-develop` | 只生成 kernel 代码 |
+| `/tilelang-tuning-flash` | 对已有正确实现执行完整调优会话或恢复指定 run |
+| `/tilelang-op-profiling` | 采集、核对和归档设备性能证据；Flash 使用 collect_only |
 | `/tilelang-perf-optimization` | 根据已有精度与性能证据分析优化方案，不采集数据、不修改 kernel |
 | `/tilelang-performance-best-practices` | 查阅 A2/A3 优化知识、适用条件与实现约束 |
 | `/tilelang-env-check` | 单独跑环境检查 |
@@ -172,14 +180,21 @@ Orchestrator 唯一会反向询问的关键信息：
 examples/{op}/
 ├── DESIGN.md                              # Stage 1
 ├── proto.yaml                             # Stage 1（算子接口规格 dtype/attr，供覆盖门禁派生应覆盖维度）
-├── {op}.py                                # Stage 2 / 3 纯 kernel（@tilelang.jit，可 import，无 golden/测试/__main__）
+├── {op}.py                                # Stage 2 原始 kernel，Flash 中保持不变
 ├── test_{op}.py                           # Stage 2 from {op} import kernel + golden + 分层测试套件 L0/L1/L2/Boundary + main
 ├── README.md                              # Stage 2（可选）
 ├── debug_log.md                           # Stage 2 / 3 每次调度追加一条记录
 ├── perf_tuning/                           # Stage 3（仅当用户启用）
-│   ├── baseline_iter{N}.json
-│   ├── {op}_impl_iter{N}_before.py
-│   └── perf_log.md
+│   └── flash_<run_id>/
+│       ├── manifest.json                  # 输入、版本、命令、文件清单与 SHA256
+│       ├── baseline/                      # B0，只读原始基线
+│       ├── working/                       # B*，当前最佳版本
+│       ├── candidates/Ci/                 # 从 B* 隔离创建的候选
+│       ├── profiling/                     # 按 measurement_id/case_id 保存证据
+│       ├── optimization-search-coverage.json
+│       ├── timing.json
+│       ├── final_optimized/               # 仅最终验收通过的交付
+│       └── flash-report.md                # 双状态、停止原因与恢复条件
 ├── history_version/                       # 两类备份
 │   ├── design_rev{N}.md                   # 设计回退前的 DESIGN 备份
 │   └── {op}_impl_s2_attempt{N}.py         # Stage 2 precision_fix 前的 impl 备份
@@ -190,7 +205,7 @@ examples/{op}/
 
 | 文件 | 内容 |
 |------|------|
-| `{op}.py` | **纯 kernel**：`@tilelang.jit` kernel + `pass_configs`（可 import；无 golden、无测试、无 `__main__`）；`precision_fix` 与 perf 调优只改此文件 |
+| `{op}.py` | **纯 kernel**：`@tilelang.jit` kernel + `pass_configs`（可 import；无 golden、无测试、无 `__main__`）；Stage 2 precision_fix 修改此文件，Stage 3 修改 run 内隔离副本 |
 | `test_{op}.py` | `from {op} import {op}` + PyTorch golden + **分层测试套件**（L0 按 DESIGN.md 计划落地；L0 通过后由 `tilelang-op-test-design` 场景 B 扩展 L1/L2/Boundary）+ main 块（含分层标记输出，`--level` 分发） |
 | `DESIGN.md` | 设计文档（11 章节：编程模式 / API 映射 / 内存规划 / Tiling / Loop / 同步 / 验证方案 / 风险点 等） |
 | `proto.yaml` | Stage 1 派生的算子接口规格（dtype 全集 + attr），供覆盖门禁 `coverage_check.py --proto` 派生应覆盖维度 |
@@ -211,14 +226,34 @@ examples/{op}/
   "stage2_failure_breakdown": {"runtime_fail": 0, "precision_fail": 0},
   "design_revision_count": 0,
   "perf_tuning_requested": null,
-  "perf_iteration": {
-    "count": 0,
-    "last_improvement": 0.0,
-    "consecutive_no_improvement": 0
+  "perf_session": {
+    "run_dir": null,
+    "implementation_status": null,
+    "performance_status": null,
+    "report_path": null,
+    "deliverable_dir": null,
+    "stop_reason": null,
+    "resume_condition": null
   },
   "last_updated": "2026-05-19T00:00:00Z"
 }
 ```
+
+`perf_session` 只保存会话指针与结果；候选 CREATED/RESULT 和搜索义务在 run 内 `optimization-search-coverage.json`，由 Flash 执行者维护。主控以同一 `run_dir` 和 `resume=true` 恢复，先校验冻结输入、源码/测试 SHA、case、target 和环境身份。旧单轮状态保留为历史，从可信实现新建 Flash run，不能把旧计数伪装成搜索记录。
+
+### Stage 3 双状态与失败恢复
+
+| 结果 | 含义与路由 |
+|------|------------|
+| `implementation_status=VERIFIED` | 完整验收通过且有可靠收益；不代表目标达成 |
+| `implementation_status=NO_CHANGE` | 保留完整验收后的基线 |
+| `implementation_status=CANDIDATE/BLOCKED` | 尚无完整交付；Stage 3 未完成 |
+| `performance_status=MET` | 终局门禁 `TARGET_MET`，所有明确目标满足 |
+| `performance_status=CONVERGED_WITHOUT_NUMERIC_TARGET` | 未设数值目标，逐 case 搜索与下界审计完成 |
+| `performance_status=NOT_MET_CONVERGED` | 门禁 `UNMET_BUT_CONVERGED`，有证据收敛但目标未达成 |
+| `performance_status=NOT_MET_UNFINISHED` | 搜索/验证未完成，不能写收敛 |
+
+主控核对完整精度、最终同口径测量、源码身份、搜索终态和交付归档后才可完成 Stage 3；结果协议见 [perf-tuner](tilelang-op-perf-tuner.md)。未完成搜索或预算耗尽为 `BLOCKED_PERFORMANCE`，最终精度失败为 `BLOCKED_ACCURACY`，环境故障为 `BLOCKED_ENVIRONMENT`。恢复保留原 run；预算耗尽后继续需要用户明确增加预算，不能通过新会话重置消耗。
 
 ### 写入规则
 
@@ -233,9 +268,10 @@ examples/{op}/
 | 流程卡在 Stage 1，反复问编程模式 | 用户输入不被识别 | 用 `Developer` / `Expert` / `混合` 三个明确词之一 |
 | 反复出现 `[DESIGN_ERROR]` 回退 | analyst 收不到历史回退信息 | 检查状态文件 `design_revision_count` 是否累加；查看 `history_version/design_rev*.md` 是否齐全 |
 | Stage 2 反复精度失败 | 实现层无解，应为 design 错误 | Developer 应主动返回 `[DESIGN_ERROR]`；若它没主动报，可手动跑 `/tilelang-op-design` 修正 design |
+| `BLOCKED_PERFORMANCE` | 未决义务、证据不足或显式预算耗尽 | 查看 flash-report 与 resume_condition，补齐条件后恢复同一 run |
 | `BLOCKED_ENVIRONMENT` | torch/torch_npu/CANN 版本不达标 | 按报告中的修复命令处理；自动可修复的（子模块/编译）已尝试 |
-| 中断后想从头开始 | 不想续跑 | 删除 `examples/{op}/.orchestrator_state.json`，重新触发 orchestrator |
-| 状态文件结构异常 | 字段缺失或旧格式 | Orchestrator 会自动迁移；严重情况下删除状态文件重跑 |
+| Flash 中断后想从头开始 | 需要新一轮搜索 | 明确请求新 run，保留原状态和历史工件；不得删除记录来重置已耗预算 |
+| 状态文件结构异常 | 字段缺失或旧格式 | 主控按规范迁移并保留历史；缺可信证据时重新验证，不能补造完整状态 |
 
 ## 与项目根 AGENTS.md 的关系
 
@@ -255,6 +291,9 @@ Orchestrator 在调度 Subagent 时会在 prompt 中明确提醒这些原则，S
 - [AGENTS.md](../../AGENTS.md) — 项目级开发规范与代理体系入口
 - [tilelang-op-orchestrator.md](tilelang-op-orchestrator.md) — Primary 代理完整规范
 - [tilelang-op-analyst.md](tilelang-op-analyst.md) — Stage 1 设计代理
-- [tilelang-op-developer.md](tilelang-op-developer.md) — Stage 2/3 开发代理
+- [tilelang-op-developer.md](tilelang-op-developer.md) — Stage 2 开发代理
 - [tilelang-op-perf-tuner.md](tilelang-op-perf-tuner.md) — Stage 3 性能调优代理
+- [tilelang-tuning-flash](../../.agents/skills/tilelang-tuning-flash/SKILL.md) — Flash 工作流与搜索校验
 - [.agents/skills/](../../.agents/skills/) — Skill 库
+
+多 CLI 角色注册、路径适配与兼容性验收是后续工作，本次仅更新现有 OpenCode Agent 接线。
