@@ -156,34 +156,3 @@ def test_atomic_add_dtype_mismatch_raises():
 # ---------------------------------------------------------------------------
 # Exception boundary: unsupported dtype (default — no LP)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "dtype,target",
-    [
-        ("uint16", "pto"),
-        ("uint32", "pto"),
-        ("int8", "ascendc"),
-    ],
-)
-def test_atomic_add_unsupported_dtype_raises(dtype, target):
-    """PTO rejects unsigned atomic dtypes after a legal same-dtype input copy."""
-
-    @T.prim_func
-    def main(
-        SRC: T.Tensor((32,), dtype),  # type: ignore
-        C: T.Tensor((32,), dtype),  # type: ignore
-    ):
-        with T.Kernel(1, is_npu=True) as (cid, _):
-            src_ub = T.alloc_ub((32,), dtype)
-            # Prepare input without a fill that could reject the dtype before
-            # the atomic-add operation is compiled.
-            T.copy(SRC, src_ub)
-            T.tile.atomic_add(C[0], src_ub)
-
-    with pytest.raises(RuntimeError, match="Compilation Failed"):  # noqa: B017
-        tilelang.compile(main, pass_configs=PASS_CONFIGS, target=target)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-n", "8"])

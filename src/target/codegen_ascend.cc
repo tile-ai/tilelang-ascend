@@ -609,6 +609,12 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     MmaCodegen(op);
   } else if (op->op.same_as(tl::ascend_reinterpretcast())) {
     ReinterpretCastCodegen(op);
+  } else if (op->op.same_as(tl::ascend_clamp_max())) {
+    ClampMaxMinCodegen(op);
+  } else if (op->op.same_as(tl::ascend_clamp_min())) {
+    ClampMaxMinCodegen(op);
+  } else if (op->op.same_as(tl::ascend_clamp())) {
+    ClampCodegen(op);
   } else if (op->op.same_as(builtin::if_then_else())) {
     IfThenElseCodegen(op, os);
   } else {
