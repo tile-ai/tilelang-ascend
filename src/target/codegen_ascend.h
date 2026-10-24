@@ -144,6 +144,9 @@ private:
 
   void MulAddDstCodegen(const CallNode *op);
 
+  void ClampMaxMinCodegen(const CallNode *op);
+  void ClampCodegen(const CallNode *op);
+
   void InitSortBufCodegen(const CallNode *op);
 
   void CompareCodegen(const CallNode *op, const std::string &op_name);
