@@ -394,8 +394,8 @@ def run_test_axpy(M, N, block_M, block_N, dtype, target):
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_axpy(dtype, target, shape):
     M, N = shape
