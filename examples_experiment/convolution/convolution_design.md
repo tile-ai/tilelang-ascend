@@ -160,7 +160,7 @@ def main(A: T.Tensor((M, K), "float16"),
 | `T.alloc_shared` | api-kernel-memory.md §2.1 | ✅ 已验证 |
 | `T.alloc_fragment` | api-kernel-memory.md §2.2 | ✅ 已验证 |
 | `T.copy` | api-kernel-memory.md §3 | ✅ 已验证 |
-| `T.gemm_v0` | api-compute.md §1 | ✅ 已验证，examples/developer_mode/gemm_developer.py |
+| `T.gemm_v0` | api-compute.md §1 | ✅ 已验证，examples_experiment/developer_mode/gemm_developer.py |
 | `T.ceildiv` | TileLang DSL 内置 | ✅ 已验证 |
 | `T.serial` | api-schedule-sync.md §1 | ✅ 已验证 |
 | `T.Kernel(..., is_npu=True)` | api-kernel-memory.md §1.3 | ✅ 已验证 |
@@ -187,7 +187,7 @@ def main(A: T.Tensor((M, K), "float16"),
 
 | 文件路径 | 相似度 | 关键参考点 |
 |----------|--------|-----------|
-| `examples/developer_mode/gemm_developer.py` | 高度相似 | GEMM Kernel 结构、T.gemm_v0 用法、T.serial K 循环 |
+| `examples_experiment/developer_mode/gemm_developer.py` | 高度相似 | GEMM Kernel 结构、T.gemm_v0 用法、T.serial K 循环 |
 | `examples/convolution/example_convolution_autotune.py` | 同一算子 | autotune 变体，block 搜索空间 [64,128] |
 | `examples/developer_mode/matmul_add_developer.py` | 相似 | T.copy + T.gemm_v0 组合模式 |
 
