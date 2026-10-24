@@ -18,11 +18,11 @@ non-constant expression ended up inside the template argument, producing invalid
 generated C++ (``error: use of undeclared identifier 'T'``), so the kernel failed
 to compile.
 
-The fix: if the inner extent is a compile-time ``IntImm`` use it (every existing
-caller -- full-width copies and constant slices -- stays byte-identical); if it is
-a runtime expression, use the buffer's compile-time shape for the template dim.
-The actual runtime width is already carried by the ``maskShapeN`` argument
-(``validCol``), so the DMA still transfers exactly the runtime number of columns.
+The GM->UB path uses the static buffer width when the inner extent is dynamic.
+UB->GM and UB atomic-add use the physical source row pitch for the template dim,
+including when the source is a constant-width slice. The actual runtime width
+is carried by ``maskShapeN`` (``validCol``), so the DMA still transfers exactly
+the runtime number of columns.
 
 How this test triggers it
 -------------------------

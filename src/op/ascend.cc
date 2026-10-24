@@ -24,6 +24,56 @@ namespace tl {
 
 using namespace tir;
 
+namespace {
+
+PrimExpr GetUBCopyRowPitch(const Buffer &buf, const Array<PrimExpr> &extents,
+                           const LowerArgs &T, arith::Analyzer *analyzer) {
+  // The DMA template describes physical row spacing, not the copied region's
+  // width. Follow the same layout/remap path as the source pointer so slices,
+  // explicit strides and padded layouts all retain their backing storage pitch.
+  const int rank = static_cast<int>(buf->shape.size());
+  ICHECK_GT(rank, 0);
+  Array<PrimExpr> indices;
+  for (int i = 0; i < rank; ++i) {
+    indices.push_back(Var("copy_index", buf->shape[i].dtype()));
+  }
+  auto physical = T.buffer_remap.count(buf) ? T.buffer_remap[buf] : buf;
+  auto offset = [&](const Array<PrimExpr> &logical) {
+    auto mapped =
+        T.layout_map.count(buf) ? T.layout_map[buf]->Forward(logical) : logical;
+    return physical.OffsetOf(mapped).back();
+  };
+  PrimExpr base = offset(indices);
+  auto columns = indices;
+  columns.Set(rank - 1, columns[rank - 1] + 1);
+  ICHECK(analyzer->CanProveEqual(offset(columns) - base, Integer(1)))
+      << "UB copy requires contiguous columns";
+
+  // Match the DMA's active row dimension, folding intervening singleton
+  // region dimensions. A one-row region keeps the immediate preceding dim.
+  int row = rank - 2;
+  for (int i = rank - 2; i >= 0; --i) {
+    if (!analyzer->CanProveEqual(extents[i], Integer(1))) {
+      row = i;
+      break;
+    }
+  }
+  PrimExpr pitch = buf->shape.back();
+  if (rank > 1) {
+    auto rows = indices;
+    rows.Set(row, rows[row] + 1);
+    pitch = offset(rows) - base;
+  }
+  pitch = analyzer->Simplify(pitch);
+  const auto *constant = pitch.as<IntImmNode>();
+  ICHECK(constant && constant->value > 0)
+      << "UB copy requires a positive compile-time row pitch, but got "
+      << pitch;
+  return pitch;
+}
+
+} // namespace
+
 #define TIR_DEFINE_TL_BUILTIN(OpName)                                          \
   const Op &OpName() {                                                         \
     static const Op &op = Op::Get("tl." #OpName);                              \
@@ -282,19 +332,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
       ss << "copy_ub_to_gm<";
       ss << get_dtype(dst) << ", ";
-      // See copy_gm_to_ub above: a runtime inner-extent must use the buffer's
-      // compile-time shape for the template col dim (runtime width is carried
-      // by the maskShapeN function arg); const extents are byte-identical.
-      PrimExpr ub2gm_tmpl_n = src_extents[src->shape.size() - 1];
-      if (!ub2gm_tmpl_n->IsInstance<IntImmNode>()) {
-        ub2gm_tmpl_n = src->shape[src->shape.size() - 1];
-        // See copy_gm_to_ub: the shape fallback must itself be compile-time.
-        ICHECK(ub2gm_tmpl_n->IsInstance<IntImmNode>())
-            << "copy_ub_to_gm: the inner (column) dimension of the source "
-               "buffer shape must be a compile-time constant, but got "
-            << ub2gm_tmpl_n;
-      }
-      ss << ub2gm_tmpl_n;
+      ss << GetUBCopyRowPitch(src, src_extents, T, analyzer);
       if (src->shape.size() > 1) {
         ss << ", " << compute_blocklen(src, src_extents);
       }
@@ -791,30 +829,23 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
          "destination buffer rank";
 
   std::stringstream ss;
-  // Same compile-time-template-arg fix as the GM<->UB copy above (see
-  // AscendCopy::Lower): the inner (column) dim is a template arg, so a runtime
-  // inner-extent -- e.g. atomic_add(A[rows, 0:n], src_ub[:, 0:n]) with a
-  // dynamic n -- would put a non-const expr in the template and emit invalid
-  // C++. Use the source buffer's compile-time shape for the template; the
-  // runtime column count is carried by validCol_dst below, so the DMA still
-  // adds exactly the runtime number of columns. A const extent stays
-  // byte-identical, so every existing caller is unchanged.
-  PrimExpr atomic_tmpl_n = src_extents[src->shape.size() - 1];
-  if (!atomic_tmpl_n->IsInstance<IntImmNode>()) {
-    atomic_tmpl_n = src->shape[src->shape.size() - 1];
-    ICHECK(atomic_tmpl_n->IsInstance<IntImmNode>())
-        << "tl.ascend_atomic_add: the inner (column) dimension of the source "
-           "buffer shape must be a compile-time constant, but got "
-        << atomic_tmpl_n;
-  }
   if (src.scope() == "shared.ub") {
     ss << "tl::ascend::atomic_add_ub_to_gm<";
-    ss << get_dtype(dst) << ", " << atomic_tmpl_n;
+    ss << get_dtype(dst) << ", "
+       << GetUBCopyRowPitch(src, src_extents, T, analyzer);
     if (src->shape.size() > 1) {
       ss << ", " << compute_blocklen(src, src_extents);
     }
     ss << ">";
   } else if (src.scope() == "wmma.accumulator") {
+    PrimExpr atomic_tmpl_n = src_extents[src->shape.size() - 1];
+    if (!atomic_tmpl_n->IsInstance<IntImmNode>()) {
+      atomic_tmpl_n = src->shape[src->shape.size() - 1];
+      ICHECK(atomic_tmpl_n->IsInstance<IntImmNode>())
+          << "tl.ascend_atomic_add: the inner (column) dimension of the source "
+             "buffer shape must be a compile-time constant, but got "
+          << atomic_tmpl_n;
+    }
     ss << "tl::ascend::atomic_add_l0c_to_gm<";
     ss << get_dtype(src) << ", " << get_dtype(dst) << ", "
        << (T.layout_map.count(src) ? T.layout_map[src]->AscendLayoutStr()
