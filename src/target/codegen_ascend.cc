@@ -3272,6 +3272,36 @@ void CodeGenTileLangAscend::EmitSelectedRawClamp(
   std::string type = getType(dtype);
   std::string dst = PrintBufferOffset(args[1].as<CallNode>());
   std::string src = PrintBufferOffset(args[2].as<CallNode>());
+
+  // Tensor bounds: emit tile-to-tile Max/Min (from PR #1620).
+  // Scalar bounds continue to the mask-managed scalar path below.
+  const bool min_is_tensor = args[3].as<CallNode>() != nullptr;
+  const bool max_is_tensor = args[4].as<CallNode>() != nullptr;
+  if (min_is_tensor || max_is_tensor) {
+    std::string count = (args.size() > 5) ? PrintExpr(args[5]) : "";
+    if (min_is_tensor) {
+      std::string min_tile = PrintBufferOffset(args[3].as<CallNode>());
+      this->PrintIndent();
+      this->stream << "AscendC::Max<" << type << ">(" << dst << ", " << src
+                   << ", " << min_tile << ", " << count << ");\n";
+    } else {
+      this->PrintIndent();
+      this->stream << "AscendC::Maxs<" << type << ">(" << dst << ", " << src
+                   << ", " << PrintExpr(args[3]) << ", " << count << ");\n";
+    }
+    if (max_is_tensor) {
+      std::string max_tile = PrintBufferOffset(args[4].as<CallNode>());
+      this->PrintIndent();
+      this->stream << "AscendC::Min<" << type << ">(" << dst << ", " << dst
+                   << ", " << max_tile << ", " << count << ");\n";
+    } else {
+      this->PrintIndent();
+      this->stream << "AscendC::Mins<" << type << ">(" << dst << ", " << dst
+                   << ", " << PrintExpr(args[4]) << ", " << count << ");\n";
+    }
+    return;
+  }
+
   auto emit = [&](const std::string &api, const std::string &input,
                   const PrimExpr &scalar) {
     std::vector<std::string> args{dst,
