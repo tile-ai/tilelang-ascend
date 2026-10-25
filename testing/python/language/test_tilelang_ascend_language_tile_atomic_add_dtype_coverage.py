@@ -90,8 +90,8 @@ def _run_and_check(program, shape, dtype, num_blocks, target):
 @pytest.mark.parametrize(
     "target",
     [
-        "ascendc",
-        "pto",
+        pytest.param("ascendc", marks=pytest.mark.low_priority, id="int32-ascendc"),
+        pytest.param("pto", marks=pytest.mark.low_priority, id="int32-pto"),
     ],
 )
 def test_atomic_add_int32_1d(target):

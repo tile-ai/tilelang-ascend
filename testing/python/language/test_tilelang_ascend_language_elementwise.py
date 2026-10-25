@@ -1671,11 +1671,11 @@ def run_test_tile_clamp(shape, dtype, target, count=None, inplace=False):
     ("dtype", "target"),
     [
         ("float", "ascendc"),
-        ("float16", "ascendc"),
-        ("int16", "ascendc"),
-        ("int32", "ascendc"),
-        ("float", "pto"),
-        ("int16", "pto"),
+        pytest.param("float16", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("int16", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("int32", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("float", "pto", marks=pytest.mark.low_priority),
+        pytest.param("int16", "pto", marks=pytest.mark.low_priority),
     ],
 )
 def test_tile_clamp_full_tile(dtype, target):
@@ -1686,14 +1686,14 @@ def test_tile_clamp_full_tile(dtype, target):
     "dtype",
     [
         "float",
-        "float16",
-        "int16",
-        "int32",
+        pytest.param("float16", marks=pytest.mark.low_priority),
+        pytest.param("int16", marks=pytest.mark.low_priority),
+        pytest.param("int32", marks=pytest.mark.low_priority),
     ],
 )
 @pytest.mark.parametrize(
     "count",
-    [17, 32],
+    [17, pytest.param(32, marks=pytest.mark.low_priority)],
 )
 def test_tile_clamp_ascendc_partial_count(dtype, count):
     run_test_tile_clamp((64,), dtype, "ascendc", count=count)
@@ -1703,9 +1703,9 @@ def test_tile_clamp_ascendc_partial_count(dtype, count):
     ("dtype", "target"),
     [
         ("float", "ascendc"),
-        ("float16", "ascendc"),
-        ("float16", "pto"),
-        ("int32", "pto"),
+        pytest.param("float16", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("float16", "pto", marks=pytest.mark.low_priority),
+        pytest.param("int32", "pto", marks=pytest.mark.low_priority),
     ],
 )
 def test_tile_clamp_inplace(dtype, target):
@@ -1730,7 +1730,7 @@ def tile_clamp_region_kernel(dtype):
     return main
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_tile_clamp_buffer_region(target):
     kernel = tilelang.compile(
         tile_clamp_region_kernel("float16"),
@@ -1774,9 +1774,9 @@ def test_tile_clamp_count_omitted():
     ("dtype", "target"),
     [
         ("float", "ascendc"),
-        ("float16", "ascendc"),
-        ("float", "pto"),
-        ("float16", "pto"),
+        pytest.param("float16", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("float", "pto", marks=pytest.mark.low_priority),
+        pytest.param("float16", "pto", marks=pytest.mark.low_priority),
     ],
 )
 def test_tile_clamp_tensor_bounds(dtype, target):
@@ -1806,7 +1806,7 @@ def test_tile_clamp_tensor_bounds(dtype, target):
     torch.testing.assert_close(output, expected_host.npu(), rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_tile_clamp_mixed_scalar_tensor(target):
     @T.prim_func
     def main(
