@@ -1,9 +1,10 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
-"""CPU tensor regressions for Profiler.assert_consistent; no TVM or NPU required."""
+"""CPU and optional NPU tensor regressions for Profiler.assert_consistent."""
 
 import importlib.util
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from types import ModuleType
 from unittest import mock
@@ -137,6 +138,90 @@ def test_broadcastable_shape_change_is_rejected(profiler_class):
 
 def test_empty_outputs(profiler_class):
     make_profiler(profiler_class, lambda: []).assert_consistent(repeat=2)
+
+
+@pytest.fixture(scope="module")
+def npu_device():
+    pytest.importorskip("torch_npu")
+    if not torch.npu.is_available():
+        pytest.skip("NPU device is unavailable")
+    return torch.device("npu", torch.npu.current_device())
+
+
+@pytest.mark.parametrize("ordered_stream", [False, True], ids=["same_stream", "event_ordered"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "stable_tensor",
+        "stable_list",
+        "stable_tuple",
+        "stable_scalar",
+        "changing_tensor",
+        "changing_list",
+        "changing_tuple",
+        "changing_scalar",
+        "changed_count",
+        "changed_shape",
+    ],
+)
+def test_npu_output_consistency(profiler_class, npu_device, ordered_stream, case):
+    shape = () if case.endswith("_scalar") else (2, 3)
+    output = torch.zeros(shape, device=npu_device)
+    producer = torch.npu.Stream() if ordered_stream else None
+    consumer = torch.npu.current_stream() if ordered_stream else None
+    events = []
+    calls = 0
+
+    def adapter():
+        nonlocal calls
+        calls += 1
+        if ordered_stream:
+            # Complete the consumer's previous snapshot before overwriting shared storage.
+            ready = consumer.record_event()
+            producer.wait_event(ready)
+            events.append(ready)
+        with torch.npu.stream(producer) if ordered_stream else nullcontext():
+            if case.startswith("changing"):
+                output.add_(1)
+            elif case.startswith("stable"):
+                output.fill_(1)
+            result = output
+            if case.endswith("_count"):
+                result = [output] if calls == 1 else [output, output]
+            elif case.endswith("_shape"):
+                result = output if calls == 1 else output.reshape(3, 2)
+            elif case.endswith("_list"):
+                result = [output]
+            elif case.endswith("_tuple"):
+                result = (output,)
+        if ordered_stream:
+            # The profiler reads on the consumer stream only after production completes.
+            done = producer.record_event()
+            consumer.wait_event(done)
+            events.append(done)
+        return result
+
+    profiler = make_profiler(profiler_class, adapter)
+    expected_error = None
+    if case.startswith("changing"):
+        expected_error = "result is not consistent"
+    elif case.endswith("_count"):
+        expected_error = "Number of output tensors"
+    elif case.endswith("_shape"):
+        expected_error = "Output tensor shape"
+    try:
+        if expected_error:
+            with pytest.raises(AssertionError, match=expected_error):
+                profiler.assert_consistent(repeat=3)
+        else:
+            profiler.assert_consistent(repeat=3)
+        assert calls == (2 if expected_error else 4)
+        assert output.device == npu_device
+        assert bool(events) == ordered_stream
+    finally:
+        # Keep outputs, streams and event objects alive until all queued work completes,
+        # including the intentional profiler assertion paths.
+        torch.npu.synchronize()
 
 
 if __name__ == "__main__":
