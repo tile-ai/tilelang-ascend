@@ -14,7 +14,6 @@ import unittest
 
 
 class InstallAscendTest(unittest.TestCase):
-
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -53,10 +52,15 @@ class InstallAscendTest(unittest.TestCase):
         self.write_script(self.bin_dir / "python3", 'echo "Python 3.12.0"')
         self.write_script(
             self.bin_dir / "pip",
-            'echo "pip:$*" >> "$FAKE_COMMAND_LOG"\n'
-            'if [[ "$1" == uninstall ]]; then\n'
-            '    exit "${FAKE_UNINSTALL_STATUS:-0}"\n'
-            "fi\nexit 0",
+            "\n".join(
+                [
+                    'echo "pip:$*" >> "$FAKE_COMMAND_LOG"',
+                    'if [[ "$1" == uninstall ]]; then',
+                    '    exit "${FAKE_UNINSTALL_STATUS:-0}"',
+                    "fi",
+                    "exit 0",
+                ]
+            ),
         )
         self.write_script(
             self.bin_dir / "pip3",
@@ -84,11 +88,13 @@ class InstallAscendTest(unittest.TestCase):
         path.write_text("#!/bin/bash\n" + body + "\n", encoding="utf-8")
         path.chmod(0o755)
 
-    def run_installer(self,
-                      *,
-                      enabled: bool = True,
-                      outside: bool = False,
-                      **settings: str) -> subprocess.CompletedProcess[str]:
+    def run_installer(
+        self,
+        *,
+        enabled: bool = True,
+        outside: bool = False,
+        **settings: str,
+    ) -> subprocess.CompletedProcess[str]:
         env = dict(os.environ)
         env.update(settings)
         env["FAKE_COMMAND_LOG"] = str(self.log)
@@ -107,8 +113,11 @@ class InstallAscendTest(unittest.TestCase):
         self.commands = self.log.read_text(encoding="utf-8")
         return result
 
-    def assert_failed_before_install(self, result: subprocess.CompletedProcess[str],
-                                     error: str) -> None:
+    def assert_failed_before_install(
+        self,
+        result: subprocess.CompletedProcess[str],
+        error: str,
+    ) -> None:
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(error, result.stdout + result.stderr)
         self.assertNotIn("pip:uninstall", self.commands)
@@ -171,7 +180,9 @@ class InstallAscendTest(unittest.TestCase):
         self.assertIn("native-build:" + str(self.shmem), self.commands)
         self.assertIn(str(self.python_dir / "dist/shmem-test.whl"), self.commands)
         self.assertLess(
-            self.commands.index("python:setup.py"), self.commands.index("pip:uninstall"))
+            self.commands.index("python:setup.py"),
+            self.commands.index("pip:uninstall"),
+        )
         self.assertIn("source-env", self.commands)
         self.assertIn("source-env:" + str(self.shmem / "install"), self.commands)
 
