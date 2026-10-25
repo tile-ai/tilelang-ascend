@@ -971,8 +971,8 @@ def run_test_bitwise_not(M, N, block_M, block_N, dtype, target):
     assert_close_npu(b, ref_b, dtype, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
-@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("dtype", ["int16", "uint16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_not(dtype, target, shape):
     M, N = shape
@@ -1028,7 +1028,7 @@ def run_test_bitwise_not_ext(dtype, target):
     "dtype",
     [
         "int8",
-        pytest.param("uint8", marks=pytest.mark.low_priority),
+        "uint8",
     ],
 )
 @pytest.mark.parametrize("target", ["pto"])
@@ -1042,14 +1042,7 @@ def test_bitwise_not_int8_uint8(dtype, target):
     run_test_bitwise_not_ext(dtype, target)
 
 
-@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
-def test_bitwise_not_int32_raises(target):
-    """int32 fails on both backends: ascendc vnot rejects int32, pto B82B16Trait cannot widen int32."""
-    with pytest.raises(RuntimeError, match="Compilation Failed"):  # noqa: B017
-        run_test_bitwise_not_ext("int32", target)
-
-
-@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_bitwise_not_buffer_region(target):
     """BufferRegion slices are supported as operands."""
     M, N = 1024, 1024
