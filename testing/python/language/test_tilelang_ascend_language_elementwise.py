@@ -2463,18 +2463,18 @@ def run_test_clear(M, N, block_M, block_N, dtype, target):
     "dtype",
     [
         "float",
-        pytest.param("float16", marks=pytest.mark.low_priority),
-        pytest.param("bfloat16", marks=pytest.mark.low_priority),
-        pytest.param("int32", marks=pytest.mark.low_priority),
-        pytest.param("int16", marks=pytest.mark.low_priority),
-        pytest.param("uint16", marks=pytest.mark.low_priority),
+        "float16",
+        "bfloat16",
+        "int32",
+        "int16",
+        "uint16",
     ],
 )
 @pytest.mark.parametrize(
     "target",
     [
         "ascendc",
-        pytest.param("pto", marks=pytest.mark.low_priority),
+        "pto",
     ],
 )
 @pytest.mark.parametrize("shape", [(1024, 1024)])
@@ -2483,7 +2483,6 @@ def test_clear(dtype, target, shape):
     run_test_clear(M, N, 64, 32, dtype, target=target)
 
 
-@pytest.mark.low_priority
 @pytest.mark.parametrize("dtype", ["int8", "uint8"])
 @pytest.mark.parametrize("target", ["pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
@@ -2531,15 +2530,15 @@ def run_test_clear_1d(N, block_N, dtype, target):
     "dtype",
     [
         "float",
-        pytest.param("float16", marks=pytest.mark.low_priority),
-        pytest.param("int32", marks=pytest.mark.low_priority),
+        "float16",
+        "int32",
     ],
 )
 @pytest.mark.parametrize(
     "target",
     [
         "ascendc",
-        pytest.param("pto", marks=pytest.mark.low_priority),
+        "pto",
     ],
 )
 def test_clear_1d(dtype, target):
@@ -2582,14 +2581,14 @@ def run_test_clear_buffer_region(M, N, block_M, block_N, dtype, target):
     "dtype",
     [
         "float",
-        pytest.param("float16", marks=pytest.mark.low_priority),
+        "float16",
     ],
 )
 @pytest.mark.parametrize(
     "target",
     [
         "ascendc",
-        pytest.param("pto", marks=pytest.mark.low_priority),
+        "pto",
     ],
 )
 @pytest.mark.parametrize("shape", [(1024, 1024)])
