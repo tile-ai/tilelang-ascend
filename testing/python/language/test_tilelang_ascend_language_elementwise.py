@@ -2427,19 +2427,19 @@ def run_test_fill(M, N, block_M, block_N, dtype, target):
     "dtype",
     [
         "float",
-        pytest.param("float16", marks=pytest.mark.low_priority),
-        pytest.param("bfloat16", marks=pytest.mark.low_priority),
-        pytest.param("int32", marks=pytest.mark.low_priority),
-        pytest.param("uint32", marks=pytest.mark.low_priority),
-        pytest.param("int16", marks=pytest.mark.low_priority),
-        pytest.param("uint16", marks=pytest.mark.low_priority),
+        "float16",
+        "bfloat16",
+        "int32",
+        "uint32",
+        "int16",
+        "uint16",
     ],
 )
 @pytest.mark.parametrize(
     "target",
     [
         "ascendc",
-        pytest.param("pto", marks=pytest.mark.low_priority),
+        "pto",
     ],
 )
 @pytest.mark.parametrize("shape", [(1024, 1024)])
@@ -2448,7 +2448,6 @@ def test_fill(dtype, target, shape):
     run_test_fill(M, N, 64, 32, dtype, target=target)
 
 
-@pytest.mark.low_priority
 @pytest.mark.parametrize("dtype", ["int8", "uint8"])
 @pytest.mark.parametrize("target", ["pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
@@ -2494,15 +2493,15 @@ def run_test_fill_1d(N, block_N, dtype, target):
     "dtype",
     [
         "float",
-        pytest.param("float16", marks=pytest.mark.low_priority),
-        pytest.param("int32", marks=pytest.mark.low_priority),
+        "float16",
+        "int32",
     ],
 )
 @pytest.mark.parametrize(
     "target",
     [
         "ascendc",
-        pytest.param("pto", marks=pytest.mark.low_priority),
+        "pto",
     ],
 )
 def test_fill_1d(dtype, target):
@@ -2547,14 +2546,14 @@ def run_test_fill_buffer_region(M, N, block_M, block_N, dtype, target):
     "dtype",
     [
         "float",
-        pytest.param("float16", marks=pytest.mark.low_priority),
+        "float16",
     ],
 )
 @pytest.mark.parametrize(
     "target",
     [
         "ascendc",
-        pytest.param("pto", marks=pytest.mark.low_priority),
+        "pto",
     ],
 )
 @pytest.mark.parametrize("shape", [(1024, 1024)])
@@ -2603,18 +2602,18 @@ def run_test_fill_values(M, N, block_M, block_N, dtype, value, target):
 @pytest.mark.parametrize(
     "dtype_value",
     [
-        pytest.param(("float16", -1.5), marks=pytest.mark.low_priority),
+        ("float16", -1.5),
         ("float", 3.14159),
-        pytest.param(("int32", -100), marks=pytest.mark.low_priority),
-        pytest.param(("int32", 2147483647), marks=pytest.mark.low_priority),
-        pytest.param(("int16", -32000), marks=pytest.mark.low_priority),
+        ("int32", -100),
+        ("int32", 2147483647),
+        ("int16", -32000),
     ],
 )
 @pytest.mark.parametrize(
     "target",
     [
         "ascendc",
-        pytest.param("pto", marks=pytest.mark.low_priority),
+        "pto",
     ],
 )
 def test_fill_special_values(dtype_value, target):
@@ -2658,14 +2657,14 @@ def run_test_fill_alloc_shared_inferred_ub(M, N, block_M, block_N, dtype, target
     "dtype",
     [
         "float",
-        pytest.param("float16", marks=pytest.mark.low_priority),
+        "float16",
     ],
 )
 @pytest.mark.parametrize(
     "target",
     [
         "ascendc",
-        pytest.param("pto", marks=pytest.mark.low_priority),
+        "pto",
     ],
 )
 def test_fill_alloc_shared_inferred_ub(dtype, target):
