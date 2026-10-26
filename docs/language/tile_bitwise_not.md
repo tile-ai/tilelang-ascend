@@ -45,7 +45,6 @@ def bitwise_not(
 3. src0 的 dtype 必须与 dst 一致
 4. 仅支持上述 DataType 表中列出的整数类型
 5. 操作数地址需 32 字节对齐（硬件约束）
-6. Ascend C 后端要求 tile 字节数为 32 的倍数，否则可能产生错误结果（参见 [Issue #1717](https://github.com/tile-ai/tilelang-ascend/issues/1717)）
 
 ## 3. 示例代码
 
