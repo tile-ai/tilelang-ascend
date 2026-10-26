@@ -519,18 +519,29 @@ def dequant_swiglu_quant(
     activate_left: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Host entry: select kernel variant by dtype and quant_scale, compile and run."""
+    if not isinstance(x, torch.Tensor):
+        raise TypeError(f"dequant_swiglu_quant: x must be a torch tensor, got {type(x).__name__}")
+    if x.dim() != 2 or x.shape[1] % 2 != 0:
+        raise ValueError(f"dequant_swiglu_quant: x must be 2D [M, 2H] with an even second dimension, got shape {tuple(x.shape)}")
+
     M_orig, TwoH = x.shape
     H_orig = TwoH // 2
 
     if x.dtype == torch.int32:
         in_dtype = "int32"
         has_ws = True
+        if weight_scale is None or activation_scale is None:
+            raise ValueError("dequant_swiglu_quant: int32 input requires weight_scale [1, 2H] and activation_scale [M]")
     elif x.dtype == torch.float16:
         in_dtype = "float16"
         has_ws = False
+        if weight_scale is not None or activation_scale is not None:
+            raise ValueError("dequant_swiglu_quant: weight_scale/activation_scale apply to int32 input only")
     elif x.dtype == torch.bfloat16:
         in_dtype = "bfloat16"
         has_ws = False
+        if weight_scale is not None or activation_scale is not None:
+            raise ValueError("dequant_swiglu_quant: weight_scale/activation_scale apply to int32 input only")
     else:
         raise ValueError(f"Unsupported x dtype: {x.dtype}")
 
