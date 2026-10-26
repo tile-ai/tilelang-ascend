@@ -3739,7 +3739,7 @@ def run_test_bitwise_or_ext(dtype, target):
 @pytest.mark.parametrize(
     "dtype",
     [
-        "int16",
+        "int8",
         pytest.param("uint8", marks=pytest.mark.low_priority),
     ],
 )
@@ -3753,6 +3753,50 @@ def run_test_bitwise_or_ext(dtype, target):
 def test_bitwise_or_int8_uint8(dtype, target):
     """int8/uint8 are supported on A2/A3 for both backends."""
     run_test_bitwise_or_ext(dtype, target)
+
+
+def run_test_bitwise_or_uint8_odd_width(shape, target):
+    """uint8 odd-width tiles must not drop the tail byte on the PTO path."""
+    dtype = "uint8"
+
+    @T.prim_func
+    def main(
+        A: T.Tensor(shape, dtype),  # type: ignore
+        B: T.Tensor(shape, dtype),  # type: ignore
+        C: T.Tensor(shape, dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            a_ub = T.alloc_ub(shape, dtype)
+            b_ub = T.alloc_ub(shape, dtype)
+            c_ub = T.alloc_ub(shape, dtype)
+            if vid == 0:
+                T.copy(A, a_ub)
+                T.copy(B, b_ub)
+                T.tile.bitwise_or(c_ub, a_ub, b_ub)
+                T.copy(c_ub, C)
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    a = torch.randint(0, 100, shape, dtype=torch.uint8).npu()
+    b = torch.randint(0, 100, shape, dtype=torch.uint8).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    ref_c = a | b
+    assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (255,),
+        (4, 101),
+    ],
+    ids=["odd-1d", "odd-2d"],
+)
+@pytest.mark.parametrize("target", ["pto"])
+def test_bitwise_or_uint8_odd_width(shape, target):
+    """PTO widens uint8 via uint16 reinterpreting; odd valid widths must not
+    lose the tail byte (the u16 view used floor(ColValid / 2))."""
+    run_test_bitwise_or_uint8_odd_width(shape, target)
 
 
 def run_test_bitwise_or_scalar(target):
