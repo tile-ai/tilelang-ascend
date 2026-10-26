@@ -340,8 +340,8 @@ def run_test_bitwise_and(M, N, block_M, block_N, dtype, target):
     assert_close_npu(c, ref_c, dtype, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["int16", "uint16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_and(dtype, target, shape):
     M, N = shape
@@ -406,6 +406,7 @@ def run_test_bitwise_and_ext(dtype, target):
     assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
 
 
+@pytest.mark.low_priority
 @pytest.mark.parametrize("dtype", ["int8", "uint8"])
 @pytest.mark.parametrize("target", ["pto"])
 def test_bitwise_and_int8_uint8(dtype, target):
@@ -413,7 +414,7 @@ def test_bitwise_and_int8_uint8(dtype, target):
     run_test_bitwise_and_ext(dtype, target)
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_and_buffer_region(target):
     """BufferRegion slices are supported as operands."""
     M, N = 1024, 1024
