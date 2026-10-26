@@ -866,10 +866,17 @@ def softmax_impl(x, dim=-1):
     Returns:
         output tensor with same shape and dtype as x
     """
+    if not isinstance(x, torch.Tensor):
+        raise TypeError(f"softmax_impl: x must be a torch tensor, got {type(x).__name__}")
+    if x.dtype not in _DTYPE_MAP:
+        raise TypeError(f"softmax_impl: unsupported dtype {x.dtype} (supported: float16/float32/bfloat16)")
+
     rank = x.dim()
+    orig_dim = dim
     if dim < 0:
         dim = dim + rank
-    assert 0 <= dim < rank, f"dim {dim} out of range for rank {rank}"
+    if not 0 <= dim < rank:
+        raise ValueError(f"softmax_impl: dim {orig_dim} out of range for rank-{rank} tensor")
 
     dtype_str = _DTYPE_MAP[x.dtype]
 
