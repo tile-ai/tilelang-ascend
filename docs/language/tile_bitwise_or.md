@@ -48,7 +48,7 @@ def bitwise_or(
 4. src0 和 src1 的 dtype 必须与 dst 一致
 5. 仅支持 int8、uint8、int16 和 uint16
 6. 操作数地址需 32 字节对齐（硬件约束）
-7. 当前 src1 仅支持张量，标量暂不可用（参见 [Issue #177](https://github.com/tile-ai/tilelang-ascend/issues/177)）
+7. 当前 src1 仅支持张量，标量暂不可用
 
 ## 3. 示例代码
 
