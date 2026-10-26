@@ -97,6 +97,10 @@ class InstallAscendTest(unittest.TestCase):
     ) -> subprocess.CompletedProcess[str]:
         env = dict(os.environ)
         env.update(settings)
+        # CI exports BASH_ENV=/root/.bashrc. Sourcing it in every Bash-based
+        # fake command can recursively invoke the same fakes during startup.
+        env.pop("BASH_ENV", None)
+        env.pop("ENV", None)
         env["FAKE_COMMAND_LOG"] = str(self.log)
         env["PATH"] = str(self.bin_dir) + os.pathsep + env["PATH"]
         command = ["bash", str(self.root / "install_ascend.sh")]
@@ -193,6 +197,27 @@ class InstallAscendTest(unittest.TestCase):
         self.assertNotIn("python:", self.commands)
         self.assertNotIn("pip:uninstall", self.commands)
         self.assertNotIn("source-env", self.commands)
+
+    def test_inherited_shell_startup_does_not_run_in_fake_commands(self):
+        startup = self.root / "shell-startup.sh"
+        self.write_script(
+            startup,
+            "depth=${FAKE_STARTUP_DEPTH:-0}\n"
+            "if ((depth >= 3)); then\n"
+            '    echo "unexpected recursive shell startup" >&2\n'
+            "    exit 91\n"
+            "fi\n"
+            "export FAKE_STARTUP_DEPTH=$((depth + 1))\n"
+            "grep ignored\n"
+            "exit $?",
+        )
+        # Also cover PATH-based shell selection. The depth limit makes the
+        # unfixed harness fail promptly without leaving an unbounded chain.
+        self.write_script(self.bin_dir / "bash", 'exec /bin/bash "$@"')
+        result = self.run_installer(BASH_ENV=str(startup), ENV=str(startup))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("recursive shell startup", result.stderr)
+        self.assertIn("Install shmem all success.", result.stdout)
 
 
 if __name__ == "__main__":
