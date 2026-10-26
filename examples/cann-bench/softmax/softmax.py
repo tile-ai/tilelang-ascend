@@ -1,23 +1,35 @@
-"""Softmax operator implementation using TileLang-Ascend.
+# ----------------------------------------------------------------------------
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under
+# the terms of the CANN Open Software License Agreement Version 2.0 (the
+# "License"). You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY
+# KIND, EITHER EXPRESS OR IMPLIED.
+# ----------------------------------------------------------------------------
 
-Online safe softmax with 2D kernel + Python wrapper for arbitrary dim.
-Supports float16, float32, bfloat16.
+"""Softmax TileLang kernel — online safe softmax for arbitrary dim.
 
-Algorithm (online safe softmax, two-pass):
-    Pass 1: online update running max + running sum
-    Pass 2: normalize output
+Online safe softmax (two-pass): Pass 1 online-updates the running max and
+running sum, Pass 2 normalizes.  Five specialized kernels behind a Python
+wrapper that handles 1~8D inputs and arbitrary dim (negative indexing
+supported) via fast paths (2D last-dim / any-rank last-dim contiguous /
+2D dim-0 / interior-dim 3D) with a general permute+flatten fallback.
 
-Reference: examples/softmax/example_online_softmax.py
+Algorithm:
+    y = exp(x - max) / sum(exp(x - max))
+
+Reference: torch.nn.functional.softmax (golden_softmax in test_softmax.py)
+
+Interface: softmax_impl(x, dim) -> y  (x: 1~8D fp16/fp32/bf16)
 """
 
-import argparse
-import sys
+import torch
 
 import tilelang
 from tilelang import language as T
-import torch
 
 # ========== Configuration ==========
+
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
@@ -43,42 +55,6 @@ _DTYPE_MAP = {
     torch.bfloat16: "bfloat16",
 }
 
-_THRESHOLDS = {
-    "float16": 2**-10,
-    "bfloat16": 2**-7,
-    "float": 2**-13,
-    "float32": 2**-13,
-}
-
-# Small value domain thresholds (cann-bench standard)
-_SMALL_VALUE_THRESHOLDS = {
-    "float16": 2**-11,
-    "bfloat16": 2**-8,
-    "float": 2**-14,
-    "float32": 2**-14,
-}
-
-_SMALL_VALUE_ERROR_THRESHOLDS = {
-    "float16": 2**-16,
-    "bfloat16": 2**-16,
-    "float": 2**-30,
-    "float32": 2**-30,
-}
-
-# Cancellation domain thresholds (cann-bench standard)
-_CANCEL_BOUNDARY = {
-    "float16": 2**-5,
-    "bfloat16": 2**-3,
-    "float": 2**-8,
-    "float32": 2**-8,
-}
-
-_CANCEL_ZERO = {
-    "float16": 2**-5,
-    "bfloat16": 2**-3,
-    "float": 2**-8,
-    "float32": 2**-8,
-}
 
 _kernel_cache = {}
 
@@ -939,444 +915,32 @@ def softmax_impl(x, dim=-1):
     return y
 
 
-# ========== Golden ==========
-def golden_softmax(x, dim=-1):
-    """PyTorch golden reference in FP64 precision (matches cann-bench fp64_cpu strategy).
+# ----------------------------------------------------------------------------
+# CI smoke test (examples/bench_test.sh runs this file directly and requires
+# "Kernel Output Match!" or "TEST PASSED!" in the output, same as the
+# lstm/gru/depthwise_conv_2d/nms/group_norm/rms_norm smoke tests).  The full
+# layered suite over the 20 cann-bench cases lives in test_softmax.py.
+# ----------------------------------------------------------------------------
+if __name__ == "__main__":
+    import torch.nn.functional as F
 
-    Computes softmax in float64 on CPU for maximum accuracy.
-    """
-    return torch.nn.functional.softmax(x.double(), dim=dim)
-
-
-def native_softmax(x, dim=-1):
-    """Same-precision reference (matches cann-bench native_output).
-
-    Computes softmax in the original dtype on CPU, used for small-value
-    domain fallback comparison.
-    """
-    return torch.nn.functional.softmax(x, dim=dim)
-
-
-# ========== Precision ==========
-def mere_mare(actual, golden):
-    """Compute MERE (mean relative error) and MARE (max relative error).
-
-    Assumes no NaN/inf in inputs. For special value cases, use check_precision.
-    """
-    diff = (actual.float() - golden.float()).abs()
-    rel = diff / (golden.float().abs() + 1e-7)
-    return rel.mean().item(), rel.max().item()
-
-
-def check_precision(actual, golden, native, dtype_str):
-    """Check precision matching cann-bench relative_error checker.
-
-    Implements the full cann-bench logic:
-    1. First stage: overall MERE < threshold AND MARE < 10*threshold
-    2. Second stage (if first fails): classify mismatches into
-       small-value / cancellation / normal domains
-    3. Fallback: if only small-value/cancellation mismatches, use
-       ErrorCount ratio (NPU/CPU <= 2)
-
-    Args:
-        actual: kernel output (NPU), same dtype as input
-        golden: FP64 golden reference (CPU)
-        native: same-precision reference (CPU, original dtype)
-        dtype_str: dtype string for threshold lookup
-
-    Returns:
-        (passed, mere, mare) — mere/mare are display values
-    """
-    threshold = _THRESHOLDS[dtype_str]
-    mare_threshold = 10 * threshold
-    sv_threshold = _SMALL_VALUE_THRESHOLDS[dtype_str]
-    sv_error = _SMALL_VALUE_ERROR_THRESHOLDS[dtype_str]
-    cancel_boundary = _CANCEL_BOUNDARY[dtype_str]
-    cancel_zero = _CANCEL_ZERO[dtype_str]
-
-    # Move to CPU and upcast for comparison
-    if actual.device.type == "npu":
-        actual = actual.cpu()
-    target_dtype = actual.dtype
-    golden_trunc = golden.to(target_dtype).double()
-    output_fp64 = actual.double()
-
-    # NaN position check
-    nan_out = torch.isnan(output_fp64)
-    nan_gold = torch.isnan(golden_trunc)
-    if not torch.all(nan_out == nan_gold):
-        return False, float("inf"), float("inf")
-
-    # Inf saturation handling: replace one-sided inf with max finite value
-    inf_out = torch.isinf(output_fp64)
-    inf_gold = torch.isinf(golden_trunc)
-    inf_mismatch = inf_out != inf_gold
-    inf_match_mask = torch.zeros_like(output_fp64, dtype=torch.bool)
-    if torch.any(inf_mismatch):
-        max_finite = float(torch.finfo(target_dtype).max)
-        if torch.any(inf_out & ~inf_gold):
-            mask = inf_out & ~inf_gold
-            output_fp64[mask] = torch.sign(output_fp64[mask]) * max_finite
-        if torch.any(inf_gold & ~inf_out):
-            mask = inf_gold & ~inf_out
-            golden_trunc[mask] = torch.sign(golden_trunc[mask]) * max_finite
-    both_inf = inf_out & inf_gold
-    if torch.any(both_inf):
-        if not torch.all(torch.sign(output_fp64[both_inf]) == torch.sign(golden_trunc[both_inf])):
-            return False, float("inf"), float("inf")
-        inf_match_mask[both_inf] = True
-
-    # Compute relative error
-    diff = torch.abs(output_fp64 - golden_trunc)
-    golden_abs = torch.abs(golden_trunc)
-    denominator = golden_abs + 1e-7
-    relative_error = diff / denominator
-
-    # Exclude NaN, Inf, and matched-Inf positions
-    valid_mask = ~(torch.isnan(relative_error) | torch.isinf(relative_error) | inf_match_mask)
-    valid_re = relative_error[valid_mask]
-
-    if len(valid_re) == 0:
-        return True, 0.0, 0.0
-
-    overall_mere = float(valid_re.mean())
-    overall_mare = float(valid_re.max())
-
-    # First stage: overall MERE/MARE check
-    if overall_mere < threshold and overall_mare < mare_threshold:
-        return True, overall_mere, overall_mare
-
-    # Second stage: classify mismatches
-    mismatch_mask = (relative_error > mare_threshold) & valid_mask
-
-    # Small value domain: |golden| < sv_threshold
-    sv_mask = (golden_abs < sv_threshold) & valid_mask
-    # Cancellation: output ≈ 0 AND golden in [sv_threshold, cancel_boundary)
-    output_abs = torch.abs(output_fp64)
-    cancel_mask = (output_abs < cancel_zero) & (golden_abs >= sv_threshold) & (golden_abs < cancel_boundary) & valid_mask
-    # Normal: everything else
-    normal_mismatch = mismatch_mask & ~sv_mask & ~cancel_mask
-
-    if torch.any(normal_mismatch):
-        # Normal domain has mismatches → FAIL
-        return False, overall_mere, overall_mare
-
-    # Only small-value/cancellation mismatches → fallback
-    # NPU small-value errors: |golden| < sv_threshold AND |diff| > sv_error
-    sv_npu_err = sv_mask & (diff > sv_error)
-    sv_npu_count = int(sv_npu_err.sum())
-
-    # CPU (native) small-value errors
-    native_fp64 = native.to(target_dtype).double()
-    cpu_diff = torch.abs(native_fp64 - golden_trunc)
-    sv_cpu_err = sv_mask & (cpu_diff > sv_error)
-    sv_cpu_count = int(sv_cpu_err.sum())
-
-    if sv_cpu_count == 0:
-        sv_passed = sv_npu_count == 0
-    else:
-        sv_passed = sv_npu_count / max(sv_cpu_count, 1) <= 2
-
-    # Cancellation errors
-    cancel_npu_err = cancel_mask & (relative_error > mare_threshold)
-    cancel_npu_count = int(cancel_npu_err.sum())
-    cpu_re = cpu_diff / (golden_abs + 1e-7)
-    cancel_cpu_err = cancel_mask & (cpu_re > mare_threshold)
-    cancel_cpu_count = int(cancel_cpu_err.sum())
-
-    if cancel_cpu_count == 0:
-        cancel_passed = cancel_npu_count == 0
-    else:
-        cancel_passed = cancel_npu_count / max(cancel_cpu_count, 1) <= 2
-
-    passed = sv_passed and cancel_passed
-
-    # Display MERE/MARE excluding small-value/cancellation
-    normal_mask = ~sv_mask & ~cancel_mask & valid_mask
-    normal_re = relative_error[normal_mask]
-    if len(normal_re) > 0:
-        display_mere = float(normal_re.mean())
-        display_mare = float(normal_re.max())
-    else:
-        display_mere = 0.0
-        display_mare = 0.0
-
-    return passed, display_mere, display_mare
-
-
-# ========== Input Generation ==========
-def _gen_normal(shape, dtype_torch, lo, hi):
-    """Generate uniform random input in [lo, hi]."""
-    x = torch.empty(shape, dtype=torch.float32).uniform_(lo, hi)
-    return x.to(dtype_torch)
-
-
-def _gen_zeros(shape, dtype_torch):
-    """Generate all-zeros input."""
-    return torch.zeros(shape, dtype=dtype_torch)
-
-
-def _gen_with_inf(shape, dtype_torch):
-    """Generate input with inf/-inf special values.
-
-    Ensures some slices contain +inf (-> NaN output) and some are all -inf
-    (-> NaN output), matching torch.nn.functional.softmax behavior.
-    """
-    x = torch.randn(shape, dtype=torch.float32) * 10
-    x = x.to(dtype_torch)
-    if x.dim() == 2:
-        # Every 2000th row: all -inf (-> NaN output)
-        x[::2000, :] = float("-inf")
-        # Every 1000th row (offset): +inf in col 0 (-> NaN output)
-        x[1000::2000, 0] = float("inf")
-    else:
-        xf = x.view(-1)
-        xf[::10000] = float("inf")
-        xf[1::10000] = float("-inf")
-    return x
-
-
-def _gen_with_nan(shape, dtype_torch):
-    """Generate input with NaN values (-> NaN output propagation)."""
-    x = torch.randn(shape, dtype=torch.float32)
-    x = x.to(dtype_torch)
-    xf = x.view(-1)
-    xf[::10000] = float("nan")
-    return x
-
-
-# ========== Test Runner ==========
-def _run_case(name, shape, dtype_torch, dim, value_range, level):
-    """Run a single test case.
-
-    Args:
-        name: case name (e.g. "L0-1")
-        shape: input shape
-        dtype_torch: torch dtype
-        dim: softmax dimension
-        value_range: (lo, hi) tuple or "zero"/"inf"/"nan"
-        level: "L0"/"L1"/"L2"/"Boundary"
-
-    Returns:
-        True if passed
-    """
-    dtype_str = _DTYPE_MAP[dtype_torch]
-    shape_list = list(shape)
-    try:
-        # Generate input
-        if value_range == "zero":
-            x_cpu = _gen_zeros(shape, dtype_torch)
-        elif value_range == "inf":
-            x_cpu = _gen_with_inf(shape, dtype_torch)
-        elif value_range == "nan":
-            x_cpu = _gen_with_nan(shape, dtype_torch)
-        else:
-            lo, hi = value_range
-            x_cpu = _gen_normal(shape, dtype_torch, lo, hi)
-
-        # Run kernel on NPU
-        x_npu = x_cpu.npu()
-        y = softmax_impl(x_npu, dim=dim).cpu()
-
-        # Compute golden (FP64) and native (same precision) on CPU
-        ref = golden_softmax(x_cpu, dim=dim)
-        native = native_softmax(x_cpu, dim=dim)
-
-        # Check precision (cann-bench relative_error checker logic)
-        ok, mere, mare = check_precision(y, ref, native, dtype_str)
-
-        if level in ("L0", "L1"):
-            tag = "[PRECISION_PASS]" if ok else "[PRECISION_FAIL]"
-        else:
-            tag = "[BOUNDARY_PASS]" if ok else "[BOUNDARY_WARN]"
-
-        print(f"{tag} {level} {name} shape={shape_list} dtype={dtype_str} dim={dim} MERE={mere:.2e} MARE={mare:.2e}")
-        return ok
-    except Exception as e:
-        if level in ("L0", "L1"):
-            tag = "[PRECISION_FAIL]"
-        else:
-            tag = "[BOUNDARY_WARN]"
-        print(f"{tag} {level} {name} shape={shape_list} dtype={dtype_str} dim={dim}: {e}")
-        return False
-
-
-# ========== L0 Threshold Tests ==========
-def test_softmax_l0():
-    """L0 threshold tests (9 cases from DESIGN.md §13.2).
-
-    Covers: aligned/non-aligned shapes, 3 dtypes, dim=-1/0/3,
-    2D/5D, inf/zero special values.
-    """
-    cases = [
-        ("L0-1", [1024, 1024], torch.float16, -1, (-1, 1)),
-        # ("L0-2", [2048, 2048], torch.float32, -1, (-2, 2)),
-        # ("L0-3", [4096, 4096], torch.bfloat16, -1, (-3, 3)),
-        # ("L0-4", [8192, 8192], torch.float16, 0, (-10, 10)),
-        # ("L0-5", [1023, 2047], torch.float16, -1, (-0.1, 0.1)),
-        # ("L0-6", [2049, 4097], torch.float32, -1, (-1, 1)),
-        # ("L0-7", [1000003, 2], torch.float16, -1, "inf"),
-        # ("L0-8", [3, 7, 11, 13, 1013], torch.bfloat16, -1, "zero"),
-        # ("L0-9", [2, 3, 17, 1024, 101], torch.float32, 3, (-20, 40)),
-    ]
-    passed = 0
-    for name, shape, dtype, dim, vr in cases:
-        if _run_case(name, tuple(shape), dtype, dim, vr, "L0"):
-            passed += 1
-    print(f"\n[L0] Summary: {passed}/{len(cases)} passed")
-    return passed == len(cases)
-
-
-# ========== L1 Functional Tests ==========
-def test_softmax_l1():
-    """L1 functional tests: irregular shapes, various dtypes and dims.
-
-    Covers cann-bench cases not in L0: dim=0/1/2/-2, 3D/4D, prime shapes.
-    """
-    cases = [
-        ("L1-1", [8192, 8192], torch.float32, 1, (-100, 100)),
-        ("L1-2", [31, 67, 127, 257], torch.bfloat16, 2, (-5, 5)),
-        ("L1-3", [127, 257, 1023], torch.bfloat16, -2, (-0.5, 0.5)),
-        ("L1-4", [1009, 1021], torch.float16, -1, (-1, 2)),
-        ("L1-5", [367, 373, 379], torch.float32, 1, (-50, 100)),
-        ("L1-6", [11, 13, 17, 4001], torch.bfloat16, -1, (-3, 6)),
-        ("L1-7", [512, 2049], torch.float16, 0, (-0.5, 0.5)),
-        ("L1-8", [255, 8193], torch.float32, 1, (-1000, 1000)),
-        ("L1-9", [2, 511, 2049], torch.bfloat16, -1, (-0.2, 0.2)),
-    ]
-    passed = 0
-    for name, shape, dtype, dim, vr in cases:
-        if _run_case(name, tuple(shape), dtype, dim, vr, "L1"):
-            passed += 1
-    print(f"\n[L1] Summary: {passed}/{len(cases)} passed")
-    return passed == len(cases)
-
-
-# ========== L2 Exception Tests ==========
-def test_softmax_l2():
-    """L2 exception tests: inf/nan special values, large value range.
-
-    L2 failures produce [BOUNDARY_WARN] and do not block exit code.
-    """
-    cases = [
-        ("L2-1", [1024, 1024], torch.float16, -1, "inf"),
-        ("L2-2", [256, 256], torch.float32, -1, "nan"),
-        ("L2-3", [4, 255, 2049], torch.float16, 1, (-65504, 65504)),
-    ]
-    passed = 0
-    for name, shape, dtype, dim, vr in cases:
-        if _run_case(name, tuple(shape), dtype, dim, vr, "L2"):
-            passed += 1
-    print(f"\n[L2] Summary: {passed}/{len(cases)} passed (warnings do not block)")
-
-
-# ========== Boundary Tests ==========
-def test_softmax_boundary():
-    """Boundary tests: extreme small shapes, single row/column.
-
-    Boundary failures produce [BOUNDARY_WARN] and do not block exit code.
-    """
-    cases = [
-        ("B-1", [1, 1], torch.float16, -1, (-1, 1)),
-        ("B-2", [1, 1024], torch.float32, -1, (-1, 1)),
-        ("B-3", [1024, 1], torch.float16, -1, (-1, 1)),
-        ("B-4", [2, 3], torch.bfloat16, -1, (-1, 1)),
-    ]
-    passed = 0
-    for name, shape, dtype, dim, vr in cases:
-        if _run_case(name, tuple(shape), dtype, dim, vr, "Boundary"):
-            passed += 1
-    print(f"\n[Boundary] Summary: {passed}/{len(cases)} passed (warnings do not block)")
-
-
-# ========== cann-bench 20 Cases ==========
-def test_softmax_cann_bench():
-    """cann-bench level2/softmax 20 cases (exact shapes/dtypes/dims/value_ranges).
-
-    Source: cann-bench/tasks/level2/softmax/cases.yaml
-    """
-    cases = [
-        ("cann-bench-1", [1024, 1024], torch.float16, -1, (-1, 1)),
-        ("cann-bench-2", [2048, 2048], torch.float32, -1, (-2, 2)),
-        ("cann-bench-3", [4096, 4096], torch.bfloat16, -1, (-3, 3)),
-        ("cann-bench-4", [8192, 8192], torch.float16, 0, (-10, 10)),
-        ("cann-bench-5", [8192, 8192], torch.float32, 1, (-100, 100)),
-        ("cann-bench-6", [31, 67, 127, 257], torch.bfloat16, 2, (-5, 5)),
-        ("cann-bench-7", [1023, 2047], torch.float16, -1, (-0.1, 0.1)),
-        ("cann-bench-8", [2049, 4097], torch.float32, -1, (-1, 1)),
-        ("cann-bench-9", [127, 257, 1023], torch.bfloat16, -2, (-0.5, 0.5)),
-        ("cann-bench-10", [1009, 1021], torch.float16, -1, (-1, 2)),
-        ("cann-bench-11", [367, 373, 379], torch.float32, 1, (-50, 100)),
-        ("cann-bench-12", [11, 13, 17, 4001], torch.bfloat16, -1, (-3, 6)),
-        ("cann-bench-13", [1000003, 2], torch.float16, -1, "inf"),
-        ("cann-bench-14", [11, 13, 17, 67, 67], torch.float32, -1, "nan"),
-        ("cann-bench-15", [3, 7, 11, 13, 1013], torch.bfloat16, -1, "zero"),
-        ("cann-bench-16", [512, 2049], torch.float16, 0, (-0.5, 0.5)),
-        ("cann-bench-17", [255, 8193], torch.float32, 1, (-1000, 1000)),
-        ("cann-bench-18", [2, 511, 2049], torch.bfloat16, -1, (-0.2, 0.2)),
-        ("cann-bench-19", [4, 255, 2049], torch.float16, 1, (-65504, 65504)),
-        ("cann-bench-20", [2, 3, 17, 1024, 101], torch.float32, 3, (-20, 40)),
-    ]
-    passed = 0
-    for name, shape, dtype, dim, vr in cases:
-        if _run_case(name, tuple(shape), dtype, dim, vr, "L0"):
-            passed += 1
-    print(f"\n[cann-bench] Summary: {passed}/{len(cases)} passed")
-    return passed == len(cases)
-
-
-# ========== Main ==========
-def main():
-    parser = argparse.ArgumentParser(description="Softmax operator tests")
-    parser.add_argument(
-        "--level",
-        default="l0",
-        type=str.lower,
-        choices=["l0", "l1", "l2", "boundary", "cann-bench", "all"],
-        help="Test level: L0 (threshold), L1 (functional), L2 (exception), "
-        "Boundary (edge cases), cann-bench (20 official cases), all (full suite)",
-    )
-    args = parser.parse_args()
-
-    tilelang.disable_cache()
     torch.manual_seed(0)
 
-    blocking_ok = True
-
-    if args.level in ("l0", "all"):
-        print("=" * 70)
-        print("Running L0 threshold tests...")
-        print("=" * 70)
-        blocking_ok &= test_softmax_l0()
-    if args.level in ("l1", "all"):
-        print("=" * 70)
-        print("Running L1 functional tests...")
-        print("=" * 70)
-        blocking_ok &= test_softmax_l1()
-    if args.level in ("l2", "all"):
-        print("=" * 70)
-        print("Running L2 exception tests...")
-        print("=" * 70)
-        test_softmax_l2()
-    if args.level in ("boundary", "all"):
-        print("=" * 70)
-        print("Running Boundary tests...")
-        print("=" * 70)
-        test_softmax_boundary()
-    if args.level in ("cann-bench", "all"):
-        print("=" * 70)
-        print("Running cann-bench 20 cases...")
-        print("=" * 70)
-        blocking_ok &= test_softmax_cann_bench()
-
-    print("=" * 70)
-    if blocking_ok:
-        print("Test Passed!")
-        sys.exit(0)
-    else:
-        print("Test Failed!")
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
+    # one case per kernel dispatch path and dtype: 2D dim=-1 / dim=0 / interior dim (3D)
+    for shape, dtype, dim in (
+        ((1024, 1024), torch.float16, -1),  # 2D last-dim fast path
+        ((256, 256), torch.float32, 0),  # 2D dim-0 kernel
+        ((2, 3, 128), torch.bfloat16, 1),  # interior dim -> 3D kernel
+    ):
+        x = (torch.rand(*shape) * 2 - 1).to(dtype)
+        y = softmax_impl(x.npu(), dim=dim).cpu()
+        ref = F.softmax(x.float(), dim=dim).to(dtype)
+        atol, rtol = {
+            torch.float16: (1e-3, 1e-3),
+            torch.float32: (1e-4, 1e-4),
+            torch.bfloat16: (1e-2, 5e-3),
+        }[dtype]
+        torch.testing.assert_close(y, ref, atol=atol, rtol=rtol)
+        diff = (y.float() - ref.float()).abs().max().item()
+        print(f"[SMOKE] {tuple(shape)} {str(dtype).split('.')[-1]} dim={dim} max_abs={diff:.3e}")
+    print("Kernel Output Match!")
