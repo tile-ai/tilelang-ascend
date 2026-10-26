@@ -3671,8 +3671,8 @@ def run_test_bitwise_or(M, N, block_M, block_N, dtype, target):
     assert_close_npu(c, ref_c, dtype, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["int16", "uint16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_or(dtype, target, shape):
     M, N = shape
@@ -3740,14 +3740,14 @@ def run_test_bitwise_or_ext(dtype, target):
     "dtype",
     [
         "int16",
-        "uint8",
+        pytest.param("uint8", marks=pytest.mark.low_priority),
     ],
 )
 @pytest.mark.parametrize(
     "target",
     [
         "ascendc",
-        "pto",
+        pytest.param("pto", marks=pytest.mark.low_priority),
     ],
 )
 def test_bitwise_or_int8_uint8(dtype, target):
@@ -3781,14 +3781,14 @@ def run_test_bitwise_or_scalar(target):
     tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_or_scalar_not_registered_raises(target):
     """Scalar src1 path uses tl.ascend_bitwise_ors which is not registered in C++."""
     with pytest.raises((Exception, SystemExit)):  # noqa: B017
         run_test_bitwise_or_scalar(target)
 
 
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_or_buffer_region(target):
     """BufferRegion slices are supported as operands."""
     M, N = 1024, 1024
