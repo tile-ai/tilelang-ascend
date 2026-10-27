@@ -938,5 +938,145 @@ def test_row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM, dtype, accum_dtype, target):
     _assert_l0b_tile_row_within_capacity(kfunc, target, CUBE_PASS_CONFIGS, expected_tile_row=BM)
 
 
+# =============================================================================
+# Group 10 - Flat L1 buffer with a K sub-range slice  [risk: high]
+# =============================================================================
+
+
+def flat_l1_k_slice(BM, K_L1, BK, BN, dtype="int8", accum_dtype="int32"):
+    """Flat ``(BM, K_L1)`` / ``(K_L1, BN)`` L1 buffers sliced along K into
+    L0A / L0B.
+
+    The L1 buffers carry the default zN layout injected by
+    ``AscendInferBufferScope`` (they are ``shared.l1`` and carry no explicit
+    ``T.annotate_layout``), so the j-th K band must be addressed *through* that
+    layout::
+
+        A: j * BK * round_up(BM, 16)     zN column band  = round_up(BM,16)*ELE_PER_C0
+        B: j * BK * ELE_PER_C0           zN row fractal  = 16*ELE_PER_C0
+
+    and not at the plain row-major ``j * BK`` (A) / ``j * BK * BN`` (B).  This
+    is the flat-L1 form of a GEMM whose GM->L1 chunk is decoupled from the
+    L1->L0 slice (K_L1 > L0 capacity), which is the shape that makes the
+    difference observable at all: when the copy covers the whole last two dims
+    every candidate offset evaluates to 0 or to the same slot offset.
+
+    The trailing V-scope ``T.Parallel`` loop is load-bearing for the
+    regression.  ``AscendLowerParallelToVector`` only rebuilds a Block node
+    when it actually vectorizes something, and that rebuild is where the Block
+    annotations -- including the injected ``kLayoutMap`` -- used to be dropped
+    on the floor.  Without a vector loop in the same block the pass early
+    returns and the annotation survives regardless.
+    """
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((BM, K_L1), dtype),  # type: ignore
+        B: T.Tensor((K_L1, BN), dtype),  # type: ignore
+        C: T.Tensor((BM, BN), accum_dtype),  # type: ignore
+        D: T.Tensor((BN,), "float32"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            with T.Scope("C"):
+                a_l1 = T.alloc_L1([BM, K_L1], dtype)
+                b_l1 = T.alloc_L1([K_L1, BN], dtype)
+                a_l0 = T.alloc_L0A([BM, BK], dtype)
+                b_l0 = T.alloc_L0B([BK, BN], dtype)
+                l0c = T.alloc_L0C([BM, BN], accum_dtype)
+
+                T.copy(A[:, :], a_l1[:, :])
+                T.copy(B[:, :], b_l1[:, :])
+                for j in T.serial(K_L1 // BK):
+                    T.copy(a_l1[:, j * BK : (j + 1) * BK], a_l0[:, :])
+                    T.copy(b_l1[j * BK : (j + 1) * BK, :], b_l0[:, :])
+                    T.mma(a_l0, b_l0, l0c, init=(j == 0))
+                T.copy(l0c, C[:, :])
+
+            with T.Scope("V"):
+                tmp = T.alloc_ub([BN], "float32")
+                for i in T.Parallel(BN):
+                    tmp[i] = 1.0
+                T.copy(tmp, D[:])
+
+    return main
+
+
+def _l1_to_l0_j_stride(src, l0_fn):
+    """Return the coefficient of ``j`` in the generated ``copy_<l0_fn>`` call.
+
+    The two backends spell the source offset differently -- ascendc inlines it
+    as an index (``copy_l1_to_l0a<...>(a_l0[0], a_l1[(j * 16384)], 128, 128)``)
+    while pto passes a normalised tile index as a trailing argument
+    (``copy_l1_to_l0a<...>(a_l0, a_l1_temp_0, 0, (((j * 16384) % 65536) / 128))``)
+    -- but both carry the raw K-slice offset as a literal ``j * <stride>``
+    factor, which is exactly the quantity under test.
+    """
+    import re
+
+    calls = re.findall(rf"copy_{l0_fn}<[^;]*?\);", src)
+    assert calls, f"no copy_{l0_fn} call in generated source"
+    coeffs = set()
+    for call in calls:
+        for a, b in re.findall(r"j\s*\*\s*(\d+)|(\d+)\s*\*\s*j", call):
+            coeffs.add(int(a or b))
+    assert len(coeffs) == 1, f"expected one j-stride in {l0_fn}, got {sorted(coeffs)}"
+    return coeffs.pop()
+
+
+def _assert_flat_l1_k_slice_offsets(kernel_func, target, pass_configs, bm, bk, dtype="int8"):
+    """Codegen-layer assertion: a K sub-range slice of a flat L1 buffer must be
+    addressed through the injected zN layout, not row-major.
+
+    Guards against ``AscendLowerParallelToVector`` rebuilding the Block without
+    ``op->annotations``: that drops the ``kLayoutMap`` injected by
+    ``AscendInferBufferScope``, so ``LowerTileOp`` sees a layout-less L1 buffer
+    and falls back to a plain row-major ``OffsetOf`` for the slice.
+    """
+    elem_bits = {"int8": 8, "uint8": 8, "float16": 16, "bfloat16": 16, "int32": 32, "float": 32}[dtype]
+    elem_per_c0 = 32 * 8 // elem_bits
+    rows_up = (bm + 15) // 16 * 16
+
+    src = _lower_and_get_source(kernel_func, target, pass_configs)
+
+    # A: (BM, K_L1) zN -- the slice walks K, i.e. the zN column bands.
+    stride_a = _l1_to_l0_j_stride(src, "l1_to_l0a")
+    expected_a = bk * rows_up
+    assert stride_a == expected_a, (
+        f"L1->L0A K-slice stride is {stride_a}, expected the zN column-band "
+        f"stride {expected_a} (= BK * round_up(BM,16) = {bk} * {rows_up}); "
+        f"a stride of {bk} means the L1 buffer lost its injected zN layout and "
+        f"fell back to a row-major offset."
+    )
+
+    # B: (K_L1, BN) zN -- the slice walks K, i.e. the zN row fractals.
+    stride_b = _l1_to_l0_j_stride(src, "l1_to_l0b")
+    expected_b = bk * elem_per_c0
+    assert stride_b == expected_b, (
+        f"L1->L0B K-slice stride is {stride_b}, expected the zN row-fractal "
+        f"stride {expected_b} (= BK * ELE_PER_C0 = {bk} * {elem_per_c0}); "
+        f"a larger stride means the L1 buffer lost its injected zN layout and "
+        f"fell back to a row-major offset."
+    )
+
+
+@pytest.mark.parametrize("target", TARGETS)
+@pytest.mark.parametrize(
+    "dtype,accum_dtype",
+    [("int8", "int32"), pytest.param("float16", "float", marks=pytest.mark.low_priority)],
+)
+@pytest.mark.parametrize(
+    "BM,K_L1,BK,BN",
+    [
+        (128, 512, 128, 256),  # BK*4 = K_L1, the decoupled GEMM shape
+        pytest.param(64, 256, 64, 128, marks=pytest.mark.low_priority),
+        pytest.param(128, 512, 64, 128, marks=pytest.mark.low_priority),
+    ],
+)
+def test_flat_l1_k_slice(BM, K_L1, BK, BN, dtype, accum_dtype, target):
+    """Flat L1 K sub-range -> L0A/L0B: the slice must use the zN layout."""
+    kfunc = flat_l1_k_slice(BM, K_L1, BK, BN, dtype, accum_dtype)
+    _assert_flat_l1_k_slice_offsets(kfunc, target, CUBE_PASS_CONFIGS, BM, BK, dtype=dtype)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-n", "8"])
