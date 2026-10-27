@@ -1448,6 +1448,14 @@ def bitwise_not(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
         - PTO: int8, uint8, int16, uint16.
 
     BufferRegion slice operands are supported.
+
+    Note (Ascend C): for a full 2-D tile, the current Ascend C implementation
+    requires each row's logical byte width to be a multiple of 32. For
+    int16/uint16 (2 bytes per element) this means the tile inner dim must be a
+    multiple of 16; a tile whose total byte size is 32-aligned but whose rows
+    are not (e.g. a (64, 100) int16 tile) may compile and run yet return
+    incorrect results. This is the current implementation's support scope,
+    not a hardware limitation.
     """
     return unary_op(dst, src0, "bitwise_not")
 
