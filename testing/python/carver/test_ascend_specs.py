@@ -39,16 +39,12 @@ cube_k_size=16
 def source_function(path, name, class_name=None):
     module = ast.parse(path.read_text())
     if class_name:
-        module = next(
-            node for node in module.body
-            if isinstance(node, ast.ClassDef) and node.name == class_name)
-    function = next(
-        node for node in module.body if isinstance(node, ast.FunctionDef) and node.name == name)
+        module = next(node for node in module.body if isinstance(node, ast.ClassDef) and node.name == class_name)
+    function = next(node for node in module.body if isinstance(node, ast.FunctionDef) and node.name == name)
     return ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
 
 
 class AscendSpecsTest(unittest.TestCase):
-
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -63,7 +59,8 @@ class AscendSpecsTest(unittest.TestCase):
         recognize = SPECS["a3_sku"]
         self.assertEqual(
             [
-                recognize(name) for name in (
+                recognize(name)
+                for name in (
                     "Ascend910_9392",
                     "ascend910_9382",
                     "Ascend910B",
@@ -80,20 +77,13 @@ class AscendSpecsTest(unittest.TestCase):
         profile = self.resources()
         self.assertEqual(
             (profile["raw_memory_capacities"], profile["usable_memory_capacities"]),
-            ({
-                "UB": 196608,
-                "L1": 524288,
-                "L0A": 65536,
-                "L0B": 65536,
-                "L0C": 131072
-            }, SPECS["BACKEND_CAPACITIES"]),
+            ({"UB": 196608, "L1": 524288, "L0A": 65536, "L0B": 65536, "L0C": 131072}, SPECS["BACKEND_CAPACITIES"]),
         )
 
     def test_sdk_counts_and_bf16_are_read(self):
         profile = self.resources()
         self.assertEqual(
-            (profile["cores"], profile["vector_cores"], profile["L2"], profile["cube"],
-             profile["supports_bf16"]),
+            (profile["cores"], profile["vector_cores"], profile["L2"], profile["cube"], profile["supports_bf16"]),
             (24, 48, 201326592, [16, 16, 16], True),
         )
 
@@ -103,41 +93,39 @@ class AscendSpecsTest(unittest.TestCase):
         path = ROOT / "tilelang/carver/arch/ascend.py"
         module = ast.parse(path.read_text())
         definitions = [
-            node for node in module.body
-            if (isinstance(node, ast.ClassDef) and node.name == "Ascend") or
-            (isinstance(node, ast.Assign) and any(
-                isinstance(name, ast.Name) and name.id in ("CHIP_SPECS", "DEFAULT_CHIP")
-                for name in node.targets))
+            node
+            for node in module.body
+            if (isinstance(node, ast.ClassDef) and node.name == "Ascend")
+            or (
+                isinstance(node, ast.Assign)
+                and any(isinstance(name, ast.Name) and name.id in ("CHIP_SPECS", "DEFAULT_CHIP") for name in node.targets)
+            )
         ]
-        namespace = {
-            "Target": object,
-            "TileDevice": object,
-            "Optional": Optional,
-            "List": list,
-            "_TORCH_NPU_AVAILABLE": False,
-            **SPECS
-        }
-        exec(
-            compile(
-                ast.fix_missing_locations(ast.Module(body=definitions, type_ignores=[])), str(path),
-                "exec"), namespace)
-        descriptor = namespace["Ascend"](
-            SimpleNamespace(mcpu="ascend910_9392"), platform_config=str(self.config))
+        namespace = {"Target": object, "TileDevice": object, "Optional": Optional, "List": list, "_TORCH_NPU_AVAILABLE": False, **SPECS}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=definitions, type_ignores=[])), str(path), "exec"), namespace)
+        descriptor = namespace["Ascend"](SimpleNamespace(mcpu="ascend910_9392"), platform_config=str(self.config))
         self.assertEqual(
-            (descriptor.chip_name, descriptor.compute_max_core, descriptor.compute_max_vector_core,
-             descriptor.l0c_cap, descriptor.l1_cap, descriptor.ub_cap,
-             descriptor.raw_memory_capacities["UB"]),
+            (
+                descriptor.chip_name,
+                descriptor.compute_max_core,
+                descriptor.compute_max_vector_core,
+                descriptor.l0c_cap,
+                descriptor.l1_cap,
+                descriptor.ub_cap,
+                descriptor.raw_memory_capacities["UB"],
+            ),
             ("Ascend910_9392", 24, 48, 131072, 524032, 196352, 196608),
         )
 
     def test_9382_reads_its_own_data(self):
         # Deliberately different synthetic fields; no 9382 device claim.
-        content = SDK_9392.replace("9392",
-                                   "9382").replace("cube_core_cnt=24", "cube_core_cnt=20").replace(
-                                       "l2_size=201326592", "l2_size=100663296")
+        content = (
+            SDK_9392.replace("9392", "9382")
+            .replace("cube_core_cnt=24", "cube_core_cnt=20")
+            .replace("l2_size=201326592", "l2_size=100663296")
+        )
         profile = self.resources(content, "Ascend910_9382")
-        self.assertEqual((profile["sku"], profile["cores"], profile["L2"]),
-                         ("Ascend910_9382", 20, 100663296))
+        self.assertEqual((profile["sku"], profile["cores"], profile["L2"]), ("Ascend910_9382", 20, 100663296))
 
     def test_wrong_sku_never_substitutes_9392(self):
         with self.assertRaisesRegex(ValueError, "does not describe"):
@@ -169,14 +157,19 @@ class AscendSpecsTest(unittest.TestCase):
         self.assertEqual(Path(profile["path"]), directory / "Ascend910_9392.ini")
 
     def test_missing_selected_sdk_does_not_mix_another_version(self):
-        other = (Path(self.temporary.name) / "other-sdk" / "data/platform_config")
+        other = Path(self.temporary.name) / "other-sdk" / "data/platform_config"
         other.mkdir(parents=True)
         (other / "Ascend910_9392.ini").write_text(SDK_9392)
-        with patch.dict(
-                "os.environ", {
+        with (
+            patch.dict(
+                "os.environ",
+                {
                     "CANN_ROOT": str(Path(self.temporary.name) / "selected-sdk"),
                     "ASCEND_HOME_PATH": str(Path(self.temporary.name) / "other-sdk"),
-                }), self.assertRaises(FileNotFoundError):
+                },
+            ),
+            self.assertRaises(FileNotFoundError),
+        ):
             SPECS["a3_resources"]("Ascend910_9392")
 
     def test_backend_limits_match_both_actual_backend_consumers(self):
@@ -191,10 +184,8 @@ class AscendSpecsTest(unittest.TestCase):
         }
         for name, expected in SPECS["BACKEND_CAPACITIES"].items():
             with self.subTest(memory=name):
-                planner_value = int(
-                    re.search(rf"#define {planner_names[name]} (\d+)", planner).group(1))
-                codegen_value = int(
-                    re.search(rf"#define ASCEND_A2A3_{name}_SIZE \((\d+)\)", codegen).group(1))
+                planner_value = int(re.search(rf"#define {planner_names[name]} (\d+)", planner).group(1))
+                codegen_value = int(re.search(rf"#define ASCEND_A2A3_{name}_SIZE \((\d+)\)", codegen).group(1))
                 self.assertEqual((planner_value, codegen_value), (expected, expected))
 
     def test_actual_l0_predicate_rejects_oversized_accumulator(self):
@@ -204,32 +195,20 @@ class AscendSpecsTest(unittest.TestCase):
         exec(compile(function, str(policy), "exec"), namespace)
         predicate = namespace["_check_l0_usage"]
         capacities = self.resources()["usable_memory_capacities"]
-        arch = SimpleNamespace(
-            l0a_capacity=capacities["L0A"],
-            l0b_capacity=capacities["L0B"],
-            l0c_capacity=capacities["L0C"])
-        results = [
-            predicate(arch, m * 64 * 2, 64 * n * 2, m * n * 4, 2)
-            for m, n in ((256, 256), (128, 256), (256, 128))
-        ]
+        arch = SimpleNamespace(l0a_capacity=capacities["L0A"], l0b_capacity=capacities["L0B"], l0c_capacity=capacities["L0C"])
+        results = [predicate(arch, m * 64 * 2, 64 * n * 2, m * n * 4, 2) for m, n in ((256, 256), (128, 256), (256, 128))]
         self.assertEqual(results, [False, True, True])
 
     def test_bf16_admission_uses_actual_sdk_feature(self):
         path = ROOT / "tilelang/carver/arch/ascend.py"
-        namespace = {
-            "Ascend": SimpleNamespace,
-            "TileDevice": object,
-            "A3_SKUS": SPECS["A3_SKUS"],
-            "CHIP_SPECS": {}
-        }
-        exec(
-            compile(source_function(path, "is_cube_supported_precision"), str(path), "exec"),
-            namespace)
+        namespace = {"Ascend": SimpleNamespace, "TileDevice": object, "A3_SKUS": SPECS["A3_SKUS"], "CHIP_SPECS": {}}
+        exec(compile(source_function(path, "is_cube_supported_precision"), str(path), "exec"), namespace)
         predicate = namespace["is_cube_supported_precision"]
         arch = SimpleNamespace(chip_name="Ascend910_9382", sdk_resources={"supports_bf16": False})
         self.assertEqual(
             [
-                predicate(source, target, arch) for source, target in (
+                predicate(source, target, arch)
+                for source, target in (
                     ("float16", "float32"),
                     ("bfloat16", "float32"),
                     ("float16", "bfloat16"),

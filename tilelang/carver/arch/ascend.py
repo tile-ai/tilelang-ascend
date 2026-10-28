@@ -58,18 +58,13 @@ DEFAULT_CHIP = "Ascend910A"
 
 
 class CubeInstruction:
-
     def __init__(self, name: str, shape: list[int]):
         self.name = name
         self.shape = shape
 
 
 class Ascend(TileDevice):
-
-    def __init__(self,
-                 target: Target | str = "llvm -keys=ascend",
-                 chip_name: str | None = None,
-                 platform_config: str | None = None):
+    def __init__(self, target: Target | str = "llvm -keys=ascend", chip_name: str | None = None, platform_config: str | None = None):
         """Describe Carver budgets; A3 requires its own selected SDK INI.
 
         Cross compilation can name an exact chip and platform_config path.
@@ -110,8 +105,7 @@ class Ascend(TileDevice):
                     elif "910" in npu_name:
                         chip_name = "Ascend910A"
 
-                    logger.debug(
-                        f"Detected Ascend NPU: {npu_name}, using chip profile: {chip_name}")
+                    logger.debug(f"Detected Ascend NPU: {npu_name}, using chip profile: {chip_name}")
             except Exception as e:
                 logger.warning(f"Failed to detect Ascend NPU properties from torch_npu: {e}")
 
@@ -139,16 +133,16 @@ class Ascend(TileDevice):
             self.sdk_resources = a3_resources(chip_name, platform_config)
             self.raw_memory_capacities = dict(self.sdk_resources["raw_memory_capacities"])
             spec = {
-                **self.sdk_resources["usable_memory_capacities"], "cores":
-                    self.sdk_resources["cores"],
-                "L2":
-                    self.sdk_resources["L2"],
-                "cube":
-                    self.sdk_resources["cube"]
+                **self.sdk_resources["usable_memory_capacities"],
+                "cores": self.sdk_resources["cores"],
+                "L2": self.sdk_resources["L2"],
+                "cube": self.sdk_resources["cube"],
             }
             self.compute_max_vector_core = (
-                detected_vector_cores if detected_vector_cores is not None and
-                detected_vector_cores > 0 else self.sdk_resources["vector_cores"])
+                detected_vector_cores
+                if detected_vector_cores is not None and detected_vector_cores > 0
+                else self.sdk_resources["vector_cores"]
+            )
         else:
             spec = CHIP_SPECS.get(chip_name, CHIP_SPECS[DEFAULT_CHIP]).copy()
 
@@ -224,8 +218,7 @@ def is_cube_supported_precision(in_dtype: str, accum_dtype: str, arch: TileDevic
         return in_dtype in input_types and accum_dtype in accumulator_types
     if arch.chip_name in CHIP_SPECS:
         # Ascend NPU supports float16 and bfloat16 tensor core operations
-        return in_dtype in ["float16", "bfloat16"
-                           ] and accum_dtype in ["float16", "bfloat16", "float32"]
+        return in_dtype in ["float16", "bfloat16"] and accum_dtype in ["float16", "bfloat16", "float32"]
     else:
         raise ValueError(f"Unsupported architecture: {arch}")
 

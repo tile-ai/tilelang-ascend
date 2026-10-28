@@ -40,13 +40,11 @@ def _platform_file(sku: str, explicit: str | Path | None) -> Path:
             root = Path(value)
             break
     if root is not None:
-        for directory in (root / "data/platform_config",
-                          root / f"{platform.machine()}-linux" / "data/platform_config"):
+        for directory in (root / "data/platform_config", root / f"{platform.machine()}-linux" / "data/platform_config"):
             path = directory / f"{sku}.ini"
             if path.is_file():
                 return path.resolve()
-    raise FileNotFoundError(f"{sku} needs its own selected SDK platform file; "
-                            "activate the SDK or pass platform_config explicitly")
+    raise FileNotFoundError(f"{sku} needs its own selected SDK platform file; activate the SDK or pass platform_config explicitly")
 
 
 def a3_resources(
@@ -65,8 +63,7 @@ def a3_resources(
     content = path.read_bytes()
     config = configparser.ConfigParser()
     config.read_string(content.decode())
-    if (config["version"]["SoC_version"].upper() != sku.upper() or
-            config["version"]["NpuArch"] != "2201"):
+    if config["version"]["SoC_version"].upper() != sku.upper() or config["version"]["NpuArch"] != "2201":
         raise ValueError(f"Platform file does not describe {sku}/dav-2201")
     memory_keys = {
         "UB": "ub_size",
