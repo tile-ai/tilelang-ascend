@@ -57,10 +57,17 @@ def fill(
 1. value 的 dtype 需可转换到 buffer 的 dtype；不一致时前端自动 Cast。Cast 不做范围检查，
    超出目标 dtype 可表示范围的值可能静默截断或环绕，调用方需确保 value 可表示。
 2. buffer 地址需 32 字节对齐（硬件约束）。
-3. size 由 buffer shape 自动推断，无需显式传入 count 参数。
-4. 仅支持 UB（Unified Buffer）内存。`T.alloc_shared` 仅在编译器将其推断为 UB 时可用，
+3. 行宽对齐（当前 Ascend C 后端实现的支持范围，非硬件限制）：对完整的二维
+   tile，Ascend C 后端当前要求**每一行**的逻辑数据字节数为 32 的倍数。对 float16、bfloat16、int16、uint16（每元素 2 字节），即 tile 内维元素数需为 16 的倍数；
+   对 float32、int32、uint32（每元素 4 字节），需为 8 的倍数。
+   整个 tile 总字节数为 32 的倍数并不足够：例如 `(64, 100)` 的 int16 tile 总大小为
+   `64 × 100 × 2 = 12800` 字节，但每一行为 `100 × 2 = 200` 字节，不满足行宽
+   要求。当前实现对此类输入可能编译并运行成功但返回错误结果，且暂无编译期
+   拒绝检查。起始地址对齐（第 2 条）与行宽约束是相互独立的两个条件，需分别满足。
+4. size 由 buffer shape 自动推断，无需显式传入 count 参数。
+5. 仅支持 UB（Unified Buffer）内存。`T.alloc_shared` 仅在编译器将其推断为 UB 时可用，
    不代表 fill 支持 L1；其他内存级别的 fill 行为未经验证。
-5. 仅支持片上 buffer fill，GM 级别 fill 需用 T.copy。
+6. 仅支持片上 buffer fill，GM 级别 fill 需用 T.copy。
 
 ## 3. 示例代码
 
