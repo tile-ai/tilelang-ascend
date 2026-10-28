@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import platform
 
-
 A3_SKUS = ("Ascend910_9392", "Ascend910_9382")
 
 # Match AscendMemoryPlanning and CodeGenTileLangAscend's A2/A3 arenas.
@@ -42,19 +41,17 @@ def _platform_file(sku: str, explicit: str | Path | None) -> Path:
             break
     if root is not None:
         for directory in (root / "data/platform_config",
-                          root / f"{platform.machine()}-linux"
-                          / "data/platform_config"):
+                          root / f"{platform.machine()}-linux" / "data/platform_config"):
             path = directory / f"{sku}.ini"
             if path.is_file():
                 return path.resolve()
-    raise FileNotFoundError(
-        f"{sku} needs its own selected CANN SDK platform file; "
-        "activate CANN or pass platform_config explicitly"
-    )
+    raise FileNotFoundError(f"{sku} needs its own selected SDK platform file; "
+                            "activate the SDK or pass platform_config explicitly")
 
 
 def a3_resources(
-    sku: str, platform_config: str | Path | None = None,
+    sku: str,
+    platform_config: str | Path | None = None,
 ) -> dict:
     """Read one SKU's raw SDK capacities and clip to backend usable budgets.
 
@@ -72,29 +69,32 @@ def a3_resources(
             config["version"]["NpuArch"] != "2201"):
         raise ValueError(f"Platform file does not describe {sku}/dav-2201")
     memory_keys = {
-        "UB": "ub_size", "L1": "l1_size", "L0A": "l0_a_size",
-        "L0B": "l0_b_size", "L0C": "l0_c_size",
+        "UB": "ub_size",
+        "L1": "l1_size",
+        "L0A": "l0_a_size",
+        "L0B": "l0_b_size",
+        "L0C": "l0_c_size",
     }
-    raw = {name: config.getint("AICoreSpec", key)
-           for name, key in memory_keys.items()}
+    raw = {name: config.getint("AICoreSpec", key) for name, key in memory_keys.items()}
     cores = config.getint("SoCInfo", "cube_core_cnt")
     vector_cores = config.getint("SoCInfo", "vector_core_cnt")
     l2 = config.getint("SoCInfo", "l2_size")
     if any(value <= 0 for value in (*raw.values(), cores, vector_cores, l2)):
         raise ValueError("SDK capacities and core counts must be positive")
-    cube = [config.getint("AICoreSpec", f"cube_{axis}_size")
-            for axis in ("m", "n", "k")]
+    cube = [config.getint("AICoreSpec", f"cube_{axis}_size") for axis in ("m", "n", "k")]
     if any(value <= 0 for value in cube):
         raise ValueError("SDK Cube dimensions must be positive")
-    usable = {name: min(value, BACKEND_CAPACITIES[name])
-              for name, value in raw.items()}
+    usable = {name: min(value, BACKEND_CAPACITIES[name]) for name, value in raw.items()}
     return {
-        "sku": sku, "path": str(path),
+        "sku": sku,
+        "path": str(path),
         "sha256": hashlib.sha256(content).hexdigest(),
         "raw_memory_capacities": raw,
         "backend_memory_capacities": dict(BACKEND_CAPACITIES),
         "usable_memory_capacities": usable,
-        "cores": cores, "vector_cores": vector_cores,
-        "L2": l2, "cube": cube,
+        "cores": cores,
+        "vector_cores": vector_cores,
+        "L2": l2,
+        "cube": cube,
         "supports_bf16": config.getboolean("SoCInfo", "support_bf16"),
     }
