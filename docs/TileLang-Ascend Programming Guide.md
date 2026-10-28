@@ -282,7 +282,9 @@ python .agents/skills/tilelang-a5-sim-convert/scripts/run_a5_sim_template.py --l
 
 ### 3.1 kernel定义
 
-TileLang kernel是基于TIR（TVM IR）生成的函数，用`@T.prim_func`来修饰。参数类型为`T.Tensor`或`T.Buffer`，包含了shape和dtype信息。
+TileLang kernel 通过 `@T.prim_func` 定义为 TIR（TVM IR）函数。Kernel 参数使用 `T.Tensor(shape, dtype)` 声明张量的形状（shape）和数据类型（dtype）。
+
+> **注意**：旧接口作为函数参数的 `T.Buffer(...)` 和 `T.Buffer[...]` 已被标记为弃用（deprecated），新代码应统一使用 `T.Tensor(...)`。这一弃用声明针对 TileLang 的 DSL 接口，不代表底层 TVM Buffer 类型或缓冲区这一概念被弃用。
 
 ```
 @T.prim_func
@@ -1065,7 +1067,7 @@ TileLang提供了多种元素级操作算符，并结合调度原语**T.Parallel
 
   ```
   @T.prim_func
-  def main(A: T.Buffer((M, N), "float16"), B: T.Buffer((M, N), "float16")):
+  def main(A: T.Tensor((M, N), "float16"), B: T.Tensor((M, N), "float16")):
       with T.Scope("V"):
           a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), "float16")
           b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), "float16")
@@ -1084,7 +1086,7 @@ TileLang提供了多种元素级操作算符，并结合调度原语**T.Parallel
 
   ```
   @T.prim_func
-  def main(A: T.Buffer((M, N), "float16"), B: T.Buffer((M, N), "float16")):
+  def main(A: T.Tensor((M, N), "float16"), B: T.Tensor((M, N), "float16")):
       with T.Scope("V"):
           T.copy(A, a_ub)
           T.tile.exp(b_ub, a_ub)
