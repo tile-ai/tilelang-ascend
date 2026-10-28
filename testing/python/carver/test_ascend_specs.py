@@ -5,10 +5,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tilelang.carver.arch import ascend
-from tilelang.carver.arch.ascend import Ascend, is_cube_supported_precision
-from tilelang.carver.roller.policy.ascend import AscendDefaultPolicy
-
 SDK_9392 = """[SoCInfo]
 cube_core_cnt=24
 vector_core_cnt=48
@@ -28,6 +24,9 @@ cube_k_size=16
 
 @pytest.fixture
 def sdk(tmp_path, monkeypatch):
+    # Carver templates probe the device on import; keep that out of pytest collection.
+    from tilelang.carver.arch import ascend
+
     directory = tmp_path / "data/platform_config"
     directory.mkdir(parents=True)
     path = directory / "Ascend910_9392.ini"
@@ -39,6 +38,9 @@ def sdk(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("source", ["device", "target", "chip"])
 def test_a3_detection(sdk, monkeypatch, source):
+    from tilelang.carver.arch import ascend
+    from tilelang.carver.arch.ascend import Ascend, is_cube_supported_precision
+
     npu = MagicMock()
     npu.is_available.return_value = True
     npu.device_count.return_value = 1
@@ -68,11 +70,16 @@ def test_a3_detection(sdk, monkeypatch, source):
 
 @pytest.mark.parametrize("m, allowed", [(256, False), (128, True)])
 def test_a3_l0_admission(sdk, m, allowed):
+    from tilelang.carver.arch.ascend import Ascend
+    from tilelang.carver.roller.policy.ascend import AscendDefaultPolicy
+
     policy = AscendDefaultPolicy(Ascend(chip_name="Ascend910_9392"))
     assert policy._check_l0_usage(m * 64 * 2, 64 * 256 * 2, m * 256 * 4, 2) is allowed
 
 
 def test_9382_sdk(sdk):
+    from tilelang.carver.arch.ascend import Ascend, is_cube_supported_precision
+
     directory = sdk.parents[2] / f"{platform.machine()}-linux" / "data/platform_config"
     directory.mkdir(parents=True)
     path = directory / "Ascend910_9382.ini"
