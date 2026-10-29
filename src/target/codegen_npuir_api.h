@@ -291,6 +291,7 @@ private:
   mlir::Value GenMemrefLoadFromRegion(Buffer buffer_data, Array<Range> range);
   mlir::Value GenSubviewFromRegion(const CallNode *region_node);
   mlir::Value GenSubviewFromRegion(Buffer buffer_data, Array<Range> range);
+  mlir::Value GetBufferView(Buffer buffer);
   bool EnableToReduceRank(Array<Range> range, int target_rank);
   // Similar to GenSubviewFromRegion but performs rank reduction by dropping
   // static-1 dimensions from the slice sizes (Region extents).
@@ -353,6 +354,9 @@ private:
   NPU_CORETYPE current_coretype;
 
   tvm::tl::BufferMap vmap{tvm::tl::BufferMap()};
+
+  // Local allocations accessed through more than one element type.
+  std::unordered_map<const VarNode *, bool> multi_typed_vars_;
 
   // Keeps name of current function
   std::string current_function_name;
