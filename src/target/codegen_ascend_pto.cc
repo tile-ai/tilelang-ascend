@@ -2631,10 +2631,14 @@ void CodeGenTileLangAscendPto::CompareScalarCodegen(
   if (is_buffer_scalar) {
     std::string buf_offset = PrintBufferOffset(scalar_buf);
     std::string temp_name = GetTempVarName(buf_offset + "_scalar");
+    // GetValue is a scalar-pipe read of UB written by the vector pipe, so a
+    // cross-pipe sync is required. Use pipe_barrier instead of an event flag
+    // pair: a hardcoded EVENT_ID on the V->S channel could collide with
+    // user-level T.set_flag/T.wait_flag in the kernel (event IDs are
+    // documented as free to use within a pipe pair). Mirrors the AscendC
+    // backend's CompareScalarCodegen (codegen_ascend.cc).
     this->PrintIndent();
-    this->stream << "set_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
-    this->PrintIndent();
-    this->stream << "wait_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
+    this->stream << "pipe_barrier(PIPE_ALL);\n";
     this->PrintIndent();
     this->stream << "auto " << temp_name << " = " << buf_offset << ".GetValue("
                  << PrintExpr(op->args[3]) << ");\n";
