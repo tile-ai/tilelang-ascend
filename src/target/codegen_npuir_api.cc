@@ -1462,9 +1462,15 @@ void CodeGenTileLangNPUIRAPI::AscendCopyCodegen(const CallNode *op) {
 template <typename T, typename U>
 void CodeGenTileLangNPUIRAPI::UnaryVecOpCodegen(const CallNode *op) {
   T npuirop(op->args, this->vmap);
-  auto in_data_name = GenSubviewFromRegion(npuirop.src, npuirop.src_range);
-  auto out_data_name = GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
-  auto dims = getBroadcastDim(npuirop.src->shape, npuirop.dst->shape);
+  mlir::Value in_data_name =
+      GenSubviewFromRegion(npuirop.src, npuirop.src_range);
+  mlir::Value out_data_name =
+      GenSubviewFromRegion(npuirop.dst, npuirop.dst_range);
+  // Broadcasting belongs to the accessed regions, not their allocations.
+  // GenSubviewFromRegion has already projected each operand to that region.
+  auto inType = in_data_name.getType().cast<mlir::MemRefType>();
+  auto outType = out_data_name.getType().cast<mlir::MemRefType>();
+  auto dims = getBroadcastDim(inType.getShape(), outType.getShape());
   // Create HIVM Op
   builder.create<U>(builder.getUnknownLoc(), mlir::TypeRange{}, // result type
                     mlir::ValueRange{in_data_name},             // in
