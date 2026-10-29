@@ -951,12 +951,24 @@ def _lshift_ref(a_cpu, scalarvalue, dtype):
     return torch.bitwise_left_shift(a_cpu, scalarvalue)
 
 
+_LSHIFT_SIGN_SAMPLES = {
+    # Deterministic high-bit samples where the logical-shift and
+    # sign-preserving-shift models diverge (e.g. int16 0x4000 << 1:
+    # logical -> 0x8000 = -32768, sign-preserving -> 0).
+    "int16": [16384, 24576, 32767, 8192, -16384, -32768, 1, -1, -100, -32768],
+    "int32": [1073741824, 1610612736, 2147483647, 536870912, -1073741824, -2147483648, 1, -1, -100, -2147483648],
+}
+
+
 def run_test_bitwise_lshift_signed_semantics(dtype, target, scalarvalue):
     """Verify that left shift on signed types is logical (not sign-preserving).
 
-    The original doc claims signed types use 'arithmetic left shift' preserving
-    the sign bit. The actual vshls/vshl instruction is a standard logical
-    left shift — sign bit is NOT preserved.
+    Deterministic high-bit samples are required: small random values (e.g.
+    in [-100, 100) shifted by 1) produce identical results under both the
+    logical-shift and the sign-preserving-shift models, so they cannot
+    distinguish them. For int16 0x4000 << 1 the models diverge: logical
+    yields 0x8000 (-32768) while sign-preserving yields 0 (the CANN 8.3
+    documentation describes the latter for signed types).
     """
     M, N = 1024, 1024
     block_M, block_N = 128, 256
@@ -980,13 +992,8 @@ def run_test_bitwise_lshift_signed_semantics(dtype, target, scalarvalue):
 
     func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
     td = _TORCH_INT_DTYPE_LSHIFT[dtype]
-    if "int" in dtype and "int8" not in dtype:
-        low = -100
-        high = 100
-    else:
-        low = 1
-        high = 100
-    a = torch.randint(low=low, high=high, size=(M, N), dtype=td).npu()
+    samples = torch.tensor(_LSHIFT_SIGN_SAMPLES[dtype], dtype=td)
+    a = samples.repeat((M * N) // samples.numel() + 1)[: M * N].reshape(M, N).npu()
     torch.npu.synchronize()
     b = func(a)
     ref_b = _lshift_ref(a.cpu(), scalarvalue, dtype).npu()
@@ -994,10 +1001,8 @@ def run_test_bitwise_lshift_signed_semantics(dtype, target, scalarvalue):
 
 
 @pytest.mark.parametrize("scalarvalue", [1])
-@pytest.mark.parametrize(
-    "dtype", [pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)]
-)
-@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("dtype", ["int16", pytest.param("int32", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_bitwise_lshift_signed_semantics(dtype, target, scalarvalue):
     run_test_bitwise_lshift_signed_semantics(dtype, target, scalarvalue)
 
