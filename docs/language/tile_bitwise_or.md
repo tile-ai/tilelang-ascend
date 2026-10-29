@@ -34,7 +34,8 @@ def bitwise_or(
 
 | 平台 | dst | src0 | src1 |
 |------|:---:|:----:|:----:|
-| Ascend A2 / A3 | int8, uint8, int16, uint16 | 同 dst | 同 dst |
+| Ascend A2 / A3（Ascend C） | uint8, int16, uint16 | 同 dst | 同 dst |
+| Ascend A2 / A3（PTO） | int8, uint8, int16, uint16 | 同 dst | 同 dst |
 
 #### 2.3.2 Shape 支持
 
@@ -46,7 +47,7 @@ def bitwise_or(
 2. dst 与 src0 的元素个数必须相同
 3. 当 src1 为切片时，其元素个数也必须与 dst 相同
 4. src0 和 src1 的 dtype 必须与 dst 一致
-5. 仅支持 int8、uint8、int16 和 uint16
+5. Ascend C 后端支持 uint8、int16 和 uint16；int8 仅在 PTO 后端支持（Ascend C 向量指令选择器不支持有符号 int8）
 6. 操作数地址需 32 字节对齐（硬件约束）
 7. 行宽对齐（当前 Ascend C 后端实现的支持范围，非硬件限制）：对完整的二维
    tile，Ascend C 后端当前要求**每一行**的逻辑数据字节数为 32 的倍数。对 int16/uint16（每元素 2 字节），即 tile 内维元素数需为 16 的倍数。

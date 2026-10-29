@@ -3737,21 +3737,16 @@ def run_test_bitwise_or_ext(dtype, target):
 
 
 @pytest.mark.parametrize(
-    "dtype",
+    "dtype,target",
     [
-        "int8",
-        pytest.param("uint8", marks=pytest.mark.low_priority),
-    ],
-)
-@pytest.mark.parametrize(
-    "target",
-    [
-        "ascendc",
-        pytest.param("pto", marks=pytest.mark.low_priority),
+        ("int8", "pto"),
+        pytest.param("uint8", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("uint8", "pto", marks=pytest.mark.low_priority),
     ],
 )
 def test_bitwise_or_int8_uint8(dtype, target):
-    """int8/uint8 are supported on A2/A3 for both backends."""
+    """int8 is PTO-only: the AscendC vector instruction selector rejects signed
+    int8 for bitwise_or. uint8 is supported on both backends."""
     run_test_bitwise_or_ext(dtype, target)
 
 
