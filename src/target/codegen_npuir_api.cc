@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <elf.h>
+#include <limits>
 #include <memory>
 #include <ostream>
 #include <sstream>
@@ -778,6 +779,132 @@ CodeGenTileLangNPUIRAPI::GenSubviewFromRegion(const CallNode *region_node) {
   return GenSubviewFromRegion(regionop.GetBuffer(), regionop.GetRanges());
 }
 
+// A typed view identifies a Buffer, not just its shared data Var. Keep the
+// allocation as bytes and derive both typed views from it so alias analysis
+// retains the common allocation rather than seeing an unrelated raw pointer.
+mlir::Value CodeGenTileLangNPUIRAPI::GetBufferView(Buffer buffer) {
+  mlir::Value base = GetVarValue(buffer->data.get());
+  auto baseType = base.getType().dyn_cast<mlir::MemRefType>();
+  ICHECK(baseType) << "Buffer must lower to a memref";
+  auto *allocation = base.getDefiningOp();
+  const bool byteStorage =
+      allocation && allocation->hasAttr("tilelang.typed_view_storage");
+  if (!byteStorage) {
+    ICHECK(baseType.getElementType() == DTypetoMLIRType(buffer->dtype))
+        << "Typed views require a local UB allocation; external and non-UB "
+           "typed aliases are not supported";
+    // Preserve existing nonlocal/non-UB handling. Local UB aliases must use
+    // each Buffer's metadata even when their element types are identical.
+    if (!allocation || !mlir::isa<mlir::memref::AllocOp>(allocation) ||
+        buffer.scope() != "shared")
+      return base;
+    bool identity =
+        buffer->shape.size() == baseType.getRank() && buffer->strides.empty();
+    const auto *offset = as_const_int(buffer->elem_offset);
+    identity = identity && offset && *offset == 0;
+    if (identity) {
+      for (size_t i = 0; i < buffer->shape.size(); ++i) {
+        const auto *dim = as_const_int(buffer->shape[i]);
+        if (!dim || *dim != baseType.getDimSize(i)) {
+          identity = false;
+          break;
+        }
+      }
+    }
+    if (identity)
+      return base;
+  }
+
+  if (byteStorage) {
+    ICHECK_EQ(baseType.getRank(), 1);
+    ICHECK(baseType.getElementType().isInteger(8));
+  }
+  ICHECK(baseType.hasStaticShape())
+      << "Local views require a static allocation";
+  ICHECK_EQ(buffer->dtype.lanes(), 1)
+      << "Typed local views require scalar element types";
+  ICHECK_EQ(buffer->dtype.bits() % 8, 0)
+      << "Typed local views require byte-sized elements";
+  const int64_t bytes = buffer->dtype.bits() / 8;
+  ICHECK_GT(bytes, 0);
+  int64_t capacity = byteStorage ? 1 : bytes;
+  for (int64_t dim : baseType.getShape()) {
+    ICHECK_GT(dim, 0);
+    ICHECK_LE(dim, std::numeric_limits<int64_t>::max() / capacity);
+    capacity *= dim;
+  }
+  if (!byteStorage) {
+    SmallVector<int64_t> baseStrides;
+    int64_t baseOffset;
+    ICHECK(mlir::succeeded(
+        mlir::getStridesAndOffset(baseType, baseStrides, baseOffset)));
+    ICHECK_EQ(baseOffset, 0);
+    int64_t stride = 1;
+    for (int i = baseType.getRank() - 1; i >= 0; --i) {
+      ICHECK_EQ(baseStrides[i], stride)
+          << "Local views require a contiguous allocation";
+      stride *= baseType.getDimSize(i);
+    }
+  }
+  int64_t elements = 1;
+  SmallVector<int64_t> shape;
+  for (const PrimExpr &extent : buffer->shape) {
+    const auto *dim = as_const_int(extent);
+    ICHECK(dim && *dim > 0)
+        << "Typed local views require positive static dimensions";
+    ICHECK_LE(*dim, capacity / bytes / elements)
+        << "Typed local view exceeds allocation capacity";
+    elements *= *dim;
+    shape.push_back(*dim);
+  }
+  const auto *offset = as_const_int(buffer->elem_offset);
+  ICHECK(offset && *offset >= 0)
+      << "Typed local views require a nonnegative static element offset";
+  ICHECK_LE(*offset, capacity / bytes - elements)
+      << "Typed local view exceeds allocation capacity";
+
+  SmallVector<int64_t> strides(shape.size());
+  int64_t stride = 1;
+  for (size_t i = shape.size(); i > 0; --i) {
+    strides[i - 1] = stride;
+    stride *= shape[i - 1];
+  }
+  if (!buffer->strides.empty()) {
+    ICHECK_EQ(buffer->strides.size(), strides.size());
+    for (size_t i = 0; i < strides.size(); ++i) {
+      const auto *value = as_const_int(buffer->strides[i]);
+      ICHECK(value && *value == strides[i])
+          << "Noncontiguous typed local views are not supported";
+    }
+  }
+
+  auto loc = builder.getUnknownLoc();
+  auto elemType = DTypetoMLIRType(buffer->dtype);
+  auto viewType =
+      mlir::MemRefType::get(shape, elemType, mlir::MemRefLayoutAttrInterface{},
+                            baseType.getMemorySpace());
+  mlir::Value view = base;
+  if (byteStorage) {
+    auto shift =
+        builder.create<mlir::arith::ConstantIndexOp>(loc, *offset * bytes);
+    view = builder.create<mlir::memref::ViewOp>(loc, viewType, base, shift,
+                                                mlir::ValueRange{});
+  }
+  const int64_t viewOffset = byteStorage ? 0 : *offset;
+  auto layout =
+      mlir::StridedLayoutAttr::get(builder.getContext(), viewOffset, strides);
+  auto resultType =
+      mlir::MemRefType::get(shape, elemType, layout, baseType.getMemorySpace());
+  SmallVector<mlir::OpFoldResult> sizes, strideValues;
+  for (int64_t size : shape)
+    sizes.push_back(builder.getIndexAttr(size));
+  for (int64_t value : strides)
+    strideValues.push_back(builder.getIndexAttr(value));
+  return builder.create<mlir::memref::ReinterpretCastOp>(
+      loc, resultType, view, builder.getIndexAttr(viewOffset), sizes,
+      strideValues);
+}
+
 // Helper to check if an OpFoldResult is a static integer equal to `value`.
 static bool IsStaticIntOFR(mlir::OpFoldResult ofr, int64_t value) {
   if (auto attr = ofr.dyn_cast<mlir::Attribute>()) {
@@ -805,8 +932,7 @@ mlir::Value CodeGenTileLangNPUIRAPI::GenRankReducedSubviewFromRegion(
     region_shape.push_back(r.get()->extent);
     region_indices.push_back(r.get()->min);
   }
-  const VarNode *v = buffer_data->data.get();
-  mlir::Value v_value = GetVarValue(v);
+  mlir::Value v_value = GetBufferView(buffer_data);
   // Full-region marker used for fast path after rank-reduction shape is known.
   const bool is_full_region =
       IsEqual(buffer_data->shape, region_shape) && AllZero(region_indices);
@@ -929,8 +1055,7 @@ mlir::Value CodeGenTileLangNPUIRAPI::GenSubviewFromRegion(Buffer buffer_data,
     region_shape.push_back(r.get()->extent);
     region_indeces.push_back(r.get()->min);
   }
-  const VarNode *v = buffer_data->data.get();
-  mlir::Value v_value = GetVarValue(v);
+  mlir::Value v_value = GetBufferView(buffer_data);
   if ((IsEqual(buffer_data->shape, region_shape) && AllZero(region_indeces))) {
     return v_value; // return original buffer and no need to create subview
   }
@@ -1115,7 +1240,7 @@ CodeGenTileLangNPUIRAPI::SliceFacts
 CodeGenTileLangNPUIRAPI::BuildSliceFacts(Buffer buffer_data,
                                          Array<Range> range) {
   SliceFacts facts;
-  facts.baseMemref = GetVarValue(buffer_data->data.get());
+  facts.baseMemref = GetBufferView(buffer_data);
   facts.baseMemrefType =
       facts.baseMemref.getType().dyn_cast<mlir::MemRefType>();
   // Generic T.copy only reasons about memref views in the default path.
@@ -1133,7 +1258,10 @@ CodeGenTileLangNPUIRAPI::BuildSliceFacts(Buffer buffer_data,
   ICHECK(!mlir::ShapedType::isDynamic(layoutAttr.getOffset()))
       << "generic T.copy requires a statically-known base layout offset.";
   // Keep the generic path intentionally narrow: contiguous buffers only.
-  ICHECK(buffer_data->strides.empty())
+  auto *storage = GetVarValue(buffer_data->data.get()).getDefiningOp();
+  const bool checkedTypedView =
+      storage && storage->hasAttr("tilelang.typed_view_storage");
+  ICHECK(buffer_data->strides.empty() || checkedTypedView)
       << "generic T.copy only supports contiguous buffers; explicit buffer "
          "strides are unsupported.";
 
@@ -1878,17 +2006,17 @@ void CodeGenTileLangNPUIRAPI::DotCodegen(const CallNode *op) {
   if (npuirop.src0_range.size() > 2) {
     a = GenRankReducedSubviewFromRegion(npuirop.src0, npuirop.src0_range, 2);
   } else {
-    a = GetVarValue(npuirop.src0->data.get());
+    a = GetBufferView(npuirop.src0);
   }
   if (npuirop.src1_range.size() > 2) {
     b = GenRankReducedSubviewFromRegion(npuirop.src1, npuirop.src1_range, 2);
   } else {
-    b = GetVarValue(npuirop.src1->data.get());
+    b = GetBufferView(npuirop.src1);
   }
   if (npuirop.dst_range.size() > 2) {
     c = GenRankReducedSubviewFromRegion(npuirop.dst, npuirop.dst_range, 2);
   } else {
-    c = GetVarValue(npuirop.dst->data.get());
+    c = GetBufferView(npuirop.dst);
   }
   mlir::TypeRange result_tensors = {};
   mlir::Value init_condition = MakeValue(npuirop.initC);
@@ -1949,7 +2077,7 @@ mlir::Value
 CodeGenTileLangNPUIRAPI::GenMemrefLoadFromRegion(Buffer buffer_data,
                                                  Array<Range> range) {
   // Convert buffer from Buffer in TIR 2 memref in MLIR
-  auto mem = GetVarValue(buffer_data->data.get());
+  auto mem = GetBufferView(buffer_data);
 
   // Convert index from PrimExpr in TIR 2 index type in MLIR
   SmallVector<mlir::Value> convert_inds;
@@ -2814,8 +2942,28 @@ void CodeGenTileLangNPUIRAPI::VisitStmt_(const AllocateNode *op) {
     auto memrefType = mlir::MemRefType::get(shape, DTypetoMLIRType(op->dtype),
                                             layoutMap, memorySpaceHIVMAttr);
 
+    const bool typedStorage = multi_typed_vars_.count(op->buffer_var.get());
+    if (typedStorage) {
+      ICHECK_EQ(scope, "shared")
+          << "Typed local views currently support UB allocations only";
+      ICHECK_EQ(op->dtype.lanes(), 1);
+      ICHECK_EQ(op->dtype.bits() % 8, 0);
+      int64_t bytes = op->dtype.bits() / 8;
+      ICHECK_GT(bytes, 0);
+      for (int64_t dim : shape) {
+        ICHECK_GT(dim, 0);
+        ICHECK_LE(dim, std::numeric_limits<int64_t>::max() / bytes);
+        bytes *= dim;
+      }
+      memrefType = mlir::MemRefType::get({bytes}, builder.getI8Type(),
+                                         mlir::MemRefLayoutAttrInterface{},
+                                         memorySpaceHIVMAttr);
+    }
+
     auto allocOp = builder.create<mlir::memref::AllocOp>(
         builder.getUnknownLoc(), memrefType);
+    if (typedStorage)
+      allocOp->setAttr("tilelang.typed_view_storage", builder.getUnitAttr());
 
     // Update var_map_ with the new variable
     ICHECK(!var_map_.count(op->buffer_var.get()));
@@ -2976,6 +3124,24 @@ void CodeGenTileLangNPUIRAPI::AddFunctionForCoreType(const GlobalVar &gvar,
   // clear previous generated state.
   this->InitFuncState();
 
+  // Scan once per function, including allocation types and Buffer accesses.
+  // Do not rescan every allocation subtree: nested lifetimes can make that
+  // quadratic in the number of TIR nodes.
+  std::unordered_map<const VarNode *, DataType> firstTypes;
+  auto noteType = [&](const VarNode *var, DataType dtype) {
+    auto inserted = firstTypes.emplace(var, dtype);
+    if (!inserted.second && inserted.first->second != dtype)
+      multi_typed_vars_[var] = true;
+  };
+  tir::PostOrderVisit(f->body, [&](const ObjectRef &node) {
+    if (const auto *load = node.as<BufferLoadNode>())
+      noteType(load->buffer->data.get(), load->buffer->dtype);
+    else if (const auto *store = node.as<BufferStoreNode>())
+      noteType(store->buffer->data.get(), store->buffer->dtype);
+    else if (const auto *alloc = node.as<AllocateNode>())
+      noteType(alloc->buffer_var.get(), alloc->dtype);
+  });
+
   auto global_symbol = f->GetAttr<String>(tvm::attr::kGlobalSymbol);
   ICHECK(global_symbol.defined())
       << "CodeGenC: Expect PrimFunc to have the global_symbol attribute";
@@ -3089,6 +3255,7 @@ void CodeGenTileLangNPUIRAPI::AddFunctionForCoreType(const GlobalVar &gvar,
 
 void CodeGenTileLangNPUIRAPI::InitFuncState() {
   var_map_.clear();
+  multi_typed_vars_.clear();
   alias_var_set_.clear();
   alloc_storage_info_.clear();
   volatile_buf_.clear();
@@ -3199,7 +3366,7 @@ mlir::Value CodeGenTileLangNPUIRAPI::VisitExpr_(const BufferLoadNode *op) {
   }
 
   // Convert buffer from Buffer in TIR 2 memref in MLIR
-  auto mem = var_map_[buffer->data.get()];
+  auto mem = GetBufferView(buffer);
 
   // Convert index from PrimExpr in TIR 2 index type in MLIR
   SmallVector<mlir::Value> convert_inds;
@@ -3240,7 +3407,7 @@ void CodeGenTileLangNPUIRAPI::VisitStmt_(const BufferStoreNode *op) {
     LOG(FATAL) << "The store type and buffer element type do not match";
   }
 
-  auto mem = var_map_[buffer->data.get()];
+  auto mem = GetBufferView(buffer);
 
   auto mlir_value = MakeValue(value);
 

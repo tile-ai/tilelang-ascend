@@ -3,7 +3,8 @@
 """The language interface for tl programs."""
 
 import tilelang.language as T
-from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Var
+from tvm.tir import PrimExpr, Buffer
+from tvm import DataType, arith
 from typing import List, Union
 
 
@@ -30,7 +31,9 @@ def atomic_addx2(dst: Buffer, value: PrimExpr) -> PrimExpr:
     Returns:
         PrimExpr: Handle to the double-width atomic addition operation
     """
-    return T.call_extern("handle", "AtomicAddx2", T.address_of(dst), T.address_of(value))
+    return T.call_extern(
+        "handle", "AtomicAddx2", T.address_of(dst), T.address_of(value)
+    )
 
 
 def atomic_addx4(dst: Buffer, value: PrimExpr) -> PrimExpr:
@@ -43,7 +46,9 @@ def atomic_addx4(dst: Buffer, value: PrimExpr) -> PrimExpr:
     Returns:
         PrimExpr: Handle to the double-width atomic addition operation
     """
-    return T.call_extern("handle", "AtomicAddx4", T.address_of(dst), T.address_of(value))
+    return T.call_extern(
+        "handle", "AtomicAddx4", T.address_of(dst), T.address_of(value)
+    )
 
 
 def dp4a(A: Buffer, B: Buffer, C: Buffer) -> PrimExpr:
@@ -57,17 +62,19 @@ def dp4a(A: Buffer, B: Buffer, C: Buffer) -> PrimExpr:
     Returns:
         PrimExpr: Handle to the DP4A operation
     """
-    return T.call_extern("handle", "DP4A", T.address_of(A), T.address_of(B), T.address_of(C))
+    return T.call_extern(
+        "handle", "DP4A", T.address_of(A), T.address_of(B), T.address_of(C)
+    )
 
 
 def clamp(dst: PrimExpr, min_val: PrimExpr, max_val: PrimExpr) -> PrimExpr:
     """Clamps the input value dst between [min_val, max_val]
-    
+
     Args:
         dst: Input value to be clamped
         min_val: Minimum value
         max_val: Maximum value
-    
+
     Returns:
         Value clamped to the specified range
     """
@@ -78,7 +85,7 @@ def clamp(dst: PrimExpr, min_val: PrimExpr, max_val: PrimExpr) -> PrimExpr:
 
 def reshape(src: Buffer, shape: List[PrimExpr]) -> Buffer:
     """Reshapes the input buffer to the specified shape.
-    
+
     Args:
         src (Buffer): Input buffer to be reshaped
         shape (List[PrimExpr]): New shape for the buffer
@@ -89,21 +96,42 @@ def reshape(src: Buffer, shape: List[PrimExpr]) -> Buffer:
     return T.Buffer(shape, src.dtype, src.data)
 
 
-def view(src: Buffer,
-         shape: Union[List[PrimExpr], None] = None,
-         dtype: Union[str, None] = None) -> Buffer:
+def view(
+    src: Buffer,
+    shape: Union[List[PrimExpr], None] = None,
+    dtype: Union[str, None] = None,
+) -> Buffer:
     """Views the input buffer with optionally modified shape and dtype.
-    
+
     Args:
         src (Buffer): Input buffer to be viewed
         shape (Union[List[PrimExpr], None], optional): New shape for the buffer. Defaults to None.
         dtype (Union[str, None], optional): New dtype for the buffer. Defaults to None.
 
     Returns:
-        Buffer: A new buffer view with the specified shape and dtype
+        Buffer: A new buffer view with the specified shape and dtype, sharing
+        the source allocation and first-element byte address. Dtype changes
+        require the source offset to be aligned for the destination element.
     """
     if shape is None:
         shape = src.shape
     if dtype is None:
         dtype = src.dtype
-    return T.Buffer(shape, dtype, src.data)
+    offset = src.elem_offset
+    if dtype != src.dtype:
+        src_type, dst_type = DataType(src.dtype), DataType(dtype)
+        if (
+            src_type.lanes != 1
+            or dst_type.lanes != 1
+            or src_type.bits % 8
+            or dst_type.bits % 8
+        ):
+            raise ValueError("view dtype changes require byte-sized scalar elements")
+        analyzer = arith.Analyzer()
+        offset_bits = offset * src_type.bits
+        if not analyzer.can_prove(offset_bits % dst_type.bits == 0):
+            raise ValueError(
+                "source offset must be divisible by destination element width"
+            )
+        offset = analyzer.simplify(offset_bits // dst_type.bits)
+    return T.Buffer(shape, dtype, src.data, elem_offset=offset)
