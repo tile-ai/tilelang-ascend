@@ -34,6 +34,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd) || exit 1
+cd "$SCRIPT_DIR" || exit 1
+
 # Check Python Version, require greater then 3.10
 python_version=$(python3 --version 2>&1 | grep -oP '\d+\.\d+')
 IFS='.' read -r major minor <<< "$python_version"
@@ -247,20 +250,39 @@ cd ..
 # compile and install shmem package
 if $USE_SHMEM; then
     echo "Starting installation shmem..."
-    cd 3rdparty/shmem
-    bash scripts/build.sh -python_extension -mf
-    pip show shmem >/dev/null 2>&1
-    if [[ $? -eq 0 ]]; then
-        echo "begin uninstall old shmem whl package"
-        pip uninstall --yes shmem
+    SHMEM_DIR="$SCRIPT_DIR/3rdparty/shmem"
+    SHMEM_PYTHON_DIR="$SHMEM_DIR/src/python"
+    SHMEM_ENV="$SHMEM_DIR/install/set_env.sh"
+    cd "$SHMEM_DIR" || exit 1
+    if ! bash scripts/build.sh -python_extension -mf; then
+        echo "Error: shmem build failed." >&2
+        exit 1
     fi
-    cd src/python
-    python setup.py bdist_wheel
-    cd dist
-    python -m pip install shmem*.whl
+    if [[ ! -f "$SHMEM_ENV" ]]; then
+        echo "Error: shmem environment script not found: $SHMEM_ENV" >&2
+        exit 1
+    fi
+    cd "$SHMEM_PYTHON_DIR" || exit 1
+    if ! python setup.py bdist_wheel; then
+        echo "Error: shmem wheel build failed." >&2
+        exit 1
+    fi
+    SHMEM_WHEELS=("$SHMEM_PYTHON_DIR"/dist/shmem*.whl)
+    if [[ ! -f "${SHMEM_WHEELS[0]}" ]]; then
+        echo "Error: No shmem wheel found in $SHMEM_PYTHON_DIR/dist." >&2
+        exit 1
+    fi
+    if pip show shmem >/dev/null 2>&1; then
+        echo "begin uninstall old shmem whl package"
+        if ! pip uninstall --yes shmem; then
+            echo "Error: Failed to uninstall old shmem package." >&2
+            exit 1
+        fi
+    fi
+    python -m pip install "${SHMEM_WHEELS[@]}"
     if [ $? -ne 0 ]; then
         echo "python -m pip install failed, try pip3 install ..."
-        pip3 install shmem*.whl
+        pip3 install "${SHMEM_WHEELS[@]}"
         if [ $? -ne 0 ]; then
             echo "Error: shmem-xxx.whl install failed."
             exit 1
@@ -270,13 +292,16 @@ if $USE_SHMEM; then
     else
         echo "shmem-xxx.whl install success."
     fi
-    source ../../../install/set_env.sh
+    # SHMEM's environment script does not quote dirname's result. Source it by
+    # a relative name so repository paths containing spaces remain supported.
+    cd "$SHMEM_DIR/install" || exit 1
+    source ./set_env.sh
     if [ $? -ne 0 ]; then
         echo "Error: set shmem env failed."
         exit 1
     fi
     # back to path tilelang-ascend/
-    cd ../../../../..
+    cd "$SCRIPT_DIR" || exit 1
     echo "Install shmem all success."
 fi
 
