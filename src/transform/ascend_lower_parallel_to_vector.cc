@@ -1097,12 +1097,36 @@ private:
     }
 
     if (auto load = operands[1].as<BufferLoadNode>()) {
+      bool left_is_row_broadcast = IsRowVarIndexed1DUBLoad(operands[0]);
       if (IsScalarAccess(load->indices, parallel_vars)) {
+        if (left_is_row_broadcast) {
+          // Both operands are row-constant scalars: no vector operand remains
+          // for the scalar-variant op. Bail so VisitStmt_ falls back to a
+          // scalar serial loop.
+          return false;
+        }
         PrimExpr scalar_offset =
             CalculateBufferOffset(load->indices, load->buffer, parallel_vars);
         auto stmt = GenerateBufferScalarVectorCall(
             op_type, output_buffer, output_offset, left_buffer, left_offset,
             load->buffer, scalar_offset, element_count, is_2d);
+        statements->push_back(stmt);
+        return true;
+      } else if (left_is_row_broadcast) {
+        // The left operand is a row-broadcast 1D UB load: its address advances
+        // sub-32B per row and cannot be emitted as a direct VEC operand. Swap
+        // it into the scalar slot when the op is commutative (GetValue does a
+        // scalar read, which has no block alignment requirement); otherwise
+        // bail to the scalar serial fallback because no reversed scalar op
+        // exists.
+        if (!IsCommutativeScalarSwapOp(op_type)) {
+          return false;
+        }
+        PrimExpr right_offset =
+            CalculateBufferOffset(load->indices, load->buffer, parallel_vars);
+        auto stmt = GenerateBufferScalarVectorCall(
+            op_type, output_buffer, output_offset, load->buffer, right_offset,
+            left_buffer, left_offset, element_count, is_2d);
         statements->push_back(stmt);
         return true;
       } else {
@@ -1143,6 +1167,16 @@ private:
       return false;
     }
 
+    // A row-broadcast 1D UB left operand cannot be emitted as a direct VEC
+    // operand (sub-32B row stride traps the VEC instruction). Swap it into
+    // the scalar slot when the op is commutative; otherwise bail before
+    // creating any temp buffer so VisitStmt_ falls back to a scalar serial
+    // loop.
+    bool left_is_row_broadcast = IsRowVarIndexed1DUBLoad(operands[0]);
+    if (left_is_row_broadcast && !IsCommutativeScalarSwapOp(op_type)) {
+      return false;
+    }
+
     Buffer tmp =
         CreateTempBufferLike(output_buffer, element_count, inner_vec_len);
     PrimExpr tmp_offset = IntImm(DataType::Int(32), 0);
@@ -1150,6 +1184,14 @@ private:
     if (!DecomposeExpression(operands[1], tmp, tmp_offset, element_count,
                              parallel_vars, statements, is_2d, inner_vec_len)) {
       return false;
+    }
+
+    if (left_is_row_broadcast) {
+      auto stmt = GenerateBufferScalarVectorCall(
+          op_type, output_buffer, output_offset, tmp, tmp_offset, left_buffer,
+          left_offset, element_count, is_2d);
+      statements->push_back(stmt);
+      return true;
     }
 
     auto stmt = GenerateBinaryVectorCall(op_type, output_buffer, output_offset,
@@ -1442,6 +1484,37 @@ private:
     }
 
     return false;
+  }
+
+  // True when `operand` is a 1D UB load indexed by a plain loop variable other
+  // than the vector dim var (e.g. the outer parallel var or an enclosing
+  // serial var). Inside a row body such an operand advances at element
+  // granularity (sub-32B for fp32) between rows, so it must not be emitted as
+  // a direct VEC operand: AscendC vector instructions require 32B-aligned UB
+  // addresses.
+  bool IsRowVarIndexed1DUBLoad(const PrimExpr &operand) {
+    const auto *load = operand.as<BufferLoadNode>();
+    if (load == nullptr || load->buffer->shape.size() != 1 ||
+        load->indices.size() != 1) {
+      return false;
+    }
+    if (!IsUnifiedBuffer(load->buffer)) {
+      return false;
+    }
+    const auto *idx = load->indices[0].as<VarNode>();
+    if (idx == nullptr) {
+      // Constant or affine index: not the row-broadcast family.
+      return false;
+    }
+    return vector_dim_var_ == nullptr || idx != vector_dim_var_;
+  }
+
+  // Binary ops whose operands can be swapped without changing semantics, so a
+  // row-broadcast 1D left operand can be moved into the scalar slot of the
+  // Muls/Addss-style lowering instead of a direct VEC operand.
+  bool IsCommutativeScalarSwapOp(const Op &op_type) {
+    return op_type.same_as(tl::ascend_add()) ||
+           op_type.same_as(tl::ascend_mul());
   }
 
   PrimExpr CreateAccessPtr(const Buffer &buffer, const DataType &dtype,
