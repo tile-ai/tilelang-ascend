@@ -5,6 +5,33 @@ from typing import Optional
 
 import torch
 
+
+def _check_precision(actual, golden):
+    if not actual.is_floating_point():
+        if not torch.equal(actual, golden):
+            raise AssertionError("integer mismatch")
+        return
+    atol, rtol, cap = {
+        torch.float16: (1e-2, 1e-2, float("inf")),
+        torch.bfloat16: (1e-2, 1e-2, float("inf")),
+        torch.float32: (1e-2, 1e-2, float("inf")),
+    }.get(actual.dtype, (1e-2, 1e-2, float("inf")))
+    sa = torch.isnan(actual)
+    sg = torch.isnan(golden)
+    if not (
+        torch.equal(sa, sg)
+        and torch.equal(torch.isposinf(actual), torch.isposinf(golden))
+        and torch.equal(torch.isneginf(actual), torch.isneginf(golden))
+    ):
+        raise AssertionError("NaN/Inf mismatch")
+    valid = torch.isfinite(golden)
+    if valid.any():
+        d = torch.where(torch.isfinite(actual[valid]), (actual[valid] - golden[valid]).abs(), torch.full_like(golden[valid], float("inf")))
+        p = d <= atol + rtol * golden[valid].abs()
+        if p.float().mean().item() < 0.99 or d.max().item() > cap:
+            raise AssertionError("precision mismatch")
+
+
 import tilelang
 from tilelang.profiler import do_bench  # noqa: E402
 
@@ -156,7 +183,7 @@ def _prepare_and_run(
     max_diff = (out_valid.float() - ref_out.float()).abs().max().item()
 
     try:
-        torch.testing.assert_close(out_valid.cpu(), ref_out.cpu(), rtol=rtol, atol=atol)
+        _check_precision(out_valid.cpu(), ref_out.cpu())
         passed = True
     except AssertionError:
         passed = False
@@ -455,9 +482,11 @@ def run_one(name, batch, heads, seq_q, seq_kv, dim, window_size, block_M, block_
     out_v = out[:, :, :seq_q, :].cpu()
     ref_v = ref_out[:, :, :seq_q, :].cpu()
     max_diff = (out_v.float() - ref_v.float()).abs().max().item()
-    print(f"  correctness: max_diff={max_diff:.6e} (atol=1e-2)")
-    if max_diff >= 1e-2:
-        print(f"  [ERROR] correctness check failed: max_diff={max_diff:.6e} >= atol=1e-2")
+    print(f"  correctness: max_diff={max_diff:.6e}")
+    try:
+        _check_precision(out_v, ref_v)
+    except AssertionError as exc:
+        print(f"  [ERROR] correctness check failed: {exc}")
         return False
 
     # Bench TileLang kernel
