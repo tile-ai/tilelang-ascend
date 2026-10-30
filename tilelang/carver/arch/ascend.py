@@ -1,12 +1,17 @@
-from typing import Optional, List
-from tvm.target import Target
-from .arch_base import TileDevice
-import logging
+from __future__ import annotations
 
-# check if torch_npu is available, if not, degrade using CHIP_SPECS only
+import logging
+from pathlib import Path
+import platform
+
+from tvm.target import Target
+from tilelang.env import ASCEND_HOME
+
+from .arch_base import TileDevice
+from .ascend_specs import A3_SKUS, a3_resources, a3_sku
+
 try:
-    import torch
-    import torch_npu
+    from torch_npu import npu
 
     _TORCH_NPU_AVAILABLE = True
 except ImportError:
@@ -55,13 +60,19 @@ CHIP_SPECS = {
 DEFAULT_CHIP = "Ascend910A"
 
 
-class CubeInstruction(object):
-    def __init__(self, name: str, shape: List[int]):
+class CubeInstruction:
+    def __init__(self, name: str, shape: list[int]):
         self.name = name
         self.shape = shape
 
+
 class Ascend(TileDevice):
-    def __init__(self, target: Target | str = "llvm -keys=ascend", chip_name: Optional[str] = None):
+    def __init__(
+        self,
+        target: Target | str = "llvm -keys=ascend",
+        chip_name: str | None = None,
+        platform_config: str | Path | None = None,
+    ):
         if isinstance(target, str):
             target = Target(target)
         self.target = target
@@ -69,40 +80,45 @@ class Ascend(TileDevice):
 
         # detect npu properties if chip_name is not provided
         detected_cores = None
+        detected_vector_cores = None
         L2_cache_size_bytes = None
         if chip_name is None and _TORCH_NPU_AVAILABLE:
             try:
-                if torch.npu.is_available() and torch.npu.device_count() > 0:
+                if npu.is_available() and npu.device_count() > 0:
                     # Get the current NPU device properties
-                    props = torch.npu.get_device_properties(torch.npu.current_device())
+                    props = npu.get_device_properties(npu.current_device())
                     npu_name = props.name.upper()  # e.g., "ASCEND910B"
 
                     if hasattr(props, "cube_core_num"):
                         detected_cores = props.cube_core_num
                     if hasattr(props, "l2_cache_size"):
                         L2_cache_size_bytes = props.l2_cache_size
+                    elif hasattr(props, "L2_cache_size"):
+                        L2_cache_size_bytes = props.L2_cache_size
+                    if hasattr(props, "vector_core_num"):
+                        detected_vector_cores = props.vector_core_num
 
-                    if "910B" in npu_name:
+                    if sku := a3_sku(npu_name):
+                        chip_name = sku
+                    elif "910B" in npu_name:
                         chip_name = "Ascend910B"
                     elif "310P" in npu_name:
                         chip_name = "Ascend310P"
                     elif "910" in npu_name:
                         chip_name = "Ascend910A"
 
-                    logger.debug(
-                        f"Detected Ascend NPU: {npu_name}, using chip profile: {chip_name}"
-                    )
+                    logger.debug(f"Detected Ascend NPU: {npu_name}, using chip profile: {chip_name}")
             except Exception as e:
-                logger.warning(
-                    f"Failed to detect Ascend NPU properties from torch_npu: {e}"
-                )
+                logger.warning(f"Failed to detect Ascend NPU properties from torch_npu: {e}")
 
         # Else determine chip properties from CHIP_SPEC if not chip name provided
         if chip_name is None:
             mcpu = getattr(target, "mcpu", None)
             if mcpu:
                 mcpu = mcpu.lower()
-                if "910b" in mcpu:
+                if sku := a3_sku(mcpu):
+                    chip_name = sku
+                elif "910b" in mcpu:
                     chip_name = "Ascend910B"
                 elif "310p" in mcpu:
                     chip_name = "Ascend310P"
@@ -113,8 +129,25 @@ class Ascend(TileDevice):
             else:
                 chip_name = DEFAULT_CHIP
 
+        chip_name = a3_sku(chip_name) or chip_name
         self.chip_name = chip_name
-        spec = CHIP_SPECS.get(chip_name, CHIP_SPECS[DEFAULT_CHIP]).copy()
+        if chip_name in A3_SKUS:
+            if platform_config is None:
+                root = Path(ASCEND_HOME)
+                platform_config = root / "data/platform_config" / f"{chip_name}.ini"
+                if not platform_config.is_file():
+                    platform_config = root / f"{platform.machine()}-linux/data/platform_config" / f"{chip_name}.ini"
+            self.sdk_resources = a3_resources(chip_name, platform_config)
+            self.raw_memory_capacities = self.sdk_resources["raw_memory_capacities"]
+            spec = {
+                **self.sdk_resources["usable_memory_capacities"],
+                "cores": self.sdk_resources["cores"],
+                "L2": self.sdk_resources["L2"],
+                "cube": self.sdk_resources["cube"],
+            }
+            self.compute_max_vector_core = detected_vector_cores or self.sdk_resources["vector_cores"]
+        else:
+            spec = CHIP_SPECS.get(chip_name, CHIP_SPECS[DEFAULT_CHIP]).copy()
 
         # AI Core size
         if detected_cores is not None and detected_cores > 0:
@@ -159,7 +192,7 @@ class Ascend(TileDevice):
         return self.cube_spec[-1]
 
     @property
-    def cube_shape(self) -> List[int]:
+    def cube_shape(self) -> list[int]:
         """
         Return the full dimensions of the CUBE unit [M, N, K].
         """
@@ -170,20 +203,24 @@ class Ascend(TileDevice):
         return (self.cube_spec[0], self.cube_spec[1])
 
     def get_avaliable_tensorintrin_shapes(self):
-        self.available_cube_instructions = (
-            CubeInstruction("Davich", [16, 16]),
-        )
+        self.available_cube_instructions = (CubeInstruction("Davich", [16, 16]),)
         return [t.shape for t in self.available_cube_instructions]
 
-# TODO: consider the dtype of the input a and b seperately
-# As the tensorcore may supports e4m3_float8 * e5m2
+
 def is_cube_supported_precision(in_dtype: str, accum_dtype: str, arch: TileDevice) -> bool:
     if not isinstance(arch, Ascend):
         return False
-    if arch.chip_name == "Ascend910A" or arch.chip_name == "Ascend910B" or arch.chip_name == "Ascend310P":
+    if arch.chip_name in A3_SKUS:
+        return (
+            in_dtype in ["float16", "bfloat16"]
+            and accum_dtype in ["float16", "bfloat16", "float32"]
+            and ("bfloat16" not in (in_dtype, accum_dtype) or arch.sdk_resources["supports_bf16"])
+        )
+    if arch.chip_name in CHIP_SPECS:
         # Ascend NPU supports float16 and bfloat16 tensor core operations
         return in_dtype in ["float16", "bfloat16"] and accum_dtype in ["float16", "bfloat16", "float32"]
     else:
         raise ValueError(f"Unsupported architecture: {arch}")
+
 
 __all__ = ["Ascend", "is_ascend_arch", "is_cube_supported_precision"]
