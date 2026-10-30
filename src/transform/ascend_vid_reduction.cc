@@ -505,6 +505,9 @@ private:
         "tl.ascend_exp", "tl.ascend_ln", "tl.ascend_abs",
         "tl.ascend_reciprocal", "tl.ascend_sqrt", "tl.ascend_rsqrt",
         "tl.ascend_relu", "tl.ascend_bitwise_not",
+        // sigmoid/round: size/count is the last arg (after optional tmp
+        // inserted by _call_intrin_with_optional_tmp), same halving pattern
+        "tl.ascend_sigmoid", "tl.ascend_round",
         // scalar_op: size = math.prod(src0_extent), assert size_0 == size_2
         "tl.ascend_leaky_relu", "tl.ascend_axpy",
         // bitwise_shift: size = math.prod(src0_extent), assert size_0 == size_2
