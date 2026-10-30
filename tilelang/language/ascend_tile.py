@@ -1617,6 +1617,15 @@ def bitwise_rshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scal
         src0: The source buffer.
         scalarValue: The number of bits to shift (scalar).
     """
+    _supported = ("int16", "uint16", "int32", "uint32")
+    dst_dtype = _underlying_buffer(dst).dtype
+    src0_dtype = _underlying_buffer(src0).dtype
+    if dst_dtype not in _supported or src0_dtype not in _supported:
+        raise ValueError(
+            "tilelang.language.bitwise_rshift supports only int16, uint16, int32, "
+            f"uint32 data operands on Ascend A2/A3; got dst={dst_dtype}, src0={src0_dtype}."
+        )
+
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
         size_2 = math.prod(dst_extent)

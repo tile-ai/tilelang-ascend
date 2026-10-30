@@ -1061,6 +1061,15 @@ def test_bitwise_rshift(dtype, target, shape):
     run_test_bitwise_rshift(M, N, 128, 256, scalarvalue=scalarvalue, dtype=dtype, target=target)
 
 
+@pytest.mark.parametrize("dtype", ["int64", "uint64"])
+def test_bitwise_rshift_unsupported_dtype_raises(dtype):
+    """int64/uint64 data operands must be rejected with a clear diagnostic."""
+    src = tir.decl_buffer((64, 128), dtype)
+    dst = tir.decl_buffer((64, 128), dtype)
+    with pytest.raises(ValueError, match="bitwise_rshift supports only int16, uint16, int32, uint32"):
+        T.tile.bitwise_rshift(dst, src, 2)
+
+
 def bitwise_rshift_slice(M, N, block_M, block_N, scalarvalue, dtype="int32"):
     m_num = M // block_M
     n_num = N // block_N
