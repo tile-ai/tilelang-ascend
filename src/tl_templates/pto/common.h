@@ -1413,12 +1413,15 @@ AICORE PTO_INLINE void
 tand(TileUbDataND<uint8_t, Rows, Cols, RowValid, ColValid> &dst,
      TileUbDataND<uint8_t, Rows, Cols, RowValid, ColValid> &src0,
      TileUbDataND<uint8_t, Rows, Cols, RowValid, ColValid> &src1) {
-  auto &dst_u16 = reinterpret_cast<
-      TileUbDataND<uint16_t, Rows, Cols / 2, RowValid, ColValid / 2> &>(dst);
-  auto &src0_u16 = reinterpret_cast<
-      TileUbDataND<uint16_t, Rows, Cols / 2, RowValid, ColValid / 2> &>(src0);
-  auto &src1_u16 = reinterpret_cast<
-      TileUbDataND<uint16_t, Rows, Cols / 2, RowValid, ColValid / 2> &>(src1);
+  auto &dst_u16 =
+      reinterpret_cast<TileUbDataND<uint16_t, Rows, (Cols + 1) / 2, RowValid,
+                                    (ColValid + 1) / 2> &>(dst);
+  auto &src0_u16 =
+      reinterpret_cast<TileUbDataND<uint16_t, Rows, (Cols + 1) / 2, RowValid,
+                                    (ColValid + 1) / 2> &>(src0);
+  auto &src1_u16 =
+      reinterpret_cast<TileUbDataND<uint16_t, Rows, (Cols + 1) / 2, RowValid,
+                                    (ColValid + 1) / 2> &>(src1);
   pto::TAND(dst_u16, src0_u16, src1_u16);
 }
 
@@ -1436,12 +1439,15 @@ AICORE PTO_INLINE void
 tor(TileUbDataND<uint8_t, Rows, Cols, RowValid, ColValid> &dst,
     TileUbDataND<uint8_t, Rows, Cols, RowValid, ColValid> &src0,
     TileUbDataND<uint8_t, Rows, Cols, RowValid, ColValid> &src1) {
-  auto &dst_u16 = reinterpret_cast<
-      TileUbDataND<uint16_t, Rows, Cols / 2, RowValid, ColValid / 2> &>(dst);
-  auto &src0_u16 = reinterpret_cast<
-      TileUbDataND<uint16_t, Rows, Cols / 2, RowValid, ColValid / 2> &>(src0);
-  auto &src1_u16 = reinterpret_cast<
-      TileUbDataND<uint16_t, Rows, Cols / 2, RowValid, ColValid / 2> &>(src1);
+  auto &dst_u16 =
+      reinterpret_cast<TileUbDataND<uint16_t, Rows, (Cols + 1) / 2, RowValid,
+                                    (ColValid + 1) / 2> &>(dst);
+  auto &src0_u16 =
+      reinterpret_cast<TileUbDataND<uint16_t, Rows, (Cols + 1) / 2, RowValid,
+                                    (ColValid + 1) / 2> &>(src0);
+  auto &src1_u16 =
+      reinterpret_cast<TileUbDataND<uint16_t, Rows, (Cols + 1) / 2, RowValid,
+                                    (ColValid + 1) / 2> &>(src1);
   pto::TOR(dst_u16, src0_u16, src1_u16);
 }
 
