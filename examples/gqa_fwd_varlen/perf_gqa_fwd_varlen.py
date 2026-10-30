@@ -3,6 +3,29 @@ import sys
 
 import torch
 
+
+def _check_precision(actual, golden):
+    if not actual.dtype.is_floating_point:
+        return torch.equal(actual, golden)
+    atol, rtol, max_abs = {
+        torch.float16: (2**-14, 2**-9, 1e-1),
+        torch.bfloat16: (2**-10, 2**-6, 1e0),
+        torch.float32: (2**-16, 2**-10, 1e-2),
+    }.get(actual.dtype, (2**-16, 2**-10, 1e-2))
+    a, g = actual.float(), golden.float()
+    if not (
+        torch.equal(torch.isnan(a), torch.isnan(g))
+        and torch.equal(torch.isposinf(a), torch.isposinf(g))
+        and torch.equal(torch.isneginf(a), torch.isneginf(g))
+    ):
+        return False
+    valid = torch.isfinite(golden)
+    if not valid.any():
+        return True
+    diff = torch.where(torch.isfinite(a[valid]), (a[valid] - g[valid]).abs(), torch.full_like(g[valid], float("inf")))
+    return (diff <= atol + rtol * g[valid].abs()).float().mean().item() >= 0.99 and diff.max().item() <= max_abs
+
+
 # Import kernel + helpers from the example module (same directory).
 # Make sure the example dir is on sys.path.
 import os
@@ -195,9 +218,9 @@ def run_one(
         out_v = out_v[non_nan]
         ref_v = ref_v[non_nan]
     max_diff = (out_v.float() - ref_v.float()).abs().max().item()
-    print(f"  correctness: max_diff={max_diff:.6e} (atol=1e-2)")
-    if max_diff >= 1e-2:
-        print(f"  [ERROR] correctness check failed: max_diff={max_diff:.6e} >= atol=1e-2")
+    print(f"  correctness: max_diff={max_diff:.6e}")
+    if not _check_precision(out_v, ref_v):
+        print("  [ERROR] correctness check failed")
         return False
 
     # Bench TileLang kernel

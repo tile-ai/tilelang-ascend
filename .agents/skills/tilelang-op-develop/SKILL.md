@@ -56,7 +56,7 @@ design.md 可能很长，**只提取以下字段，忽略其余内容**：
 | 逐元素运算（add/mul/sigmoid/relu） | `examples/elementwise/`、`examples/activation/` |
 | 归约运算（reduce_sum/max/min） | `examples/reduce/` |
 | 归一化（softmax/layernorm/rmsnorm） | `examples/softmax/`、`examples/normalization/` |
-| GEMM | `examples/gemm/`、`examples/developer_mode/gemm_developer.py` |
+| GEMM | `examples/gemm/`、`examples_experiment/developer_mode/gemm_developer.py` |
 | 融合算子 | `examples/flash_attention/`、`examples/pipeline/`、`examples/developer_mode/matmul_add_developer.py` |
 | Developer 模式 | `examples/developer_mode/` |
 | transpose / layout transform | `examples/transpose/transpose.py`（提取结构谓词、
