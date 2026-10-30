@@ -2619,11 +2619,39 @@ void CodeGenTileLangAscendPto::CompareScalarCodegen(
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo dst_shape_info =
       GetCompareMaskInfo(op->args[0].as<CallNode>(), src0_shape_info);
-  auto src1_name = PrintExpr(op->args[2]);
-  auto mode = Downcast<StringImm>(op->args[3])->value;
+  // The scalar operand comes either as an immediate expression (args[2],
+  // mode at args[3]) or as a buffer pointer plus element index (args[2] is a
+  // tvm_access_ptr, index at args[3], mode at args[4]).
+  const auto *scalar_buf = op->args[2].as<CallNode>();
+  const bool is_buffer_scalar =
+      scalar_buf != nullptr &&
+      scalar_buf->op.same_as(builtin::tvm_access_ptr());
+  std::string src1_name;
+  int mode_idx = 3;
+  if (is_buffer_scalar) {
+    std::string buf_offset = PrintBufferOffset(scalar_buf);
+    std::string temp_name = GetTempVarName(buf_offset + "_scalar");
+    // GetValue is a scalar-pipe read of UB written by the vector pipe, so a
+    // cross-pipe sync is required. Use pipe_barrier instead of an event flag
+    // pair: a hardcoded EVENT_ID on the V->S channel could collide with
+    // user-level T.set_flag/T.wait_flag in the kernel (event IDs are
+    // documented as free to use within a pipe pair). Mirrors the AscendC
+    // backend's CompareScalarCodegen (codegen_ascend.cc).
+    this->PrintIndent();
+    this->stream << "pipe_barrier(PIPE_ALL);\n";
+    this->PrintIndent();
+    this->stream << "auto " << temp_name << " = " << buf_offset << ".GetValue("
+                 << PrintExpr(op->args[3]) << ");\n";
+    src1_name = temp_name;
+    mode_idx = 4;
+  } else {
+    src1_name = PrintExpr(op->args[2]);
+  }
+  auto mode = Downcast<StringImm>(op->args[mode_idx])->value;
 
   DataType src_dtype = GetAccessPtrDtypePto(op->args[1].as<CallNode>());
-  DataType scalar_dtype = op->args[2].dtype();
+  DataType scalar_dtype =
+      is_buffer_scalar ? GetAccessPtrDtypePto(scalar_buf) : op->args[2].dtype();
   if (scalar_dtype != src_dtype) {
     src1_name = getType(src_dtype) + "(" + src1_name + ")";
   }
