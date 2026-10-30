@@ -40,7 +40,7 @@ def broadcast(
 
 #### 2.3.2 Shape 支持
 
-- 支持 1D 和 2D
+- 支持 1D 和 2D；更高维输入只有前导维度均可证明为 1 时才可降维，例如 `dst[batch, :, :]`。完整的多片 3D 张量会抛出 `ValueError`。
 
 > **已知限制**：
 > - 2D axis=1（src=(M,1)→dst=(M,N)）当 M≥2 时，ascendc、pto 均不支持
@@ -81,3 +81,35 @@ src = T.alloc_ub((1,), "float16")
 dst = T.alloc_ub((256,), "float16")
 T.tile.broadcast(dst, src, axis=0)
 ```
+
+### Symbolic shape compatibility
+
+The frontend uses arithmetic proofs to compare symbolic extents. Independently
+constructed or algebraically equivalent extents are accepted; unequal extents
+and relations that cannot be proved equal are rejected. This applies to both
+buffers and buffer regions. `T.tile.mul_add_dst` similarly requires provably
+equal element counts for the destination and both sources.
+
+For ordinary `T.tile.broadcast` calls with dynamic BufferRegion slice extents,
+AscendC temporary-buffer planning still requires static extents, and PTO reports
+a compile-time error instead of using the full allocated tile. This change does
+not add dynamic broadcast workspace allocation. The existing opt-in tail-mask
+propagation path is separate: `AscendTailMaskPropagation` emits a dedicated
+tail-broadcast intrinsic with additional valid-rectangle expressions.
+
+`T.tile.mul_add_dst` supports symbolic valid counts with `target="ascendc"`
+(and the current `auto` target). The PTO backend requires static slice extents
+and reports a compile-time error for dynamic counts; it must not silently apply
+the operation to the full allocated tile.
+
+BufferRegions passed to either operation must describe a contiguous flattened
+span (a whole buffer, whole rows, one row, or a 1D interval). Multi-row narrow
+column windows contain gaps between rows; both APIs reject them rather than
+silently treating their logical element count as a compact physical span.
+
+Contiguity is checked against explicit buffer strides as well as slice extents,
+for both complete buffers and regions. A singleton axis does not constrain its
+stride: a single row selected from a padded buffer is still valid when its
+selected elements are adjacent. Multi-row padded layouts and non-unit vector
+strides are rejected. The same flat-access requirement applies to
+`T.tile.mul_add_dst`.

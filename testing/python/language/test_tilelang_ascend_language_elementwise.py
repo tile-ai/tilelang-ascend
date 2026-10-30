@@ -6102,3 +6102,90 @@ if __name__ == "__main__":
     current_dir = os.path.dirname(os.path.abspath(__file__))
     elementwise_test_path = os.path.join(current_dir, "test_tilelang_ascend_language_elementwise.py")
     pytest.main(["--forked", elementwise_test_path])
+
+
+# Regression: independently constructed slice extents require an arithmetic proof.
+# Based on vec_mul_add_dst; fixed UB allocations with a symbolic valid count.
+def mul_add_dst_symbolic_slice():
+    @T.prim_func
+    def main(A: T.Tensor((2, 64), "float"), B: T.Tensor((2, 64), "float"), C: T.Tensor((2, 64), "float"), D: T.Tensor((2, 64), "float")):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((64,), "float")
+            b_ub = T.alloc_ub((64,), "float")
+            c_ub = T.alloc_ub((64,), "float")
+            T.copy(A[vid, 0], a_ub)
+            T.copy(B[vid, 0], b_ub)
+            T.copy(C[vid, 0], c_ub)
+            T.tile.mul_add_dst(c_ub[0 : 64 - vid * 32], a_ub[0 : 64 - vid * 32], b_ub[0 : 63 - vid * 32 + 1])
+            T.copy(c_ub, D[vid, 0])
+
+    return main
+
+
+@pytest.mark.parametrize("target", ["ascendc", "auto"])
+def test_mul_add_dst_symbolic_slice(target):
+    func = tilelang.compile(mul_add_dst_symbolic_slice(), out_idx=[-1], pass_configs=pass_configs, target=target)
+    a, b, c = [torch.randn(2, 64, device="npu") for _ in range(3)]
+    result = func(a, b, c)
+    expected = c.clone()
+    expected[0, :] += a[0, :] * b[0, :]
+    expected[1, :32] += a[1, :32] * b[1, :32]
+    torch.testing.assert_close(result, expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("target", ["ascendc", "auto"])
+def test_mul_add_dst_symbolic_slice_codegen_preserves_count(target):
+    with tilelang.tvm.transform.PassContext(config=pass_configs):
+        artifact = tilelang.lower(mul_add_dst_symbolic_slice(), target=target, platform="A2")
+    # Both subblocks share a fixed UB allocation; the operation must retain
+    # its shorter valid count on subblock 1.
+    assert "AscendC::MulAddDst" in artifact.kernel_source
+    assert "(64 - (vid * 32))" in artifact.kernel_source
+
+
+def test_mul_add_dst_pto_rejects_dynamic_count():
+    with (
+        tilelang.tvm.transform.PassContext(config=pass_configs),
+        pytest.raises(tilelang.tvm.error.TVMError, match="PTO mul_add_dst requires static slice extents"),
+    ):
+        tilelang.lower(mul_add_dst_symbolic_slice(), target="pto", platform="A2")
+
+
+def test_mul_add_dst_pto_static_count_codegen():
+    with tilelang.tvm.transform.PassContext(config=pass_configs):
+        artifact = tilelang.lower(vec_mul_add_dst(2, 64, 2, 64), target="pto", platform="A2")
+    assert "tl::ascend_pto::MulAddDst<float, 1, 64>" in artifact.kernel_source
+
+
+# Fixed-allocation counterpart of the symbolic regression: PTO must continue
+# accepting a static partial slice, not only full-tile operations.
+def mul_add_dst_static_slice():
+    @T.prim_func
+    def main(A: T.Tensor((2, 64), "float"), B: T.Tensor((2, 64), "float"), C: T.Tensor((2, 64), "float"), D: T.Tensor((2, 64), "float")):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((64,), "float")
+            b_ub = T.alloc_ub((64,), "float")
+            c_ub = T.alloc_ub((64,), "float")
+            T.copy(A[vid, 0], a_ub)
+            T.copy(B[vid, 0], b_ub)
+            T.copy(C[vid, 0], c_ub)
+            T.tile.mul_add_dst(c_ub[0:32], a_ub[0:32], b_ub[0:32])
+            T.copy(c_ub, D[vid, 0])
+
+    return main
+
+
+def test_mul_add_dst_pto_static_slice_codegen():
+    with tilelang.tvm.transform.PassContext(config=pass_configs):
+        artifact = tilelang.lower(mul_add_dst_static_slice(), target="pto", platform="A2")
+    assert "tl::ascend_pto::MulAddDst<float, 1, 32>" in artifact.kernel_source
+
+
+@pytest.mark.parametrize("target", ["ascendc", "auto", "pto"])
+def test_mul_add_dst_static_slice_preserves_tail(target):
+    func = tilelang.compile(mul_add_dst_static_slice(), out_idx=[-1], pass_configs=pass_configs, target=target)
+    a, b, c = [torch.randn(2, 64, device="npu") for _ in range(3)]
+    result = func(a, b, c)
+    expected = c.clone()
+    expected[:, :32] += a[:, :32] * b[:, :32]
+    torch.testing.assert_close(result, expected, rtol=1e-5, atol=1e-5)
