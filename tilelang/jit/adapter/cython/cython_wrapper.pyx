@@ -92,7 +92,6 @@ cdef class CythonKernelWrapper:
         cdef int ins_idx = 0
         cdef list tensor_list = []
 
-        analyzer = Analyzer()
         sym_val_by_name = {}
         for key, (ref_tensor_idx, ref_shape_idx) in self.dynamic_symbolic_map.items():
             val = int(inputs[ref_tensor_idx].shape[ref_shape_idx])
@@ -117,6 +116,11 @@ cdef class CythonKernelWrapper:
                                 raise KeyError(f"Unfounded symbolic var: {str(v)}")
                             vmap[v] = tir.IntImm(v.dtype, sym_val_by_name[str(v)])
                         ss = stmt_functor.substitute(s, vmap)
+                        # Lazy Analyzer construction: only pay the ~0.28 ms cost
+                        # when a shape dim actually requires symbolic simplification
+                        # (dynamic-shape kernels). Static-shape kernels with an empty
+                        # dynamic_symbolic_map never reach this branch.
+                        analyzer = Analyzer()
                         ss = analyzer.simplify(ss)
                         if isinstance(ss, tir.IntImm):
                             res = int(ss.value)
