@@ -1145,6 +1145,11 @@ TIR_DEFINE_TL_BUILTIN(ascend_bitwise_lshift)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
+TIR_DEFINE_TL_BUILTIN(ascend_bitwise_lshifts)
+    .set_num_inputs(4)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
 TIR_DEFINE_TL_BUILTIN(ascend_bitwise_rshift)
     .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind",

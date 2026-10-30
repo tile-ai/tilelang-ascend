@@ -546,6 +546,10 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
                   "explicit T.Scope(\"V\"); enable "
                   "tl.ascend_auto_cv_combine or scope it explicitly: "
                << GetRef<Call>(op);
+  } else if (op->op.same_as(tl::ascend_bitwise_lshift())) {
+    LOG(FATAL) << "AscendC backend does not support tensor shift amounts for "
+                  "T.tile.bitwise_lshift on A2/A3; use a scalar shift amount "
+                  "or the PTO backend.";
   } else if (op->op.same_as(builtin::call_extern())) {
     std::string op_name = Downcast<StringImm>(op->args[0])->value;
     if (op_name.find("tl::ascend::copy") != std::string::npos ||

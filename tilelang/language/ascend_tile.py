@@ -1575,33 +1575,90 @@ def mul_add_dst(
     )
 
 
-def bitwise_lshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalarValue: PrimExpr):  # noqa: F821
+def bitwise_lshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalarValue: Buffer | BufferRegion | PrimExpr):  # noqa: F821
     """Performs element-wise bitwise left shift: dst = src0 << scalarValue.
 
+    ``scalarValue`` may be either a scalar shift amount or a per-element
+    shift-amount buffer (or a contiguous region of one). The scalar form
+    lowers to ``TSHLS`` on the PTO backend and ``AscendC::ShiftLeft`` on the
+    AscendC backend. The tensor form (per-element shift amounts) lowers to
+    ``TSHL`` and is supported only on the PTO backend for A2/A3; the AscendC
+    backend rejects it because its ``ShiftLeft`` tensor variant is not
+    available on A2/A3. Both forms support int16/uint16/int32/uint32.
+
     Args:
-        dst: The destination buffer.
-        src0: The source buffer.
-        scalarValue: The number of bits to shift (scalar).
+        dst: The destination buffer (UB).
+        src0: The source buffer (UB).
+        scalarValue: The number of bits to shift (scalar), or a per-element
+            shift-amount buffer / buffer region. The tensor form must share
+            ``src0``'s dtype and shape, and must also live in UB.
+
+    Note:
+        Shift amounts must be within ``[0, element-bit-width)`` for
+        well-defined results. The tensor form's per-element shift amounts are
+        runtime values: the compiler checks dtype and shape only, not the
+        value range, and negative or out-of-range (>= bit width) shift amounts
+        are not guaranteed to produce defined results.
     """
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
-        size_2 = math.prod(dst_extent)
     else:
         dst_ptr = dst.access_ptr("w")
-        size_2 = math.prod(dst.shape)
+        dst_extent = dst.shape
 
     if isinstance(src0, BufferRegion):
         src0_ptr, src0_extent = _handle_buffer_region(src0, "r")
-        size_0 = math.prod(src0_extent)
     else:
         src0_ptr = src0.access_ptr("r")
-        size_0 = math.prod(src0.shape)
+        src0_extent = src0.shape
 
+    size_0 = math.prod(src0_extent)
+    size_2 = math.prod(dst_extent)
     assert size_0 == size_2, "size must be same"
+
+    if isinstance(scalarValue, (Buffer, BufferRegion)):
+        # Tensor (per-element) shift-amount path. Lowered to PTO TSHL; rejected
+        # by the AscendC backend at codegen time.
+        if isinstance(dst, BufferRegion):
+            _validate_binary_op_region(dst, "bitwise_lshift", "dst")
+        if isinstance(src0, BufferRegion):
+            _validate_binary_op_region(src0, "bitwise_lshift", "src0")
+        if isinstance(scalarValue, BufferRegion):
+            _validate_binary_op_region(scalarValue, "bitwise_lshift", "scalarValue")
+            shift_ptr, shift_extent = _handle_buffer_region(scalarValue, "r")
+        else:
+            shift_ptr = scalarValue.access_ptr("r")
+            shift_extent = scalarValue.shape
+
+        assert size_0 == math.prod(shift_extent), "size must be same"
+        if not (_shapes_equal(list(dst_extent), list(src0_extent)) and _shapes_equal(list(dst_extent), list(shift_extent))):
+            raise ValueError(
+                "T.tile.bitwise_lshift with a tensor shift amount requires dst, src0 and scalarValue to have identical shapes."
+            )
+        dst_dtype = DataType(_underlying_buffer(dst).dtype)
+        src0_dtype = DataType(_underlying_buffer(src0).dtype)
+        shift_dtype = DataType(_underlying_buffer(scalarValue).dtype)
+        if not (dst_dtype == src0_dtype == shift_dtype):
+            raise ValueError("T.tile.bitwise_lshift with a tensor shift amount requires dst, src0 and scalarValue to have the same dtype.")
+        if dst_dtype not in (DataType("int16"), DataType("uint16"), DataType("int32"), DataType("uint32")):
+            # Keep the tensor form consistent with the scalar form (AscendC
+            # ShiftLeft and PTO TSHLS): only 16/32-bit signed/unsigned integers.
+            # PTO TSHL itself also accepts int8/uint8, but the scalar form does
+            # not, so those are rejected here for API consistency.
+            raise ValueError(f"T.tile.bitwise_lshift supports int16/uint16/int32/uint32; got {dst_dtype}.")
+
+        return tir.call_intrin(
+            "handle",
+            tir.op.Op.get("tl.ascend_bitwise_lshift"),
+            dst_ptr,
+            src0_ptr,
+            shift_ptr,
+            size_0,
+        )
 
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get("tl.ascend_bitwise_lshift"),
+        tir.op.Op.get("tl.ascend_bitwise_lshifts"),
         dst_ptr,
         src0_ptr,
         scalarValue,
