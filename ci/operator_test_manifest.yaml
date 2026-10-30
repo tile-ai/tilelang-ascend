@@ -271,3 +271,6 @@ mappings:
 
   # examples_experiment/seer_attention
   examples_experiment/seer_attention/block_sparse_attn.py: examples_experiment/seer_attention/test_block_sparse_attn.py
+
+  # examples_experiment/gated_mla
+  examples_experiment/gated_mla/example_gated_mla_decode.py: examples_experiment/gated_mla/test_gated_mla_decode.py
