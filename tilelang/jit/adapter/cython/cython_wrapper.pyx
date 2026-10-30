@@ -29,6 +29,8 @@ cdef class CythonKernelWrapper:
         list param_dtypes    # Cache for parameter dtypes
         list param_shapes    # Cache for parameter shapes as native Python lists
         object get_current_device
+    # Exposed read-only for introspection/testing (issue #1898)
+    cdef readonly object shape_cache  # Cache for resolved output shapes, keyed by symbolic values
     def __cinit__(self, result_idx, workspace_idx, auto_gm_idx, params, lib):
         # Initialize wrapper with kernel configuration
         self.result_idx = result_idx
@@ -41,6 +43,7 @@ cdef class CythonKernelWrapper:
         # Convert TVM shape arrays to native Python lists
         self.param_shapes = []
         self.get_current_device = torch.npu.current_device
+        self.shape_cache = {}
         for param in params:
             native_shape = []
             for dim in param.shape:
@@ -92,43 +95,58 @@ cdef class CythonKernelWrapper:
         cdef int ins_idx = 0
         cdef list tensor_list = []
 
-        # Constructed lazily in the symbolic-shape branch below; static-shape
-        # kernels must not pay the per-call TVM Analyzer construction cost.
-        analyzer = None
-        sym_val_by_name = {}
-        for key, (ref_tensor_idx, ref_shape_idx) in self.dynamic_symbolic_map.items():
-            val = int(inputs[ref_tensor_idx].shape[ref_shape_idx])
-            sym_val_by_name[str(key)] = val
+        # Resolve symbolic values from input shapes (native torch ops, no TVM FFI)
+        sym_vals = []
+        for _, (ref_tensor_idx, ref_shape_idx) in self.dynamic_symbolic_map.items():
+            sym_vals.append(int(inputs[ref_tensor_idx].shape[ref_shape_idx]))
+        cache_key = tuple(sym_vals)
+
+        # Cache resolved output/workspace shapes keyed by the symbolic values so
+        # that repeated calls with identical shapes skip the TVM FFI shape resolution entirely
+        cached_shapes = self.shape_cache.get(cache_key)
+        cdef bint cache_miss = cached_shapes is None
+        if cache_miss:
+            # Constructed lazily in the tir.PrimExpr branch below; static-shape
+            # kernels must not pay the TVM Analyzer construction cost even once.
+            analyzer = None
+            sym_val_by_name = {}
+            for key, val in zip(self.dynamic_symbolic_map.keys(), sym_vals):
+                sym_val_by_name[str(key)] = val
+            cached_shapes = {}
 
         # Prepare input and output tensors
         for i in range(len(self.params)):
             if i in self.result_idx or i in self.workspace_idx:
                 dtype = self.param_dtypes[i]
-                shape = []
-                # Now working with native Python list, no FFI calls needed
-                for s in self.param_shapes[i]:
-                    res = -1
-                    if isinstance(s, int):
-                        res = s
-                    elif isinstance(s, tir.IntImm):
-                        res = int(s.value)
-                    elif isinstance(s, tir.PrimExpr):
-                        vmap = {}
-                        for v in tir.analysis.undefined_vars(s):
-                            if str(v) not in sym_val_by_name:
-                                raise KeyError(f"Unfounded symbolic var: {str(v)}")
-                            vmap[v] = tir.IntImm(v.dtype, sym_val_by_name[str(v)])
-                        ss = stmt_functor.substitute(s, vmap)
-                        if analyzer is None:
-                            analyzer = Analyzer()
-                        ss = analyzer.simplify(ss)
-                        if isinstance(ss, tir.IntImm):
-                            res = int(ss.value)
+                if cache_miss:
+                    shape = []
+                    # Now working with native Python list, no FFI calls needed
+                    for s in self.param_shapes[i]:
+                        res = -1
+                        if isinstance(s, int):
+                            res = s
+                        elif isinstance(s, tir.IntImm):
+                            res = int(s.value)
+                        elif isinstance(s, tir.PrimExpr):
+                            vmap = {}
+                            for v in tir.analysis.undefined_vars(s):
+                                if str(v) not in sym_val_by_name:
+                                    raise KeyError(f"Unfounded symbolic var: {str(v)}")
+                                vmap[v] = tir.IntImm(v.dtype, sym_val_by_name[str(v)])
+                            ss = stmt_functor.substitute(s, vmap)
+                            if analyzer is None:
+                                analyzer = Analyzer()
+                            ss = analyzer.simplify(ss)
+                            if isinstance(ss, tir.IntImm):
+                                res = int(ss.value)
+                            else:
+                                raise ValueError(f"Shape not constant: {str(s)}")
                         else:
-                            raise ValueError(f"Shape not constant: {str(s)}")
-                    else:
-                        raise TypeError(f"Unsupported shape dim type: {type(s)} ({str(s)})")
-                    shape.append(res)
+                            raise TypeError(f"Unsupported shape dim type: {type(s)} ({str(s)})")
+                        shape.append(res)
+                    cached_shapes[i] = shape
+                else:
+                    shape = cached_shapes[i]
                 device = inputs[0].device if len(inputs) > 0 else torch.npu.current_device()
                 tensor = torch.empty(*shape, dtype=dtype, device=device)
             elif i in self.auto_gm_idx:
@@ -143,7 +161,14 @@ cdef class CythonKernelWrapper:
                 tensor = inputs[ins_idx]
                 ins_idx += 1
             tensor_list.append(tensor)
-        
+
+        # Store the successfully resolved shapes only after all buffers resolved,
+        # so a failed resolution does not leave a partial cache entry behind
+        if cache_miss:
+            if len(self.shape_cache) >= 1024:
+                self.shape_cache.clear()
+            self.shape_cache[cache_key] = cached_shapes
+
         # Convert tensor pointers to C void pointers for kernel call
         call_args = []
         for i in range(len(tensor_list)):
