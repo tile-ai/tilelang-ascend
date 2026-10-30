@@ -72,7 +72,7 @@ class PassConfigKey(str, Enum):
 
     TL_ASCEND_EXCEPTION_DUMP = "tl.ascend_exception_dump"
     """Enable/disable AI CORE exception dump callback. Requires a CANN version
-    that provides aclrtSetExceptionInfoCallback / aclrtGetArgsFromExceptionInfo.
+    that provides aclrtExceptionInfoCallbackRegister / aclrtGetArgsFromExceptionInfo.
     Default: False"""
 
     # TIR related configs

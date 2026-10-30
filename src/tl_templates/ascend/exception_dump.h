@@ -65,21 +65,35 @@ extern "C" int tilelang_dump_from_host_args(const void *argsBuf,
     return -4;
   }
 
+  size_t validCount = 0;
   for (size_t t = 0; t < count; t++) {
     uint64_t devAddr = paramInfo->addr[t];
-    tensorInfos[t].type = ACL_DUMP_TENSOR_INPUT;
-    tensorInfos[t].tensorSize = paramInfo->sizes[t];
-    tensorInfos[t].format = 2;
-    tensorInfos[t].dataType = paramInfo->dataTypes[t];
-    tensorInfos[t].tensorAddr = (int64_t *)devAddr;
-    tensorInfos[t].argsOffset = 0;
-    tensorInfos[t].shape[0] = paramInfo->sizes[t];
-    tensorInfos[t].originShape[0] = paramInfo->sizes[t];
+    if (devAddr == 0 || paramInfo->sizes[t] == 0) {
+      continue;
+    }
+    tensorInfos[validCount].type = ACL_DUMP_TENSOR_INPUT;
+    tensorInfos[validCount].tensorSize = paramInfo->sizes[t];
+    tensorInfos[validCount].format = 2;
+    tensorInfos[validCount].dataType = paramInfo->dataTypes[t];
+    tensorInfos[validCount].tensorAddr = (int64_t *)devAddr;
+    tensorInfos[validCount].addrType = ACL_DUMP_ADDR_RAW;
+    tensorInfos[validCount].placement = ACL_DUMP_PLACEMENT_DEVICE;
+    tensorInfos[validCount].argsOffset = 0;
+    tensorInfos[validCount].shapeNum = 1;
+    tensorInfos[validCount].originShapeNum = 1;
+    tensorInfos[validCount].shape[0] = paramInfo->sizes[t];
+    tensorInfos[validCount].originShape[0] = paramInfo->sizes[t];
+    validCount++;
+  }
+
+  if (validCount == 0) {
+    free(tensorInfos);
+    return -5;
   }
 
   if (acldumpSaveExceptionInfo != nullptr) {
     acldumpSaveExceptionInfo(paramInfo->kernel_name, "tilelang", tensorInfos,
-                             count);
+                             validCount);
   } else {
     const char *dumpDir = getenv("TILELANG_EXCEPTION_DUMP_DIR");
     if (dumpDir == nullptr || dumpDir[0] == '\0') {
@@ -101,8 +115,8 @@ extern "C" int tilelang_dump_from_host_args(const void *argsBuf,
     }
     if (fp != nullptr) {
       fprintf(fp, "TileLang Exception Dump\n");
-      fprintf(fp, "Tensor count: %zu\n", count);
-      for (size_t t = 0; t < count; t++) {
+      fprintf(fp, "Tensor count: %zu\n", validCount);
+      for (size_t t = 0; t < validCount; t++) {
         uint64_t devAddr = (uint64_t)tensorInfos[t].tensorAddr;
         fprintf(fp, "tensor[%zu]: addr=0x%lx, size=%zu bytes, dataType=%d\n", t,
                 (unsigned long)devAddr, tensorInfos[t].tensorSize,
@@ -166,7 +180,7 @@ static void TileLangExceptionDumpCallback(aclrtExceptionInfo *exceptionInfo) {
 static inline void tilelang_register_exception_dump_callback() {
   static bool registered = false;
   if (!registered) {
-    aclrtSetExceptionInfoCallback(TileLangExceptionDumpCallback);
+    aclrtExceptionInfoCallbackRegister(TileLangExceptionDumpCallback);
     registered = true;
   }
 }
