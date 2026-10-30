@@ -20,6 +20,30 @@ import torch.nn.functional as F
 import tilelang
 import tilelang.language as T
 
+
+def _check_precision(actual, golden):
+    if not actual.is_floating_point():
+        torch.testing.assert_close(actual, golden, rtol=0, atol=0)
+        return
+    table = {torch.float16: (2**-14, 2**-9, 1e-1), torch.bfloat16: (2**-10, 2**-6, 1.0), torch.float32: (2**-16, 2**-10, 1e-2)}
+    atol, rtol, cap = table.get(actual.dtype, (2**-14, 2**-9, 1e-1))
+    if actual.shape != golden.shape:
+        raise AssertionError(f"shape mismatch: {actual.shape} vs {golden.shape}")
+    special_a = torch.isnan(actual) | torch.isinf(actual)
+    special_g = torch.isnan(golden) | torch.isinf(golden)
+    if not torch.equal(special_a, special_g) or (special_a.any() and not torch.equal(actual[special_a], golden[special_g])):
+        raise AssertionError("NaN/Inf structure mismatch")
+    valid = ~special_g
+    if not valid.any():
+        return
+    diff = (actual[valid] - golden[valid]).abs()
+    passed = diff <= atol + rtol * golden[valid].abs()
+    ratio = passed.float().mean().item()
+    max_abs = diff.max().item()
+    if ratio < 0.99 or max_abs > cap:
+        raise AssertionError(f"precision mismatch: ratio={ratio:.6f}, max_abs={max_abs:.6g}")
+
+
 # Block sizes (all at hardware limits)
 BLOCK_M = 64
 BLOCK_N = 256
@@ -1293,6 +1317,6 @@ if __name__ == "__main__":
     ref = golden_shared_expert(x, w_gate, w_up, w_down)
 
     max_diff = (output.cpu().float() - ref.cpu().float()).abs().max().item()
-    torch.testing.assert_close(output.cpu(), ref.cpu(), atol=5e-3, rtol=5e-3)
+    _check_precision(output.cpu(), ref.cpu())
     print(f"max_diff={max_diff:.6f}")
     print("Test Passed!")

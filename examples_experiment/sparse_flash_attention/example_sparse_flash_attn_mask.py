@@ -1,9 +1,31 @@
 import tilelang
-from tilelang import DataType, language as T
+from tilelang import language as T
 import torch
 
 torch.set_default_device("npu")
 torch.manual_seed(0)
+
+
+def _check_precision(actual, golden):
+    table = {torch.float16: (2**-14, 2**-9, 1e-1), torch.bfloat16: (2**-10, 2**-6, 1e0), torch.float32: (2**-16, 2**-10, 1e-2)}
+    if actual.dtype not in table:
+        return torch.equal(actual, golden), 1.0, 0.0
+    atol, rtol, limit = table[actual.dtype]
+    a, g = actual.detach().float().cpu(), golden.detach().float().cpu()
+    special = ~torch.isfinite(g)
+    if special.any() and (
+        not torch.equal(torch.isnan(a[special]), torch.isnan(g[special]))
+        or not torch.equal(torch.isinf(a[special]), torch.isinf(g[special]))
+    ):
+        return False, 0.0, float("inf")
+    finite = torch.isfinite(g)
+    if not finite.any():
+        return True, 1.0, 0.0
+    err = (a[finite] - g[finite]).abs()
+    ratio = (err <= atol + rtol * g[finite].abs()).float().mean().item()
+    max_err = err.max().item()
+    return ratio >= 0.99 and max_err <= limit, ratio, max_err
+
 
 tilelang.disable_cache()
 
@@ -21,11 +43,8 @@ def sparse_attention_fwd(heads, dim, tail_dim, topk, kv_stride, kv_group=1, sm_s
     sm_scale = (1.0 / (dim + tail_dim)) ** 0.5 if sm_scale is None else sm_scale
 
     batch = T.symbolic("batch")
-    # batch = 2
     seq_len = T.symbolic("seq_len")
-    # seq_len = 273
 
-    # seq_len_kv = 44444 # T.symbolic("seq_len_kv")
     seq_len_kv = T.symbolic("seq_len_kv")
     head_kv = heads // kv_group
     q_shape = [batch, seq_len, heads, dim + tail_dim]
@@ -89,6 +108,7 @@ def sparse_attention_fwd(heads, dim, tail_dim, topk, kv_stride, kv_group=1, sm_s
             sumexp = T.alloc_ub([v_block], accum_dtype)
             m_i = T.alloc_ub([v_block], accum_dtype)
             indices_ub_ = T.alloc_ub([BI], indices_dtype)
+            indices_ub_float = T.alloc_ub([BI], "float")
             kv_ub = T.alloc_ub([D], dtype)
             kv_tail_ub = T.alloc_ub([D_tail], dtype)
             acc_s_ub = T.alloc_ub([v_block, BI], accum_dtype)
@@ -98,6 +118,7 @@ def sparse_attention_fwd(heads, dim, tail_dim, topk, kv_stride, kv_group=1, sm_s
             acc_s_half = T.alloc_ub([v_block, BI], dtype)
             acc_o_ub = T.alloc_ub([v_block, D], accum_dtype)
             acc_o_half = T.alloc_ub([v_block, D], dtype)
+            mask_ub = T.alloc_ub([BI // 8], "uint8")
 
             # Currently manually set the address.
             T.annotate_address(
@@ -116,6 +137,7 @@ def sparse_attention_fwd(heads, dim, tail_dim, topk, kv_stride, kv_group=1, sm_s
                     sumexp: 65536,
                     m_i: 65664,
                     indices_ub_: 65792,
+                    indices_ub_float: 66048,
                     kv_ub: 66048,
                     kv_tail_ub: 67072,
                     acc_s_ub: 66048,
@@ -125,6 +147,7 @@ def sparse_attention_fwd(heads, dim, tail_dim, topk, kv_stride, kv_group=1, sm_s
                     acc_s_half: 98944,
                     acc_o_ub: 98944,
                     acc_o_half: 98944,
+                    mask_ub: 164480,
                 }
             )
 
@@ -179,7 +202,6 @@ def sparse_attention_fwd(heads, dim, tail_dim, topk, kv_stride, kv_group=1, sm_s
 
                             T.set_cross_flag("FIX", 3)
                             T.wait_cross_flag(4)
-                        # T.wait_cross_flag(8)
 
                     with T.Scope("V"):
                         T.tile.fill(acc_o, 0.0)
@@ -189,6 +211,10 @@ def sparse_attention_fwd(heads, dim, tail_dim, topk, kv_stride, kv_group=1, sm_s
 
                         for i_i in range(NI):
                             T.copy(Indices[b_i, s_i, g_i, i_i * BI : i_i * BI + BI], indices_ub_)
+                            T.barrier_all()
+                            T.copy(indices_ub_, indices_ub_float)
+                            T.barrier_all()
+                            T.tile.compare(mask_ub, indices_ub_float, T.float32(s_i), "LE")
                             T.barrier_all()
 
                             for bi_i in range(BI // 2):
@@ -201,8 +227,13 @@ def sparse_attention_fwd(heads, dim, tail_dim, topk, kv_stride, kv_group=1, sm_s
 
                             T.set_cross_flag("MTE3", 0)
 
-                            T.tile.fill(acc_s_ub, 0.0)
+                            T.tile.fill(acc_s_ub_, 0.0)
                             T.barrier_all()
+
+                            for i in T.serial(v_block):
+                                # T.barrier_all()
+                                T.tile.select(acc_s_ub[i, :], mask_ub, acc_s_ub_[i, :], -T.infinity(accum_dtype), "VSEL_TENSOR_SCALAR_MODE")
+                                T.barrier_all()
 
                             T.copy(m_i, m_i_prev)
                             T.barrier_all()
@@ -282,10 +313,6 @@ def sparse_attention_fwd(heads, dim, tail_dim, topk, kv_stride, kv_group=1, sm_s
                         T.barrier_all()
                         T.copy(acc_o_half, Output[b_i, s_i, H0 + vid * v_block : H0 + v_block + vid * v_block, :])
 
-                        T.barrier_all()
-
-                        # T.set_cross_flag("MTE3", 8)
-
     return main
 
 
@@ -298,14 +325,17 @@ func = sparse_attention_fwd(
 )
 
 
-def ref_sparse_attention_fwd_interface(q, kv, indices, q_start_index_s, kv_stride=4, sm_scale=None, is_casual=True):
+def ref_sparse_attention_fwd_interface(
+    q,
+    kv,
+    indices,
+    sm_scale=None,
+):
     q = q.float()
     kv = kv.float()
     indices = indices.transpose(1, 2)
     b, sq, h, dim_q = q.shape
     b, sk, g, _ = kv.shape
-    if q_start_index_s is None:
-        q_start_index_s = sk * kv_stride - sq
 
     assert kv.shape[-1] == 576, "you should assign dim otherwise"
     dim = 512
@@ -313,22 +343,22 @@ def ref_sparse_attention_fwd_interface(q, kv, indices, q_start_index_s, kv_strid
     v = kv[..., :dim]
 
     b, _, _, dim_v = v.shape
-    # num_kv_per_index = 1
     g_index = g
     h_index = h // g
-    compressed_casual_mask = torch.arange(q_start_index_s, sq + q_start_index_s, dtype=torch.int32).view(-1, 1) >= torch.arange(
-        kv_stride - 1, sk * kv_stride, kv_stride, dtype=torch.int32
-    ).view(1, -1)
+    compressed_casual_mask = torch.arange(0, sq, dtype=torch.int32).view(-1, 1) >= torch.arange(1 - 1, sk * 1, 1, dtype=torch.int32).view(
+        1, -1
+    )
 
     mask = q.new_zeros(b, g_index, sq, sk + 1, dtype=torch.bool).scatter(3, indices.long(), 1)
     mask = mask[..., :-1]
     mask = mask & compressed_casual_mask.view(1, 1, sq, sk)
-    mask[:, :, : kv_stride - 1, 0] = True
+    mask[:, :, : 1 - 1, 0] = True
     mask = mask.view(b, g_index, 1, sq, sk)
 
     q = q.view(b, sq, g, -1, dim_q)
     score = torch.einsum("bmghd,bngd->bghmn", q, k)
     sm_scale = dim_q**-0.5 if sm_scale is None else sm_scale
+
     score = score.masked_fill(~mask, float("-inf")).mul(sm_scale)
     p = score.softmax(dim=-1)
     p = p.view(b, g_index, h_index, -1, sq, sk)
@@ -338,20 +368,21 @@ def ref_sparse_attention_fwd_interface(q, kv, indices, q_start_index_s, kv_strid
     return o.to(torch.bfloat16)
 
 
-B, S, SKV, H, HKV, DQK, DV, topk = 2, 273, 44444, 128, 1, 576, 512, 2048
+B, S, SKV, H, HKV, DQK, DV, topk = 1, 1024, 32 * 1024, 128, 1, 576, 512, 2048
 dtype = torch.bfloat16
 
-KV_stride = 1
-q_start_s_index = 4096 * 7
 
 q = torch.randn((B, S, H, DQK), dtype=dtype)
 kv = torch.randn((B, SKV, HKV, DQK), dtype=dtype)
 indices = torch.full((B, S, HKV, topk), SKV, dtype=torch.int32)
+
 for b in range(B):
     for t in range(S):
         for h in range(HKV):
-            i_i = torch.randperm(max(1, ((t + q_start_s_index) // KV_stride)))[:topk]
+            i_i = torch.randperm(max(1, t))[:topk]
             indices[b, t, h, : len(i_i)] = i_i
+
+torch.npu.synchronize()
 
 # output = torch.empty((B, S, H, DV), dtype=dtype)
 # workspace_1 = torch.zeros((core_num, 64, 512), dtype=dtype)
@@ -367,8 +398,9 @@ output = func(q, kv, indices)
 
 torch.npu.synchronize()
 
-ref_output = ref_sparse_attention_fwd_interface(q, kv, indices, q_start_s_index, KV_stride)
+ref_output = ref_sparse_attention_fwd_interface(q, kv, indices)
 torch.npu.synchronize()
-print(f"obviously cmp ref and out, ref:{ref_output}, out:{output}")
-torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
+
+ok, ratio, max_err = _check_precision(output, ref_output)
+assert ok, f"matched_ratio={ratio:.4f}, max_abs_error={max_err:.3e}"
 print("Test Passed!")

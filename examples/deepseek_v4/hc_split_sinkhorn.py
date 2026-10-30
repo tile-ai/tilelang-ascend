@@ -22,6 +22,32 @@ pass_configs = {
 }
 
 
+def _check_precision(actual, golden, dtype):
+    table = {
+        "float16": (2**-14, 2**-9, 1e-1),
+        "bfloat16": (2**-10, 2**-6, 1.0),
+        "float32": (2**-16, 2**-10, 1e-2),
+        "hifloat32": (2**-16, 2**-10, 1e-2),
+        "float8_e4m3": (2**-4, 2**-2, 1.0),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1),
+    }
+    if dtype not in table:
+        assert torch.equal(actual.detach().cpu(), golden.detach().cpu()), "integer output mismatch"
+        return
+    atol, rtol, max_abs_limit = table[dtype]
+    actual, golden = actual.detach().cpu().float(), golden.detach().cpu().float()
+    special = ~torch.isfinite(golden)
+    assert torch.equal(torch.isnan(actual[special]), torch.isnan(golden[special]))
+    assert torch.equal(torch.isinf(actual[special]), torch.isinf(golden[special]))
+    finite = torch.isfinite(golden)
+    if not finite.any():
+        return
+    error = (actual[finite] - golden[finite]).abs()
+    ratio = (error <= atol + rtol * golden[finite].abs()).float().mean().item()
+    max_abs = error.max().item()
+    assert ratio >= 0.99 and max_abs <= max_abs_limit, f"matched_ratio={ratio:.4f}, max_abs={max_abs:.3e}"
+
+
 # kernel
 @tilelang.jit(out_idx=[4, 5, 6], workspace_idx=[3], pass_configs=pass_configs)
 def hc_split_sinkhorn(hc, sinkhorn_iters, eps):
@@ -209,9 +235,9 @@ def test():
     pre_ref, post_ref, comb_ref = hc_split_sinkhorn_ref(mixes, hc_scale, hc_base, hc_mult, 20, 1e-6)
     torch.npu.synchronize()
 
-    torch.testing.assert_close(pre_ref, pre, rtol=1e-2, atol=1e-2)
-    torch.testing.assert_close(post_ref, post, rtol=1e-2, atol=1e-2)
-    torch.testing.assert_close(comb_ref, comb, rtol=1e-2, atol=1e-2)
+    _check_precision(pre, pre_ref, "float32")
+    _check_precision(post, post_ref, "float32")
+    _check_precision(comb, comb_ref, "float32")
 
     logging.info("Kernel Output Match!")
 

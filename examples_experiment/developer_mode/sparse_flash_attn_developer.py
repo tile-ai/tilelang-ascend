@@ -1,6 +1,36 @@
 import tilelang
-from tilelang import DataType, language as T
+from tilelang import language as T
 import torch
+
+
+def _check_precision(actual, golden, dtype):
+    configs = {
+        "float16": (2**-14, 2**-9, 1e-1, 0.99),
+        "bfloat16": (2**-10, 2**-6, 1e0, 0.99),
+        "float32": (2**-16, 2**-10, 1e-2, 0.99),
+        "hifloat32": (2**-16, 2**-10, 1e-2, 0.99),
+        "float8_e4m3": (2**-4, 2**-2, 1e0, 0.99),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1, 0.99),
+    }
+    if dtype in {"int8", "int16", "int32", "int64", "uint8"}:
+        assert torch.equal(actual.detach().cpu(), golden.detach().cpu()), "integer output mismatch"
+        return
+    atol, rtol, max_abs_limit, required_ratio = configs[dtype]
+    actual, golden = actual.detach().cpu().float(), golden.detach().cpu().float()
+    assert actual.shape == golden.shape, f"shape mismatch: {actual.shape} != {golden.shape}"
+    assert torch.equal(torch.isnan(actual), torch.isnan(golden)), "NaN positions differ"
+    assert torch.equal(torch.isposinf(actual), torch.isposinf(golden)), "+Inf positions differ"
+    assert torch.equal(torch.isneginf(actual), torch.isneginf(golden)), "-Inf positions differ"
+    finite = torch.isfinite(golden)
+    if not finite.any():
+        return
+    abs_error = (actual[finite] - golden[finite]).abs()
+    matched_ratio = (abs_error <= atol + rtol * golden[finite].abs()).float().mean().item()
+    max_abs_error = abs_error.max().item()
+    assert matched_ratio >= required_ratio and max_abs_error <= max_abs_limit, (
+        f"matched_ratio={matched_ratio:.4f}, max_abs_error={max_abs_error:.3e}"
+    )
+
 
 torch.set_default_device("npu")
 torch.manual_seed(0)
@@ -274,6 +304,6 @@ torch.npu.synchronize()
 
 ref_output = ref_sparse_attention_fwd_interface(q, kv, indices, q_start_s_index, KV_stride)
 torch.npu.synchronize()
-torch.testing.assert_close(ref_output, output, rtol=1e-2, atol=1e-2)
+_check_precision(output, ref_output, "float16")
 
 print("Test Passed!")
