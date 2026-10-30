@@ -6,6 +6,12 @@
 
 ## Usage
 
+The examples below use the legacy planner. The opt-in calibrated A3 constraint
+planner has a narrower operation subset and treats `num_stages` as a version
+search cap; actual versions and stage offsets are verified separately. It also
+supports zero/one/short static loops. See [calibrated constraint pipelines](../language_ref/primitives.md#calibrated-multi-stage-constraint-pipelines)
+for that contract.
+
 ### Interface
 
 ```python

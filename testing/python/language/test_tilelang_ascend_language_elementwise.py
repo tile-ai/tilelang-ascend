@@ -88,17 +88,22 @@ def vec_abs(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-def run_test_abs(M, N, block_M, block_N, dtype, target):
+def run_test_abs(M, N, block_M, block_N, dtype, target, repeat=1):
+    from ascend_repeat import repeat_launch
+
     func = vec_abs(M, N, block_M, block_N, dtype)
-    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+    func = tilelang.compile(func, out_idx=[], pass_configs=pass_configs, target=target)
 
     a = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
-
-    torch.npu.synchronize()
-    b = func(a)
-
+    b = torch.empty_like(a)
     ref_b = torch.abs(a)
-    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+    repeat_launch(
+        func,
+        (a, b),
+        (b,),
+        lambda: torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2),
+        repeat,
+    )
 
 
 @pytest.mark.parametrize("dtype", ["float", "float16"])

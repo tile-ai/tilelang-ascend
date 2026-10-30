@@ -46,7 +46,53 @@ def allow_vectorize(pass_ctx: PassContext | None = None) -> bool:
     return not disable_vectorize
 
 
+def _ascend_sync_strategy(pass_ctx: PassContext, target: Target, platform: str | None = None) -> str:
+    strategy = str(pass_ctx.config.get("tl.ascend_sync_strategy", "legacy"))
+    if strategy not in {"legacy", "a3"}:
+        raise ValueError(f"Unknown Ascend synchronization strategy: {strategy!r}")
+    if strategy == "a3":
+        if target.model not in {"ascendc", "auto"}:
+            raise ValueError("The a3 synchronization strategy requires the AscendC backend")
+        if platform is not None and platform != "A3":
+            raise ValueError("The a3 synchronization strategy requires platform A3")
+    return strategy
+
+
+def _ascend_pipeline_planner(pass_ctx: PassContext, target: Target, platform: str | None = None) -> str:
+    planner = str(pass_ctx.config.get("tl.ascend_pipeline_planner", "legacy"))
+    if planner not in {"legacy", "constraint", "auto"}:
+        raise ValueError(f"Unknown Ascend pipeline planner strategy: {planner!r}")
+    if planner == "auto":
+        if target.model not in {"ascendc", "auto"} or (platform is not None and platform != "A3"):
+            raise ValueError("The auto scheduler requires the A3 AscendC backend")
+        required = {
+            "tl.ascend_auto_sync": True,
+            "tl.ascend_memory_planning": True,
+            "tl.ascend_auto_cv_combine": True,
+            "tl.ascend_auto_cross_core_sync": False,
+            "tl.ascend_auto_sync_vs": False,
+        }
+        defaults = {"tl.ascend_auto_cv_combine": True}
+        for key, expected in required.items():
+            if bool(pass_ctx.config.get(key, defaults.get(key, False))) != expected:
+                raise ValueError(f"The auto scheduler requires {key}={expected}")
+        if str(pass_ctx.config.get("tl.ascend_sync_strategy", "legacy")) != "a3":
+            raise ValueError("The auto scheduler requires tl.ascend_sync_strategy='a3'")
+        if pass_ctx.config.get("tl.ascend_pipeline_cost_model") is not None:
+            raise ValueError("The auto scheduler uses abstract_issue_step_v1; a constraint latency cost model cannot be supplied")
+    return planner
+
+
 def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
+    pass_ctx = tilelang.transform.get_pass_context()
+    _ascend_sync_strategy(pass_ctx, target)
+    planner = _ascend_pipeline_planner(pass_ctx, target)
+    if planner == "constraint":
+        mod = tilelang.transform.AscendCanonicalizeStorageAliases()(mod)
+        mod = tilelang.transform.AscendPrepareConstraintPipeline(target)(mod)
+    elif planner == "auto":
+        mod = tilelang.transform.AscendPrepareAutoSchedule(target)(mod)
+    mod = tilelang.transform.AscendValidateScheduleHints()(mod)
     # Workspace sizing must see the same UB scopes as VidReduction.
     mod = tilelang.transform.AscendInferBufferScope()(mod)
     # allocate the tmp buffer for vector api
@@ -98,14 +144,26 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     from tilelang.utils.target import check_npu_availability
 
     pass_ctx = tilelang.transform.get_pass_context()
+    planner = _ascend_pipeline_planner(pass_ctx, target, platform)
+    sync_strategy = _ascend_sync_strategy(pass_ctx, target, platform)
+    if planner == "constraint":
+        mod = tilelang.transform.AscendCanonicalizeStorageAliases()(mod)
+    if planner != "auto":
+        mod = tilelang.transform.AscendLowerScheduleHints(target, platform)(mod)
     managed_vector_mask = target.model in {"ascendc", "auto"} and platform in {"A2", "A3"}
     mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
-    mod = tilelang.transform.CrossCorePipeline()(mod)
-    mod = tilelang.transform.CombineCV()(mod)
-    # Recompute allocation scopes after C/V partitioning drops buffer uses.
-    mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
-    mod = tilelang.transform.PipelinePlanning()(mod)
-    mod = tilelang.transform.InjectSoftwarePipeline()(mod)
+    if planner == "auto":
+        mod = tilelang.transform.AscendAutoSchedule(target, platform)(mod)
+        mod = tilelang.transform.AscendMaterializeSchedule(target, platform)(mod)
+    else:
+        if sync_strategy == "a3" and planner == "legacy":
+            mod = tilelang.transform.AscendPrepareSyncHandoff(target, platform)(mod)
+        mod = tilelang.transform.CrossCorePipeline()(mod)
+        mod = tilelang.transform.CombineCV()(mod)
+        # Recompute allocation scopes after C/V partitioning drops buffer uses.
+        mod = tir.transform.PlanAndUpdateBufferAllocationLocation()(mod)
+        mod = tilelang.transform.PipelinePlanning()(mod)
+        mod = tilelang.transform.InjectSoftwarePipeline()(mod)
     mod = tilelang.transform.AscendLowerOpaqueBlock()(mod)
     mod = tir.transform.NarrowDataType(32)(mod)
     mod = tilelang.transform.ConfigIndexBitwidth()(mod)
@@ -122,13 +180,27 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     mod = tir.transform.RewriteUnsafeSelect()(mod)
     mod = tir.transform.HoistIfThenElse()(mod)
     mod = tilelang.transform.AscendMemoryPlanning()(mod)
-    mod = tilelang.transform.AscendSyncInsert(target, platform)(mod)
-    mod = tilelang.transform.AscendSyncInsertVS(target, platform)(mod)
+    if planner == "auto":
+        mod = tilelang.transform.AscendInsertScheduledSync(target, platform)(mod)
+    elif sync_strategy == "a3" and planner == "constraint":
+        mod = tilelang.transform.AscendInsertSyncA3(target, platform)(mod)
+    else:
+        mod = tilelang.transform.AscendSyncInsert(target, platform)(mod)
+    if planner != "auto":
+        mod = tilelang.transform.AscendSyncInsertVS(target, platform)(mod)
+    if sync_strategy == "a3" and planner == "legacy":
+        mod = tilelang.transform.AscendInsertSyncHandoff(target, platform)(mod)
     if managed_vector_mask:
         # Materialize physical terminals only after every semantic analysis and
         # rewrite pass has completed. No TIR-transforming pass may run after
         # mask legalization.
         mod = tir.transform.Simplify()(mod)
+    if planner == "auto":
+        mod = tilelang.transform.AscendVerifyAutoSchedule(target, platform)(mod)
+    elif planner == "constraint":
+        mod = tilelang.transform.AscendVerifyConstraintSync(target, platform)(mod)
+    elif sync_strategy == "a3":
+        mod = tilelang.transform.AscendVerifySyncHandoff(target, platform)(mod)
     # CombineCV or explicit T.Scope annotations must assign every
     # resource-specific Ascend operation to C or V. Verify after automatic
     # synchronization has materialized its final hardware calls.

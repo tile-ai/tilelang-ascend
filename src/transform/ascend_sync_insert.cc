@@ -33,6 +33,7 @@
 
 #include "../op/ascend.h"
 #include "../op/builtin.h"
+#include "./common/ascend_sync_a3.h"
 #include "./common/collector.h"
 #include "./common/operation_config.h"
 
@@ -71,6 +72,15 @@ public:
       return f;
     }
 
+    ICHECK(
+        ctx->GetConfig<String>("tl.ascend_pipeline_planner", String("legacy"))
+                .value() != "auto" &&
+        !f->GetAttr<ObjectRef>("tl.ascend_auto_schedule").defined())
+        << "The auto scheduler owns this kernel; legacy synchronization cannot "
+           "run";
+    ICHECK(!f->GetAttr<ObjectRef>(kAscendLocalSyncPlan).defined())
+        << "A3 local synchronization already owns this kernel; legacy "
+           "generator cannot run twice";
     auto preprocessed = syncInserter.PreprocessUnrollForLoops(f->body);
 
     Stmt processed_body = syncInserter(preprocessed.first);

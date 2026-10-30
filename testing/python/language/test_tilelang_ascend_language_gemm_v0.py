@@ -73,7 +73,9 @@ def _gemm_v0_kernel(
     return main
 
 
-def _run_precision_case(target, kL0Size, shape_group):
+def _run_precision_case(target, kL0Size, shape_group, repeat=1):
+    from ascend_repeat import repeat_launch
+
     full_M, full_N, full_K, block_M, block_N, K_L1 = SHAPE_CONFIGS[shape_group]
     dtype = "float16"
     accum_dtype = "float"
@@ -85,12 +87,14 @@ def _run_precision_case(target, kL0Size, shape_group):
     b = torch.randn(full_K, full_N, dtype=torch.float16, device="npu")
     c = torch.zeros(full_M, full_N, dtype=torch.float16, device="npu")
 
-    torch.npu.synchronize()
-    kernel(a, b, c)
-    torch.npu.synchronize()
-
     ref_c = a @ b
-    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+    repeat_launch(
+        kernel,
+        (a, b, c),
+        (c,),
+        lambda: torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2),
+        repeat,
+    )
 
 
 @pytest.mark.skipif(
