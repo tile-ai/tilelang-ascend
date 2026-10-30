@@ -23,6 +23,8 @@
 - [ ] 新增算子在默认场景下通过：未显式指定 `target="ascendc"`，PTO 后端已完成编译、运行和精度验证；如不适用，已说明原因。
 - [ ] 适用时 AscendC 与 PTO 双后端均已通过；不支持的 dtype/shape/后端行为已显式说明，没有静默跳过。
 - [ ] 未影响现有算子用例、公共接口和已有后端行为。
+- [ ] 新增或迁移的算子测试在 `test_*.py` 中提供 `test_*` 入口，完成必要初始化，并用断言报告精度失败。
+- [ ] 测试就绪后，已核对并按需补齐 `ci/operator_test_manifest.yaml` 的源文件与测试文件映射，按 CI 配置逐文件验证收集及 NPU 运行，并附命令、结果和耗时。
 - [ ] `examples/` 下的算子有性能要求和代表性 shape；历史遗留且暂未达标的实现已迁移到 `examples_experiment/`，或有维护者批准的豁免。
 - [ ] 有 AscendC 参考实现时，TileLang 性能达到 AscendC 的 50% 以上；如有 GPU 基线，候选耗时不超过其 2 倍。
 - [ ] 无 AscendC 参考实现时，已检查 [性能反模式清单](../.agents/skills/tilelang-perf-optimization/references/performance-antipatterns.md)，并记录保留项及原因。
