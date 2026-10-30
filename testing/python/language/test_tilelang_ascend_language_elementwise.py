@@ -1244,6 +1244,166 @@ def test_bitwise_xor_slice(dtype, target, shape):
     run_test_bitwise_xor_slice(M, N, 128, 256, dtype, target)
 
 
+_XOR_BYTE_BASE = [0x00, 0xFF, 0xAA, 0x55, 0xF0, 0x0F, 0x80, 0x01]
+
+
+def _xor_byte_codes(total):
+    return (_XOR_BYTE_BASE * (total // len(_XOR_BYTE_BASE) + 1))[:total]
+
+
+def _byte_tensor(codes, dtype):
+    if dtype == "int8":
+        codes = [x - 0x100 if x >= 0x80 else x for x in codes]
+        return torch.tensor(codes, dtype=torch.int8)
+    return torch.tensor(codes, dtype=torch.uint8)
+
+
+def bitwise_xor_explicit_tmp(M, N, block_M, block_N, dtype="uint8"):
+    m_num = M // block_M
+    n_num = N // block_N
+    VEC_NUM = 2
+    tmp_size = (block_M // VEC_NUM) * block_N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            tmp_ub = T.alloc_ub((tmp_size,), "uint8")
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
+            T.tile.bitwise_xor(c_ub, a_ub, b_ub, tmp=tmp_ub)
+            T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    return main
+
+
+def run_test_bitwise_xor_byte(M, N, block_M, block_N, dtype, target, explicit_tmp=False):
+    builder = bitwise_xor_explicit_tmp if explicit_tmp else bitwise_xor
+    func = builder(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    total = M * N
+    a = _byte_tensor(_xor_byte_codes(total), dtype).reshape(M, N).npu()
+    b = _byte_tensor(list(reversed(_xor_byte_codes(total))), dtype).reshape(M, N).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    torch.npu.synchronize()
+    ref = torch.bitwise_xor(a.cpu(), b.cpu()).npu()
+    assert_close_npu(c, ref, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("dtype", ["uint8"])
+@pytest.mark.parametrize("shape", [(1024, 1024)])
+def test_bitwise_xor_uint8(dtype, shape):
+    M, N = shape
+    run_test_bitwise_xor_byte(M, N, 128, 256, dtype=dtype, target="pto")
+
+
+@pytest.mark.low_priority
+@pytest.mark.parametrize("dtype", ["uint8"])
+@pytest.mark.parametrize("shape", [(1024, 1024)])
+def test_bitwise_xor_uint8_explicit_tmp(dtype, shape):
+    M, N = shape
+    run_test_bitwise_xor_byte(M, N, 128, 256, dtype=dtype, target="pto", explicit_tmp=True)
+
+
+def bitwise_xor_1d(N, dtype="uint8"):
+    @T.prim_func
+    def main(
+        A: T.Tensor((N,), dtype),  # type: ignore
+        B: T.Tensor((N,), dtype),  # type: ignore
+        C: T.Tensor((N,), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((N,), dtype)
+            b_ub = T.alloc_ub((N,), dtype)
+            c_ub = T.alloc_ub((N,), dtype)
+            T.copy(A[0], a_ub)
+            T.copy(B[0], b_ub)
+            T.tile.bitwise_xor(c_ub, a_ub, b_ub)
+            T.copy(c_ub, C[0])
+
+    return main
+
+
+@pytest.mark.low_priority
+@pytest.mark.parametrize("dtype", ["uint8"])
+def test_bitwise_xor_uint8_1d(dtype):
+    N = 1024
+    func = bitwise_xor_1d(N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target="pto")
+    a = _byte_tensor(_xor_byte_codes(N), dtype).npu()
+    b = _byte_tensor(list(reversed(_xor_byte_codes(N))), dtype).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    torch.npu.synchronize()
+    ref = torch.bitwise_xor(a.cpu(), b.cpu()).npu()
+    assert_close_npu(c, ref, dtype, rtol=0, atol=0)
+
+
+def bitwise_xor_slice_sentinel(M, N, block_M, block_N, dtype="uint8"):
+    m_num = M // block_M
+    n_num = N // block_N
+    VEC_NUM = 2
+    rows = block_M // VEC_NUM
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((rows, block_N), dtype)
+            b_ub = T.alloc_ub((rows, block_N), dtype)
+            c_ub = T.alloc_ub((rows, block_N), dtype)
+            T.copy(A[bx * block_M + vid * rows, by * block_N], a_ub)
+            T.copy(B[bx * block_M + vid * rows, by * block_N], b_ub)
+            T.tile.fill(c_ub, 0x5A)
+            # XOR an aligned, non-zero-offset, contiguous row band [1, rows).
+            T.tile.bitwise_xor(c_ub[1:rows, :], a_ub[1:rows, :], b_ub[1:rows, :])
+            T.copy(c_ub, C[bx * block_M + vid * rows, by * block_N])
+
+    return main
+
+
+@pytest.mark.low_priority
+@pytest.mark.parametrize("dtype", ["uint8"])
+@pytest.mark.parametrize("shape", [(1024, 1024)])
+def test_bitwise_xor_uint8_slice_sentinel(dtype, shape):
+    M, N = shape
+    rows = 64
+    func = bitwise_xor_slice_sentinel(M, N, 128, 256, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target="pto")
+    total = M * N
+    a = _byte_tensor(_xor_byte_codes(total), dtype).reshape(M, N).npu()
+    b = _byte_tensor(list(reversed(_xor_byte_codes(total))), dtype).reshape(M, N).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    torch.npu.synchronize()
+    ref = torch.bitwise_xor(a.cpu(), b.cpu())
+    ref[::rows, :] = 0x5A  # every block-local row 0 stays the sentinel
+    assert_close_npu(c.cpu(), ref, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.low_priority
+@pytest.mark.parametrize("dtype", ["int8"])
+@pytest.mark.parametrize("shape", [(1024, 1024)])
+def test_bitwise_xor_int8(dtype, shape):
+    M, N = shape
+    run_test_bitwise_xor_byte(M, N, 128, 256, dtype=dtype, target="pto")
+
+
 def block_reduce_max(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockNum, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N

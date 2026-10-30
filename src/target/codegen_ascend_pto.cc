@@ -2585,6 +2585,12 @@ void CodeGenTileLangAscendPto::XorCodegen(const CallNode *op,
   tmp_shape_info.slice_valid_row = dst_shape_info.slice_valid_row;
   tmp_shape_info.slice_valid_col = dst_shape_info.slice_valid_col;
   tmp_shape_info.extent = dst_shape_info.extent;
+  // The inherited 2D shape always needs a freshly built 2D view: the raw
+  // workspace is a 1D arena, and for a same-width dtype (e.g. uint8) the
+  // access is not retyped, so GetSliceInfo reports is_slice=false and
+  // ResolveUbSliceName would return the 1D tile descriptor, which TXOR then
+  // reads out of bounds.
+  tmp_shape_info.is_slice = true;
   std::string tmp_name = ResolveUbSliceName(tmp_shape_info);
 
   std::string src0_name = ResolveUbSliceName(src0_shape_info);
