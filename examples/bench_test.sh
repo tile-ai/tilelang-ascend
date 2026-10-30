@@ -113,7 +113,7 @@ export TILELANG_AUTO_TUNING_MAX_CPU_COUNT=4 # for autotuner
 # 每个任务独立加入测试队列，分别执行、分别显示结果
 # 格式: EXTRA_TASKS 数组，每项为 "目录|命令|显示名称"
 EXTRA_TASKS=(
-    "./sparse_flash_attention/bench_sfa|python bench_sfa.py --file sparse_flash_attn_pa_baseline|[bench_sfa] sparse_flash_attn_pa_baseline"
+    "./sparse_flash_attention/bench_sfa|PYTHONPATH=../../../examples_experiment/sparse_flash_attention/bench_sfa:${PYTHONPATH:-} python bench_sfa.py --file sparse_flash_attn_pa_baseline|[bench_sfa] sparse_flash_attn_pa_baseline"
     "./sparse_flash_attention/bench_sfa|python bench_sfa.py --file sparse_flash_attn_pa_developer|[bench_sfa] sparse_flash_attn_pa_developer"
     "./sparse_flash_attention/bench_sfa|python bench_sfa.py --file sparse_flash_attn_pa_no_cv_pipeline|[bench_sfa] sparse_flash_attn_pa_no_cv_pipeline"
     "./sparse_flash_attention/bench_sfa|python bench_sfa.py --file sparse_flash_attn_pa|[bench_sfa] sparse_flash_attn_pa"
@@ -203,6 +203,12 @@ collect_test_scripts() {
             elif [[ "$dir" == "./torch_tl_ascend" ]]; then
                 scripts+=("./torch_tl_ascend/test_example.sh")
             fi
+            echo "${scripts[@]}"
+            return
+            ;;
+        "../examples_experiment/gemm_aot")
+            # The relocated AOT source is driven by
+            # examples/gemm_aot/run_example_gemm_aot.sh.
             echo "${scripts[@]}"
             return
             ;;
