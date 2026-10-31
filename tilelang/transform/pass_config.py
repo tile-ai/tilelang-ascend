@@ -38,6 +38,9 @@ class PassConfigKey(str, Enum):
     TL_ASCEND_AUTO_SYNC = "tl.ascend_auto_sync"
     """Enable/disable TileLang AscendSyncInsert pass. Default: False"""
 
+    TL_ASCEND_SYNC_BACKEND = "tl.ascend_sync_backend"
+    """Synchronization engine: 'legacy' (default) or opt-in 'upstream'."""
+
     TL_ASCEND_AUTO_SYNC_VS = "tl.ascend_auto_sync_vs"
     """Enable/disable TileLang AscendSyncInsertVS pass. Default value setted dynamically according target"""
 

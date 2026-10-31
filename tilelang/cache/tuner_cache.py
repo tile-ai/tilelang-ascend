@@ -26,6 +26,7 @@ KERNEL_PATH = "kernel.cu"
 WRAPPED_KERNEL_PATH = "wrapped_kernel.cu"
 KERNEL_LIB_PATH = "kernel_lib.so"
 PARAMS_PATH = "params.pkl"
+AUTO_GM_IDX_PATH = "auto_gm_idx.pkl"
 
 
 class AutoTunerCache:
@@ -102,6 +103,10 @@ class AutoTunerCache:
             "execution_backend": execution_backend,
             "pass_configs": pass_configs,
         }
+        from tilelang.jit.ascend_runtime_contract import sync_engine_cache_abi
+
+        if abi := sync_engine_cache_abi(pass_configs, target):
+            key_data["ascend_sync_engine_abi"] = abi
         key_string = json.dumps(key_data, sort_keys=True)  # Sort keys to ensure consistency
         return sha256(key_string.encode()).hexdigest()  # Use SHA256 to generate hash key
 
@@ -242,6 +247,14 @@ class AutoTunerCache:
             - kernel_lib.so: The compiled kernel library
             - params.pkl: The serialized kernel parameters
         """
+        attributes = getattr(func, "attrs", None)
+        compiled_attributes = getattr(getattr(kernel, "prim_func", None), "attrs", None)
+        marked = attributes is not None and "tl.ascend_auto_gm_fresh_contract" in attributes
+        if compiled_attributes is not None and "tl.ascend_auto_gm_fresh_contract" in compiled_attributes and not marked:
+            # This legacy entry point did not prepare the function before its
+            # cache key. Never publish a fresh-sensitive binary under that key.
+            self.logger.warning("Skipping automatic GM artifact without its prepared cache key")
+            return
         cache_path = self._get_cache_path(key)
         try:
             os.makedirs(cache_path, exist_ok=True)  # Ensure directory exists
@@ -282,6 +295,28 @@ class AutoTunerCache:
                 cloudpickle.dump(kernel.params, f)
         except Exception as e:
             self.logger.error(f"Error saving kernel parameters to disk: {e}")
+
+        contract_configs = getattr(kernel, "pass_configs", None)
+        from tilelang.jit.ascend_runtime_contract import sync_engine_cache_abi
+
+        contract_target = getattr(kernel, "target", None)
+        if marked or sync_engine_cache_abi(contract_configs, contract_target) is not None:
+            from tilelang.jit.ascend_runtime_contract import (
+                AUTO_GM_MANIFEST_PATH,
+                build_cached_auto_gm_manifest,
+            )
+
+            try:
+                indices = kernel.auto_gm_idx
+                manifest = build_cached_auto_gm_manifest(
+                    func, kernel.execution_backend, indices, len(kernel.params), contract_configs, contract_target
+                )
+                with open(os.path.join(cache_path, AUTO_GM_IDX_PATH), "w") as f:
+                    json.dump(indices, f)
+                with open(os.path.join(cache_path, AUTO_GM_MANIFEST_PATH), "w") as f:
+                    json.dump(manifest, f)
+            except Exception as error:
+                self.logger.error("Error saving automatic GM allocation contract: %s", error)
 
     def _load_kernel_from_disk(
         self,
@@ -332,6 +367,43 @@ class AutoTunerCache:
         except Exception as e:
             self.logger.error(f"Error loading kernel parameters from disk: {e}")
 
+        runtime_contract_kwargs = {}
+        attributes = getattr(func, "attrs", None)
+        from tilelang.jit.ascend_runtime_contract import sync_engine_cache_abi
+
+        if (attributes is not None and "tl.ascend_auto_gm_fresh_contract" in attributes) or (
+            sync_engine_cache_abi(pass_configs, target) is not None
+        ):
+            from tilelang.jit.ascend_runtime_contract import (
+                AUTO_GM_MANIFEST_PATH,
+                validate_cached_auto_gm_manifest,
+            )
+            from tilelang.utils.target import determine_platform
+
+            try:
+                with open(os.path.join(cache_path, AUTO_GM_IDX_PATH)) as f:
+                    indices = json.load(f)
+                with open(os.path.join(cache_path, AUTO_GM_MANIFEST_PATH)) as f:
+                    manifest = json.load(f)
+                validate_cached_auto_gm_manifest(
+                    func,
+                    execution_backend,
+                    indices,
+                    len(kernel_params) if kernel_params is not None else 0,
+                    manifest,
+                    pass_configs,
+                    target,
+                )
+                runtime_contract_kwargs = {
+                    "auto_gm_idx": indices,
+                    "auto_gm_manifest": manifest,
+                    "workspace_idx": None,
+                    "platform": determine_platform("auto"),
+                }
+            except (OSError, ValueError) as error:
+                self.logger.warning("Cached automatic GM allocation contract is invalid: %s", error)
+                return None
+
         if kernel_global_source and kernel_params:
             try:
                 return JITKernel.from_database(
@@ -344,6 +416,7 @@ class AutoTunerCache:
                     out_idx=out_idx,
                     execution_backend=execution_backend,
                     pass_configs=pass_configs,
+                    **runtime_contract_kwargs,
                 )
             except PermissionError:
                 # The entry is present but unreadable; recompiling would hit the

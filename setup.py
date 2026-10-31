@@ -48,6 +48,7 @@ def load_module_from_path(module_name, path):
 
 
 envs = load_module_from_path("env", os.path.join(ROOT_DIR, PACKAGE_NAME, "env.py"))
+native_runtime = load_module_from_path("tilelang_native_runtime_packaging", os.path.join(ROOT_DIR, PACKAGE_NAME, "_native_runtime.py"))
 
 CUDA_HOME = envs.CUDA_HOME
 ROCM_HOME = envs.ROCM_HOME
@@ -353,21 +354,6 @@ def setup_llvm_for_tvm():
     return extract_path, llvm_config_path
 
 
-def patch_libs(libpath):
-    """
-    tvm and tilelang libs are copied from elsewhere into wheels
-    and have a hard-coded rpath.
-    Set rpath to the directory of libs so auditwheel works well.
-    """
-    # check if patchelf is installed
-    # find patchelf in the system
-    patchelf_path = shutil.which("patchelf")
-    if not patchelf_path:
-        logger.warning("patchelf is not installed, which is required for auditwheel to work for compatible wheels.")
-        return
-    subprocess.run([patchelf_path, "--set-rpath", "$ORIGIN", libpath])
-
-
 class TileLangBuilPydCommand(build_py):
     """Customized setuptools install command - builds TVM after setting up LLVM."""
 
@@ -421,42 +407,8 @@ class TileLangBuilPydCommand(build_py):
                     os.makedirs(target_dir)
                 shutil.copy2(source_dir, target_dir)
 
-        TVM_PREBUILD_ITEMS = [
-            "libtvm_runtime.so",
-            "libtvm.so",
-            "libtilelang.so",
-            "libtilelang_module.so",
-        ]
-
-        potential_dirs = [
-            ext_output_dir,
-            self.build_lib,
-            build_temp_dir,
-            os.path.join(ROOT_DIR, "build"),
-        ]
-
-        for item in TVM_PREBUILD_ITEMS:
-            source_lib_file = None
-            for dir in potential_dirs:
-                candidate = os.path.join(dir, item)
-                if os.path.exists(candidate):
-                    source_lib_file = candidate
-                    break
-
-            if source_lib_file:
-                patch_libs(source_lib_file)
-                target_dir_release = os.path.join(self.build_lib, PACKAGE_NAME, "lib")
-                target_dir_develop = os.path.join(PACKAGE_NAME, "lib")
-                os.makedirs(target_dir_release, exist_ok=True)
-                os.makedirs(target_dir_develop, exist_ok=True)
-                shutil.copy2(source_lib_file, target_dir_release)
-                logger.info(f"Copied {source_lib_file} to {target_dir_release}")
-                shutil.copy2(source_lib_file, target_dir_develop)
-                logger.info(f"Copied {source_lib_file} to {target_dir_develop}")
-                os.remove(source_lib_file)
-            else:
-                logger.info(f"WARNING: {item} not found in any expected directories!")
-
+        # build_ext has staged and patched the package copies. Keep the
+        # original CMake outputs available for native installation and reuse.
         TVM_CONFIG_ITEMS = [
             f"{build_temp_dir}/config.cmake",
         ]
@@ -481,6 +433,7 @@ class TileLangBuilPydCommand(build_py):
             "3rdparty/tvm/CONTRIBUTORS.md",
             "3rdparty/tvm/KEYS",
             "3rdparty/tvm/LICENSE",
+            "3rdparty/tvm/NOTICE",
             "3rdparty/tvm/README.md",
             "3rdparty/tvm/mypy.ini",
             "3rdparty/tvm/pyproject.toml",
@@ -626,41 +579,8 @@ class TileLangDevelopCommand(develop):
 
     def run(self):
         logger.info("Running TileLangDevelopCommand")
-        # 1. Build the C/C++ extension modules
+        # build_ext stages both regular and editable package libraries.
         self.run_command("build_ext")
-
-        build_ext_cmd = self.get_finalized_command("build_ext")
-        ext_modules = build_ext_cmd.extensions
-        for ext in ext_modules:
-            extdir = build_ext_cmd.get_ext_fullpath(ext.name)
-            logger.info(f"Extension {ext.name} output directory: {extdir}")
-
-        ext_output_dir = os.path.dirname(extdir)
-        logger.info(f"Extension output directory (parent): {ext_output_dir}")
-
-        # Copy the built TVM to the package directory
-        TVM_PREBUILD_ITEMS = [
-            f"{ext_output_dir}/libtvm_runtime.so",
-            f"{ext_output_dir}/libtvm.so",
-            f"{ext_output_dir}/libtilelang.so",
-            f"{ext_output_dir}/libtilelang_module.so",
-        ]
-        for item in TVM_PREBUILD_ITEMS:
-            source_lib_file = os.path.join(ROOT_DIR, item)
-            # only copy the file
-            file_name = os.path.basename(item)
-            target_dir = os.path.join(PACKAGE_NAME, file_name)
-            target_dir = os.path.dirname(target_dir)
-            target_dir = os.path.join(target_dir, "lib")
-            if not os.path.exists(target_dir):
-                os.makedirs(target_dir)
-            if os.path.exists(source_lib_file):
-                patch_libs(source_lib_file)
-                shutil.copy2(source_lib_file, target_dir)
-                # remove the original file
-                os.remove(source_lib_file)
-            else:
-                logger.info(f"INFO: {source_lib_file} does not exist.")
 
 
 class CMakeExtension(Extension):
@@ -705,19 +625,22 @@ class CMakeBuild(build_ext):
         for ext in self.extensions:
             self.build_cmake(ext)
 
-        # To make it works with editable install,
-        # we need to copy the lib*.so files to the tilelang/lib directory
-        import glob
-
-        files = glob.glob("*.so")
-        if os.path.exists(PACKAGE_NAME):
-            target_lib_dir = os.path.join(PACKAGE_NAME, "lib")
-            for file in files:
-                if not os.path.exists(target_lib_dir):
-                    os.makedirs(target_lib_dir)
-                shutil.copy(file, target_lib_dir)
-                # remove the original file
-                os.remove(file)
+        native_runtime.remove_legacy_package_outputs(
+            self.build_lib,
+            [ROOT_DIR, self.build_temp, os.path.join(self.build_temp, "native")],
+        )
+        # Only this CMake build determines ON/OFF, including its cached value.
+        package_lib_dirs = [
+            os.path.join(self.build_lib, PACKAGE_NAME, "lib"),
+            os.path.join(ROOT_DIR, PACKAGE_NAME, "lib"),
+        ]
+        native_runtime.configure_pypi_runtime([self.build_temp], package_lib_dirs)
+        output_dirs = [os.path.join(self.build_temp, "native")]
+        native_runtime.stage_packaged_libraries([*output_dirs, self.build_temp], package_lib_dirs)
+        native_runtime.copy_native_notices(
+            ROOT_DIR,
+            [os.path.join(self.build_lib, PACKAGE_NAME), os.path.join(ROOT_DIR, PACKAGE_NAME)],
+        )
 
     def build_cmake(self, ext):
         """
@@ -732,7 +655,10 @@ class CMakeBuild(build_ext):
             _, llvm_config_path = setup_llvm_for_tvm()
 
         # Determine the directory where the final .so or .pyd library should go.
-        extdir = os.path.abspath(os.path.dirname(self.get_ext_fullpath(ext.name)))
+        # Raw CMake outputs must stay outside build_lib, which setuptools copies
+        # wholesale into a wheel. Only the prepared package copies belong there.
+        extdir = os.path.abspath(os.path.join(self.build_temp, "native"))
+        os.makedirs(extdir, exist_ok=True)
 
         # Prepare arguments for the CMake configuration step.
         # -DCMAKE_LIBRARY_OUTPUT_DIRECTORY sets where built libraries go
@@ -740,7 +666,13 @@ class CMakeBuild(build_ext):
         cmake_args = [
             f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extdir}",
             f"-DPYTHON_EXECUTABLE={sys.executable}",
+            f"-DPython3_EXECUTABLE={sys.executable}",
         ]
+        # setup.py has no generic CMAKE_ARGS mechanism. Preserve CMake's default
+        # unless the caller explicitly configures the optional proof service.
+        for variable in ("USE_ASCEND_SYNC_Z3", "Z3_ROOT"):
+            if variable in os.environ:
+                cmake_args.append(f"-D{variable}={os.environ[variable]}")
 
         # Create the temporary build directory (if it doesn't exist).
         build_temp = os.path.abspath(self.build_temp)

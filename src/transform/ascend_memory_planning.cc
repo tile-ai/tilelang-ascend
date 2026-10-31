@@ -31,6 +31,7 @@
 #include "../op/builtin.h"
 #include "./common/attr.h"
 #include "./common/collector.h"
+#include "./common/pipeline_ring_provenance.h"
 
 #define ASCEND_SHARED_MEM_SIZE 196352
 #define ASCEND_SHARED_DYN_MEM_SIZE 524032
@@ -267,7 +268,14 @@ private:
       linear_seq_[begin_index].scope_pair_offset = end_index - begin_index;
     }
 
-    void VisitStmt_(const AttrStmtNode *op) final { VisitNewScope(op); }
+    void VisitStmt_(const AttrStmtNode *op) final {
+      if (IsPhysicalPipelineMetadata(op->attr_key)) {
+        // Provenance describes an access clock, not a new lifetime scope.
+        StmtExprVisitor::VisitStmt_(op);
+      } else {
+        VisitNewScope(op);
+      }
+    }
     void VisitStmt_(const IfThenElseNode *op) final { VisitNewScope(op); }
     void VisitStmt_(const ForNode *op) final {
       scope_level_++;

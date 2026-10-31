@@ -7,6 +7,7 @@
 
 #include <tvm/arith/analyzer.h>
 #include <tvm/ir/transform.h>
+#include <tvm/node/structural_equal.h>
 #include <tvm/runtime/container/string.h>
 #include <tvm/runtime/registry.h>
 #include <tvm/tir/expr_functor.h>
@@ -36,6 +37,23 @@ using ShapeInfo = CodeGenTileLangAscendPto::ShapeInfo;
 using BufferInfo = CodeGenTileLangAscendPto::BufferInfo;
 
 namespace {
+
+PrimExpr FindPtoAllocationAddress(const Map<tir::Var, PrimExpr> &addresses,
+                                  const tir::Var &buffer) {
+  if (auto address = addresses.Get(buffer))
+    return address.value();
+  // Older IR may retain a distinct Var in the allocation map. Preserve its
+  // name-based fallback only when every matching entry agrees.
+  PrimExpr result;
+  for (const auto &[var, address] : addresses) {
+    if (var->name_hint != buffer->name_hint)
+      continue;
+    ICHECK(!result.defined() || StructuralEqual()(result, address))
+        << "Ambiguous PTO allocation address for " << buffer->name_hint;
+    result = address;
+  }
+  return result;
+}
 
 class ShapeVarCollector : public tir::ExprVisitor {
 public:
@@ -1704,12 +1722,6 @@ void CodeGenTileLangAscendPto::PreScanPipes(const PrimFunc &f) {
   Map<String, PrimExpr> local_address_offset;
   Map<Var, PrimExpr> local_buffer_address_map;
 
-  // Build address_map_name_hint once from the function attribute
-  Map<String, PrimExpr> address_map_name_hint;
-  for (const auto &[var, address] : address_map_) {
-    address_map_name_hint.Set(var->name_hint, address);
-  }
-
   // Populate pipe metadata from PrimFunc attr
   if (auto opt =
           f->GetAttr<Map<IntImm, Map<String, ObjectRef>>>("pipe_infos")) {
@@ -1751,11 +1763,9 @@ void CodeGenTileLangAscendPto::PreScanPipes(const PrimFunc &f) {
       }
 
       // Resolve buffer base address (same logic as VisitStmt_ AllocateNode)
-      PrimExpr target_address;
-      if (address_map_name_hint.count(allocate->buffer_var->name_hint)) {
-        target_address =
-            address_map_name_hint.at(allocate->buffer_var->name_hint);
-      } else {
+      PrimExpr target_address =
+          FindPtoAllocationAddress(address_map_, allocate->buffer_var);
+      if (!target_address.defined()) {
         PrimExpr current_offset =
             local_address_offset.Get(String(scope)).value_or(Integer(0));
         target_address = current_offset;
@@ -4214,17 +4224,10 @@ void CodeGenTileLangAscendPto::VisitStmt_(const AllocateNode *op) {
   stream << op_name << "<" << type << ", " << M << ", " << N << ", " << valid_M
          << ", " << valid_N << "> " << vid << ";\n";
 
-  // address_map, use name_hint as key
-  Map<String, PrimExpr> address_map_name_hint;
-  for (const auto &[var, address] : address_map_) {
-    address_map_name_hint.Set(var->name_hint, address);
-  }
-
   // 4. Resolve the target physical memory address
-  PrimExpr target_address;
-  if (address_map_name_hint.count(op->buffer_var->name_hint)) {
-    target_address = address_map_name_hint.at(op->buffer_var->name_hint);
-  } else {
+  PrimExpr target_address =
+      FindPtoAllocationAddress(address_map_, op->buffer_var);
+  if (!target_address.defined()) {
     PrimExpr current_offset =
         address_offset_.Get(String(scope)).value_or(Integer(0));
     target_address = current_offset;

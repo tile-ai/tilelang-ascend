@@ -80,6 +80,10 @@ class CompileArgs:
             "pass_configs": json.dumps(self.pass_configs, sort_keys=True) if self.pass_configs else None,
             "compile_flags": json.dumps(self.compile_flags, sort_keys=True) if self.compile_flags else None,
         }
+        from tilelang.jit.ascend_runtime_contract import sync_engine_cache_abi
+
+        if abi := sync_engine_cache_abi(self.pass_configs, self.target):
+            data["ascend_sync_engine_abi"] = abi
 
         hash_obj = hashlib.sha256(json.dumps(data, sort_keys=True).encode("utf-8"))
         return int.from_bytes(hash_obj.digest(), byteorder="big")
@@ -230,6 +234,34 @@ class AutotuneResult:
         except Exception as e:
             logger.error(f"Error saving auto_gm_idx to disk: {e}")
 
+        function = getattr(kernel, "prim_func", None)
+        attributes = getattr(function, "attrs", None)
+        contract_configs = getattr(kernel, "pass_configs", None)
+        from tilelang.jit.ascend_runtime_contract import sync_engine_cache_abi
+
+        contract_target = getattr(kernel, "target", None)
+        if (attributes is not None and "tl.ascend_auto_gm_fresh_contract" in attributes) or (
+            sync_engine_cache_abi(contract_configs, contract_target) is not None
+        ):
+            from tilelang.jit.ascend_runtime_contract import (
+                AUTO_GM_MANIFEST_PATH,
+                build_cached_auto_gm_manifest,
+            )
+
+            try:
+                manifest = build_cached_auto_gm_manifest(
+                    function,
+                    kernel.execution_backend,
+                    kernel.auto_gm_idx,
+                    len(kernel.params),
+                    contract_configs,
+                    contract_target,
+                )
+                with open(os.path.join(cache_path, AUTO_GM_MANIFEST_PATH), "w") as f:
+                    json.dump(manifest, f)
+            except Exception as error:
+                logger.error("Error saving automatic GM allocation contract: %s", error)
+
     def _load_kernel_from_disk(
         self,
         cache_path: Path,
@@ -290,13 +322,44 @@ class AutotuneResult:
         # Load auto_gm_idx (workspace reduction indices for runtime allocation).
         # Missing for cache entries written before this file was persisted.
         auto_gm_idx = []
+        auto_gm_metadata = None
         auto_gm_idx_path = os.path.join(cache_path, AUTO_GM_IDX_PATH)
         if os.path.exists(auto_gm_idx_path):
             try:
                 with open(auto_gm_idx_path) as f:
-                    auto_gm_idx = json.load(f) or []
+                    auto_gm_metadata = json.load(f)
+                    auto_gm_idx = auto_gm_metadata or []
             except Exception as e:
                 logger.error(f"Error loading auto_gm_idx from disk: {e}")
+
+        runtime_contract_kwargs = {}
+        attributes = getattr(func, "attrs", None)
+        from tilelang.jit.ascend_runtime_contract import sync_engine_cache_abi
+
+        if (attributes is not None and "tl.ascend_auto_gm_fresh_contract" in attributes) or (
+            sync_engine_cache_abi(pass_configs, target) is not None
+        ):
+            from tilelang.jit.ascend_runtime_contract import (
+                AUTO_GM_MANIFEST_PATH,
+                validate_cached_auto_gm_manifest,
+            )
+
+            try:
+                with open(os.path.join(cache_path, AUTO_GM_MANIFEST_PATH)) as f:
+                    manifest = json.load(f)
+                validate_cached_auto_gm_manifest(
+                    func,
+                    execution_backend,
+                    auto_gm_metadata,
+                    len(kernel_params) if kernel_params is not None else 0,
+                    manifest,
+                    pass_configs,
+                    target,
+                )
+                runtime_contract_kwargs["auto_gm_manifest"] = manifest
+            except (OSError, ValueError) as error:
+                logger.warning("Cached automatic GM allocation contract is invalid: %s", error)
+                return None
 
         if kernel_global_source and kernel_params:
             try:
@@ -317,6 +380,7 @@ class AutotuneResult:
                     execution_backend=execution_backend,
                     pass_configs=pass_configs,
                     compile_flags=compile_flags,
+                    **runtime_contract_kwargs,
                 )
             except PermissionError:
                 # The entry is present but unreadable; retuning would hit the

@@ -396,6 +396,12 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
       AscendC::Duplicate<T>(dstTensor, padValue, dstM * dstN);
       SetFlag<HardEvent::V_MTE2>(0);
       WaitFlag<HardEvent::V_MTE2>(0);
+      // An empty logical tile still publishes its padded UB contents. Keep
+      // the V -> MTE2 completion boundary, but never submit an empty DMA or
+      // dereference the (possibly out-of-allocation) GM slice for that tile.
+      if (maskShapeM == 0 || maskShapeN == 0) {
+        return;
+      }
     }
   }
   AscendC::DataCopyExtParams dataCopyParams(

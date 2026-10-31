@@ -157,7 +157,9 @@ AICORE PTO_INLINE void gemm_v0_inner(
   set_flag(PIPE_M, PIPE_MTE1, war_event_id);
   wait_flag(PIPE_M, PIPE_MTE1, war_event_id);
 
-  if (!is_tail_block) {
+  // FIX has a single event slot. Gate the first accumulator update once;
+  // later chunks are ordered by the M/MTE1 single-slot feedback.
+  if (kL0Idx == 0 && !is_tail_block) {
     set_flag(PIPE_FIX, PIPE_M, war_event_id);
     wait_flag(PIPE_FIX, PIPE_M, war_event_id);
   }
@@ -184,11 +186,6 @@ AICORE PTO_INLINE void gemm_v0_inner(
     pto::TMATMUL(C, l0a, l0b);
   } else {
     pto::TMATMUL_ACC(C, C, l0a, l0b);
-  }
-
-  if (!is_tail_block) {
-    set_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
-    wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
   }
 }
 
@@ -224,6 +221,8 @@ gemm_v0(std::conditional_t<transpose_A, TileMatL1<T1, K, M, validK, validM>,
     }
   }
 
+  // Release the L1 operands only after every extract. Releasing each chunk
+  // can set the same binary event twice before MTE2 consumes the first one.
   set_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
   wait_flag(PIPE_MTE1, PIPE_MTE2, war_event_id);
 

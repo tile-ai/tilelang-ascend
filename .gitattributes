@@ -1,1 +1,4 @@
 *.h linguist-language=C++
+
+# Keep the upstream license byte-for-byte, including its original trailing space.
+src/transform/ascend_sync/licenses/Z3-LICENSE.txt whitespace=-blank-at-eol

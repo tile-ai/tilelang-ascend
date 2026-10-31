@@ -28,6 +28,7 @@
 #include <tvm/tir/utils.h>
 
 #include "../op/ascend.h"
+#include "./common/attr.h"
 #include "./common/operation_config.h"
 
 #include "tir/transforms/ir_utils.h"
@@ -59,6 +60,9 @@ public:
     auto size_map = f->GetAttr<Map<Var, PrimExpr>>("size_map")
                         .value_or(Map<Var, PrimExpr>());
     mutator.InitConfig(address_map, size_map);
+    mutator.logic_buffer_shapes_ =
+        f->GetAttr<Map<Var, Array<PrimExpr>>>(kLogicBufferShapes)
+            .value_or(Map<Var, Array<PrimExpr>>());
 
     PrimFuncNode *fptr = f.CopyOnWrite();
     fptr->body = mutator(f->body);
@@ -465,8 +469,11 @@ private:
         std::string op_name = op_ptr->name;
         auto config_it = operation_config_.find(op_name);
         if (config_it != operation_config_.end()) {
-          CollectBufferAccesses(ResolveOperationConfig(call), op_name,
-                                call->args, 0, accesses);
+          CollectBufferAccesses(
+              ResolveOperationConfigWithPipeline(
+                  call, logic_buffer_shapes_,
+                  target_->GetAttr<String>("model").value_or("") == "pto"),
+              op_name, call->args, 0, accesses);
         }
       }
     }
@@ -917,6 +924,7 @@ private:
   Map<Var, PrimExpr> size_map_;
   std::string platform_;
   Target target_;
+  Map<Var, Array<PrimExpr>> logic_buffer_shapes_;
 };
 
 tvm::transform::Pass AscendSyncInsertVS(Target target, std::string platform) {

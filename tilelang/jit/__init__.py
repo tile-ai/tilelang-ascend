@@ -84,10 +84,14 @@ def compile(
 
     from tilelang.transform.pass_config import process_default_pass_config
     from tilelang.jit.adapter.libgen import resolve_compile_flags
+    from tilelang.jit.ascend_runtime_contract import prepare_auto_gm_contract
 
     pass_configs = process_default_pass_config(target, pass_configs)
     # Resolve once here so the same flag list feeds both the cache key and codegen.
     compile_flags = resolve_compile_flags(target, pass_configs, compile_flags)
+    # This versioned allocator contract must participate in the cache key.
+    # It describes automatic GM workspaces only, not aliasing between inputs.
+    func = prepare_auto_gm_contract(func, execution_backend, target)
 
     return cached(
         func=func,

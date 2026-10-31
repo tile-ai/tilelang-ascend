@@ -78,6 +78,9 @@ def _load_tile_lang_lib():
     lib_name = "tilelang" if tvm._ffi.base._RUNTIME_ONLY else "tilelang_module"
     # pylint: enable=protected-access
     lib_path = libinfo.find_lib_path(lib_name, optional=False)
+    from ._native_runtime import preload_pypi_z3_runtime
+
+    preload_pypi_z3_runtime(lib_path[0])
     return ctypes.CDLL(lib_path[0]), lib_path[0]
 
 

@@ -1,0 +1,53 @@
+{
+  "host": [
+    "testing/python/language/test_ascend_upstream_sync_codegen_matrix.py",
+    "testing/python/language/test_ascend_upstream_sync_composite.py",
+    "testing/python/language/test_ascend_upstream_sync_composite_loop.py",
+    "testing/python/language/test_ascend_upstream_sync_cross_core.py",
+    "testing/python/language/test_ascend_upstream_sync_cross_core_loop.py",
+    "testing/python/language/test_ascend_upstream_sync_cube_pipeline.py",
+    "testing/python/language/test_ascend_upstream_sync_dynamic_pipeline.py",
+    "testing/python/language/test_ascend_upstream_sync_guards.py",
+    "testing/python/language/test_ascend_upstream_sync_insert.py",
+    "testing/python/language/test_ascend_upstream_sync_persistent.py",
+    "testing/python/language/test_ascend_upstream_sync_persistent_pipeline.py",
+    "testing/python/language/test_ascend_upstream_sync_physical_rings.py",
+    "testing/python/language/test_ascend_upstream_sync_pipeline.py",
+    "testing/python/language/test_ascend_upstream_sync_policy.py",
+    "testing/python/language/test_ascend_upstream_sync_pto_composite.py",
+    "testing/python/language/test_ascend_upstream_sync_pto_composite_protocol.py",
+    "testing/python/language/test_ascend_upstream_sync_runtime_contract.py",
+    "testing/python/language/test_ascend_upstream_sync_runtime_contract_cache_compile.py",
+    "testing/python/language/test_ascend_upstream_sync_snapshot.py",
+    "testing/python/language/test_ascend_upstream_sync_tail_copy.py",
+    "testing/python/language/test_ascend_upstream_sync_transpose.py",
+    "testing/python/language/test_ascend_upstream_sync_wave_seal.py",
+    "testing/python/language/test_ascend_z3_proof_service.py",
+    "testing/python/language/test_ascend_pipeline_ring_provenance.py",
+    "testing/python/language/test_ascend_sync_insert.py",
+    "testing/python/language/test_ascend_sync_insert_one_trip.py",
+    "testing/python/language/test_tilelang_ascend_language_persistent.py",
+    "testing/python/test_ascend_runtime_contract.py",
+    "testing/python/test_ascend_sync_cache_abi.py",
+    "testing/python/cache/test_ascend_runtime_contract_cache.py",
+    "testing/python/test_pypi_z3_runtime.py"
+  ],
+  "device": [
+    "testing/python/language/test_ascend_upstream_sync_composite_device.py",
+    "testing/python/language/test_ascend_upstream_sync_control_device.py",
+    "testing/python/language/test_ascend_upstream_sync_cross_core_device.py",
+    "testing/python/language/test_ascend_upstream_sync_cross_core_loop_device.py",
+    "testing/python/language/test_ascend_upstream_sync_cube_pipeline_device.py",
+    "testing/python/language/test_ascend_upstream_sync_device.py",
+    "testing/python/language/test_ascend_upstream_sync_persistent_device.py",
+    "testing/python/language/test_ascend_upstream_sync_persistent_pipeline_device.py",
+    "testing/python/language/test_ascend_upstream_sync_pipeline_device.py",
+    "testing/python/language/test_ascend_upstream_sync_pto_device.py",
+    "testing/python/language/test_ascend_upstream_sync_tail_copy_device.py",
+    "testing/python/language/test_ascend_upstream_sync_wave_seal_device.py",
+    "testing/python/language/test_tilelang_ascend_language_transpose.py::test_transpose_sync_matches_helper_pipeline"
+  ],
+  "legacy_vs": [
+    "testing/python/language/test_ascend_sync_insert_vs.py"
+  ]
+}

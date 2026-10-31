@@ -4,6 +4,8 @@ requires = [
     "packaging",
     "setuptools>=61",
     "wheel",
+    "z3-solver>=4.13.0,<4.15.5",
+    "patchelf>=0.17.2; platform_system == 'Linux'",
 ]
 build-backend = "setuptools.build_meta"
 
