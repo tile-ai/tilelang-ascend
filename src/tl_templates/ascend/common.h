@@ -369,7 +369,7 @@ CATLASS_DEVICE auto thread_block_swizzle(uint64_t pid) {
   return coord.m() * cols + coord.n();
 }
 
-template <typename T, uint32_t dstN, uint32_t dstM = 1>
+template <typename T, uint32_t dstN, uint32_t dstM = 1, bool padGap = true>
 CATLASS_DEVICE void
 copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
               uint32_t realSrcN = 1, uint32_t maskShapeM = dstM,
@@ -381,13 +381,22 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
   // binary / scalar ops to tail_* helpers that compute only over the valid
   // region, so the pad value in the gap is preserved (not corrupted by
   // elementwise ops) and reaches the unreduced readers intact.
+  //
+  // padGap=false disables the Duplicate pre-fill for column-slice
+  // destinations (dstN is the buffer's physical row pitch while the copy only
+  // owns the [offset, offset+maskShapeN) column window): the gap columns
+  // belong to neighbouring slices' already-assembled data, so pre-filling
+  // dstM*dstN elements would wipe them. It also avoids the fixed event ids 0
+  // (MTE2_V / MTE3_V) below, which would corrupt the caller's event
+  // discipline. Existing callers keep padGap=true (defaulted template arg,
+  // byte-identical instantiation).
   bool isPad = true;
   uint32_t rightPadding = 1;
   if (maskShapeN == dstN || EleNumToBytes<T>(maskShapeN) % 32 == 0) {
     isPad = false;
     rightPadding = 0;
   }
-  if (maskShapeM != dstM || maskShapeN != dstN) {
+  if (padGap && (maskShapeM != dstM || maskShapeN != dstN)) {
     if constexpr (IsDuplicateSupported_v<T>) {
       SetFlag<HardEvent::MTE2_V>(0);
       WaitFlag<HardEvent::MTE2_V>(0);
