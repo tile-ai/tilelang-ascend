@@ -1,9 +1,9 @@
 import tilelang
-from tilelang import language as T
+from tilelang.ascend.a2a3 import language as T
 import torch
 import argparse
 
-tilelang.cache.clear_cache()
+tilelang.disable_cache()
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,

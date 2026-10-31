@@ -1,6 +1,3 @@
-// Copyright (c) Tile-AI Corporation.
-// Licensed under the MIT License.
-
 /*!
  * \file layout/utils.h
  * \brief Some arith tools for layout & fragment inference
@@ -10,12 +7,38 @@
 #ifndef TVM_TL_LAYOUT_UTILS_H_
 #define TVM_TL_LAYOUT_UTILS_H_
 
+#include <cstdint>
+#include <optional>
+
+#include "support/check.h"
 #include <tvm/arith/iter_affine_map.h>
+
+#include "layout.h"
 
 namespace tvm {
 namespace tl {
 
-using namespace tir;
+using namespace tirx;
+using namespace ffi;
+
+class NormalizeIterException : public std::exception {
+public:
+  const char *what() const noexcept override { return msg_.c_str(); }
+  NormalizeIterException(const std::string &msg) : msg_(msg) {}
+
+private:
+  std::string msg_;
+};
+
+/*!
+ * \brief Fully evaluate a constant integer expression used by a layout.
+ *
+ * In addition to ordinary arithmetic, this handles the bitwise and shift
+ * builtins that arith::Analyzer does not currently fold for constant operands.
+ *
+ * \return The integer value, or std::nullopt for an unsupported expression.
+ */
+std::optional<int64_t> EvaluateConstantInteger(const PrimExpr &expr);
 
 /*!
  * \brief Collect the IterSplit that is not used in expr.
@@ -57,6 +80,36 @@ Map<Var, Range> ToVMap(const Array<IterVar> &ivs);
  *
  */
 Array<IterVar> ToIterVars(const Map<Var, Range> &vmap);
+
+/*!
+ * \brief Compute the fragment layout of a reduction with its axis removed.
+ *
+ * A one-dimensional input produces shape {1}. Callers can reshape this
+ * canonical layout to a keep-dim destination without changing ownership.
+ */
+Fragment ComputeReducerLayout(const Fragment &src_layout, int dim);
+
+/*!
+ * \brief Check whether the threads that access elements of a smaller fragment
+ *        are a subset of the threads that access elements of a larger fragment.
+ *
+ * This function ensures that if the small fragment's layout corresponds to the
+ * loop itself, accessing the large fragment's elements is valid. Additionally,
+ * if small is updated to large, the originally valid access remains valid.
+ *
+ * \param small_frag The smaller fragment to check
+ * \param large_frag The larger fragment to check against
+ * \param small_frag_indices The indices used to access small_frag
+ * \param large_frag_indices The indices used to access large_frag
+ * \param analyzer The analyzer for simplification
+ * \param check_forward_index Whether to also check physical index equality
+ * \return true if small_frag's threads are contained in large_frag's threads
+ */
+bool ProveFragmentContains(Fragment small_frag, Fragment large_frag,
+                           Array<PrimExpr> small_frag_indices,
+                           Array<PrimExpr> large_frag_indices,
+                           arith::Analyzer &analyzer,
+                           bool check_forward_index = false);
 
 } // namespace tl
 } // namespace tvm

@@ -3,9 +3,9 @@ import torch.nn.functional as F
 import itertools
 
 import tilelang
-import tilelang.language as T
+import tilelang.ascend.a2a3.language as T
 
-tilelang.cache.clear_cache()
+tilelang.disable_cache()
 
 
 seed = 42
@@ -17,7 +17,7 @@ pass_configs = {
 }
 
 
-def get_configs(key_args, _key_kwargs=None):
+def get_configs(*key_args, **_key_kwargs):
     if not isinstance(key_args, (tuple, list)) or len(key_args) < 3:
         raise ValueError(f"get_configs: key_args must be (M, N, K), got {key_args}")
     M, N, K = int(key_args[0]), int(key_args[1]), int(key_args[2])

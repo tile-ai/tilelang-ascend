@@ -1,5 +1,3 @@
-// Copyright (c) Tile-AI Corporation.
-// Licensed under the MIT License.
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -24,11 +22,13 @@
  * \brief Common utilities for TL transforms
  */
 
-#include <tvm/tir/builtin.h>
-#include <tvm/tir/op.h>
-#include <tvm/tir/stmt_functor.h>
-#include <tvm/tir/transform.h>
-#include <tvm/tir/utils.h>
+#include "support/check.h"
+#include <tvm/ir/cast.h>
+#include <tvm/s_tir/utils.h>
+#include <tvm/tirx/builtin.h>
+#include <tvm/tirx/op.h>
+#include <tvm/tirx/stmt_functor.h>
+#include <tvm/tirx/transform.h>
 
 #include <queue>
 
@@ -40,14 +40,14 @@
 namespace tvm {
 namespace tl {
 
-using namespace tir;
+using namespace tirx;
 using arith::IRMutatorWithAnalyzer;
 
 class FragmentAccessDetector : public StmtExprVisitor {
 public:
   FragmentAccessDetector() = default;
 
-  void Collect(Stmt stmt) { VisitStmt(stmt); }
+  void Collect(const Stmt &stmt) { VisitStmt(stmt); }
 
   bool HasFragmentAccess() { return has_fragment_access_; }
 
@@ -72,7 +72,7 @@ private:
   bool IsFragmentBuffer(const Buffer &buffer) {
     // The storage scope is often encoded in the buffer->data var name or
     // associated attributes.
-    String scope = buffer.scope();
+    ffi::String scope = buffer.scope();
     return scope == "local.fragment";
   }
 
@@ -93,15 +93,17 @@ private:
  */
 class ParallelLoopFuser : public IRMutatorWithAnalyzer {
 public:
-  static Stmt Fuse(Stmt stmt) {
+  static Stmt Fuse(const Stmt &stmt) {
     arith::Analyzer analyzer;
     ParallelLoopFuser substituter(&analyzer);
     return substituter.VisitStmt(stmt);
   }
 
-private:
+protected:
   ParallelLoopFuser(arith::Analyzer *analyzer)
-      : IRMutatorWithAnalyzer(analyzer){};
+      : IRMutatorWithAnalyzer(analyzer) {};
+
+  virtual bool PreserveParallelLoopNest(const ForNode *) const { return false; }
 
   Stmt VisitStmt_(const ForNode *op) final {
     // Gather consecutive parallel loops
@@ -111,7 +113,7 @@ private:
     FragmentAccessDetector detector;
     detector.Collect(op->body);
     // Do not fuse if there is a fragment access
-    if (detector.HasFragmentAccess()) {
+    if (detector.HasFragmentAccess() || PreserveParallelLoopNest(op)) {
       return IRMutatorWithAnalyzer::VisitStmt_(op);
     }
     while (true) {
@@ -207,7 +209,7 @@ private:
       return FloorMod(FloorDiv(fused_var, strides[i]), extents[i]);
     };
 
-    Map<Var, PrimExpr> var_map;
+    ffi::Map<Var, PrimExpr> var_map;
     for (size_t i = 0; i < loop_chain.size(); i++) {
       const ForNode *loop = loop_chain[i];
       var_map.Set(loop->loop_var,
@@ -220,6 +222,28 @@ private:
     // Create the fused loop
     For fused_for = For(fused_var, 0, fused_extent, ForKind::kParallel, body);
     fused_for.CopyOnWrite()->annotations = op->annotations;
+
+    // If the outermost loop carried a parallel loop layout annotation,
+    // reshape it to the fused 1D domain so the fused loop's layout remains
+    // valid. Using Fragment::Reshape preserves forward_index/thread semantics
+    // and performs necessary simplifications.
+    if (fused_for->annotations.count(attr::kParallelLoopLayout)) {
+      auto old_layout = Downcast<Fragment>(
+          fused_for->annotations.Get(attr::kParallelLoopLayout).value());
+      size_t old_dim = old_layout->InputDim();
+      // Only attempt to fuse when dimensions match the number of fused loops.
+      if (old_dim == loop_chain.size()) {
+        ffi::Array<PrimExpr> new_shape = {fused_extent};
+        Fragment fused_layout =
+            Downcast<Fragment>(old_layout->Reshape(new_shape, analyzer_));
+        fused_for.CopyOnWrite()->annotations.Set(attr::kParallelLoopLayout,
+                                                 fused_layout);
+      } else {
+        // Dimension mismatch: drop the stale layout so downstream passes can
+        // re-infer a correct one for the fused loop.
+        fused_for.CopyOnWrite()->annotations.erase(attr::kParallelLoopLayout);
+      }
+    }
     return fused_for;
   }
 };

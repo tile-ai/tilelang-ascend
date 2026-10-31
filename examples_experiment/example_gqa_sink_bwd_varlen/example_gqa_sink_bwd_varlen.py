@@ -13,7 +13,7 @@ Developer mode (NoScope): threads=1, 4-True pass_configs, block_M=64, block_N=64
 
 import tilelang
 import torch
-from tilelang import language as T
+from tilelang.ascend.a2a3 import language as T
 
 # ============================================================================
 # pass_configs

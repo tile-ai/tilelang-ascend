@@ -1,32 +1,36 @@
-# lint requirements
--r requirements-lint.txt
-# build requirements
+# Lint requirements
+--requirement requirements-lint.txt
+
+# Build requirements
+cython
 cmake>=3.26
-# runtime requirements
+setuptools
+scikit-build-core
+ninja
+
+# Runtime requirements
+--requirement requirements.txt
+
+# Test requirements
 cffi
 cpplint
-Cython
+cython
 docutils
 dtlib
-numpy>=1.23.5
-pytest>=6.2.4
-pytest_xdist>=2.2.1
-packaging>=21.0
-PyYAML
-tqdm>=4.62.3
-typing_extensions>=4.10.0
-requests
-cloudpickle
-ml_dtypes
-psutil
-torch
-thefuzz
-tabulate
-wheel
-setuptools
 einops
-attrs
-decorator
-flash-attn
+flash-linear-attention==0.3.2
+matplotlib
+packaging>=21.0
+pandas
+pytest-durations
+pytest-timeout
+pytest-xdist>=2.2.1
+pytest>=6.2.4
+pyyaml
+requests
 scipy
+seaborn
+tabulate
 tornado
+wheel
+z3-solver>=4.13.0,<4.15.5

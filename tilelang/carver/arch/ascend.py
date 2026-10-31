@@ -1,4 +1,3 @@
-from typing import Optional, List
 from tvm.target import Target
 from .arch_base import TileDevice
 import logging
@@ -6,7 +5,7 @@ import logging
 # check if torch_npu is available, if not, degrade using CHIP_SPECS only
 try:
     import torch
-    import torch_npu
+    import torch_npu  # noqa: F401
 
     _TORCH_NPU_AVAILABLE = True
 except ImportError:
@@ -55,14 +54,17 @@ CHIP_SPECS = {
 DEFAULT_CHIP = "Ascend910A"
 
 
-class CubeInstruction(object):
-    def __init__(self, name: str, shape: List[int]):
+class CubeInstruction:
+    def __init__(self, name: str, shape: list[int]):
         self.name = name
         self.shape = shape
 
+
 class Ascend(TileDevice):
-    def __init__(self, target: Target | str = "llvm -keys=ascend", chip_name: Optional[str] = None):
-        if isinstance(target, str):
+    def __init__(self, target: Target | str | dict | None = None, chip_name: str | None = None):
+        if target is None:
+            target = {"kind": "llvm", "keys": ["ascend"]}
+        if not isinstance(target, Target):
             target = Target(target)
         self.target = target
         self.platform = "ascend"
@@ -89,13 +91,9 @@ class Ascend(TileDevice):
                     elif "910" in npu_name:
                         chip_name = "Ascend910A"
 
-                    logger.debug(
-                        f"Detected Ascend NPU: {npu_name}, using chip profile: {chip_name}"
-                    )
+                    logger.debug(f"Detected Ascend NPU: {npu_name}, using chip profile: {chip_name}")
             except Exception as e:
-                logger.warning(
-                    f"Failed to detect Ascend NPU properties from torch_npu: {e}"
-                )
+                logger.warning(f"Failed to detect Ascend NPU properties from torch_npu: {e}")
 
         # Else determine chip properties from CHIP_SPEC if not chip name provided
         if chip_name is None:
@@ -159,7 +157,7 @@ class Ascend(TileDevice):
         return self.cube_spec[-1]
 
     @property
-    def cube_shape(self) -> List[int]:
+    def cube_shape(self) -> list[int]:
         """
         Return the full dimensions of the CUBE unit [M, N, K].
         """
@@ -170,12 +168,11 @@ class Ascend(TileDevice):
         return (self.cube_spec[0], self.cube_spec[1])
 
     def get_avaliable_tensorintrin_shapes(self):
-        self.available_cube_instructions = (
-            CubeInstruction("Davich", [16, 16]),
-        )
+        self.available_cube_instructions = (CubeInstruction("Davich", [16, 16]),)
         return [t.shape for t in self.available_cube_instructions]
 
-# TODO: consider the dtype of the input a and b seperately
+
+# TODO: consider the dtype of the input a and b separately
 # As the tensorcore may supports e4m3_float8 * e5m2
 def is_cube_supported_precision(in_dtype: str, accum_dtype: str, arch: TileDevice) -> bool:
     if not isinstance(arch, Ascend):
@@ -185,5 +182,6 @@ def is_cube_supported_precision(in_dtype: str, accum_dtype: str, arch: TileDevic
         return in_dtype in ["float16", "bfloat16"] and accum_dtype in ["float16", "bfloat16", "float32"]
     else:
         raise ValueError(f"Unsupported architecture: {arch}")
+
 
 __all__ = ["Ascend", "is_ascend_arch", "is_cube_supported_precision"]

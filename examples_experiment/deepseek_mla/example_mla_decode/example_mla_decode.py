@@ -27,7 +27,7 @@ Input value constraints:
 import tilelang
 import torch
 import torch.nn.functional as F
-from tilelang import language as T
+from tilelang.ascend.a2a3 import language as T
 
 tilelang.disable_cache()
 

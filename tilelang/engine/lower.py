@@ -1,24 +1,21 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
 """The compiler for TL programs."""
 
 from __future__ import annotations
 
-
-import os
-import os.path as osp
-from typing import Callable
+from collections.abc import Callable
+from contextlib import nullcontext
 import tilelang.transform
 from tilelang import tvm as tvm
-from tvm import tir
+from tvm import tirx
 from tvm.ir import CallingConv
 from tvm.target import Target
-from tilelang.contrib import hipcc, nvcc
 from tilelang.engine.param import KernelParam, CompiledArtifact
-from tilelang.utils.target import determine_target  # noqa: F401
-from tilelang.engine.phase import (
-    LowerAndLegalize,
-    OptimizeForTarget,
+from tilelang.engine.semantic_check import PreLowerSemanticCheck
+from tilelang.backend.module import BackendContext, create_backend_context
+from tilelang.instrumentation import (
+    compile_pass_instrumentation,
+    current_compile_pass_instrumentation,
+    instrument_current_pass_context,
 )
 
 
@@ -31,97 +28,31 @@ def has_device_kernel_launch(attrs) -> bool:
     return bool(attrs and "calling_conv" in attrs and attrs["calling_conv"] == CallingConv.DEVICE_KERNEL_LAUNCH)
 
 
-def is_device_call_c_device(func: tir.PrimFunc):
+def is_device_call_c_device(func: tirx.PrimFunc):
     attrs = func.attrs
+    calling_conv = attrs.get("calling_conv", CallingConv.DEFAULT)
+    is_cpacked = calling_conv == CallingConv.C_PACKED_FUNC
 
     # Check if it's a C target
-    if "target" in attrs and attrs["target"].kind.name == "c":
+    if "target" in attrs and attrs["target"].kind.name == "c" and not is_cpacked:
         return True
 
     return has_device_kernel_launch(attrs)
 
 
-def is_device_call(func: tir.PrimFunc):
+def is_device_call(func: tirx.PrimFunc):
     return has_device_kernel_launch(func.attrs)
 
 
-def get_device_call(is_device_c: bool = False) -> Callable[[tir.PrimFunc], bool]:
+def get_device_call(is_device_c: bool = False) -> Callable[[tirx.PrimFunc], bool]:
     return is_device_call_c_device if is_device_c else is_device_call
 
 
-def get_host_call(is_device_c: bool = False) -> Callable[[tir.PrimFunc], bool]:
+def get_host_call(is_device_c: bool = False) -> Callable[[tirx.PrimFunc], bool]:
     return lambda func: not get_device_call(is_device_c)(func)
 
 
-@tvm.register_func("tilelang_callback_cuda_compile", override=True)
-def tilelang_callback_cuda_compile(code, target):
-    project_root = osp.join(osp.dirname(__file__), "../..")
-    if "TL_TEMPLATE_PATH" in os.environ:
-        tl_template_path = os.environ["TL_TEMPLATE_PATH"]
-    else:
-        tl_template_path = osp.abspath(osp.join(project_root, "src"))
-    # TODO(lei): this indeed should be renamed into
-    # TL_CUTLASS_INCLUDE_PATH in the future
-    if "TL_CUTLASS_PATH" in os.environ:
-        cutlass_path = os.environ["TL_CUTLASS_PATH"]
-    else:
-        cutlass_path = osp.abspath(osp.join(project_root, "3rdparty/cutlass/include"))
-    compute_version = "".join(nvcc.get_target_compute_version(target).split("."))
-
-    # special handle for Hopper
-    if compute_version == "90":
-        arch = ["-arch=sm_90a"]
-        format = "cubin"
-    else:
-        arch = [f"-arch=sm_{compute_version}"]
-        format = "cubin"
-
-    # printing out number of registers
-    debug_option = "--ptxas-options=--verbose,--register-usage-level=10,--warn-on-local-memory-usage"
-    ptx = nvcc.compile_cuda(
-        code,
-        format,
-        arch,
-        options=[
-            "-std=c++17",
-            debug_option,
-            "--use_fast_math",
-            "-I" + tl_template_path,
-            "-I" + cutlass_path,
-        ],
-        verbose=False,
-    )
-
-    return ptx
-
-
-@tvm.register_func("tilelang_callback_hip_compile", override=True)
-def tilelang_callback_hip_compile(code, target):
-    project_root = osp.join(osp.dirname(__file__), "../..")
-    tl_template_path = osp.abspath(osp.join(project_root, "src"))
-
-    # TODO(lei): actually this indeed should be renamed into
-    # TL_COMPOSABLE_KERNEL_INCLUDE_PATH in the future
-    if "TL_COMPOSABLE_KERNEL_PATH" in os.environ:
-        ck_path = os.environ["TL_COMPOSABLE_KERNEL_PATH"]
-    else:
-        ck_path = osp.abspath(osp.join(project_root, "3rdparty/composable_kernel/include"))
-
-    hsaco = hipcc.compile_hip(
-        code,
-        target_format="hsaco",
-        options=[
-            "-std=c++17",
-            "-I" + tl_template_path,
-            "-I" + ck_path,
-        ],
-        verbose=False,
-    )
-
-    return hsaco
-
-
-def extrac_params(func: tir.PrimFunc) -> list[KernelParam]:
+def extrac_params(func: tirx.PrimFunc) -> list[KernelParam]:
     tensor_types = []
     for var in func.params:
         if var in func.buffer_map:
@@ -131,109 +62,187 @@ def extrac_params(func: tir.PrimFunc) -> list[KernelParam]:
     return tensor_types
 
 
-def canon_target_host(target: str | Target, target_host: str | Target | None):
-    if not target_host:
-        target_host = "llvm" if tvm.runtime.enabled("llvm") else "stackvm"
+def host_codegen(
+    host_mod: tvm.IRModule,
+    context: BackendContext,
+) -> tvm.IRModule:
+    """Generate host-side code from the lowered IR module.
 
-    return target_host
+    Parameters
+    ----------
+    host_mod : tvm.IRModule
+        The host-side IR module to compile.
+    context : BackendContext
+        Resolved backend, device target, host target, and execution policy.
+    """
+    target_host = context.target_host
+    host_mod = tirx.transform.BindTarget(target_host)(host_mod)
+    host_mod = tirx.transform.FP8StorageLegalize()(host_mod)
+    host_mod = tirx.transform.BF16StorageLegalize()(host_mod)
+    host_mod = tirx.transform.LowerTVMBuiltin()(host_mod)
+    host_mod = tirx.transform.LowerCustomDatatypes()(host_mod)
+    host_mod = tilelang.transform.LowerIntrin()(host_mod)
+    combine_context_call = getattr(tirx.transform, "CombineContextCall", None)
+    if combine_context_call is not None:
+        host_mod = combine_context_call()(host_mod)
+    host_mod = context.preprocess_host_codegen(host_mod)
+    return context.codegen_host(host_mod)
 
 
-def host_codegen(host_mod: tvm.IRModule, target_host: Target) -> tvm.IRModule:
-    host_mod = tir.transform.BindTarget(target_host)(host_mod)
-    host_mod = tir.transform.FP8StorageLegalize()(host_mod)
-    host_mod = tir.transform.BF16StorageLegalize()(host_mod)
-    host_mod = tir.transform.LowerTVMBuiltin()(host_mod)
-    host_mod = tir.transform.LowerCustomDatatypes()(host_mod)
-    host_mod = tir.transform.LowerIntrin()(host_mod)
-    host_mod = tilelang.transform.LowerDeviceStorageAccessInfo()(host_mod)
-    host_mod = tir.transform.CombineContextCall()(host_mod)
-    if target_host.kind.name == "llvm":
-        host_mod = tvm._ffi.get_global_func("target.build.llvm")(host_mod, target_host)
-    elif target_host.kind.name == "c":
-        host_mod = tvm._ffi.get_global_func("target.build.c")(host_mod, target_host)
-    else:
-        raise ValueError(f"Target host {target_host.kind.name} is not supported")
-    return host_mod
-
-
-def device_codegen(device_mod: tvm.IRModule, target: Target, platform: str) -> tvm.IRModule:
-    managed_vector_mask = target.model in {"ascendc", "auto"} and platform in {"A2", "A3"}
-    if not managed_vector_mask:
-        device_mod = tir.transform.Simplify()(device_mod)
-
-    if target.model == "ascendc" or target.model == "auto":
-        device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend")(device_mod, target, platform)
-    elif target.model == "pto":
-        device_mod = tvm._ffi.get_global_func("target.build.tilelang_ascend_pto")(device_mod, target, platform)
-    else:
-        print(target.kind.name)
-        raise ValueError(f"Target {target.kind.name} is not supported")
-
+def _prepare_device_codegen_mod(device_mod: tvm.IRModule) -> tvm.IRModule:
+    device_mod = tilelang.transform.LowerIntrin()(device_mod)
+    device_mod = tirx.transform.Simplify()(device_mod)
+    device_mod = tilelang.transform.HoistBroadcastValues()(device_mod)
     return device_mod
 
 
-def device_codegen_without_compile(device_mod: tvm.IRModule, target: Target) -> tvm.IRModule:
-    device_mod = tilelang.transform.LowerDeviceStorageAccessInfo()(device_mod)
-    device_mod = tir.transform.LowerIntrin()(device_mod)
-    device_mod = tir.transform.Simplify()(device_mod)
-    if target.kind.name == "cuda":
-        device_mod = tvm._ffi.get_global_func("target.build.tilelang_cuda_without_compile")(device_mod, target)
-    elif target.kind.name == "hip":
-        device_mod = tvm._ffi.get_global_func("target.build.tilelang_hip_without_compile")(device_mod, target)
-    elif target.kind.name == "c":
-        device_mod = tvm._ffi.get_global_func("target.build.tilelang_cpp")(device_mod, target)
-    elif target.kind.name == "llvm":
-        device_mod = tvm._ffi.get_global_func("target.build.llvm")(device_mod, target)
-    elif target.kind.name == "webgpu":
-        device_mod = tvm._ffi.get_global_func("target.build.tilelang_webgpu")(device_mod, target)
-    else:
-        raise ValueError(f"Target {target.kind.name} is not supported")
+def device_codegen(device_mod: tvm.IRModule, context: BackendContext) -> tvm.IRModule:
+    device_mod = context.preprocess_device_codegen(device_mod, _prepare_device_codegen_mod)
+    return context.codegen_device(device_mod, compile_device=True)
 
-    return device_mod
+
+def device_codegen_without_compile(device_mod: tvm.IRModule, context: BackendContext) -> tvm.IRModule:
+    device_mod = context.preprocess_device_codegen(device_mod, _prepare_device_codegen_mod)
+    return context.codegen_device(device_mod, compile_device=False)
+
+
+def lower_to_host_device_ir(
+    func_or_mod: tirx.PrimFunc | tvm.IRModule,
+    context: BackendContext,
+    runtime_only: bool = False,
+) -> tuple[tvm.IRModule, tvm.IRModule, list[KernelParam] | None, Target, Target]:
+    """Lower to split IR under a per-compilation instrumentation session."""
+
+    has_session = current_compile_pass_instrumentation() is not None
+    with compile_pass_instrumentation(name="lower-to-host-device-ir"):
+        attach_instruments = nullcontext() if has_session else instrument_current_pass_context()
+        with attach_instruments:
+            mod = func_or_mod
+            params = None
+            if isinstance(func_or_mod, tirx.PrimFunc):
+                func = func_or_mod
+                params = extrac_params(func) if not runtime_only else None
+                mod = tvm.IRModule({func.attrs["global_symbol"]: func})
+
+            target = context.target
+            target_host = context.target_host
+
+            _is_host_call = get_host_call(is_device_c=is_cpu_device_backend(target))
+            _is_device_call = get_device_call(is_device_c=is_cpu_device_backend(target))
+
+            # Run backend-independent semantic checks before target-specific lowering.
+            PreLowerSemanticCheck(mod)
+
+            mod = context.lower(mod)
+            if not runtime_only:
+                lowered_params = context.extract_parameters(mod)
+                if lowered_params is not None:
+                    params = lowered_params
+
+            host_mod = tirx.transform.Filter(_is_host_call)(mod)
+            device_mod = tirx.transform.Filter(_is_device_call)(mod)
+
+            return host_mod, device_mod, params, target, target_host
+
+
+def lower_with_context(
+    func_or_mod: tirx.PrimFunc | tvm.IRModule,
+    context: BackendContext,
+    *,
+    runtime_only: bool = False,
+    enable_host_codegen: bool = False,
+    enable_device_compile: bool = False,
+) -> CompiledArtifact:
+    """Compile using an existing context without resolving backend state again.
+
+    ``enable_host_codegen`` builds the host runtime module when true. It is
+    disabled by default because JIT adapters provide their own host-side
+    integration. ``enable_device_compile`` similarly controls whether device
+    code is compiled at this stage; JIT adapters compile it separately by
+    default.
+    """
+
+    has_session = current_compile_pass_instrumentation() is not None
+    with compile_pass_instrumentation(name="lower-with-context"):
+        attach_instruments = nullcontext() if has_session else instrument_current_pass_context()
+        with attach_instruments:
+            return _lower_with_context_impl(
+                func_or_mod,
+                context,
+                runtime_only=runtime_only,
+                enable_host_codegen=enable_host_codegen,
+                enable_device_compile=enable_device_compile,
+            )
+
+
+def _lower_with_context_impl(
+    func_or_mod: tirx.PrimFunc | tvm.IRModule,
+    context: BackendContext,
+    *,
+    runtime_only: bool,
+    enable_host_codegen: bool,
+    enable_device_compile: bool,
+) -> CompiledArtifact:
+    """Implementation executed inside the caller's analyzer context."""
+
+    host_mod, device_mod, params, target, target_host = lower_to_host_device_ir(
+        func_or_mod,
+        context,
+        runtime_only=runtime_only,
+    )
+
+    codegen_mod = device_codegen(device_mod, context) if enable_device_compile else device_codegen_without_compile(device_mod, context)
+    kernel_source = codegen_mod.inspect_source()
+
+    if enable_host_codegen:
+        host_mod = host_codegen(host_mod, context)
+        host_mod.import_module(codegen_mod)
+        return CompiledArtifact(
+            host_mod,
+            device_mod,
+            params,
+            kernel_source,
+            rt_mod=host_mod,
+            target=target,
+            target_host=target_host,
+        )
+
+    return CompiledArtifact(
+        host_mod,
+        device_mod,
+        params,
+        kernel_source,
+        target=target,
+        target_host=target_host,
+    )
 
 
 def lower(
-    func_or_mod: tir.PrimFunc | tvm.IRModule,
+    func_or_mod: tirx.PrimFunc | tvm.IRModule,
     target: str | Target = "auto",
     target_host: str | Target | None = None,
-    platform: str = "auto",
-    runtime_only=False,
-    enable_host_codegen=False,
-    enable_device_compile=False,
+    runtime_only: bool = False,
+    enable_host_codegen: bool = False,
+    enable_device_compile: bool = False,
 ) -> CompiledArtifact:
+    """Compile after resolving exactly one backend context.
+
+    ``enable_host_codegen`` builds the host runtime module when true. It is
+    disabled by default because JIT adapters provide their own host-side
+    integration. ``enable_device_compile`` similarly controls whether device
+    code is compiled at this stage; JIT adapters compile it separately by
+    default.
     """
-    enable_host_codegen: whether to enable host codegen, default is False, as we have our
-    own host codegen implementation in jit.
-    enable_device_compile: whether to enable device codegen, default is False, as we have our
-    own device codegen implementation in jit.
-    """
 
-    from tilelang.utils.target import determine_platform
-
-    platform = determine_platform(platform)
-
-    mod = func_or_mod
-    params = None
-    if isinstance(func_or_mod, tir.PrimFunc):
-        func = func_or_mod
-        params = extrac_params(func) if not runtime_only else None
-        mod = tvm.IRModule({func.attrs["global_symbol"]: func})
-
-    # Inject platform into PrimFunc attrs for TIR pass access
-    for gvar, f in mod.functions_items():
-        mod[gvar] = f.with_attr("npu_platform", platform)
-
-    target = tvm.target.Target({"kind": "llvm", "model": target})
-
-    # Phase 1: Lower and legalize the IR
-    mod = LowerAndLegalize(mod, target)
-
-    # Phase 2: Optimize the IR for the target
-    mod = OptimizeForTarget(mod, target, platform)
-
-    codegen_mod = device_codegen(mod, target, platform)
-
-    func = mod.functions_items()[0][1]
-    params = extrac_params(func)
-
-    return CompiledArtifact(None, mod, params, codegen_mod.get_source())
+    has_session = current_compile_pass_instrumentation() is not None
+    with compile_pass_instrumentation(name="lower"):
+        attach_instruments = nullcontext() if has_session else instrument_current_pass_context()
+        with attach_instruments:
+            context = create_backend_context(target, target_host, "auto")
+            return lower_with_context(
+                func_or_mod,
+                context,
+                runtime_only=runtime_only,
+                enable_host_codegen=enable_host_codegen,
+                enable_device_compile=enable_device_compile,
+            )

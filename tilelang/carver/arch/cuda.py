@@ -1,16 +1,27 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
-
+from __future__ import annotations
+import re
 import tvm
 from tvm.target import Target
 from .arch_base import TileDevice
-from typing import List, Union
 from .driver import cuda_driver
+
+# Matches an SM arch string in full: one optional "sm_" prefix, the numeric
+# compute capability, then the trailing feature-set letters nvcc and CUTLASS use
+# for Hopper and newer ("sm_90a", "sm_100a", "sm_103a"). Anchoring the prefix
+# here rather than stripping it first means a malformed value like "sm_sm_90"
+# has no way to slip through.
+_SM_VERSION_PATTERN = re.compile(r"^(?:sm_)?(\d+)[a-zA-Z]*$")
 
 
 def check_sm_version(arch: str) -> int:
-    sm_version = arch.replace("sm_", "")
-    return int(sm_version) if sm_version.isdigit() else -1
+    """Return the numeric compute capability of an SM arch string, or -1.
+
+    ``sm_90`` and ``sm_90a`` both describe compute capability 9.0, so both
+    parse to 90. Anything that is not a well formed SM arch, such as a HIP
+    ``gfx942`` target, returns -1.
+    """
+    match = _SM_VERSION_PATTERN.match(arch)
+    return int(match.group(1)) if match else -1
 
 
 def is_cuda_arch(arch: TileDevice) -> bool:
@@ -53,6 +64,26 @@ def has_mma_support(arch: TileDevice) -> bool:
     return all(conditions)
 
 
+def _get_target_attr(target: Target, name: str) -> int | None:
+    value = getattr(target, name, None)
+    if value is None:
+        value = target.attrs.get(name, None)
+    return int(value) if value is not None else None
+
+
+def _get_l2_cache_size_bytes(target: Target) -> int:
+    target_value = _get_target_attr(target, "l2_cache_size_bytes")
+    if target_value is not None:
+        return target_value
+
+    prop = cuda_driver.get_cuda_device_properties()
+    if prop is not None and hasattr(prop, "L2_cache_size"):
+        return int(prop.L2_cache_size)
+
+    persisting_l2 = cuda_driver.get_persisting_l2_cache_max_size()
+    return int(persisting_l2) if persisting_l2 is not None else 0
+
+
 volta_tensorcore_supported = [
     ("float16", "float32"),
     ("float16", "float16"),
@@ -71,17 +102,16 @@ ada_tensorcore_supported = [
     ("float16", "float32"),
     ("float16", "float16"),
     ("int8", "int32"),
-    ("e5m2_float8", "float32"),
-    ("e4m3_float8", "float32"),
+    ("float8_e5m2", "float32"),
+    ("float8_e4m3", "float32"),
 ]
 hopper_tensorcore_supported = ada_tensorcore_supported
 
 
 # TODO(lei): we should consider the dtype of the input a and b
 # instead of assuming both a and b share the same dtype.
-# As the tensorcore may supports e4m3_float8 * e5m2_float8
+# As the tensorcore may supports float8_e4m3 * float8_e5m2
 def is_tensorcore_supported_precision(in_dtype: str, accum_dtype: str, arch: TileDevice) -> bool:
-
     if is_volta_arch(arch):
         return (in_dtype, accum_dtype) in volta_tensorcore_supported
     elif is_ampere_arch(arch):
@@ -94,25 +124,25 @@ def is_tensorcore_supported_precision(in_dtype: str, accum_dtype: str, arch: Til
         raise ValueError(f"Unsupported architecture: {arch}")
 
 
-class TensorInstruction(object):
-
+class TensorInstruction:
     def __init__(
         self,
         name: str,
-        shape: List[int],
+        shape: list[int],
     ):
         self.name: str = name
         # only hold the shape of M and N
-        self.shape: List[int] = shape
+        self.shape: list[int] = shape
 
 
 class CUDA(TileDevice):
-
-    def __init__(self, target: Union[Target, str]):
+    def __init__(self, target: Target | str):
         if isinstance(target, str):
-            target = tvm.target.Target(target)
+            from tilelang.backend.target import determine_target
+
+            target = determine_target(target, return_object=True)
         self.target = target
-        self.sm_version = check_sm_version(self.target.arch)
+        self.sm_version = check_sm_version(self.target.attrs["arch"])
         device = tvm.runtime.cuda(0)
         if not device.exist:
             raise RuntimeError("Cannot find cuda device 0.")
@@ -127,17 +157,17 @@ class CUDA(TileDevice):
         self.reg_cap: int = 65536
         self.max_smem_usage: int = 2 * self.smem_cap
         self.sm_partition: int = 4
-        self.l2_cache_size_bytes: int = target.l2_cache_size_bytes
+        self.l2_cache_size_bytes: int = _get_l2_cache_size_bytes(target)
         # the number of transaction size in bytes
-        self.transaction_size: List[int] = [32, 128]  # in bytes
+        self.transaction_size: list[int] = [32, 128]  # in bytes
         # bandwidth in MB/s, will be used for recommend basic tile size
         # TODO(lei): find some way to get the real bandwidth
         # However, the ratio of bandwidth between different devices can
         # be similar. The bandwidth can work for another devices as well.
-        self.bandwidth: List[int] = [750, 12080]
+        self.bandwidth: list[int] = [750, 12080]
         # get the available tensor instructions during runtime to avoid
         # the dependency of the tensor intrinsics registration
-        self.available_tensor_instructions: List[TensorInstruction] = None
+        self.available_tensor_instructions: list[TensorInstruction] = None
 
     def get_avaliable_tensorintrin_shapes(self):
         self.available_tensor_instructions = (
@@ -148,3 +178,15 @@ class CUDA(TileDevice):
 
     def __repr__(self):
         return f"CUDA({self.target})"
+
+
+__all__ = [
+    "is_cuda_arch",
+    "is_volta_arch",
+    "is_ampere_arch",
+    "is_ada_arch",
+    "is_hopper_arch",
+    "is_tensorcore_supported_precision",
+    "has_mma_support",
+    "CUDA",
+]

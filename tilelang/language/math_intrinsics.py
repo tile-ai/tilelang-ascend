@@ -1,0 +1,465 @@
+"""Common math intrinsics exposed on the TileLang language surface."""
+
+from tvm import DataType, DataTypeCode, tirx
+from tvm.tirx import PrimExpr
+
+
+def _validate_fast_math_arg(x: PrimExpr, intrinsic: str) -> PrimExpr:
+    """Normalize a fast-math argument and reject unsupported dtypes."""
+    x = tirx.convert(x)
+    if DataType(x.dtype).type_code not in (DataTypeCode.FLOAT, DataTypeCode.BFLOAT):
+        raise TypeError(f"T.{intrinsic} only supports floating-point inputs, but got {x.dtype}")
+    return x
+
+
+def _validate_rounding_mode(rounding_mode):
+    """Validate that the rounding mode is one of the supported IEEE modes"""
+    valid_modes = {"rn", "rz", "ru", "rd"}
+    if isinstance(rounding_mode, str) and rounding_mode in valid_modes:
+        return
+    raise ValueError(f"Invalid rounding mode '{rounding_mode}'. Must be one of: {valid_modes}")
+
+
+def __log(x: PrimExpr) -> PrimExpr:
+    """Calculate log(x) with fast math
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    x = _validate_fast_math_arg(x, "__log")
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.__log"), x)
+
+
+def __log2(x: PrimExpr) -> PrimExpr:
+    """Calculate log2(x) with fast math
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    x = _validate_fast_math_arg(x, "__log2")
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.__log2"), x)
+
+
+def __log10(x: PrimExpr) -> PrimExpr:
+    """Calculate log10(x) with fast math
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    x = _validate_fast_math_arg(x, "__log10")
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.__log10"), x)
+
+
+def __tan(x: PrimExpr) -> PrimExpr:
+    """Calculate tan(x) with fast math
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    x = _validate_fast_math_arg(x, "__tan")
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.__tan"), x)
+
+
+def __cos(x: PrimExpr) -> PrimExpr:
+    """Calculate cos(x) with fast math
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    x = _validate_fast_math_arg(x, "__cos")
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.__cos"), x)
+
+
+def __sin(x: PrimExpr) -> PrimExpr:
+    """Calculate sin(x) with fast math
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    x = _validate_fast_math_arg(x, "__sin")
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.__sin"), x)
+
+
+def __exp10(x: PrimExpr) -> PrimExpr:
+    """Calculate 10**x with fast math
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    x = _validate_fast_math_arg(x, "__exp10")
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.__exp10"), x)
+
+
+def __exp(x: PrimExpr) -> PrimExpr:
+    """Calculate e**x with fast math
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    x = _validate_fast_math_arg(x, "__exp")
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.__exp"), x)
+
+
+def fast_rcp(x: PrimExpr) -> PrimExpr:
+    """Approximate reciprocal using CUDA fast reciprocal."""
+    x = tirx.convert(x)
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.fast_rcp"), x)
+
+
+# IEEE-compliant operations
+def ieee_add(x: PrimExpr, y: PrimExpr, rounding_mode="rn") -> PrimExpr:
+    """IEEE-compliant addition with specified rounding mode
+
+    Parameters
+    ----------
+    x : PrimExpr
+        First operand.
+    y : PrimExpr
+        Second operand.
+    rounding_mode : str, optional
+        Rounding mode: 'rn' (round to nearest), 'rz' (round toward zero),
+        'ru' (round toward positive infinity), 'rd' (round toward negative infinity).
+        Default is 'rn'.
+
+    Returns
+    -------
+    result : PrimExpr
+        The result.
+    """
+    _validate_rounding_mode(rounding_mode)
+    x = tirx.convert(x)
+    y = tirx.convert(y)
+    rounding_mode = tirx.convert(rounding_mode)
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.ieee_add"), x, y, rounding_mode)
+
+
+def ieee_sub(x: PrimExpr, y: PrimExpr, rounding_mode="rn") -> PrimExpr:
+    """IEEE-compliant subtraction with specified rounding mode
+
+    Parameters
+    ----------
+    x : PrimExpr
+        First operand.
+    y : PrimExpr
+        Second operand.
+    rounding_mode : str, optional
+        Rounding mode: 'rn', 'rz', 'ru', 'rd'. Default is 'rn'.
+
+    Returns
+    -------
+    result : PrimExpr
+        The result.
+    """
+    _validate_rounding_mode(rounding_mode)
+    x = tirx.convert(x)
+    y = tirx.convert(y)
+    rounding_mode = tirx.convert(rounding_mode)
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.ieee_sub"), x, y, rounding_mode)
+
+
+def ieee_mul(x: PrimExpr, y: PrimExpr, rounding_mode="rn") -> PrimExpr:
+    """IEEE-compliant multiplication with specified rounding mode
+
+    Parameters
+    ----------
+    x : PrimExpr
+        First operand.
+    y : PrimExpr
+        Second operand.
+    rounding_mode : str, optional
+        Rounding mode: 'rn', 'rz', 'ru', 'rd'. Default is 'rn'.
+
+    Returns
+    -------
+    result : PrimExpr
+        The result.
+    """
+    _validate_rounding_mode(rounding_mode)
+    x = tirx.convert(x)
+    y = tirx.convert(y)
+    rounding_mode = tirx.convert(rounding_mode)
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.ieee_mul"), x, y, rounding_mode)
+
+
+def ieee_fmaf(x: PrimExpr, y: PrimExpr, z: PrimExpr, rounding_mode="rn") -> PrimExpr:
+    """IEEE-compliant fused multiply-add with specified rounding mode
+
+    Parameters
+    ----------
+    x : PrimExpr
+        First operand.
+    y : PrimExpr
+        Second operand.
+    z : PrimExpr
+        Third operand (addend).
+    rounding_mode : str, optional
+        Rounding mode: 'rn', 'rz', 'ru', 'rd'. Default is 'rn'.
+
+    Returns
+    -------
+    result : PrimExpr
+        The result of x * y + z.
+    """
+    _validate_rounding_mode(rounding_mode)
+    x = tirx.convert(x)
+    y = tirx.convert(y)
+    z = tirx.convert(z)
+    rounding_mode = tirx.convert(rounding_mode)
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.ieee_fmaf"), x, y, z, rounding_mode)
+
+
+def ieee_frcp(x: PrimExpr, rounding_mode="rn") -> PrimExpr:
+    """IEEE-compliant reciprocal with specified rounding mode
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input operand.
+    rounding_mode : str, optional
+        Rounding mode: 'rn', 'rz', 'ru', 'rd'. Default is 'rn'.
+
+    Returns
+    -------
+    result : PrimExpr
+        The result of 1/x.
+    """
+    _validate_rounding_mode(rounding_mode)
+    x = tirx.convert(x)
+    rounding_mode = tirx.convert(rounding_mode)
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.ieee_frcp"), x, rounding_mode)
+
+
+def ieee_fsqrt(x: PrimExpr, rounding_mode="rn") -> PrimExpr:
+    """IEEE-compliant square root with specified rounding mode
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input operand.
+    rounding_mode : str, optional
+        Rounding mode: 'rn', 'rz', 'ru', 'rd'. Default is 'rn'.
+
+    Returns
+    -------
+    result : PrimExpr
+        The result of sqrt(x).
+    """
+    _validate_rounding_mode(rounding_mode)
+    x = tirx.convert(x)
+    rounding_mode = tirx.convert(rounding_mode)
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.ieee_fsqrt"), x, rounding_mode)
+
+
+def ieee_frsqrt(x: PrimExpr) -> PrimExpr:
+    """IEEE-compliant reciprocal square root (round to nearest only)
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input operand.
+
+    Returns
+    -------
+    result : PrimExpr
+        The result of 1/sqrt(x).
+    """
+    x = tirx.convert(x)
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.ieee_frsqrt"), x)
+
+
+def ieee_fdiv(x: PrimExpr, y: PrimExpr, rounding_mode="rn") -> PrimExpr:
+    """IEEE-compliant division with specified rounding mode
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Dividend.
+    y : PrimExpr
+        Divisor.
+    rounding_mode : str, optional
+        Rounding mode: 'rn', 'rz', 'ru', 'rd'. Default is 'rn'.
+
+    Returns
+    -------
+    result : PrimExpr
+        The result of x/y.
+    """
+    _validate_rounding_mode(rounding_mode)
+    x = tirx.convert(x)
+    y = tirx.convert(y)
+    rounding_mode = tirx.convert(rounding_mode)
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.ieee_fdiv"), x, y, rounding_mode)
+
+
+_PACKED_X2_DTYPES = frozenset({"float32x2", "bfloat16x2", "float16x2"})
+
+
+def _validate_packed_x2_args(*args: PrimExpr) -> None:
+    """Validate that all arguments have the same supported packed x2 dtype."""
+    for arg in args:
+        if not isinstance(arg, PrimExpr):
+            raise TypeError(f"Expected PrimExpr, got {type(arg)}: {arg}")
+        if arg.dtype not in _PACKED_X2_DTYPES:
+            raise ValueError(f"Expected dtype in {sorted(_PACKED_X2_DTYPES)}, got '{arg.dtype}'")
+    if len({arg.dtype for arg in args}) > 1:
+        raise ValueError(f"Expected all packed x2 arguments to have the same dtype, got {[arg.dtype for arg in args]}")
+
+
+# ---------------------------------------------------------------------------
+# Packed x2 element-wise operations
+#
+# All ops accept float32x2, bfloat16x2, and float16x2 operands.
+# On CUDA, the codegen emits ``tl::<op>(...)`` which resolves to the
+# appropriate C++ overload (float2, __half2, __nv_bfloat162, or the uint1
+# bridge overload used by TVM for 16-bit packed types).
+# ---------------------------------------------------------------------------
+
+
+def add2(x: PrimExpr, y: PrimExpr) -> PrimExpr:
+    """Packed element-wise add (x + y)."""
+    x = tirx.convert(x)
+    y = tirx.convert(y)
+    _validate_packed_x2_args(x, y)
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.add2"), x, y)
+
+
+def sub2(x: PrimExpr, y: PrimExpr) -> PrimExpr:
+    """Packed element-wise subtract (x - y)."""
+    x = tirx.convert(x)
+    y = tirx.convert(y)
+    _validate_packed_x2_args(x, y)
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.sub2"), x, y)
+
+
+def mul2(x: PrimExpr, y: PrimExpr) -> PrimExpr:
+    """Packed element-wise multiply (x * y)."""
+    x = tirx.convert(x)
+    y = tirx.convert(y)
+    _validate_packed_x2_args(x, y)
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.mul2"), x, y)
+
+
+def fma2(x: PrimExpr, y: PrimExpr, z: PrimExpr) -> PrimExpr:
+    """Packed fused multiply-add (x * y + z)."""
+    x = tirx.convert(x)
+    y = tirx.convert(y)
+    z = tirx.convert(z)
+    _validate_packed_x2_args(x, y, z)
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.fma2"), x, y, z)
+
+
+def max2(x: PrimExpr, y: PrimExpr) -> PrimExpr:
+    """Packed element-wise maximum."""
+    x = tirx.convert(x)
+    y = tirx.convert(y)
+    _validate_packed_x2_args(x, y)
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.max2"), x, y)
+
+
+def min2(x: PrimExpr, y: PrimExpr) -> PrimExpr:
+    """Packed element-wise minimum."""
+    x = tirx.convert(x)
+    y = tirx.convert(y)
+    _validate_packed_x2_args(x, y)
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.min2"), x, y)
+
+
+def abs2(x: PrimExpr) -> PrimExpr:
+    """Packed element-wise absolute value."""
+    x = tirx.convert(x)
+    _validate_packed_x2_args(x)
+    return tirx.call_intrin(x.dtype, tirx.op.Op.get("tl.abs2"), x)
+
+
+# Packed x2 element-wise math: registered target-neutrally and lowered on
+# both CUDA and ROCm (ROCm currently supports the float32x2 flavors).
+COMMON_MATH_INTRINSICS = [
+    "add2",
+    "sub2",
+    "mul2",
+    "fma2",
+    "max2",
+    "min2",
+    "abs2",
+]
+
+# CUDA-only intrinsics: PTX fast-math approximations and IEEE ops with an
+# explicit rounding mode. Registered and lowered only by the CUDA backend,
+# so only the CUDA dialect exports them.
+CUDA_MATH_INTRINSICS = [
+    "__log",
+    "__log2",
+    "__log10",
+    "__tan",
+    "__cos",
+    "__sin",
+    "__exp10",
+    "__exp",
+    "fast_rcp",
+    "ieee_add",
+    "ieee_sub",
+    "ieee_mul",
+    "ieee_fmaf",
+    "ieee_frcp",
+    "ieee_fsqrt",
+    "ieee_frsqrt",
+    "ieee_fdiv",
+]
+
+__all__ = CUDA_MATH_INTRINSICS + COMMON_MATH_INTRINSICS

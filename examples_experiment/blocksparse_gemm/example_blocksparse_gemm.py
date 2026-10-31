@@ -1,10 +1,10 @@
 import argparse
 import itertools
 import tilelang
-import tilelang.language as T
+import tilelang.ascend.a2a3.language as T
 import torch
 
-tilelang.cache.clear_cache()
+tilelang.disable_cache()
 
 DEFAULT_BLOCK_M = 128
 DEFAULT_BLOCK_N = 128

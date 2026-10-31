@@ -38,8 +38,8 @@ Key NPU adaptations vs GPU reference:
 
 import tilelang
 import torch
-from tilelang import language as T
-from tilelang.intrinsics import make_zn_layout, make_nz_layout
+from tilelang.ascend.a2a3 import language as T
+from tilelang.ascend.a2a3.layout import make_zn_layout, make_nz_layout
 
 # ============================================================================
 # pass_configs

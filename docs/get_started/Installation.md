@@ -4,117 +4,186 @@
 
 **Prerequisites for installation via wheel or PyPI:**
 
-- **Operating System**: Ubuntu 20.04 or later
-- **Python Version**: >= 3.8
-- **CUDA Version**: >= 11.0
+- **glibc**: 2.28 (Ubuntu 20.04 or later)
+- **Python Version**: >= 3.10
+- **NVIDIA GPUs — CUDA Version**: >= 10.0 (host installation), or pip-provided CUDA toolchain (>= 13.0)
+- **AMD GPUs — ROCm**: a host ROCm installation providing `hipcc` (see [Installing on AMD GPUs (ROCm)](#installing-on-amd-gpus-rocm))
 
-The easiest way to install **tile-lang** is directly from PyPI using pip. To install the latest version, run the following command in your terminal:
+The easiest way to install tilelang is directly from PyPI using pip. To install the latest version, run the following command in your terminal:
 
 ```bash
 pip install tilelang
 ```
 
-Alternatively, you may choose to install **tile-lang** using prebuilt packages available on the Release Page:
+Alternatively, you may choose to install tilelang using prebuilt packages available on the Release Page:
 
 ```bash
 pip install tilelang-0.0.0.dev0+ubuntu.20.4.cu120-py3-none-any.whl
 ```
 
-To install the latest version of **tile-lang** from the GitHub repository, you can run the following command:
+To install the latest version of tilelang from the GitHub repository, you can run the following command:
 
 ```bash
 pip install git+https://github.com/tile-ai/tilelang.git
 ```
 
-After installing **tile-lang**, you can verify the installation by running:
+After installing tilelang, you can verify the installation by running:
 
 ```bash
 python -c "import tilelang; print(tilelang.__version__)"
 ```
 
+### Installing on AMD GPUs (ROCm)
+
+The Linux x86_64 wheels on PyPI are fat CUDA+ROCm builds: the same `pip install tilelang` works on AMD GPUs, and no source build or separate package index is required. Two things differ from the CUDA flow:
+
+1. **A host ROCm installation is required at runtime.** Kernels are JIT-compiled with the host `hipcc` (there is no pip-provided ROCm toolchain, unlike the CUDA `nvcc` extra).
+2. **Install a ROCm build of PyTorch first.** A plain `pip install tilelang` resolves the default (CUDA) `torch` from PyPI, which cannot detect AMD GPUs. Install torch from the ROCm channel matching your ROCm version before (or when) installing tilelang:
+
+```bash
+# 1) Install a ROCm build of PyTorch (pick the channel matching your ROCm version)
+pip install torch --index-url https://download.pytorch.org/whl/rocm7.0
+
+# 2) Install tilelang; the already-installed torch is reused
+pip install tilelang
+```
+
+Verify that the ROCm target is detected:
+
+```bash
+python -c "import tilelang; from tilelang.backend.target import determine_target; print(tilelang.__version__, determine_target(return_object=True))"
+```
+
+This should print a `hip` target with your GPU architecture (e.g. `mcpu=gfx942`).
+
+If ROCm is installed outside `/opt/rocm`, or several HIP toolchains are visible on `PATH`, set `ROCM_PATH` to pin the installation TileLang should use:
+
+```bash
+export ROCM_PATH=/opt/rocm  # or your custom ROCm prefix
+```
+
+Notes:
+
+- The `tilelang[nvcc]` extra is CUDA-only; do not install it on ROCm hosts.
+- Windows and macOS wheels do not include the ROCm backend (Linux only).
+
 ## Building from Source
 
 **Prerequisites for building from source:**
 
-- **Operating System**: Linux
-- **Python Version**: >= 3.7
-- **CUDA Version**: >= 10.0
-- **LLVM**: < 20 if you are using the bundled TVM submodule
+- **Operating System**: Linux or Windows
+- **Python Version**: >= 3.10
+- **CUDA Version**: >= 10.0 (host installation), or pip-provided CUDA toolchain (>= 13.0)
 
-We recommend using a Docker container with the necessary dependencies to build **tile-lang** from source. You can use the following command to run a Docker container with the required dependencies:
+If you prefer Docker, please skip to the [Install Using Docker](#install-using-docker) section. The commands below use Ubuntu/Debian as the Linux example; Windows-specific notes are called out where they differ.
 
-```bash
-docker run --gpus all -it --rm --ipc=host nvcr.io/nvidia/pytorch:23.01-py3
-```
-
-To build and install **tile-lang** directly from source, follow these steps. This process requires certain pre-requisites from Apache TVM, which can be installed on Ubuntu/Debian-based systems using the following commands:
+First, install the OS-level prerequisites on Ubuntu/Debian-based systems using the following commands:
 
 ```bash
 apt-get update
 apt-get install -y python3 python3-dev python3-setuptools gcc zlib1g-dev build-essential cmake libedit-dev
 ```
 
-After installing the prerequisites, you can clone the **tile-lang** repository and install it using pip:
+On Windows, install Python 3, CMake, and Visual Studio Build Tools with the MSVC C++ toolchain. Run the `pip install` commands below from a Visual Studio Developer Command Prompt (or `call VsDevCmd.bat` first) so that `cl.exe` is on `PATH` and CMake can detect the compiler.
+
+Then, clone the tilelang repository and install it using pip. The `-v` flag enables verbose output during the build process.
+
+> **Note**: Use the `--recursive` flag to include necessary submodules. Tilelang currently depends on a customized version of TVM, which is included as a submodule. If you prefer [Building with Existing TVM Installation](#using-existing-tvm), you can skip cloning the TVM submodule (but still need other dependencies).
+
+### With host CUDA toolchain
 
 ```bash
 git clone --recursive https://github.com/tile-ai/tilelang.git
 cd tilelang
-pip install .  # Please be patient, this may take some time.
+pip install . -v
 ```
 
-If you want to install **tile-lang** in development mode, you can run the following command:
+### With pip-provided CUDA toolchain (no host CUDA required)
+
+If you don't have CUDA installed on the host, you can use pip-provided CUDA packages instead.
+
+**Option A** — pip toolchain in the current environment (use `--no-build-isolation`):
 
 ```bash
-pip install -e .
-```
-
-We currently provide three methods to install **tile-lang**:
-
-1. [Install from Source (using your own TVM installation)](#install-method-1)
-2. [Install from Source (using the bundled TVM submodule)](#install-method-2)
-3. [Install Using the Provided Script](#install-method-3)
-
-(install-method-1)=
-
-### Method 1: Install from Source (Using Your Own TVM Installation)
-
-If you already have a compatible TVM installation, follow these steps:
-
-1. **Clone the Repository**:
-
-```bash
-git clone --recursive https://github.com/tile-ai/tilelang
+git clone --recursive https://github.com/tile-ai/tilelang.git
 cd tilelang
+pip install -r requirements-dev.txt
+pip install "nvidia-cuda-nvcc>=13" "nvidia-cuda-cccl>=13" "nvidia-cuda-nvrtc>=13"
+pip install . -v --no-build-isolation
 ```
 
-**Note**: Use the `--recursive` flag to include necessary submodules.
-
-2. **Configure Build Options**:
-
-Create a build directory and specify your existing TVM path:
+**Option B** — pip toolchain in another virtualenv or path:
 
 ```bash
-mkdir build
+# Point to the cu<ver> directory inside another venv's site-packages
+export WITH_PIP_CUDA_TOOLCHAIN=/path/to/venv/lib/python3.x/site-packages/nvidia/cu13
+pip install . -v
+```
+
+If you want to install tilelang in development mode, you can use the `-e` flag so that any changes to the Python files will be reflected immediately without reinstallation.
+
+```bash
+pip install -e . -v
+```
+
+> **Note**: changes to C++ files require rebuilding the tilelang C++ library. See [Faster Rebuild for Developers](#faster-rebuild-for-developers) below. A default `build` directory will be created if you use `pip install`, so you can also directly run `make` in the `build` directory to rebuild it as [Working from Source via PYTHONPATH](#working-from-source-via-pythonpath) suggested below.
+
+(working-from-source-via-pythonpath)=
+
+### Working from Source via `PYTHONPATH` (Recommended for Developers)
+
+If you prefer to work directly from the source tree via `PYTHONPATH` instead of using pip, make sure the native extension (`libtilelang.so`) is built first:
+
+```bash
+mkdir -p build
 cd build
-cmake .. -DTVM_PREBUILD_PATH=/your/path/to/tvm/build  # e.g., /workspace/tvm/build
-make -j 16
+cmake .. -DUSE_CUDA=ON
+make -j
 ```
 
-3. **Set Environment Variables**:
-
-Update `PYTHONPATH` to include the `tile-lang` Python module:
+We also recommend using `ninja` to speed up compilation:
 
 ```bash
-export PYTHONPATH=/your/path/to/tilelang/:$PYTHONPATH
-# TVM_IMPORT_PYTHON_PATH is used by 3rd-party frameworks to import TVM
-export TVM_IMPORT_PYTHON_PATH=/your/path/to/tvm/python
+cmake .. -DUSE_CUDA=ON -G Ninja
+ninja
 ```
 
-(install-method-2)=
+Then add the repository root to `PYTHONPATH` before importing `tilelang`, for example:
 
-### Method 2: Install from Source (Using the Bundled TVM Submodule)
+```bash
+export PYTHONPATH=/path/to/tilelang:$PYTHONPATH
+python -c "import tilelang; print(tilelang.__version__)"
+```
 
-If you prefer to use the built-in TVM version, follow these instructions:
+Some useful CMake options you can toggle while configuring:
+
+- `-DUSE_CUDA=ON|OFF` builds against NVIDIA CUDA (default ON when a CUDA toolkit is found, except on macOS).
+- `-DUSE_ROCM=ON|OFF` enables ROCm support (default ON on Linux).
+- `-DUSE_ASCEND=ON|OFF` enables Ascend support (default ON on Linux).
+- `-DNO_VERSION_LABEL=ON` disables the backend/git suffix in `tilelang.__version__`.
+- `-DUSE_LLVM=ON` enables the LLVM backend for CPU codegen.
+
+(using-existing-tvm)=
+
+### Building with Customized TVM Path
+
+If you already have a TVM codebase, use the `TVM_ROOT` environment variable to specify the location of your existing TVM repository when building tilelang:
+
+```bash
+TVM_ROOT=<your-tvm-repo> pip install . -v
+```
+
+> **Note**: This will still rebuild the TVM-related libraries (stored in `TL_LIBS`). And this method often leads to some path issues. Check `env.py` to see some environment variables which are not set properly.
+
+(install-using-docker)=
+
+## Install Using Docker
+
+For users who prefer a containerized environment with all dependencies pre-configured, tilelang provides Docker images for different CUDA versions. This method is particularly useful for ensuring consistent environments across different systems.
+
+**Prerequisites:**
+- Docker installed on your system
+- NVIDIA Docker runtime or GPU is not necessary for building tilelang, you can build on a host without GPU and use that built image on other machine.
 
 1. **Clone the Repository**:
 
@@ -123,60 +192,239 @@ git clone --recursive https://github.com/tile-ai/tilelang
 cd tilelang
 ```
 
-**Note**: Ensure the `--recursive` flag is included to fetch submodules.
+2. **Build Docker Image**:
 
-2. **Configure Build Options**:
-
-Copy the configuration file and enable the desired backends (e.g., LLVM and CUDA):
+Navigate to the docker directory and build the image for your desired CUDA version:
 
 ```bash
-mkdir build
-cp 3rdparty/tvm/cmake/config.cmake build
-cd build
-# echo "set(USE_LLVM ON)"  # set USE_LLVM to ON if using LLVM
-echo "set(USE_CUDA ON)" >> config.cmake 
-# or echo "set(USE_ROCM ON)" >> config.cmake to enable ROCm runtime
-cmake ..
-make -j 16
+cd docker
+docker build -f Dockerfile.cu120 -t tilelang-cu120 .
 ```
 
-The build outputs (e.g., `libtilelang.so`, `libtvm.so`, `libtvm_runtime.so`) will be generated in the `build` directory.
+Available Dockerfiles:
+- `Dockerfile.cu120` - For CUDA 12.0
+- Other CUDA versions may be available in the docker directory
 
-3. **Set Environment Variables**:
+3. **Run Docker Container**:
 
-Ensure the `tile-lang` Python package is in your `PYTHONPATH`:
+Start the container with GPU access and volume mounting:
 
 ```bash
-export PYTHONPATH=/your/path/to/tilelang/:$PYTHONPATH
+docker run -itd \
+  --shm-size 32g \
+  --gpus all \
+  -v /home/tilelang:/home/tilelang \
+  --name tilelang_b200 \
+  tilelang-cu120 \
+  /bin/zsh
 ```
 
-(install-method-3)=
+**Command Parameters Explanation:**
+- `--shm-size 32g`: Increases shared memory size for better performance
+- `--gpus all`: Enables access to all available GPUs
+- `-v /home/tilelang:/home/tilelang`: Mounts host directory to container (adjust path as needed)
+- `--name tilelang_b200`: Assigns a name to the container for easy management
+- `/bin/zsh`: Uses zsh as the default shell
 
-### Method 3: Install Using the Provided Script
-
-For a simplified installation, use the provided script:
-
-1. **Clone the Repository**:
+4. **Access the Container and Verify Installation**:
 
 ```bash
-git clone --recursive https://github.com/tile-ai/tilelang
-cd tilelang
+docker exec -it tilelang_b200 /bin/zsh
+# Inside the container:
+python -c "import tilelang; print(tilelang.__version__)"
 ```
 
-2. **Run the Installation Script**:
+### ROCm container build (gfx942/gfx950)
+
+A source build is **not** required just to run TileLang on AMD GPUs — the PyPI
+wheels already include the ROCm backend (see
+[Installing on AMD GPUs (ROCm)](#installing-on-amd-gpus-rocm)). Use the
+container/source flow below when developing TileLang itself or when you need a
+custom build.
+
+If you want a ready-to-use ROCm image that builds TileLang from source, use
+`docker/Dockerfile.rocm`. This is the recommended path for a clean, reproducible
+environment.
+
+If you are already inside another ROCm container (for example, the `sglang`
+image) and just need to rebuild TileLang in-place, follow the steps below.
+
+If you are using the `sglang` ROCm container and need to build TileLang in it (for example on MI300 `gfx942` or MI355 `gfx950`), the build requires extra system libraries, Cython, and a valid `llvm-config`. The following steps match the build flow used in `sglang/docker/rocm.Dockerfile`:
 
 ```bash
-bash install_cuda.sh
-# or bash `install_amd.sh` if you want to enable ROCm runtime
+# Inside the container (as root)
+apt-get update && apt-get install -y --no-install-recommends \
+  build-essential git wget curl ca-certificates gnupg \
+  libgtest-dev libgmock-dev \
+  libprotobuf-dev protobuf-compiler libgflags-dev libsqlite3-dev \
+  python3 python3-dev python3-setuptools python3-pip \
+  gcc libtinfo-dev zlib1g-dev libedit-dev libxml2-dev \
+  cmake ninja-build pkg-config libstdc++6 \
+  && rm -rf /var/lib/apt/lists/*
+
+# Prefer the container venv (avoid system pip)
+export PATH="/opt/venv/bin:${PATH}"
+
+# Build GoogleTest static libs (Ubuntu package ships sources only)
+cmake -S /usr/src/googletest -B /tmp/build-gtest -DBUILD_GTEST=ON -DBUILD_GMOCK=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build /tmp/build-gtest -j"$(nproc)"
+cp -v /tmp/build-gtest/lib/*.a /usr/lib/x86_64-linux-gnu/
+rm -rf /tmp/build-gtest
+
+# Keep setuptools < 80 (compat with some base images)
+pip install --upgrade "setuptools>=77.0.3,<80" wheel cmake ninja scikit-build-core
+
+# Locate ROCm llvm-config (install LLVM 18 if missing)
+LLVM_CONFIG_PATH=""
+for p in /opt/rocm/llvm/bin/llvm-config /opt/rocm/llvm-*/bin/llvm-config /opt/rocm-*/llvm*/bin/llvm-config; do
+  if [ -x "$p" ]; then LLVM_CONFIG_PATH="$p"; break; fi
+done
+if [ -z "$LLVM_CONFIG_PATH" ]; then
+  echo "ROCm llvm-config not found; installing LLVM 18..."
+  curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
+  chmod +x /tmp/llvm.sh
+  /tmp/llvm.sh 18
+  LLVM_CONFIG_PATH="$(command -v llvm-config-18)"
+  if [ -z "$LLVM_CONFIG_PATH" ]; then
+    echo "ERROR: llvm-config-18 not found after install"
+    exit 1
+  fi
+fi
+export LLVM_CONFIG="$LLVM_CONFIG_PATH"
+export PATH="$(dirname "$LLVM_CONFIG"):/usr/local/bin:${PATH}"
+
+# Optional shim for tools that expect llvm-config-16
+mkdir -p /usr/local/bin
+printf "#!/usr/bin/env bash\nexec \"%s\" \"\$@\"\n" "$LLVM_CONFIG_PATH" > /usr/local/bin/llvm-config-16
+chmod +x /usr/local/bin/llvm-config-16
+
+# TVM Python bits need Cython (for system Python used by the build)
+pip install --no-cache-dir "cython>=0.29.36,<3.0"
+
+# Clone + build TileLang (ROCm)
+# Default location: /opt/tilelang (adjust if you prefer a different path).
+git clone --recursive https://github.com/tile-ai/tilelang.git /opt/tilelang
+cd /opt/tilelang
+git submodule update --init --recursive
+export CMAKE_ARGS="-DUSE_CUDA=OFF -DUSE_ROCM=ON -DROCM_PATH=/opt/rocm -DLLVM_CONFIG=${LLVM_CONFIG}"
+
+# Avoid pulling CUDA wheels / reinstalling torch by skipping dependency resolution.
+# Assume torch is already installed in the container.
+pip install -e . -v --no-build-isolation --no-deps
+
+# Manually install required runtime deps when using --no-deps.
+# Note: skip torch-c-dlpack-ext on ROCm (its wheel expects CUDA libs).
+pip install "apache-tvm-ffi>=0.1.11,<0.1.13" "z3-solver>=4.13.0"
+# If you already installed torch-c-dlpack-ext and hit `libtorch_cuda.so` errors:
+# pip uninstall -y torch-c-dlpack-ext
+
+# If you hit Cython compile errors like `PyLong_SHIFT`/`digit` not declared,
+# disable the stable ABI (abi3) for editable builds:
+# export CMAKE_ARGS="-DUSE_CUDA=OFF -DUSE_ROCM=ON -DROCM_PATH=/opt/rocm -DLLVM_CONFIG=${LLVM_CONFIG} -DSKBUILD_SABI_VERSION="
+# pip install -e . -v --no-build-isolation --no-deps
+
+# Verify
+python -c "import tilelang; print(tilelang.__version__)"
 ```
+
+If you still want to use `pip install -e . -v --no-build-isolation` without `--no-deps`, pip will try to resolve TileLang dependencies and may download CUDA wheels (e.g., `nvidia_cudnn`, `nvidia_nvshmem`) and reinstall `torch`. To avoid that in ROCm containers, keep `--no-deps` and ensure required packages are already installed.
 
 ## Install with Nightly Version
 
-For users who want access to the latest features and improvements before official releases, we provide nightly builds of **tile-lang**.
+For users who want access to the latest features and improvements before official releases, we provide nightly builds of tilelang.
 
 ```bash
-pip install tilelang -f https://tile-ai.github.io/whl/nightly/cu121/
-# or pip install tilelang --find-links https://tile-ai.github.io/whl/nightly/cu121/
+pip install tilelang -f https://tile-ai.github.io/whl/nightly
+# or pip install tilelang --find-links https://tile-ai.github.io/whl/nightly
 ```
 
 > **Note:** Nightly builds contain the most recent code changes but may be less stable than official releases. They're ideal for testing new features or if you need a specific bugfix that hasn't been released yet.
+
+## Install Configs
+
+### Build-time environment variables
+
+Backend options are independent. CMake variables, including `-DUSE_*=...` arguments and existing cache entries, take precedence over environment variables. Environment variables initialize options in a fresh build directory; use `-D` arguments to change an existing configuration.
+
+`USE_CUDA`: Enables CUDA support, default: `ON` when a host or pip-provided CUDA toolkit is found, except on macOS. Set `CUDAToolkit_ROOT` to select a different CUDA toolkit.
+
+`USE_ROCM`: Enables ROCm support, default: `ON` on Linux and `OFF` elsewhere. The default HIP stubs and vendored headers allow building without a ROCm installation. Set `USE_ROCM=<rocm_sdk>` to use a custom SDK path.
+
+`USE_ASCEND`: Enables Ascend support, default: `ON` on Linux and `OFF` elsewhere. The default Ascend stub and local ACL declarations allow building without CANN.
+
+Running kernels still requires the selected backend's compiler, runtime, and device. Set `USE_CUDA=OFF USE_ROCM=OFF USE_ASCEND=OFF` to disable all three backends.
+
+`USE_METAL`: If to enable Metal support, default: `ON` on Darwin.
+
+`USE_LLVM`: If to enable LLVM support for CPU codegen, default: `OFF`. Set `USE_LLVM=1` for auto-detection, or pass `-DUSE_LLVM=/path/to/llvm-config` through `CMAKE_ARGS` when you need a specific LLVM installation. LLVM 15 or newer is required.
+
+`TVM_ROOT`: TVM source root to use.
+
+`WITH_PIP_CUDA_TOOLCHAIN`: Path to a pip-installed CUDA toolkit directory (e.g., `/path/to/venv/lib/python3.x/site-packages/nvidia/cu13`). When set, the build system uses this directory instead of a host CUDA installation. If not set and no host CUDA is found, the build system will attempt to auto-detect pip-installed CUDA packages from the current Python environment.
+
+`NO_VERSION_LABEL` and `NO_TOOLCHAIN_VERSION`:
+When building tilelang, we'll try to embed SDK and version information into package version as below,
+where local version label could look like `<sdk>.git<git_hash>`. Set `NO_VERSION_LABEL=ON` to disable this behavior.
+```
+$ python -mbuild -w
+...
+Successfully built tilelang-0.1.6.post1+cu116.git0d4a74be-cp38-abi3-linux_x86_64.whl
+```
+
+where `<sdk>={cuda,rocm,metal}`. Specifically, when `<sdk>=cuda` and `CUDA_VERSION` is provided via env,
+`<sdk>=cu<cuda_major><cuda_minor>`, similar with this part in pytorch.
+Set `NO_TOOLCHAIN_VERSION=ON` to disable this.
+
+### Run-time environment variables
+
+Please refer to the `env.py` file for a full list of supported run-time environment variables.
+
+## Other Tips
+
+### IDE Configs
+
+Building tilelang locally will automatically generate a `compile_commands.json` file in `build` dir.
+VSCode with clangd and [clangd extension](https://marketplace.visualstudio.com/items?itemName=llvm-vs-code-extensions.vscode-clangd) should be able to index that without extra configuration.
+
+### Compile Cache
+
+The default path of the compile cache is `~/.tilelang/cache`. `ccache` will be automatically used if found.
+
+### Repairing Wheels
+
+If you plan to use your wheel in other environment,
+it's recommended to use auditwheel (on Linux) or delocate (on Darwin)
+to repair them.
+
+(faster-rebuild-for-developers)=
+
+### Faster Rebuild for Developers
+
+`pip install` introduces extra [un]packaging and takes ~30 sec to complete,
+even if no source change.
+
+Developers who needs to recompile frequently could use:
+
+```bash
+pip install -r requirements-dev.txt
+
+# For first time compilation
+pip install -e . -v --no-build-isolation
+
+# Or manually compile with cmake/ninja. Remember to set PYTHONPATH properly.
+mkdir build
+cd build
+cmake .. -G Ninja
+ninja
+
+# Rebuild when you change the cpp code
+cd build; ninja
+```
+
+When running in editable/developer mode,
+you'll see logs like below:
+
+```console
+$ python -c 'import tilelang'
+2025-10-14 11:11:29  [TileLang:tilelang.env:WARNING]: Loading tilelang libs from dev root: /Users/yyc/repo/tilelang/build
+```

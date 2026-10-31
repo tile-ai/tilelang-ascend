@@ -1,5 +1,3 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
 """Template for the TileLang Carver."""
 
 from .base import BaseTemplate  # noqa: F401

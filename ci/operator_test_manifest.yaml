@@ -1,6 +1,6 @@
 # 算子源文件 -> 它的 Pytest 测试。
 # 一条登记只有在测试文件真实存在时才生效；否则算子照常由
-# examples/bench_test.sh 执行。
+# examples/ascend_a2a3/bench_test.sh 执行。
 #
 # 覆盖 bench_test.sh 会收集到的全部算子。以下不在此表：
 #   examples/gemm_aot/example_gemm.py —— 拼出的名字与已有的独立脚本

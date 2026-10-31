@@ -1,32 +1,66 @@
-// Copyright (c) Tile-AI Corporation.
-// Licensed under the MIT License.
-
 /*!
  * \file attr.h
  * \brief Check attributes of the IR
  */
 
+#ifndef TVM_TL_TRANSFORM_COMMON_ATTR_H_
+#define TVM_TL_TRANSFORM_COMMON_ATTR_H_
+
+#include <string>
+#include <tvm/tirx/stmt.h>
+
 namespace tvm {
 namespace tl {
 
-constexpr const char *MainBlockName = "tilelang_root";
+constexpr const char *HostMainBlockName = "root";
 
-constexpr const char *tilelang_is_cpu_kernel_frame =
-    "tilelang.is_cpu_kernel_frame";
+constexpr const char *DeviceMainBlockName = "tilelang_root";
 
-constexpr const char *tilelang_is_npu_kernel_frame =
-    "tilelang.is_npu_kernel_frame";
+inline bool IsHostMainBlock(const tirx::SBlockNode *node) {
+  return node->name_hint == HostMainBlockName;
+}
 
-constexpr const char *tilelang_is_npu_kernel_frame_dev_mode =
-    "tilelang.is_npu_kernel_frame_dev_mode";
+inline bool IsDeviceMainBlock(const tirx::SBlockNode *node) {
+  return node->name_hint == DeviceMainBlockName;
+}
 
-constexpr const char *cv_1_1 = "cv_1_1";
+// The kernel-launch frame no longer needs a per-backend marker annotation:
+// KernelLaunchFrame exposes its grid_vars/thread_vars explicitly and each
+// backend pipeline decides what the launch means (MaterializeKernelLaunch).
 
-constexpr const char *cv_1_2 = "cv_1_2";
+namespace attr {
+// Attributes to mark CUDA sync calls
+constexpr const char *kHasTriggerLaunch = "has_cuda_pdl_trigger";
+constexpr const char *kHasGridSync = "has_cuda_pdl_sync";
 
-constexpr const char *kInitialBufferShapes = "initial_buffer_shapes";
+// TileLang-only AttrStmt keys.
+constexpr const char *volatile_scope = "volatile_scope";
+constexpr const char *coproc_scope = "coproc_scope";
+constexpr const char *pipeline_exec_scope = "pipeline_exec_scope";
+// Marks user-authored assumptions that require a host runtime check. The
+// corresponding tl.assume remains in the IR as an optimizer fact.
+constexpr const char *kAssumeRequiresRuntimeCheck =
+    "tl.assume_requires_runtime_check";
 
-constexpr const char *kLogicBufferShapes = "logic_buffer_shapes";
+// Compiler-internal physical buffer version count.
+constexpr const char *kBufferVersion = "tl.buffer_version";
+
+// Attributes to implement SourceCodeBlock
+constexpr const char *kCodeBlockSource = "code_block_source";
+constexpr const char *kCodeBlockEntryName = "code_block_entry_name";
+
+/*!
+ * \brief Check if attr_key is a code block key extension
+ * \param attr_key The attr key to be compared
+ * \return true if it is a code block key
+ */
+inline bool IsCodeBlockKey(const std::string &attr_key) {
+  return attr_key.compare(0, 11, "code_block_") == 0;
+}
+
+} // namespace attr
 
 } // namespace tl
 } // namespace tvm
+
+#endif // TVM_TL_TRANSFORM_COMMON_ATTR_H_

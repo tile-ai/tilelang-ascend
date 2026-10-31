@@ -2,9 +2,9 @@ import torch
 import torch.nn.functional as F
 
 import tilelang
-import tilelang.language as T
+import tilelang.ascend.a2a3.language as T
 
-tilelang.cache.clear_cache()
+tilelang.disable_cache()
 
 
 seed = 42

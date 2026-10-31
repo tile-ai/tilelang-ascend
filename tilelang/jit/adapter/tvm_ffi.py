@@ -1,0 +1,475 @@
+"""Utilities to adapt TVM-FFI kernels to Torch tensors.
+
+TVM-FFI obtains the active work stream through Torch's DLPack Exchange API.
+The Ascend adapter installs TileLang's Torch NPU callback before the first
+tensor reaches an executable.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+from collections.abc import Callable
+import sys
+import threading
+
+import torch
+from tilelang import tvm
+from tvm import runtime, tirx
+from tvm.target import Target
+from tvm.relax import TensorType
+from tilelang.backend.target import determine_target
+from tilelang.jit.abi import CALLEE_ALLOCATED_OUTPUTS_ATTR
+from tilelang.jit.adapter.base import BaseKernelAdapter, CachedTextSource
+from tilelang.utils.language import retrieve_func_from_module
+from tilelang.engine.param import KernelParam
+from tilelang.language.dtypes import dtype
+
+
+COMPILE_ARGS = {}
+
+if sys.platform == "darwin":
+    from torch.utils import cpp_extension
+
+    COMPILE_ARGS["options"] = ["-x", "objective-c++", "-g", "-std=gnu++17"] + ["-I" + i for i in cpp_extension.include_paths()]
+elif sys.platform == "win32":
+    from tilelang.contrib.msvc import create_shared as _msvc_create_shared
+
+    COMPILE_ARGS["fcompile"] = _msvc_create_shared
+
+
+def _install_torch_stream_exchange() -> None:
+    from tilelang.ascend.torch_exchange import (
+        install_torch_npu_stream_exchange,
+    )
+
+    install_torch_npu_stream_exchange()
+
+
+class TVMFFIKernelAdapter(BaseKernelAdapter):
+    """Adapter that runs a TVM runtime.Executable with Torch tensors.
+
+    Notes
+    - Torch tensors use TVM-FFI's zero-copy DLPack Exchange API conversion.
+    - Ascend execution installs a Cython callback that reads Torch's current
+      NPU stream for every invocation.
+    """
+
+    # Class attributes to store compiled kernel information
+    target: str | Target = "cuda"
+    ir_module: tvm.IRModule | None = None
+    # The global source code of the kernel -> global means the source code of the kernel
+    # that is not wrapped by the wrapper code
+    host_kernel_source: str | None = None
+    device_kernel_source: str | None = None
+    executable: tvm.runtime.Executable | tvm.runtime.Module | None = None
+    # Pass configs for the compiler
+    pass_configs: dict[str, Any] | None = None
+    # host_mod
+    host_mod: tvm.IRModule | None = None
+    # device_mod
+    device_mod: tvm.IRModule | None = None
+    # rt_mod
+    rt_mod: tvm.runtime.Module | None = None
+    # Maps symbolic variables to their corresponding buffer and shape indices
+    dynamic_symbolic_map: dict[tirx.Var, tuple[int, int, int, int]] | None = None
+
+    _torch_npu_stream_exchange_installed: bool = False
+
+    def _prepare_torch_device(self, device: torch.device) -> None:
+        if device.type == "npu" and not self._torch_npu_stream_exchange_installed:
+            _install_torch_stream_exchange()
+            self._torch_npu_stream_exchange_installed = True
+
+    # Stream/device functors are inherited from BaseKernelAdapter
+    def __init__(
+        self,
+        params: list[KernelParam],
+        result_idx: list[int],
+        target: str | Target,
+        func_or_mod: tirx.PrimFunc | tvm.IRModule,
+        host_mod: tvm.IRModule | None = None,
+        device_mod: tvm.IRModule | None = None,
+        rt_mod: tvm.runtime.Module | None = None,
+        host_kernel_source: str | None = None,
+        device_kernel_source: str | None = None,
+        verbose: bool = False,
+        pass_configs: dict[str, Any] | None = None,
+        compile_flags: list[str] | None = None,
+    ):
+        """Initialize the adapter with the given TIR function or module.
+
+        Args:
+            params: List of tensor types for inputs/outputs
+            result_idx: Indices of output tensors
+            target: Target platform (e.g., 'cuda')
+            func_or_mod: TIR function or module to be compiled
+            verbose: Enable verbose logging
+        """
+        self.params = params
+        self.result_idx = self._legalize_result_idx(result_idx)
+        self.host_kernel_source = host_kernel_source
+        self.device_kernel_source = device_kernel_source
+
+        if isinstance(func_or_mod, tirx.PrimFunc):
+            self.ir_module = tvm.IRModule({func_or_mod.attrs["global_symbol"]: func_or_mod})
+        else:
+            self.ir_module = func_or_mod
+
+        self.target = Target(determine_target(target))
+
+        self.host_mod = host_mod
+        self.device_mod = device_mod
+        self.rt_mod = rt_mod
+        self.verbose = verbose
+        self.pass_configs = pass_configs
+        self.compile_flags = compile_flags
+        self._ffi_callee_allocated_output_abi = self._uses_ffi_callee_allocated_output_abi()
+        self.dynamic_symbolic_map = None if self._ffi_callee_allocated_output_abi else self._process_dynamic_symbolic()
+        self.kernel_global_source = self.device_kernel_source
+        self.executable = None
+        self._executable_lock = threading.Lock()
+
+        self._post_init()
+
+    def _make_executable(self) -> tvm.runtime.Executable:
+        if self.rt_mod is None:
+            raise RuntimeError("Cannot create TVM FFI executable without a runtime module.")
+        executable = runtime.Executable(self.rt_mod)
+        compile_args = dict(COMPILE_ARGS)
+        from tilelang.cpu.toolchain import get_compile_flags
+
+        backend_flags = get_compile_flags(self.target, self.pass_configs, execution_backend="tvm_ffi")
+        if backend_flags:
+            options = list(compile_args.get("options", []))
+            options += backend_flags
+            compile_args["options"] = options
+        if compile_args:
+            # Precompile with platform and backend-owned toolchain options.
+            executable.jit(**compile_args)
+        return executable
+
+    def _get_executable(self) -> tvm.runtime.Executable | tvm.runtime.Module:
+        executable = self.executable
+        if executable is not None:
+            return executable
+
+        with self._executable_lock:
+            executable = self.executable
+            if executable is None:
+                executable = self._make_executable()
+                self.executable = executable
+            return executable
+
+    def get_exportable_executable(self) -> tvm.runtime.Executable | tvm.runtime.Module:
+        """Return the lazy executable, or the runnable module loaded from disk cache."""
+        return self._get_executable()
+
+    def _uses_ffi_callee_allocated_output_abi(self) -> bool:
+        """Whether lowering gives this kernel the callee-allocated main ABI."""
+        if not self.result_idx:
+            return False
+
+        # The ABI decision is stamped on the PrimFunc at compile time from the
+        # execution backend's declared capability; read it back rather than
+        # re-deriving it from the target, so lowering and dispatch can never
+        # disagree.
+        attrs = getattr(self.prim_func, "attrs", None)
+        if attrs is None or CALLEE_ALLOCATED_OUTPUTS_ATTR not in attrs:
+            return False
+        return int(attrs[CALLEE_ALLOCATED_OUTPUTS_ATTR]) != 0
+
+    def _process_dynamic_symbolic(self) -> dict[tirx.Var, tuple[int, int, int, int]]:
+        """Extract information about dynamic shapes from the TIR function.
+
+        Maps symbolic variables to their corresponding (id, buffer_index, dimension, stride_scale)
+        for runtime shape resolution.
+        id represents shape or stride, 0 represents shape, 1 represents stride, 2 represents scalar param.
+        stride_scale compensates for sub-byte dtypes (e.g. float4_e2m1fn) where torch strides
+        are in storage units but the kernel expects logical element strides.
+        """
+        func = self.prim_func
+        params = func.params
+        buffer_map = func.buffer_map
+        dynamic_symbolic_map = {}
+        for i, param in enumerate(params):
+            if isinstance(param, tirx.Var) and (param not in dynamic_symbolic_map):
+                dynamic_symbolic_map[param] = (2, i, -1, 1)
+        # Inputs are visited first. An output's shape is resolved from these entries
+        # while that output is being allocated, so a dimension mentioned by both an
+        # input and an output must be owned by the input; owning it on the output
+        # would make the allocation loop read a slot it has not filled yet.
+        ordered = [i for i in range(len(params)) if i not in self.result_idx]
+        ordered += [i for i in range(len(params)) if i in self.result_idx]
+        for i in ordered:
+            param = params[i]
+            if param in buffer_map:
+                buffer = buffer_map[param]
+                for j, shape in enumerate(buffer.shape):
+                    if isinstance(shape, tirx.Var) and (shape not in dynamic_symbolic_map) and (shape not in params):
+                        dynamic_symbolic_map[shape] = (0, i, j, 1)
+        for i in ordered:
+            param = params[i]
+            if param in buffer_map:
+                buffer = buffer_map[param]
+                element_bits = buffer.dtype.bits * buffer.dtype.lanes
+                stride_scale = 8 // element_bits if element_bits < 8 else 1
+                for j, stride in enumerate(buffer.strides):
+                    if isinstance(stride, tirx.Var) and (stride not in dynamic_symbolic_map) and (stride not in params):
+                        dynamic_symbolic_map[stride] = (1, i, j, stride_scale)
+        return dynamic_symbolic_map
+
+    def _convert_torch_func(self) -> Callable[..., Any]:
+        if getattr(self, "_ffi_callee_allocated_output_abi", False):
+            return self._convert_ffi_callee_allocated_output_func()
+
+        current_device_functor = None
+
+        # Convert TVM types to native Python types during initialization
+        # Convert tvm.DataType to torch.dtype for tensor creation
+        param_dtypes = [param.torch_dtype() for param in self.params]
+        # Convert TVM shape arrays to native Python lists
+        param_shapes = []
+
+        for param in self.params:
+            native_shape = []
+            for dim in param.shape:
+                if isinstance(dim, tirx.IntImm):
+                    native_shape.append(int(dim))
+                elif isinstance(dim, tirx.Var):
+                    native_shape.append(dim)  # Keep tirx.Var for dynamic dimensions
+                else:
+                    native_shape.append(dim)
+            tl_dtype = param.dtype
+            if tl_dtype.bits < 8:
+                storage_dtype: dtype = dtype(param.torch_dtype())
+                native_shape[-1] = native_shape[-1] * tl_dtype.bits * tl_dtype.lanes // (storage_dtype.bits * storage_dtype.lanes)
+            param_shapes.append(native_shape)
+
+        dynamic_symbolic_map = self.dynamic_symbolic_map
+        assert dynamic_symbolic_map is not None
+
+        # Prepare helpers for friendly dtype error messages
+        prim_func = self.prim_func
+        buffer_map = prim_func.buffer_map
+        params = prim_func.params
+        # Expected dtype string per parameter index (for buffers only)
+        expected_dtype_strs: list[str | None] = []
+        # Track whether each param is a buffer (has dtype) vs scalar
+        is_buffer_param: list[bool] = []
+        for p in params:
+            if p in buffer_map:
+                expected_dtype_strs.append(str(buffer_map[p].dtype))
+                is_buffer_param.append(True)
+            else:
+                expected_dtype_strs.append(None)
+                is_buffer_param.append(False)
+
+        def func(*inputs: torch.Tensor | Any):
+            nonlocal current_device_functor
+            # Validate input count strictly
+            expected_inputs = len(self.params) - len(self.result_idx)
+            if len(inputs) != expected_inputs:
+                raise ValueError(f"Kernel expected {expected_inputs} inputs, but {len(inputs)} are provided.")
+
+            # Resolve the device used for outputs. Prefer the first tensor input's device
+            # if available, otherwise use PyTorch's current device.
+            out_device: torch.device | None = next(
+                (input.device for input in inputs if isinstance(input, torch.Tensor)),
+                None,
+            )
+
+            # Stitch the full positional argument list expected by the TVM executable.
+            # Inputs are placed first so that a symbolic dimension owned by an input can
+            # be resolved even when the output that needs it comes earlier in the
+            # signature; the outputs are then allocated in parameter order.
+            ins_idx: int = 0
+            tensor_list: list[torch.Tensor | None] = [None] * len(self.params)
+            for i in range(len(self.params)):
+                if i not in self.result_idx:
+                    tensor_list[i] = inputs[ins_idx]
+                    ins_idx += 1
+
+            # Prepare output tensors
+            for i in range(len(self.params)):
+                if i in self.result_idx:
+                    dtype = param_dtypes[i]
+                    shape = []
+                    # Now working with native Python list, no FFI calls needed
+                    for s in param_shapes[i]:
+                        if isinstance(s, tirx.Var):
+                            for key in dynamic_symbolic_map:
+                                if str(s) == str(key):
+                                    ref_id, ref_tensor_idx, ref_shape_idx, stride_scale = dynamic_symbolic_map[key]
+                                    # ref_tensor_idx is a PrimFunc parameter index. `inputs` holds only
+                                    # the non-output parameters, so an output-before-input signature
+                                    # ([out, in, n]) would read the wrong slot or run off the end;
+                                    # `tensor_list` is sized and indexed by parameter position.
+                                    ref_tensor = tensor_list[ref_tensor_idx]
+                                    if ref_id == 2:
+                                        if ref_tensor is None:
+                                            param_name = self.params[i].name if hasattr(self.params[i], "name") else f"parameter_{i}"
+                                            raise ValueError(
+                                                f"Cannot resolve symbolic dimension {s} of output parameter {param_name}: "
+                                                f"it is taken from scalar parameter {ref_tensor_idx}, which has not "
+                                                f"been supplied."
+                                            )
+                                        shape.append(ref_tensor)
+                                        continue
+                                    if ref_tensor is None:
+                                        param_name = self.params[i].name if hasattr(self.params[i], "name") else f"parameter_{i}"
+                                        raise ValueError(
+                                            f"Cannot resolve symbolic dimension {s} of output parameter {param_name}: "
+                                            f"it is taken from parameter {ref_tensor_idx}, which is an output that has "
+                                            f"not been allocated yet."
+                                        )
+                                    if ref_id == 0:
+                                        shape.append(ref_tensor.shape[ref_shape_idx])
+                                    elif ref_id == 1:
+                                        shape.append(ref_tensor.stride()[ref_shape_idx] * stride_scale)
+                        else:  # Already converted to Python int during initialization
+                            shape.append(s)
+
+                    if out_device is None:
+                        if current_device_functor is None:
+                            current_device_functor = self.get_current_device_functor()
+                        out_device = current_device_functor()
+
+                    if len(shape) == 0:
+                        param_name = self.params[i].name if hasattr(self.params[i], "name") else f"parameter_{i}"
+                        raise ValueError(
+                            f"Cannot create output tensor (name={param_name}) - 0-dimensional tensors are not supported. "
+                            f"Expected shape: {shape}"
+                        )
+                    tensor_list[i] = torch.empty(*shape, dtype=dtype, device=out_device)
+
+            if out_device is not None:
+                self._prepare_torch_device(out_device)
+            executable = self._get_executable()
+            executable(*tensor_list)
+
+            # Return outputs in the requested form
+            if len(self.result_idx) == 1:
+                return tensor_list[self.result_idx[0]]
+            return [tensor_list[i] for i in self.result_idx]
+
+        return func
+
+    def _convert_ffi_callee_allocated_output_func(self) -> Callable[..., Any]:
+        """Create a Torch callable whose outputs are allocated by TVM-FFI."""
+        current_device_functor = None
+        expected_inputs = len(self.params) - len(self.result_idx)
+
+        def func(*inputs: torch.Tensor | Any):
+            nonlocal current_device_functor
+            if len(inputs) != expected_inputs:
+                raise ValueError(f"Kernel expected {expected_inputs} inputs, but {len(inputs)} are provided.")
+
+            allocator_anchor = next((value for value in inputs if isinstance(value, torch.Tensor)), None)
+            if allocator_anchor is None:
+                if current_device_functor is None:
+                    current_device_functor = self.get_current_device_functor()
+                device = current_device_functor()
+            else:
+                device = allocator_anchor.device
+
+            self._prepare_torch_device(device)
+            if not (hasattr(torch.Tensor, "__dlpack_c_exchange_api__") or hasattr(torch.Tensor, "__c_dlpack_exchange_api__")):
+                raise RuntimeError(
+                    "TVM-FFI callee-allocated outputs require Torch's DLPack allocator exchange API. "
+                    "Install a compatible torch-c-dlpack-ext or use a supported PyTorch build."
+                )
+
+            if allocator_anchor is None:
+                # A Torch tensor argument installs the EnvTensorAllocator in
+                # TVM-FFI's thread-local call context.  Scalar-only kernels use
+                # a zero-element anchor solely for that allocator/device state.
+                allocator_anchor = torch.empty(0, device=device)
+
+            result = self._get_executable()(*inputs, allocator_anchor)
+            if len(self.result_idx) == 1:
+                return result
+            return list(result)
+
+        return func
+
+    @classmethod
+    def from_database(
+        cls,
+        params: list[TensorType],
+        result_idx: list[int],
+        target: str,
+        func_or_mod: tirx.PrimFunc | tvm.IRModule,
+        host_kernel_source: CachedTextSource,
+        device_kernel_source: CachedTextSource,
+        kernel_lib_path: str,
+        verbose: bool = False,
+        pass_configs: dict[str, Any] | None = None,
+        compile_flags: list[str] | None = None,
+    ):
+        adapter = cls.__new__(cls)
+        adapter.params = params
+        adapter.result_idx = adapter._legalize_result_idx(result_idx)
+        host_kernel_source = adapter._set_cached_text_source("host_kernel_source", "_host_kernel_source_path", host_kernel_source)
+        device_kernel_source = adapter._set_cached_text_source("device_kernel_source", "_device_kernel_source_path", device_kernel_source)
+        adapter.wrapped_source = (
+            device_kernel_source.text + "\n\n" + host_kernel_source.text
+            if device_kernel_source.text is not None and host_kernel_source.text is not None
+            else None
+        )
+        adapter.pass_configs = pass_configs
+
+        if isinstance(func_or_mod, tirx.PrimFunc):
+            adapter.ir_module = tvm.IRModule({func_or_mod.attrs["global_symbol"]: func_or_mod})
+        else:
+            adapter.ir_module = func_or_mod
+
+        target = determine_target(target, return_object=True)
+        adapter.target = Target(determine_target(target))
+
+        adapter.verbose = verbose
+        adapter.libpath = kernel_lib_path
+        adapter.kernel_global_source = device_kernel_source.text
+        adapter.rt_mod = None
+        adapter.executable = runtime.load_module(kernel_lib_path)
+        adapter._ffi_callee_allocated_output_abi = adapter._uses_ffi_callee_allocated_output_abi()
+        adapter.dynamic_symbolic_map = None if adapter._ffi_callee_allocated_output_abi else adapter._process_dynamic_symbolic()
+        adapter._executable_lock = threading.Lock()
+        adapter._post_init()
+        return adapter
+
+    def get_host_source(self) -> str | None:
+        """Returns the source code of the host module."""
+        source = self._load_cached_text_source("host_kernel_source", "_host_kernel_source_path")
+        if source is not None:
+            return source
+        rt_mod = getattr(self, "rt_mod", None)
+        if rt_mod is None:
+            return None
+        return rt_mod.inspect_source()
+
+    def get_device_source(self) -> str | None:
+        """Returns the source code of the device module."""
+        source = self._load_cached_text_source("device_kernel_source", "_device_kernel_source_path")
+        if source is not None:
+            self.kernel_global_source = source
+            return source
+        rt_mod = getattr(self, "rt_mod", None)
+        if rt_mod is None:
+            return None
+        return rt_mod.imports[0].inspect_source()
+
+    def get_kernel_source(self, kernel_only: bool = False):
+        """Returns the source code of the compiled kernel."""
+        device_source = self.get_device_source() or ""
+        if kernel_only:
+            return device_source
+
+        host_source = self.get_host_source() or ""
+        if device_source and host_source:
+            return device_source + "\n\n" + host_source
+        return device_source or host_source
+
+    @property
+    def prim_func(self) -> tirx.PrimFunc:
+        """Returns the primary TIR function from the IR module."""
+        return retrieve_func_from_module(self.ir_module)

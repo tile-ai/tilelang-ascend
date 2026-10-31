@@ -1,5 +1,3 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
 """
 This module provides an auto-tuning infrastructure for TileLang (tl) programs.
 It includes functionality to JIT-compile TileLang programs into a runnable
@@ -8,345 +6,689 @@ kernel adapter using TVM.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+import inspect
 from typing import (
     Any,
-    Callable,
+    Generic,
+    TypeVar,
     overload,
     Literal,
+    ParamSpec,
 )
+from collections.abc import Callable
+from collections.abc import Iterable
+
 from tilelang import tvm as tvm
-from tvm.tir import PrimFunc
+from tilelang.language.eager import PrimFunc, prim_func, JITFunc
+from tilelang.language.eager.builder import _make_jit_key
 from tvm.target import Target
+from contextlib import nullcontext
 
 from tilelang.jit.kernel import JITKernel
 from tilelang.cache import cached
+from tilelang.utils.device import get_available_cpu_count
 from os import path, makedirs
 from logging import getLogger
-import functools
-import inspect
-from tilelang.jit.param import Kernel, _P, _RProg
+from tilelang.jit.param import Kernel
+import concurrent.futures
+
+from tqdm.auto import tqdm
+from tilelang.backend.target import determine_target
 
 logger = getLogger(__name__)
 
+_P = ParamSpec("_P")
+_KP = ParamSpec("_KP")
+_T = TypeVar("_T")
+_Ret = TypeVar("_Ret")
+TargetLike = str | dict[str, object] | Target
+_CallFormKey = tuple[tuple[Any, ...], tuple[tuple[str, Any], ...]]
+_CALL_FORM_CACHE_MISS = object()
+
+
+@dataclass
+class _CallFormCache:
+    """Memoize lazy no-tensor kernel factories by raw Python call form."""
+
+    entries: dict[_CallFormKey, Kernel] = field(default_factory=dict)
+    last_args: tuple[Any, ...] | None = None
+    last_kwargs: dict[str, Any] | None = None
+    last_kernel: Kernel | object = _CALL_FORM_CACHE_MISS
+
+    def clear(self) -> None:
+        self.entries.clear()
+        self.last_args = None
+        self.last_kwargs = None
+        self.last_kernel = _CALL_FORM_CACHE_MISS
+
+    def __len__(self) -> int:
+        return len(self.entries)
+
+    def _matches_last(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        if self.last_args is None or self.last_kwargs is None:
+            return False
+        return args == self.last_args and kwargs == self.last_kwargs
+
+    def _remember(self, call_form_key: _CallFormKey, kernel: Kernel) -> None:
+        args, kwargs_items = call_form_key
+        self.last_args = args
+        self.last_kwargs = dict(kwargs_items)
+        self.last_kernel = kernel
+
+    def lookup(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[Kernel | object, _CallFormKey | None]:
+        # Validate even on a last-call hit: an unhashable value can compare equal
+        # to a previously cached hashable argument.
+        call_form_key = _make_jit_key((args, tuple(kwargs.items())))
+        if self._matches_last(args, kwargs):
+            return self.last_kernel, None
+
+        kernel = self.entries.get(call_form_key, _CALL_FORM_CACHE_MISS)
+        if kernel is not _CALL_FORM_CACHE_MISS:
+            self._remember(call_form_key, kernel)
+        return kernel, call_form_key
+
+    def store(self, call_form_key: _CallFormKey, kernel: Kernel) -> None:
+        self.entries[call_form_key] = kernel
+        self._remember(call_form_key, kernel)
+
+
+def _prepare_compile_arguments(func, out_idx, pass_configs, compile_flags):
+    """Merge frontend request attributes for public compile and autotuning."""
+    assert isinstance(func, PrimFunc), f"target function must be a PrimFunc but got {type(func)}"
+
+    # Merge function-level attrs from PrimFunc
+    func_attrs = func.attrs
+    if func_attrs and "tilelang_out_idx" in func_attrs:
+        func_out_idx = list(func_attrs["tilelang_out_idx"])
+        if out_idx is not None:
+            raise ValueError("Out index conflict: out_idx is specified and prim_func have returned `T.empty` tensors")
+        out_idx = func_out_idx
+    if func_attrs and "tilelang_pass_configs" in func_attrs:
+        func_pc = dict(func_attrs["tilelang_pass_configs"])
+        if pass_configs is not None:
+            # External pass_configs override function-level ones
+            func_pc.update(pass_configs)
+        pass_configs = func_pc
+    if func_attrs and "tilelang_compile_flags" in func_attrs:
+        func_cf = list(func_attrs["tilelang_compile_flags"])
+        if compile_flags is not None:
+            if isinstance(compile_flags, str):
+                func_cf.append(compile_flags)
+            else:
+                func_cf.extend(compile_flags)
+        compile_flags = func_cf
+
+    return out_idx, pass_configs, compile_flags
+
 
 def compile(
-    func: PrimFunc = None,
+    func: PrimFunc[_KP, _T] = None,
     out_idx: list[int] | int | None = None,
-    workspace_idx: list[int] | int | None = None,
-    execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
-    target: str | Target = "auto",
-    target_host: str | Target = None,
-    platform: str = "auto",
-    verbose: bool = False,
+    execution_backend: Literal["auto", "tvm_ffi", "cython", "nvrtc", "torch", "cutedsl", "pto"] | None = None,
+    target: TargetLike | None = None,
+    target_host: TargetLike | None = None,
+    verbose: bool | None = None,
     pass_configs: dict[str, Any] | None = None,
     compile_flags: list[str] | str | None = None,
-) -> JITKernel:
+    workspace_idx: list[int] | int | None = None,
+) -> JITKernel[_KP, _T]:
     """
     Compile the given TileLang PrimFunc with TVM and build a JITKernel.
+
     Parameters
     ----------
-    func : tvm.tir.PrimFunc, optional
+    func : tvm.tirx.PrimFunc, optional
         The TileLang TIR function to compile and wrap.
-    out_idx : list[int] | int | None
+    out_idx : Union[List[int], int], optional
         Index(es) of the output tensors to return (default: None).
     workspace_idx : list[int] | int | None
-        Index(es) of the auto-allocated workspace tensors.
-    execution_backend : Literal["dlpack", "ctypes"], optional
-        Execution backend to use for kernel execution (default: "dlpack").
-    target : Union[str, Target], optional
-        Compilation target, either as a string or a TVM Target object (default: "auto").
-    target_host : Union[str, Target], optional
+        Deprecated A2A3 compatibility option: automatically allocate these tensor
+        parameters, supporting negative indices. Prefer language-owned allocation
+        when that replacement is available.
+    execution_backend : Literal["auto", "tvm_ffi", "cython", "nvrtc", "torch", "cutedsl", "pto"], optional
+        Execution backend to use for kernel execution. If None, reads from
+        TILELANG_EXECUTION_BACKEND environment variable (defaults to "auto").
+    target : str, dict, or tvm.target.Target, optional
+        Compilation target. If None, reads from TILELANG_DEFAULT_TARGET environment
+        variable (defaults to "auto"). Use a dict for target attributes, for example
+        {"kind": "cuda", "arch": "sm_90"}.
+    target_host : str, dict, or tvm.target.Target, optional
         Target host for cross-compilation (default: None).
-    platform : Literal
-        Specifies the target hardware platform generation. Defaults to "A3".
     verbose : bool, optional
-        Whether to enable verbose output (default: False).
+        Whether to enable verbose output. If None, reads from
+        TILELANG_VERBOSE environment variable (defaults to False).
     pass_configs : dict, optional
         Additional keyword arguments to pass to the Compiler PassContext.
-        Available options:
-            "tir.disable_vectorize": bool, default: False
-            "tl.disable_tma_lower": bool, default: False
-            "tl.disable_warp_specialized": bool, default: False
-            "tl.config_index_bitwidth": int, default: None
-            "tl.disable_dynamic_tail_split": bool, default: False
-            "tl.dynamic_vectorize_size_bits": int, default: 128
-            "tl.disable_safe_memory_legalize": bool, default: False
-            "tl.ascend_auto_sync": bool, default: False
-            "tl.ascend_memory_planning": bool, default: False
-    compile_flags : list[str] | str, optional
-        Extra Bisheng compiler flags for this kernel, e.g.
-        ``["--cce-auto-sync=off", "-O3"]``. They are appended after the flags the
-        framework derives from ``pass_configs`` and the ``TL_CCE_*`` /
-        ``TL_PTO_DEBUG`` environment variables, and therefore win (bisheng is
-        last-wins for repeated flags). Resolved per kernel; the process
-        environment is never mutated.
+        Refer to `tilelang.transform.PassConfigKey` for supported options.
+
+    Environment Variables
+    ---------------------
+    TILELANG_DEFAULT_TARGET : str
+        Default compilation target (e.g., "cuda", "llvm", or a JSON target config string).
+        Defaults to "auto".
+    TILELANG_EXECUTION_BACKEND : str
+        Default execution backend. Defaults to "auto".
+    TILELANG_VERBOSE : str
+        Set to "1", "true", "yes", or "on" to enable verbose compilation by default.
     """
 
-    from tilelang.transform.pass_config import process_default_pass_config
-    from tilelang.jit.adapter.libgen import resolve_compile_flags
-
-    pass_configs = process_default_pass_config(target, pass_configs)
-    # Resolve once here so the same flag list feeds both the cache key and codegen.
-    compile_flags = resolve_compile_flags(target, pass_configs, compile_flags)
+    out_idx, pass_configs, compile_flags = _prepare_compile_arguments(func, out_idx, pass_configs, compile_flags)
 
     return cached(
         func=func,
         out_idx=out_idx,
-        workspace_idx=workspace_idx,
         execution_backend=execution_backend,
         target=target,
         target_host=target_host,
-        platform=platform,
         verbose=verbose,
         pass_configs=pass_configs,
         compile_flags=compile_flags,
+        **({"workspace_idx": workspace_idx} if workspace_idx is not None else {}),
     )
 
 
-class _JitImplementation:
-    out_idx: Any
-    workspace_idx: Any
-    target: str | Target
-    target_host: str | Target
-    platform: str
-    execution_backend: Literal["dlpack", "ctypes", "cython"]
-    verbose: bool
+def par_compile(
+    funcs: Iterable[PrimFunc[_KP, _T]],
+    out_idx: list[int] | int | None = None,
+    execution_backend: Literal["auto", "tvm_ffi", "cython", "nvrtc", "torch", "cutedsl", "pto"] | None = None,
+    target: TargetLike | None = None,
+    target_host: TargetLike | None = None,
+    verbose: bool | None = None,
+    pass_configs: dict[str, Any] | None = None,
+    compile_flags: list[str] | str | None = None,
+    num_workers: int | None = None,
+    ignore_error: bool = False,
+    workspace_idx: list[int] | int | None = None,
+) -> list[JITKernel[_KP, _T]]:
+    """
+    Parallel compile multiple TileLang PrimFunc with TVM and build JITKernels.
+
+    Parameters
+    ----------
+    funcs : Iterable[tvm.tirx.PrimFunc]
+        The TileLang TIR functions to compile and wrap.
+    out_idx : Union[List[int], int], optional
+        Index(es) of the output tensors to return (default: None).
+    execution_backend : Literal["auto", "tvm_ffi", "cython", "nvrtc", "torch", "cutedsl", "pto"], optional
+        Execution backend to use for kernel execution. If None, reads from
+        TILELANG_EXECUTION_BACKEND environment variable (defaults to "auto").
+    target : str, dict, or tvm.target.Target, optional
+        Compilation target. If None, reads from TILELANG_DEFAULT_TARGET environment
+        variable (defaults to "auto"). Use a dict for target attributes, for example
+        {"kind": "cuda", "arch": "sm_90"}.
+    target_host : str, dict, or tvm.target.Target, optional
+        Target host for cross-compilation (default: None).
+    verbose : bool, optional
+        Whether to enable verbose output. If None, reads from
+        TILELANG_VERBOSE environment variable (defaults to False).
+    pass_configs : dict, optional
+        Additional keyword arguments to pass to the Compiler PassContext.
+        Refer to `tilelang.transform.PassConfigKey` for supported options.
+
+    Environment Variables
+    ---------------------
+    TILELANG_DEFAULT_TARGET : str
+        Default compilation target (e.g., "cuda", "llvm", or a JSON target config string).
+        Defaults to "auto".
+    TILELANG_EXECUTION_BACKEND : str
+        Default execution backend. Defaults to "auto".
+    TILELANG_VERBOSE : str
+        Set to "1", "true", "yes", or "on" to enable verbose compilation by default.
+    """
+
+    # funcs may be a one-shot iterable; materialize to size the pool and reuse below.
+    funcs = list(funcs)
+
+    if num_workers is None and funcs:
+        # Scale to available cores (affinity-aware), capped at #kernels; the stdlib
+        # min(32, cpu+4) throttles large AOT batches. Lowering releases the GIL and
+        # nvcc is a subprocess, so threads parallelize.
+        num_workers = min(len(funcs), get_available_cpu_count())
+
+    with concurrent.futures.ThreadPoolExecutor(num_workers, "tl-par-comp") as executor:
+        futures = []
+        future_map = {}
+        for i, func in enumerate(funcs):
+            future = executor.submit(
+                compile,
+                func=func,
+                out_idx=out_idx,
+                execution_backend=execution_backend,
+                target=target,
+                target_host=target_host,
+                verbose=verbose,
+                pass_configs=pass_configs,
+                compile_flags=compile_flags,
+                **({"workspace_idx": workspace_idx} if workspace_idx is not None else {}),
+            )
+            future_map[future] = i
+            futures.append(future)
+        results = [... for _ in futures]
+        for future in tqdm(
+            concurrent.futures.as_completed(futures),
+            total=len(futures),
+            desc="Parallel Compiling",
+        ):
+            idx = future_map[future]
+            if ignore_error:
+                try:
+                    results[idx] = future.result()
+                except Exception as e:
+                    logger.warning(f"Error compiling function at index {idx}: {e}")
+                    results[idx] = None
+            else:
+                results[idx] = future.result()
+        return results
+    return results
+
+
+@dataclass
+class JITImpl(Generic[_P, _KP, _T, _Ret]):
+    """
+    Just-In-Time compilation wrapper for TileLang programs.
+
+    This class provides a unified interface for compiling and executing TileLang
+    kernels. It supports two execution modes that are automatically inferred:
+
+    Execution Modes
+    ---------------
+    - **lazy**: The decorated function returns a PrimFunc explicitly. Calling the
+      JIT wrapper returns a compiled kernel object, which can be invoked separately.
+      This mode is useful when you want to inspect or reuse the kernel object.
+
+      Example (lazy mode)::
+
+          @tilelang.jit(out_idx=[-1])
+          def matmul(M, N, K, block_M, block_N, block_K):
+              @T.prim_func
+              def kernel(A: T.Tensor((M, K), dtype), ...):
+                  ...
+              return kernel  # explicitly return PrimFunc
+
+          kernel = matmul(1024, 1024, 1024, 128, 128, 32)  # returns kernel
+          result = kernel(a, b)  # execute separately
+
+    - **eager**: The decorated function uses the DSL builder pattern with tensor
+      type annotations. Calling the JIT wrapper compiles and immediately executes
+      the kernel, returning the result directly.
+
+      Example (eager mode)::
+
+          @tilelang.jit
+          def gemm(A, B, C, block_M: int = 64):
+              M, N, K = T.const("M N K")
+              A: T.Tensor[[M, K], dtype]  # tensor shape via annotation
+              B: T.Tensor[[K, N], dtype]
+              C: T.Tensor[[M, N], dtype]
+              with T.Kernel(...):
+                  ...
+
+          gemm(A, B, C)  # compiles and executes immediately
+
+    The mode is automatically inferred based on whether the function returns a
+    PrimFunc (lazy) or uses the builder pattern (eager).
+
+    Attributes
+    ----------
+    out_idx : list[int] | int | None
+        Index(es) of output tensor(s) to return (lazy mode only).
+    execution_backend : str | None
+        Backend for kernel execution ("auto", "tvm_ffi", etc.).
+    target : str | tvm.target.Target | None
+        TVM compilation target (e.g., "cuda", "llvm", "auto").
+    target_host : str | tvm.target.Target | None
+        Host target for cross-compilation.
+    verbose : bool | None
+        Enable verbose compilation output.
+    pass_configs : dict[str, Any] | None
+        TVM pass configuration options.
+    debug_root_path : str | None
+        Directory to save compiled kernel source for debugging.
+    compile_flags : list[str] | str | None
+        Additional compiler flags.
+    func_source : str
+        Original Python source code of the decorated function.
+    signature : inspect.Signature
+        Function signature of the original function.
+    mode : Literal["auto", "lazy", "eager"]
+        Execution mode. "auto" infers from function behavior.
+    func : JITFunc
+        The wrapped function object.
+    """
+
+    out_idx: list[int] | int | None
+    workspace_idx: list[int] | int | None = field(default=None, kw_only=True)
+    execution_backend: Literal["auto", "tvm_ffi", "cython", "nvrtc", "torch", "cutedsl", "pto"] | None
+    target: TargetLike | None
+    target_host: TargetLike | None
+    verbose: bool | None
     pass_configs: dict[str, Any] | None
-    compile_flags: list[str] | str | None
     debug_root_path: str | None
-    func: Callable | None = None  # Store the original function
-    signature: Any | None = None  # Store the signature
-    wrapper: Callable | None = None  # Store the wrapped function for autotuner access
+    compile_flags: list[str] | str | None
+    func_source: str
+    signature: inspect.Signature
+    mode: Literal["auto", "lazy", "eager"]
+    # place func at the last element for better __repr__
+    func: JITFunc[_KP, _T]
 
-    def __init__(
-        self,
-        out_idx: Any = None,
-        workspace_idx: Any = None,
-        target: str | Target = "auto",
-        target_host: str | Target = None,
-        platform: str = "auto",
-        execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
-        verbose: bool = False,
-        pass_configs: dict[str, Any] | None = None,
-        compile_flags: list[str] | str | None = None,
-        debug_root_path: str | None = None,
-    ):
-        """
-        Initializes the JIT compiler decorator.
-
-        Parameters
-        ----------
-        out_idx : Any, optional
-            Index(es) of the output tensors to return from the compiled kernel
-            (default: None, meaning all outputs are returned or determined by the kernel itself).
-        workspace_idx : Any, optional
-            Index(es) of the auto-allocated workspace tensors.
-        target : Union[str, Target], optional
-            Compilation target for TVM. Can be a string (e.g., "cuda", "llvm")
-            or a TVM Target object. If "auto", the target is determined automatically
-            (default: "auto").
-        target_host : Union[str, Target], optional
-            Target host for cross-compilation, similar to `target` (default: None).
-        platform : Literal
-            Specifies the target hardware platform generation. Defaults to "A3".
-        execution_backend : Literal["dlpack", "ctypes", "cython"], optional
-            The backend used for kernel execution and argument passing.
-            "dlpack" is generally preferred for zero-copy tensor passing with compatible frameworks.
-            "ctypes" uses standard C types. "cython" uses Cython for potentially faster execution.
-            (default: "cython").
-        verbose : bool, optional
-            If True, enables verbose logging during compilation (default: False).
-        pass_configs : dict[str, Any] | None
-            A dictionary of configurations for TVM's pass context. These can fine-tune
-            the compilation process. Examples include "tir.disable_vectorize"
-            (default: None).
-        debug_root_path : Optional[str], optional
-            If provided, the compiled kernel's source code will be saved to a file
-            in this directory. This is useful for debugging the generated code.
-            If None, no debug information is saved (default: None).
-            If a relative path is given, it's made absolute relative to the project root
-            or current working directory.
-        """
-
-        self.out_idx = out_idx
-        self.workspace_idx = workspace_idx
-        self.execution_backend = execution_backend
-        self.target = target
-        self.target_host = target_host
-        self.platform = platform
-        self.verbose = verbose
-        self.pass_configs = pass_configs
-        self.compile_flags = compile_flags
-        self.func = None
-        self.signature = None
-
-        # Corrected debug_root_path handling
-        self.debug_root_path = debug_root_path
+    def __post_init__(self):
         if self.debug_root_path is not None and not path.isabs(self.debug_root_path):
             try:
                 base_path = path.dirname(path.dirname(path.dirname(__file__)))
                 self.debug_root_path = path.join(base_path, self.debug_root_path)
             except NameError:
                 self.debug_root_path = path.abspath(self.debug_root_path)
-
         self._kernel_cache: dict[tuple, Kernel] = {}
+        self._call_form_cache: _CallFormCache = _CallFormCache()
+        self._tuner_cache: dict[tuple, Kernel] = {}
 
-    # This tells the type checker what the *wrapper* function will return.
-    # this is for linting, please do not remove it.
-    @overload
-    def __call__(self, func: Callable[_P, _RProg]) -> Callable[_P, tuple[_RProg, Kernel]]: ...
+    def _get_frontend_target_context(self, target=None):
+        target = self.target if target is None else target
+        if target is None:
+            return nullcontext()
+        try:
+            target = determine_target(target, return_object=True)
+        except Exception:
+            return nullcontext()
+        if isinstance(target, Target):
+            return target
+        return nullcontext()
 
-    @overload
-    def __call__(self, func: Callable[_P, _RProg]) -> Callable[_P, Kernel]: ...
+    def get_tir(self, *args: _P.args, **kwargs: _P.kwargs) -> PrimFunc[_KP, _T]:
+        """
+        Retrieve a TIR (Tensor Intermediate Representation) PrimFunc from the stored callable or object.
+        """
+        return self._get_tir_with_target(self.target, *args, **kwargs)
 
-    # Actual implementation of __call__
-    def __call__(
+    def _get_tir_with_target(self, target, *args, **kwargs):
+        """Elaborate with an already selected target without changing JIT state."""
+        self.initialize_jit_mode(*args, **kwargs)
+        with self._get_frontend_target_context(target):
+            if isinstance(self.func, PrimFunc):
+                tir = self.func
+            elif callable(self.func):
+                tir = self.func(*args, **kwargs)
+            else:
+                raise ValueError(f"Invalid function type: {type(self.func)}")
+        assert isinstance(tir, PrimFunc), f"target function must be a PrimFunc but got {type(tir)}"
+        return tir
+
+    def _infer_jit_mode(self, *args: _P.args, **kwargs: _P.kwargs) -> Literal["lazy", "eager"]:
+        """
+        Infer the JIT execution mode based on function behavior.
+
+        Returns "lazy" if the function explicitly returns a PrimFunc,
+        or "eager" if it uses the DSL builder pattern.
+        """
+        if self.mode in ("lazy", "eager"):
+            return self.mode
+        # auto: infer by checking if function returns PrimFunc directly
+        if not isinstance(self.func, JITFunc):
+            return "lazy"
+        is_lazy_style = self.func._is_lazy_style(*args, **kwargs)
+        return "lazy" if is_lazy_style else "eager"
+
+    def initialize_jit_mode(self, *args: _P.args, **kwargs: _P.kwargs) -> Literal["lazy", "eager"]:
+        if self.mode == "auto":
+            self.mode = self._infer_jit_mode(*args, **kwargs)
+        self.func.set_mode(self.mode)
+        if self.mode == "eager" and self.out_idx is not None:
+            raise ValueError("out_idx is only supported in lazy mode. In eager mode, use T.empty() to declare output tensors instead.")
+        return self.mode
+
+    def par_compile(
         self,
-        func: Callable[_P, _RProg],  # func is Union[Callable[_P, _RProg], PrimFunc] in original
-    ) -> Callable[_P, Any]:
-        # Store the function and its signature for autotuner access
-        self.func = func
-        self.signature = inspect.signature(func)
+        configs: Iterable[dict[str, Any] | tuple[str, Any]],
+        num_workers: int = None,
+        ignore_error: bool = False,
+    ) -> list[JITKernel[_KP, _T]]:
+        """
+        Parallel compile multiple TileLang PrimFunc with TVM and build JITKernels.
+        Parameters
+        ----------
+        configs : Iterable[Union[dict[str, Any], tuple[Any, ...]]]
+            The configurations to elaborate and compile. Each config can be either
+            a dictionary mapping keyword arguments to values, or a tuple of positional
+            arguments.
+        num_workers : int, optional
+            Number of parallel workers to use for compilation. Defaults to None,
+            which lets the system decide.
+        ignore_error : bool, optional
+            If True, compilation errors for individual configs will be logged
+            as warnings and the corresponding result will be None. If False,
+            any compilation error will raise an exception. Defaults to False.
+        Returns
+        -------
+        List[JITKernel]
+            A list of compiled JITKernel objects corresponding to the provided configs.
+        """
 
-        @functools.wraps(func)
-        def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Any:
-            # Separate out the tuning parameters from the user's kwargs
-            tune_params = kwargs.pop("__tune_params", {})
+        configs = list(configs)
+        funcs = []
+        for cfg in tqdm(configs, desc="Elaborating"):
+            if isinstance(cfg, tuple):
+                funcs.append(self.get_tir(*cfg))
+            elif isinstance(cfg, dict):
+                funcs.append(self.get_tir(**cfg))
+            else:
+                raise ValueError(f"Invalid config type: {type(cfg)}, expected tuple or dict.")
+        return par_compile(
+            funcs,
+            out_idx=self.out_idx,
+            execution_backend=self.execution_backend,
+            target=self.target,
+            target_host=self.target_host,
+            verbose=self.verbose,
+            pass_configs=self.pass_configs,
+            compile_flags=self.compile_flags,
+            **({"workspace_idx": self.workspace_idx} if self.workspace_idx is not None else {}),
+            num_workers=num_workers,
+            ignore_error=ignore_error,
+        )
 
-            key_args_tuple = args
-            key_kwargs_tuple = tuple(sorted(kwargs.items()))
-            key = (key_args_tuple, key_kwargs_tuple)
+    def compile(self, *args: _P.args, **kwargs: _P.kwargs) -> _Ret:
+        def compile_program(prim_func):
+            return compile(
+                prim_func,
+                out_idx=self.out_idx,
+                execution_backend=self.execution_backend,
+                target=self.target,
+                target_host=self.target_host,
+                verbose=self.verbose,
+                pass_configs=self.pass_configs,
+                compile_flags=self.compile_flags,
+                **({"workspace_idx": self.workspace_idx} if self.workspace_idx is not None else {}),
+            )
 
-            if key not in self._kernel_cache:
-                # Ensure 'func' (the original user function) is used correctly
-                program_result_source = func
-                if isinstance(program_result_source, PrimFunc):
-                    program_result = program_result_source
-                elif callable(program_result_source):
-                    program_result = program_result_source(*args, **kwargs, **tune_params)
-                else:
-                    raise ValueError(f"Invalid function type: {type(program_result_source)}")
+        return self._compile_with(compile_program, None, *args, **kwargs)
 
-                kernel_result = compile(
-                    program_result,
-                    out_idx=self.out_idx,
-                    workspace_idx=self.workspace_idx,
-                    execution_backend=self.execution_backend,
-                    target=self.target,
-                    target_host=self.target_host,
-                    platform=self.platform,
-                    verbose=self.verbose,
-                    pass_configs=self.pass_configs,
-                    compile_flags=self.compile_flags,
-                )
+    def _compile_with(self, compile_program, frontend_target, *args, **kwargs):
+        """Use a private compile callback while retaining normal debug artifacts."""
+        prim_func = (
+            self.get_tir(*args, **kwargs) if frontend_target is None else self._get_tir_with_target(frontend_target, *args, **kwargs)
+        )
+        kernel_result = compile_program(prim_func)
 
-                if self.debug_root_path:
-                    func_name = getattr(func, "__name__", "jit_kernel")  # Use func for name
-                    kernel_file = f"tilelang_jit_kernel_{func_name}.c"
-                    program_file = f"tilelang_jit_program_{func_name}.py"
-                    makedirs(self.debug_root_path, exist_ok=True)
-                    with open(path.join(self.debug_root_path, kernel_file), "w") as f:
-                        print(kernel_result.get_kernel_source(), file=f)
-                    with open(path.join(self.debug_root_path, program_file), "w") as f:
-                        print(program_result.script(), file=f)
+        if self.debug_root_path:
+            if isinstance(self.func, PrimFunc):
+                func_name = self.func.attrs["global_symbol"]
+            else:
+                func_name = getattr(self.func, "__name__", "jit_kernel")
 
-                self._kernel_cache[key] = kernel_result
+            # cutedsl emits python executor not `c`
+            is_cutedsl = (self.execution_backend or self.target) == "cutedsl"
+            kernel_suffix = "py" if is_cutedsl else "c"
+            kernel_file = f"tilelang_jit_kernel_{func_name}.{kernel_suffix}"
 
-            return self._kernel_cache[key]
+            program_file = f"tilelang_jit_program_{func_name}.py"
+            makedirs(self.debug_root_path, exist_ok=True)
+            with open(path.join(self.debug_root_path, kernel_file), "w") as f:
+                print(kernel_result.get_kernel_source(), file=f)
+            with open(path.join(self.debug_root_path, program_file), "w") as f:
+                print(prim_func.script(), file=f)
 
-        # Attach reference to _JitImplementation for autotuner to access
-        wrapper.__jit_impl__ = self
-        # Store the wrapper for autotuner to call it directly
-        self.wrapper = wrapper
+        return kernel_result
 
-        return wrapper
+    def parse_cache_key(self, *args: _P.args, **kwargs: _P.kwargs):
+        tune_params = kwargs.pop("__tune_params", {})
+        key_args_tuple = args
+        key_kwargs_tuple = tuple(sorted(kwargs.items()))
+        tuned_key_kwargs_tuple = tuple(sorted(tune_params.items()))
+        key = (key_args_tuple, key_kwargs_tuple, tuned_key_kwargs_tuple)
+        return key
+
+    def get_kernel_source(self, *args: _P.args, **kwargs: _P.kwargs) -> str:
+        kernel = self.compile(*args, **kwargs)
+        return kernel.get_kernel_source()
+
+    def is_lazy_mode(self) -> bool:
+        return self.mode == "lazy"
+
+    def _can_use_call_form_cache(self, has_tune_params: bool) -> bool:
+        # This cache returns a kernel object directly, so it is only valid for
+        # JIT functions that have no runtime tensor arguments to extract.
+        return not has_tune_params and isinstance(self.func, JITFunc) and not self.func.tensor_args
+
+    def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> _Ret:
+        # Separate out the tuning parameters from the user's kwargs
+        # Whether to return the compile arguments (out_idx, target, target_host, etc.) for autotuner cache
+        return_compile_arguments = kwargs.pop("__return_compile_arguments", False)
+        if return_compile_arguments:
+            logger.warning("`__return_compile_arguments` is deprecated and will be removed in future versions.")
+            compile_args = {
+                "out_idx": self.out_idx,
+                "execution_backend": self.execution_backend,
+                "target": self.target,
+                "target_host": self.target_host,
+                "verbose": self.verbose,
+                "pass_configs": self.pass_configs,
+                "compile_flags": self.compile_flags,
+                **({"workspace_idx": self.workspace_idx} if self.workspace_idx is not None else {}),
+            }
+            return compile_args
+
+        has_tune_params = "__tune_params" in kwargs
+        kwargs.update(kwargs.pop("__tune_params", {}))
+
+        # infer mode early, before parse_args needs it
+        if self.mode == "auto":
+            self.mode = self._infer_jit_mode(*args, **kwargs)
+            self.func.set_mode(self.mode)
+
+        call_form_key = None
+        if self.is_lazy_mode() and self._can_use_call_form_cache(has_tune_params):
+            kernel, call_form_key = self._call_form_cache.lookup(args, kwargs)
+            if kernel is not _CALL_FORM_CACHE_MISS:
+                return kernel
+
+        key, kernel_args = self.func.parse_args(*args, **kwargs)
+        kernel = self._kernel_cache.get(key, None)
+        if kernel is None:
+            kernel = self.compile(*args, **kwargs)
+            self._kernel_cache[key] = kernel
+
+        if call_form_key is not None and self.is_lazy_mode() and not kernel_args:
+            self._call_form_cache.store(call_form_key, kernel)
+
+        # eager mode: execute kernel immediately and return result
+        # lazy mode: return kernel object for manual invocation
+        if self.mode == "eager":
+            return kernel(*kernel_args.values())
+        else:
+            return kernel
 
 
-def jit(  # This is the new public interface
-    func: Callable[_P, _RProg] | PrimFunc | None = None,
-    *,  # Indicates subsequent arguments are keyword-only
+ExecutionBackend = Literal["auto", "tvm_ffi", "cython", "nvrtc", "torch", "cutedsl", "pto"]
+
+
+@overload
+def jit(func: Callable[_KP, _T]) -> JITImpl[_KP, _KP, _T, _T]: ...
+
+
+@overload
+def jit(
+    *,
     out_idx: Any = None,
-    workspace_idx: Any = None,
-    target: str | Target = "auto",
-    target_host: str | Target = None,
-    platform: str = "auto",
-    execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
-    verbose: bool = False,
+    workspace_idx: list[int] | int | None = None,
+    target: TargetLike | None = None,
+    target_host: TargetLike | None = None,
+    execution_backend: ExecutionBackend | None = None,
+    verbose: bool | None = None,
     pass_configs: dict[str, Any] | None = None,
-    compile_flags: list[str] | str | None = None,
     debug_root_path: str | None = None,
-):
-    """
-    Just-In-Time (JIT) compiler decorator for TileLang functions.
+    compile_flags: list[str] | str | None = None,
+) -> Callable[[Callable[_KP, _T]], JITImpl[_KP, _KP, _T, _T]]: ...
 
-    This decorator can be used without arguments (e.g., `@tilelang.jit`):
-       Applies JIT compilation with default settings.
+
+def jit(
+    func: Callable[_P, _T] | PrimFunc | None = None,
+    *,  # Indicates subsequent arguments are keyword-only
+    out_idx: list[int] | int | None = None,
+    workspace_idx: list[int] | int | None = None,
+    target: TargetLike | None = None,
+    target_host: TargetLike | None = None,
+    execution_backend: ExecutionBackend | None = None,
+    verbose: bool | None = None,
+    pass_configs: dict[str, Any] | None = None,
+    debug_root_path: str | None = None,
+    compile_flags: list[str] | str | None = None,
+) -> Callable[[Callable[_P, _T]], JITImpl[_KP, _KP, _T, _T]]:
+    """
+    JIT compiler decorator for TileLang functions.
+
+    Supports two execution modes (automatically inferred):
+    - **lazy**: Function returns PrimFunc explicitly. Returns compiled kernel object.
+    - **eager**: Function uses DSL builder pattern. Executes kernel immediately.
+
+    Compile-time arguments and their defaults must be hashable. Their hash and
+    equality semantics must remain stable while cached kernels are in use.
+    Runtime tensor arguments are excluded from this requirement.
 
     Parameters
     ----------
-    func_or_out_idx : Any, optional
-        If using `@tilelang.jit(...)` to configure, this is the `out_idx` parameter.
-        If using `@tilelang.jit` directly on a function, this argument is implicitly
-        the function to be decorated (and `out_idx` will be `None`).
-    workspace_idx : Any, optional
-        Index(es) of the auto-allocated workspace tensors.
-    target : Union[str, Target], optional
-        Compilation target for TVM (e.g., "cuda", "llvm"). Defaults to "auto".
-    target_host : Union[str, Target], optional
-        Target host for cross-compilation. Defaults to None.
-    platform : Literal
-        Specifies the target hardware platform generation. Defaults to "A3".
-    execution_backend : Literal["dlpack", "ctypes", "cython"], optional
-        Backend for kernel execution and argument passing. Defaults to "cython".
-    verbose : bool, optional
-        Enables verbose logging during compilation. Defaults to False.
+    out_idx : list[int] | int | None
+        Output tensor index(es). Only supported in lazy mode.
+    target : str | tvm.target.Target | None
+        Compilation target (e.g., "cuda", "llvm", "auto").
+    target_host : str | tvm.target.Target | None
+        Host target for cross-compilation.
+    execution_backend : ExecutionBackend | None
+        Backend for kernel execution.
+    verbose : bool | None
+        Enable verbose compilation output.
     pass_configs : dict[str, Any] | None
-        Configurations for TVM's pass context. Defaults to None.
+        TVM pass configuration options.
+    debug_root_path : str | None
+        Directory to save compiled kernel source for debugging.
     compile_flags : list[str] | str | None
-        Extra Bisheng compiler flags for this kernel (e.g.
-        ``["--cce-auto-sync=off", "-O3"]``). Appended after the framework-derived
-        flags and folded into the cache key; see :func:`compile`. Defaults to None.
-    debug_root_path : Optional[str], optional
-        Directory to save compiled kernel source for debugging. Defaults to None.
-
-    Returns
-    -------
-    Callable
-        Either a JIT-compiled wrapper around the input function, or a configured decorator
-        instance that can then be applied to a function.
+        Additional compiler flags.
     """
-    if callable(func):
-        # Case 1: Used as @jit (func_or_out_idx is the function, others are defaults)
-        # Create a default _JitImplementation instance and apply it to the function.
-        default_decorator = _JitImplementation(
-            out_idx=out_idx,  # Explicitly None for the default case
-            workspace_idx=workspace_idx,
-            target=target,
-            target_host=target_host,
-            platform=platform,
-            execution_backend=execution_backend,
-            verbose=verbose,
-            pass_configs=pass_configs,
-            compile_flags=compile_flags,
-            debug_root_path=debug_root_path,
+
+    compile_args = dict(
+        out_idx=out_idx,
+        **({"workspace_idx": workspace_idx} if workspace_idx is not None else {}),
+        execution_backend=execution_backend,
+        target=target,
+        target_host=target_host,
+        verbose=verbose,
+        pass_configs=pass_configs,
+        debug_root_path=debug_root_path,
+        compile_flags=compile_flags,
+    )
+
+    def decorator(func: Callable[_P, _T]):
+        mode = "auto"
+        pf: JITFunc[_P, _T] = prim_func(func, eager_jit=True)
+        func_source = inspect.getsource(pf.orig_func)
+        signature = inspect.signature(pf.orig_func)
+
+        return JITImpl(
+            func=pf,
+            **compile_args,
+            func_source=func_source,
+            signature=signature,
+            mode=mode,
         )
-        return default_decorator(func)
-    elif isinstance(func, PrimFunc):
-        raise ValueError("Use tilelang.jit to decorate prim_func is not supported yet.")
-    else:
-        # Case 2: Used as @jit(...) to configure, or func_or_out_idx is meant as out_idx.
-        # Create a _JitImplementation instance with the provided/defaulted arguments.
-        # This instance is a decorator that will be applied to the function later.
-        configured_decorator = _JitImplementation(
-            out_idx=out_idx,  # Pass along; could be an actual out_idx or None
-            workspace_idx=workspace_idx,
-            target=target,
-            target_host=target_host,
-            platform=platform,
-            execution_backend=execution_backend,
-            verbose=verbose,
-            pass_configs=pass_configs,
-            compile_flags=compile_flags,
-            debug_root_path=debug_root_path,
-        )
-        return configured_decorator
+
+    return decorator(func) if func is not None else decorator

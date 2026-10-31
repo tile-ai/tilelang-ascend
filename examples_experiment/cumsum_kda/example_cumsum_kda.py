@@ -1,10 +1,10 @@
 import functools
 
 import tilelang
-import tilelang.language as tl
+import tilelang.ascend.a2a3.language as tl
 import torch
 
-tilelang.cache.clear_cache()
+tilelang.disable_cache()
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
@@ -750,7 +750,7 @@ def ref_varlen_cumsum(ref_fn, s, cu_seqlens, head_first=False, **kwargs):
 
 
 if __name__ == "__main__":
-    tilelang.cache.clear_cache()
+    tilelang.disable_cache()
     torch.manual_seed(0)
 
     print("=== Testing chunk_local_cumsum_scalar ===")

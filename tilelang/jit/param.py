@@ -1,6 +1,3 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
-
 from typing import (
     Any,
     TypeVar,

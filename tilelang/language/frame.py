@@ -1,14 +1,11 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
 """Override the LetFrame to print a message when entering the frame."""
 
-from tvm._ffi import register_object as _register_object
-from tvm.tir import Var, PrimExpr, BufferLoad, BufferRegion
+from __future__ import annotations
+from tvm.tirx import Var, PrimExpr, BufferLoad, BufferRegion
 from tvm.ir import Range
 from tvm import DataType
-from tvm.script.ir_builder.tir.frame import TIRFrame
+from tvm.tirx.script.builder.frame import TIRFrame
 from collections import deque
-from typing import Optional
 import threading
 
 
@@ -32,7 +29,7 @@ class FrameStack:
             item: The frame object to push onto the stack
         """
         self._stack.append(item)
-        if hasattr(item, 'var') and hasattr(item, 'value'):
+        if hasattr(item, "var") and hasattr(item, "value"):
             self._var_value_map[item.var] = item.value
 
     def pop(self):
@@ -46,7 +43,7 @@ class FrameStack:
         """
         if self._stack:
             item = self._stack.pop()
-            if hasattr(item, 'var'):
+            if hasattr(item, "var"):
                 self._var_value_map.pop(item.var, None)
             return item
         raise IndexError(f"{self.__class__.__name__} is empty")
@@ -61,6 +58,14 @@ class FrameStack:
             The value associated with the variable, or None if not found
         """
         return self._var_value_map.get(var)
+
+    def set_value(self, var, value):
+        """Record a variable binding that is not represented by a scoped frame."""
+        self._var_value_map[var] = value
+
+    def clear_values(self):
+        """Clear all tracked variable bindings."""
+        self._var_value_map.clear()
 
     def has_value(self, var):
         """Check if a variable has an associated value.
@@ -109,7 +114,21 @@ def _get_let_stack() -> FrameStack:
     return _local_let.let_frame_stack
 
 
-@_register_object("script.ir_builder.tir.LetFrame")
+def register_let_value(var: Var, value: PrimExpr | BufferRegion):
+    """Record the value behind a flat tirx Bind.
+
+    The legacy LetFrame path updated FrameStack through __enter__/__exit__.
+    tirx emits flat Bind statements instead, so callers that need to recover
+    BufferRegion aliases must explicitly register the Python-side mapping.
+    """
+    _get_let_stack().set_value(var, value)
+
+
+def clear_let_values():
+    """Clear all Python-side bindings recorded for the current thread."""
+    _get_let_stack().clear_values()
+
+
 class LetFrame(TIRFrame):
     """A TIR frame for let bindings that manages variable scope and value tracking.
 
@@ -132,8 +151,7 @@ class LetFrame(TIRFrame):
                     is_block_load = True
                     break
             if is_block_load:
-                self.value = BufferRegion(self.value.buffer,
-                                          [Range(x.base, x.lanes) for x in indices])
+                self.value = BufferRegion(self.value.buffer, [Range(x.base, x.lanes) for x in indices])
 
         _get_let_stack().push(self)
         return self.var
@@ -152,7 +170,7 @@ class LetFrame(TIRFrame):
         super().__exit__(ptype, value, trace)
 
     @classmethod
-    def Current(cls) -> "LetFrame":
+    def Current(cls) -> LetFrame:
         """Get the current (topmost) let frame.
 
         Returns:
@@ -200,7 +218,7 @@ def has_let_value(var: Var) -> bool:
     return _get_let_stack().has_value(var)
 
 
-def get_let_value(var: Var) -> Optional[PrimExpr]:
+def get_let_value(var: Var) -> PrimExpr | None:
     """Get the value bound to a variable in the current let frame stack.
 
     Args:

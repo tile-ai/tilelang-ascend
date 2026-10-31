@@ -1,0 +1,362 @@
+// Copyright (c) Tile-AI Corporation.
+// Licensed under the MIT License.
+
+/*!
+ * \file tl/op/ascend.h
+ * \brief Define ascend-related operators.
+ *
+ */
+
+#ifndef TVM_TL_ASCEND_A2A3_OP_ASCEND_H_
+#define TVM_TL_ASCEND_A2A3_OP_ASCEND_H_
+
+#include "builtin.h"
+#include "op/operator.h"
+
+namespace tvm {
+namespace tl {
+namespace a2a3 {
+
+using namespace tirx;
+using namespace ffi;
+
+class AscendCopyNode : public TileOperatorNode {
+public:
+  AscendCopyNode(Array<PrimExpr> args, Map<String, ObjectRef> annotations);
+  Stmt Lower(const ::tvm::tl::LowerArgs &T,
+             arith::Analyzer *analyzer) const final;
+  LayoutMap InferLayout(const ::tvm::tl::LayoutInferArgs &T,
+                        InferLevel level) const final;
+  TileOperator Clone() const final;
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.ascend.a2a3.AscendCopy", AscendCopyNode,
+                                    TileOperatorNode);
+
+private:
+  Array<PrimExpr> args_;
+  Map<String, ObjectRef> annotations_;
+
+  Buffer src, dst;
+
+  Array<Range> src_range, dst_range;
+  Array<PrimExpr> src_extents, dst_extents;
+  int srcN;
+  bool enRelu = false;
+  bool transposeL1;
+  PrimExpr padValue;
+  Buffer tmp;
+  Array<Range> tmp_range;
+  Array<PrimExpr> tmp_extents;
+  // L0C->GM fixpipe unitFlag (default 0 = a standalone fixpipe). Threaded into
+  // copy_l0c_to_gm so a kernel-driven fixpipe can pair with the preceding mma's
+  // unitFlag and overlap across an L0C ping-pong.
+  PrimExpr unitFlag;
+  // L1->L0 runtime contraction length (default 0 = take the K extent from the
+  // destination L0 buffer). Overrides copy_l1_to_l0a's dstN / copy_l1_to_l0b's
+  // dstM so the loaded fractal matches a following mma's runtime K -- a
+  // full-width load feeding a shorter mma otherwise reads mismatched fractals.
+  PrimExpr realK;
+  // L1->L0B runtime output width (default 0 = take N from the destination L0
+  // buffer). The other axis of what realK covers: L0B's fractal derives its
+  // K-block stride from the column count, so a full-width load followed by a
+  // shorter mma addresses the wrong K-blocks. Applies to matrix_b only, since
+  // matrix_a is [M, K] and has no N.
+  PrimExpr realN;
+};
+
+class AscendAtomicAddNode : public TileOperatorNode {
+public:
+  AscendAtomicAddNode(Array<PrimExpr> args, Map<String, ObjectRef> annotations);
+  Stmt Lower(const ::tvm::tl::LowerArgs &T,
+             arith::Analyzer *analyzer) const final;
+  LayoutMap InferLayout(const ::tvm::tl::LayoutInferArgs &T,
+                        InferLevel level) const final;
+  TileOperator Clone() const final;
+  static void RegisterReflection();
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.ascend.a2a3.AscendAtomicAdd",
+                                    AscendAtomicAddNode, TileOperatorNode);
+
+private:
+  Array<PrimExpr> args_;
+  Map<String, ObjectRef> annotations_;
+
+  Buffer dst, src;
+  Array<Range> dst_range, src_range;
+  Array<PrimExpr> dst_extents, src_extents;
+};
+
+class AscendCopy : public TileOperator {
+public:
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(AscendCopy, TileOperator,
+                                             AscendCopyNode);
+  TVM_DLL AscendCopy(Array<PrimExpr> args,
+                     Map<String, ObjectRef> annotations = {});
+  static const Op &Get();
+};
+
+class AscendAtomicAdd : public TileOperator {
+public:
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(AscendAtomicAdd, TileOperator,
+                                             AscendAtomicAddNode);
+  TVM_DLL AscendAtomicAdd(Array<PrimExpr> args,
+                          Map<String, ObjectRef> annotations = {});
+  static const Op &Get();
+};
+
+TVM_DLL const Op &ascend_atomic_add();
+
+TVM_DLL const Op &ascend_add();
+
+TVM_DLL const Op &ascend_sub();
+
+TVM_DLL const Op &ascend_mul();
+
+TVM_DLL const Op &ascend_div();
+
+TVM_DLL const Op &ascend_max();
+
+TVM_DLL const Op &ascend_min();
+
+TVM_DLL const Op &ascend_bitwise_and();
+
+TVM_DLL const Op &ascend_bitwise_or();
+
+TVM_DLL const Op &ascend_adds();
+
+TVM_DLL const Op &ascend_subs();
+
+TVM_DLL const Op &ascend_muls();
+
+TVM_DLL const Op &ascend_divs();
+
+TVM_DLL const Op &ascend_maxs();
+
+TVM_DLL const Op &ascend_mins();
+
+TVM_DLL const Op &ascend_compare();
+
+TVM_DLL const Op &ascend_compare_scalar();
+
+TVM_DLL const Op &ascend_exp();
+
+TVM_DLL const Op &ascend_ln();
+
+TVM_DLL const Op &ascend_abs();
+
+TVM_DLL const Op &ascend_reciprocal();
+
+TVM_DLL const Op &ascend_sqrt();
+
+TVM_DLL const Op &ascend_rsqrt();
+
+TVM_DLL const Op &ascend_relu();
+
+TVM_DLL const Op &ascend_bitwise_not();
+
+TVM_DLL const Op &ascend_select();
+
+TVM_DLL const Op &ascend_leaky_relu();
+
+TVM_DLL const Op &ascend_axpy();
+
+TVM_DLL const Op &ascend_mul_add_dst();
+
+TVM_DLL const Op &ascend_bitwise_lshift();
+
+TVM_DLL const Op &ascend_bitwise_rshift();
+
+TVM_DLL const Op &ascend_sin();
+
+TVM_DLL const Op &ascend_cos();
+
+TVM_DLL const Op &ascend_transpose();
+
+TVM_DLL const Op &ascend_createvecindex();
+
+TVM_DLL const Op &ascend_fill();
+
+TVM_DLL const Op &ascend_arith_progression();
+
+TVM_DLL const Op &ascend_sort();
+
+TVM_DLL const Op &ascend_merge_sort();
+
+TVM_DLL const Op &ascend_topk();
+
+TVM_DLL const Op &ascend_shmem_put_nbi();
+
+TVM_DLL const Op &ascend_shmem_get_nbi();
+
+TVM_DLL const Op &ascend_shmem_ub_put_nbi();
+
+TVM_DLL const Op &ascend_shmem_ub_get_nbi();
+
+TVM_DLL const Op &ascend_gather_mask();
+
+TVM_DLL const Op &ascend_gatherb();
+
+TVM_DLL const Op &ascend_init_sort_buf();
+
+TVM_DLL const Op &ascend_sort32();
+
+TVM_DLL const Op &ascend_gather();
+
+TVM_DLL const Op &ascend_reduce();
+
+TVM_DLL const Op &ascend_block_reduce_max();
+
+TVM_DLL const Op &ascend_block_reduce_min();
+
+TVM_DLL const Op &ascend_block_reduce_sum();
+
+TVM_DLL const Op &ascend_cast();
+
+TVM_DLL const Op &ascend_set_deq_scale();
+
+TVM_DLL const Op &ascend_pow();
+
+TVM_DLL const Op &ascend_bitwise_xor();
+
+TVM_DLL const Op &ascend_broadcast();
+
+TVM_DLL const Op &ascend_row_expand_mul();
+
+TVM_DLL const Op &ascend_reinterpretcast();
+
+TVM_DLL const Op &ascend_wait_cross_flag();
+
+TVM_DLL const Op &ascend_set_cross_flag();
+
+// Reuse the A5 Op and its canonical argument convention.
+using ::tvm::tl::ascend_set_flag;
+
+// Reuse the A5 Op and its canonical argument convention.
+using ::tvm::tl::ascend_wait_flag;
+
+// Reuse the A5 Op and its canonical argument convention.
+using ::tvm::tl::ascend_pipe_barrier;
+
+TVM_DLL const Op &ascend_free_pipe();
+
+TVM_DLL const Op &ascend_sync_all();
+
+TVM_DLL const Op &ascend_gemm_v0();
+
+TVM_DLL const Op &ascend_gemm_v1();
+
+TVM_DLL const Op &ascend_printf();
+
+TVM_DLL const Op &ascend_dump_tensor();
+
+TVM_DLL const Op &ascend_src_code();
+
+TVM_DLL const Op &ascend_bilinear_interpolation();
+
+TVM_DLL const Op &ascend_wholereducemax();
+
+TVM_DLL const Op &ascend_wholereducemin();
+
+TVM_DLL const Op &ascend_wholereducesum();
+
+TVM_DLL const Op &ascend_auto_barrier();
+
+TVM_DLL const Op &ascend_auto_set_flag();
+
+TVM_DLL const Op &ascend_auto_wait_flag();
+
+TVM_DLL const Op &ascend_auto_set_cross_flag();
+
+TVM_DLL const Op &ascend_auto_wait_cross_flag();
+
+TVM_DLL const Op &ascend_use_swizzle();
+
+TVM_DLL const Op &ascend_mma();
+
+TVM_DLL const Op &ascend_sigmoid();
+
+TVM_DLL const Op &ascend_silu();
+
+TVM_DLL const Op &ascend_clamp_max();
+
+TVM_DLL const Op &ascend_clamp_min();
+
+TVM_DLL const Op &ascend_clamp();
+
+TVM_DLL const Op &ascend_round();
+
+TVM_DLL const Op &ascend_sub_experiment();
+
+TVM_DLL const Op &ascend_abs_experiment();
+
+TVM_DLL const Op &ascend_mins_experiment();
+
+TVM_DLL const Op &ascend_reducesum_experiment();
+
+TVM_DLL const Op &ascend_reducesum_mask_experiment();
+
+TVM_DLL const Op &ascend_gather_mask_experiment();
+
+TVM_DLL const Op &ascend_fill_experiment();
+
+TVM_DLL const Op &ascend_sum_experiment();
+
+TVM_DLL const Op &ascend_datacachecleanandinvalid_experiment();
+
+TVM_DLL const Op &ascend_brcb_experiment();
+
+TVM_DLL const Op &ascend_row_expand_mul_experiment();
+
+TVM_DLL const Op &ascend_row_expand_sub_experiment();
+
+TVM_DLL const Op &ascend_row_expand_div_experiment();
+
+TVM_DLL const Op &ascend_exp_experiment();
+
+// ---------------------------------------------------------------------------
+// Internal tail-aware vector ops produced by AscendTailMaskPropagation. These
+// are never emitted by the front-end; the pass rewrites the corresponding
+// plain tl.ascend_* op when its UB operand carries a tail valid-region. Each
+// carries the original buffer pointers plus the runtime tail rect
+// (valid_row, valid_col, physical_col) so the codegen can call the matching
+// tl::ascend::tail_* helper.
+// ---------------------------------------------------------------------------
+TVM_DLL const Op &ascend_tail_unary();
+
+TVM_DLL const Op &ascend_tail_binary();
+
+TVM_DLL const Op &ascend_tail_scalar();
+
+TVM_DLL const Op &ascend_tail_reduce();
+
+TVM_DLL const Op &ascend_tail_compare();
+
+TVM_DLL const Op &ascend_tail_compare_scalar();
+
+TVM_DLL const Op &ascend_tail_select();
+
+TVM_DLL const Op &ascend_tail_broadcast();
+
+TVM_DLL const Op &ascend_copy_cv_experiment();
+
+TVM_DLL const Op &ascend_copy_vc_experiment();
+
+// Internal operations inserted by the compiler-managed Vector-mask passes.
+#define TL_ASCEND_SEMANTIC_OP(...)
+#define TL_ASCEND_PHYSICAL(selected, selector, dtype_domain, operands,         \
+                           payload, emitter, intrinsic)                        \
+  TVM_DLL const Op &selected();
+#define TL_ASCEND_HELPER(selected, selector, contract)                         \
+  TVM_DLL const Op &selected();
+#include "ascend_vector_mask_ops.inc"
+#undef TL_ASCEND_HELPER
+#undef TL_ASCEND_PHYSICAL
+#undef TL_ASCEND_SEMANTIC_OP
+
+TVM_DLL const Op &ascend_set_mask_mode();
+
+TVM_DLL const Op &ascend_set_mask_payload();
+} // namespace a2a3
+} // namespace tl
+} // namespace tvm
+
+#endif //  TVM_TL_ASCEND_A2A3_OP_ASCEND_H_

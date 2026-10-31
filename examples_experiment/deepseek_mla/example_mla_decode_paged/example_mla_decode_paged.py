@@ -24,8 +24,8 @@ For the layered test suite (L0/L1/L2/Boundary), see
 
 import torch
 import tilelang
-from tilelang import language as T
-from tilelang.intrinsics import make_zn_layout, make_nz_layout
+from tilelang.ascend.a2a3 import language as T
+from tilelang.ascend.a2a3.layout import make_zn_layout, make_nz_layout
 
 # Developer pass_configs: combineCV auto-separates C/V, AUTO_CV_SYNC auto-inserts sync.
 # No manual T.Scope, no manual cross_flag — framework handles Cube/Vector division.

@@ -1,18 +1,16 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
-
-import tvm.script.ir_builder.tir.ir as _ir
-from tvm.script.ir_builder.tir import frame
-from tvm.tir import PrimExpr
-from typing import Any, Dict
+import tvm.tirx.script.builder.ir as _ir
+from tvm.tirx.script.builder import frame
+from tvm.tirx import PrimExpr, IntImm, StringImm
+from tvm.tirx import _ffi_api as _tir_ffi
+from tvm.tirx.expr import Select as _Select
+from typing import Any
 import tilelang.language.tir.op as _tir_op
 import functools
 
+PyPrimExpr = PrimExpr | int | float | bool
 
-def serial(start: PrimExpr,
-           stop: PrimExpr = None,
-           *,
-           annotations: Dict[str, Any] = None) -> frame.ForFrame:
+
+def serial(start: PrimExpr, stop: PrimExpr = None, *, annotations: dict[str, Any] = None) -> frame.ForFrame:
     """The serial For statement.
 
     Parameters
@@ -34,10 +32,7 @@ def serial(start: PrimExpr,
     return _ir.serial(start=start, stop=stop, annotations=annotations)
 
 
-def parallel(start: PrimExpr,
-             stop: PrimExpr = None,
-             *,
-             annotations: Dict[str, Any] = None) -> frame.ForFrame:
+def parallel(start: PrimExpr, stop: PrimExpr = None, *, annotations: dict[str, Any] = None) -> frame.ForFrame:
     """The parallel For statement.
 
     Parameters
@@ -59,10 +54,7 @@ def parallel(start: PrimExpr,
     return _ir.parallel(start=start, stop=stop, annotations=annotations)
 
 
-def vectorized(start: PrimExpr,
-               stop: PrimExpr = None,
-               *,
-               annotations: Dict[str, Any] = None) -> frame.ForFrame:
+def vectorized(start: PrimExpr, stop: PrimExpr = None, *, annotations: dict[str, Any] = None) -> frame.ForFrame:
     """The vectorized For statement.
 
     Parameters
@@ -84,10 +76,7 @@ def vectorized(start: PrimExpr,
     return _ir.vectorized(start=start, stop=stop, annotations=annotations)
 
 
-def unroll(start: PrimExpr,
-           stop: PrimExpr = None,
-           *,
-           annotations: Dict[str, Any] = None) -> frame.ForFrame:
+def unroll(start: PrimExpr, stop: PrimExpr = None, *, annotations: dict[str, Any] = None) -> frame.ForFrame:
     """The unrolled For statement.
 
     Parameters
@@ -106,6 +95,10 @@ def unroll(start: PrimExpr,
     res : frame.ForFrame
         The ForFrame.
     """
+    if annotations is None:
+        annotations = dict()
+    else:
+        annotations = dict(annotations)
     return _ir.unroll(start=start, stop=stop, annotations=annotations)
 
 
@@ -114,7 +107,7 @@ def thread_binding(
     stop: PrimExpr = None,
     thread: str = None,
     *,
-    annotations: Dict[str, Any] = None,
+    annotations: dict[str, Any] = None,
 ) -> frame.ForFrame:
     """The thread-binding For statement.
 
@@ -157,7 +150,6 @@ def grid(*extents: PrimExpr) -> frame.ForFrame:
 
 
 def _dtype_forward(func):
-
     @functools.wraps(func)
     def wrapped(*args, **kwargs):
         if "dtype" in kwargs:
@@ -168,7 +160,6 @@ def _dtype_forward(func):
 
 
 def _op_wrapper(func):
-
     @functools.wraps(func)
     def wrapped(*args, **kwargs):
         if "dtype" in kwargs:
@@ -178,6 +169,26 @@ def _op_wrapper(func):
     return wrapped
 
 
+def Select(condition: PrimExpr | bool, true_value: PyPrimExpr, false_value: PyPrimExpr, span=None) -> PrimExpr:
+    """Construct a TIR select expression.
+
+    ``Select`` evaluates both value expressions. Use ``if_then_else`` when a
+    branch must guard side effects or out-of-bounds memory accesses.
+    """
+    return _Select(condition, true_value, false_value, span)
+
+
+def min(a: PrimExpr, b: PrimExpr) -> PrimExpr:  # pylint: disable=redefined-builtin
+    """Construct a binary TIR minimum expression."""
+    return _ir.min(a, b)
+
+
+def max(a: PrimExpr, b: PrimExpr) -> PrimExpr:  # pylint: disable=redefined-builtin
+    """Construct a binary TIR maximum expression."""
+    return _ir.max(a, b)
+
+
+Shuffle = _tir_op.Shuffle
 abs = _op_wrapper(_tir_op.abs)  # pylint: disable=redefined-builtin
 acos = _op_wrapper(_tir_op.acos)
 acosh = _op_wrapper(_tir_op.acosh)
@@ -200,8 +211,16 @@ erf = _op_wrapper(_tir_op.erf)
 exp = _op_wrapper(_tir_op.exp)
 exp2 = _op_wrapper(_tir_op.exp2)
 exp10 = _op_wrapper(_tir_op.exp10)
+extract_lane = _tir_op.extract_lane
 floor = _op_wrapper(_tir_op.floor)
 ceildiv = _op_wrapper(_tir_op.ceildiv)
+cdiv = ceildiv
+
+
+def align_up(x, y):
+    return cdiv(x, y) * y
+
+
 floordiv = _op_wrapper(_tir_op.floordiv)
 floormod = _op_wrapper(_tir_op.floormod)
 fmod = _op_wrapper(_tir_op.fmod)
@@ -246,7 +265,6 @@ tvm_throw_last_error = _op_wrapper(_tir_op.tvm_throw_last_error)
 tvm_stack_alloca = _op_wrapper(_tir_op.tvm_stack_alloca)
 tvm_stack_make_shape = _op_wrapper(_tir_op.tvm_stack_make_shape)
 tvm_stack_make_array = _op_wrapper(_tir_op.tvm_stack_make_array)
-tvm_check_return = _op_wrapper(_tir_op.tvm_check_return)
 call_packed = _op_wrapper(_tir_op.call_packed)
 call_cpacked = _op_wrapper(_tir_op.call_cpacked)
 call_packed_lowered = _op_wrapper(_tir_op.call_packed_lowered)
@@ -272,7 +290,6 @@ ptx_cp_async_barrier = _op_wrapper(_tir_op.ptx_cp_async_barrier)
 ptx_init_barrier_thread_count = _op_wrapper(_tir_op.ptx_init_barrier_thread_count)
 ptx_arrive_barrier = _op_wrapper(_tir_op.ptx_arrive_barrier)
 ptx_arrive_barrier_expect_tx = _op_wrapper(_tir_op.ptx_arrive_barrier_expect_tx)
-ptx_wait_barrier = _op_wrapper(_tir_op.ptx_wait_barrier)
 create_barriers = _op_wrapper(_tir_op.create_barriers)
 assume = _op_wrapper(_tir_op.assume)
 undef = _op_wrapper(_tir_op.undef)
@@ -286,23 +303,219 @@ anylist_setitem_call_packed = _op_wrapper(_tir_op.anylist_setitem_call_packed)
 anylist_setitem_call_cpacked = _op_wrapper(_tir_op.anylist_setitem_call_cpacked)
 vscale = _op_wrapper(_tir_op.vscale)
 
-reinterpret = _dtype_forward(_tir_op.reinterpret)
+# reinterpret = _dtype_forward(_tir_op.reinterpret)
+reinterpret = _tir_op.reinterpret
+
 call_extern = _dtype_forward(_tir_op.call_extern)
 call_intrin = _dtype_forward(_tir_op.call_intrin)
 call_llvm_intrin = _dtype_forward(_tir_op.call_llvm_intrin)
 call_llvm_pure_intrin = _dtype_forward(_tir_op.call_llvm_pure_intrin)
 call_pure_extern = _dtype_forward(_tir_op.call_pure_extern)
-ptx_mma = _dtype_forward(_tir_op.ptx_mma)
-ptx_mma_sp = _dtype_forward(_tir_op.ptx_mma_sp)
-ptx_ldmatrix = _dtype_forward(_tir_op.ptx_ldmatrix)
 ptx_cp_async = _dtype_forward(_tir_op.ptx_cp_async)
-ptx_cp_async_bulk = _dtype_forward(_tir_op.ptx_cp_async_bulk)
-mma_store = _dtype_forward(_tir_op.mma_store)
-mma_fill = _dtype_forward(_tir_op.mma_fill)
 vectorlow = _dtype_forward(_tir_op.vectorlow)
 vectorhigh = _dtype_forward(_tir_op.vectorhigh)
 vectorcombine = _dtype_forward(_tir_op.vectorcombine)
-tvm_mfma = _dtype_forward(_tir_op.tvm_mfma)
-tvm_mfma_store = _dtype_forward(_tir_op.tvm_mfma_store)
-tvm_rdna_wmma = _dtype_forward(_tir_op.tvm_rdna_wmma)
-tvm_rdna_wmma_store = _dtype_forward(_tir_op.tvm_rdna_wmma_store)
+# ---------------------------------------------------------------------------
+# Cast with optional CUDA/PTX rounding hints.
+#
+# Upstream ``tvm.tir.generic.cast`` only takes a generic ``annotations`` map
+# on the resulting CastNode (it is backend-agnostic). The tilelang wrapper
+# below exposes a friendly keyword API (``round`` / ``sat`` / ``rbits``) that
+# maps onto the PTX ``cvt`` instruction family used by the CUDA backend, and
+# translates the kwargs into entries on the CastNode annotations map:
+#
+#   round=<str>  -> "round" (StringImm)
+#   sat=False    -> "sat"   (IntImm bool 0; sat=True is the default and
+#                            emits no annotation)
+#   rbits=<expr> -> "rbits" (PrimExpr; required when round="rs")
+# ---------------------------------------------------------------------------
+
+_VALID_CAST_ROUNDING_MODES = {"", "rn", "rz", "rp", "rm", "rs"}
+
+
+def cast(value, dtype, round: str = "", sat: bool = True, rbits=None, span=None):
+    """Cast ``value`` to ``dtype`` with optional PTX-style rounding hints.
+
+    Parameters
+    ----------
+    value : object
+        The source operand.
+    dtype : str
+        The target data type.
+    round : str, optional
+        PTX rounding modifier (e.g. ``"rn"``, ``"rz"``, ``"rp"``, ``"rm"``,
+        ``"rs"``). Empty string means use the backend default. Currently
+        only ``""`` and ``"rs"`` are lowered by the CUDA backend; the other
+        modifiers are reserved.
+    sat : bool, optional
+        Saturate to finite (``True`` = PTX ``.satfinite``, default).
+    rbits : PrimExpr, optional
+        Random bits operand for stochastic rounding (``round="rs"``).
+    span : Optional[Span]
+        The location of this operator in the source.
+
+    Returns
+    -------
+    op : tvm.tir.PrimExpr
+        The cast expression.
+    """
+    if round not in _VALID_CAST_ROUNDING_MODES:
+        raise ValueError(f"Invalid round '{round}'. Must be one of: {sorted(_VALID_CAST_ROUNDING_MODES)}")
+    if not isinstance(sat, bool):
+        raise ValueError(f"Invalid sat '{sat}'. Must be a bool (True for satfinite, False for no saturation)")
+    if round == "rs" and rbits is None:
+        raise ValueError("rbits is required when round='rs' (stochastic rounding)")
+    if round != "rs" and rbits is not None:
+        raise ValueError("rbits is only valid with round='rs' (stochastic rounding)")
+
+    annotations: dict = {}
+    if round:
+        annotations["round"] = StringImm(round)
+    if not sat:
+        annotations["sat"] = IntImm("bool", 0)
+    if rbits is not None:
+        annotations["rbits"] = rbits
+
+    # Go through the TIR FFI directly: ``tvm.tir.generic.cast`` is overridden
+    # by ``topi.math.cast`` (a 2/3-arg signature) via TVM's GenericFunc
+    # dispatch, so calling it would lose the ``annotations`` argument.
+    return _tir_ffi._cast(dtype, value, annotations or None, span)
+
+
+# PrimExpr/IntImm/StringImm/Shuffle/Any are TVM/typing primitives re-exported as
+# part of the historical ``tilelang.language`` surface (e.g. ``T.PrimExpr``).
+__all__ = (
+    "Any",
+    "IntImm",
+    "PrimExpr",
+    "Select",
+    "Shuffle",
+    "StringImm",
+    "TVMBackendAllocWorkspace",
+    "TVMBackendFreeWorkspace",
+    "abs",
+    "acos",
+    "acosh",
+    "address_of",
+    "align_up",
+    "anylist_getitem",
+    "anylist_resetitem",
+    "anylist_setitem_call_cpacked",
+    "anylist_setitem_call_packed",
+    "asin",
+    "asinh",
+    "assume",
+    "atan",
+    "atan2",
+    "atanh",
+    "bitwise_and",
+    "bitwise_not",
+    "bitwise_or",
+    "bitwise_xor",
+    "call_cpacked",
+    "call_cpacked_lowered",
+    "call_extern",
+    "call_intrin",
+    "call_llvm_intrin",
+    "call_llvm_pure_intrin",
+    "call_packed",
+    "call_packed_lowered",
+    "call_pure_extern",
+    "cast",
+    "cdiv",
+    "ceil",
+    "ceildiv",
+    "clz",
+    "copysign",
+    "cos",
+    "cosh",
+    "create_barriers",
+    "end_profile_intrinsic",
+    "erf",
+    "exp",
+    "exp10",
+    "exp2",
+    "extract_lane",
+    "floor",
+    "floordiv",
+    "floormod",
+    "fmod",
+    "grid",
+    "hypot",
+    "if_then_else",
+    "infinity",
+    "isfinite",
+    "isinf",
+    "isnan",
+    "isnullptr",
+    "ldexp",
+    "likely",
+    "log",
+    "log10",
+    "log1p",
+    "log2",
+    "lookup_param",
+    "max",
+    "max_value",
+    "min",
+    "min_value",
+    "nearbyint",
+    "nextafter",
+    "parallel",
+    "popcount",
+    "pow",
+    "ptx_arrive_barrier",
+    "ptx_arrive_barrier_expect_tx",
+    "ptx_commit_group",
+    "ptx_cp_async",
+    "ptx_cp_async_barrier",
+    "ptx_init_barrier_thread_count",
+    "ptx_wait_group",
+    "q_multiply_shift",
+    "q_multiply_shift_per_axis",
+    "reinterpret",
+    "ret",
+    "round",
+    "rsqrt",
+    "serial",
+    "shift_left",
+    "shift_right",
+    "sigmoid",
+    "sin",
+    "sinh",
+    "sqrt",
+    "start_profile_intrinsic",
+    "tan",
+    "tanh",
+    "thread_binding",
+    "trunc",
+    "truncdiv",
+    "truncmod",
+    "tvm_access_ptr",
+    "tvm_bmma_sync",
+    "tvm_fill_fragment",
+    "tvm_load_matrix_sync",
+    "tvm_mma_sync",
+    "tvm_stack_alloca",
+    "tvm_stack_make_array",
+    "tvm_stack_make_shape",
+    "tvm_storage_sync",
+    "tvm_store_matrix_sync",
+    "tvm_struct_get",
+    "tvm_struct_set",
+    "tvm_thread_allreduce",
+    "tvm_thread_invariant",
+    "tvm_throw_last_error",
+    "tvm_tuple",
+    "tvm_warp_activemask",
+    "tvm_warp_shuffle",
+    "tvm_warp_shuffle_down",
+    "tvm_warp_shuffle_up",
+    "undef",
+    "unroll",
+    "vectorcombine",
+    "vectorhigh",
+    "vectorized",
+    "vectorlow",
+    "vscale",
+)

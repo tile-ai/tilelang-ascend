@@ -1,20 +1,16 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
 """Wrapping Layouts."""
-# pylint: disable=invalid-name, unsupported-binary-operation
 
-import tvm
+# pylint: disable=invalid-name, unsupported-binary-operation
+import tvm_ffi
 from tvm.ir import Node, Range
-from tvm.tir import IterVar, Var, PrimExpr, IndexMap
+from tvm.tirx import IterVar, Var, PrimExpr, IndexMap
 from tilelang import _ffi_api
-from typing import List
 
 
 # Register the Layout class as a TVM object under the name "tl.Layout"
-@tvm._ffi.register_object("tl.Layout")
+@tvm_ffi.register_object("tl.Layout")
 class Layout(Node):
-
-    def __init__(self, shape, forward_fn, layout_tag=0):
+    def __init__(self, shape, forward_fn):
         """
         Initialize a Layout object.
 
@@ -44,8 +40,7 @@ class Layout(Node):
             forward_index = [forward_index]
 
         # Call the FFI constructor to create the Layout object in C++ backend
-        self.__init_handle_by_constructor__(_ffi_api.Layout, forward_vars, forward_index,
-                                            layout_tag)
+        self.__init_handle_by_constructor__(_ffi_api.Layout, forward_vars, forward_index)
 
     @property
     def index(self):
@@ -92,7 +87,14 @@ class Layout(Node):
         """
         return _ffi_api.Layout_forward_vars(self)
 
-    def map_forward_index(self, indices: List[PrimExpr]) -> PrimExpr:
+    def get_forward_index(self):
+        return self.index
+
+    def get_linearized_forward_index(self) -> PrimExpr:
+        """Return the row-major linear offset of the physical output index."""
+        return _ffi_api.Layout_linearized_index(self)
+
+    def map_forward_index(self, indices: list[PrimExpr]) -> PrimExpr:
         """
         Compute the forward index mapping for a given set of input indices.
 
@@ -116,11 +118,101 @@ class Layout(Node):
         index_map = IndexMap(
             initial_indices=forward_vars,  # The original iteration variables
             final_indices=forward_indexes,  # The computed forward indices
-            inverse_index_map=None  # No inverse mapping provided at this stage
+            inverse_index_map=None,  # No inverse mapping provided at this stage
         )
 
         # Map the provided indices using the constructed index mapping
         return index_map.map_indices(indices)
+
+    def repeat(self, dim: int, factor: int) -> "Layout":
+        """
+        Repeat a layout along a single input dimension.
+
+        This is useful for building a larger layout by tiling an "atom" layout.
+        Conceptually, repeating on dimension ``dim`` with ``factor`` constructs a
+        new layout ``L'`` such that::
+
+            L'(*idx) = [idx[dim] // extent_dim] + L(idx with idx[dim] % extent_dim)
+
+        where ``extent_dim`` is the original extent of the repeated dimension.
+
+        Parameters
+        ----------
+        dim : int
+            The input dimension to repeat (0-based, supports negative indexing).
+        factor : int
+            The repeat factor. Must be a positive integer.
+
+        Returns
+        -------
+        Layout
+            A new Layout with the repeated input shape and an extra leading
+            output dimension representing the repeat-group index.
+        """
+        if not isinstance(dim, int):
+            raise TypeError(f"dim must be an int, got {type(dim)!r}")
+        if not isinstance(factor, int):
+            raise TypeError(f"factor must be an int, got {type(factor)!r}")
+        if factor < 1:
+            raise ValueError(f"factor must be >= 1, got {factor}")
+        if factor == 1:
+            return self
+
+        input_shape = list(self.get_input_shape())
+        ndim = len(input_shape)
+        if ndim == 0:
+            raise ValueError("Cannot repeat a 0-dim layout")
+
+        if dim < 0:
+            dim += ndim
+        if dim < 0 or dim >= ndim:
+            raise ValueError(f"dim out of range: dim={dim}, ndim={ndim}")
+        return _ffi_api.Layout_repeat(self, dim, factor)
+
+    def expand(self, leading_shape) -> "Layout":
+        """
+        Expand (lift) this layout by prepending new leading input dimensions.
+
+        The new leading dimensions are forwarded unchanged to the output, and
+        the original layout is applied to the remaining trailing dimensions.
+
+        Example
+        -------
+        Given a 2D layout ``L`` over ``[J, K]``, you can lift it to a 3D layout
+        over ``[I, J, K]`` by::
+
+            L3 = L.expand([I])
+            # [i, j, k] -> [i, *L(j, k)]
+
+        Parameters
+        ----------
+        leading_shape : int or Sequence[int or PrimExpr]
+            The shape of the new leading dimensions to prepend. Use an empty
+            list/tuple for a no-op.
+
+        Returns
+        -------
+        Layout
+            A new Layout with input shape ``leading_shape + input_shape`` and
+            output indices ``[leading_dims] + old_forward_index``.
+        """
+        if isinstance(leading_shape, int):
+            leading_shape = [leading_shape]
+        if not isinstance(leading_shape, (list, tuple)):
+            raise TypeError(f"leading_shape must be an int or a sequence, got {type(leading_shape)!r}")
+
+        leading_shape = list(leading_shape)
+        if len(leading_shape) == 0:
+            return self
+
+        for idx, extent in enumerate(leading_shape):
+            if isinstance(extent, int):
+                if extent <= 0:
+                    raise ValueError(f"leading_shape[{idx}] must be > 0, got {extent}")
+            elif not isinstance(extent, PrimExpr):
+                raise TypeError(f"leading_shape elements must be int or PrimExpr, got {type(extent)!r} at index {idx}")
+
+        return _ffi_api.Layout_expand(self, leading_shape)
 
     def inverse(self) -> "Layout":
         """
@@ -132,3 +224,59 @@ class Layout(Node):
             A new Layout object representing the inverse transformation.
         """
         return _ffi_api.Layout_inverse(self)
+
+    def reshape(self, shape, rescale_num=1, rescale_den=1) -> "Layout":
+        """
+        Reshape the input shape of the layout.
+
+        Parameters
+        ----------
+        shape : list[PrimExpr] or list[int]
+            The new input shape.
+        rescale_num : int
+            Rescale numerator for element size changes.
+        rescale_den : int
+            Rescale denominator for element size changes.
+        """
+        return _ffi_api.Layout_reshape(self, shape, rescale_num, rescale_den)
+
+    def is_equal(self, other: "Layout") -> bool:
+        """
+        Check if the current layout is equal to another layout.
+
+        Parameters
+        ----------
+        other : Layout
+            The layout to compare with.
+        """
+        return _ffi_api.Layout_is_equal(self, other)
+
+    def map_region_bounds(self, region: list[Range]) -> list[Range]:
+        """
+        Map a logical (input-space) sub-region to its physical (output-space)
+        bounding-box region.
+
+        This is the region-aware generalization of ``get_output_shape()``, which
+        is equivalent to ``map_region_bounds`` with full-extent ranges.
+
+        Example (NZ layout): a logical slice ``[m0:m1, k0:k1]`` on a ``[M, K]``
+        buffer maps to physical ``[m0//16 : (m1-m0)//16, k0//C0 : (k1-k0)//C0,
+        0:16, 0:C0]``.
+
+        Parameters
+        ----------
+        region : list[Range]
+            One ``Range`` per input dimension, each ``[min, min+extent)``.
+
+        Returns
+        -------
+        list[Range]
+            One ``Range`` per output dimension.
+        """
+        return _ffi_api.Layout_map_region_bounds(self, region)
+
+    def __call__(self, *args: list[PrimExpr]) -> PrimExpr:
+        return self.map_forward_index(args)
+
+    def __repr__(self):
+        return self._DebugOutput()

@@ -1,60 +1,166 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
 """The profiler and convert to torch utils"""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any, List, Callable, Optional, Union
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
+import torch
+
 from tilelang.engine.param import KernelParam
 
 
+@dataclass(frozen=True)
+class CachedTextSource:
+    text: str | None = None
+    path: str | None = None
+
+
+CachedTextSourceLike = CachedTextSource | str | None
+
+
 class BaseKernelAdapter(ABC):
+    func: Callable | None = None
 
-    func: Optional[Callable] = None
-
-    def __init__(self, mod, params: List[KernelParam], 
-                 result_idx: List[int], workspace_idx: List[int]) -> None:
+    def __init__(self, mod, params: list[KernelParam], result_idx: list[int]) -> None:
         self.mod = mod
         self.params = params
-        self.result_idx = self._legalize_auto_memory_idx(result_idx, "result_idx")
-        self.workspace_idx = self._legalize_auto_memory_idx(workspace_idx, "workspace_idx")
+        self.result_idx = self._legalize_result_idx(result_idx)
         self._post_init()
 
-    def _legalize_auto_memory_idx(self, memory_idx: Union[List[int], int, None] = None, memory_name = "auto_memory_idx") -> List[int]:
+    def _legalize_result_idx(self, result_idx: list[int] | int | None) -> list[int]:
         params = self.params
-        if memory_idx is None:
-            memory_idx = []
-
-        elif isinstance(memory_idx, int):
-            if memory_idx >= len(params) or memory_idx < -len(params):
-                raise ValueError(
-                    f"{memory_name} should be an integer between {-len(params)} and {len(params) - 1}") 
-            if memory_idx < 0:
-                memory_idx = len(params) + memory_idx
-            memory_idx = [memory_idx]
-
-        elif isinstance(memory_idx, list):
-            for i, idx in enumerate(memory_idx):
+        # result_idx is a list of indices of the output tensors
+        if result_idx is None:
+            result_idx = []
+        elif isinstance(result_idx, int):
+            if result_idx >= len(params) or result_idx < -len(params):
+                raise ValueError(f"result_idx should be an integer between {-len(params)} and {len(params) - 1}")
+            if result_idx < 0:
+                result_idx = len(params) + result_idx
+            result_idx = [result_idx]
+        elif isinstance(result_idx, list):
+            result_idx = result_idx.copy()
+            for i, idx in enumerate(result_idx):
                 if idx >= len(params) or idx < -len(params):
-                    raise ValueError(
-                        f"{memory_name} should be an integer between {-len(params)} and {len(params) - 1}")
+                    raise ValueError(f"result_idx should be an integer between {-len(params)} and {len(params) - 1}")
                 if idx < 0:
-                    memory_idx[i] = len(params) + idx
-
+                    result_idx[i] = len(params) + idx
         else:
-            raise ValueError(f"{memory_name} should be a list of integers")
+            raise ValueError("result_idx should be a list of integers")
 
-        return memory_idx
-    
+        return result_idx
 
     @abstractmethod
     def _convert_torch_func(self) -> callable:
         pass
 
+    # --- Common helpers to align with PyTorch stream/device semantics ---
+    @staticmethod
+    def get_current_stream_functor(device: torch.device | None = None) -> Callable[[], int]:
+        """Return a callable that reads Torch's current device stream pointer.
+
+        The returned lambda yields the raw stream handle of the current
+        PyTorch stream on the active device. It's a thunk (evaluated at call
+        time) so that any upstream stream guards are respected. If no supported
+        device runtime is available, it returns a lambda that yields 0.
+        An explicit Torch device takes precedence over runtime auto-detection.
+        """
+        if device is None:
+            if hasattr(torch, "npu") and torch.npu.is_available():
+                device = torch.device("npu")
+            elif torch.cuda.is_available():
+                device = torch.device("cuda")
+            else:
+                return lambda: 0
+
+        if device.type == "npu":
+            current_device = torch.npu.current_device if device.index is None else lambda: device.index
+            # NOTE(chaofan): Mirror the CUDA branch: use the low-level raw-stream accessor.
+            # torch.npu.current_stream() internally probes
+            # torch.cuda.is_available(), which costs ~150us per call on a
+            # CUDA-less NPU host; the _C accessor avoids that.
+            try:
+                import torch_npu
+
+                get_npu_stream = torch_npu._C._npu_getCurrentRawStream
+                return lambda: int(get_npu_stream(current_device()))
+            except (ImportError, AttributeError):
+                return lambda: int(torch.npu.current_stream(device).npu_stream)
+        elif device.type == "cuda":
+            try:
+                torch.cuda._lazy_init()
+                current_device = torch._C._cuda_getDevice if device.index is None else lambda: device.index
+                get_stream = torch._C._cuda_getCurrentRawStream
+                return lambda: get_stream(current_device())
+            except Exception:
+                # Fallback to Python API if internal handles are unavailable
+                return lambda: int(torch.cuda.current_stream(device).cuda_stream)
+        # CPU or device unavailable: no stream semantics
+        return lambda: 0
+
+    @staticmethod
+    def get_current_device_functor() -> Callable[[], torch.device]:
+        """Return a callable that yields Torch's current device.
+
+        Similar to the stream functor, we capture a callable that, when called,
+        fetches the current device according to PyTorch, independently of the
+        compilation target. If neither NPU nor CUDA is available, returns
+        ``torch.device('cpu')``.
+        """
+        if hasattr(torch, "npu") and torch.npu.is_available():
+            return lambda: torch.device("npu", torch.npu.current_device())
+        elif torch.cuda.is_available():
+            try:
+                torch.cuda._lazy_init()
+                current_device = torch._C._cuda_getDevice
+                return lambda: torch.device("cuda", current_device())
+            except Exception:
+                return lambda: torch.device("cuda", torch.cuda.current_device())
+        # CPU fallback
+        return lambda: torch.device("cpu")
+
     def __call__(self, *args: Any, **kwds: Any) -> Any:
         return self.func(*args, **kwds)
 
-    def get_kernel_source(self) -> str:
-        return self.mod.imported_modules[0].get_source()
+    def get_kernel_source(self, kernel_only: bool = True) -> str:
+        if kernel_only:
+            return self.mod.imports[0].inspect_source()
+        else:
+            return self.mod.inspect_source() + "\n\n" + self.mod.imports[0].inspect_source()
 
     def _post_init(self):
         self.func = self._convert_torch_func()
+
+    @staticmethod
+    def _normalize_cached_text_source(source: CachedTextSourceLike) -> CachedTextSource:
+        if isinstance(source, CachedTextSource):
+            return source
+        if source is None:
+            return CachedTextSource()
+        return CachedTextSource(text=source)
+
+    def _set_cached_text_source(self, source_attr: str, path_attr: str, source: CachedTextSourceLike) -> CachedTextSource:
+        source = self._normalize_cached_text_source(source)
+        setattr(self, source_attr, source.text)
+        setattr(self, path_attr, source.path)
+        return source
+
+    def _load_cached_text_source(self, source_attr: str, path_attr: str) -> str | None:
+        source = getattr(self, source_attr, None)
+        if source is not None:
+            return source
+
+        path = getattr(self, path_attr, None)
+        if path is None:
+            return None
+
+        try:
+            with open(path, encoding="utf-8") as file:
+                source = file.read()
+        except OSError:
+            return None
+        setattr(self, source_attr, source)
+        return source

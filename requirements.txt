@@ -1,24 +1,15 @@
-# runtime requirements
-Cython
-numpy>=1.23.5
-tqdm>=4.62.3
-typing_extensions>=4.10.0
+# Runtime requirements
+
+apache-tvm-ffi>=0.1.11,<0.1.13
+# No prebuilt Windows ARM64 wheels are available for this optional extension.
+torch-c-dlpack-ext; python_version < '3.14' and (platform_system != 'Windows' or platform_machine != 'ARM64')
 cloudpickle
-ml_dtypes
+ml-dtypes
+numpy>=1.23.5
 psutil
 torch
-pybind11
-pytest
-pytest-xdist
-pytest-forked
-pytest-cov>=4.0
-coverage>=7.0
-pandas
-matplotlib
-PyYAML
-decorator 
-absl-py 
-attrs 
-scipy 
-tornado
-torch-npu
+torch>=2.7; platform_system == 'Darwin'
+tqdm>=4.62.3
+typing-extensions>=4.10.0
+z3-solver>=4.13.0,<4.15.5; platform_system != 'Windows' or platform_machine != 'ARM64'
+z3-solver>=4.15.8,<4.16; platform_system == 'Windows' and platform_machine == 'ARM64'

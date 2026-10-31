@@ -17,21 +17,24 @@
 # This file is modified from the original version,
 # which is part of the TVM project (https://tvm.apache.org/).
 # ruff: noqa
-"""The entry point of TVM parser for tir."""
+"""The entry point of TVM parser for tirx."""
+
 import inspect
 from typing import Callable, Optional, Union
 
 from tvm.ir.base import deprecated
-from tvm.tir import Buffer, PrimFunc
+from tvm import tirx
+from tvm.tirx import PrimFunc
 
 from ..ast import buffer, ptr
 from tvm.script.parser._core import parse, scan_macro, utils
 from tvm.script.parser.core.parser import Parser, ScriptMacro
 
+from tilelang._typing import ShapeType, DType
+from tilelang.language import dtypes as _dtypes
 
-def prim_func(func: Optional[Callable] = None,
-              private: bool = False,
-              check_well_formed=True) -> Union[PrimFunc, Callable]:
+
+def prim_func(func: Optional[Callable] = None, private: bool = False, check_well_formed=True) -> Union[PrimFunc, Callable]:
     """The parsing method for tir prim func, by using `@prim_func` as decorator.
 
     Parameters
@@ -113,7 +116,7 @@ def macro(*args, hygienic: bool = True) -> Callable:
         Example:
         ```
         import tvm
-        from tvm.script import tir as T
+        from tvm.script import tirx as T
 
         x_value = 128
 
@@ -149,8 +152,7 @@ def macro(*args, hygienic: bool = True) -> Callable:
     if len(args) == 1 and inspect.isfunction(args[0]):
         return _decorator(args[0])
 
-    raise ValueError(
-        "Invalid use of T.macro. Usage: @T.macro, @T.macro(), @T.macro(hygienic=[True|False])")
+    raise ValueError("Invalid use of T.macro. Usage: @T.macro, @T.macro(), @T.macro(hygienic=[True|False])")
 
 
 class BufferProxy:
@@ -158,8 +160,8 @@ class BufferProxy:
 
     def __call__(
         self,
-        shape,
-        dtype="float32",
+        shape: ShapeType,
+        dtype: DType = _dtypes.float32,
         data=None,
         strides=None,
         elem_offset=None,
@@ -168,7 +170,7 @@ class BufferProxy:
         offset_factor=0,
         buffer_type="",
         axis_separators=None,
-    ) -> Buffer:
+    ) -> tirx.Buffer:
         return buffer(
             shape,
             dtype=dtype,
@@ -183,7 +185,7 @@ class BufferProxy:
         )
 
     @deprecated("T.Tensor[...]", "T.Tensor(...)")
-    def __getitem__(self, keys) -> Buffer:
+    def __getitem__(self, keys) -> tirx.Buffer:
         if not isinstance(keys, tuple):
             return self(keys)
         if len(keys) >= 2 and not isinstance(keys[1], str):

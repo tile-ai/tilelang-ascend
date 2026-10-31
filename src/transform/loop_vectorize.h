@@ -1,5 +1,3 @@
-// Copyright (c) Tile-AI Corporation.
-// Licensed under the MIT License.
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -27,20 +25,80 @@
 #ifndef TVM_TL_LOOP_VECTORIZE_H_
 #define TVM_TL_LOOP_VECTORIZE_H_
 
+#include "../op/operator.h"
 #include <tvm/arith/analyzer.h>
-#include <tvm/tir/op.h>
+#include <tvm/target/target.h>
+#include <tvm/tirx/op.h>
 
 namespace tvm {
 namespace tl {
 
-using namespace tir;
+using namespace tirx;
 
-int GetVectorizeSize(const For &loop);
+// Widest vector memory access, in bits, that the vectorize planner will
+// consider for code whose memory-access mix is described by
+// `global_only_access` (touches global memory and no shared memory).
+// Single source of truth for the width-cap policy: the layout-inference
+// cost model calls this too, so a candidate layout is scored under exactly
+// the cap the vectorizer will later enforce on it.
+int MaxVectorLoadBits(const Target &target, bool global_only_access);
 
-For VectorizeLoop(const For &loop, int vectorize_hint = -1);
+// Extract an existing BufferLoad, optionally wrapped in address_of/access_ptr.
+// tvm_access_ptr carries a flat offset instead and must be handled separately.
+ffi::Optional<BufferLoad> ExtractBufferLoadForAtomic(const PrimExpr &expr);
 
-bool IndiceCanVectorize(PrimExpr expr, Var var, PrimExpr iter_var_size,
-                        int target_vectorized_size, arith::Analyzer *analyzer);
+// Target/dtype/address-space capability; access legality is checked separately.
+int GetMaxAtomicVectorSize(DataType dtype, const ffi::String &storage_scope,
+                           const Target &target);
+
+int GetVectorizeSize(const For &loop, const LayoutMap &layout_map = {});
+
+int GetVectorizeSize(const For &loop, arith::Analyzer *analyzer,
+                     const LayoutMap &layout_map = {});
+
+For VectorizeLoop(const For &loop, const LayoutMap &layout_map = {},
+                  int vectorize_hint = -1);
+
+For VectorizeLoop(const For &loop, arith::Analyzer *analyzer,
+                  const LayoutMap &layout_map = {}, int vectorize_hint = -1);
+
+// Can prove expr is independent with var, i.e. the value of expr doesn't change
+// when var changes
+bool CanProveIndependent(const PrimExpr &expr, Var var,
+                         arith::Analyzer *analyzer);
+
+// Check if expr is invariant within groups of consecutive unit-step iterations.
+// The minimum defaults to zero.
+bool IsExprInvariantInVectorBoundary(const PrimExpr &expr, const Var &var,
+                                     const PrimExpr &extent,
+                                     int target_vectorized_size,
+                                     arith::Analyzer *analyzer,
+                                     const PrimExpr &min = 0);
+
+/*!
+ * \brief Check whether an element-offset expression supports a vector width.
+ *
+ * For unit-step loops, iteration k has logical index min + k in
+ * [min, min + extent). The minimum defaults to zero.
+ *
+ * With allow_broadcast=true, offsets invariant within a vector group are
+ * accepted. For example, loading A[i // 4] at width 4 can load one element and
+ * broadcast its value. This preserves the existing access analysis; callers
+ * must separately check write-side ordering constraints.
+ *
+ * For widths greater than one, allow_broadcast=false requires every group to
+ * simplify to a unit-stride Ramp whose base is divisible by the vector width.
+ * Atomic destinations use this mode: four atomic additions to B[i // 4] update
+ * the same element, whereas AtomicAddx4 would update four consecutive elements.
+ * Alignment must hold for every group, not just at the first iteration.
+ *
+ * The flag applies only to the analyzed address; an atomic's source value may
+ * still broadcast. If the check fails, the planner can try a smaller width.
+ */
+bool IndicesCanVectorize(const PrimExpr &expr, const Var &var,
+                         const PrimExpr &extent, int target_vectorized_size,
+                         arith::Analyzer *analyzer, bool allow_broadcast = true,
+                         const PrimExpr &min = 0);
 
 } // namespace tl
 } // namespace tvm

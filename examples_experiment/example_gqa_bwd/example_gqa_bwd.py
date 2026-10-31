@@ -16,8 +16,8 @@ Kernels:
 import torch
 import torch_npu  # noqa: F401  # register NPU backend
 import tilelang
-from tilelang import language as T
-from tilelang.intrinsics import make_zn_layout, make_nz_layout
+from tilelang.ascend.a2a3 import language as T
+from tilelang.ascend.a2a3.layout import make_zn_layout, make_nz_layout
 
 # pass_configs — Developer mode (CV fusion: 4 keys enabled)
 _developer_cv_pass_configs = {

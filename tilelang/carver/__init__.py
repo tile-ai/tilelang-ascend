@@ -1,6 +1,5 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
 """Base infra"""
+
 from .analysis import (
     BlockInfo,  # noqa: F401
     IterInfo,  # noqa: F401
@@ -12,5 +11,5 @@ from .analysis import (
 )  # noqa: F401
 from .common_schedules import get_block, get_output_blocks, try_inline, try_inline_contiguous_spatial  # noqa: F401
 from .roller import *
-from .arch import CUDA, CDNA  # noqa: F401
+from .arch import CUDA, CDNA, RDNA  # noqa: F401
 from .template import MatmulTemplate, GEMVTemplate, ElementwiseTemplate, GeneralReductionTemplate, FlashAttentionTemplate  # noqa: F401

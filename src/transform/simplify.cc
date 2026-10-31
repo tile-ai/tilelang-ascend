@@ -1,60 +1,80 @@
-// Copyright (c) Tile-AI Corporation.
-// Licensed under the MIT License.
-
 /*!
  * \file simplify.cc
- * \brief Remove useless parameters of TL PrimFunc.
+ * \brief Statement simplifier based on analyzer and remove useless parameters
+ * of TL PrimFunc.
  */
 
-#include <tvm/tir/buffer.h>
-#include <tvm/tir/builtin.h>
-#include <tvm/tir/stmt_functor.h>
-#include <tvm/tir/transform.h>
-#include <tvm/tir/utils.h>
+#include "support/check.h"
+#include <tvm/ffi/reflection/accessor.h>
+#include <tvm/ir/cast.h>
+#include <tvm/s_tir/utils.h>
+#include <tvm/tirx/analysis.h>
+#include <tvm/tirx/buffer.h>
+#include <tvm/tirx/builtin.h>
+#include <tvm/tirx/stmt_functor.h>
+#include <tvm/tirx/transform.h>
 
+#include <optional>
+#include <unordered_set>
+#include <utility>
+
+#include "arith/const_fold.h"
 #include "arith/ir_mutator_with_analyzer.h"
+#include "common/attr.h"
 #include "tir/analysis/control_flow_graph.h"
 #include "tir/analysis/var_use_def_analysis.h"
 
 namespace tvm {
 namespace tl {
 
-using namespace tir;
+using namespace tirx;
+using namespace ffi;
 using namespace arith;
 
-struct SimplifyConfigNode : public tvm::AttrsNode<SimplifyConfigNode> {
-  bool transitively_prove_inequalities;
-  bool propagate_knowns_to_prove_conditional;
-  bool propagate_knowns_to_simplify_expressions;
-  bool convert_boolean_to_and_of_ors;
-  bool apply_constraints_to_boolean_branches;
+struct SimplifyConfigNode : public AttrsNodeReflAdapter<SimplifyConfigNode> {
+  bool transitively_prove_inequalities{};
+  bool propagate_knowns_to_prove_conditional{};
+  bool propagate_knowns_to_simplify_expressions{};
+  bool convert_boolean_to_and_of_ors{};
+  bool apply_constraints_to_boolean_branches{};
+  bool enable_simplify_let_inline{true};
 
-  TVM_DECLARE_ATTRS(SimplifyConfigNode, "tl.transform.SimplifyConfig") {
-    TVM_ATTR_FIELD(transitively_prove_inequalities)
-        .describe("If true, simplify conditionals with transitive combinations "
-                  "of scoped constraints")
-        .set_default(false);
-
-    TVM_ATTR_FIELD(propagate_knowns_to_prove_conditional)
-        .describe("If true, known buffer values are propagated and used to "
-                  "statically prove conditionals")
-        .set_default(false);
-
-    TVM_ATTR_FIELD(propagate_knowns_to_simplify_expressions)
-        .describe("If true, known buffer values are propagated and used to "
-                  "replace BufferLoad wherever "
-                  "possible")
-        .set_default(false);
-
-    TVM_ATTR_FIELD(convert_boolean_to_and_of_ors)
-        .describe("If true, simplify conditionals into an AND of ORs")
-        .set_default(false);
-
-    TVM_ATTR_FIELD(apply_constraints_to_boolean_branches)
-        .describe("If true, simplify each branch of AND/OR "
-                  "under a constraints provided by the other branch")
-        .set_default(false);
+  static void RegisterReflection() {
+    namespace refl = reflection;
+    refl::ObjectDef<SimplifyConfigNode>()
+        .def_ro("transitively_prove_inequalities",
+                &SimplifyConfigNode::transitively_prove_inequalities,
+                "If true, simplify conditionals with transitive combinations "
+                "of scoped constraints",
+                refl::DefaultValue(false))
+        .def_ro("propagate_knowns_to_prove_conditional",
+                &SimplifyConfigNode::propagate_knowns_to_prove_conditional,
+                "If true, known buffer values are propagated and used to "
+                "statically prove conditionals",
+                refl::DefaultValue(false))
+        .def_ro("propagate_knowns_to_simplify_expressions",
+                &SimplifyConfigNode::propagate_knowns_to_simplify_expressions,
+                "If true, known buffer values are propagated and used to "
+                "replace BufferLoad wherever "
+                "possible",
+                refl::DefaultValue(false))
+        .def_ro("convert_boolean_to_and_of_ors",
+                &SimplifyConfigNode::convert_boolean_to_and_of_ors,
+                "If true, simplify conditionals into an AND of ORs",
+                refl::DefaultValue(false))
+        .def_ro("apply_constraints_to_boolean_branches",
+                &SimplifyConfigNode::apply_constraints_to_boolean_branches,
+                "If true, simplify each branch of AND/OR under a constraints "
+                "provided by the other "
+                "branch",
+                refl::DefaultValue(false))
+        .def_ro("enable_simplify_let_inline",
+                &SimplifyConfigNode::enable_simplify_let_inline,
+                "If true, inline let statements when possible",
+                refl::DefaultValue(true));
   }
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.transform.SimplifyConfig",
+                                    SimplifyConfigNode, BaseAttrsNode);
 
   RewriteSimplifier::Extension GetEnabledExtensions() const {
     RewriteSimplifier::Extension flags = RewriteSimplifier::kNone;
@@ -80,7 +100,7 @@ CollectUsedBuffers(const PrimFunc &func) {
     using StmtExprVisitor::VisitExpr_;
     using StmtExprVisitor::VisitStmt_;
 
-    Visitor(PrimFunc func) : func(func) {}
+    Visitor(PrimFunc func) : func(std::move(func)) {}
 
     void VisitExpr_(const CallNode *op) override {
       for (const auto &arg : op->args) {
@@ -100,7 +120,7 @@ CollectUsedBuffers(const PrimFunc &func) {
       VisitBuffer(op->buffer);
       StmtExprVisitor::VisitStmt_(op);
     }
-    void VisitStmt_(const BlockNode *op) override {
+    void VisitStmt_(const SBlockNode *op) override {
       for (const auto &buffer : op->alloc_buffers) {
         for (const auto &it : func->buffer_map) {
           if (it.second.get()->data.same_as(buffer.get()->data)) {
@@ -155,9 +175,7 @@ CollectUsedBuffers(const PrimFunc &func) {
   return visitor.used_in_buffer_def_;
 }
 
-/* \brief Utility function to collect vars that should be retained. Used in
- * Letstmt Only
- */
+/* \brief Collect variables referenced by buffer definitions. */
 std::unordered_set<const VarNode *>
 CollectVarsUsedInBufferDefinition(const Stmt &stmt) {
   struct Visitor : StmtExprVisitor {
@@ -185,7 +203,7 @@ CollectVarsUsedInBufferDefinition(const Stmt &stmt) {
       }
       usage(buf->elem_offset);
 
-      // Track for use in LetStmtNode mutator
+      // Track for use in BindNode mutator
       for (const auto &var : usage.undefined_) {
         used_in_buffer_def_.insert(var.get());
       }
@@ -198,19 +216,221 @@ CollectVarsUsedInBufferDefinition(const Stmt &stmt) {
   return visitor.used_in_buffer_def_;
 }
 
-class SimplifyConfig : public Attrs {
-public:
-  TVM_DEFINE_NOTNULLABLE_OBJECT_REF_METHODS(SimplifyConfig, Attrs,
-                                            SimplifyConfigNode);
+namespace {
+
+struct BindUseInfo {
+  using VarSet = std::unordered_set<Var, ObjectPtrHash, ObjectPtrEqual>;
+  VarSet used_vars;
+  VarSet volatile_buffers;
 };
 
-TVM_REGISTER_NODE_TYPE(SimplifyConfigNode);
+class BindUseCollector : public StmtExprVisitor {
+public:
+  static BindUseInfo Collect(const PrimFunc &func) {
+    BindUseCollector collector;
+    collector.VisitObject_(func);
+    return std::move(collector.info_);
+  }
+
+private:
+  // IR children and metadata share the same deduplication entry point.
+  void VisitStmt(const Stmt &stmt) final { VisitObject_(stmt); }
+  void VisitExpr(const PrimExpr &expr) final { VisitObject_(expr); }
+
+  void VisitExpr_(const VarNode *op) final {
+    info_.used_vars.insert(GetRef<Var>(op));
+    VisitObject_(op->type_annotation);
+  }
+
+  void VisitStmt_(const BindNode *op) final {
+    // Skip the definition without marking its Var visited: metadata may use it
+    // later.
+    StmtExprVisitor::VisitStmt_(op);
+    VisitObject_(op->var->type_annotation);
+  }
+
+  void VisitStmt_(const AllocBufferNode *op) final {
+    if (op->annotations.count(tirx::attr::kVolatile)) {
+      info_.volatile_buffers.insert(op->buffer->data);
+    }
+    StmtExprVisitor::VisitStmt_(op);
+    VisitObject_(op->annotations);
+  }
+
+  void VisitStmt_(const AttrStmtNode *op) final {
+    if (op->attr_key == tl::attr::volatile_scope) {
+      if (auto var = op->node.as<Var>()) {
+        info_.volatile_buffers.insert(var.value());
+      } else if (auto buffer = op->node.as<Buffer>()) {
+        info_.volatile_buffers.insert(buffer.value()->data);
+      }
+    }
+    StmtExprVisitor::VisitStmt_(op);
+    VisitObject_(op->node);
+  }
+
+  void VisitBufferDef(const Buffer &buffer, bool alloc_data) final {
+    VisitObject_(buffer);
+  }
+
+  void VisitBufferUse(const Buffer &buffer) final {
+    // Liveness must retain references in buffer descriptors even when there is
+    // no explicit DeclBuffer in the body. It does not enforce lexical scope.
+    VisitObject_(buffer);
+  }
+
+  void VisitExpr_(const BufferLoadNode *op) final {
+    StmtExprVisitor::VisitExpr_(op);
+    VisitObject_(op->predicate);
+  }
+
+  void VisitStmt_(const BufferStoreNode *op) final {
+    StmtExprVisitor::VisitStmt_(op);
+    VisitObject_(op->predicate);
+  }
+
+  void VisitStmt_(const ForNode *op) final {
+    StmtExprVisitor::VisitStmt_(op);
+    VisitObject_(op->loop_var);
+    VisitObject_(op->thread_binding);
+    VisitObject_(op->annotations);
+  }
+
+  void VisitStmt_(const SBlockNode *op) final {
+    StmtExprVisitor::VisitStmt_(op);
+    VisitObject_(op->iter_vars);
+    VisitObject_(op->annotations);
+  }
+
+  void VisitExpr_(const CallNode *op) final {
+    StmtExprVisitor::VisitExpr_(op);
+    VisitObject_(op->op);
+    VisitObject_(op->annotations);
+  }
+
+  void VisitExpr_(const CastNode *op) final {
+    StmtExprVisitor::VisitExpr_(op);
+    VisitObject_(op->annotations);
+  }
+
+  void VisitExpr_(const LetNode *op) final {
+    StmtExprVisitor::VisitExpr_(op);
+    VisitObject_(op->var);
+  }
+
+  void VisitExpr_(const ReduceNode *op) final {
+    StmtExprVisitor::VisitExpr_(op);
+    VisitObject_(op->combiner);
+    VisitObject_(op->axis);
+  }
+
+  void VisitExpr_(const ProducerLoadNode *op) final {
+    StmtExprVisitor::VisitExpr_(op);
+    VisitObject_(op->producer);
+  }
+
+  void VisitExpr_(const RampNode *op) final {
+    StmtExprVisitor::VisitExpr_(op);
+    VisitExpr(op->lanes);
+  }
+
+  void VisitExpr_(const BroadcastNode *op) final {
+    StmtExprVisitor::VisitExpr_(op);
+    VisitExpr(op->lanes);
+  }
+
+  // Use ordinary IR visitors for statements and expressions. Reflection is
+  // only needed for containers and metadata objects such as Buffer and Layout.
+  void VisitObject_(const Any &value) {
+    auto obj = value.as<ObjectRef>();
+    if (!obj || !obj->defined() || !visited_.insert(*obj).second) {
+      return;
+    }
+    if (auto expr = obj->as<PrimExpr>()) {
+      StmtExprVisitor::VisitExpr(expr.value());
+    } else if (auto stmt = obj->as<Stmt>()) {
+      StmtExprVisitor::VisitStmt(stmt.value());
+    } else if (auto array = obj->as<ArrayObj>()) {
+      for (const Any &item : *array) {
+        VisitObject_(item);
+      }
+    } else if (auto map = obj->as<MapObj>()) {
+      for (const auto &item : *map) {
+        VisitObject_(item.first);
+        VisitObject_(item.second);
+      }
+    } else {
+      auto visit_field = [&](const TVMFFIFieldInfo *field) {
+        VisitObject_(reflection::FieldGetter(field)(*obj));
+      };
+      reflection::ForEachFieldInfo(TVMFFIGetTypeInfo((*obj)->type_index()),
+                                   visit_field);
+    }
+  }
+
+  BindUseInfo info_;
+  std::unordered_set<ObjectRef, ObjectPtrHash, ObjectPtrEqual> visited_;
+};
+
+class UnusedBindRemover : public StmtMutator {
+public:
+  static PrimFunc Apply(PrimFunc func) {
+    bool removed;
+    // Recompute after removing consumers to handle chains and shared nodes.
+    do {
+      UnusedBindRemover remover;
+      remover.uses_ = BindUseCollector::Collect(func);
+      func.CopyOnWrite()->body = remover(func->body);
+      removed = remover.removed_;
+    } while (removed);
+    return func;
+  }
+
+private:
+  bool CanDiscard_(const PrimExpr &value) const {
+    bool discard = SideEffect(value) <= CallEffectKind::kReadState &&
+                   !UsesVar(value, [&](const VarNode *var) {
+                     return uses_.volatile_buffers.count(GetRef<Var>(var));
+                   });
+    // SideEffect and UsesVar do not visit BufferLoad predicates.
+    PostOrderVisit(value, [&](const ObjectRef &node) {
+      if (const auto *load = node.as<BufferLoadNode>();
+          load && load->predicate) {
+        discard &= CanDiscard_(load->predicate.value());
+      }
+    });
+    return discard;
+  }
+
+  Stmt VisitStmt_(const BindNode *op) final {
+    if (!uses_.used_vars.count(op->var) && CanDiscard_(op->value)) {
+      removed_ = true;
+      return Evaluate(Integer(0));
+    }
+    return GetRef<Stmt>(op);
+  }
+
+  BindUseInfo uses_;
+  bool removed_{false};
+};
+
+} // namespace
+
+class SimplifyConfig : public Attrs {
+public:
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(SimplifyConfig, Attrs,
+                                                SimplifyConfigNode);
+};
+TVM_FFI_STATIC_INIT_BLOCK() { SimplifyConfigNode::RegisterReflection(); }
+
 TVM_REGISTER_PASS_CONFIG_OPTION("tl.Simplify", SimplifyConfig);
 
 class StmtSimplifier : public IRMutatorWithAnalyzer {
 public:
-  static PrimFunc Apply(PrimFunc func, Analyzer *analyzer,
-                        Optional<SimplifyConfig> config_opt = NullOpt) {
+  static PrimFunc
+  Apply(PrimFunc func, Analyzer *analyzer,
+        const Optional<SimplifyConfig> &config_opt = std::nullopt,
+        bool simplify_arguments = false) {
     auto config = config_opt.value_or(AttrsWithDefaultValues<SimplifyConfig>());
     analyzer->rewrite_simplify.SetEnabledExtensions(
         config->GetEnabledExtensions());
@@ -227,42 +447,86 @@ public:
                               std::move(used_in_buffer_def));
     simplifier.MarkBufferMapShapes(func);
     func.CopyOnWrite()->body = simplifier(func->body);
+    func = UnusedBindRemover::Apply(std::move(func));
 
-    // Begin to remove useless var and buffer
-    // First get used buffers
-    simplifier.used_buffers_ = CollectUsedBuffers(func);
-    bool param_updated = false;
-    Array<Var> new_params;
-    Map<Var, Buffer> new_buffer_map;
-    // Check whether each buffer is used
-    for (const auto &var : func->params) {
-      if (func->buffer_map.find(var) != func->buffer_map.end()) {
-        if (simplifier.used_buffers_.find(func->buffer_map[var].get()) !=
-            simplifier.used_buffers_.end()) {
-          new_params.push_back(var);
-          new_buffer_map.Set(var, func->buffer_map[var]);
+    // Optionally remove unused buffer parameters
+    if (simplify_arguments) {
+      // First get used buffers
+      simplifier.used_buffers_ = CollectUsedBuffers(func);
+
+      bool param_updated = false;
+      Array<Var> new_params;
+      Map<Var, Buffer> new_buffer_map;
+      // Check whether each buffer is used
+      for (const auto &var : func->params) {
+        if (func->buffer_map.find(var) != func->buffer_map.end()) {
+          if (simplifier.used_buffers_.find(func->buffer_map[var].get()) !=
+              simplifier.used_buffers_.end()) {
+            new_params.push_back(var);
+            new_buffer_map.Set(var, func->buffer_map[var]);
+          } else if (simplifier.used_in_buffer_def_.find(
+                         func->buffer_map[var]->data.get()) !=
+                     simplifier.used_in_buffer_def_.end()) {
+            new_params.push_back(var);
+            new_buffer_map.Set(var, func->buffer_map[var]);
+          } else {
+            param_updated = true;
+          }
         } else {
-          param_updated = true;
+          // Non-buffer parameters (e.g., scalars) are always retained
+          new_params.push_back(var);
         }
       }
+
+      if (param_updated) {
+        return PrimFunc(new_params, func.CopyOnWrite()->body, func->ret_type,
+                        new_buffer_map, func->attrs, func->span);
+      }
     }
-    // return func;
-    if (param_updated) {
-      return PrimFunc(new_params, func.CopyOnWrite()->body, func->ret_type,
-                      new_buffer_map, func->attrs, func->span);
-    } else {
-      return func;
-    }
+    // Either no change to params or argument simplification disabled
+    return func;
   }
 
 private:
+  // TileLang-local post-simplification: TVM's rewrite simplifier can prove
+  // singleton bounds for floor-div expressions, but does not always rewrite the
+  // expression to that singleton constant.  Keep this scoped to tl.Simplify so
+  // internal lowering passes are not affected by a global arithmetic rewrite.
+  class ContextSingletonFloorDivFolder : public StmtExprMutator {
+  public:
+    explicit ContextSingletonFloorDivFolder(Analyzer *analyzer)
+        : analyzer_(analyzer) {}
+
+    PrimExpr Fold(const PrimExpr &expr) { return VisitExpr(expr); }
+
+  private:
+    using StmtExprMutator::VisitExpr_;
+
+    PrimExpr VisitExpr_(const FloorDivNode *op) final {
+      PrimExpr expr = StmtExprMutator::VisitExpr_(op);
+      expr = analyzer_->Simplify(expr);
+      if (const auto *div = expr.as<FloorDivNode>();
+          div && IsIndexType(div->dtype)) {
+        // Example: under thread_extent tx in [0, 256) and else(tx < 128),
+        // const_int_bound(tx // 128) is [1, 1], so the div is constant.
+        ConstIntBound bound = analyzer_->const_int_bound(expr);
+        if (bound.defined() && bound->min_value == bound->max_value) {
+          return make_const(div->dtype, bound->min_value);
+        }
+      }
+      return expr;
+    }
+
+    Analyzer *analyzer_;
+  };
+
   explicit StmtSimplifier(
       Analyzer *analyzer, SimplifyConfig config,
       std::optional<ControlFlowGraph> touch_pattern,
       std::unordered_set<const VarNode *> used_in_buffer_def)
-      : IRMutatorWithAnalyzer(analyzer), config_(config),
-        touch_pattern_(touch_pattern), used_in_buffer_def_(used_in_buffer_def) {
-  }
+      : IRMutatorWithAnalyzer(analyzer), config_(std::move(config)),
+        touch_pattern_(std::move(touch_pattern)),
+        used_in_buffer_def_(std::move(used_in_buffer_def)) {}
 
   using Parent = IRMutatorWithAnalyzer;
   using Parent::VisitExpr_;
@@ -270,12 +534,22 @@ private:
   using Parent::VisitStmt_;
 
   PrimExpr VisitExpr(const PrimExpr &expr) final {
+    PrimExpr simplified;
     if (config_->propagate_knowns_to_simplify_expressions) {
-      return touch_pattern_->SimplifyInContext(expr, current_stmt_.value(),
-                                               analyzer_);
+      simplified = touch_pattern_->SimplifyInContext(
+          expr, current_stmt_.value(), analyzer_);
     } else {
-      return analyzer_->Simplify(expr);
+      simplified = analyzer_->Simplify(expr);
     }
+
+    ContextSingletonFloorDivFolder folder(analyzer_);
+    PrimExpr folded = folder.Fold(simplified);
+    if (!folded.same_as(simplified)) {
+      // Clean up arithmetic exposed by singleton folding, e.g.
+      // 1 * 64 + i - 64 -> i.
+      return analyzer_->Simplify(folded);
+    }
+    return simplified;
   }
 
   Stmt Simplify(Stmt stmt) { return operator()(std::move(stmt)); }
@@ -289,14 +563,19 @@ private:
   }
 
   Stmt VisitStmt_(const ForNode *op) final {
-    analyzer_->Bind(op->loop_var, Range::FromMinExtent(op->min, op->extent));
+    if (analyzer_->CanProve(op->extent <= 0)) {
+      // Remove loops with non-positive extent
+      return Evaluate(0);
+    }
     With<ConstraintContext> ctx1(analyzer_, op->loop_var >= op->min);
     With<ConstraintContext> ctx2(analyzer_,
                                  op->loop_var < op->min + op->extent);
     return Parent::VisitStmt_(op);
   }
 
-  bool CanInlineLetStmt(const LetStmtNode *op) {
+  bool CanInlineBind(const BindNode *op) {
+    if (!config_->enable_simplify_let_inline)
+      return false;
     if (is_const_number(op->value))
       return true;
     if (op->value.as<VarNode>())
@@ -309,43 +588,65 @@ private:
     return SideEffect(op->value) <= CallEffectKind::kPure;
   }
 
-  Stmt VisitStmt_(const LetStmtNode *op) override {
+  Stmt VisitStmt_(const BindNode *op) override {
     PrimExpr value = this->VisitExpr(op->value);
-    bool can_inline = CanInlineLetStmt(op);
+    bool remove_buffer_alias = false;
+    // TileLang emits aliases like `X_shared = buffer[0:128, 0:32]` to annotate
+    // fragment types. TVM currently reinterprets vectorized/shared accesses as
+    // Let-bound BufferLoad/BufferRegion nodes. If these bindings survive, later
+    // passes (Layout rewrite, FlattenBuffer) substitute them with vector lanes
+    // that our layout can't handle. Force-inline (by dropping the let) whenever
+    // the alias spans more than 2 dims or carries vector lanes.
+    auto get_ranges = [&](const PrimExpr &expr) -> Array<Range> {
+      Array<Range> ranges;
+      if (const auto *load = expr.as<BufferLoadNode>()) {
+        for (const PrimExpr &index : load->indices) {
+          if (const auto *ramp = index.as<RampNode>()) {
+            ranges.push_back(Range::FromMinExtent(ramp->base, ramp->lanes));
+          } else {
+            ranges.push_back(Range::FromMinExtent(index, Integer(1)));
+          }
+        }
+      } else if (const auto *region = expr.as<BufferRegionNode>()) {
+        for (const Range &range : region->region) {
+          ranges.push_back(range);
+        }
+      }
+      return ranges;
+    };
+    Array<Range> ranges = get_ranges(value);
+    if (!ranges.empty()) {
+      int non_unit_dims = 0;
+      for (const Range &range : ranges) {
+        PrimExpr extent = analyzer_->Simplify(range->extent);
+        if (is_const_int(extent, 1) || analyzer_->CanProveEqual(extent, 1)) {
+          continue;
+        }
+        ++non_unit_dims;
+        if (non_unit_dims > 1) {
+          remove_buffer_alias = true;
+          break;
+        }
+      }
+    }
+    if (remove_buffer_alias) {
+      return Evaluate(Integer(0));
+    }
+
+    bool can_inline = CanInlineBind(op);
     if (can_inline) {
-      // It is usually fine to discard the let binding because the
-      // call to simplify will always inline the var.
-      //
-      // The exception is when the variable is used in a Buffer's
-      // definition, as these are not updated by the simplification.
-      // After DeclBuffer is required prior to use of a buffer,
-      // simplifying can update the buffer definition as well.  The
-      // buffer can only be updated at its point of definition,
-      // because the points of use may occur within contexts that
-      // allow for additional simplifications (e.g. a buffer of shape
-      // [i,j] whose first use occurs within "if i==1" should not have
-      // its shape simplified to [1,j]).
       analyzer_->Bind(op->var, value);
     } else if (SideEffect(op->value) <= CallEffectKind::kPure) {
-      // Even if we aren't replacing all occurrences, they may be
-      // necessary for proving conditional statements.
       non_inlined_bindings_.Set(op->var, value);
     }
-    Stmt body = this->VisitStmt(op->body);
 
-    // TODO(Lunderberg): Update the Buffer object as part of
-    // DeclBuffer updates, which will first require
-    // https://github.com/apache/tvm/pull/14778.
-    bool used_in_buffer_def = used_in_buffer_def_.count(op->var.get());
-
-    if (can_inline && !used_in_buffer_def) {
-      return body;
-    } else if (value.same_as(op->value) && body.same_as(op->body)) {
+    // Defer deletion to UnusedBindRemover: annotations and other metadata may
+    // still reference the variable after its ordinary uses have been inlined.
+    if (value.same_as(op->value)) {
       return GetRef<Stmt>(op);
     } else {
       auto n = this->CopyOnWrite(op);
       n->value = std::move(value);
-      n->body = std::move(body);
       return Stmt(n);
     }
   }
@@ -396,8 +697,8 @@ private:
     if (const BufferLoadNode *load = store->value.as<BufferLoadNode>()) {
       if (load->buffer->data.same_as(store->buffer->data) &&
           ArrayDeepEqual(load->indices, store->indices) &&
-          tir::ExprDeepEqual()(load->buffer->elem_offset,
-                               store->buffer->elem_offset) &&
+          tirx::ExprDeepEqual()(load->buffer->elem_offset,
+                                store->buffer->elem_offset) &&
           ArrayDeepEqual(load->buffer->shape, store->buffer->shape) &&
           ArrayDeepEqual(load->buffer->strides, store->buffer->strides)) {
         return Evaluate(0);
@@ -410,13 +711,23 @@ private:
     return std::move(store);
   }
 
+  Stmt VisitStmt_(const AttrStmtNode *op) override {
+    if (op->attr_key == "tl.assume") {
+      PrimExpr condition = this->VisitExpr(Downcast<PrimExpr>(op->node));
+      auto n = CopyOnWrite(op);
+      n->node = std::move(condition);
+      return Parent::VisitStmt_(n.get());
+    }
+    return Parent::VisitStmt_(op);
+  }
+
 private:
   bool ArrayDeepEqual(const Array<PrimExpr> &lhs, const Array<PrimExpr> &rhs) {
     if (lhs.size() != rhs.size()) {
       return false;
     }
     for (size_t i = 0; i < lhs.size(); i++) {
-      if (!tir::ExprDeepEqual()(lhs[i], rhs[i])) {
+      if (!tirx::ExprDeepEqual()(lhs[i], rhs[i])) {
         return false;
       }
     }
@@ -440,7 +751,13 @@ private:
     if (const int64_t *as_int = as_const_int(condition)) {
       return Bool(*as_int);
     } else {
-      return NullOpt;
+      // May have symbolic, need kSymbolicBound level prover.
+      if (analyzer_->CanProve(condition) ||
+          analyzer_->CanProve(condition,
+                              arith::ProofStrength::kSymbolicBound)) {
+        return Bool(true);
+      }
+      return std::nullopt;
     }
   }
 
@@ -448,24 +765,28 @@ private:
   std::optional<ControlFlowGraph> touch_pattern_;
 
   Map<Var, PrimExpr> non_inlined_bindings_;
-  Optional<Stmt> current_stmt_{NullOpt};
+  Optional<Stmt> current_stmt_{std::nullopt};
   std::unordered_set<const VarNode *> used_in_buffer_def_;
   std::unordered_set<const VarNode *> used_vars_;
   std::unordered_set<const BufferNode *> used_buffers_;
 };
 
-using namespace tir::transform;
+using namespace tirx::transform;
 
-tvm::transform::Pass Simplify() {
-  auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {
+tvm::transform::Pass Simplify(bool simplify_arguments = true) {
+  auto pass_func = [=](PrimFunc f, const IRModule &m, PassContext ctx) {
     arith::Analyzer analyzer;
     auto cfg = ctx->GetConfig<SimplifyConfig>("tl.Simplify");
-    return StmtSimplifier::Apply(f, &analyzer, cfg);
+    return StmtSimplifier::Apply(std::move(f), &analyzer, cfg,
+                                 simplify_arguments);
   };
   return CreatePrimFuncPass(pass_func, 0, "tl.Simplify", {});
 }
 
-TVM_REGISTER_GLOBAL("tl.transform.Simplify").set_body_typed(Simplify);
+TVM_FFI_STATIC_INIT_BLOCK() {
+  namespace refl = reflection;
+  refl::GlobalDef().def("tl.transform.Simplify", Simplify);
+}
 
 } // namespace tl
 } // namespace tvm

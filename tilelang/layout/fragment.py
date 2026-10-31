@@ -1,34 +1,26 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
 """Wrapping Layouts."""
-# pylint: disable=invalid-name, unsupported-binary-operation
 
-import tvm
+# pylint: disable=invalid-name, unsupported-binary-operation
+import tvm_ffi
 from tvm.ir import Range
-from tvm.tir import IterVar, Var, PrimExpr, IndexMap
+from tvm.tirx import IterVar, Var, PrimExpr, IndexMap
 from tilelang import _ffi_api
 from tilelang.layout import Layout
-from typing import List
 
 
-@tvm._ffi.register_object("tl.Fragment")
+@tvm_ffi.register_object("tl.Fragment")
 class Fragment(Layout):
     """
     A Fragment layout object that encapsulates iteration variables (forward_vars),
-    thread iteration variables (forward_thread), and index transformations 
-    (forward_index). This class supports replication (thread_replicate) and 
+    thread iteration variables (forward_thread), and index transformations
+    (forward_index). This class supports replication (thread_replicate) and
     index mapping for fine-grained control over multi-dimensional data layouts.
     """
 
     # Disable the linter warning about not calling super().__init__()
     # because this object is created via TVM's FFI constructor mechanism.
     # pylint: disable=super-init-not-called
-    def __init__(self,
-                 shape,
-                 forward_fn=None,
-                 forward_thread_fn=None,
-                 replicate=1,
-                 forward_index_fn=None):
+    def __init__(self, shape, forward_fn=None, forward_thread_fn=None, replicate=1, forward_index_fn=None):
         """
         Initialize the Fragment with iteration variables and optional thread replication.
 
@@ -51,7 +43,7 @@ class Fragment(Layout):
             used for multi-threading or replication in the hardware threads. Defaults to 1.
         forward_index_fn : callable, optional
             A function that takes iteration variables and returns an index or list
-            of indices for this fragment. Used when `forward_fn` is None and 
+            of indices for this fragment. Used when `forward_fn` is None and
             the index transformation is derived separately.
         """
 
@@ -67,7 +59,7 @@ class Fragment(Layout):
 
         # Initialize placeholders for optional outputs
         forward_thread: IterVar = None
-        forward_index: tvm.ir.container.Array = None
+        forward_index: tvm_ffi.Array = None
         thread_replicate: IterVar = None
 
         # If a forward_fn is provided, use it to derive both thread mapping and indices
@@ -92,7 +84,9 @@ class Fragment(Layout):
                 forward_thread = forward_thread_fn(*vars)
 
         # Ensure forward_index is an array if it isn't None
-        if forward_index is not None and not isinstance(forward_index, tvm.ir.container.Array):
+        if forward_index is None:
+            forward_index = []
+        elif not isinstance(forward_index, tvm_ffi.Array):
             forward_index = [forward_index]
 
         # Call TVM FFI constructor to set up internal data structures
@@ -120,10 +114,7 @@ class Fragment(Layout):
         """
         return _ffi_api.Fragment_thread_size(self)
 
-    def repeat(self,
-               repeats,
-               repeat_on_thread: bool = False,
-               lower_dim_first: bool = True) -> "Fragment":
+    def repeat(self, repeats, repeat_on_thread: bool = False, lower_dim_first: bool = True) -> "Fragment":
         """
         Returns a new Fragment that repeats the iteration space a given number of times.
 
@@ -172,7 +163,7 @@ class Fragment(Layout):
         """
         return _ffi_api.Fragment_condense_rep_var(self)
 
-    def map_forward_thread(self, indices: List[PrimExpr]) -> PrimExpr:
+    def map_forward_thread(self, indices: list[PrimExpr]) -> PrimExpr:
         """
         Get the thread mapping expression for a given set of argument indices.
 
@@ -191,8 +182,7 @@ class Fragment(Layout):
         # The thread dimension (IterVar) is accessed via the `thread` property
         forward_thread = self.thread
         # Construct an IndexMap to map the provided args into the final thread index
-        index_map = IndexMap(
-            initial_indices=forward_vars, final_indices=[forward_thread], inverse_index_map=None)
+        index_map = IndexMap(initial_indices=forward_vars, final_indices=[forward_thread], inverse_index_map=None)
         return index_map.map_indices(indices)
 
     def __repr__(self):
@@ -204,13 +194,11 @@ class Fragment(Layout):
         str
             A string showing the thread dimension and the index dimension.
         """
-        return f"Fragment<thread={self.thread}, index={self.index}>"
+        return self._DebugOutput()
+        # return f"Fragment<{self.get_input_shape()}->{self.get_output_shape()}, thread={self.thread}, index={self.index}>"
 
-
-def make_swizzled_layout(buffer: tvm.tir.Buffer):
-    assert len(buffer.shape) == 2
-    return _ffi_api.make_swizzled_layout(
-        int(buffer.shape[0]),
-        int(buffer.shape[1]),
-        int(tvm.DataType(buffer.dtype).bits),
-    )
+    def is_equal(self, other: "Fragment") -> bool:
+        """
+        Check if the current fragment is equal to another fragment.
+        """
+        return _ffi_api.Fragment_is_equal(self, other)

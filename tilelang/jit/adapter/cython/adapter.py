@@ -1,180 +1,64 @@
-# Copyright (c) Tile-AI Organization.
-# Licensed under the MIT License.
 """The profiler and convert to torch utils"""
 
 from __future__ import annotations
-
-from ..base import BaseKernelAdapter
 import ctypes
-from typing import Callable, Any
+import logging
+import torch
+
+from typing import Any
+from collections.abc import Callable
 from tilelang import tvm as tvm
 from tvm.target import Target
 from tilelang.engine.param import KernelParam
-from tvm import tir
-from tvm.relay import TensorType
+from tvm import tirx
+from tvm.relax import TensorType
+
+from tilelang.jit.adapter.base import BaseKernelAdapter, CachedTextSource
 from tilelang.jit.adapter.wrapper import TLWrapper
 from tilelang.jit.adapter.libgen import LibraryGenerator
+from tilelang.jit.adapter.utils import is_ascend_target, is_cpu_target, is_cuda_target, is_hip_target, is_metal_target
+from tilelang.backend.target import determine_target
 from tilelang.utils.language import retrieve_func_from_module
-from tilelang.utils.tensor import map_torch_type
-from tilelang.contrib.cc import get_cplus_compiler
-import torch
-import sys
-import sysconfig
-import hashlib
-import os
-import fcntl
-from pathlib import Path
-import logging
-import site
 
 logger = logging.getLogger(__name__)
 
+try:
+    from tilelang_cython_wrapper import CythonKernelWrapper
+except ImportError:
+    raise
 
-def get_cython_compiler() -> str | None:
-    """Return the path to the Cython compiler.
 
-    Returns
-    -------
-    out: Optional[str]
-        The path to the Cython compiler, or None if none was found.
+def _device_providers():
+    """Resolve Torch devices and their current streams lazily at runtime."""
+    current_device_functor = None
+    current_stream_functors = {}
+
+    def current_device():
+        nonlocal current_device_functor
+        if current_device_functor is None:
+            current_device_functor = BaseKernelAdapter.get_current_device_functor()
+        return current_device_functor()
+
+    def current_stream(device: torch.device):
+        device_key = (device.type, device.index)
+        stream_functor = current_stream_functors.get(device_key)
+        if stream_functor is None:
+            stream_functor = BaseKernelAdapter.get_current_stream_functor(device)
+            current_stream_functors[device_key] = stream_functor
+        return stream_functor()
+
+    return current_device, current_stream
+
+
+def is_symbolic_expr(expr) -> bool:
+    """Check if the expression is a symbolic expression.
+    A symbolic expression can be a simple tvm.Var, or an tvm.PrimExpr containing tvm.Var.
     """
-
-    cython_names = ["cython", "cython3"]
-
-    # Check system PATH
-    dirs_in_path = list(os.get_exec_path())
-
-    # Add user site-packages bin directory
-    user_base = site.getuserbase()
-    if user_base:
-        user_bin = os.path.join(user_base, "bin")
-        if os.path.exists(user_bin):
-            dirs_in_path = [user_bin] + dirs_in_path
-
-    # If in a virtual environment, add its bin directory
-    if sys.prefix != sys.base_prefix:
-        venv_bin = os.path.join(sys.prefix, "bin")
-        if os.path.exists(venv_bin):
-            dirs_in_path = [venv_bin] + dirs_in_path
-
-    for cython_name in cython_names:
-        for d in dirs_in_path:
-            cython_path = os.path.join(d, cython_name)
-            if os.path.isfile(cython_path) and os.access(cython_path, os.X_OK):
-                return cython_path
-    return None
-
-
-# Add cache management functions at module level
-def get_cache_dir() -> Path:
-    """Get the cache directory for the current Python version."""
-    py_version = f"py{sys.version_info.major}{sys.version_info.minor}"
-    # current directory
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    cache_dir = Path(current_dir) / ".cycache" / py_version
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir
-
-
-def get_cached_lib(source_code: str) -> tuple[ctypes.CDLL | None, Path]:
-    """Try to load cached library or return None if not found."""
-    code_hash = hashlib.sha256(source_code.encode()).hexdigest()
-    cache_path = get_cache_dir() / f"{code_hash}.so"
-    lock_file = cache_path.with_suffix(".lock")
-    with open(lock_file, "w") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            if cache_path.exists():
-                try:
-                    if cache_path.stat().st_size > 1024:
-                        return ctypes.CDLL(str(cache_path)), cache_path
-                    else:
-                        cache_path.unlink()  # remove the incomplete file
-                except Exception as e:
-                    logger.error(f"Failed to load cached library: {e}")
-                    return None, cache_path
-            return None, cache_path
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-
-
-# read the cython_wrapper.pyx file
-current_dir = os.path.dirname(os.path.abspath(__file__))
-cython_wrapper_path = os.path.join(current_dir, "cython_wrapper.pyx")
-
-with open(cython_wrapper_path) as f:
-    cython_wrapper_code = f.read()
-    cache_dir = get_cache_dir()
-    source_path = cache_dir / "cython_wrapper.cpp"
-    library_path = cache_dir / "cython_wrapper.so"
-    md5_path = cache_dir / "md5.txt"
-    code_hash = hashlib.sha256(cython_wrapper_code.encode()).hexdigest()
-    cache_path = cache_dir / f"{code_hash}.so"
-    lock_file = cache_path.with_suffix(".lock")
-
-    # Check if cached version exists and is valid
-    need_compile = True
-    if md5_path.exists() and library_path.exists():
-        with open(md5_path) as f:
-            cached_hash = f.read().strip()
-            if cached_hash == code_hash:
-                logger.debug("Cython jit adapter is up to date, no need to compile...")
-                need_compile = False
-            else:
-                logger.info("Cython jit adapter is out of date, need to recompile...")
-    else:
-        logger.info("No cached version found for cython jit adapter, need to compile...")
-
-    if need_compile:
-        logger.info("Waiting for lock to compile cython jit adapter...")
-        with open(lock_file, "w") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            try:
-                # After acquiring the lock, check again if the file has been compiled by another process
-                if md5_path.exists() and library_path.exists():
-                    with open(md5_path) as f:
-                        cached_hash = f.read().strip()
-                        if cached_hash == code_hash:
-                            logger.info("Another process has already compiled the file, using it...")
-                            need_compile = False
-
-                if need_compile:
-                    logger.info("Compiling cython jit adapter...")
-                    temp_path = cache_dir / f"temp_{code_hash}.so"
-
-                    with open(md5_path, "w") as f:
-                        f.write(code_hash)
-
-                    # compile the cython_wrapper.pyx file into .cpp
-                    cython = get_cython_compiler()
-                    if cython is None:
-                        raise Exception("Cython is not installed, please install it first.")
-                    os.system(f"{cython} {cython_wrapper_path} --cplus -o {source_path}")
-                    python_include_path = sysconfig.get_path("include")
-                    cc = get_cplus_compiler()
-                    command = f"{cc} -shared -pthread -fPIC -fwrapv -O2 -Wall -fno-strict-aliasing -I{python_include_path} {source_path} -o {temp_path}"
-                    os.system(command)
-
-                    # rename the temp file to the library file
-                    temp_path.rename(library_path)
-            except Exception as e:
-                if "temp_path" in locals() and temp_path.exists():
-                    temp_path.unlink()
-                raise Exception(f"Failed to compile cython jit adapter: {e}") from e
-            finally:
-                if lock_file.exists():
-                    lock_file.unlink()
-
-    # add the .so file to the sys.path
-    cache_dir_str = str(cache_dir)
-    if cache_dir_str not in sys.path:
-        sys.path.append(cache_dir_str)
-
-from cython_wrapper import CythonKernelWrapper
+    return not isinstance(expr, tirx.IntImm) and isinstance(expr, tirx.PrimExpr)
 
 
 class CythonKernelAdapter(BaseKernelAdapter):
-    """Adapter class that converts TVM/TIR functions to callable CUDA kernels using ctypes.
+    """Adapter class that converts TVM/TIR functions to callable CUDA kernels using cython.
 
     This adapter handles:
     1. Converting TIR functions to compiled CUDA libraries
@@ -184,106 +68,114 @@ class CythonKernelAdapter(BaseKernelAdapter):
 
     # Class attributes to store compiled kernel information
     target: str | Target = "cuda"
+    _a2a3_runtime: bool = False
     ir_module: tvm.IRModule | None = None
     # The global source code of the kernel -> global means the source code of the kernel
     # that is not wrapped by the wrapper code
-    kernel_global_source: str | None = None
+    host_kernel_source: str | None = None
+    device_kernel_source: str | None = None
+    kernel_global_source: str | None = None  # Alias for device_kernel_source for compatibility
     lib: ctypes.CDLL | None = None  # Compiled library handle
-    wrapped_source: str | None = None  # Generated C++ wrapper code
-    # Maps symbolic variables to their corresponding buffer and shape indices
-    dynamic_symbolic_map: dict[tir.Var, tuple[int, int]] | None = None
+    # Maps symbolic variables to (kind, buffer_index, dimension, stride_scale)
+    dynamic_symbolic_map: dict[tirx.Var, tuple[int, int, int, int]] | None = None
+    # Maps symbolic variable names to ALL buffers that carry them, for cascaded None resolution
+    dynamic_symbolic_sources: dict[str, list[tuple[int, int, int, int]]] | None = None
     # Maps pointer arguments to their corresponding (buffer_index, shape_dimension)
     ptr_map: dict[int, str] | None = None
     # Maps buffer variables to their corresponding dtypes
-    buffer_dtype_map: dict[tir.Var, tuple[int, torch.dtype]] | None = None
-    # Maps buffer variables to their corresponding static shapes
-    # {
-    #     "A": [(0, 16), (1, 16)] -> represents A.shape = (16, 16)
+    buffer_dtype_map: dict[tirx.Var, tuple[int, torch.dtype]] | None = None
+    # Maps buffer variables to their corresponding static shapes and strides,
+    # e.g., {
+    #     "A": [(0, 16), (1, 16)] -> represents A.shape/strides = (16, 16)
     # }
-    static_shape_map: dict[tir.Var, tuple[int, list[tuple[int, int]]]] | None = None
+    static_shape_map: dict[tirx.Var, tuple[int, list[tuple[int, int]]]] | None = None
+    static_strides_map: dict[tirx.Var, tuple[int, list[tuple[int, int]]]] | None = None
+    # Contains contiguous buffers
+    static_contiguous_list: list[tirx.Var] | None = None
     # Maps buffer variables to their corresponding devices
-    buffer_device_map: dict[tir.Var, tuple[int, torch.device]] | None = None
+    buffer_device_map: dict[tirx.Var, tuple[int, torch.device]] | None = None
     # Pass configs for the compiler
     pass_configs: dict[str, Any] | None = None
-    # Resolved Bisheng compile flags for this kernel
-    compile_flags: list[str] | str | None = None
 
     def __init__(
         self,
         params: list[KernelParam],
         result_idx: list[int],
-        workspace_idx: list[int],
-        auto_gm_idx: list[int],
         target: str | Target,
-        platform: str,
-        func_or_mod: tir.PrimFunc | tvm.IRModule,
+        func_or_mod: tirx.PrimFunc | tvm.IRModule,
         host_mod: tvm.IRModule | None = None,
         device_mod: tvm.IRModule | None = None,
-        kernel_global_source: str | None = None,
+        device_kernel_source: str | None = None,
         verbose: bool = False,
         pass_configs: dict[str, Any] | None = None,
-        compile_flags: list[str] | str | None = None,
+        compile_flags: list[str] | None = None,
+        workspace_idx: list[int] | int | None = None,
+        auto_gm_idx: list[int] | None = None,
+        compile_config=None,
+        runtime_func: tirx.PrimFunc | None = None,
     ):
         """Initialize the adapter with the given TIR function or module.
 
         Args:
             params: List of tensor types for inputs/outputs
             result_idx: Indices of output tensors
-            workspace_idx: Indices of auto-allocated workspace tensors
             target: Target platform (e.g., 'cuda')
-            platform: Specifies the target hardware platform generation. Defaults to "A3".
             func_or_mod: TIR function or module to be compiled
             verbose: Enable verbose logging
         """
         self.params = params
-        self.result_idx = self._legalize_auto_memory_idx(result_idx, "result_idx")
-        self.workspace_idx = self._legalize_auto_memory_idx(workspace_idx, "workspace_idx")
-        self.auto_gm_idx = self._legalize_auto_memory_idx(auto_gm_idx, "auto_gm_idx")
-        self.kernel_global_source = kernel_global_source
+        self.target = Target(determine_target(target))
+        from tilelang.ascend.target import is_a2a3_target
 
-        if isinstance(func_or_mod, tir.PrimFunc):
+        self._a2a3_runtime = is_a2a3_target(self.target)
+        self.compile_config = compile_config
+        self.result_idx = self._legalize_result_idx(result_idx)
+        self.device_kernel_source = device_kernel_source
+        self.kernel_global_source = device_kernel_source  # Set alias for compatibility
+
+        if self._a2a3_runtime and device_mod is not None:
+            from tilelang.ascend.a2a3.pipeline import get_device_kernel
+
+            func_or_mod = get_device_kernel(device_mod)
+        if runtime_func is not None:
+            func_or_mod = runtime_func
+        if isinstance(func_or_mod, tirx.PrimFunc):
             self.ir_module = tvm.IRModule({func_or_mod.attrs["global_symbol"]: func_or_mod})
         else:
             self.ir_module = func_or_mod
-
-        # # self.target = Target.canon_target(determine_target(target))
-        # self.target = tvm.target.Target.from_device('cpu')
+        self._configure_auto_memory(workspace_idx, auto_gm_idx)
 
         self.dynamic_symbolic_map = self._process_dynamic_symbolic()
+        self.dynamic_symbolic_sources = self._process_dynamic_symbolic_sources()
         self.buffer_dtype_map = self._process_buffer_dtype()
         self.ptr_map = self._process_ptr_map()
-        self.static_shape_map = self._process_static_shape()
         self.buffer_device_map = self._process_buffer_device()
 
+        static_buffer_infos = self._process_static_buffer_infos()
+        self.static_shape_map = static_buffer_infos[0]
+        self.static_strides_map = static_buffer_infos[1]
+        self.static_contiguous_list = static_buffer_infos[2]
+
         self.verbose = verbose
-        self.compile_flags = compile_flags
-        self.wrapper = TLWrapper("npu")
-        self.lib_generator = LibraryGenerator(target, platform, compile_flags)
+        self.wrapper = TLWrapper(self.target)
+        generator_options = {"compile_config": compile_config} if self._a2a3_runtime else {}
+        self.lib_generator = LibraryGenerator(self.target, verbose=verbose, **generator_options)
+        self.lib_generator.assign_pass_configs(pass_configs)
+        if not self._a2a3_runtime or compile_config is None:
+            self.lib_generator.assign_compile_flags(compile_flags)
 
         self.wrapper.assign_optimized_module(self.ir_module)
         self.wrapper.assign_pass_configs(pass_configs)
         self.wrapper.assign_host_module(host_mod)
         self.wrapper.assign_device_module(device_mod)
-        self.wrapped_source = self.wrapper.wrap(self.get_kernel_source(kernel_only=True))
+        self.host_kernel_source = self.wrapper.wrap(self.get_kernel_source(kernel_only=True))
 
-        self.lib_generator.update_lib_code(self.wrapped_source)
+        self.lib_generator.update_lib_code(self.host_kernel_source)
         self.lib_generator.compile_lib()
         self.lib = self.lib_generator.load_lib()
 
-        # TODO: support npu
-        # self.lib.get_last_error.restype = ctypes.c_char_p
-        # result = self.lib.init()
-        # if result != 0:
-        #     error_msg = self.lib.get_last_error().decode('utf-8')
-        #     error_msg += f"\n{self.lib_code}"
-        #     raise RuntimeError(f"Initialization failed: {error_msg}")
-
-        self.cython_wrapper = CythonKernelWrapper(self.result_idx, self.workspace_idx, self.auto_gm_idx, self.params, self.lib)
-        self.cython_wrapper.set_dynamic_symbolic_map(self.dynamic_symbolic_map)
-        self.cython_wrapper.set_buffer_dtype_map(self.buffer_dtype_map)
-        self.cython_wrapper.set_static_shape_map(self.static_shape_map)
-        self.cython_wrapper.set_buffer_device_map(self.buffer_device_map)
-        self.cython_wrapper.set_ptr_map(self.ptr_map)
+        self._initialize_library(include_source=True)
+        self._create_cython_wrapper()
         self._post_init()
 
     @classmethod
@@ -291,86 +183,196 @@ class CythonKernelAdapter(BaseKernelAdapter):
         cls,
         params: list[TensorType],
         result_idx: list[int],
-        workspace_idx: list[int],
-        auto_gm_idx: list[int],
         target: str,
-        platform: str,
-        func_or_mod: tir.PrimFunc | tvm.IRModule,
-        kernel_global_source: str,
+        func_or_mod: tirx.PrimFunc | tvm.IRModule,
+        host_kernel_source: CachedTextSource,
+        device_kernel_source: CachedTextSource,
         kernel_lib_path: str,
         verbose: bool = False,
         pass_configs: dict[str, Any] | None = None,
-        compile_flags: list[str] | str | None = None,
+        compile_flags: list[str] | None = None,
+        workspace_idx: list[int] | int | None = None,
+        auto_gm_idx: list[int] | None = None,
+        compile_config=None,
+        runtime_func: tirx.PrimFunc | None = None,
     ):
         adapter = cls.__new__(cls)
         adapter.params = params
-        adapter.result_idx = adapter._legalize_auto_memory_idx(result_idx, "result_idx")
-        adapter.workspace_idx = adapter._legalize_auto_memory_idx(workspace_idx, "workspace_idx")
-        adapter.auto_gm_idx = adapter._legalize_auto_memory_idx(auto_gm_idx, "auto_gm_idx")
-        adapter.kernel_global_source = kernel_global_source
-        adapter.wrapped_source = kernel_global_source
-        adapter.pass_configs = pass_configs
-        adapter.compile_flags = compile_flags
+        adapter.target = Target(determine_target(target))
+        from tilelang.ascend.target import is_a2a3_target
 
-        if isinstance(func_or_mod, tir.PrimFunc):
+        adapter._a2a3_runtime = is_a2a3_target(adapter.target)
+        adapter.compile_config = compile_config
+        adapter.result_idx = adapter._legalize_result_idx(result_idx)
+        adapter._set_cached_text_source("host_kernel_source", "_host_kernel_source_path", host_kernel_source)
+        device_kernel_source = adapter._set_cached_text_source("device_kernel_source", "_device_kernel_source_path", device_kernel_source)
+        adapter.kernel_global_source = device_kernel_source.text  # Set alias for compatibility
+        adapter.pass_configs = pass_configs
+
+        if runtime_func is not None:
+            func_or_mod = runtime_func
+        if isinstance(func_or_mod, tirx.PrimFunc):
             adapter.ir_module = tvm.IRModule({func_or_mod.attrs["global_symbol"]: func_or_mod})
         else:
             adapter.ir_module = func_or_mod
 
-        # target = determine_target(target, return_object=True)
-        # adapter.target = Target.canon_target(determine_target(target))
+        adapter._configure_auto_memory(workspace_idx, auto_gm_idx)
 
         adapter.dynamic_symbolic_map = adapter._process_dynamic_symbolic()
+        adapter.dynamic_symbolic_sources = adapter._process_dynamic_symbolic_sources()
         adapter.buffer_dtype_map = adapter._process_buffer_dtype()
-        adapter.static_shape_map = adapter._process_static_shape()
         adapter.ptr_map = adapter._process_ptr_map()
         adapter.buffer_device_map = adapter._process_buffer_device()
 
+        static_buffer_infos = adapter._process_static_buffer_infos()
+        adapter.static_shape_map = static_buffer_infos[0]
+        adapter.static_strides_map = static_buffer_infos[1]
+        adapter.static_contiguous_list = static_buffer_infos[2]
+
         adapter.verbose = verbose
-        adapter.lib_generator = LibraryGenerator(target, platform, compile_flags)
+        generator_options = {"compile_config": compile_config} if adapter._a2a3_runtime else {}
+        adapter.lib_generator = LibraryGenerator(adapter.target, verbose=verbose, **generator_options)
+        adapter.lib_generator.assign_pass_configs(pass_configs)
+        if not adapter._a2a3_runtime or compile_config is None:
+            adapter.lib_generator.assign_compile_flags(compile_flags)
         adapter.lib = adapter.lib_generator.load_lib(lib_path=kernel_lib_path)
 
-        # adapter.lib.get_last_error.restype = ctypes.c_char_p
-        # result = adapter.lib.init()
-        # if result != 0:
-        #     error_msg = adapter.lib.get_last_error().decode('utf-8')
-        #     raise RuntimeError(f"Initialization failed: {error_msg}")
-
-        adapter.cython_wrapper = CythonKernelWrapper(
-            adapter.result_idx, adapter.workspace_idx, adapter.auto_gm_idx, adapter.params, adapter.lib
-        )
-        adapter.cython_wrapper.set_dynamic_symbolic_map(adapter.dynamic_symbolic_map)
-        adapter.cython_wrapper.set_buffer_dtype_map(adapter.buffer_dtype_map)
-        adapter.cython_wrapper.set_static_shape_map(adapter.static_shape_map)
-        adapter.cython_wrapper.set_buffer_device_map(adapter.buffer_device_map)
-        adapter.cython_wrapper.set_ptr_map(adapter.ptr_map)
+        adapter._initialize_library()
+        adapter._create_cython_wrapper()
 
         adapter._post_init()
         return adapter
 
-    def _process_dynamic_symbolic(self) -> dict[tir.Var, tuple[int, int]]:
+    def _configure_auto_memory(self, workspace_idx, auto_gm_idx):
+        self.workspace_idx = []
+        self.auto_gm_idx = []
+        if not self._a2a3_runtime:
+            if workspace_idx is not None or auto_gm_idx is not None:
+                raise ValueError("workspace_idx and auto_gm_idx are supported only by the A2A3 Cython backend")
+            self._automatic_indices = set(self.result_idx)
+            return
+        from tilelang.ascend.a2a3.runtime import normalize_memory_indices
+
+        if self.compile_config is not None and str(self.target.attrs.get("model", "")) != self.compile_config.platform:
+            raise ValueError("A2A3 compiler snapshot requires the same frozen target.model platform")
+        if self.compile_config is not None and self.compile_config.dialect != ("pto" if "pto" in self.target.keys else "ascendc"):
+            raise ValueError("A2A3 compiler snapshot requires the same target dialect keys")
+        if len(self.params) != len(self.prim_func.params):
+            raise ValueError("A2A3 runtime parameters must describe the final device kernel, including compiler-derived GM workspaces")
+        self.workspace_idx = normalize_memory_indices(workspace_idx, len(self.params), "workspace_idx")
+        if auto_gm_idx is None:
+            auto_gm_idx = [int(value) for value in self.prim_func.attrs.get("auto_gm_indices", [])]
+        self.auto_gm_idx = normalize_memory_indices(auto_gm_idx, len(self.params), "auto_gm_idx")
+        self._automatic_indices = set(self.result_idx + self.workspace_idx + self.auto_gm_idx)
+
+    def _initialize_library(self, include_source=False):
+        if self._a2a3_runtime:
+            from tilelang.ascend.a2a3.runtime import configure_void_call
+
+            configure_void_call(self.lib)
+            return
+        self.lib.get_last_error.restype = ctypes.c_char_p
+        result = self.lib.init()
+        if result != 0:
+            error_msg = self.lib.get_last_error().decode("utf-8")
+            if include_source:
+                error_msg += f"\n{self.lib_code}"
+            raise RuntimeError(f"Initialization failed: {error_msg}")
+
+    def _create_cython_wrapper(self):
+        self.cython_wrapper = CythonKernelWrapper(self.result_idx, self.params, self.lib, *_device_providers())
+        self.cython_wrapper.set_dynamic_symbolic_map(self.dynamic_symbolic_map)
+        self.cython_wrapper.set_dynamic_symbolic_sources(self.dynamic_symbolic_sources)
+        self.cython_wrapper.set_buffer_dtype_map(self.buffer_dtype_map)
+        self.cython_wrapper.set_static_shape_map(self.static_shape_map)
+        self.cython_wrapper.set_static_strides_map(self.static_strides_map)
+        self.cython_wrapper.set_static_contiguous_list(self.static_contiguous_list)
+        self.cython_wrapper.set_buffer_device_map(self.buffer_device_map)
+        self.cython_wrapper.set_ptr_map(self.ptr_map)
+        if self._a2a3_runtime:
+            self.cython_wrapper.set_a2a3_runtime(self.workspace_idx, self.auto_gm_idx)
+
+    def _process_dynamic_symbolic(self) -> dict[tirx.Var, tuple[int, int, int, int]]:
         """Extract information about dynamic shapes from the TIR function.
 
-        Maps symbolic variables to their corresponding (buffer_index, shape_dimension)
+        Maps symbolic variables to their corresponding (id, buffer_index, dimension, stride_scale)
         for runtime shape resolution.
+        id represents shape or stride, 0 represents shape, 1 represents stride.
+        stride_scale compensates for sub-byte dtypes (e.g. float4_e2m1fn) where torch strides
+        are in storage units but the kernel expects logical element strides.
         """
         func = self.prim_func
         params = func.params
         buffer_map = func.buffer_map
         dynamic_symbolic_map = {}
-        temp = 0
-        for i, param in enumerate(params):
-            if i in self.result_idx or i in self.workspace_idx:
-                temp += 1
-                continue
+        # Inputs are visited first. An output's shape is resolved from these entries
+        # while that output is being allocated, so a dimension mentioned by both an
+        # input and an output must be owned by the input; owning it on the output
+        # would make the allocation loop read a slot it has not filled yet.
+        if self._a2a3_runtime:
+            ordered = [i for i in range(len(params)) if i not in self._automatic_indices]
+        else:
+            ordered = [i for i in range(len(params)) if i not in self.result_idx]
+            ordered += [i for i in range(len(params)) if i in self.result_idx]
+        for i in ordered:
+            param = params[i]
             if param in buffer_map:
                 buffer = buffer_map[param]
                 for j, shape in enumerate(buffer.shape):
-                    if isinstance(shape, tir.Var) and (shape not in dynamic_symbolic_map) and (shape not in params):
-                        dynamic_symbolic_map[shape] = (i - temp, j)
+                    if isinstance(shape, tirx.Var) and (shape not in dynamic_symbolic_map) and (shape not in params):
+                        dynamic_symbolic_map[shape] = (0, i, j, 1)
+        if self._a2a3_runtime:
+            # TA's self-contained host launcher appends shape symbols only;
+            # its codegen does not append independent stride symbols.
+            if "pto" in self.target.keys:
+                from tilelang.ascend.a2a3.runtime import order_pto_shape_symbols
+
+                return order_pto_shape_symbols(func, dynamic_symbolic_map)
+            return dynamic_symbolic_map
+        for i in ordered:
+            param = params[i]
+            if param in buffer_map:
+                buffer = buffer_map[param]
+                element_bits = buffer.dtype.bits * buffer.dtype.lanes
+                stride_scale = 8 // element_bits if element_bits < 8 else 1
+                for j, stride in enumerate(buffer.strides):
+                    if isinstance(stride, tirx.Var) and (stride not in dynamic_symbolic_map) and (stride not in params):
+                        dynamic_symbolic_map[stride] = (1, i, j, stride_scale)
         return dynamic_symbolic_map
 
-    def _process_buffer_dtype(self) -> dict[tir.Var, tuple[int, torch.dtype]]:
+    def _process_dynamic_symbolic_sources(self) -> dict[str, list[tuple[int, int, int, int]]]:
+        """Build a multi-source map for cascaded None resolution.
+
+        For each dynamic symbol, maps to ALL buffers that carry it as (kind, buffer_idx, dim_idx, stride_scale).
+        Each source retains its own kind: 0 for shape, 1 for stride.
+        This allows the Cython wrapper to find a non-None carrier when some buffers are None.
+        """
+        func = self.prim_func
+        params = func.params
+        buffer_map = func.buffer_map
+        sources: dict[str, list[tuple[int, int, int, int]]] = {}
+        for i, param in enumerate(params):
+            if self._a2a3_runtime and i in self._automatic_indices:
+                continue
+            if param in buffer_map:
+                buffer = buffer_map[param]
+                element_bits = buffer.dtype.bits * buffer.dtype.lanes
+                stride_scale = 8 // element_bits if element_bits < 8 else 1
+                for j, dim in enumerate(buffer.shape):
+                    if isinstance(dim, tirx.Var) and dim not in params:
+                        key = str(dim)
+                        if key not in sources:
+                            sources[key] = []
+                        sources[key].append((0, i, j, 1))
+                for j, stride in enumerate(buffer.strides):
+                    if not self._a2a3_runtime and isinstance(stride, tirx.Var) and stride not in params:
+                        key = str(stride)
+                        if key not in sources:
+                            sources[key] = []
+                        sources[key].append((1, i, j, stride_scale))
+        return sources
+
+    def _process_buffer_dtype(self) -> dict[tirx.Var, tuple[int, torch.dtype]]:
         """Extract information about buffer dtypes from the TIR function.
 
         Maps buffer variables to their corresponding dtypes.
@@ -383,7 +385,13 @@ class CythonKernelAdapter(BaseKernelAdapter):
             if param in buffer_map:
                 buffer = buffer_map[param]
                 name, dtype = buffer.name, buffer.dtype
-                buffer_dtype_map[name] = (i, map_torch_type(dtype))
+                if self._a2a3_runtime:
+                    from tilelang.ascend.a2a3.runtime import as_torch_dtype
+
+                    torch_dtype = as_torch_dtype(dtype)
+                else:
+                    torch_dtype = dtype.as_torch()
+                buffer_dtype_map[name] = (i, torch_dtype)
         return buffer_dtype_map
 
     def _process_ptr_map(self) -> dict[int, str]:
@@ -400,7 +408,9 @@ class CythonKernelAdapter(BaseKernelAdapter):
                 ptr_map[i] = param.name
         return ptr_map
 
-    def _process_static_shape(self) -> dict[tir.Var, list[tuple[int, int]]]:
+    def _process_static_buffer_infos(
+        self,
+    ) -> tuple[dict[tirx.Var, tuple[int, list[tuple[int, int]]]], dict[tirx.Var, tuple[int, list[tuple[int, int]]]], list[tuple[tirx.Var]]]:
         """Extract information about static shapes from the TIR function.
 
         Maps buffer variables to their corresponding static shapes.
@@ -409,19 +419,60 @@ class CythonKernelAdapter(BaseKernelAdapter):
         params = func.params
         buffer_map = func.buffer_map
         static_shape_map = {}
+        static_strides_map = {}
+        static_contiguous_list = list()
         for i, param in enumerate(params):
             if param in buffer_map:
                 buffer = buffer_map[param]
-                name = buffer.name
-                shape = buffer.shape
-                static_shape = []
-                for j, s in enumerate(shape):
-                    if isinstance(s, tir.IntImm):
-                        static_shape.append((j, s.value))
-                static_shape_map[name] = (i, static_shape)
-        return static_shape_map
+                static_shape, static_strides = [], []
+                packing_factor = 1
+                innermost_dim = len(buffer.shape) - 1
+                for j, s in enumerate(buffer.shape):
+                    if isinstance(s, tirx.IntImm):
+                        extent = s.value
+                        if j == innermost_dim and packing_factor > 1:
+                            if extent % packing_factor:
+                                raise ValueError(
+                                    f"The innermost dimension of {buffer.dtype} must be divisible by "
+                                    f"its packing factor ({packing_factor}), got {extent}"
+                                )
+                            extent //= packing_factor
+                        static_shape.append((j, extent))
+                    elif is_symbolic_expr(s):
+                        static_shape.append((j, -1))  # -1 for symbolic
+                    else:
+                        raise ValueError(f"Unsupported shape type: {type(s)}")
+                for j, s in enumerate(buffer.strides):
+                    if j != innermost_dim and packing_factor > 1 and is_symbolic_expr(s):
+                        raise ValueError(
+                            f"Packed {buffer.dtype} buffers do not support dynamic outer strides; "
+                            f"stride index {j} must be a compile-time storage-aligned value"
+                        )
+                    if j == innermost_dim and packing_factor > 1 and (not isinstance(s, tirx.IntImm) or s.value != 1):
+                        raise ValueError(f"Packed {buffer.dtype} buffers require a static innermost stride of 1")
+                    if isinstance(s, tirx.IntImm):
+                        stride = s.value
+                        if j != innermost_dim and packing_factor > 1:
+                            if stride % packing_factor:
+                                raise ValueError(
+                                    f"The stride of packed {buffer.dtype} must be divisible by "
+                                    f"its packing factor ({packing_factor}), got {stride}"
+                                )
+                            stride //= packing_factor
+                        static_strides.append((j, stride))
+                is_contiguous, prod = True, 1
+                for dim, stride in reversed(list(zip(buffer.shape, buffer.strides))):
+                    is_contiguous &= bool(stride == prod)
+                    prod *= dim
+                static_shape_map[buffer.name] = (i, static_shape)
+                static_strides_map[buffer.name] = (i, static_strides)
+                if is_contiguous:
+                    static_contiguous_list.append((i, buffer.name))
+        if self._a2a3_runtime:
+            static_contiguous_list = [(i, buffer_map[param].name) for i, param in enumerate(params) if param in buffer_map]
+        return static_shape_map, static_strides_map, static_contiguous_list
 
-    def _process_buffer_device(self) -> dict[tir.Var, tuple[int, torch.device]]:
+    def _process_buffer_device(self) -> dict[tirx.Var, tuple[int, torch.device]]:
         """Extract information about buffer devices from the TIR function.
 
         Maps buffer variables to their corresponding devices.
@@ -430,7 +481,17 @@ class CythonKernelAdapter(BaseKernelAdapter):
         params = func.params
         buffer_map = func.buffer_map
         buffer_device_map = {}
-        device = torch.device("npu")
+        device = None
+        if is_cuda_target(self.target) or is_hip_target(self.target):
+            device = torch.device("cuda")
+        elif is_ascend_target(self.target):
+            device = torch.device("npu")
+        elif is_cpu_target(self.target):
+            device = torch.device("cpu")
+        elif is_metal_target(self.target):
+            device = torch.device("mps")
+        else:
+            raise ValueError(f"Unsupported target: {self.target}")
 
         for i, param in enumerate(params):
             if param in buffer_map:
@@ -451,13 +512,20 @@ class CythonKernelAdapter(BaseKernelAdapter):
     def _convert_torch_func(self) -> Callable:
         """Returns a PyTorch-compatible function wrapper for the kernel."""
 
-        def lambda_forward(*args, stream: int = -1):
-            return self.cython_wrapper.forward([*args], stream=stream)
+        def lambda_forward(*args, stream: int = -1, skip_tensor_validation: bool = False):
+            """
+            Args:
+                args: List of input tensors
+                stream: CUDA stream ID, default to -1, will use the current stream if not specified
+                skip_tensor_validation: Whether to skip tensor attributes validation which
+                includes shape, dtype, device, etc.
+            """
+            return self.cython_wrapper.forward([*args], stream=stream, skip_tensor_validation=skip_tensor_validation)
 
         return lambda_forward
 
     @property
-    def prim_func(self) -> tir.PrimFunc:
+    def prim_func(self) -> tirx.PrimFunc:
         """Returns the primary TIR function from the IR module."""
         return retrieve_func_from_module(self.ir_module)
 
@@ -484,7 +552,16 @@ class CythonKernelAdapter(BaseKernelAdapter):
     def get_kernel_source(self, kernel_only: bool = False):
         """Returns the source code of the compiled kernel."""
         if kernel_only:
-            return self.kernel_global_source
+            source = self._load_cached_text_source("device_kernel_source", "_device_kernel_source_path")
+            if source is not None:
+                self.kernel_global_source = source
+            return source
         else:
-            assert self.wrapped_source is not None, "Wrapped source is not available"
-            return self.wrapped_source
+            # Wrapper only has host kernel source
+            source = self._load_cached_text_source("host_kernel_source", "_host_kernel_source_path")
+            assert source is not None, "Wrapped source is not available"
+            return source
+
+    def get_host_source(self):
+        """Returns the source code of the host function."""
+        return self._load_cached_text_source("host_kernel_source", "_host_kernel_source_path")

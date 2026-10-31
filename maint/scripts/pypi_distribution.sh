@@ -1,15 +1,20 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
+set -eux
 
-# if dist and build directories exist, remove them
-if [ -d dist ]; then
-    rm -r dist
-fi
+rm -rf dist raw_dist
 
-if [ -d build ]; then
-    rm -r build
-fi
+python -mpip install -U pip
+python -mpip install -U build wheel auditwheel patchelf
 
-PYPI_BUILD=TRUE python setup.py bdist_wheel --plat-name=manylinux1_x86_64
+export NO_VERSION_LABEL=1
+
+python -m build --sdist -o dist
+python -m build --wheel -o raw_dist
+
+auditwheel repair -L /lib -w dist \
+    --exclude libcuda.so.1 --exclude /usr/local/cuda\* --exclude /opt/amdgpu\* \
+    --exclude /opt/rocm\* \
+    raw_dist/*.whl
+
+echo "Wheel built successfully."

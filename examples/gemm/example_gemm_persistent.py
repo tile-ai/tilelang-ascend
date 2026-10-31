@@ -1,72 +1,142 @@
-import argparse
-
 import tilelang
 import tilelang.language as T
-import torch
+from tilelang.carver.arch import driver
+import argparse
 
-tilelang.cache.clear_cache()
 
-@tilelang.jit(out_idx=[-1])
-def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"):
-    m_num = M // block_M
-    n_num = N // block_N
-    
-    core_num = 24
+@tilelang.jit
+def matmul_non_persistent(A, B, block_M, block_N, block_K, threads, num_stages, dtype=T.float16, accum_dtype=T.float32):
+    M, N, K = T.const("M, N, K")
 
-    @T.prim_func
-    def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
-    ):
-        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
-            
-            A_L1 = T.alloc_L1((block_M, K_L1), dtype)
-            B_L1 = T.alloc_L1((K_L1, block_N), dtype)
+    A: T.Tensor((M, K), dtype)
+    B: T.Tensor((K, N), dtype)
+    C = T.empty((M, N), dtype)
 
-            C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
+    with T.Kernel(T.ceildiv(M, block_M), T.ceildiv(N, block_N), threads=threads) as (bx, by):
+        A_shared = T.alloc_shared((block_M, block_K), dtype)
+        B_shared = T.alloc_shared((block_K, block_N), dtype)
+        C_local = T.alloc_fragment((block_M, block_N), accum_dtype)
+        C_shared = T.alloc_shared((block_M, block_N), dtype)
 
-            with T.Scope("C"):
-                for bx, by in T.Persistent([T.ceildiv(M, block_M), T.ceildiv(N, block_N)],
-                    core_num, cid):
-                    loop_k = T.ceildiv(K, K_L1)
-                    for k in T.serial(loop_k):
-                        T.copy(A[bx * block_M, k * K_L1], A_L1)
-                        T.copy(B[k * K_L1, by * block_N], B_L1)
+        T.use_swizzle(10)
 
-                        T.barrier_all()
-                        T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
+        T.clear(C_local)
+        for k in T.Pipelined(T.ceildiv(K, block_K), num_stages=num_stages):
+            T.copy(A[bx * block_M, k * block_K], A_shared)
+            T.copy(B[k * block_K, by * block_N], B_shared)
+            T.gemm(A_shared, B_shared, C_local)
 
-                        T.barrier_all()
+        T.copy(C_local, C_shared)
+        T.copy(C_shared, C[bx * block_M, by * block_N])
 
-                    T.copy(C_L0, C[bx * block_M, by * block_N])
+    return C
 
-    return main
+
+@tilelang.jit
+def matmul_persistent(
+    A, B, block_M, block_N, block_K, threads, num_stages, dtype=T.float16, accum_dtype=T.float32, use_persistent_primitive=True
+):
+    M, N, K = T.const("M, N, K")
+
+    A: T.Tensor((M, K), dtype)
+    B: T.Tensor((K, N), dtype)
+    C = T.empty((M, N), dtype)
+
+    sm_num = driver.get_num_sms()
+    m_blocks = T.ceildiv(M, block_M)
+    n_blocks = T.ceildiv(N, block_N)
+    waves = T.ceildiv(m_blocks * n_blocks, sm_num)
+    group_size = 8
+
+    with T.Kernel(sm_num, threads=threads) as (block_id):
+        A_shared = T.alloc_shared((block_M, block_K), dtype)
+        B_shared = T.alloc_shared((block_K, block_N), dtype)
+        C_local = T.alloc_fragment((block_M, block_N), accum_dtype)
+        C_shared = T.alloc_shared((block_M, block_N), dtype)
+
+        if use_persistent_primitive:
+            for bx, by in T.Persistent([T.ceildiv(M, block_M), T.ceildiv(N, block_N)], sm_num, block_id):
+                T.clear(C_local)
+                for k in T.Pipelined(T.ceildiv(K, block_K), num_stages=num_stages):
+                    T.copy(A[bx * block_M, k * block_K], A_shared)
+                    T.copy(B[k * block_K, by * block_N], B_shared)
+                    T.gemm(A_shared, B_shared, C_local)
+
+                T.copy(C_local, C_shared)
+                T.copy(C_shared, C[bx * block_M, by * block_N])
+        else:
+            for w in T.serial(waves):
+                tile_id = sm_num * w + block_id
+                bx = (tile_id // group_size) % m_blocks
+                by = (tile_id % group_size) + (tile_id // group_size) // m_blocks * group_size
+
+                if bx * block_M < M and by * block_N < N:
+                    T.clear(C_local)
+                    for k in T.Pipelined(T.ceildiv(K, block_K), num_stages=num_stages):
+                        T.copy(A[bx * block_M, k * block_K], A_shared)
+                        T.copy(B[k * block_K, by * block_N], B_shared)
+                        T.gemm(A_shared, B_shared, C_local)
+
+                    T.copy(C_local, C_shared)
+                    T.copy(C_shared, C[bx * block_M, by * block_N])
+
+    return C
+
+
+def ref_program(A, B):
+    return A @ B
+
+
+def main(M=4096, N=4096, K=4096):
+    total_flops = 2 * M * N * K
+
+    BLOCK_M = 128
+    BLOCK_N = 256
+    BLOCK_K = 64
+    threads = 256
+    num_stages = 3
+
+    persistent_kernel = matmul_persistent.compile(
+        M=M, N=N, K=K, block_M=BLOCK_M, block_N=BLOCK_N, block_K=BLOCK_K, threads=threads, num_stages=num_stages
+    )
+    persistent_profiler = persistent_kernel.get_profiler(tensor_supply_type=tilelang.TensorSupplyType.Randn)
+    persistent_profiler.assert_allclose(ref_program, rtol=0.01, atol=0.01)
+    print("Persistent GEMM: All check passed.")
+    persistent_latency = persistent_profiler.do_bench(warmup=500)
+    print(f"Persistent GEMM Latency: {persistent_latency} ms")
+    print(f"Persistent GEMM TFlops: {total_flops / persistent_latency * 1e-9} TFlops")
+
+    non_persistent_kernel = matmul_non_persistent.compile(
+        M=M, N=N, K=K, block_M=BLOCK_M, block_N=BLOCK_N, block_K=BLOCK_K, threads=threads, num_stages=num_stages
+    )
+    non_persistent_profiler = non_persistent_kernel.get_profiler(tensor_supply_type=tilelang.TensorSupplyType.Randn)
+    non_persistent_profiler.assert_allclose(ref_program, rtol=0.01, atol=0.01)
+    print("Non-Persistent GEMM: All check passed.")
+    non_persistent_latency = non_persistent_profiler.do_bench(warmup=500)
+    print(f"Non-Persistent GEMM Latency: {non_persistent_latency} ms")
+    print(f"Non-Persistent GEMM TFlops: {total_flops / non_persistent_latency * 1e-9} TFlops")
+
+    print(f"Persistent GEMM Speedup: {non_persistent_latency / persistent_latency}")
+
+
+def run_regression_perf(M=4096, N=4096, K=4096):
+    BLOCK_M = 128
+    BLOCK_N = 256
+    BLOCK_K = 64
+    threads = 256
+    num_stages = 3
+    persistent_kernel = matmul_persistent.compile(
+        M=M, N=N, K=K, block_M=BLOCK_M, block_N=BLOCK_N, block_K=BLOCK_K, threads=threads, num_stages=num_stages
+    )
+    persistent_profiler = persistent_kernel.get_profiler(tensor_supply_type=tilelang.TensorSupplyType.Randn)
+    return persistent_profiler.do_bench(backend="cupti")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="NPU Kernel Compilation")
-    parser.add_argument("--m", type=int, default=1024, help="Matrix M dimension")
-    parser.add_argument("--n", type=int, default=1024, help="Matrix N dimension")
-    parser.add_argument("--k", type=int, default=1024, help="Matrix K dimension")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--M", type=int, default=8192, help="M dimension")
+    parser.add_argument("--N", type=int, default=8192, help="N dimension")
+    parser.add_argument("--K", type=int, default=8192, help="K dimension")
     args = parser.parse_args()
-
-    M = args.m
-    N = args.n
-    K = args.k
-
-    func = matmul(M, N, K, 128, 256, 64)
-
-    torch.manual_seed(0)
-
-    a = torch.randn(M, K).half().npu()
-    b = torch.randn(K, N).half().npu()
-    c = torch.empty(M, N).half().npu()
-    print("init successful!")
-
-    c = func(a, b)
-
-    ref_c = a @ b
-
-    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-    print("Kernel Output Match!")
+    M, N, K = args.M, args.N, args.K
+    main(M, N, K)

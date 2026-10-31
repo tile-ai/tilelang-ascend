@@ -1,10 +1,10 @@
 import argparse
 
 import tilelang as tl
-import tilelang.language as T
+import tilelang.ascend.a2a3.language as T
 import torch
 
-tl.cache.clear_cache()
+tl.disable_cache()
 
 
 def torch_unpack_uint4_to_fp16(tensor: torch.Tensor) -> torch.Tensor:
@@ -423,7 +423,7 @@ def main(custom_args=None):
 
     M, N, K = args.m, args.n, args.k
 
-    tl.cache.clear_cache()
+    tl.disable_cache()
     torch.manual_seed(0)
 
     print("=" * 60)

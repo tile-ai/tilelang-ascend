@@ -1,273 +1,273 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
 from __future__ import annotations
-from tilelang import tvm as tvm
 import ctypes
-import os
-import tempfile
-import subprocess
 import logging
-from pathlib import Path
-from tilelang.env import TILELANG_TEMPLATE_PATH, TILELANG_PACKAGE_PATH
+import os
+import subprocess
+import sys
+import tempfile
+from typing import Any
+
+from tvm.target import Target
+
+from tilelang import tvm as tvm
+from tilelang.transform import PassConfigKey
+from tilelang.contrib.nvcc import (
+    format_target_code_for_gencode,
+    get_cuda_library_dirs,
+    get_nvcc_compiler,
+    get_target_arch_and_code,
+)
+from tilelang.contrib.rocm import find_hipcc, find_rocm_path, get_rocm_arch
+from tilelang.env import TILELANG_TEMPLATE_PATH
+from tilelang.contrib.hip_resource_info import filter_and_record
+
+from .utils import is_ascend_target, is_cpu_target, is_cuda_target, is_hip_target
 
 logger = logging.getLogger(__name__)
-
-
-def _get_tl_root(third_party_name="3rdparty") -> str:
-    """Get TL_ROOT path, fallback to package path if not set."""
-    tl_root = os.environ.get("TL_ROOT")
-    if tl_root is not None:
-        if not (Path(tl_root) / third_party_name).exists():
-            raise ValueError(f"3rdparty dependencies not found. TL_ROOT is {tl_root!r}")
-        return tl_root
-
-    for path in [TILELANG_PACKAGE_PATH, TILELANG_PACKAGE_PATH.parent]:
-        if (path / third_party_name).exists():
-            return str(path)
-    # In most situations, (path / third_party_name) should exists.
-    # Otherwise, "import tvm" will fail before reaching this point.
-    raise ValueError(
-        f"TL_ROOT is not set and {third_party_name}/ directory not found in "
-        f"{TILELANG_PACKAGE_PATH} or {TILELANG_PACKAGE_PATH.parent}. "
-        "Please set the TL_ROOT environment variable."
-    )
-
-
-def _get_ascend_home_path() -> str:
-    """Get Ascend home path, with fallback options."""
-    ascend_home = os.environ.get("ASCEND_HOME_PATH") or os.environ.get("ASCEND_HOME")
-    if ascend_home is None:
-        potential_paths = [
-            "/usr/local/Ascend/ascend-toolkit/latest",
-        ]
-        for path in potential_paths:
-            if os.path.exists(path):
-                ascend_home = path
-                break
-    if ascend_home is None:
-        raise ValueError("ASCEND_HOME_PATH or ASCEND_HOME is not set. Please set the environment variable.")
-    return ascend_home
-
-
-def _get_simulator_lib_path(ascend_home: str, platform: str) -> str:
-    """Get the camodel simulator library path for the given platform.
-
-    Returns the directory containing libruntime_camodel.so.
-    """
-    sim_base = os.path.join(ascend_home, "tools", "simulator")
-    if not os.path.isdir(sim_base):
-        sim_base = os.path.join(ascend_home, "simulator")
-
-    if platform == "A5":
-        soc_candidates = ["Ascend950PR_9599", "Ascend910_9599"]
-    else:
-        soc_candidates = ["Ascend910B1", "Ascend910_9599"]
-
-    for soc in soc_candidates:
-        soc_dir = os.path.join(sim_base, soc)
-        if not os.path.isdir(soc_dir):
-            continue
-        # The lib/ directory contains required config.json + *.toml files.
-        # The camodel/ directory lacks these configs, causing TMultiRing crash.
-        candidate = os.path.join(soc_dir, "lib")
-        if os.path.isdir(candidate):
-            return candidate
-
-    raise FileNotFoundError(
-        f"Simulator library not found for platform {platform}. Searched: {sim_base}/<soc>/lib and {sim_base}/<soc>/camodel"
-    )
-
-
-def resolve_compile_flags(
-    target: str,
-    pass_configs: dict | None = None,
-    compile_flags: list[str] | str | None = None,
-) -> list[str]:
-    """Resolve the Bisheng flags for one kernel.
-
-    Emits the framework's derived defaults first (see
-    :func:`normalize_compiler_options`: the #1346 VS-sync pairing plus the
-    ``TL_CCE_*`` / ``TL_PTO_DEBUG`` env fallbacks), then appends the caller's
-    ``compile_flags`` last -- bisheng is last-wins for repeated flags, so caller
-    flags override the derived ones (e.g. ``["--cce-auto-sync=on"]`` re-enables
-    auto-sync, ``["-O0"]`` lowers the level). ``os.environ`` is only read.
-
-    Resolved once per kernel in :func:`tilelang.compile` so the same list feeds
-    both the kernel cache key and codegen.
-    """
-    from tilelang.transform.pass_config import normalize_compiler_options
-
-    options = normalize_compiler_options(pass_configs)
-    flags = [f"-O{options['opt_level']}"]
-    if target in ("ascendc", "auto") and not options["cce_auto_sync"]:
-        # AscendC-only: PTO has no auto-sync to disable (its default already
-        # matches --cce-auto-sync=off), so the flag is not emitted there.
-        flags.append("--cce-auto-sync=off")
-    if target == "pto" and options["pto_debug"]:
-        flags += ["-D_DEBUG", "--cce-enable-print"]
-    if compile_flags:
-        flags += [compile_flags] if isinstance(compile_flags, str) else list(compile_flags)
-    return flags
 
 
 class LibraryGenerator:
     srcpath: str | None = None
     libpath: str | None = None
     lib_code: str | None = None
+    pass_configs: dict[str, Any] | None = None
+    compile_flags: list[str] | None = None
+    compile_config = None
+    _a2a3_generator = None
 
-    def __init__(self, target: str, platform: str, compile_flags: list[str] | str | None = None):
+    def __init__(self, target: Target, verbose: bool = False, compile_config=None):
         self.target = target
-        self.platform = platform
-        # Fully-resolved Bisheng flags for this kernel (derived defaults + caller
-        # flags). None means a direct/legacy caller: fall back to the derived
-        # defaults in compile_lib.
+        self.verbose = verbose
+        self.compile_config = compile_config
+        self._a2a3_generator = None
+
+    def _get_a2a3_generator(self):
+        if not is_ascend_target(self.target):
+            return None
+        from tilelang.ascend.target import is_a2a3_target
+
+        if not is_a2a3_target(self.target):
+            return None
+        if self._a2a3_generator is None:
+            from tilelang.ascend.a2a3.compiler import LibraryGenerator as A2A3LibraryGenerator, resolve_compile_config
+
+            if self.compile_config is None:
+                self.compile_config = resolve_compile_config(self.target, self.pass_configs, self.compile_flags)
+            self._a2a3_generator = A2A3LibraryGenerator(self.compile_config, verbose=self.verbose)
+            if self.lib_code is not None:
+                self._a2a3_generator.update_lib_code(self.lib_code)
+            if self.libpath is not None:
+                self._a2a3_generator.set_lib_path(self.libpath)
+            if self.srcpath is not None:
+                self._a2a3_generator.set_src_path(self.srcpath)
+        return self._a2a3_generator
+
+    def assign_pass_configs(self, pass_configs: dict[str, Any] | None = None):
+        self.pass_configs = pass_configs
+
+    def assign_compile_flags(self, compile_flags: list[str] | None = None):
+        if compile_flags is None:
+            compile_flags = []
         self.compile_flags = compile_flags
+        if self.compile_config is not None:
+            self._get_a2a3_generator().set_compile_flags(compile_flags)
 
     def update_lib_code(self, lib_code: str):
         self.lib_code = lib_code
+        if self._a2a3_generator is not None:
+            self._a2a3_generator.update_lib_code(lib_code)
 
     # Assume currently we only support CUDA compilation
     def load_lib(self, lib_path: str | None = None):
+        a2a3_generator = self._get_a2a3_generator()
+        if a2a3_generator is not None:
+            library = a2a3_generator.load_lib(lib_path)
+            self.libpath = a2a3_generator.libpath
+            return library
         if lib_path is None:
             lib_path = self.libpath
-        run_mode = os.environ.get("TL_RUN_MODE", "npu")
-        if run_mode == "sim":
-            ascend_home = _get_ascend_home_path()
-            sim_lib_path = _get_simulator_lib_path(ascend_home, self.platform)
-            ld_path = os.environ.get("LD_LIBRARY_PATH", "")
-            if sim_lib_path not in ld_path.split(":"):
-                os.environ["LD_LIBRARY_PATH"] = f"{sim_lib_path}:{ld_path}"
+        else:
+            self.libpath = lib_path
         return ctypes.CDLL(lib_path)
 
     def compile_lib(self, timeout: float = None):
-        src = tempfile.NamedTemporaryFile(mode="w", suffix=".cpp", delete=False)
-        libpath = src.name.replace(".cpp", ".so")
-        ASCEND_HOME_PATH = _get_ascend_home_path()
-        TL_ROOT = _get_tl_root()
-        # The JIT pipeline resolves these up front; a direct caller gets the
-        # framework defaults (pass-config-free, env fallbacks still apply).
-        compile_flags = self.compile_flags
-        if compile_flags is None:
-            compile_flags = resolve_compile_flags(self.target)
-        if self.target == "ascendc" or self.target == "auto":
+        a2a3_generator = self._get_a2a3_generator()
+        if a2a3_generator is not None:
+            a2a3_generator.compile_lib(timeout=timeout)
+            self.srcpath = a2a3_generator.srcpath
+            self.libpath = a2a3_generator.libpath
+            return
+        target = self.target
+        verbose = self.verbose
+        extra_compile_options = [item for flag in (self.compile_flags or []) for item in flag.split()]
+        if is_cuda_target(target):
+            from tilelang.env import CUTLASS_INCLUDE_DIR
+
+            _lib_ext = ".dll" if sys.platform == "win32" else ".so"
+            src = tempfile.NamedTemporaryFile(mode="w", suffix=".cu", delete=False)  # noqa: SIM115
+            libpath = src.name.replace(".cu", _lib_ext)
+
+            enable_fast_math = self.pass_configs.get(PassConfigKey.TL_ENABLE_FAST_MATH, False)
+
+            ptxas_usage_level = self.pass_configs.get(PassConfigKey.TL_PTXAS_REGISTER_USAGE_LEVEL, None)
+            if ptxas_usage_level is not None:
+                ptxas_usage_level = int(ptxas_usage_level)
+            cuda_library_flags = [f"-L{lib_dir}" for lib_dir in get_cuda_library_dirs()]
+            target_arch, target_code = get_target_arch_and_code(target)
+            gencode_code = format_target_code_for_gencode(target_code)
+            if gencode_code is None:
+                gencode_code = f"sm_{target_arch}"
+            # CUDA 13.1 expands `nvcc --shared -arch=sm_90a` through an sm_90
+            # PTX pass, which rejects Hopper-only instructions such as
+            # setmaxnreg. Use explicit gencode so shared-library compilation
+            # preserves the requested accelerated target.
+            arch_flags = ["-gencode", f"arch=compute_{target_arch},code={gencode_code}"]
+
             command = [
-                "bisheng",
-                "--npu-arch=dav-2201",
+                get_nvcc_compiler(),
+                # tl_templates/cuda/reduce.h uses explicit lambda template
+                # parameters (`[&]<typename T>(T) { ... }`) which are a C++20
+                # feature.
+                "-std=c++20",
+                "-w",
+                "-Xcudafe",
+                "--diag_suppress=177",
+                "-lineinfo",
+                "--shared",
+                src.name,
+                *cuda_library_flags,
+                "-lcuda",
+                *arch_flags,
+            ]
+            if sys.platform == "win32":
+                # /Zc:__cplusplus forces MSVC to report the actual C++ standard
+                # via __cplusplus. Without it cuda.h's `alignas(128)` on
+                # CUtensorMap is dropped (it is gated on
+                # ``__cplusplus >= 201103L``), so NVCC emits a kernel param
+                # with .align 8 and cuLaunchKernel later fails with
+                # CUDA_ERROR_MISALIGNED_ADDRESS.
+                command += ["-Xcompiler", "/Zc:preprocessor /Zc:__cplusplus"]
+            else:
+                command += ["--compiler-options", "-fPIC"]
+            if enable_fast_math:
+                command += ["--use_fast_math"]
+            if ptxas_usage_level is not None:
+                command += [f"--ptxas-options=--register-usage-level={int(ptxas_usage_level)}"]
+            if self.verbose:
+                command += ["--ptxas-options=--verbose"]
+            command += [
+                "-I" + CUTLASS_INCLUDE_DIR,
+            ]
+
+        elif is_hip_target(target):
+            from tilelang.rocm.target import target_get_mcpu
+
+            from tilelang.env import TILELANG_HIP_SAVE_TEMP_FILES
+
+            src = tempfile.NamedTemporaryFile(mode="w", suffix=".cpp", delete=False)  # noqa: SIM115
+            libpath = src.name.replace(".cpp", ".so")
+            rocm_path = find_rocm_path()
+            arch = target_get_mcpu(target) or get_rocm_arch(rocm_path)
+            command = [
+                find_hipcc(),
                 "-std=c++17",
-                "-xasc",
-                f"-I{ASCEND_HOME_PATH}/include",
-                f"-I{ASCEND_HOME_PATH}/include/experiment/msprof",
-                f"-I{ASCEND_HOME_PATH}/include/experiment/runtime",
-                f"-I{ASCEND_HOME_PATH}/pkg_inc",
-                f"-I{ASCEND_HOME_PATH}/pkg_inc/runtime",
-                f"-I{ASCEND_HOME_PATH}/pkg_inc/profiling",
-                f"-I{TL_ROOT}/3rdparty/catlass/include",
-                f"-I{TL_ROOT}/3rdparty/shmem/include",
-                f"-I{TL_ROOT}/3rdparty/shmem/src/device",
-                "-DBACKEND_HYBM",
-                "-I" + TILELANG_TEMPLATE_PATH,
-                f"-L{ASCEND_HOME_PATH}/lib64",
-                "-Wno-macro-redefined",
-                "-Wno-ignored-attributes",
-                "-Wno-non-c-typedef-for-linkage",
-                "-lruntime",
-                "-lascendcl",
-                "-lm",
-                "-ltiling_api",
-                "-lplatform",
-                "-lc_sec",
-                "-ldl",
                 "-fPIC",
+                f"--offload-arch={arch}",
                 "--shared",
                 src.name,
+                "-Rpass-analysis=kernel-resource-usage",
             ]
-        elif self.target == "pto":
-            ccec = "dav-c310" if self.platform == "A5" else "dav-c220"
-            memory = "REGISTER_BASE" if self.platform == "A5" else "MEMORY_BASE"
+            if TILELANG_HIP_SAVE_TEMP_FILES != "0":
+                command += ["--save-temps", "-g"]
+        elif is_ascend_target(target):
+            from tilelang.contrib.bisheng import (
+                find_bisheng_path,
+                get_bisheng_compile_options,
+                get_target_npu_arch,
+                normalize_options,
+            )
+
+            src = tempfile.NamedTemporaryFile(mode="w", suffix=".asc", delete=False)  # noqa: SIM115
+            libpath = src.name.replace(".asc", ".so")
+
+            npu_arch = get_target_npu_arch(target)
+            configured_options = normalize_options((self.pass_configs or {}).get(PassConfigKey.TL_DEVICE_COMPILE_FLAGS))
+            explicit_options = normalize_options(self.compile_flags)
+            # Keep repeated option/value pairs such as -mllvm intact and ordered.
+            # Merge here to bypass the token deduplication below.
+            extra_compile_options = []
             command = [
-                "bisheng",
-                f"--cce-aicore-arch={ccec}",
-                f"-D{memory}",
-                "-std=gnu++17",
-                "-xcce",
-                "-mllvm",
-                "-cce-aicore-stack-size=0x8000",
-                "-mllvm",
-                "-cce-aicore-function-stack-size=0x8000",
-                "-mllvm",
-                "-cce-aicore-record-overflow=true",
-                "-mllvm",
-                "-cce-aicore-addr-transform",
-                "-mllvm",
-                "-cce-aicore-dcci-insert-for-scalar=false",
-                "-DL2_CACHE_HINT",
-                "-I../../src/",
-                f"-I{TL_ROOT}/3rdparty/pto-isa/include",
-                f"-I{ASCEND_HOME_PATH}/include",
-                f"-I{ASCEND_HOME_PATH}/include/experiment/msprof",
-                f"-I{ASCEND_HOME_PATH}/include/experiment/runtime",
-                "-I/usr/local/Ascend/driver/kernel/inc",
-                f"-I{ASCEND_HOME_PATH}/pkg_inc",
-                f"-I{ASCEND_HOME_PATH}/pkg_inc/runtime",
-                f"-I{ASCEND_HOME_PATH}/pkg_inc/profiling",
-                f"-L{ASCEND_HOME_PATH}/lib64",
-                "-I" + TILELANG_TEMPLATE_PATH,
-                "-Wno-macro-redefined",
-                "-Wno-ignored-attributes",
-                "-lruntime",
-                "-lstdc++",
-                "-lascendcl",
-                "-lm",
-                "-ltiling_api",
-                "-lplatform",
-                "-lc_sec",
-                "-ldl",
-                "-fPIC",
+                find_bisheng_path(),
+                *get_bisheng_compile_options(npu_arch),
+                *configured_options,
+                *explicit_options,
+                # Avoid using mmap to write linker output, thus more friendly for distributed FS
+                "-Wl,--no-mmap-output-file",
                 "--shared",
                 src.name,
             ]
+        elif is_cpu_target(target):
+            from tilelang.contrib.cc import get_cplus_compiler
+            from tilelang.cpu.toolchain import get_compile_flags
 
-        # --- camodel (simulator) support ---
-        run_mode = os.environ.get("TL_RUN_MODE", "npu")
-        if run_mode == "sim":
-            sim_lib_path = _get_simulator_lib_path(ASCEND_HOME_PATH, self.platform)
-            # Insert simulator library path before ASCEND_HOME_PATH/lib64 so
-            # libruntime_camodel.so takes precedence over libruntime.so.
-            # --disable-new-dtags makes -rpath set DT_RPATH (transitive) instead
-            # of DT_RUNPATH (non-transitive), so that libruntime_camodel.so's
-            # own dependencies (e.g. libnpu_drv_camodel.so) are also resolved.
-            try:
-                ascend_lib_idx = command.index(f"-L{ASCEND_HOME_PATH}/lib64")
-                command.insert(ascend_lib_idx, f"-L{sim_lib_path}")
-                command.insert(ascend_lib_idx + 1, f"-Wl,-rpath,{sim_lib_path}")
-                command.insert(ascend_lib_idx + 2, "-Wl,--disable-new-dtags")
-            except ValueError:
-                command.insert(1, f"-L{sim_lib_path}")
-                command.insert(2, f"-Wl,-rpath,{sim_lib_path}")
-                command.insert(3, "-Wl,--disable-new-dtags")
-            # Replace '-lruntime' with '-lruntime_camodel'
-            try:
-                rt_idx = command.index("-lruntime")
-                command[rt_idx] = "-lruntime_camodel"
-            except ValueError:
-                pass
-            logger.info("camodel sim mode: using %s", sim_lib_path)
+            src = tempfile.NamedTemporaryFile(mode="w", suffix=".cpp", delete=False)  # noqa: SIM115
+            libpath = src.name.replace(".cpp", ".so")
 
-        # Append the resolved flags last so they win (bisheng is last-wins);
-        # whitespace-split and de-duplicated, matching upstream tilelang.
-        command += [item for flag in compile_flags for item in flag.split() if item not in command]
+            command = [get_cplus_compiler(), "-std=c++17", "-fPIC", "-shared", src.name]
+            command += [
+                "-I" + TILELANG_TEMPLATE_PATH,
+            ]
+            command += get_compile_flags(target, self.pass_configs, execution_backend="cython")
+        else:
+            raise ValueError(f"Unsupported target: {target}")
+
+        command += [
+            "-I" + TILELANG_TEMPLATE_PATH,
+        ]
+
+        command += [item for item in extra_compile_options if item not in command]
 
         command += ["-o", libpath]
 
         src.write(self.lib_code)
         src.flush()
+        if sys.platform == "win32":
+            src.close()
+
+        # On Windows, two concerns matter for parallel autotune:
+        # 1. nvcc needs MSVC's host compiler env (cl.exe, INCLUDE, LIB).
+        # 2. Concurrent subprocesses sharing the parent's console handle can
+        #    deadlock when their output interleaves with tqdm progress bars.
+        # Pipe stdio + isolate stdin to make the launch self-contained.
+        run_kwargs: dict[str, Any] = {"timeout": timeout}
+        if sys.platform == "win32":
+            from tilelang.contrib.nvcc import get_nvcc_subprocess_env
+
+            run_kwargs.update(
+                env=get_nvcc_subprocess_env(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+        if is_hip_target(target):
+            run_kwargs.setdefault("stdout", subprocess.PIPE)
+            run_kwargs.setdefault("stderr", subprocess.STDOUT)
+
         try:
-            ret = subprocess.run(command, timeout=timeout)
+            if verbose:
+                print(f"compile_lib compilation command: {' '.join(command)}")
+            ret = subprocess.run(command, **run_kwargs)
         except Exception as e:
             raise RuntimeError(f"Compile kernel failed because of {e}") from e
 
         if ret.returncode != 0:
-            raise RuntimeError(f"Compilation Failed! {command}")
+            captured = ret.stdout.decode("utf-8", errors="replace") if ret.stdout else ""
+            raise RuntimeError(f"Compilation Failed! {command}\n{captured}\n{self.lib_code}")
+
+        if is_hip_target(target) and ret.stdout is not None:
+            captured = filter_and_record(ret.stdout.decode("utf-8", errors="replace"))
+            if verbose and captured.strip():
+                print(captured)
 
         self.srcpath = src.name
         self.libpath = libpath
@@ -285,6 +285,10 @@ class LibraryGenerator:
 
     def set_lib_path(self, libpath):
         self.libpath = libpath
+        if self._a2a3_generator is not None:
+            self._a2a3_generator.set_lib_path(libpath)
 
     def set_src_path(self, srcpath):
         self.srcpath = srcpath
+        if self._a2a3_generator is not None:
+            self._a2a3_generator.set_src_path(srcpath)

@@ -1,26 +1,27 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
-
 # pylint: disable=missing-docstring, invalid-name
 """A GEMM schedule rule for GPU operators."""
+
+from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional, Set, Union, Tuple, Dict
-from tvm import tir
+from tvm import tirx
 from tvm.ir import Range
-from tvm.tir import IterVar, PrimExpr, Var, BufferRegion, IndexMap
-from tvm.tir.analysis import undefined_vars
-from tvm.tir.schedule.schedule import BlockRV
+from tvm.tirx import IterVar, PrimExpr, Var, BufferRegion, IndexMap
+from tvm.tirx.analysis import undefined_vars
+from tvm.s_tir import Schedule
+from tvm.s_tir.schedule import SBlockRV
 from .analysis import (
     collect_block_iter_vars_used_in_access_region,
     get_root_block,
     get_reduction_blocks,
 )
 from tvm.target.target import Target
-from tvm.tir.stmt_functor import pre_order_visit
+from tvm.tirx.stmt_functor import pre_order_visit
 from .arch import get_arch, is_tensorcore_supported_precision, is_cube_supported_precision
+from .arch.cuda import check_sm_version
+from .arch.rdna import _get_rdna_tuning_config
+from tilelang.rocm.target import target_get_mcpu, target_is_rdna
 import logging
-import torch, torch_npu
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +40,10 @@ def collect_vars_from_expr(prim_expr):
 
 
 def _is_one(x: PrimExpr) -> bool:
-    return isinstance(x, tir.IntImm) and x.value == 1
+    return isinstance(x, tirx.IntImm) and x.value == 1
 
 
-def _collect_producers(sch: tir.Schedule, block: tir.schedule.BlockRV):
+def _collect_producers(sch: Schedule, block: SBlockRV):
     result = []
     for producer in sch.get_producers(block):
         result.append(producer)
@@ -50,7 +51,7 @@ def _collect_producers(sch: tir.Schedule, block: tir.schedule.BlockRV):
     return result
 
 
-def _collect_consumers(sch: tir.Schedule, block: tir.schedule.BlockRV):
+def _collect_consumers(sch: Schedule, block: SBlockRV):
     result = []
     for consumer in sch.get_consumers(block):
         result.append(consumer)
@@ -59,9 +60,9 @@ def _collect_consumers(sch: tir.Schedule, block: tir.schedule.BlockRV):
 
 
 def auto_inline_producers(
-    sch: tir.Schedule,
-    block: tir.schedule.BlockRV,
-    skip_blocks: Optional[List[tir.schedule.BlockRV]] = None,
+    sch: Schedule,
+    block: SBlockRV,
+    skip_blocks: list[SBlockRV] | None = None,
 ):
     skip_blocks = skip_blocks or []
     while True:
@@ -80,8 +81,8 @@ def auto_inline_producers(
 
 
 def auto_inline_consumers(
-    sch: tir.Schedule,
-    block: tir.schedule.BlockRV,
+    sch: Schedule,
+    block: SBlockRV,
 ):
     while True:
         inlined_cnt = 0
@@ -103,8 +104,8 @@ def auto_inline_consumers(
 
 
 def auto_inline_consumer_chain(
-    sch: tir.Schedule,
-    block: tir.schedule.BlockRV,
+    sch: Schedule,
+    block: SBlockRV,
 ):
     auto_inline_consumers(sch, block)
     remaining_consumers = sch.get_consumers(block)
@@ -122,7 +123,7 @@ def auto_inline_consumer_chain(
 
 
 # used to match the similar region with dequantize op.
-def find_first_similar_region(regions: List[BufferRegion], buffer: tir.Buffer):
+def find_first_similar_region(regions: list[BufferRegion], buffer: tirx.Buffer):
     for region in regions:
         if len(region.buffer.shape) == len(buffer.shape):
             return region
@@ -130,7 +131,7 @@ def find_first_similar_region(regions: List[BufferRegion], buffer: tir.Buffer):
 
 
 # used to match the similar buffer with dequantize op.
-def find_first_similar_buffer(regions: List[BufferRegion], buffer: tir.Buffer):
+def find_first_similar_buffer(regions: list[BufferRegion], buffer: tirx.Buffer):
     for region in regions:
         if len(region.buffer.shape) == len(buffer.shape):
             return region.buffer
@@ -138,7 +139,7 @@ def find_first_similar_buffer(regions: List[BufferRegion], buffer: tir.Buffer):
 
 
 # find the block that required to be reindex and scope.
-def find_last_producer_from_buffer(sch, main_block, buffer: tir.Buffer) -> Optional[BlockRV]:
+def find_last_producer_from_buffer(sch, main_block, buffer: tirx.Buffer) -> SBlockRV | None:
     # block that most near to the arguments
     block = main_block
     buffer = buffer
@@ -161,13 +162,12 @@ def find_last_producer_from_buffer(sch, main_block, buffer: tir.Buffer) -> Optio
     return block
 
 
-def find_arg_idx_from_buffer_chain(sch: tir.Schedule, main_block: tir.schedule.BlockRV,
-                                   buffer: tir.Buffer) -> int:
+def find_arg_idx_from_buffer_chain(sch: Schedule, main_block: SBlockRV, buffer: tirx.Buffer) -> int:
     """traverse to find the arg index from the buffer"""
     producers = sch.get_producers(main_block)
 
     # a head buffer has no producer blocks
-    def find_args_index(sch: tir.Schedule, buffer: tir.Buffer):
+    def find_args_index(sch: Schedule, buffer: tirx.Buffer):
         for i, param in enumerate(sch.mod["main"].params):
             if sch.mod["main"].buffer_map[param] == buffer:
                 return i
@@ -213,13 +213,13 @@ class IterTrait:
 
 
 def make_iter_fusion_index_map(
-    traits: List[IterTrait],
-    kind_order: List[IterKind],
-) -> tir.IndexMap:
-    fused_iters: Dict[IterKind, PrimExpr] = {}
-    input_iters: List[tir.Var] = []
+    traits: list[IterTrait],
+    kind_order: list[IterKind],
+) -> tirx.IndexMap:
+    fused_iters: dict[IterKind, PrimExpr] = {}
+    input_iters: list[tirx.Var] = []
     for i, trait in enumerate(traits):
-        v_i = tir.Var(f"i{i}", trait.extent.dtype)
+        v_i = tirx.Var(f"i{i}", trait.extent.dtype)
         input_iters.append(v_i)
         if trait.kind == IterKind.kIter_T:
             continue
@@ -230,25 +230,23 @@ def make_iter_fusion_index_map(
         else:
             fused_iters[trait.kind] = v_i
 
-    final_indices: List[tir.PrimExpr] = [
-        fused_iters.get(kind, tir.IntImm(traits[0].extent.dtype, 0)) for kind in kind_order
-    ]
+    final_indices: list[tirx.PrimExpr] = [fused_iters.get(kind, tirx.IntImm(traits[0].extent.dtype, 0)) for kind in kind_order]
 
-    return tir.IndexMap(input_iters, final_indices, None)
+    return tirx.IndexMap(input_iters, final_indices, None)
 
 
-def detect_iter_traits(block: tir.Block) -> Optional[Tuple[List[IterTrait], List[IterTrait], List[IterTrait], List[IterTrait]]]:
+def detect_iter_traits(block: tirx.SBlock) -> tuple[list[IterTrait]] | None:
     """Detect iter traits based on the pattern C[S, I, J] += A[S, I, K] * B[S, J, K]
 
     Parameters
     ----------
-    block : tir.Block
+    block : tirx.SBlock
         The block to be analyzed
 
     Returns
     -------
-    traits : Optional[Tuple[List[IterTrait], List[IterTrait], List[IterTrait], List[IterTrait]]]
-        The detected iter traits for axes in A, B, C, and block. None if the block
+    traits : Optional[Tuple[List[IterTrait]]]
+        The detected iter traits for axes in A, B and C. None if the block
         does not match the pattern.
 
     """
@@ -256,8 +254,8 @@ def detect_iter_traits(block: tir.Block) -> Optional[Tuple[List[IterTrait], List
     if len(block.reads) != 2 or len(block.writes) != 1:
         return None
 
-    def get_access_axes(region: List[Range]) -> Set[Var]:
-        axes: Set[Var] = set()
+    def get_access_axes(region: list[Range]) -> set[Var]:
+        axes: set[Var] = set()
         for r in region:
             if not _is_one(r.extent):
                 raise ValueError("Expect elemwise block access")
@@ -271,12 +269,12 @@ def detect_iter_traits(block: tir.Block) -> Optional[Tuple[List[IterTrait], List
     except ValueError:
         return None
 
-    traits: Dict[Var, IterTrait] = {}
+    traits: dict[Var, IterTrait] = {}
     for iter_var in block.iter_vars:
         var = iter_var.var
         kind: IterKind
         if _is_one(iter_var.dom.extent):
-            if iter_var.iter_type == tir.IterVar.CommReduce:
+            if iter_var.iter_type == tirx.IterVar.CommReduce:
                 # for simplified case (e.g. 1x1 conv kernel)
                 kind = IterKind.kIter_K
             else:
@@ -290,7 +288,7 @@ def detect_iter_traits(block: tir.Block) -> Optional[Tuple[List[IterTrait], List
                 kind = IterKind.kIter_J
             else:
                 return None
-        elif iter_var.iter_type == tir.IterVar.CommReduce:
+        elif iter_var.iter_type == tirx.IterVar.CommReduce:
             if var in A_axes and var in B_axes and var not in C_axes:
                 kind = IterKind.kIter_K
             else:
@@ -308,16 +306,15 @@ def detect_iter_traits(block: tir.Block) -> Optional[Tuple[List[IterTrait], List
     B_traits = [traits[iter_var.var] for iter_var in block.iter_vars if iter_var.var in B_axes]
     C_traits = [traits[iter_var.var] for iter_var in block.iter_vars if iter_var.var in C_axes]
     block_traits = [traits[i.var] for i in block.iter_vars]
-    return (A_traits, B_traits, C_traits, block_traits)
+    return A_traits, B_traits, C_traits, block_traits
 
 
-def get_index_map(block: tir.Block,
-                  layout: Optional[List[str]] = None) -> Optional[Tuple[tir.IndexMap, ...]]:
+def get_index_map(block: tirx.SBlock, layout: list[str] | None = None) -> tuple[tirx.IndexMap, ...] | None:
     """Get index maps for the block
 
     Parameters
     ----------
-    block : tir.Block
+    block : tirx.SBlock
         The block to be analyzed
 
     layout : List[str]
@@ -328,7 +325,7 @@ def get_index_map(block: tir.Block,
 
     Returns
     -------
-    index_maps : Optional[Tuple[tir.IndexMap]]
+    index_maps : Optional[Tuple[tirx.IndexMap]]
         The index maps for the block, or None if the block is not a gemm-liked kernel
     """
     if layout is None:
@@ -338,8 +335,8 @@ def get_index_map(block: tir.Block,
         return None
     A_traits, B_traits, C_traits, block_traits = traits
 
-    def get_ordered_axes(region: List[Range]) -> Set[Var]:
-        axes: List[Var] = []
+    def get_ordered_axes(region: list[Range]) -> set[Var]:
+        axes: list[Var] = []
         for r in region:
             if not _is_one(r.extent):
                 raise ValueError("Expect elemwise block access")
@@ -347,20 +344,17 @@ def get_index_map(block: tir.Block,
         return axes
 
     def is_common_reduce(var: Var) -> bool:
-        for iter_var in block.iter_vars:
-            if iter_var.var == var and iter_var.iter_type == IterVar.CommReduce:
-                return True
-        return False
+        return any(iter_var.var == var and iter_var.iter_type == IterVar.CommReduce for iter_var in block.iter_vars)
 
     def has_common_reduce(var: Var) -> bool:
         vars = collect_vars_from_expr(var)
         return any(is_common_reduce(v) for v in vars)
 
-    def check_last_trait(region: List[Range]):
+    def check_last_trait(region: list[Range]):
         axes = get_ordered_axes(region)
         return has_common_reduce(axes[-1])
 
-    def infer_layout(layout: str, region: List[Range], kind: str = "A"):
+    def infer_layout(layout: str, region: list[Range], kind: str = "A"):
         """
         Infer the layout based on the region and the kind of buffer
         kind: "A", "B", "C"
@@ -388,17 +382,17 @@ def get_index_map(block: tir.Block,
             if kind == "C":
                 return [IterKind.kIter_S, primary_iter, secondary_iter]
             else:
-                return ([IterKind.kIter_S, spatial_iter, reduction_iter] if check_last_trait(region)
-                        else [IterKind.kIter_S, reduction_iter, spatial_iter])
+                return (
+                    [IterKind.kIter_S, spatial_iter, reduction_iter]
+                    if check_last_trait(region)
+                    else [IterKind.kIter_S, reduction_iter, spatial_iter]
+                )
         else:
             raise ValueError(f"Unknown layout {layout}")
 
-    A_index_map = make_iter_fusion_index_map(
-        A_traits, infer_layout(layout[0], block.reads[0].region, kind="A"))
-    B_index_map = make_iter_fusion_index_map(
-        B_traits, infer_layout(layout[1], block.reads[1].region, kind="B"))
-    C_index_map = make_iter_fusion_index_map(
-        C_traits, infer_layout(layout[2], block.writes[0].region, kind="C"))
+    A_index_map = make_iter_fusion_index_map(A_traits, infer_layout(layout[0], block.reads[0].region, kind="A"))
+    B_index_map = make_iter_fusion_index_map(B_traits, infer_layout(layout[1], block.reads[1].region, kind="B"))
+    C_index_map = make_iter_fusion_index_map(C_traits, infer_layout(layout[2], block.writes[0].region, kind="C"))
 
     matmul_index_map = make_iter_fusion_index_map(
         block_traits,
@@ -413,7 +407,7 @@ def get_index_map(block: tir.Block,
     )
 
 
-def get_in_out_dtypes(block: tir.Block) -> Tuple[str]:
+def get_in_out_dtypes(block: tirx.SBlock) -> tuple[str]:
     """
     Detect In/Out data types for the given block based on the analysis if read/write buffers.
     """
@@ -423,41 +417,39 @@ def get_in_out_dtypes(block: tir.Block) -> Tuple[str]:
     return (in_dtype, out_dtype)
 
 
-def get_dequantize_block(sch, blocks) -> Optional[BlockRV]:
+def get_dequantize_block(sch, blocks) -> SBlockRV | None:
     # check at least two input and one output
     # at lease one input has uint dtype, and the output dtype is float
-    def is_dequantize(block: BlockRV) -> bool:
+    def is_dequantize(block: SBlockRV) -> bool:
         block_stmt = sch.get(block)
         if len(block_stmt.reads) < 2:
             return False
         has_uint_input = any("uint" in str(region.buffer.dtype) for region in block_stmt.reads)
         if not has_uint_input:
             return False
-        return not (len(block_stmt.writes) != 1 or
-                    "float" not in str(block_stmt.writes[0].buffer.dtype))
+        return not (len(block_stmt.writes) != 1 or "float" not in str(block_stmt.writes[0].buffer.dtype))
 
     dequantize_blocks = [block for block in blocks if is_dequantize(block)]
     return dequantize_blocks[0] if len(dequantize_blocks) == 1 else None
 
 
-def is_identity_or_transpose_block(block_stmt: tir.Block) -> bool:
+def is_identity_or_transpose_block(block_stmt: tirx.SBlock) -> bool:
     iter_types = {iter_var.iter_type for iter_var in block_stmt.iter_vars}
     if iter_types != {IterVar.DataPar}:
         return False, False
-    if not isinstance(block_stmt.body, tir.BufferStore):
+    if not isinstance(block_stmt.body, tirx.BufferStore):
         return False, False
-    if not isinstance(block_stmt.body.value, tir.BufferLoad):
+    if not isinstance(block_stmt.body.value, tirx.BufferLoad):
         return False, False
 
-    def get_access_vars(region: List[Range]) -> List[Var]:
-        axes: List[Var] = []
+    def get_access_vars(region: list[Range]) -> list[Var]:
+        axes: list[Var] = []
         for r in region:
             if not _is_one(r.extent):
                 return None
             axes.extend(undefined_vars(r.min))
         # remove trivial axis
-        trivial_vars = set(
-            iter_var.var for iter_var in block_stmt.iter_vars if _is_one(iter_var.dom.extent))
+        trivial_vars = set(iter_var.var for iter_var in block_stmt.iter_vars if _is_one(iter_var.dom.extent))
         axes = [axis for axis in axes if axis not in trivial_vars]
         # remove duplicate axis
         axes = [var for i, var in enumerate(axes) if i == 0 or var != axes[i - 1]]
@@ -466,20 +458,19 @@ def is_identity_or_transpose_block(block_stmt: tir.Block) -> bool:
     lhs_access_vars = get_access_vars(block_stmt.reads[0].region)[-2:]
     rhs_access_vars = get_access_vars(block_stmt.writes[0].region)[-2:]
     is_identity = list(lhs_access_vars) == list(rhs_access_vars)
-    is_transpose = list(lhs_access_vars) != list(rhs_access_vars) and set(lhs_access_vars) == set(
-        rhs_access_vars)
+    is_transpose = list(lhs_access_vars) != list(rhs_access_vars) and set(lhs_access_vars) == set(rhs_access_vars)
     return is_identity, is_transpose
 
 
-def is_identity_block(block_stmt: tir.Block) -> bool:
+def is_identity_block(block_stmt: tirx.SBlock) -> bool:
     return is_identity_or_transpose_block(block_stmt)[0]
 
 
-def is_transpose_block(block_stmt: tir.Block) -> bool:
+def is_transpose_block(block_stmt: tirx.SBlock) -> bool:
     return is_identity_or_transpose_block(block_stmt)[1]
 
 
-def inline_transpose_block(sch: tir.Schedule, blocks: List[tir.schedule.BlockRV]):
+def inline_transpose_block(sch: Schedule, blocks: list[SBlockRV]):
     result_blocks = []
     for block in blocks:
         if not is_transpose_block(sch.get(block)):
@@ -495,9 +486,7 @@ def inline_transpose_block(sch: tir.Schedule, blocks: List[tir.schedule.BlockRV]
     return result_blocks
 
 
-def normalize_to_matmul(sch: tir.Schedule,
-                        main_block: BlockRV,
-                        layout: Optional[List[str]] = None) -> Optional[tir.Schedule]:
+def normalize_to_matmul(sch: Schedule, main_block: SBlockRV, layout: list[str] | None = None) -> Schedule | None:
     if layout is None:
         layout = ["n", "t", "n"]
     block_stmt = sch.get(main_block)
@@ -523,51 +512,51 @@ def normalize_to_matmul(sch: tir.Schedule,
 
 
 def get_tensorized_func_and_tags(
-    func: tir.PrimFunc,
+    func: tirx.PrimFunc,
     target: Target,
-    layout: Optional[List[str]] = None,
+    layout: list[str] | None = None,
     skip_normalize: bool = False,
     allow_gemv: bool = False,
-) -> Tuple[tir.PrimFunc, Dict[str, Union[List[int], int]]]:
+) -> tuple[tirx.PrimFunc, dict[str, list[int] | int]]:
     """
-        transform function to matmul if necessary (e.g. transform conv2d with im2col)
+    transform function to matmul if necessary (e.g. transform conv2d with im2col)
     """
     if layout is None:
         layout = ["a", "a", "a"]
     # step1. detect whether the function can utilize tensorcore
-    sch = tir.Schedule(func)
+    sch = Schedule(func)
     root_block = get_root_block(sch)
     blocks = sch.get_child_blocks(root_block)
     reduction_blocks = get_reduction_blocks(sch, blocks)
     if not reduction_blocks or len(reduction_blocks) != 1:
         return func, None
 
-    def _can_be_tensorized(sch: tir.Schedule, block: BlockRV) -> bool:
+    def _can_be_tensorized(sch: Schedule, block: SBlockRV) -> bool:
         block_stmt = sch.get(block)
         conditions = []
         conditions.append(len(block_stmt.reads) == 2)
         conditions.append(len(block_stmt.writes) == 1)
-        conditions.append(
-            len(
-                collect_block_iter_vars_used_in_access_region(block_stmt,
-                                                              block_stmt.writes[0].region)) > 0)
+        conditions.append(len(collect_block_iter_vars_used_in_access_region(block_stmt, block_stmt.writes[0].region)) > 0)
         return all(conditions)
 
     # step2. transform function to tensorcore matmul (e.g. conv2d with im2col)
-    def check_sm_version(arch: str) -> int:
-        sm_version = arch.replace("sm_", "")
-        return int(sm_version) if sm_version.isdigit() else -1
+    def is_cuda_tensorcore_target(target: Target) -> bool:
+        return target.kind.name == "cuda" and check_sm_version(target.attrs.get("arch", "")) >= 70
 
-    def analysis_tensorcore_tags(sch: tir.Schedule, block: BlockRV,
-                                 target: Target) -> Union[bool, Dict]:
-        tags: Dict[str, Union[List[int], int]] = {}
+    def is_ascend_target(target: Target) -> bool:
+        return target.kind.name == "ascend" or (target.kind.name == "llvm" and "ascend" in target.keys)
+
+    def is_rdna_wmma_target(target: Target) -> bool:
+        return target.kind.name == "hip" and target_is_rdna(target)
+
+    def analysis_tensorcore_tags(sch: Schedule, block: SBlockRV, target: Target) -> bool | dict:
+        tags: dict[str, list[int] | int] = {}
         block_stmt = sch.get(block)
 
-        is_ascend = target.kind.name == "ascend" or (target.kind.name == "llvm" and "ascend" in target.keys)
-
-        # Nvidia Only Support Tensor Core for
-        # devices greater than 70.
-        if not is_ascend and check_sm_version(target.arch) < 70:
+        # Tensorized schedules are supported by NVIDIA Tensor Cores and by RDNA
+        # WMMA on HIP/gfx11+ targets.  Other targets fall back to the default
+        # Roller policy.
+        if not is_cuda_tensorcore_target(target) and not is_rdna_wmma_target(target) and not is_ascend_target(target):
             return False
         # analysis tensorcore axis
         # todo(lei): maybe we can remove this in the future
@@ -578,22 +567,24 @@ def get_tensorized_func_and_tags(
         # analysis pipeline stage
         # todo(lei): maybe we can integrate this into policy in the future
         tags["pipeline_stage"] = 1
-        if target.kind.name == "cuda" and check_sm_version(target.arch) in {80, 90}:
+        if target.kind.name == "cuda" and check_sm_version(target.attrs.get("arch", "")) in {80, 90}:
             # enable pipeline stage only for sm_80 devices
             tags["pipeline_stage"] = 2
-        elif is_ascend:
+        elif is_ascend_target(target):
             tags["pipeline_stage"] = 2
+        elif is_rdna_wmma_target(target):
+            tags["pipeline_stage"] = _get_rdna_tuning_config(target_get_mcpu(target)).pipeline_stage
 
         # analysis async copy
         # todo(lei): maybe we can integrate this into policy in the future
         tags["use_async_copy"] = False
-        if tags["pipeline_stage"] == 2 and check_sm_version(target.arch) in {80, 90}:
+        if target.kind.name == "cuda" and tags["pipeline_stage"] == 2 and check_sm_version(target.attrs.get("arch", "")) in {80, 90}:
             # async copy only works in software pipeline.
             tags["use_async_copy"] = True
 
         # analysis intrin information
-        def get_ordered_axes(region: List[Range]) -> Set[Var]:
-            axes: List[Var] = []
+        def get_ordered_axes(region: list[Range]) -> set[Var]:
+            axes: list[Var] = []
             for r in region:
                 if not _is_one(r.extent):
                     raise ValueError("Expect elemwise block access")
@@ -601,16 +592,13 @@ def get_tensorized_func_and_tags(
             return axes
 
         def is_common_reduce(var: Var) -> bool:
-            for iter_var in block_stmt.iter_vars:
-                if iter_var.var == var and iter_var.iter_type == IterVar.CommReduce:
-                    return True
-            return False
+            return any(iter_var.var == var and iter_var.iter_type == IterVar.CommReduce for iter_var in block_stmt.iter_vars)
 
         def has_common_reduce(var: Var) -> bool:
             vars = collect_vars_from_expr(var)
             return any(is_common_reduce(v) for v in vars)
 
-        def check_last_trait(region: List[Range]):
+        def check_last_trait(region: list[Range]):
             axes = get_ordered_axes(region)
             return has_common_reduce(axes[-1])
 
@@ -619,7 +607,7 @@ def get_tensorized_func_and_tags(
         intrin_info["in_dtype"] = in_dtype
         intrin_info["out_dtype"] = out_dtype
 
-        if 70 <= check_sm_version(target.arch) < 80 and out_dtype == "int32":
+        if target.kind.name == "cuda" and 70 <= check_sm_version(target.attrs.get("arch", "")) < 80 and out_dtype == "int32":
             # INT32 Accum TensorCore only supports SM Version > 32.
             return False
 
@@ -635,14 +623,14 @@ def get_tensorized_func_and_tags(
         # When the func is a dequantize like ops, we should consider the M
         require_block_reduce = False
         # And we only support float16 for now
-        if (hasattr(func.attrs, "dequantize_info") and in_dtype in ["bfloat16", "float16"]):
+        if hasattr(func.attrs, "dequantize_info") and in_dtype in ["bfloat16", "float16"]:
             for arg in func.params:
                 inp_shape = func.buffer_map[arg].shape
                 M = inp_shape[0]
-                if isinstance(M, tir.IntImm) and M <= 128:
+                if isinstance(M, tirx.IntImm) and M <= 128:
                     require_block_reduce = True
                 break
-        if require_block_reduce and check_sm_version(target.arch) == 80:
+        if target.kind.name == "cuda" and require_block_reduce and check_sm_version(target.attrs.get("arch", "")) == 80:
             tags["block_reduction_depth"] = 2
         return tags
 
@@ -651,23 +639,19 @@ def get_tensorized_func_and_tags(
         return func, None
 
     block_stmt = sch.get(main_block)
-    is_ascend = target.kind.name == "ascend" or (target.kind.name == "llvm" and "ascend" in target.keys)
-    cuda_with_tensorcore = target.kind.name == "cuda" and check_sm_version(target.arch) >= 70
-    if is_ascend or cuda_with_tensorcore:
+    if is_cuda_tensorcore_target(target) or is_rdna_wmma_target(target) or is_ascend_target(target):
         in_dtype, out_dtype = get_in_out_dtypes(block_stmt)
-        if cuda_with_tensorcore:
+        if is_cuda_tensorcore_target(target):
             if not is_tensorcore_supported_precision(in_dtype, out_dtype, arch=get_arch(target)):
-                logger.debug(
-                    f"The input and output dtype ({in_dtype}, {out_dtype})is not supported by tensorcore"
-                )
+                logger.debug(f"The input and output dtype ({in_dtype}, {out_dtype})is not supported by tensorcore")
                 return func, None
-        else:
-            # Ascend only support float16 tensorcore for now
-            if not is_cube_supported_precision(in_dtype, out_dtype, arch=get_arch(target)):
-                logger.debug(
-                    f"The input and output dtype ({in_dtype}, {out_dtype})is not supported by Ascend tensorcore"
-                )
-                return func, None
+        elif is_ascend_target(target) and not is_cube_supported_precision(in_dtype, out_dtype, arch=get_arch(target)):
+            logger.debug(f"The input and output dtype ({in_dtype}, {out_dtype})is not supported by Ascend tensorcore")
+            return func, None
+        elif is_rdna_wmma_target(target) and (str(in_dtype), str(out_dtype)) not in {("float16", "float32")}:
+            logger.debug(f"The input and output dtype ({in_dtype}, {out_dtype})is not supported by RDNA WMMA")
+            return func, None
+
         # reindex and transform functions
         # Normalize tensor functions to C[S, I, J] += A[S, I, K] * B[S, J, K]
         # or C[S, I, J] += A[S, I, K] * B[S, K, J]
@@ -680,9 +664,8 @@ def get_tensorized_func_and_tags(
         block_stmt = sch.get(main_block)
 
         # 16 for 16 bits tensor core while 32 for 8bits tensorcore.
-        if is_ascend:
-            arch = get_arch(target)
-            cube_shape = arch.cube_shape
+        if is_ascend_target(target):
+            cube_shape = get_arch(target).cube_shape
             minimal_tensorize_spatial_threshold = cube_shape[0]
             minimal_tensorize_reduce_threshold = cube_shape[2]
         else:
@@ -700,7 +683,7 @@ def get_tensorized_func_and_tags(
             else:
                 raise ValueError(f"Unknown IterVar type {iter_type}")
 
-            if (isinstance(extent, tir.expr.IntImm) and extent.value < minimal_tensorize_threshold):
+            if isinstance(extent, tirx.expr.IntImm) and extent.value < minimal_tensorize_threshold:
                 return func, None
         tags = analysis_tensorcore_tags(sch, main_block, target)
         return sch.mod["main"], tags
@@ -710,22 +693,24 @@ def get_tensorized_func_and_tags(
 
 def get_propagate_map(trans: bool = True, dtype="float16", matrix_name="A", index_dtype="int32"):
     from bitblas.tl.mma_layout import (  # pylint: disable=import-outside-toplevel
-        ldmatrix_32x8_to_shared_16x16_layout, ldmatrix_trans_32x8_to_shared_16x16_layout,
-        ldmatrix_32x16_to_shared_16x32_layout_a, ldmatrix_32x16_to_shared_16x32_layout_b,
+        ldmatrix_32x8_to_shared_16x16_layout,
+        ldmatrix_trans_32x8_to_shared_16x16_layout,
+        ldmatrix_32x16_to_shared_16x32_layout_a,
+        ldmatrix_32x16_to_shared_16x32_layout_b,
     )
 
     assert dtype in [
         "bfloat16",
         "float16",
         "int8",
-        "e4m3_float8",
-        "e5m2_float8",
-    ], "Only support bfloat16, float16, int8, e4m3_float8, e5m2_float8"
+        "float8_e4m3",
+        "float8_e5m2",
+    ], "Only support bfloat16, float16, int8, float8_e4m3, float8_e5m2"
     # TODO(lei): actually should analyze based on bits instead of dtype
     if dtype in ["bfloat16", "float16"]:
         ldmatrix_layout = ldmatrix_32x8_to_shared_16x16_layout
         ldmatrix_layout_trans = ldmatrix_trans_32x8_to_shared_16x16_layout
-    elif dtype in ["int8", "e4m3_float8", "e5m2_float8"]:
+    elif dtype in ["int8", "float8_e4m3", "float8_e5m2"]:
         # int8 mma only support 32x16 to 16x32 layout
         if matrix_name == "A" and trans is False:
             ldmatrix_layout = ldmatrix_32x16_to_shared_16x32_layout_a
@@ -751,9 +736,7 @@ def get_propagate_map(trans: bool = True, dtype="float16", matrix_name="A", inde
         return ldmatrix_layout(thread_id, local_id)
 
     if dtype in ["bfloat16", "float16"]:
-        ldmatrix_index_map = (
-            ldmatrix_trans_permutation_16x16_32x8_16x16
-            if trans else ldmatrix_permutation_16x16_32x8_16x16)
+        ldmatrix_index_map = ldmatrix_trans_permutation_16x16_32x8_16x16 if trans else ldmatrix_permutation_16x16_32x8_16x16
     else:
         ldmatrix_index_map = ldmatrix_permutation_16x32_32x16_32x16
 
@@ -768,7 +751,6 @@ def get_propagate_map(trans: bool = True, dtype="float16", matrix_name="A", inde
 # Ladder weight propagation, which can be used to avoid the ldmatrix
 # Instructions.
 def get_ladder_stage3_map(dtype="float16", index_dtype="int32"):
-
     def shared_32x8_to_mma_32x8_layout(i, j):
         thread_id = (i % 8) * 4 + (j // 2)
         local_id = (i // 8) * 2 + (j % 2)
@@ -783,12 +765,12 @@ def get_ladder_stage3_map(dtype="float16", index_dtype="int32"):
         "bfloat16",
         "float16",
         "int8",
-        "e4m3_float8",
-        "e5m2_float8",
-    ], "Only support float16, int8, e4m3_float8, e5m2_float8"
+        "float8_e4m3",
+        "float8_e5m2",
+    ], "Only support float16, int8, float8_e4m3, float8_e5m2"
     if dtype in ["bfloat16", "float16"]:
         stage3_layout = shared_32x8_to_mma_32x8_layout
-    elif dtype in ["int8", "e4m3_float8", "e5m2_float8"]:
+    elif dtype in ["int8", "float8_e4m3", "float8_e5m2"]:
         stage3_layout = shared_32x16_to_mma_32x16_layout
     else:
         raise ValueError("Unknown dtype ", dtype)
@@ -823,10 +805,10 @@ def get_ladder_stage3_map(dtype="float16", index_dtype="int32"):
 
 
 def layout_propagate_chain(
-    sch: tir.Schedule,
-    start_block: BlockRV,
-    start_buffer: tir.Buffer,
-    end_block: BlockRV,
+    sch: Schedule,
+    start_block: SBlockRV,
+    start_buffer: tirx.Buffer,
+    end_block: SBlockRV,
     index_map: IndexMap,
 ):
     # some layout transformation may only apply to the last n dimensions
@@ -861,8 +843,7 @@ def layout_propagate_chain(
                 scaling_factor = 1
                 for i, j in zip(write.buffer.shape, read.buffer.shape):
                     scaling_factor *= i // j
-                final_indices = list(
-                    index_map.map_indices(tmp_index_map.map_indices(write_indices)))
+                final_indices = list(index_map.map_indices(tmp_index_map.map_indices(write_indices)))
                 final_indices[-1] = final_indices[-1] // scaling_factor
                 index_map = IndexMap(
                     write_indices,
