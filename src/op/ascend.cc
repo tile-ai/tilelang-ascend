@@ -329,7 +329,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       ss << get_dtype(dst) << ", ";
       // See copy_gm_to_ub above: a runtime inner-extent must use the buffer's
       // compile-time shape for the template col dim (runtime width is carried
-      // by the maskShapeN function arg); const extents are byte-identical.
+      // by the maskShapeN function arg); const extents keep their
+      // instantiation, except proper column slices (handled below).
       PrimExpr ub2gm_tmpl_n = src_extents[src->shape.size() - 1];
       if (!ub2gm_tmpl_n->IsInstance<IntImmNode>()) {
         ub2gm_tmpl_n = src->shape[src->shape.size() - 1];
@@ -338,6 +339,36 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
             << "copy_ub_to_gm: the inner (column) dimension of the source "
                "buffer shape must be a compile-time constant, but got "
             << ub2gm_tmpl_n;
+      } else if (src->shape.size() > 1) {
+        const auto *ext_imm = ub2gm_tmpl_n.as<IntImmNode>();
+        const auto *pitch_imm =
+            src->shape[src->shape.size() - 1].as<IntImmNode>();
+        // Read-side mirror of the copy_gm_to_ub flattening bug: with srcN ==
+        // slice width, copy_ub_to_gm's packed check (srcN == maskShapeN &&
+        // realdstN == maskShapeN) collapses a multi-row column-slice store
+        // into ONE flat burst that reads the UB rows contiguously from the
+        // slice offset (neighbour columns' data), and the non-packed path
+        // would compute srcStride = (bytes(srcN) - blockLen) / 32 from the
+        // slice width instead of the physical row pitch. Instantiating with
+        // the pitch restores the correct 32B-block stepping. Gated on 32B
+        // alignment exactly like copy_gm_to_ub (the srcStride division must
+        // be exact); non-aligned widths keep the legacy instantiation.
+        if (pitch_imm != nullptr && ext_imm->value < pitch_imm->value &&
+            (ext_imm->value * src->dtype.bytes()) % 32 == 0 &&
+            (pitch_imm->value * src->dtype.bytes()) % 32 == 0) {
+          ub2gm_tmpl_n = src->shape[src->shape.size() - 1];
+          // MTE3 bursts read 32B blocks; the UB buffer base is aligned, so a
+          // CONST column offset must be a multiple of 32B. A RUNTIME column
+          // offset cannot be checked here: the caller must keep
+          // offset * sizeof(T) % 32 == 0 (device: MTE3 ADDR_MISALIGN).
+          PrimExpr col_off = src_range[src_range.size() - 1]->min;
+          if (const auto *off_imm = col_off.as<IntImmNode>()) {
+            ICHECK((off_imm->value * src->dtype.bytes()) % 32 == 0)
+                << "copy_ub_to_gm: column-slice source offset ("
+                << off_imm->value << " x " << src->dtype.bytes()
+                << "B) must be 32B-aligned for the MTE3 burst stepping";
+          }
+        }
       }
       ss << ub2gm_tmpl_n;
       if (src->shape.size() > 1) {

@@ -85,7 +85,7 @@ def col_slice_assemble(L, M, W, dtype):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             ub = T.alloc_ub((M, pitch), dtype)
             for l in T.serial(L):
-                T.copy(A[l, 0, 0], ub[0:M, l * W:(l + 1) * W])
+                T.copy(A[l, 0, 0], ub[0:M, l * W : (l + 1) * W])
             T.copy(ub, C[0, 0])
 
     return main
@@ -122,7 +122,7 @@ def col_slice_const_offset(L, M, W, off, dtype):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             ub = T.alloc_ub((M, pitch), dtype)
             T.tile.fill(ub, 7.0)
-            T.copy(A[1, 0, 0], ub[0:M, off:off + W])
+            T.copy(A[1, 0, 0], ub[0:M, off : off + W])
             T.copy(ub, C[0, 0])
 
     return main
@@ -137,9 +137,9 @@ def test_col_slice_const_offset_preserves_neighbours(target):
     a = torch.randn(L, M, W, dtype=torch.float32).npu()
     torch.npu.synchronize()
     c = func(a).cpu()
-    torch.testing.assert_close(c[:, off:off + W], a[1].cpu(), rtol=0, atol=0)
+    torch.testing.assert_close(c[:, off : off + W], a[1].cpu(), rtol=0, atol=0)
     assert torch.all(c[:, :off] == 7.0), "left neighbour columns were wiped"
-    assert torch.all(c[:, off + W:] == 7.0), "right neighbour columns were wiped"
+    assert torch.all(c[:, off + W :] == 7.0), "right neighbour columns were wiped"
 
 
 # =============================================================================
@@ -182,7 +182,7 @@ def row_slice_dst(M, N, dtype):
         with T.Kernel(1, is_npu=True) as (cid, vid):
             ub = T.alloc_ub((M, N), dtype)
             T.tile.fill(ub, 9.0)
-            T.copy(A[0:M // 2, 0:N], ub[0:M // 2, 0:N])
+            T.copy(A[0 : M // 2, 0:N], ub[0 : M // 2, 0:N])
             T.copy(ub, C[0, 0])
 
     return main
@@ -197,8 +197,8 @@ def test_row_slice_dst(target):
     a = torch.randn(M, N, dtype=torch.float32).npu()
     torch.npu.synchronize()
     c = func(a).cpu()
-    torch.testing.assert_close(c[:M // 2], a.cpu()[:M // 2], rtol=0, atol=0)
-    assert torch.all(c[M // 2:] == 9.0), "rows below the row slice were wiped"
+    torch.testing.assert_close(c[: M // 2], a.cpu()[: M // 2], rtol=0, atol=0)
+    assert torch.all(c[M // 2 :] == 9.0), "rows below the row slice were wiped"
 
 
 # =============================================================================
@@ -210,18 +210,62 @@ def test_col_slice_codegen_source():
     tilelang.disable_cache()
     try:
         func = col_slice_assemble(4, 16, 128, "float")
-        kern = tilelang.compile(
-            func, out_idx=[-1], pass_configs=VEC_PASS_CONFIGS, target="ascendc"
-        )
+        kern = tilelang.compile(func, out_idx=[-1], pass_configs=VEC_PASS_CONFIGS, target="ascendc")
         src = kern.get_kernel_source()
     finally:
         tilelang.enable_cache()
-    assert "copy_gm_to_ub<float, 512, 16, false>" in src, (
-        "column-slice copy not emitted with pitch dstN + padGap=false:\n" + src
-    )
-    assert "copy_gm_to_ub<float, 128" not in src, (
-        "slice-width dstN instantiation still emitted:\n" + src
-    )
+    assert "copy_gm_to_ub<float, 512, 16, false>" in src, "column-slice copy not emitted with pitch dstN + padGap=false:\n" + src
+    assert "copy_gm_to_ub<float, 128" not in src, "slice-width dstN instantiation still emitted:\n" + src
+
+
+# =============================================================================
+# 6. UB -> GM column-slice disassemble (read-side mirror)    [risk: medium]
+# =============================================================================
+def col_slice_disassemble(L, M, W, dtype):
+    """Store direction: load the whole UB [M, L*W] from one GM tensor, then
+    copy L column slices out to L GM planes [M, W].  With srcN == slice width
+    the copy_ub_to_gm packed check collapsed each multi-row slice store into
+    ONE flat burst reading the UB rows contiguously from the slice offset
+    (neighbour columns' data); with srcN == pitch the multi-burst srcStride
+    is (pitch - W) * sizeof(T) / 32 32B blocks."""
+    pitch = L * W
+
+    @T.prim_func
+    def main(A: T.Tensor((M, pitch), dtype), C: T.Tensor((L, M, W), dtype)):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            ub = T.alloc_ub((M, pitch), dtype)
+            T.copy(A[0, 0], ub)
+            for l in T.serial(L):
+                T.copy(ub[0:M, l * W : (l + 1) * W], C[l, 0, 0])
+
+    return main
+
+
+@pytest.mark.parametrize("target", TARGETS)
+def test_col_slice_disassemble(target):
+    torch.manual_seed(0)
+    L, M, W = 4, 16, 128
+    func = col_slice_disassemble(L, M, W, "float")
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=VEC_PASS_CONFIGS, target=target)
+    a = torch.randn(M, L * W, dtype=torch.float32).npu()
+    torch.npu.synchronize()
+    c = func(a).cpu()
+    expected = a.cpu().reshape(M, L, W).permute(1, 0, 2)
+    torch.testing.assert_close(c, expected, rtol=0, atol=0)
+
+
+def test_col_slice_disassemble_codegen_source():
+    """The store-side slice copy must instantiate the template with the
+    PHYSICAL pitch (512), never the slice width (128) as srcN."""
+    tilelang.disable_cache()
+    try:
+        func = col_slice_disassemble(4, 16, 128, "float")
+        kern = tilelang.compile(func, out_idx=[-1], pass_configs=VEC_PASS_CONFIGS, target="ascendc")
+        src = kern.get_kernel_source()
+    finally:
+        tilelang.enable_cache()
+    assert "copy_ub_to_gm<float, 512, 16>" in src, "column-slice store not emitted with pitch srcN:\n" + src
+    assert "copy_ub_to_gm<float, 128" not in src, "slice-width srcN instantiation still emitted:\n" + src
 
 
 if __name__ == "__main__":
