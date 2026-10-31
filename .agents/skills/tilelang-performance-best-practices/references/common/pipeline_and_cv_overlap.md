@@ -14,7 +14,7 @@
 
 真实 LOCK 参考为 [kernel.tl](../../../../../examples/flash_attention/fa_opt/expert_v3/kernel.tl) 和 [预处理器](../../../../../examples/flash_attention/fa_opt/expert_v3/tools/preprocess.py)，不规定不存在的统一源文件名。
 
-旧文“纯 Vector 必须关闭 AUTO_SYNC”“不超过 10% 就是同步未关”等不是通用定律。`AUTO_SYNC=False` 不会自动建立正确流水；仅删除 barrier 或交替 dst 也不能代替完整依赖。检查 [同步插入](../../../../../src/transform/ascend_sync_insert.cc) 与生成代码。纯 Vector 的 CombineCV 不必默认关闭；若出现 `alloc_var` 定义与使用跨核的具体错误，先定位 classifier，诊断回退关闭时补齐显式 V scope。
+纯 Vector 是否调整 AUTO_SYNC 由依赖和生成代码决定，不能根据固定收益比例推断同步状态。`AUTO_SYNC=False` 不会自动建立正确流水；仅删除 barrier 或交替 dst 也不能代替完整依赖。检查 [同步插入](../../../../../src/transform/ascend_sync_insert.cc) 与生成代码。纯 Vector 的 CombineCV 不必默认关闭；若出现 `alloc_var` 定义与使用跨核的具体错误，先定位 classifier，诊断回退关闭时补齐显式 V scope。
 
 ## 核内生命周期
 
@@ -22,7 +22,7 @@
 
 Vector 低层事件常见 `MTE3→MTE2`（可覆写）、`MTE2→V`（输入就绪）、`V→MTE3`（输出就绪）。Cube 分开处理 GM→L1 的 MTE2、L1→L0 的 MTE1、MMA 的 M、输出 FIX；事件方向与真实生产/消费匹配，初始化及末尾 drain 必须成对。具体语法由当前 DSL/生成器决定。
 
-正确 slot 推导见 [双缓冲专题](../elementwise/double_buffer_design.md)。预取第 0 块以后，第一轮必须消费 slot 0；旧示例从 `si=1` 配 `cur=si%2` 会先等待未填充 slot，不得复用。
+正确 slot 推导见 [双缓冲专题](../elementwise/double_buffer_design.md)。预取第 0 块以后，第一轮必须消费 slot 0；从 `si=1` 配 `cur=si%2` 会先等待未填充 slot，这是不合法的轮转。
 
 ## CV 核间流水
 
@@ -38,4 +38,4 @@ Vector 低层事件常见 `MTE3→MTE2`（可覆写）、`MTE2→V`（输入就�
 
 检查生成 buffer 地址、版本切换、同步方向与首尾调度，然后在同输入/同语义下测 stage 1/2 latency、MTE/Vector/Cube overlap 和噪声。编译成功、正确性通过或两个 buffer 均不能单独证明生效。
 
-自动分析失败只否决该组合；在现有模式授权和可验证 API 范围内，可继续手动 ownership 代表，或记录容量/依赖/编译支持不足。所有候选记录 tile、stage、访问形状、控制流和同步配置；不能将单个 tile 的失败泛化为整个流水方向失败。零/单次循环、尾块、改变 case 顺序和连续多次调用必须纳入回归。
+自动分析失败只否决该组合。流水候选已经由每核独立迭代、容量和 MTE/Compute 可重叠性准入时，自动失败或部分生效后必须按 [多版本流水门禁](../elementwise/double_buffer_design.md) 完成手动显式多版本代表，或提供 API、lowering、容量或依赖的确定不可实施证据；不能只将它留为可选建议。自动组合完整生效时可记录 `NOT_NEEDED_AUTO_COMPLETE`，不再重复测试手动等价实现。所有候选记录 tile、stage、访问形状、控制流和同步配置；不能将单个 tile 的失败泛化为整个流水方向失败。零/单次循环、尾块、改变 case 顺序和连续多次调用必须纳入回归。

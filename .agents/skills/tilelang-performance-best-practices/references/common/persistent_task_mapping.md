@@ -16,4 +16,4 @@
 
 当前 [Persistent 签名](../../../../../tilelang/language/persistent.py) 要求 domain 各维、wave_size、group_size 为正，`0 <= index < wave_size`，末维可被 `min(group_size, domain[-1])` 整除；空任务在进入 Persistent 前处理，不能将验证覆盖的空任务直接传作零 extent。多轴映射见 [Persistent 测试](../../../../../testing/python/language/test_tilelang_ascend_language_persistent.py)；已有用例不替代目标 kernel 的精度与性能验证。
 
-A2/A3 的 Fixed Core、空任务、workspace 复用与 owner 约束见 [任务映射补充](task_mapping.md)。
+Fixed Core、空任务、workspace 复用与 owner 约束见 [任务映射](task_mapping.md)。

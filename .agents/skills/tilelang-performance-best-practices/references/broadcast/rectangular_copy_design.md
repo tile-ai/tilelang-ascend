@@ -26,4 +26,4 @@
 
 动态维、张量视图与搬运限制按当前 [copy_op.py](../../../../../tilelang/language/copy_op.py)、[API 计算参考](../../../tilelang-custom-skill/tilelang-api-best-practices/references/api-compute.md) 的 stride 模式及 [common.h](../../../../../src/tl_templates/ascend/common.h) 核对。
 
-本页讨论多维广播的矩形搬运，不引入 NDDMA 指令；A2/A3 具体 API 与参数加载见 [广播补充](guide.md)。
+多维广播的矩形搬运与参数加载见 [广播指南](broadcast_design.md)，是否形成预期 DMA 必须由 lowering 与生成代码确认。

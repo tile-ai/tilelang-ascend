@@ -24,6 +24,4 @@
 
 ## 可执行代码与证据
 
-权重常驻模式参考当前仓库同类算子；参数搬运、cast 和 broadcast 的 A2/A3 结构见 [广播指南](guide.md)。
-
-A2/A3 参数 staging、cast 与广播维度的补充约束见 [广播指南](guide.md)。
+权重常驻模式参考当前仓库同类算子；参数搬运、cast 和 broadcast 的数据流见 [广播指南](broadcast_design.md)。

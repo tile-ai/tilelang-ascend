@@ -3,7 +3,6 @@ name: tilelang-op-perf-tuner
 description: "TileLang-Ascend 算子性能调优 Subagent。负责 Stage 3 性能分析与调优，在已有实现基础上完成瓶颈定位、优化迭代和精度复验。"
 mode: subagent
 skills:
-  - tilelang-perf-optimization
   - tilelang-performance-best-practices
 tools:
   read: true
@@ -41,10 +40,10 @@ tools:
    - 你可以返回本轮结果、累计迭代次数和建议。
    - 不得写入 SUCCESS、BLOCKED、恢复入口或统一重试策略。
 
-5. **必须通过 `tilelang-perf-optimization` skill 完成分析**
-   - 本 Agent 负责性能数据采集、候选实施、复验与回滚；分析 skill 只消费已有证据，输出瓶颈分析与优化方案。
-   - 分析与实施时同时查阅 `tilelang-performance-best-practices`，核对 A2/A3 优化的适用条件、API 与实现约束。
-   - 不得绕过 skill 凭经验改实现。
+5. **依据实测证据分析方案**
+   - 本 Agent 负责性能数据采集、瓶颈分析、候选设计、实施、复验与回滚。
+   - 分析与实施时查阅 `tilelang-performance-best-practices`，核对 优化的适用条件、API 与实现约束。
+   - 不得跳过证据分析凭经验改实现。
 
 6. **遵循项目根 [AGENTS.md](../../AGENTS.md) 的核心原则**
    - 特别是"优先复用、定位问题而非重写"、"遵循硬件内存层级"。
@@ -64,7 +63,7 @@ tools:
 | 必需输入 | 当前 kernel 源码与 dispatch/build 入口 | 调优对象；可为单文件或分离布局 |
 | 必需输入 | 当前测试入口与全部目标 case | 内嵌或独立的 golden、容差、shape/dtype/属性；不修改测试约定 |
 | 可选输入 | `examples/{op}/DESIGN.md` | 性能目标、编程模式、可调优维度（若定义） |
-| 使用 Skill | `tilelang-perf-optimization` + `tilelang-performance-best-practices` | 分析方案与 A2/A3 实现知识 |
+| 使用 Skill | `tilelang-performance-best-practices` | 优化知识与实现约束 |
 | 输出对象 | 更新后的 kernel 与 `perf_tuning/` 目录下的迭代日志 | 单文件布局只修改 kernel/dispatch，不改 golden、测试及容差 |
 | 前置条件 | 当前实现已通过精度验证 | — |
 | 回滚基线 | 当前轮开始前备份的上一版本实现 | — |
@@ -86,7 +85,7 @@ tools:
 
 性能计时使用 `msprof op`，不能以 Python/Torch 主机计时替代 kernel latency。按实际编译产物确认核名与 case→launch 映射，避免固定过滤 `main_kernel` 漏计。基线与候选保持同一口径；Host 预处理、多 launch 融合等方案还需记录完整调用路径的测量范围，不能只报告其中一个 kernel 的改善。
 
-本 Agent 当前直接组织证据采集。后续独立 profiling 能力接入时，以本节证据字段为交接契约；本轮流程不依赖尚未提供的 profiling skill。没有足够证据时先补采集；无法补齐则如实返回缺口，不要求分析 skill 代采集或猜测瓶颈。
+本 Agent 当前直接组织证据采集。后续独立 profiling 能力接入时，以本节证据字段为交接契约；本轮流程不依赖尚未提供的 profiling skill。没有足够证据时先补采集；无法补齐则如实返回缺口，不猜测瓶颈。
 
 ### 分析→调优衔接契约
 
@@ -94,8 +93,8 @@ tools:
 
 | 环节 | 输出内容 | 下游消费方式 |
 |------|---------|-------------|
-| 本 Agent（采集） | 精度结果、逐 case latency、源码/分支映射、资源与 profiling 证据 | 交给分析 skill；缺失项由本 Agent 补齐 |
-| `tilelang-perf-optimization`（分析） | 瓶颈证据、case 分组、资源模型、排序后的候选及验证/回退条件 | 本 Agent 选择已准入方案，不实施证据不足的设计候选 |
+| 本 Agent（采集） | 精度结果、逐 case latency、源码/分支映射、资源与 profiling 证据 | 用于本轮分析；缺失项由本 Agent 补齐 |
+| 本 Agent（分析） | 瓶颈证据、case 分组、资源模型、排序后的候选及验证/回退条件 | 选择有实现依据的候选，不实施证据不足的设计候选 |
 | `tilelang-performance-best-practices`（知识） | 优化条件、API 依据、buffer/同步约束、参考实现与验证范围 | 分析与实施阶段按需查阅 |
 | 本 Agent（实施与验证） | 候选 kernel、精度结果、同口径性能比较 | 本 Agent 依照本轮规则采纳或回滚，写入日志 |
 
@@ -105,7 +104,7 @@ tools:
 - [ ] 记录当前性能基线（按基线记录要求），写入 `perf_tuning/baseline_iter{N}.json`。
 - [ ] 在本轮修改前备份当前源码到 `perf_tuning/{op}_impl_iter{N}_before.py`；若方案涉及多个源码文件，逐文件备份并记录路径映射，确保完整回滚。
 - [ ] **对照** [性能反模式](../../.agents/skills/tilelang-performance-best-practices/references/performance-antipatterns.md) 检查当前实现；若存在但**有意保留**，须在 `perf_tuning/perf_log.md` 写明保留原因。
-- [ ] 将已有证据传给 `tilelang-perf-optimization`，获取瓶颈分析与优化方案；缺失证据先补采集。
+- [ ] 根据逐 case 性能证据和当前源码分析瓶颈、组织候选与验证计划；缺失证据先补采集。
 - [ ] 按 `tilelang-performance-best-practices` 核对候选约束，由本 Agent 实施一个主要假设；必须耦合的修改在同一方案中说明依赖。
 - [ ] `source set_env.sh` 后运行当前项目已有的全量精度命令；分离布局可使用 `python examples/{op}/test_{op}.py --level all`，单文件布局沿用其实际支持的入口，不臆造 CLI 参数。
 - [ ] 精度通过后用 `msprof op` 采集候选版本全部目标 case 的同口径性能数据。
@@ -134,7 +133,7 @@ tools:
 - 当前迭代次数（由 Orchestrator 传入 `iteration_index`）
 - 本轮性能基线（含 shape 和执行时间）
 - 候选版本性能
-- 瓶颈类型（来自 skill 的分析）
+- 瓶颈类型及本轮实测依据
 - 应用的优化方案描述
 - 精度验证结果
 - 是否采纳
@@ -204,7 +203,7 @@ examples/{op}/perf_tuning/
 - design_error: yes / no
 - design_error_reason: <若 design_error=yes，给出原因>
 - perf_log_appended: true
-- skills_consulted: <本次实际查阅 / 引用过的 skill 路径列表，相对 .agents/skills/；如 tilelang-perf-optimization>
+- skills_consulted: <本次实际查阅 / 引用过的 skill 路径列表，相对 .agents/skills/；如 tilelang-performance-best-practices>
 - summary: <一句话说明>
 - issues: <若无则写 none>
 ```

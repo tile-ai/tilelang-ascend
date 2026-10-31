@@ -1,4 +1,4 @@
-# A2/A3 性能关注项与错误诊断
+# 性能关注项与错误诊断
 
 本清单用于静态筛查；命中后需当前代码、生成结果与 profiling 支持，不能直接下 bound 或收益结论。改动遵守原公开接口、reference、容差和用户已选模式。详细知识集中在专题，避免不同文件维护冲突规则。
 
@@ -6,7 +6,7 @@
 
 逻辑 block 远多于硬件可同时运行数时，逐任务 launch 可能重复初始化、扩大 workspace；任务很少却固定大量核可能浪费初始化与同步。比较 Fixed Core 连续/跨步分配，workspace 按其真实生命周期复用，尾 task 加有效 guard。
 
-不写死 A2/A3=24 核，也不混淆 AIV 总数与 `(cid,vid)` 的 launch 单位。任务时长不均时静态连续分配可能更慢；MIX 不一律 `vid==0`。见 [任务映射](common/task_mapping.md)。
+不将可用核数固定为 24，也不混淆 AIV 总数与 `(cid,vid)` 的 launch 单位。任务时长不均时静态连续分配可能更慢；MIX 不一律 `vid==0`。见 [任务映射](common/task_mapping.md)。
 
 ## 2. Vector 侧逐行发射相同操作
 
@@ -24,13 +24,13 @@ Developer/混合模式沿用自动依赖；Expert 用当前 LOCK 源和预处理
 
 `acc+=x*w` 可评估 `mul_add_dst`，`dst+=alpha*src` 可评估 `axpy`，激活与 `rsqrt` 路径按数值合约比较。`x=x*scale-m` 不等价于 `axpy(x,m,scale)`；错误融合不是精度可容忍的近似。每条候选检查 operand、alias、dtype、舍入、NaN/±0 与原容差。
 
-已有授权的优化范围内按验证执行，不沿用旧资料“所有指令融合必须额外询问”的流程。具体例子见 [Elementwise](elementwise/guide.md)。
+融合候选按原数值合约验证，具体例子见 [Elementwise](elementwise/guide.md)。
 
 ## 5. tile 太小或预算模型错误
 
 低利用率、小 DMA、任务/同步太多时评估更大 tile；也保留小 tile 以提高并行度。总量必须包含实际输入/输出/计算 dtype、padding、broadcast、mask、scratch、常驻和全部存活版本。
 
-旧固定 UB=192 KiB、固定六份 buffer、固定 16 元素对齐、任意 tile cap 与固定 L2 容量不作为当前结论。当前后端预算、生命周期及内存规划生成结果见 [资源发现](common/hardware_resource_discovery.md)。编译器复用不允许提前覆盖异步 consumer；最大可装 tile 也不等于最快 tile。
+不能将 UB 预算固定为 192 KiB，也不能一律假定六份 buffer、16 元素对齐、任意 tile cap 或固定 L2 容量。当前后端预算、生命周期及内存规划生成结果见 [资源发现](common/hardware_resource_discovery.md)。编译器复用不允许提前覆盖异步 consumer；最大可装 tile 也不等于最快 tile。
 
 ## 6. 纯 AIV 搬算完全串行
 
@@ -48,7 +48,7 @@ Developer/混合模式沿用自动依赖；Expert 用当前 LOCK 源和预处理
 
 对于可结合总 sum/sumsq，比较每块 reduce+小状态与先累积 `[rows,block_S]` 后循环外归约。后者减少 reduce 次数，但多用 UB、改变求和顺序；不能禁止所有循环内 reduce。共享统计量可两步归约到标量，独立行统计只能保持每行输出。
 
-旧“dim=0 随机”“reduce 输出必须 1D”是局部旧经验；当前合法 rank/dim/keepdim 及后端 dtype 限制见 [Reduction](reduce/guide.md)。诊断需具体 target、shape、real_shape、对齐和生成代码。
+不能笼统认定 dim=0 不可靠或 reduce 输出必须为 1D；当前合法 rank/dim/keepdim 及后端 dtype 限制见 [Reduction](reduce/guide.md)。诊断需具体 target、shape、real_shape、对齐和生成代码。
 
 ## 9. 多行 layout / padding / 广播错误
 
@@ -64,7 +64,7 @@ Developer/混合模式沿用自动依赖；Expert 用当前 LOCK 源和预处理
 | 尾部随机值 | GM 两侧 valid、UB 幺元、真实 output storage 与签名一致 |
 | MIX 重复结果/丢半结果 | 检查 cid/vid owner 与分片，而非机械加/删 guard |
 
-见 [广播](broadcast/guide.md)、[尾块](common/tail_block_design.md) 和 [多行归约](reduce/guide.md)。
+见 [广播](broadcast/broadcast_design.md)、[尾块](common/tail_block_design.md) 和 [多行归约](reduce/guide.md)。
 
 ## 10. host 拷贝或同步掩盖 kernel 收益
 

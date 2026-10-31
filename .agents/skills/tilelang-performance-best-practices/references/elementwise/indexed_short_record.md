@@ -2,7 +2,7 @@
 
 适用于大量独立短记录上的 gather/scatter、仿射组合及参数梯度归约。
 
-**证据等级：源平台历史结构参考。** 源资料记录下列结构已在真实 Ascend kernel 中落地，并有编译运行、精度和同口径性能对比证据；该等级只表示候选可信度，不构成 A2/A3 当前实现或性能证明，不替代当前瓶颈排序和目标 case 复验。
+**适用性与证据：** 下列结构是待结合目标 kernel 验证的优化候选，不构成当前实现或性能证明；必须按当前瓶颈排序，并完成目标 case 的 lowering、精度和同口径性能验证。
 
 ## 优化结构
 
@@ -10,12 +10,18 @@
 - 共享同一短记录、有效区和索引族的相邻字段，优先在一次 SIMD traversal 中联合处理；拆成多轮热循环时须核对重复索引、load/store 和循环成本。
 - 将索引、常量和循环不变量移出 Persistent 热循环，并从生成代码确认没有按 tile 重算。
 - 前序阶段已物化可恢复导数或中间表达式的值时，比较新增读取与删除重算；结合当前记录搬运、任务映射和生命周期完成 lowering 与实测，不能只按输入字节或算术量取舍。
-- 参数梯度等跨 tile 状态分别核对当前 API 可表达的分组归约与 UB 索引重排 + 向量归约；源平台 register permutation 不作为 A2/A3 已有 API；按 accumulator 物理布局、循环后指令、精度和实测选择。
+- 参数梯度等跨 tile 状态分别核对当前 API 可表达的分组归约与 UB 索引重排 + 向量归约；register permutation 必须有当前 API/lowering 支持；按 accumulator 物理布局、循环后指令、精度和实测选择。
 - 消费者、归约轴和生命周期兼容的 partial，在 Persistent 后统一完成 lane reduction，并打包为一个连续 partial record；核对是否真正减少为一个 GM buffer、一次 copy 和一次对应维度的 host reduction。
 - 索引外提、中间值复用、accumulator 布局、归约 lowering、partial 布局/copy/host reduction 数和 launcher JIT 配置分别作为候选核对；实现其中一项不能批量标记其余项完成或无效。
 - 仅对确需跨迭代重叠的流式 buffer 配置多版本；累积状态及单生命周期数据保持单版本，版本组合逐项 A/B。
 - 静态整 tile 候选须联合核对编译期 extent、尾块 mask/分支消除、索引生成、tile 和核数；用受控 A/B 或小规模组合搜索验证，负向结果只否决已测组合，其他 shape 保留通用尾块路径。
 - 流水、fast-math 和大 tile 指令必须分别通过 lowering、精度及同口径性能验证。
+
+### 共享字段与 partial 的端到端成本
+
+多个字段共享同一短记录、有效区域和索引时，比较一次遍历联合处理与多轮独立处理：记录重复索引、load/store、临时结果与 live state。外提不变量，复用已物化且可恢复的中间值；同时计算增加的读取与减少的重算。
+
+参数梯度等 partial 若消费方、归约轴和生命周期相同，可打包连续输出以减少 GM buffer/copy/host reduction 次数。是否值得取决于端到端路径；不能只减少 Python tensor 数量就判定优化有效。
 
 ## 适用性判断
 
@@ -32,4 +38,4 @@
 
 候选按当前瓶颈独立排序。只有物理布局、lowering、精度和同口径性能均验证有效，才保留对应优化。
 
-当前指令表达、AXPY 等价性及短记录 partial 合并的 A2/A3 补充见 [Elementwise 指南](guide.md)。
+指令表达与融合等价性见 [向量化与融合](vector_efficiency_design.md)。

@@ -2,7 +2,7 @@
 
 ## 适用场景
 
-dtype、源索引、向量访问范围和当前 TileLang lowering 均可表达目标索引重排时，评估该设计。A2/A3 本页状态为 DESIGN_ONLY，不提供未经验证的 gather transpose kernel。
+dtype、源索引、向量访问范围和当前 TileLang lowering 均可表达目标索引重排时，评估该设计。本页状态为 DESIGN_ONLY，不提供未经验证的 gather transpose kernel。
 
 ## TileLang Ascend Kernel 结构
 

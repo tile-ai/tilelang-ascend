@@ -1,4 +1,4 @@
-# A2/A3 Conv/GEMM 标量精简
+# Conv/GEMM 标量精简
 
 卷积若 lowering 为 im2col/grouped GEMM，shape、stride、padding、dilation、groups 和 BM/BN/BK 由 Python factory 固化。热路径只保留 output tile 与 K tile 索引，并复用 examples/gemm/example_gemm_persistent.py 或 examples/gemm/example_gemm_intrinsic_persistent.py 的 T.Persistent 任务映射；grouped GEMM 需按实际 group 语义另行实现和验证。
 

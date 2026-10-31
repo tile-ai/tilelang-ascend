@@ -32,7 +32,7 @@ m,s = m_new,s_new
 
 第二遍广播最终 m/s，重新搬入并 cast 输入，计算 exp/div，再**显式将最终计算 buffer cast/copy 到输出 buffer 后写 GM**。旧示意中计算 `a_cal` 后直接写未更新的 `a` 是不完整数据流，不能照抄。输出只在最终边界转换 dtype。
 
-广播与 reduced/keepdim shape 以当前 API 为准。示例可能使用 `[rows,1]` 状态，不能将其机械换成不同 rank；参数广播和 scratch 见 [广播指南](../broadcast/guide.md)。
+广播与 reduced/keepdim shape 以当前 API 为准。示例可能使用 `[rows,1]` 状态，不能将其机械换成不同 rank；参数广播和 scratch 见 [广播指南](../broadcast/broadcast_design.md)。
 
 ## 资源模型
 

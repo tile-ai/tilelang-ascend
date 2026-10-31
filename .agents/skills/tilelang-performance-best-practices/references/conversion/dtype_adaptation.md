@@ -2,7 +2,7 @@
 
 ## 先证明当前路径
 
-本节迁移旧指南 §2.16。按符号定位 [AscendC common.h](../../../../../src/tl_templates/ascend/common.h) 的 `transpose` 模板，并在目标 `get_kernel_source()` 中核对调用和真实 specialization。源码分支是特定后端事实，不能代表其他 target 或未来版本；`SetValue` 也应定位到实际操作，不能全文件出现一次便认定整 kernel 是标量瓶颈。
+按符号定位 [AscendC common.h](../../../../../src/tl_templates/ascend/common.h) 的 `transpose` 模板，并在目标 `get_kernel_source()` 中核对调用和真实 specialization。源码分支是特定后端事实，不能代表其他 target 或未来版本；`SetValue` 也应定位到实际操作，不能全文件出现一次便认定整 kernel 是标量瓶颈。
 
 `GetValue/SetValue` 可能封装在被调用的 C++ 模板中，生成调用点未展开时不会直接出现这些字符串；此时沿 dtype/静态 shape 推导模板分支，必要时查看更低层编译产物，不能以搜索不到字符串就否定 fallback。
 
@@ -26,7 +26,7 @@
 
 ## int8：kernel 内扩宽
 
-int8 值能精确表示为 fp16，可在 UB 内 cast 到 fp16、硬件 transpose、再 cast 回 int8。核验当前 CAST mode、饱和/舍入、原 dtype 全值域、扩宽 scratch、转换总成本和同步。不要把旧 `CAST_NONE/CAST_RINT` 当所有后端固定组合，先查实际生成模板。
+int8 值能精确表示为 fp16，可在 UB 内 cast 到 fp16、硬件 transpose、再 cast 回 int8。核验当前 CAST mode、饱和/舍入、原 dtype 全值域、扩宽 scratch、转换总成本和同步。不要把 `CAST_NONE/CAST_RINT` 当所有后端固定组合，先查实际生成模板。
 
 扩宽/收窄都放在 kernel 数据流内比较；host `.to()` 会引入独立 cast launch，`.contiguous()`/`torch.stack` 可能引入 copy/cat，不能排除这些成本后宣称改进。数据仅重排必须精确恢复。
 
@@ -34,7 +34,7 @@ int8 值能精确表示为 fp16，可在 UB 内 cast 到 fp16、硬件 transpose
 
 禁止以 fp32/fp16 或更窄整数承载通用 int64 值。选择以下两条当前可证明路径：
 
-- **路线 A，record-aware DMA**：输入/输出共享连续 suffix record，record 本身就是正确的最终搬运单位；地址、长度、gap 满足当前 DataCopy 要求。旧方案采用 `record_bytes>=32` 作为合法块路径的候选边界，具体对齐与非对齐支持仍查当前 lowering。小于合法粒度时聚合相邻记录，不能每个 8B 元素独立做 strided GM DMA。
+- **路线 A，record-aware DMA**：输入/输出共享连续 suffix record，record 本身就是正确的最终搬运单位；地址、长度、gap 满足当前 DataCopy 要求。可采用 `record_bytes>=32` 作为块路径的候选边界，具体对齐与非对齐支持仍查当前 lowering。小于合法粒度时聚合相邻记录，不能每个 8B 元素独立做 strided GM DMA。
 - **路线 B，块 DMA + UB-local 重排**：输入/输出都块搬运，`T.tile.transpose` 的标量循环仅在 UB 内部发生。即便生成 `SetValue`，它也不同于逐元素 GM 访问；可以是正确且更快的 fallback。无收益时如实记录，不为消除标量字样强制换成更差的短 DMA。
 
 把 int64 拆成两个 int32 lane 只能作为独立实验：必须证明 kernel 内提取/交织、字节序、配对、UB 规划和尾部完整，不能用 host split/stack 绕过核心问题。
@@ -47,4 +47,4 @@ int8 值能精确表示为 fp16，可在 UB 内 cast 到 fp16、硬件 transpose
 4. 同步后检查设备异常，并运行全部受影响 canonical cases，不能只跑 profile 子集。
 5. 用完整入口比较，不把 host 新增 cast/copy/cat、workspace 或多阶段 launch 排除。
 
-本页仅核对了当前源码分支与迁移方法，未在本次重构中验证候选 kernel 性能。
+上述分支依据当前源码；候选 kernel 的正确性和性能需在目标设备验证。

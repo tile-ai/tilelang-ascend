@@ -1,4 +1,4 @@
-# TileLang A2/A3 Reference 索引
+# TileLang 性能知识索引
 
 先阅读 [通用实现指南](tilelang_ascend_guide.md)、[模板成熟度](template_status.md) 和 [验证门禁](validation.md)。目标仓库已有实现直接引用仓库内真源；TileLang API 通过实际导入路径定位，不在 Skill 中复制第二份。
 
@@ -7,7 +7,7 @@
 | 算子族 | 文档 | 代码参考 | 关键优化 |
 |---|---|---|---|
 | Common | [npu-arch](../../npu-arch/SKILL.md) · [copy](common/datacopy_optimization_design.md) · [tail](common/tail_block_design.md) · [resident](common/ub_resident_design.md) · [task map](common/persistent_task_mapping.md) | [当前 examples](../../../../examples/) | 硬件事实、合并搬运、padding、常驻、多版本、多轴任务映射 |
-| Broadcast | [guide](broadcast/broadcast_design.md) | [A2/A3 广播与参数加载](broadcast/guide.md) | 单轴/多轴、resident input、shape specialization |
+| Broadcast | [guide](broadcast/broadcast_design.md) | [广播与参数加载](broadcast/broadcast_design.md) | 单轴/多轴、resident input、shape specialization |
 | Conversion | [guide](conversion/guide.md) | [Transpose 测试](../../../../testing/python/language/test_tilelang_ascend_language_transpose.py) | UB 转置测试与搬运 API 参考；通用转置需提供已验证 factory |
 | Elementwise / Gather | [vector](elementwise/vector_efficiency_design.md) · [tiling/task](elementwise/tiling_task_vector_search.md) · [pipeline](elementwise/double_buffer_design.md) · [indexed short record](elementwise/indexed_short_record.md) | [Elementwise 示例](../../../../examples/elementwise/)、[搬运 API](../../../../tilelang/language/copy_op.py) | Vector、短记录打包、共享字段融合、partial 打包、静态整 tile/JIT、连续搬运、任务展平、指令数据流、2/3 stage |
 | MatMul | [guide](matmul/guide.md) | [GEMM 示例](../../../../examples/gemm/) | tile 搜索、L1/L0、流水、resident、Stream-K |
@@ -23,7 +23,7 @@
 ## 验证要求
 
 - 从目标仓库复制的模板仍须在当前分支重新运行对应测试。
-- Scan、RoPE 和转换后的旧模板先做当前后端 lowering，再做设备精度与端到端性能测试。
+- Scan、RoPE 和布局转换实现先做当前后端 lowering，再做设备精度与端到端性能测试。
 - 先按 [template_status.md](template_status.md) 标注成熟度；`PARTIAL`/`DESIGN_ONLY` 不得列为可直接拷贝模板。
 - fp16/bf16 reduction、norm、softmax 和 GEMM 默认使用 fp32 统计或累加状态。
 - 尾块、动态 shape、NaN/Inf、极小任务和多阶段 workspace 必须纳入测试矩阵。
@@ -31,18 +31,16 @@
 ## Common
 
 - 核数、buffer 与架构能力：[npu-arch](../../npu-arch/SKILL.md) 和 [编译器有效容量](common/hardware_resource_discovery.md)，复用已确认的 SoC/NpuArch 证据，区分平台可用量和编译器预算。
-- 固定核数、任务波次与每核尾差：[A2/A3 任务映射](common/task_mapping.md)。
-- 自动/手动同步、C/V handoff：[A2/A3 流水与同步](common/pipeline_and_cv_overlap.md)。
+- 固定核数、任务波次与每核尾差：[任务映射](common/task_mapping.md)。
+- 自动/手动同步、C/V handoff：[流水与同步](common/pipeline_and_cv_overlap.md)。
 - Host pad/contiguous、非连续 stride、D2H 与数据相关同步：[Host 与设备数据流](common/host_device_dataflow.md)。
 
-## A2/A3 专属补充
+## 专题检索
 
-- 多行 tile 和原参数 staging：[Broadcast](broadcast/guide.md)。
+- 多行 tile 和原参数 staging：[Broadcast](broadcast/broadcast_design.md)。
 - 归约遍数融合与 online 递推：[Online Softmax](reduce/vector_reduce_pass_fusion.md)。
 - dtype 特定硬件路径：[dtype 适配](conversion/dtype_adaptation.md)。
 - 多 batch、双尾块及 kernel→planner 审计：[多阶段连续化](conversion/multi_stage_contiguous.md)。
 - 正交轴向量化及 NaN/整数精度：[Scan](scan/orthogonal_axis_vectorization.md)。
 - 历史参数和负结果：[GEMM 历史案例](matmul/historical_cases.md)。
 - 性能评审：[性能关注项](performance-antipatterns.md)，再按命中项读取专题。
-
-已有性能证据时，由 [性能方案分析](../../tilelang-perf-optimization/SKILL.md) 输出 case 分组、资源模型及最多三个已准入方案；采集、实施和迭代管理由调用方完成。策略文档的 `DESIGN_ONLY` 不等于当前仓库不存在对应实现，按实际源码及验证证据判断。

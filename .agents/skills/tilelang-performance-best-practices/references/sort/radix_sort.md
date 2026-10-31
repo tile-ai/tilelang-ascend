@@ -1,4 +1,4 @@
-# A2/A3 TopK 与排序
+# TopK 与排序
 
 ## 实现
 
@@ -10,4 +10,4 @@
 
 覆盖 K=1/边界/全长、重复值 tie-break、±0、NaN、±Inf、index dtype、尾块和稳定性。比较完整端到端 latency、workspace、GM bytes、Vector/MTE 时间与基线；多 kernel 必须计入全部 launch。
 
-当前 TopK 示例的检查方式和输入范围不构成稳定排序、NaN/tie 或任意尾块的保证。分层排序与全局 radix/histogram 段落是设计候选，需实现并验证；本次仅核对源码，没有新增设备验证状态。
+当前 TopK 示例的检查方式和输入范围不构成稳定排序、NaN/tie 或任意尾块的保证。分层排序与全局 radix/histogram 段落是设计候选，需实现并验证；源码参考不构成这些候选的设备验证结论。

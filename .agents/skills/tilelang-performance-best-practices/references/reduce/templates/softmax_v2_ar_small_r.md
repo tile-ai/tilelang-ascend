@@ -1,16 +1,14 @@
 # Softmax 小归约轴
 
-> 迁移来源：Ascend950 同路径文档。保留可复用原文结构与门禁，仅改写 A2/A3 平台、后端、API、路径和证据范围。本页是设计/源码参考；本次未进行 NPU 编译、精度或性能验证，不继承950模板的验证状态。
-
 ## 选型
 
 R 较小，一个 task 可批处理多行以提高向量利用率。
 
-## TileLang A2/A3 实现
+## TileLang 实现
 
 UB 工作区形状为 blk_m×padded_r，T.reduce_max/sum 沿最后维；blk_m、当前线程/vid 分工与 padded_r 由 factory 静态选择。
 
-基础 reduction 代码参考 [当前 RMSNorm](../../../../../../examples/normalization/rms_norm.py) 与 [Online Softmax](../../../../../../examples/softmax/example_online_softmax.py)：GM 数据通过 T.copy 进入 UB，按当前 API 用 fp32 UB 工作区与 T.reduce_max/T.reduce_sum、T.tile 运算；任务遵循当前 T.Kernel 的 cid/vid 映射，单个输出只有一个 owner。当前 A2/A3 接口不沿用源仓 T.SimtVF、alloc_reducer/finalize_reducer 或一维网格限制。
+基础 reduction 代码参考 [当前 RMSNorm](../../../../../../examples/normalization/rms_norm.py) 与 [Online Softmax](../../../../../../examples/softmax/example_online_softmax.py)：GM 数据通过 T.copy 进入 UB，按当前 API 用 fp32 UB 工作区与 T.reduce_max/T.reduce_sum、T.tile 运算；任务遵循当前 T.Kernel 的 cid/vid 映射，单个输出只有一个 owner。任务维度与归约输出形状须遵循当前 T.Kernel 和归约 API 的合同。
 
 ## 精度门禁
 
@@ -22,8 +20,8 @@ UB 工作区形状为 blk_m×padded_r，T.reduce_max/sum 沿最后维；blk_m、
 
 搜索 blk_m 与当前线程分工，重点测 launch 开销和小 copy 合并。
 
-目标 A2/A3 后端的定向精度测试全通过后，比较端到端 latency、有效 GM bytes、Vector/MTE 时间、核利用率、UB 字节与 stage。多 kernel 方案必须计入 workspace 和全部 launch，不能只报告局部 kernel。
+目标后端的定向精度测试全通过后，比较端到端 latency、有效 GM bytes、Vector/MTE 时间、核利用率、UB 字节与 stage。多 kernel 方案必须计入 workspace 和全部 launch，不能只报告局部 kernel。
 
 ## 实现状态
 
-本文件保留算法流程和验收门禁，状态为 `DESIGN_ONLY`；链接的 A2/A3 示例只提供局部结构依据，不证明本策略已有端到端 kernel。源仓 dav310 Python 模板没有复制到本库。
+状态为 `DESIGN_ONLY`；链接示例只提供局部结构依据，不证明本策略已有端到端 kernel。实现后须完成上述精度与性能门禁。

@@ -1,12 +1,10 @@
 # Reduction 宽输出轴 Tiling
 
-> 迁移来源：Ascend950 同路径文档。保留可复用原文结构与门禁，仅改写 A2/A3 平台、后端、API、路径和证据范围。本页是设计/源码参考；本次未进行 NPU 编译、精度或性能验证，不继承950模板的验证状态。
-
 ## 目标与适用条件
 
 用于归约计算较轻、非归约连续轴较宽，且小 tile 导致 task、DMA 或地址准备开销过高的归约。它优化输出轴切分，不改变归约轴和数值顺序。
 
-## TileLang A2/A3 实现
+## TileLang 实现
 
 - 增大非归约连续轴的 tile，使一个 Persistent task 连续处理多个 Vector chunk；按几何级数搜索候选，不固化经验值。
 - 同时计算 `tasks = outer * ceil(output_inner / tile_inner)`、有效/填充元素、DMA 次数、每核 wave 和全部版本化 buffer 的 UB 字节。

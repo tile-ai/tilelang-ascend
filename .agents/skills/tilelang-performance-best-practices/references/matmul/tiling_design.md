@@ -1,4 +1,4 @@
-# A2/A3 分层 K tiling 与容量预算
+# 分层 K tiling 与容量预算
 
 ## 适用条件与参数
 
@@ -30,7 +30,7 @@ L1 : S1_A * block_M * K_L1 * d
    + S1_B * K_L1 * block_N * d + 常驻/随路数据 ≤ 可用 L1
 ```
 
-当前 A2/A3 codegen 定义 L0A/B 为 65536 B、L0C 为 131072 B、可分配 L1 为
+当前 codegen 定义 L0A/B 为 65536 B、L0C 为 131072 B、可分配 L1 为
 524032 B，见 [codegen_ascend.cc](../../../../../src/target/codegen_ascend.cc)。标称
 512 KiB 不应直接当成可分配 L1；内存规划复用也不能免除真实同时活跃状态的预算。
 
@@ -41,7 +41,7 @@ L1 : S1_A * block_M * K_L1 * d
 
 ## 分形、对齐与小形状
 
-旧 A2/A3 案例的分形粒度是 fp16/bf16 `(M,N,K)` 为 `(16,16,16)`，int8 的 K
+旧案例的分形粒度是 fp16/bf16 `(M,N,K)` 为 `(16,16,16)`，int8 的 K
 为 32，fp32 的 K 为 8；具体接口可能施加更强限制（如 gemm_v0 的 `kL0Size%16`）。
 布局和搬运须同时满足当前接口的要求，参见
 [API 计算参考](../../../tilelang-custom-skill/tilelang-api-best-practices/references/api-compute.md)。
@@ -61,4 +61,4 @@ L1 : S1_A * block_M * K_L1 * d
 先列出有限的可行 `(block_M,block_N,K_L1,block_K/ kL0Size,S1,S2,SC)` 组合，说明
 候选改善的是搬运粒度、计算粒度还是任务数。保留原配置作对照。后续执行阶段需验证
 全部声明 dtype、transpose 组合和 M/N/K 尾块，并用同口径数据比较收益。
-本文件只有源码静态核对，未在本轮编译或上板测量候选。
+候选仍需通过编译、精度测试与上板性能测量。

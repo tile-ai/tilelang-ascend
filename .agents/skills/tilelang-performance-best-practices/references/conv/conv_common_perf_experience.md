@@ -1,4 +1,4 @@
-# A2/A3 Conv 实现流程
+# Conv 实现流程
 
 1. 用 PyTorch reference 固定输出 shape、padding 和 bias 语义。
 2. 在 Python factory 选择 direct primitive 或 tiled im2col+GEMM。

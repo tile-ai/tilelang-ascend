@@ -1,12 +1,10 @@
 # Shape-aware 输出 Tile 调度
 
-> 迁移来源：Ascend950 同路径文档。保留可复用原文结构与门禁，仅改写 A2/A3 平台、后端、API、路径和证据范围。本页是设计/源码参考；本次未进行 NPU 编译、精度或性能验证，不继承950模板的验证状态。
-
 ## 适用条件
 
 M/N 输出 tile 足够多但尾部负载不均，或遍历顺序影响 A/B L2 复用。
 
-## TileLang A2/A3 实现流程
+## TileLang 实现流程
 
 使用当前 cid/grid-stride 或已验证 T.Persistent 映射作为基础；需要 serpentine/尾块特化时在 Python factory 生成静态 scheduler 变体。每个 task 仍唯一拥有一个输出 tile，不依赖跨核同步。
 
@@ -22,4 +20,4 @@ M/N 输出 tile 足够多但尾部负载不均，或遍历顺序影响 A/B L2 �
 
 分别测尾部 wave、整体 latency、L2 hit 与核间负载；没有 profile 证据不保留复杂调度。
 
-对每个候选运行编译、目标 A2/A3 后端的定向精度测试和统一 benchmark。报告 latency、TFLOPS、Cube/MTE2 时间、GM 字节、L1/L0/UB 占用、核利用率和生成代码体积。只有完整算子端到端更快且没有精度回退时进入 dispatch。
+对每个候选运行编译、目标后端的定向精度测试和统一 benchmark。报告 latency、TFLOPS、Cube/MTE2 时间、GM 字节、L1/L0/UB 占用、核利用率和生成代码体积。只有完整算子端到端更快且没有精度回退时进入 dispatch。

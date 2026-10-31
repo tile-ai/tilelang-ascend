@@ -63,6 +63,6 @@ task = cid*single_core_load + local_id
 
 接入 planner 前独立验证 stage kernel：batch>1 且 M/N 均非整除、M/N 分别/同时小于 tile、输入输出双尾、最大 batch/逻辑任务数、各 dtype 变体。接入后逐 stage 检查唯一编号映射，再跑所有受影响 canonical cases；浮点使用有限值+稀疏 NaN 并严格比较 NaN mask，int64 使用高位非零位模式。
 
-精度失败先停止该优化并定位 stage，不继续叠加其他优化。fallback 通过、旧轮通过或最终 shape 正确都不能当本候选通过；静默回退后的 performance 也不能归给多阶段方案。
+精度失败先停止该优化并定位 stage，不继续叠加其他优化。fallback 通过、其他候选通过或最终 shape 正确都不能当本候选通过；静默回退后的 performance 也不能归给多阶段方案。
 
 比较基线、各 stage 及完整链 latency、额外 GM 流量、workspace 和 launch；无端到端收益保留正确 fallback，记录“不适用/无收益”。

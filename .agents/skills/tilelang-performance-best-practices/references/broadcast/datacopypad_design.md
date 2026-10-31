@@ -26,4 +26,4 @@ pad copy 与显式 fill+copy 做 A/B；记录额外 UB 写入和 copy latency。
 
 直接参考 [尾块测试](../../../../../testing/python/language/test_tilelang_ascend_language_tail_block.py) 与 [copy_op.py](../../../../../tilelang/language/copy_op.py)。
 
-A2/A3 参数 staging、cast 与广播维度的补充约束见 [广播指南](guide.md)。
+参数 staging、cast 与广播维度的约束见 [广播指南](broadcast_design.md)。

@@ -26,4 +26,4 @@
 
 基于 [Vector Add](../../../../../examples/elementwise/elementwise_add.py)；动态 stride 按 [API 计算参考](../../../tilelang-custom-skill/tilelang-api-best-practices/references/api-compute.md) 与 [copy_op.py](../../../../../tilelang/language/copy_op.py) 中实际接口核对。
 
-A2/A3 参数 staging、cast 与广播维度的补充约束见 [广播指南](guide.md)。
+参数 staging、cast 与广播维度的约束见 [广播指南](broadcast_design.md)。

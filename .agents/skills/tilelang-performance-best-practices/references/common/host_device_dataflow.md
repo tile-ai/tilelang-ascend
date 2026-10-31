@@ -10,7 +10,7 @@
 
 Host 直接传原 tensor，kernel 对真实范围做整块/余数块，按 [尾块规则](tail_block_design.md) 初始化完整 UB footprint。GM 输入声明原始维度，循环次数从原始尺寸计算。输出可按真实 valid 写回；若沿用 padded-output 设计，必须实际分配对应 storage 并核验裁剪后 view 的 stride。
 
-旧 GroupNorm `gamma[G, rows]` 使用单行有效 slice `gamma[g, 0:rows]`，配对齐 staging、cast、broadcast；该已知路径比误用二维 slice 更易核验，但不能推广为“所有 2D copy 禁止”。详细模式见 [广播](../broadcast/guide.md)。
+GroupNorm `gamma[G, rows]` 使用单行有效 slice `gamma[g, 0:rows]`，配对齐 staging、cast、broadcast；该已知路径比误用二维 slice 更易核验，但不能推广为“所有 2D copy 禁止”。详细模式见 [广播](../broadcast/broadcast_design.md)。
 
 ## 减少重复布局转换
 
@@ -26,7 +26,7 @@ Host 直接传原 tensor，kernel 对真实范围做整块/余数块，按 [尾�
 
 ## 输出侧 D2H 与同步
 
-对 NPU 输入，输出类型转换、index int32→int64、where 合并与布局恢复优先留在设备；wrapper 中间 `.cpu()` 再 `.npu()` 会引入数据搬运和同步。公共接口若同时支持 CPU 输入，可保留兼容入口，在边界做一次必要的输入/输出迁移；不要未经接口授权新增 CPU 语义。
+对 NPU 输入，输出类型转换、index int32→int64、where 合并与布局恢复优先留在设备；wrapper 中间 `.cpu()` 再 `.npu()` 会引入数据搬运和同步。公共接口若同时支持 CPU 输入，可保留兼容入口，在边界做一次必要的输入/输出搬运；不要未经接口授权新增 CPU 语义。
 
 移除调用链中无依赖依据的 `torch.npu.synchronize()`，由计时器/调用方或真实跨流事件建立必要等待。测试拿回 CPU 与 golden 比较属于验证，不是产品热路径中的同类问题。torch_npu 操作不可用时记录缺口，不把不存在的 NPU 能力当作方案。
 
