@@ -541,6 +541,29 @@ private:
     return false;
   }
 
+  // Whether vid reduction actually halved the buffer's first extent.
+  // ModifyExtents clamps a first extent of 1 (1 / 2 -> 0 -> 1), leaving the
+  // buffer shape unchanged. Such a buffer still holds the full per-AIV
+  // data, so sizes derived from it (tile-op count, access_ptr extent) must
+  // not be halved again.
+  bool BufferShapeWasHalved(const Buffer &origin,
+                            const Buffer &modified) const {
+    if (origin->shape.empty() || modified->shape.empty()) {
+      return false;
+    }
+    PrimExpr old_first = analyzer_->Simplify(origin->shape[0]);
+    PrimExpr new_first = analyzer_->Simplify(modified->shape[0]);
+    return !analyzer_->CanProve(old_first == new_first);
+  }
+
+  // Whether the vid-reduced buffer registered for `buf` had its shape
+  // actually halved (see BufferShapeWasHalved).
+  bool RegisteredShapeWasHalved(const Buffer &buf) const {
+    auto it = origin_to_new_buffer_.find(buf);
+    return it != origin_to_new_buffer_.end() &&
+           BufferShapeWasHalved(it->first, it->second);
+  }
+
   // Check if any buffer in the call args is in origin_to_new_buffer_
   // AND has offset == 0 (for tvm_access_ptr)
   bool HasModifiedBuffer(const CallNode *op) const {
@@ -549,6 +572,11 @@ private:
       if (buf.defined()) {
         auto it = origin_to_new_buffer_.find(buf);
         if (it != origin_to_new_buffer_.end()) {
+          // A buffer whose first extent was clamped to 1 keeps its shape
+          // and its full per-AIV data: do not halve the tile-op size.
+          if (!BufferShapeWasHalved(it->first, it->second)) {
+            continue;
+          }
           // Check if this arg is tvm_access_ptr with offset == 0
           return AccessPtrOffsetIsZero(arg);
         }
@@ -760,6 +788,13 @@ private:
         if (!offset_is_zero) {
           // offset != 0: accessing different positions in loop, no need to
           // modify extent
+          return IRMutatorWithAnalyzer::VisitExpr_(op);
+        }
+
+        // The buffer shape is unchanged (first extent clamped to 1): the
+        // per-AIV view still covers the whole buffer, keep the extent so
+        // tile-op sizes stay consistent with the buffer.
+        if (!RegisteredShapeWasHalved(matched_buffer)) {
           return IRMutatorWithAnalyzer::VisitExpr_(op);
         }
 

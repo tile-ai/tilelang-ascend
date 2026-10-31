@@ -24,7 +24,9 @@ Scenarios covered (mirroring patterns from
    acc_o[h_i, j] = acc_o[h_i, j] * m_i_prev[h_i]``
    (``LoopVarUsedInVidReducedUbFirstDim``).
 6. **T.tile + for range** — ``for h_i in range(block_M):
-   T.tile.div(acc_o[h_i, :], ...)`` (``LoopVarUsedInVidReducedUbFirstDim``).
+    T.tile.div(acc_o[h_i, :], ...)`` (``LoopVarUsedInVidReducedUbFirstDim``).
+6b. **T.tile + for range, whole-block [1, N] row temp** — row split must
+    not halve the tile-op size (issue #1800 regression).
 7. **BufferRegion** — ``T.copy(ws[cid, 0:v_block, :], acc_s_ub_)`` GM slice
    → UB (``ModifyBufferRegions``).
 8. **Baseline threads=1** — Pass is a no-op.
@@ -443,6 +445,83 @@ def test_vid_reduction_tile_range(setup_random_seed, target):
     torch.npu.synchronize()
     ref = a * 3.0
     torch.testing.assert_close(c, ref, rtol=1e-2, atol=1e-2)
+
+
+# ============================================================
+# 6b) T.tile + for range with whole-block [1, N] row temp
+#     (issue #1800: row split must not halve the tile-op size)
+#
+# Mirrors:
+#   for i in range(block_M):
+#       T.tile.cast(row, src[i : i + 1, :], "CAST_NONE", N)
+#       T.copy(row, dst[i : i + 1, :])
+# Pass: the loop extent is halved (row split via the GM<->UB vid offset
+# plus the [block_M, N] UB first-dim halving), but the [1, N] row
+# temp's first extent 1 is clamped to 1 (shape unchanged), so the
+# tile-op size must NOT be halved again. Before the fix the Cast count
+# was halved while the UB->UB row copy kept the full extent, leaving
+# the second half of every row uninitialized.
+# ============================================================
+
+
+def tile_range_row_temp_cast(M, N, block_M, block_N):
+    m_num = M // block_M
+
+    @T.prim_func
+    def main(A: T.Tensor((M, N), "float16"), B: T.Tensor((M, N), "float32")):
+        with T.Kernel(m_num, threads=2, is_npu=True) as (cid):
+            bx = cid % m_num
+            src = T.alloc_shared((block_M, block_N), "float16")
+            row = T.alloc_shared((1, block_N), "float32")
+            dst = T.alloc_shared((block_M, block_N), "float32")
+            T.copy(A[bx * block_M, 0], src)
+            for i in range(block_M):
+                T.tile.cast(row, src[i : i + 1, :], "CAST_NONE", block_N)
+                T.copy(row, dst[i : i + 1, :])
+            T.copy(dst, B[bx * block_M, 0])
+
+    return main
+
+
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_vid_reduction_tile_range_row_temp_cast(setup_random_seed, target):
+    M, N, block_M, block_N = 256, 128, 64, 128
+    func = tilelang.compile(tile_range_row_temp_cast(M, N, block_M, block_N), out_idx=[1], pass_configs=pass_configs, target=target)
+    a = torch.randn(M, N, dtype=torch.float16).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    torch.npu.synchronize()
+    torch.testing.assert_close(b, a.float(), rtol=1e-2, atol=1e-2)
+
+
+def tile_range_row_temp_relu(M, N, block_M, block_N):
+    m_num = M // block_M
+
+    @T.prim_func
+    def main(A: T.Tensor((M, N), "float16"), B: T.Tensor((M, N), "float16")):
+        with T.Kernel(m_num, threads=2, is_npu=True) as (cid):
+            bx = cid % m_num
+            src = T.alloc_shared((block_M, block_N), "float16")
+            row = T.alloc_shared((1, block_N), "float16")
+            dst = T.alloc_shared((block_M, block_N), "float16")
+            T.copy(A[bx * block_M, 0], src)
+            for i in range(block_M):
+                T.tile.relu(row, src[i : i + 1, :])
+                T.copy(row, dst[i : i + 1, :])
+            T.copy(dst, B[bx * block_M, 0])
+
+    return main
+
+
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_vid_reduction_tile_range_row_temp_relu(setup_random_seed, target):
+    M, N, block_M, block_N = 256, 128, 64, 128
+    func = tilelang.compile(tile_range_row_temp_relu(M, N, block_M, block_N), out_idx=[1], pass_configs=pass_configs, target=target)
+    a = torch.randn(M, N, dtype=torch.float16).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    torch.npu.synchronize()
+    torch.testing.assert_close(b, torch.relu(a), rtol=1e-2, atol=1e-2)
 
 
 # ============================================================
