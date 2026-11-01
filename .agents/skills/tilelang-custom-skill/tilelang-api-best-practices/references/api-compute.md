@@ -24,7 +24,7 @@
 - `transpose_B`：是否转置 B（默认 False）
 - `init`：是否在计算前将 C 清零（默认 False）。第一次迭代需要清零，后续累加。
 
-**示例**（来自 `examples/gemm/example_gemm.py`）：
+**示例**（来自 `examples_experiment/gemm/example_gemm.py`）：
 
 ```python
 A_L1 = T.alloc_L1([block_M, block_K], dtype)

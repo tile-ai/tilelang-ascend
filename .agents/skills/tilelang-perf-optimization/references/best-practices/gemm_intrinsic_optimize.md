@@ -450,7 +450,7 @@ core_num = torch.npu.get_device_properties(0).cube_core_num
 
 ## 参考资料
 
-- 基础实现：`examples/gemm/example_gemm.py`
+- 基础实现：`examples_experiment/gemm/example_gemm.py`
 - Intrinsic 优化：`examples/gemm/example_gemm_intrinsic.py`
 - API 参考：`.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/SKILL.md`
 - 流水线同步：`.agents/skills/tilelang-custom-skill/tilelang-api-best-practices/references/api-schedule-sync.md`
