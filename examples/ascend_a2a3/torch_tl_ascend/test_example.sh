@@ -11,18 +11,13 @@ ensure_torch_tl_ascend() {
     local expected_version=$(tr -d ' \t\r\n' < src/torch_tl_ascend/VERSION)  # read local VERSION file and remove whitespace/newlines
     local installed_version=$(echo "$output" | awk -F': ' '/^Version:/{print $2}' | tr -d ' \t\r\n')  # find installed version
 
-    if [ "$installed_version" != "$expected_version" ]; then
-        echo "torch_tl_ascend v$installed_version is installed. Expected v$expected_version. Reinstalling ..."
-        echo "Cleaning previous build artifacts ..."
-        rm -rf build/ dist/
-        rm -rf src/*.egg-info/
-        python -m pip uninstall -y torch_tl_ascend || { echo "Failed to uninstall outdated package"; exit 1; }
-        python setup.py install || { echo "Failed to install package"; exit 1; }
-        echo "Installed torch_tl_ascend v$expected_version"
-        return 0
-    fi
-
-    echo "torch_tl_ascend v$installed_version is already installed"
+    echo "Refreshing torch_tl_ascend v$installed_version from current sources (v$expected_version) ..."
+    echo "Cleaning previous build artifacts ..."
+    rm -rf build/ dist/
+    rm -rf src/*.egg-info/
+    python -m pip uninstall -y torch_tl_ascend || { echo "Failed to uninstall package"; exit 1; }
+    python setup.py install || { echo "Failed to install package"; exit 1; }
+    echo "Installed torch_tl_ascend v$expected_version"
     return 0
 }
 
