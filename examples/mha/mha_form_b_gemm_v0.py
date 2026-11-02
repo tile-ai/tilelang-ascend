@@ -11,7 +11,7 @@ so this file holds only its own C-scope body plus the V-side buffer declarations
 TVMScript requires to be emitted inside the prim_func itself.
 
 See mha.py for the operator-level contract (precision invariants, pipeline shape,
-sync model, constraints) and DESIGN.md in this directory for the derivation.
+sync model, constraints).
 """
 
 import tilelang
@@ -445,7 +445,7 @@ def mha_form_b_gemm_v0_kernel(
     return main
 
 
-# This file is a library module (mha.py and test_mha.py import it), but the
+# This file is a library module (mha.py imports it), but the
 # examples/bench_test.sh runner executes nearly every .py under examples/<op>/ as
 # a standalone script and requires a pass token in its output. The __name__ guard
 # below therefore keeps `import mha_form_b_gemm_v0` side-effect free while giving

@@ -24,8 +24,9 @@ mha_kernel() below keeps the signature and the return-value semantics it had whe
 all of this was one file: it picks the form and returns that form's compiled
 kernel, so `mha_kernel(B=..., S=...)` still yields an object exposing
 .get_kernel_source() and still callable as kernel(query, key, value). Calling one
-of the three form factories directly builds the identical kernel; test_mha.py
-guards that the dispatch is mutually exclusive and exhaustive.
+of the three form factories directly builds the identical kernel; the host
+self-check in mha_common.py guards that the dispatch is mutually exclusive and
+exhaustive.
 
 Architecture. The host selects one of three mutually exclusive and exhaustive
 C-scope forms from (S, D, S_kv) alone, so a generated kernel holds exactly one.
@@ -97,9 +98,6 @@ block) runs on stock tilelang-ascend: its T.gemm_v0 calls keep the default
 prologue, whose whole-MTE2-pipe drain makes every operand enqueued before the
 call resident, so that path needs no framework-side patch.
 
-DESIGN.md in this directory derives the tiling tiers, the event-id budget and
-the precision gates that test_mha.py checks.
-
 Run this file directly for a self-checking example against a torch reference:
     python examples/mha/mha.py                    # fp16, B=2 S=S_kv=128 N=8 D=64
     python examples/mha/mha.py --causal --D 128   # --help lists every option
@@ -136,10 +134,10 @@ def mha_kernel(
     """Build the kernel for one (shape, dtype, attr) point.
 
     Wrapper-layer dispatcher. The form is chosen from (S, D) by
-    mha_common.select_form() -- the same single source the dispatch-guard test
-    reads -- and the corresponding form factory builds the kernel. Host-side
-    config derivation happens inside that factory (mha_common.derive_config()),
-    so nothing is derived twice with a chance to diverge.
+    mha_common.select_form() -- the same single source the self-checks read --
+    and the corresponding form factory builds the kernel. Host-side config
+    derivation happens inside that factory (mha_common.derive_config()), so
+    nothing is derived twice with a chance to diverge.
 
     Signature and return value are unchanged from the single-file layout of this
     operator: the result exposes .get_kernel_source() and is callable as
@@ -236,8 +234,8 @@ if __name__ == "__main__":
     torch.npu.synchronize()
     ref = ref_mha(query, key, value, scale, args.causal)
 
-    # The mixed-tolerance gate test_mha.py uses: at least 99% of the elements
-    # inside atol + rtol*|ref|, and no element past the dtype's absolute ceiling.
+    # The mixed-tolerance gate: at least 99% of the elements inside
+    # atol + rtol*|ref|, and no element past the dtype's absolute ceiling.
     atol, rtol, max_abs_limit = {"float16": (2**-14, 2**-9, 1e-1), "bfloat16": (2**-10, 2**-6, 1e0)}[args.dtype]
     out_f, ref_f = out.detach().cpu().float(), ref.float()
     abs_err = (out_f - ref_f).abs()

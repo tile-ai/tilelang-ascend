@@ -10,8 +10,8 @@ This module is the one source of everything the three kernel forms must agree on
   constant. Keeping it in one place is what keeps the three forms from
   drifting apart on block_M/block_N/gemm1_kL0 or on the semaphore id space.
 * ``select_form`` -- the three-way dispatch predicate, expressed through
-  ``derive_config`` so that the wrapper, the tests and the kernel factories can
-  never disagree about which form a shape belongs to.
+  ``derive_config`` so that the wrapper, the self-checks and the kernel
+  factories can never disagree about which form a shape belongs to.
 * ``make_emit_v`` -- the factory for the shared V-scope ``@T.macro``.
 
 Why emit_v is a macro and why it lives here. TVMScript resolves ``T.*`` frames at
@@ -940,8 +940,8 @@ def make_emit_v(cfg):
 # examples/<op>/ as a standalone script and only counts it as passed when the
 # output contains a pass token ("Test Passed!" / "Kernel Output Match"). Every
 # module of this operator therefore carries a real, __name__-guarded executable
-# entry: the guard keeps `import <module>` side-effect free (mha.py, test_mha.py
-# and the three form modules all import each other), while `python <module>.py`
+# entry: the guard keeps `import <module>` side-effect free (mha.py and the
+# three form modules all import each other), while `python <module>.py`
 # runs an actual check. run_form_self_check() below is the single on-device
 # numerical check shared by the three form modules (DRY: one torch reference and
 # one tolerance gate, not three copies); mha_common.py's own entry is the
@@ -975,8 +975,8 @@ def run_form_self_check(
        mha.py's wrapper), so there is no second instance of the same kernel.
     3. Run deterministic inputs (torch.manual_seed(0)) on the npu.
     4. Compare against a torch reference on the kernel's own rounding grid.
-    5. Apply the repo's mixed-tolerance gate (identical table to mha.py and
-       test_mha.py) and print ``Test Passed!`` as the last line.
+    5. Apply the repo's mixed-tolerance gate (identical table to mha.py's
+       self-check) and print ``Test Passed!`` as the last line.
 
     All torch / torch_npu work happens inside the body, so importing this module
     stays free of device side effects.
@@ -1028,8 +1028,8 @@ def run_form_self_check(
 
     ref = _ref(query, key, value, scale, is_causal)
 
-    # (5) The mixed-tolerance gate test_mha.py uses: at least 99% of the elements
-    #     inside atol + rtol*|ref|, and no element past the dtype's ceiling.
+    # (5) The mixed-tolerance gate: at least 99% of the elements inside
+    #     atol + rtol*|ref|, and no element past the dtype's ceiling.
     atol, rtol, max_abs_limit = {"float16": (2**-14, 2**-9, 1e-1), "bfloat16": (2**-10, 2**-6, 1e0)}[dtype]
     out_f, ref_f = out.detach().cpu().float(), ref.float()
     abs_err = (out_f - ref_f).abs()
