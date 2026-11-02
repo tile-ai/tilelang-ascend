@@ -210,12 +210,9 @@ def clear_cache():
 
 
 def _compile_and_get_source(program, pass_configs, target="ascendc", platform="auto", out_idx=None):
-    # Preserve actual-use auto platform resolution; explicit source platforms
-    # freeze into the existing target model instead of an obsolete keyword.
-    attrs = {"kind": "ascend", "arch": "dav-2201", "keys": [target, "ascend"]}
-    if platform not in (None, "auto"):
-        attrs["model"] = platform
-    kwargs = {"pass_configs": pass_configs, "target": tvm.target.Target(attrs)}
+    kwargs = {"pass_configs": pass_configs, "target": target}
+    if platform == "A5":
+        kwargs["target"] = tvm.target.Target({"kind": "ascend", "arch": "dav-2201", "model": "A5", "keys": [target, "ascend"]})
     if out_idx is not None:
         kwargs["out_idx"] = out_idx
     kernel = tilelang.compile(program, **kwargs)

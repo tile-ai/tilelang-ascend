@@ -5,7 +5,6 @@ import torch
 
 import tilelang
 import tilelang.ascend.a2a3.language as T
-from tilelang import tvm
 
 
 @pytest.fixture(scope="module")
@@ -36,7 +35,7 @@ def optional_loop_kernel():
     return tilelang.compile(
         main,
         out_idx=[],
-        target=tvm.target.Target({"kind": "ascend", "arch": "dav-2201", "model": "A3", "keys": ["ascendc", "ascend"]}),
+        target="ascendc",
         pass_configs={
             tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
             tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: False,

@@ -550,7 +550,7 @@ def _source(func, target="ascendc", tail_mask=True):
     )
 
     with tvm.transform.PassContext(opt_level=3, config=cfg):
-        artifact = tilelang.lower(func, target=target_obj)
+        artifact = tilelang.lower(func, target=target)
 
     return artifact.kernel_source
 
@@ -559,7 +559,6 @@ def _lowered_tir(func, target="ascendc"):
     """Return post-tail-pass TIR without invoking backend source codegen."""
     target_obj = _target(target)
     platform = resolve_a2a3_platform(target_obj)
-    target_obj = tvm.target.Target({**dict(target_obj.export()), "model": platform})
     mod = tvm.IRModule({func.attrs["global_symbol"]: func})
     for gvar, prim_func in mod.functions_items():
         mod[gvar] = prim_func.with_attr("npu_platform", platform)

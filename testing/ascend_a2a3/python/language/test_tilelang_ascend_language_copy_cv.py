@@ -7,8 +7,7 @@ import torch
 
 import tilelang
 import tilelang.ascend.a2a3.language as T
-from tilelang import tvm
-from tilelang.ascend.a2a3.platform import resolve_a2a3_platform
+from tilelang.ascend.target import determine_platform
 
 
 PASS_CONFIGS = {
@@ -25,12 +24,11 @@ def disable_cache():
 
 @pytest.fixture(scope="session")
 def platform():
-    target = tvm.target.Target({"kind": "ascend", "arch": "dav-2201", "keys": ["ascendc", "ascend"]})
-    return resolve_a2a3_platform(target)
+    return determine_platform()
 
 
 skip_A5 = pytest.mark.skipif(
-    resolve_a2a3_platform(tvm.target.Target({"kind": "ascend", "arch": "dav-2201"}), required=False) == "A5",
+    determine_platform() == "A5",
     reason="Only test for non-A5 platform",
 )
 only_A5 = pytest.mark.skip(reason="Original TA A5-only source retained outside A2/A3; modern A5 unverified")
