@@ -40,6 +40,7 @@ mappings:
 
   # examples/cann-bench
   examples/cann-bench/cummin/example_cummin.py: examples/cann-bench/cummin/test_example_cummin.py
+  examples/cann-bench/depthwise_conv_2d/depthwise_conv_2d.py: examples/cann-bench/depthwise_conv_2d/test_depthwise_conv_2d.py
   examples/cann-bench/group_norm/example_group_norm.py: examples/cann-bench/group_norm/test_example_group_norm.py
   examples/cann-bench/situ_glu_grad/example_situ_glu_grad.py: examples/cann-bench/situ_glu_grad/test_example_situ_glu_grad.py
 
@@ -108,6 +109,9 @@ mappings:
   # examples/gqa_fwd_varlen
   examples/gqa_fwd_varlen/gqa_fwd_varlen.py: examples/gqa_fwd_varlen/test_gqa_fwd_varlen.py
   examples/gqa_fwd_varlen/perf_gqa_fwd_varlen.py: examples/gqa_fwd_varlen/test_perf_gqa_fwd_varlen.py
+
+  # examples/kpool
+  examples/kpool/example_glm53_kpool_compress.py: examples/kpool/test_example_glm53_kpool_compress.py
 
   # examples/lightning_indexer
   examples/lightning_indexer/example_lightning_indexer.py: examples/lightning_indexer/test_example_lightning_indexer.py
