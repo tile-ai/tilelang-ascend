@@ -1608,8 +1608,8 @@ def bitwise_lshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scal
     assert size_0 == size_2, "size must be same"
 
     if isinstance(scalarValue, (Buffer, BufferRegion)):
-        # Tensor (per-element) shift-amount path. Lowered to PTO TSHL; rejected
-        # by the AscendC backend at codegen time.
+        # Tensor (per-element) shift-amount path. Lowered to PTO TSHL or an
+        # AscendC device-side per-element implementation.
         if isinstance(dst, BufferRegion):
             _validate_binary_op_region(dst, "bitwise_lshift", "dst")
         if isinstance(src0, BufferRegion):
