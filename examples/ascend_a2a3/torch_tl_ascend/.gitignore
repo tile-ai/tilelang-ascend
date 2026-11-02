@@ -1,0 +1,4 @@
+/src/torch_tl_ascend/*.so
+/src/torch_tl_ascend/op_source/*.py
+!/src/torch_tl_ascend/op_source/__init__.py
+/demo_libtorch/lib/*.so
