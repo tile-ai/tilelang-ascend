@@ -16,6 +16,8 @@ ensure_torch_tl_ascend() {
         echo "Cleaning previous build artifacts ..."
         rm -rf build/ dist/
         rm -rf src/*.egg-info/
+        local base_python=$(python -c 'import sys; print(sys._base_executable if sys.prefix != sys.base_prefix else sys.executable)')
+        env -u PYTHONPATH -u PYTHONNOUSERSITE python -m pip --python "$base_python" uninstall -y torch_tl_ascend || { echo "Failed to uninstall outdated package"; exit 1; }
         python -m pip uninstall -y torch_tl_ascend || { echo "Failed to uninstall outdated package"; exit 1; }
         python setup.py install || { echo "Failed to install package"; exit 1; }
         echo "Installed torch_tl_ascend v$expected_version"
