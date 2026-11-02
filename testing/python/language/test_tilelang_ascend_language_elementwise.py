@@ -1036,13 +1036,14 @@ def run_test_bitwise_lshift_tensor(M, N, block_M, block_N, dtype, target):
         pytest.param("uint32", marks=pytest.mark.low_priority),
     ],
 )
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_bitwise_lshift_tensor(dtype, shape):
-    """Tensor (per-element) shift amount via PTO TSHL."""
+def test_bitwise_lshift_tensor(dtype, target, shape):
+    """Tensor (per-element) shift amount (PTO TSHL / AscendC per-element loop)."""
     M, N = shape
     # block_N=128 (not 256): the int32/uint32 tensor form needs three UB tiles
-    # (dst/src0/src1); 64x256x4B x3 would exceed the A2/A3 UB budget.
-    run_test_bitwise_lshift_tensor(M, N, 128, 128, dtype=dtype, target="pto")
+    # (dst/src0/shift); 64x256x4B x3 would exceed the A2/A3 UB budget.
+    run_test_bitwise_lshift_tensor(M, N, 128, 128, dtype=dtype, target=target)
 
 
 def bitwise_lshift_tensor_slice(M, N, block_M, block_N, dtype="int16"):
@@ -1125,17 +1126,11 @@ def run_test_bitwise_lshift_tensor_slice(M, N, block_M, block_N, dtype, target):
 
 
 @pytest.mark.parametrize("dtype", ["int16", "int32"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_bitwise_lshift_tensor_slice(dtype, shape):
+def test_bitwise_lshift_tensor_slice(dtype, target, shape):
     M, N = shape
-    run_test_bitwise_lshift_tensor_slice(M, N, 128, 128, dtype=dtype, target="pto")
-
-
-def test_bitwise_lshift_tensor_ascendc_rejected():
-    """AscendC backend must reject the tensor shift-amount form."""
-    func = bitwise_lshift_tensor(128, 256, 128, 256, "int16")
-    with pytest.raises(tilelang.tvm.error.TVMError, match="does not support tensor shift amounts"):
-        tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target="ascendc")
+    run_test_bitwise_lshift_tensor_slice(M, N, 128, 128, dtype=dtype, target=target)
 
 
 def test_bitwise_lshift_tensor_bad_shape():

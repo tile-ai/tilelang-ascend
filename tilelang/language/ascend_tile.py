@@ -1573,9 +1573,9 @@ def bitwise_lshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scal
     shift-amount buffer (or a contiguous region of one). The scalar form
     lowers to ``TSHLS`` on the PTO backend and ``AscendC::ShiftLeft`` on the
     AscendC backend. The tensor form (per-element shift amounts) lowers to
-    ``TSHL`` and is supported only on the PTO backend for A2/A3; the AscendC
-    backend rejects it because its ``ShiftLeft`` tensor variant is not
-    available on A2/A3. Both forms support int16/uint16/int32/uint32.
+    ``TSHL`` on the PTO backend and a device-side per-element loop on the
+    AscendC backend (A2/A3 has no native tensor ``ShiftLeft``). Both forms
+    support int16/uint16/int32/uint32.
 
     Args:
         dst: The destination buffer (UB).

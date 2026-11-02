@@ -1856,7 +1856,7 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
 
   **功能**：element-wise 左移操作
 
-  **支持范围**：标量形式在 AscendC 与 PTO 后端均支持；Tensor（逐元素）位移量形式仅在 PTO 后端支持（A2/A3，底层 `TSHL`）。支持 dtype 为 int16/uint16/int32/uint32（int8/uint8 不支持，与标量形式一致）。AscendC 后端不支持 Tensor 位移量形式（A2/A3 无对应 `ShiftLeft` Tensor 变体），会在编译期报错。Tensor 形式不做隐式 dtype 转换或广播，dtype 与 shape 必须与 src0 完全一致；逐元素位移量为运行时值，编译期只能校验 dtype/shape，无法校验每个元素的位移量是否在合法范围（0 ≤ shift < 位宽）内；负位移或位移量 ≥ 位宽的行为不做保证。
+  **支持范围**：标量形式在 AscendC 与 PTO 后端均支持；Tensor（逐元素）位移量形式同样支持 AscendC 与 PTO 双后端（A2/A3）。PTO 使用底层 `TSHL`；AscendC 因 A2/A3 无原生 Tensor `ShiftLeft`，采用设备端逐元素实现。支持 dtype 为 int16/uint16/int32/uint32（int8/uint8 不支持，与标量形式一致）。Tensor 形式不做隐式 dtype 转换或广播，dtype 与 shape 必须与 src0 完全一致；逐元素位移量为运行时值，编译期只能校验 dtype/shape，无法校验每个元素的位移量是否在合法范围（0 ≤ shift < 位宽）内；负位移或位移量 ≥ 位宽的行为不做保证。
 
   **举例**：
 
@@ -1866,7 +1866,7 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
   ```
 
   ```
-  #a_ub逐元素按 shift_ub 左移，结果存放到c_ub（仅 PTO 后端）
+  #a_ub逐元素按 shift_ub 左移，结果存放到c_ub（AscendC/PTO 双后端）
   T.tile.bitwise_lshift(c_ub, a_ub, shift_ub)
   ```
 
