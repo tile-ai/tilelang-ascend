@@ -454,6 +454,97 @@ def test_bitwise_and_buffer_region(target):
     assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
 
 
+def run_test_bitwise_and_slice_contiguous(target, mode):
+    """Contiguous slices with non-zero offsets must process exactly the slice.
+
+    Every element outside the slice keeps its sentinel value untouched,
+    pinning the contiguous-slice contract: only physically contiguous
+    regions (full-width row ranges or single-row column ranges) are valid.
+    """
+    shape = (4, 32)
+    dtype = "int16"
+
+    if mode == "row-range":
+
+        @T.prim_func
+        def main(
+            A: T.Tensor(shape, dtype),  # type: ignore
+            B: T.Tensor(shape, dtype),  # type: ignore
+            C_in: T.Tensor(shape, dtype),  # type: ignore
+            C_out: T.Tensor(shape, dtype),  # type: ignore
+        ):
+            with T.Kernel(1, is_npu=True) as (_, vid):
+                a_ub = T.alloc_ub(shape, dtype)
+                b_ub = T.alloc_ub(shape, dtype)
+                c_ub = T.alloc_ub(shape, dtype)
+                if vid == 0:
+                    T.copy(A, a_ub)
+                    T.copy(B, b_ub)
+                    T.copy(C_in, c_ub)
+                    T.tile.bitwise_and(c_ub[2:4, 0:32], a_ub[2:4, 0:32], b_ub[2:4, 0:32])
+                    T.copy(c_ub, C_out)
+
+    else:
+
+        @T.prim_func
+        def main(
+            A: T.Tensor(shape, dtype),  # type: ignore
+            B: T.Tensor(shape, dtype),  # type: ignore
+            C_in: T.Tensor(shape, dtype),  # type: ignore
+            C_out: T.Tensor(shape, dtype),  # type: ignore
+        ):
+            with T.Kernel(1, is_npu=True) as (_, vid):
+                a_ub = T.alloc_ub(shape, dtype)
+                b_ub = T.alloc_ub(shape, dtype)
+                c_ub = T.alloc_ub(shape, dtype)
+                if vid == 0:
+                    T.copy(A, a_ub)
+                    T.copy(B, b_ub)
+                    T.copy(C_in, c_ub)
+                    T.tile.bitwise_and(c_ub[0:1, 16:32], a_ub[0:1, 16:32], b_ub[0:1, 16:32])
+                    T.copy(c_ub, C_out)
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    a = torch.randint(1, 100, shape, dtype=torch.int16).npu()
+    b = torch.randint(1, 100, shape, dtype=torch.int16).npu()
+    sentinel = torch.arange(1000, 1000 + shape[0] * shape[1], dtype=torch.int16).reshape(shape)
+    c_out = func(a, b, sentinel.npu())
+    torch.npu.synchronize()
+    out = c_out.cpu()
+    rows, cols = torch.meshgrid(torch.arange(shape[0]), torch.arange(shape[1]), indexing="ij")
+    expected = (rows >= 2) if mode == "row-range" else ((rows == 0) & (cols >= 16))
+    assert bool((out[~expected] == sentinel[~expected]).all()), "out-of-slice sentinel corrupted"
+    assert bool((out[expected] == (a.cpu() & b.cpu())[expected]).all()), "wrong values inside the slice"
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "row-range",
+        "row+col",
+    ],
+)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_bitwise_and_slice_contiguous(mode, target):
+    run_test_bitwise_and_slice_contiguous(target, mode)
+
+
+def test_bitwise_and_noncontiguous_region_rejected():
+    """Non flat-contiguous BufferRegions are rejected at trace time.
+
+    binary_op lowers a region to a single linear vector operation, so
+    column-offset slices would silently lose their per-row layout; the
+    frontend validation rejects them with a clear ValueError instead
+    (see test_binary_op_region_validation). Lock the protection in for
+    bitwise_and specifically.
+    """
+    dst = tir.decl_buffer((2, 32), "int16", scope="shared.ub")
+    src0 = tir.decl_buffer((2, 32), "int16", scope="shared.ub")
+    src1 = tir.decl_buffer((2, 32), "int16", scope="shared.ub")
+    with pytest.raises(ValueError, match=r"must be contiguous when flattened"):
+        T.tile.bitwise_and(dst[:, 16:32], src0[:, 16:32], src1[:, 16:32])
+
+
 def axpy(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N

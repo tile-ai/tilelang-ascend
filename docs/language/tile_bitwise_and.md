@@ -25,7 +25,7 @@ def bitwise_and(
 | src1 | 输入 | 第二个源操作数 | 张量（tensor）/ 标量（scalar） | 必填 |
 
 > **类型说明**：
-> - **tensor**：通过 `T.alloc_ub`、`T.alloc_shared` 等分配的缓冲区（Buffer），或其切片（BufferRegion）
+> - **tensor**：通过 `T.alloc_ub`、`T.alloc_shared` 等分配的缓冲区（Buffer），或其**物理连续**的切片（BufferRegion）。二维切片需占满整行（如 `buf[r0:r1, :]`）或仅涉及单行（如 `buf[0:1, a:b]`）；跨多行的列切片（如 `buf[:, a:b]`）不受支持，前端将在编译期报错拒绝
 > - **scalar**：单个元素值，可以是 buffer 元素访问（BufferLoad）或 Python 标量/表达式（PrimExpr）
 
 ### 2.3 参数规格
