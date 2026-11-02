@@ -22,14 +22,14 @@ parse-time scoping, which is why the V scope can be shared at all. It must stay
 exactly one definition -- all four precision invariants of this operator live
 inside it, so a second copy would be a second thing to keep bit-identical.
 
-Name resolution contract. ``tvm/script/parser/tir/entry.py::prim_func`` and
-``core/parser.py::ScriptMacro.__call__`` both resolve free names against
-``inspect_function_capture(func)`` == ``{**func.__globals__, **co_freevars}``.
-Consequently every name a moved body reads from its enclosing scope has to be
-bound here, or in the enclosing factory, under exactly the same name. Attribute
-access such as ``cfg.block_M`` is NOT equivalent: TVMScript would parse it as a
-TIR expression. That is why ``make_emit_v`` unpacks the config into plain locals
-before the macro definition instead of passing the config object through.
+Name resolution contract. TVMScript resolves the free names of a prim_func body
+and of a ``@T.macro`` body against the enclosing Python scope, i.e. module
+globals plus the closure variables of the factory. Consequently every name a
+moved body reads from its enclosing scope has to be bound here, or in the
+enclosing factory, under exactly the same name. Attribute access such as
+``cfg.block_M`` is NOT equivalent: TVMScript would parse it as a TIR expression.
+That is why ``make_emit_v`` unpacks the config into plain locals before the macro
+definition instead of passing the config object through.
 """
 
 import dataclasses
