@@ -327,19 +327,19 @@ def with_compile_options(config: CompileConfig, pass_configs=None, compile_flags
 def resolve_compile_config(target, pass_configs=None, compile_flags=None, *, platform=None, run_mode=None) -> CompileConfig:
     """Freeze platform, toolchain paths, runtime mode and actual compiler flags."""
     from tilelang.ascend import target as ascend_target
-    from .platform import _known_platform, resolve_a2a3_platform
+    from .platform import resolve_a2a3_platform
 
     if not ascend_target.is_a2a3_target(target):
         raise ValueError("The A2/A3 compiler requires an ascend target with arch=dav-2201.")
     dialect = "pto" if "pto" in target.keys else "ascendc"
-    known_model = _known_platform(target.attrs.get("model"))
+    known_model = resolve_a2a3_platform(target) if target.attrs.get("model") is not None else None
     if platform is not None:
         if platform not in ("A2", "A3"):
             raise ValueError("Compiler platform must be A2 or A3.")
         if known_model is not None and known_model != platform:
             raise ValueError(f"Compiler platform={platform} conflicts with frozen target.model={known_model}.")
     else:
-        platform = resolve_a2a3_platform(target)
+        platform = known_model if known_model is not None else resolve_a2a3_platform(target)
     environ = dict(os.environ)
     working_directory = os.getcwd()
     options = _normalize_options(pass_configs, environ)

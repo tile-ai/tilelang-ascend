@@ -28,7 +28,7 @@ def _unexpected_probe():
 
 @pytest.mark.parametrize(
     ("model", "expected"),
-    [("A2", "A2"), ("a3", "A3"), ("Ascend910B1", "A2"), ("ascend910c", "A3"), ("Ascend910_9392", "A3")],
+    [("A2", "A2"), ("A3", "A3")],
 )
 def test_explicit_model_has_priority_and_skips_probe(monkeypatch, model, expected):
     monkeypatch.setenv("TL_PLATFORM", "A3" if expected == "A2" else "A2")
@@ -40,7 +40,7 @@ def test_explicit_model_has_priority_and_skips_probe(monkeypatch, model, expecte
 def test_environment_has_priority_over_probe(monkeypatch, override, expected):
     monkeypatch.setenv("TL_PLATFORM", override)
     monkeypatch.setattr(ascend_target, "_get_soc_name", _unexpected_probe)
-    assert resolve_a2a3_platform(_target("unknown")) == expected
+    assert resolve_a2a3_platform(_target()) == expected
 
 
 @pytest.mark.parametrize(
@@ -62,7 +62,7 @@ def test_unknown_and_a5_devices_never_guess_a3(monkeypatch, soc):
     assert normalize_a2a3_platform_target(target) is None
 
 
-@pytest.mark.parametrize("override", ["A5", "invalid", "Ascend910C"])
+@pytest.mark.parametrize("override", ["A5", "invalid"])
 def test_invalid_or_a5_override_does_not_fall_back_to_hardware(monkeypatch, override):
     monkeypatch.setenv("TL_PLATFORM", override)
     monkeypatch.setattr(ascend_target, "_get_soc_name", _unexpected_probe)
@@ -77,6 +77,17 @@ def test_explicit_model_ignores_an_invalid_environment(monkeypatch):
     monkeypatch.setenv("TL_PLATFORM", "invalid")
     monkeypatch.setattr(ascend_target, "_get_soc_name", _unexpected_probe)
     assert resolve_a2a3_platform(_target("A2")) == "A2"
+
+
+@pytest.mark.parametrize("model", ["A5", "auto"])
+def test_non_a2a3_model_does_not_fall_back_to_automatic_detection(monkeypatch, model):
+    monkeypatch.setenv("TL_PLATFORM", "A2")
+    monkeypatch.setattr(ascend_target, "_get_soc_name", _unexpected_probe)
+    target = _target(model)
+    assert resolve_a2a3_platform(target, required=False) is None
+    assert normalize_a2a3_platform_target(target) is None
+    with pytest.raises(ValueError, match="target.model=.*does not select A2/A3"):
+        resolve_a2a3_platform(target)
 
 
 @pytest.mark.parametrize("target", [Target("llvm"), Target("ascend"), Target({"kind": "ascend", "arch": "dav-3510"})])
