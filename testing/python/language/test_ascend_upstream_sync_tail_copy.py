@@ -225,6 +225,45 @@ def test_duplicate_supported_types_have_the_same_completion_contract(dtype: str,
     assert any(event.args[0].value == "MTE2_MTE3" for event in _events(result))
 
 
+@pytest.mark.parametrize("pad", [0, -1])
+def test_wide_integer_padding_preserves_whole_tile_and_hidden_events(pad: int) -> None:
+    dtype = "int64"
+    buffers = _buffers(dtype)
+    result = _run(
+        _function(
+            buffers,
+            [
+                _fill(buffers["local"]),
+                _store(buffers),
+                _copy(buffers, template=f"{dtype}_t, 64", pad=pad),
+                _store(buffers),
+            ],
+        )
+    )
+    directions = {event.args[0].value for event in _events(result)}
+    assert {"MTE3_MTE2", "MTE2_MTE3"} <= directions
+    _assert_hidden_slots_reserved(result)
+    # The complete 512-byte tile must fit even though only 33 elements move.
+    with pytest.raises(tvm.error.TVMError, match="whole padded UB tile"):
+        _run(_function(buffers, [_copy(buffers, template=f"{dtype}_t, 64", pad=pad)], size=256))
+
+
+@pytest.mark.parametrize(
+    "pad",
+    [1, 2**32, tir.IntImm("uint32", 2**32 - 1), tir.FloatImm("float32", -1)],
+)
+def test_wide_integer_padding_rejects_unaudited_patterns(pad: tir.PrimExpr | int) -> None:
+    buffers = _buffers("int64")
+    with pytest.raises(tvm.error.TVMError, match="64-bit integer padding requires literal"):
+        _run(_function(buffers, [_copy(buffers, template="int64_t, 64", pad=pad)]))
+
+
+def test_wide_integer_padding_rejects_overflowing_word_count() -> None:
+    buffers = _buffers("int64", local_elements=2**30)
+    with pytest.raises(tvm.error.TVMError, match="two-word Duplicate count"):
+        _run(_function(buffers, [_copy(buffers, template=f"int64_t, {2**30}", columns=1)]))
+
+
 def test_real_int32_copy_lowering_uses_the_upstream_tail_contract() -> None:
     # Exercise AscendCopy::Lower's actual `int` template spelling, rather than
     # only constructing an already-lowered `int32_t` helper by hand.
@@ -254,6 +293,110 @@ def test_real_int32_copy_lowering_uses_the_upstream_tail_contract() -> None:
     assert len(helpers) == 1
     assert "<int," in helpers[0].args[0].value
     assert "MTE2_MTE3" in {event.args[0].value for event in _events(function)}
+
+
+def _lower_copy_host(function: tir.PrimFunc) -> tir.PrimFunc:
+    configs = {
+        "tl.ascend_sync_backend": "upstream",
+        "tl.ascend_auto_sync": True,
+        "tl.ascend_auto_sync_vs": True,
+        "tl.ascend_memory_planning": False,
+    }
+    with (
+        patch("tilelang.utils.target.check_npu_availability", return_value=True),
+        tvm.transform.PassContext(config=configs),
+    ):
+        artifact = tilelang.lower(function, target="ascendc", platform="A3")
+    return artifact.device_mod.functions_items()[0][1]
+
+
+def test_copy_flattening_does_not_overflow_a_valid_int32_row_index() -> None:
+    @T.prim_func
+    def main(A: T.Tensor((2147483647, 2), "int64"), O: T.Tensor((2, 32), "int64"), row: T.int32):
+        with T.Kernel(1, is_npu=True) as (_cid, vid):
+            values = T.alloc_ub((1, 32), "int64")
+            with T.Scope("V"):
+                if row >= 0 and row < 2147483647:
+                    T.copy(A[row, 0:32], values, pad_value=-1)
+                    T.copy(values, O[vid, :])
+
+    function = _lower_copy_host(main)
+    assert function.attrs.get("tl.ascend_sync_proof") is not None
+    offset = _helper_calls(function)[0].args[1].args[2]
+    assert offset.dtype == "int64"
+    variables = []
+    tir.stmt_functor.post_order_visit(
+        offset,
+        lambda node: variables.append(node) if isinstance(node, tir.Var) else None,
+    )
+    row = next(variable for variable in variables if variable.name == "row")
+    assert row.dtype == "int32"
+    assert any(parameter.same_as(row) for parameter in function.params)
+    analyzer = tvm.arith.Analyzer()
+    for index in (0, 1073741824, 2147483646):
+        evaluated = analyzer.simplify(
+            tir.stmt_functor.substitute(
+                offset,
+                {row: tir.IntImm("int32", index)},
+            ),
+        )
+        assert int(evaluated) == index * 2
+
+
+def test_copy_flattening_keeps_user_int32_arithmetic_under_its_cast() -> None:
+    # Keep the buffer dimensions int32 too: an int64 shape already makes the
+    # original OffsetOf implementation widen the index, before this repair.
+    @T.prim_func
+    def main(A: T.Tensor((2147483647, 2), "int64"), O: T.Tensor((2, 32), "int64"), row: T.int32):
+        with T.Kernel(1, is_npu=True) as (_cid, vid):
+            values = T.alloc_ub((1, 32), "int64")
+            with T.Scope("V"):
+                if row >= 0 and row < 2147483647:
+                    T.copy(A[row * 2, 0:32], values, pad_value=-1)
+                    T.copy(values, O[vid, :])
+
+    with pytest.raises(tvm.error.TVMError, match="nonwrapping signed index arithmetic"):
+        _lower_copy_host(main)
+
+
+def test_dynamic_thread_range_retains_full_masks_inside_executing_threads() -> None:
+    rows = T.symbolic("rows")
+
+    @T.prim_func
+    def main(A: T.Tensor((rows, 64), "float32"), O: T.Tensor((2, 8, 64), "float32")):
+        with T.Kernel(rows // 16, is_npu=True) as (cid, vid):
+            values = T.alloc_ub((8, 64), "float32")
+            with T.Scope("V"):
+                T.copy(A[cid * 16 + vid * 8, 0:64], values)
+                T.copy(values, O[vid, :, :])
+
+    function = _lower_copy_host(main)
+    assert function.attrs.get("tl.ascend_sync_proof") is not None
+    extents = []
+
+    def collect(node: object) -> None:
+        if (
+            isinstance(
+                node,
+                tir.AttrStmt,
+            )
+            and node.attr_key == "thread_extent"
+            and node.node.thread_tag == "blockIdx.x"
+        ):
+            extents.append(node.value)
+
+    tir.stmt_functor.post_order_visit(function.body, collect)
+    assert len(extents) == 1
+    variables = []
+    tir.stmt_functor.post_order_visit(
+        extents[0],
+        lambda node: variables.append(node) if isinstance(node, tir.Var) else None,
+    )
+    rows = next(variable for variable in variables if variable.name == "rows")
+    # No iteration exists for a zero launch extent. Positivity is only a fact
+    # of the executing body, not a new runtime precondition or a forced launch.
+    zero_extent = tir.stmt_functor.substitute(extents[0], {rows: tir.IntImm("int32", 0)})
+    assert int(tvm.arith.Analyzer().simplify(zero_extent)) == 0
 
 
 def test_nominal_pointer_extent_cannot_hide_the_strided_gm_read() -> None:
@@ -380,6 +523,183 @@ def test_symbolic_masks_need_a_proof_of_the_complete_valid_range() -> None:
         _run(_function(buffers, [_copy(buffers, columns)], scalars=(columns,)))
 
 
+def test_parameter_shape_supplies_its_existing_nonnegative_fact() -> None:
+    count = tir.Var("count", "int32")
+    buffers = _buffers()
+    buffers["source"] = tir.decl_buffer((count,), "float32", name="source")
+    original = _function(
+        buffers,
+        [_copy(buffers, count), _store(buffers)],
+        scalars=(count,),
+        guard=count <= 64,
+    )
+    result = _run(original)
+    assert len(_helper_calls(result)) == 1
+    assert "MTE2_MTE3" in {event.args[0].value for event in _events(result)}
+
+
+def test_pure_float_let_is_preserved_without_becoming_an_integer_proof_fact() -> None:
+    count = tir.Var("count", "int32")
+    score = tir.Var("score", "float32")
+    buffers = _buffers()
+    original = _function(
+        buffers,
+        [_copy(buffers, count), _store(buffers)],
+        scalars=(count,),
+        binding=(score, tir.Cast("float32", count)),
+        guard=tir.And(count >= 0, count <= 64),
+    )
+    result = _run(original)
+    bindings = []
+    tir.stmt_functor.post_order_visit(
+        result.body,
+        lambda node: bindings.append(node) if isinstance(node, tir.LetStmt) else None,
+    )
+    assert any(
+        node.var.same_as(score)
+        and tvm.ir.structural_equal(
+            node.value,
+            tir.Cast("float32", count),
+        )
+        for node in bindings
+    )
+    assert len(_helper_calls(result)) == 1
+
+
+def test_negative_parameter_shape_cannot_make_bounds_vacuously_true() -> None:
+    buffers = _buffers()
+    buffers["source"] = tir.decl_buffer((-1,), "float32", name="source")
+    with pytest.raises(tvm.error.TVMError, match="nonnegative parameter shapes"):
+        _run(_function(buffers, [_copy(buffers, 0)]))
+
+
+@pytest.mark.parametrize("wide", [False, True])
+@pytest.mark.parametrize("behind_let", [False, True])
+def test_tail_address_intermediates_must_not_overflow_before_division(
+    wide: bool,
+    behind_let: bool,
+) -> None:
+    index = tir.Var("index", "int32")
+    buffers = _buffers()
+    integer = tir.Cast("int64", index) if wide else index
+    offset = tir.FloorDiv(
+        tir.Mul(integer, tir.const(2**24, integer.dtype)),
+        tir.const(2**24, integer.dtype),
+    )
+    captured = tir.Var("captured_offset", offset.dtype)
+    original = _function(
+        buffers,
+        [_copy(buffers, 1, source_offset=captured if behind_let else offset)],
+        scalars=(index,),
+        guard=tir.And(index >= 0, index <= 255),
+        binding=(captured, offset) if behind_let else None,
+    )
+    if wide:
+        assert len(_helper_calls(_run(original))) == 1
+    else:
+        with pytest.raises(tvm.error.TVMError, match="nonwrapping signed index arithmetic"):
+            _run(original)
+
+
+def test_nonnegative_shape_expression_does_not_make_its_variables_nonnegative() -> None:
+    count = tir.Var("count", "int32")
+    buffers = _buffers()
+    buffers["source"] = tir.decl_buffer((count + 1,), "float32", name="source")
+    # count=-1 describes a legal empty tensor. Assuming count>=0 would falsely
+    # admit this nonempty read from source[-1]. Only count+1 is nonnegative.
+    original = _function(
+        buffers,
+        [_copy(buffers, 1, source_offset=count)],
+        scalars=(count,),
+        guard=count == -1,
+    )
+    with pytest.raises(tvm.error.TVMError, match="strided GM read is in bounds"):
+        _run(original)
+
+
+@pytest.mark.parametrize("wide", [False, True])
+def test_guard_cannot_justify_its_own_overflowing_arithmetic(wide: bool) -> None:
+    index = tir.Var("index", "int32")
+    integer = tir.Cast("int64", index) if wide else index
+    scaled = tir.Mul(integer, tir.const(2**24, integer.dtype))
+    recovered = tir.FloorDiv(scaled, tir.const(2**24, integer.dtype))
+    buffers = _buffers()
+    original = _function(
+        buffers,
+        [_copy(buffers, 1, source_offset=index)],
+        scalars=(index,),
+        guard=tir.And(tir.And(index >= 0, index <= 255), recovered == index),
+    )
+    if wide:
+        assert len(_helper_calls(_run(original))) == 1
+    else:
+        with pytest.raises(tvm.error.TVMError, match="nonwrapping signed index arithmetic"):
+            _run(original)
+
+
+@pytest.mark.parametrize("wide", [False, True])
+def test_tail_loop_upper_bound_cannot_overflow_its_index_type(wide: bool) -> None:
+    dtype = "int64" if wide else "int32"
+    iteration = tir.Var("iteration", dtype)
+    buffers = _buffers()
+    loop = tir.For(
+        iteration,
+        tir.const(2**31 - 2, dtype),
+        tir.const(2, dtype),
+        tir.ForKind.SERIAL,
+        _copy(buffers, 1),
+    )
+    original = _function(buffers, [loop])
+    if wide:
+        assert len(_helper_calls(_run(original))) == 1
+    else:
+        with pytest.raises(tvm.error.TVMError, match="nonwrapping signed index arithmetic"):
+            _run(original)
+
+
+def test_atomic_add_tail_mask_promotes_mixed_int64_index_and_int32_extent() -> None:
+    @T.prim_func
+    def main(C: T.Tensor((33,), "float32"), index: T.int64):
+        with T.Kernel(1, is_npu=True) as (_cid, _vid):
+            values = T.alloc_ub((64,), "float32")
+            with T.Scope("V"):
+                if index >= 0 and index <= 32:
+                    T.tile.fill(values, 1.0)
+                    T.tile.atomic_add(C[index], values)
+
+    configs = {
+        "tl.ascend_sync_backend": "upstream",
+        "tl.ascend_auto_sync": True,
+        "tl.ascend_auto_sync_vs": True,
+        "tl.ascend_memory_planning": False,
+    }
+    with (
+        patch("tilelang.utils.target.check_npu_availability", return_value=True),
+        tvm.transform.PassContext(config=configs),
+    ):
+        artifact = tilelang.lower(main, target="ascendc", platform="A3")
+    function = artifact.device_mod.functions_items()[0][1]
+    calls = [
+        call
+        for call in _calls(function)
+        if call.op
+        == tvm.ir.Op.get(
+            "tir.call_extern",
+        )
+        and "atomic_add_ub_to_gm<" in call.args[0].value
+    ]
+    assert len(calls) == 1
+    assert function.attrs.get("tl.ascend_sync_proof") is not None
+    call = calls[0]
+    assert call.args[2].args[2].dtype == "int64"
+    assert call.args[5].dtype == "int64"
+    assert "V_MTE3" in {event.args[0].value for event in _events(function)}
+    index = next(variable for variable in function.params if str(variable) == "index")
+    for start in (0, 1, 32):
+        mask = tir.stmt_functor.substitute(call.args[5], {index: tir.IntImm("int64", start)})
+        assert int(tvm.arith.Analyzer().simplify(mask)) == 33 - start
+
+
 @pytest.mark.parametrize(
     "change,message",
     [
@@ -404,7 +724,10 @@ def test_whole_duplicate_tile_must_fit_even_when_dma_mask_is_small() -> None:
         _run(_function(buffers, [_copy(buffers, 1)], size=128))
 
 
-@pytest.mark.parametrize("dtype,template", [("int8", "int8_t, 64"), ("uint8", "uint8_t, 64")])
+@pytest.mark.parametrize(
+    "dtype,template",
+    [("int8", "int8_t, 64"), ("uint8", "uint8_t, 64"), ("uint64", "uint64_t, 64")],
+)
 def test_types_without_the_duplicate_padding_path_are_not_misclassified(dtype: str, template: str) -> None:
     buffers = _buffers(dtype)
     with pytest.raises(tvm.error.TVMError, match="type supported by Duplicate"):

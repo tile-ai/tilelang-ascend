@@ -30,6 +30,7 @@
 #include "legacy_composite.h"
 #include "legacy_cross_core.h"
 #include "legacy_helper_type.h"
+#include "legacy_manual_events.h"
 #include "legacy_persistent_pipeline.h"
 #include "legacy_pipeline_partition.h"
 #include "legacy_snapshot.h"
@@ -207,37 +208,64 @@ void RequireFullMaskGmToUb(const CallNode *call, size_t offset,
 // only forward, balanced lexical protocols until those edges are modelled.
 class ManualFlagValidator : public StmtExprVisitor {
 public:
-  void Run(const Stmt &body) {
+  // Keep the legacy admission check as the single source of truth. A failed
+  // check may select the stronger protocol normalizer, without throwing and
+  // catching an ICHECK merely to choose between the two supported paths.
+  std::string TryRun(const Stmt &body) {
+    error_.clear();
+    pending_.clear();
+    resource_ = -1;
     VisitStmt(body);
     RequireBalanced();
+    return error_;
   }
 
 private:
-  void RequireBalanced() const {
-    ICHECK(pending_.empty())
-        << "Upstream Ascend sync requires forward balanced manual flag pairs; "
-           "unmatched or cross-control-flow events need a manual schedule "
-           "model";
+  bool Require(bool condition, const std::string &message) {
+    if (error_.empty() && !condition)
+      error_ = message;
+    return error_.empty();
   }
 
-  static std::string Pipe(const PrimExpr &expression) {
+  bool RequireBalanced() {
+    return Require(
+        pending_.empty(),
+        "Upstream Ascend sync requires forward balanced manual flag pairs; "
+        "unmatched or cross-control-flow events need a manual schedule model");
+  }
+
+  std::string Pipe(const PrimExpr &expression) {
     const auto *value = expression.as<StringImmNode>();
-    ICHECK(value != nullptr)
-        << "Manual flag pipe must be a literal in the upstream sync adapter";
+    if (!Require(value != nullptr,
+                 "Manual flag pipe must be a literal in the upstream sync "
+                 "adapter"))
+      return "";
     std::string result = value->value;
     if (result.rfind("PIPE_", 0) == 0)
       result.erase(0, 5);
     return result;
   }
 
+  void VisitStmt(const Stmt &statement) final {
+    if (error_.empty())
+      StmtExprVisitor::VisitStmt(statement);
+  }
+
+  void VisitExpr(const PrimExpr &expression) final {
+    if (error_.empty())
+      StmtExprVisitor::VisitExpr(expression);
+  }
+
   void VisitStmt_(const ForNode *op) final {
-    RequireBalanced();
+    if (!RequireBalanced())
+      return;
     StmtExprVisitor::VisitStmt_(op);
     RequireBalanced();
   }
 
   void VisitStmt_(const IfThenElseNode *op) final {
-    RequireBalanced();
+    if (!RequireBalanced())
+      return;
     VisitExpr(op->condition);
     VisitStmt(op->then_case);
     RequireBalanced();
@@ -251,7 +279,10 @@ private:
     const int previous = resource_;
     if (op->attr_key == "resource_scope") {
       const auto *value = op->value.as<IntImmNode>();
-      ICHECK(value != nullptr);
+      if (!Require(value != nullptr,
+                   "Manual flag resource_scope must be a literal in the "
+                   "upstream sync adapter"))
+        return;
       resource_ = static_cast<int>(value->value);
     }
     StmtExprVisitor::VisitStmt_(op);
@@ -259,6 +290,11 @@ private:
   }
 
   void VisitExpr_(const CallNode *op) final {
+    if (op->op.same_as(builtin::call_extern()) &&
+        !Require(!op->args.empty() && op->args[0].as<StringImmNode>(),
+                 "Malformed external call in the upstream manual flag "
+                 "validator"))
+      return;
     size_t offset = 0;
     const std::string name = OperationName(op, &offset);
     const bool manual =
@@ -269,29 +305,37 @@ private:
       StmtExprVisitor::VisitExpr_(op);
       return;
     }
-    ICHECK_EQ(op->args.size(), offset + (manual ? 3U : 2U));
+    if (!Require(op->args.size() == offset + (manual ? 3U : 2U),
+                 "Malformed manual flag arguments in the upstream sync "
+                 "adapter"))
+      return;
     const std::string event =
         manual ? Pipe(op->args[offset]) + "_" + Pipe(op->args[offset + 1])
                : Pipe(op->args[offset]);
+    if (!error_.empty())
+      return;
     const auto *id = op->args[offset + (manual ? 2 : 1)].as<IntImmNode>();
-    ICHECK(id != nullptr && id->value >= 0 && id->value < 8)
-        << "Upstream Ascend sync requires a literal manual event ID in [0, 8)";
+    if (!Require(id != nullptr && id->value >= 0 && id->value < 8,
+                 "Upstream Ascend sync requires a literal manual event ID in "
+                 "[0, 8)"))
+      return;
     const std::string key = std::to_string(resource_) + ":" + event + ":" +
                             std::to_string(id->value);
     const bool is_set =
         name == "tl.ascend_set_flag" || name == "tl.ascend_auto_set_flag";
     if (is_set) {
-      ICHECK(pending_.insert(key).second)
-          << "Duplicate manual SetFlag without WaitFlag: " << key;
+      Require(pending_.insert(key).second,
+              "Duplicate manual SetFlag without WaitFlag: " + key);
     } else {
-      ICHECK_EQ(pending_.erase(key), 1U)
-          << "Upstream Ascend sync cannot combine automatic dependencies with "
-             "a manual wait before its producer: "
-          << key;
+      Require(pending_.erase(key) == 1U,
+              "Upstream Ascend sync cannot combine automatic dependencies "
+              "with a manual wait before its producer: " +
+                  key);
     }
   }
 
   int resource_{-1};
+  std::string error_;
   std::unordered_set<std::string> pending_;
 };
 
@@ -654,11 +698,14 @@ public:
                  const LegacyCompositePlan &composites,
                  LegacyTailCopyPlan *tail_copies,
                  const LegacyPipelineCase *pipeline_case,
-                 const LegacyPersistentPipelineImport *persistent)
+                 const LegacyPersistentPipelineImport *persistent,
+                 bool normalized_manual_events, int manual_event_owner)
       : result_(result), target_(target), platform_(platform),
         ordinary_sync_(ordinary_sync), composites_(composites),
         tail_copies_(tail_copies), pipeline_case_(pipeline_case),
         persistent_(persistent),
+        normalized_manual_events_(normalized_manual_events),
+        manual_event_owner_(manual_event_owner),
         logic_buffer_shapes_(
             result->original_function
                 ->GetAttr<Map<Var, Array<PrimExpr>>>(kLogicBufferShapes)
@@ -667,10 +714,28 @@ public:
   void Run() {
     CheckVersions();
     ConstrSet context;
+    if (persistent_ != nullptr && persistent_->ScopedRoot().defined())
+      context = persistent_->RootContext();
+    // Simplify already relies on MarkBufferMapShapes: parameter tensor
+    // dimensions are nonnegative. Replay the same fact in each task's proof
+    // context, rather than losing it when creating a new analyzer. Start with
+    // bare signed index variables; compound shapes need a nonwrapping audit.
+    for (const auto &[parameter, buffer] :
+         result_->original_function->buffer_map) {
+      for (const PrimExpr &shape : buffer->shape) {
+        if (const auto *constant = shape.as<IntImmNode>()) {
+          ICHECK_GE(constant->value, 0)
+              << "Upstream Ascend sync requires nonnegative parameter shapes";
+        } else if (shape.as<VarNode>() && shape.dtype().is_scalar() &&
+                   shape.dtype().is_int() &&
+                   (shape.dtype().bits() == 32 || shape.dtype().bits() == 64)) {
+          context.AddConstr(shape >= make_zero(shape.dtype()));
+        }
+      }
+    }
     if (persistent_ != nullptr && persistent_->ScopedRoot().defined()) {
       ICHECK_GT(persistent_->RootOccurrence(), 0U);
       occurrence_ = persistent_->RootOccurrence() - 1;
-      context = persistent_->RootContext();
       Import(persistent_->ScopedRoot(), &result_->roots, nullptr, context, {},
              kCoreVector, false, {});
       result_->export_state->root_scope_occurrence =
@@ -689,6 +754,16 @@ public:
     }
     const bool mixed = (selected_resources_ & kCoreCube) != 0 &&
                        (selected_resources_ & kCoreVector) != 0;
+    // A proven forward local protocol can be replaced only after every real
+    // operation has passed effect import. Cross-core publication has different
+    // semantics and cannot borrow this local event normalization contract.
+    ICHECK(!normalized_manual_events_ || (ordinary_sync_ && !mixed))
+        << "Manual event normalization requires complete ordinary automatic "
+           "synchronization on one execution resource";
+    if (normalized_manual_events_ && manual_event_owner_ >= 0)
+      ICHECK_EQ(selected_resources_,
+                manual_event_owner_ == 0 ? kCoreCube : kCoreVector)
+          << "Manual event pipes disagree with the imported execution resource";
     if (!mixed) {
       const CoreMask selected = selected_resources_ == kCoreUnassigned
                                     ? kCoreVector
@@ -949,7 +1024,12 @@ private:
         // future mutable read in proof contexts: the value remains unknown.
       } else {
         RequirePure(binding->value, "LetStmt definition");
-        context.AddConstr(binding->var, binding->value);
+        // The proof service models scalar integer/boolean geometry. Preserve
+        // other pure Lets lexically without feeding floating values into Z3.
+        const DataType dtype = binding->var.dtype();
+        if (dtype.is_scalar() &&
+            (dtype.is_int() || dtype.is_uint() || dtype.is_bool()))
+          context.AddConstr(binding->var, binding->value);
       }
       Import(binding->body, siblings, parent, std::move(context),
              std::move(guards), explicit_resource, root_chain,
@@ -978,6 +1058,9 @@ private:
             iteration->var,
             Range::FromMinExtent(make_zero(attribute->value.dtype()),
                                  attribute->value));
+        // This context describes an executing thread body. A zero-sized grid
+        // has no such execution, just as a zero-trip For has no body task.
+        context.AddConstr(attribute->value > 0);
       } else if ((attribute->attr_key == "tilelang_assume" ||
                   attribute->attr_key == "tl.assume") &&
                  attribute->node.as<PrimExprNode>()) {
@@ -1133,6 +1216,8 @@ private:
   LegacyTailCopyPlan *tail_copies_;
   const LegacyPipelineCase *pipeline_case_;
   const LegacyPersistentPipelineImport *persistent_;
+  bool normalized_manual_events_;
+  int manual_event_owner_;
   Map<Var, Array<PrimExpr>> logic_buffer_shapes_;
   std::unordered_map<TaskNode *, CoreMask> task_owners_;
   CoreMask selected_resources_{kCoreUnassigned};
@@ -1272,12 +1357,27 @@ ImportLegacySync(const PrimFunc &function, const Target &target,
     ICHECK(persistent->MatchesSource(function))
         << "Persistent pipeline private source/body mismatch";
   LegacySnapshotResult normalized;
+  LegacyManualEventResult manual{function, false};
   if (persistent != nullptr)
     normalized.function = function;
   else
     normalized =
         NormalizeLegacySnapshots(NormalizeLegacyCompositeBranches(function));
-  ManualFlagValidator().Run(normalized.function->body);
+  // Preserve every protocol already admitted by the legacy validator,
+  // including balanced loops/branches and existing automatic flags. The
+  // stronger proof's finite budgets apply only when extending that contract.
+  std::string manual_error =
+      ManualFlagValidator().TryRun(normalized.function->body);
+  if (!manual_error.empty() && ordinary_sync && persistent == nullptr &&
+      pipeline_case == nullptr) {
+    manual = NormalizeLegacyManualEvents(function);
+    if (manual.normalized) {
+      normalized = NormalizeLegacySnapshots(
+          NormalizeLegacyCompositeBranches(manual.function));
+      manual_error = ManualFlagValidator().TryRun(normalized.function->body);
+    }
+  }
+  ICHECK(manual_error.empty()) << manual_error;
   ImportedLegacySyncIR imported;
   imported.original_function = std::move(normalized.function);
   imported.physical_storage = persistent != nullptr
@@ -1291,7 +1391,8 @@ ImportLegacySync(const PrimFunc &function, const Target &target,
       AnalyzeLegacyComposites(imported.original_function, target, platform);
   LegacyTailCopyPlan tail_copies(imported.original_function, target, platform);
   LegacyImporter(&imported, target, platform, ordinary_sync, composites,
-                 &tail_copies, pipeline_case, persistent)
+                 &tail_copies, pipeline_case, persistent, manual.normalized,
+                 manual.required_owner)
       .Run();
   return imported;
 }

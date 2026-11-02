@@ -46,6 +46,57 @@ PrimExpr Int64(const PrimExpr &value, const char *field) {
   return cast(DataType::Int(64), value);
 }
 
+// Bounds are mathematical proofs. Validate every runtime integer intermediate
+// first so a narrow overflowing product cannot masquerade as an in-bounds
+// pointer after cancellation. This matches the existing PTO index audit.
+void AuditIntegerArithmetic(const PrimExpr &value, ProofAnalyzer *analyzer) {
+  ICHECK(!ContainsUnsignedWrappingArithmetic(value))
+      << kError << "wrapping unsigned index arithmetic is unsupported";
+  PostOrderVisit(value, [&](const ObjectRef &node) {
+    const auto *expression = node.as<PrimExprNode>();
+    if (!expression || expression->dtype.is_bool() ||
+        (!expression->dtype.is_int() && !expression->dtype.is_uint()))
+      return;
+    PrimExpr divisor;
+    if (const auto *operation = node.as<FloorDivNode>())
+      divisor = operation->b;
+    else if (const auto *operation = node.as<DivNode>())
+      divisor = operation->b;
+    else if (const auto *operation = node.as<FloorModNode>())
+      divisor = operation->b;
+    else if (const auto *operation = node.as<ModNode>())
+      divisor = operation->b;
+    if (divisor.defined())
+      ICHECK(analyzer->CanProve(divisor != make_zero(divisor.dtype())))
+          << kError << "index division requires a nonzero divisor";
+    const DataType dtype = expression->dtype;
+    const int bits = dtype.bits();
+    ICHECK(dtype.is_scalar() && bits <= (dtype.is_uint() ? 32 : 64))
+        << kError << "requires a value-preserving scalar index";
+    const int64_t minimum =
+        dtype.is_uint() ? 0
+                        : (bits == 64 ? std::numeric_limits<int64_t>::min()
+                                      : -(int64_t(1) << (bits - 1)));
+    const int64_t maximum =
+        dtype.is_uint() ? (int64_t(1) << bits) - 1
+                        : (bits == 64 ? std::numeric_limits<int64_t>::max()
+                                      : (int64_t(1) << (bits - 1)) - 1);
+    if (const auto *conversion = node.as<CastNode>()) {
+      const PrimExpr source = Int64(conversion->value, "index cast source");
+      ICHECK(analyzer->z3_prover.CanProve(source >= I64(minimum) &&
+                                          source <= I64(maximum)))
+          << kError << "lossy index casts are unsupported";
+    }
+    const PrimExpr wide =
+        Int64(GetRef<PrimExpr>(expression), "index expression");
+    // The legacy constant folder can wrap narrow constant arithmetic. Ask
+    // Z3 directly about the original mathematical expression instead.
+    ICHECK(analyzer->z3_prover.CanProve(wide >= I64(minimum) &&
+                                        wide <= I64(maximum)))
+        << kError << "cannot prove nonwrapping signed index arithmetic";
+  });
+}
+
 std::string Trim(const std::string &text) {
   const size_t first = text.find_first_not_of(" \t\r\n");
   ICHECK(first != std::string::npos) << kError << "empty template argument";
@@ -97,13 +148,13 @@ Shape ParseShape(const CallNode *call, size_t offset) {
   return {fields[0], dimension(1), fields.size() == 3 ? dimension(2) : 1};
 }
 
-DataType DuplicateType(const std::string &type) {
-  // Exact IsDuplicateSupported_v<T> from common.h, including bfloat16.
+DataType PaddingType(const std::string &type) {
+  // Native Duplicate types plus common.h's audited two-word integer fill.
   const std::unordered_map<std::string, DataType> types = {
       {"half", DataType::Float(16)},        {"float", DataType::Float(32)},
       {"bfloat16_t", DataType::BFloat(16)}, {"int16_t", DataType::Int(16)},
       {"uint16_t", DataType::UInt(16)},     {"int32_t", DataType::Int(32)},
-      {"uint32_t", DataType::UInt(32)}};
+      {"uint32_t", DataType::UInt(32)},     {"int64_t", DataType::Int(64)}};
   auto found = types.find(CanonicalHelperElementType(type));
   ICHECK(found != types.end())
       << kError << "tail padding requires a type supported by Duplicate";
@@ -202,6 +253,7 @@ PrimExpr BufferElements(const Buffer &buffer, ProofAnalyzer *analyzer) {
   PrimExpr elements = I64(1);
   const PrimExpr limit = I64(std::numeric_limits<int64_t>::max());
   for (const PrimExpr &shape : buffer->shape) {
+    AuditIntegerArithmetic(shape, analyzer);
     PrimExpr extent = Int64(shape, "GM buffer shape");
     ICHECK(analyzer->CanProve(extent >= I64(0)))
         << kError << "cannot prove nonnegative GM buffer shape";
@@ -372,21 +424,57 @@ LegacyTailCopyPlan::AuditCall(const CallNode *call, size_t offset,
   if (call->args.size() <= offset + 3)
     return std::nullopt;
   const Shape shape = ParseShape(call, offset);
-  ProofAnalyzer analyzer;
-  context.Populate(analyzer);
   const PrimExpr rows = Int64(call->args[offset + 3], "row mask");
   const PrimExpr columns = call->args.size() > offset + 4
                                ? Int64(call->args[offset + 4], "column mask")
                                : I64(shape.columns);
-  if (analyzer.CanProve(rows == I64(shape.rows) &&
-                        columns == I64(shape.columns)))
+  const auto *literal_rows = rows.as<IntImmNode>();
+  const auto *literal_columns = columns.as<IntImmNode>();
+  if (literal_rows && literal_rows->value == shape.rows && literal_columns &&
+      literal_columns->value == shape.columns)
     return std::nullopt;
-
+  // Retain the existing full-copy ABI, including independently certified
+  // Persistent/ring paths. Tail-specific arithmetic audits must not impose
+  // a new contract on their unrelated outer geometry.
+  ProofAnalyzer full_analyzer;
+  context.Populate(full_analyzer);
+  if (full_analyzer.CanProve(rows == I64(shape.rows) &&
+                             columns == I64(shape.columns)))
+    return std::nullopt;
+  ProofAnalyzer analyzer;
+  // Audit definitions before binding their mathematical values. Otherwise a
+  // Let could hide overflow, or a later guard could justify an earlier
+  // overflowing computation. Predicates and loop bounds need the same audit.
+  for (const Constr &constraint : context.constrs_) {
+    if (constraint.kind == Constr::kBindRange) {
+      AuditIntegerArithmetic(constraint.range->min, &analyzer);
+      AuditIntegerArithmetic(constraint.range->extent, &analyzer);
+      AuditIntegerArithmetic(
+          Add(constraint.range->min, constraint.range->extent), &analyzer);
+    } else {
+      ICHECK(SideEffect(constraint.value) <= CallEffectKind::kPure)
+          << kError << "proof predicates require captured scalar values";
+      AuditIntegerArithmetic(constraint.value, &analyzer);
+    }
+    constraint.Populate(analyzer);
+  }
+  AuditIntegerArithmetic(call->args[offset + 3], &analyzer);
+  if (call->args.size() > offset + 4)
+    AuditIntegerArithmetic(call->args[offset + 4], &analyzer);
   state_->RequireSupportedFunction();
   ICHECK_LE(call->args.size(), offset + 8)
       << kError << "unsupported trailing copy ABI";
-  const DataType dtype = DuplicateType(shape.element_type);
+  const DataType dtype = PaddingType(shape.element_type);
+  AuditIntegerArithmetic(call->args[offset + 2], &analyzer);
   const int64_t bytes = dtype.bytes();
+  if (bytes == 8 && call->args.size() > offset + 5) {
+    const auto *pad = call->args[offset + 5].as<IntImmNode>();
+    ICHECK(pad != nullptr && (pad->value == 0 || pad->value == -1) &&
+           // Unsigned values narrower than 64 bits do not sign extend -1.
+           (pad->value == 0 || pad->dtype.is_int() || pad->dtype.bits() == 64))
+        << kError
+        << "64-bit integer padding requires literal zero or all-one bits";
+  }
   // Count-form Duplicate takes int32_t; DataCopyExtParams narrows row count to
   // uint16_t and length/strides to uint32_t. A small-row first contract also
   // stays within the existing helper's documented 12-bit block-count domain.
@@ -394,6 +482,9 @@ LegacyTailCopyPlan::AuditCall(const CallNode *call, size_t offset,
          shape.columns <= std::numeric_limits<int32_t>::max() / shape.rows)
       << kError << "template tile exceeds Duplicate/DMA count limits";
   const int64_t elements = shape.rows * shape.columns;
+  ICHECK(bytes != 8 || elements <= std::numeric_limits<int32_t>::max() / 2)
+      << kError
+      << "64-bit integer padding exceeds the two-word Duplicate count";
   ICHECK(shape.columns <= std::numeric_limits<uint32_t>::max() / bytes)
       << kError << "DMA row byte length overflows";
   const int64_t row_bytes = shape.columns * bytes;
@@ -430,6 +521,8 @@ LegacyTailCopyPlan::AuditCall(const CallNode *call, size_t offset,
 
   const CallNode *source = Pointer(call->args[offset], 1, dtype);
   const CallNode *destination = Pointer(call->args[offset + 1], 2, dtype);
+  AuditIntegerArithmetic(source->args[2], &analyzer);
+  AuditIntegerArithmetic(destination->args[2], &analyzer);
   const Var source_data = Downcast<Var>(source->args[1]);
   const Var destination_data = Downcast<Var>(destination->args[1]);
   ICHECK(!storage.IsPhysicalRingStorage(source_data) &&

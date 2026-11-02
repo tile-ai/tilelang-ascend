@@ -29,7 +29,7 @@ def dynamic_tail_copy_kernel():
         with T.Kernel(1, is_npu=True) as (_cid, vid):
             values = T.alloc_ub((64,), "float32")
             with T.Scope("V"):
-                if n > 0 and n <= 64:
+                if n <= 64:
                     T.tile.fill(values, -7)
                     T.copy(values, O[vid, 0, :])
                     T.copy(A[0:64], values)
@@ -41,7 +41,7 @@ def dynamic_tail_copy_kernel():
 def test_dynamic_full_and_tail_copy_preserves_vector_and_mte3_order(dynamic_tail_copy_kernel):
     # The initial store must complete before the helper's whole-tile Duplicate.
     # Alternating full/tail also exercises the path that skips hidden V events.
-    for count in (64, 33, 1, 32, 63, 64, 7):
+    for count in (64, 33, 0, 1, 32, 63, 64, 7):
         source = torch.arange(count, dtype=torch.float32) + 17
         output = torch.full((2, 2, 64), -999.0, dtype=torch.float32, device="npu")
         for _invocation in range(3):
@@ -122,3 +122,39 @@ def test_real_int32_tail_copy_preserves_values_and_zero_padding():
         output = torch.full((2, 64), -999, dtype=torch.int32, device="npu")
         kernel(source.npu(), output)
         torch.testing.assert_close(output.cpu(), expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("pad", [0, -1])
+@pytest.mark.parametrize("index_dtype", ["int32", "int64"])
+def test_int64_padding_covers_both_words_and_preserves_mte3_reads(pad, index_dtype):
+    @T.prim_func
+    def main(
+        A: T.Tensor((64,), "int64"),
+        Count: T.Tensor((1,), index_dtype),
+        O: T.Tensor((2, 2, 64), "int64"),
+    ):
+        with T.Kernel(1, is_npu=True) as (_cid, vid):
+            values = T.alloc_ub((64,), "int64")
+            with T.Scope("V"):
+                count = Count[0]
+                if count >= 0 and count <= 64:
+                    T.copy(A, values)
+                    T.copy(values, O[vid, 0, :])
+                    T.copy(A[0:count], values, pad_value=pad)
+                    T.copy(values, O[vid, 1, :])
+
+    kernel = _compile_device_kernel(main.with_attr("tir.noalias", True))
+    # Different high/low halves distinguish a real 64-bit copy from truncation.
+    source = (torch.arange(64, dtype=torch.int64) - 32) * (2**32 + 3)
+    for count in (64, 33, 0, 1, 32, 63, 0, 64):
+        expected = torch.full((2, 2, 64), pad, dtype=torch.int64)
+        expected[:, 0, :] = source
+        expected[:, 1, :count] = source[:count]
+        for _invocation in range(3):
+            output = torch.full(expected.shape, -999, dtype=torch.int64, device="npu")
+            kernel(
+                source.npu(),
+                torch.tensor([count], dtype=getattr(torch, index_dtype), device="npu"),
+                output,
+            )
+            torch.testing.assert_close(output.cpu(), expected, rtol=0, atol=0)

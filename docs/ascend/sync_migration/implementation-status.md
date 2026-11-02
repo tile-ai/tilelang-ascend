@@ -80,6 +80,43 @@ Vector/DMA 同步。一般 Developer 自动同步应同时开启 ordinary 与 VS
 - shared helper 及同步语义变化由 native ABI v19 隔离旧缓存。针对性回归位于现有
   tail-copy、snapshot 与 device 套件。
 
+### v20 整数尾块与动态索引
+
+- A2/A3 AscendC 的 int64 GM→UB 尾块支持 literal `0/-1` 填充：将 UB 看作两个
+  uint32 半字后执行真实 Duplicate，覆盖整个 tile，保持原有隐藏事件与 MTE2 完成边界。
+  两倍元素计数必须落在 int32 范围；uint64、其他 pad 位模式及 PTO profile 不扩大支持。
+- 根证明上下文保留参数 shape 中直接声明的 int32/int64 维度变量非负这一已有 TIR
+  事实，不把复合 shape 的自由变量推定为非负；负常量维度明确拒绝。纯浮点 Let
+  按原词法位置保留，不作为整数 Z3 绑定。
+- GM→UB 尾块在数学范围证明之前按词法顺序验证定义、条件、循环上界及操作数的
+  整数中间值，拒绝无法证明不溢出的运算和有损 cast。非溢出证明直接使用 Z3，
+  避免窄整数常量折叠隐藏溢出。`T.copy` 和 AtomicAdd 保留原 Select 裁剪并统一
+  分支位宽，支持混合 int32/int64 索引与在动态行地址乘法前显式提升到 int64。
+  已证明 full/default mask 的调用保留原有独立契约，尾块审计不扩到其外层调度。
+- 共享 helper 和同步语义由 native ABI v20 隔离旧缓存。正反用例仍位于现有
+  tail-copy 与 device 套件；完整样例统计仅在对应实际运行完成后报告。
+
+### v21 核内手工协议与地址线性化
+
+- 核内 hard-event 协议可在 ordinary 自动同步开启时进行顺序 token 验证。静态
+  serial/unrolled 循环按实际索引验证，动态循环要求每次迭代保持 token 状态；
+  For 外同一纯 SSA 条件允许关联初始化与消费，最多枚举 8 个条件，全证明共用
+  65536 动作预算。每条路径须先 Set 后 Wait、无重复 Set、退出全部 drain。
+- 验证成功后仅消解显式核内 flags，保留计算、控制流和原 barriers。所有操作仍须
+  完整导入内存效果，再核对单一执行资源及事件管线 owner，最后由原 upstream
+  引擎重建实际 RAW/WAR/WAW 与循环回边同步。原 Validator 已接受的协议（包括
+  局部平衡循环、分支和既有自动事件）优先保留原预留路径，不受新增证明预算限制。
+  跨核、auto/manual 混合、反向等待、非法 ID，以及未认证的流水专用路径不借用
+  此契约；循环内未知条件仍须分支 token 终态一致。
+  未标注 scope 与显式同 owner 的事件使用同一 token 池，不能重复占用同一物理槽位。
+- Copy/AtomicAdd 对 GM 地址的编译器线性化及 stride 乘法使用 int64。提升前以
+  lower 当前上下文逐节点核对原索引、shape、stride 和 elem_offset 的整数范围；
+  无法证明原窄表达式安全时保持旧 lowering，不借后续 Simplify 改变用户算术。
+  参数 Var 身份不变。执行中的 thread_extent/virtual_thread body 也保留 extent>0
+  的实际执行事实，不改变零 grid 或零循环的运行行为。
+- native ABI 升至 v21；新增主机协议/独立字节依赖检查和设备回归列入
+  `validation/test-suites.json`。原始 examples 不作为兼容性修复的一部分修改。
+
 ## 当前支持与拒绝边界
 
 已验证范围：
@@ -166,8 +203,9 @@ Vector/DMA 同步。一般 Developer 自动同步应同时开启 ordinary 与 VS
   BufferLoad，纯符号动态 extent 不因此被禁止。
 - 非规范 break、While，以及上述 v6 契约以外的 Persistent 与 SIP 组合；没有把普通
   嵌套 For 的结果当作嵌套 ring/owner 生命周期的证明。
-- 反向 manual wait、跨控制流借用 token 或未平衡事件；仅预留 ID 不能证明无死锁。
-- 未建模的操作和动态 manual ID；不能靠扩大 barrier 或取模掩盖未知协议。
+- 反向 manual wait、未能按上述 v21 契约证明的跨控制流 token 或未平衡事件；
+  仅预留 ID 不能证明无死锁。
+- 未建模的操作和无法静态求值的 manual ID；不能靠扩大 barrier 或取模掩盖未知协议。
 - 未证明合法范围、未支持类型或 footprint 的 tail copy、PTO 零 mask，以及 tail 与
   ring/mixed C/V 的组合。full-copy 既有路径与 tail 首片的 target 支持范围分别处理。
 
