@@ -16,6 +16,7 @@
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/op.h>
 #include <tvm/tir/op_attr_types.h>
+#include <tvm/tir/stmt_functor.h>
 
 #include "builtin.h"
 
@@ -23,6 +24,91 @@ namespace tvm {
 namespace tl {
 
 using namespace tir;
+
+namespace {
+
+// CanonicalSimplifier can push widening casts through arithmetic. Only widen
+// operands whose original intermediates are representable in the current
+// lexical context. Query their raw mathematical bounds, without simplifying
+// the expression or relying on its final (possibly cancelling) result.
+bool CanWidenCopyOperand(const PrimExpr &value, arith::Analyzer *analyzer) {
+  bool safe = true;
+  PostOrderVisit(value, [&](const ObjectRef &node) {
+    const auto *expression = node.as<PrimExprNode>();
+    if (!safe || !expression || expression->dtype.is_bool() ||
+        (!expression->dtype.is_int() && !expression->dtype.is_uint()))
+      return;
+    PrimExpr divisor;
+    if (const auto *op = node.as<FloorDivNode>())
+      divisor = op->b;
+    else if (const auto *op = node.as<DivNode>())
+      divisor = op->b;
+    else if (const auto *op = node.as<FloorModNode>())
+      divisor = op->b;
+    else if (const auto *op = node.as<ModNode>())
+      divisor = op->b;
+    if (divisor.defined()) {
+      const auto bound = analyzer->const_int_bound(divisor);
+      if (bound->min_value <= 0 && bound->max_value >= 0) {
+        safe = false;
+        return;
+      }
+    }
+    const DataType dtype = expression->dtype;
+    if (dtype.bits() >= 64)
+      return;
+    const int64_t minimum =
+        dtype.is_uint() ? 0 : -(int64_t(1) << (dtype.bits() - 1));
+    const int64_t maximum = dtype.is_uint()
+                                ? (int64_t(1) << dtype.bits()) - 1
+                                : (int64_t(1) << (dtype.bits() - 1)) - 1;
+    const auto bound = analyzer->const_int_bound(GetRef<PrimExpr>(expression));
+    safe = bound->min_value >= minimum && bound->max_value <= maximum;
+    if (const auto *conversion = node.as<CastNode>()) {
+      if (!conversion->value.dtype().is_int() &&
+          !conversion->value.dtype().is_uint()) {
+        safe = false;
+        return;
+      }
+      const auto source = analyzer->const_int_bound(conversion->value);
+      safe &= source->min_value >= minimum && source->max_value <= maximum;
+    }
+  });
+  return safe;
+}
+
+bool CanWidenCopyOperands(const Array<PrimExpr> &values,
+                          arith::Analyzer *analyzer) {
+  for (const PrimExpr &value : values)
+    if (!CanWidenCopyOperand(value, analyzer))
+      return false;
+  return true;
+}
+
+PrimExpr WideCopyOperand(const PrimExpr &value) {
+  const DataType dtype = value.dtype();
+  if (dtype.is_int() || (dtype.is_uint() && dtype.bits() < 64))
+    return cast(DataType::Int(64, dtype.lanes()), value);
+  return value;
+}
+
+PrimExpr CopyOffset(const Buffer &buffer, const Array<PrimExpr> &indices,
+                    arith::Analyzer *analyzer) {
+  if (buffer.scope() != "global" || !CanWidenCopyOperands(indices, analyzer) ||
+      !CanWidenCopyOperands(buffer->shape, analyzer) ||
+      !CanWidenCopyOperands(buffer->strides, analyzer) ||
+      !CanWidenCopyOperand(buffer->elem_offset, analyzer))
+    return buffer.OffsetOf(indices).back();
+  // OffsetOf combines dimensions and explicit strides as well as indices.
+  Buffer wide_buffer = buffer;
+  auto *node = wide_buffer.CopyOnWrite();
+  node->shape = node->shape.Map(WideCopyOperand);
+  node->strides = node->strides.Map(WideCopyOperand);
+  node->elem_offset = WideCopyOperand(node->elem_offset);
+  return wide_buffer.OffsetOf(indices.Map(WideCopyOperand)).back();
+}
+
+} // namespace
 
 #define TIR_DEFINE_TL_BUILTIN(OpName)                                          \
   const Op &OpName() {                                                         \
@@ -150,8 +236,9 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     return "";
   };
 
-  auto compute_strideN = [](const Buffer &buf,
-                            const Array<PrimExpr> &extents) -> PrimExpr {
+  auto compute_strideN =
+      [analyzer](const Buffer &buf,
+                 const Array<PrimExpr> &extents) -> PrimExpr {
     // The GM copy is emitted as a 2D DMA: blockCount rows (the second-to-last
     // active dim, i.e. the highest dim below the last whose extent != 1) by
     // blockLen columns (the last dim), with one uniform stride between
@@ -163,8 +250,10 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     // (blockCount = 1) and the stride is just the last buffer dim: folding the
     // leading dims in would return the whole buffer size as the stride and
     // corrupt the DMA (issue #1263).
-    PrimExpr strideN = buf->shape[buf->shape.size() - 1];
-    PrimExpr folded = Integer(1);
+    const bool wide = CanWidenCopyOperands(buf->shape, analyzer);
+    PrimExpr strideN =
+        wide ? WideCopyOperand(buf->shape.back()) : buf->shape.back();
+    PrimExpr folded = make_const(DataType::Int(wide ? 64 : 32), 1);
     bool has_row_dim = false;
     for (int i = static_cast<int>(extents.size()) - 2; i >= 0; --i) {
       auto *extent = extents[i].as<IntImmNode>();
@@ -172,7 +261,7 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
         has_row_dim = true;
         break;
       }
-      folded = folded * buf->shape[i];
+      folded = folded * (wide ? WideCopyOperand(buf->shape[i]) : buf->shape[i]);
     }
     if (has_row_dim) {
       strideN = strideN * folded;
@@ -367,7 +456,10 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     } else {
       ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1];
       if (config.l12l0) {
-        transposeL1 == 0 ? ss << ", false" << ">" : ss << ", true" << ">";
+        transposeL1 == 0 ? ss << ", false"
+                              << ">"
+                         : ss << ", true"
+                              << ">";
       }
       // ss << src->shape[src_ndim - 2] << ", " << src->shape[src_ndim - 1] <<
       // ", "
@@ -401,10 +493,10 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
   auto src_ptr = src_new_buffer.access_ptr(
       1, src_new_buffer->dtype, 1,
-      src_new_buffer.OffsetOf(src_new_indices).back(), src_len);
+      CopyOffset(src_new_buffer, src_new_indices, analyzer), src_len);
   auto dst_ptr = dst_new_buffer.access_ptr(
       2, dst_new_buffer->dtype, 1,
-      dst_new_buffer.OffsetOf(dst_new_indices).back(), dst_len);
+      CopyOffset(dst_new_buffer, dst_new_indices, analyzer), dst_len);
 
   PrimExpr tmp_ptr;
   if (tmp.defined()) {
@@ -428,8 +520,13 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     if (remaining.dtype().lanes() > 1) {
       return extent;
     }
+    // Select requires matching branch dtypes, including the empty-tile zero.
+    const DataType index_type = (remaining + extent).dtype();
+    remaining = cast(index_type, remaining);
+    extent = cast(index_type, extent);
+    PrimExpr zero = make_zero(index_type);
     return Select(remaining >= extent, extent,
-                  Select(remaining > 0, remaining, 0));
+                  Select(remaining > zero, remaining, zero));
   };
 
   auto find_active_dim_indices =
@@ -689,8 +786,9 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
     return "";
   };
 
-  auto compute_strideN = [](const Buffer &buf,
-                            const Array<PrimExpr> &extents) -> PrimExpr {
+  auto compute_strideN =
+      [analyzer](const Buffer &buf,
+                 const Array<PrimExpr> &extents) -> PrimExpr {
     // The GM copy is emitted as a 2D DMA: blockCount rows (the second-to-last
     // active dim, i.e. the highest dim below the last whose extent != 1) by
     // blockLen columns (the last dim), with one uniform stride between
@@ -702,8 +800,10 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
     // (blockCount = 1) and the stride is just the last buffer dim: folding the
     // leading dims in would return the whole buffer size as the stride and
     // corrupt the DMA (issue #1263).
-    PrimExpr strideN = buf->shape[buf->shape.size() - 1];
-    PrimExpr folded = Integer(1);
+    const bool wide = CanWidenCopyOperands(buf->shape, analyzer);
+    PrimExpr strideN =
+        wide ? WideCopyOperand(buf->shape.back()) : buf->shape.back();
+    PrimExpr folded = make_const(DataType::Int(wide ? 64 : 32), 1);
     bool has_row_dim = false;
     for (int i = static_cast<int>(extents.size()) - 2; i >= 0; --i) {
       auto *extent = extents[i].as<IntImmNode>();
@@ -711,7 +811,7 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
         has_row_dim = true;
         break;
       }
-      folded = folded * buf->shape[i];
+      folded = folded * (wide ? WideCopyOperand(buf->shape[i]) : buf->shape[i]);
     }
     if (has_row_dim) {
       strideN = strideN * folded;
@@ -747,8 +847,12 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
     if (remaining.dtype().lanes() > 1) {
       return extent;
     }
+    const DataType index_type = (remaining + extent).dtype();
+    remaining = cast(index_type, remaining);
+    extent = cast(index_type, extent);
+    PrimExpr zero = make_zero(index_type);
     return Select(remaining >= extent, extent,
-                  Select(remaining > 0, remaining, 0));
+                  Select(remaining > zero, remaining, zero));
   };
 
   auto find_active_dim_indices =
@@ -866,8 +970,8 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
     dst_len = dst_len * dim_len;
   }
 
-  auto src_offset = src_new_buffer.OffsetOf(src_scalar_indices).back();
-  auto dst_offset = dst_new_buffer.OffsetOf(dst_scalar_indices).back();
+  auto src_offset = CopyOffset(src_new_buffer, src_scalar_indices, analyzer);
+  auto dst_offset = CopyOffset(dst_new_buffer, dst_scalar_indices, analyzer);
 
   auto src_ptr = src_new_buffer.access_ptr(1, src_new_buffer->dtype, 1,
                                            src_offset, src_len);

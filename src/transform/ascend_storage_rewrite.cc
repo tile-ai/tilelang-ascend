@@ -44,6 +44,7 @@
 #include <unordered_set>
 
 #include "../op/builtin.h"
+#include "common/pipeline_ring_provenance.h"
 
 #include "arith/int_operator.h"
 #include "runtime/thread_storage_scope.h"
@@ -452,6 +453,30 @@ public:
       return MakeAttach(attach_map_.at(nullptr), stmt);
     }
     return stmt;
+  }
+
+  PhysicalRingProvenance
+  RemapPhysicalRings(const PhysicalRingProvenance &rings) const {
+    PhysicalRingProvenance result;
+    arith::Analyzer analyzer;
+    for (const auto &[logical_id, old_record] : rings) {
+      ValidatePhysicalRingRecord(old_record);
+      Array<PrimExpr> record = old_record;
+      const Var root = Downcast<Var>(record[kPhysicalRingRoot]);
+      if (auto it = alloc_map_.find(root.get()); it != alloc_map_.end()) {
+        const auto *entry = it->second;
+        ICHECK_LE(entry->bits_offset, uint64_t(INT64_MAX))
+            << "Physical ring base offset does not fit signed index arithmetic";
+        record.Set(kPhysicalRingRoot, entry->alloc_var);
+        record.Set(kPhysicalRingBaseBits,
+                   analyzer.Simplify(
+                       record[kPhysicalRingBaseBits] +
+                       make_const(DataType::Int(64),
+                                  static_cast<int64_t>(entry->bits_offset))));
+      }
+      result.Set(logical_id, record);
+    }
+    return result;
   }
 
   template <typename Node> Node VisitBufferAccess(Node node) {
@@ -1857,6 +1882,19 @@ public:
       new_buffer_map.Set(key, new_buffer);
     }
     n->buffer_map = new_buffer_map;
+    if (auto rings =
+            func->GetAttr<PhysicalRingProvenance>(kPhysicalRingProvenance)) {
+      PhysicalRingProvenance remapped;
+      for (const auto &[logical_id, old_record] : rings.value()) {
+        ValidatePhysicalRingRecord(old_record);
+        Array<PrimExpr> record = old_record;
+        const Var root = Downcast<Var>(record[kPhysicalRingRoot]);
+        if (auto it = rewrite_map_.find(root.get()); it != rewrite_map_.end())
+          record.Set(kPhysicalRingRoot, it->second.new_buffer_var);
+        remapped.Set(logical_id, record);
+      }
+      func = WithAttr(std::move(func), kPhysicalRingProvenance, remapped);
+    }
   }
 
 private:
@@ -1949,6 +1987,11 @@ Pass AscendStorageRewrite(bool is_npu = false) {
     n->body = plan_rewriter.Rewrite(std::move(n->body), true, enable_reuse,
                                     reuse_require_exact_matched_dtype,
                                     std::move(local_var_init_map));
+    if (auto rings =
+            f->GetAttr<PhysicalRingProvenance>(kPhysicalRingProvenance)) {
+      f = WithAttr(std::move(f), kPhysicalRingProvenance,
+                   plan_rewriter.RemapPhysicalRings(rings.value()));
+    }
     // Parameters may not be rewritten, but internal allocations may.
     // Vectorization of AllocateConst is currently disabled, as it has
     // indexing issues for types that include padding (e.g. int8x3

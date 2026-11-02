@@ -1,0 +1,504 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+// Ported from tile-ai/tilelang 1c0f402e166a7d0a055c991d2f82d2175a7917b7.
+// Source: src/ascend/transform/auto_schedule/multi_buffer.h.
+// Legacy adaptation: runtime containers and direct Task/Control graph input.
+// Owner-external broadcast fills require the omitted frontend preparation
+// protocol and are rejected, rather than treated as supported versioned work.
+
+#pragma once
+
+#include <tvm/node/structural_equal.h>
+#include <tvm/runtime/container/array.h>
+#include <tvm/runtime/container/map.h>
+#include <tvm/runtime/logging.h>
+#include <tvm/tir/buffer.h>
+#include <tvm/tir/expr.h>
+#include <tvm/tir/op.h>
+#include <tvm/tir/stmt.h>
+
+#include <algorithm>
+#include <functional>
+#include <map>
+#include <memory>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+#include "buffer_version.h"
+#include "ir_structure.h"
+
+namespace tvm::tl::ascend_sync {
+
+using namespace tir;
+
+constexpr const char *kMultiBufferCounterMap = "tl.multi_buffer_counter_map";
+constexpr const char *kStorageEpochGuardMap = "tl.storage_epoch_guard_map";
+
+using MultiBufferCounterMap = Map<Var, Buffer>;
+using StorageEpochGuardMap = Map<Var, PrimExpr>;
+
+struct MultiBufferOwnerInfo {
+  ControlNode *loop{nullptr};
+  PrimExpr active_guard{Bool(true)};
+};
+
+// One scheduler-selected storage ring. A storage may have multiple disjoint
+// owner loops. Compatible storages with the same ordered owners, owner-local
+// guards, and schedule stages may share one physical counter group; iteration
+// mode derives the slot lexically and therefore requires one owner.
+//
+// MultiBufferPlan contains every scheduler-selected storage, including a
+// one-version storage. Every info has at least one owner. Physical buffer
+// rewriting is needed only when num_versions > 1; version-one entries still
+// use the same iteration/counter ownership and synchronization protocols.
+//
+// Entries stored in a plan have exactly one of these forms:
+//   iteration: counter_group_id == 0, counter undefined,
+//              exactly one owner whose active_guard is true;
+//   counter:   counter_group_id > 0, counter defined,
+//              every owner has an active_guard (possibly true).
+// Compatible storages still have one info per storage; sharing a counter means
+// those infos carry the same counter_group_id and counter.
+struct MultiBufferInfo {
+  int counter_group_id{0};
+  Var storage;
+  int num_versions{0};
+  std::vector<MultiBufferOwnerInfo> owners;
+  Buffer counter;
+
+  bool UsesCounter() const { return counter.defined(); }
+
+  const MultiBufferOwnerInfo *FindOwner(const IRStructure *node) const {
+    ICHECK(node != nullptr) << "Cannot find an owner for a null IRStructure";
+    const MultiBufferOwnerInfo *result = nullptr;
+    for (const MultiBufferOwnerInfo &owner : owners) {
+      if (!node->IsWithin(owner.loop))
+        continue;
+      ICHECK(result == nullptr)
+          << "An IRStructure node belongs to nested multi-buffer owners for "
+             "storage "
+          << storage->name_hint;
+      result = &owner;
+    }
+    return result;
+  }
+};
+
+// Multi-buffer metadata shared by PrepareMultiBuffer, ResolveCore, InsertSync,
+// and MaterializeMultiBuffer. Logical epoch domains are represented separately
+// by loop annotations and EpochDomainRegistry below; they never participate in
+// physical counter-group identity.
+class MultiBufferPlan {
+public:
+  const std::vector<MultiBufferInfo> &Infos() const { return infos_; }
+
+  // Null means that this storage has no selected automatic multi-buffer plan.
+  // Storage access/dependency visitors may observe null; code handling a
+  // selected plan must require a non-null result instead of inventing fallback
+  // state.
+  const MultiBufferInfo *Find(const Var &storage) const {
+    auto it = storage_indices_.find(storage);
+    return it == storage_indices_.end() ? nullptr : &infos_[it->second];
+  }
+
+  const MultiBufferInfo *Find(const Buffer &buffer) const {
+    return Find(buffer->data);
+  }
+
+private:
+  std::vector<MultiBufferInfo> infos_;
+  std::unordered_map<Var, size_t, ObjectPtrHash, ObjectPtrEqual>
+      storage_indices_;
+};
+
+enum class EpochDomainKind {
+  kLexical,
+  kCounter,
+};
+
+// One logical active-epoch sequence reconstructed independently in each pass.
+// A lexical domain is owned by the sibling list containing its path_begin. A
+// counter domain is owned by one concrete multi-buffer owner and may contain
+// sites anywhere strictly inside that owner.
+struct EpochDomain {
+  int id{0};
+  EpochDomainKind kind{EpochDomainKind::kLexical};
+  ControlNode *owner{nullptr};
+  PrimExpr active_guard{Bool(true)};
+  Buffer counter;
+
+  bool IsCounter() const { return kind == EpochDomainKind::kCounter; }
+};
+
+// Reconstruct counter and lexical domains from the physical multi-buffer plan
+// and per-loop storage guards. Domain ids are pass-local and are interned using
+// structural equality only; PrepareMultiBuffer has already canonicalized
+// proof-equivalent guards to one representative expression.
+class EpochDomainRegistry {
+public:
+  EpochDomainRegistry(const std::vector<std::shared_ptr<IRStructure>> &root,
+                      const MultiBufferPlan &multi_buffer_plan)
+      : multi_buffer_plan_(multi_buffer_plan) {
+    AddLexicalScope(nullptr);
+    RegisterLexicalScopes(root);
+    RegisterPreparedLexicalDomains(root);
+    RegisterCounterDomains();
+    ReorderDomainsForProjection();
+  }
+
+  const EpochDomain &Domain(int id) const {
+    ICHECK_GT(id, 0);
+    ICHECK_LE(static_cast<size_t>(id), domains_.size());
+    const EpochDomain &domain = domains_[id - 1];
+    ICHECK_EQ(domain.id, id) << "Missing prepared epoch domain " << id;
+    return domain;
+  }
+
+  bool CanProjectDomain(int source_id, int target_id,
+                        const ControlNode *scope) const {
+    auto scope_it = projection_targets_.find(scope);
+    ICHECK(scope_it != projection_targets_.end())
+        << "Missing epoch-domain projection scope";
+    auto source_it = scope_it->second.find(source_id);
+    ICHECK(source_it != scope_it->second.end())
+        << "Missing epoch-domain projection source " << source_id;
+    return std::binary_search(source_it->second.begin(),
+                              source_it->second.end(), target_id);
+  }
+
+  int DomainForStorage(const Var &storage, const ControlNode *loop) const {
+    if (loop != nullptr) {
+      if (const MultiBufferInfo *info = multi_buffer_plan_.Find(storage)) {
+        if (info->UsesCounter()) {
+          if (const MultiBufferOwnerInfo *owner = info->FindOwner(loop)) {
+            const int *domain_id =
+                FindStorageBinding(counter_bindings_, storage, owner->loop);
+            ICHECK(domain_id != nullptr)
+                << "Missing counter epoch domain for storage "
+                << storage->name_hint;
+            return *domain_id;
+          }
+        }
+      }
+    }
+    return LexicalDomainId(storage, loop);
+  }
+
+  int UnconditionalLexicalDomain(const ControlNode *scope) const {
+    auto it = lexical_domain_ids_.find(scope);
+    ICHECK(it != lexical_domain_ids_.end())
+        << "Missing unconditional lexical epoch domain";
+    return it->second;
+  }
+
+  std::vector<int> DomainsForTaskAtScope(const TaskNode *task,
+                                         const ControlNode *scope) const {
+    std::vector<int> result;
+    std::unordered_set<int> domain_ids;
+    for (const Var &storage : TaskStorages(task)) {
+      int domain_id = DomainForStorage(storage, scope);
+      if (domain_ids.insert(domain_id).second)
+        result.push_back(domain_id);
+    }
+    return result;
+  }
+
+private:
+  int InternDomain(EpochDomainKind kind, ControlNode *owner,
+                   const PrimExpr &active_guard,
+                   const Buffer &counter = Buffer()) {
+    ICHECK(kind == EpochDomainKind::kLexical || owner != nullptr);
+    ICHECK_EQ(kind == EpochDomainKind::kCounter, counter.defined());
+    for (const EpochDomain &domain : domains_) {
+      if (domain.kind != kind || domain.owner != owner)
+        continue;
+      if (counter.defined() && !domain.counter.same_as(counter))
+        continue;
+      if (!counter.defined() && domain.counter.defined())
+        continue;
+      if (domain.active_guard.same_as(active_guard) ||
+          StructuralEqual()(domain.active_guard, active_guard)) {
+        return domain.id;
+      }
+    }
+    int domain_id = static_cast<int>(domains_.size()) + 1;
+    domains_.push_back(
+        EpochDomain{domain_id, kind, owner, active_guard, counter});
+    return domain_id;
+  }
+
+  void
+  RegisterLexicalScopes(const std::vector<std::shared_ptr<IRStructure>> &root) {
+    std::function<void(IRStructure *)> visit = [&](IRStructure *node) {
+      if (!node || !node->IsControl())
+        return;
+      auto *loop = static_cast<ControlNode *>(node);
+      AddLexicalScope(loop);
+      for (const auto &child : loop->children)
+        visit(child.get());
+    };
+    for (const auto &node : root)
+      visit(node.get());
+  }
+
+  void RegisterPreparedLexicalDomains(
+      const std::vector<std::shared_ptr<IRStructure>> &root) {
+    std::function<void(IRStructure *)> visit = [&](IRStructure *node) {
+      if (!node || !node->IsControl())
+        return;
+      auto *loop = static_cast<ControlNode *>(node);
+      auto guards = loop->control->annotations.Get(kStorageEpochGuardMap);
+      if (guards.defined()) {
+        StorageEpochGuardMap guard_map =
+            Downcast<StorageEpochGuardMap>(guards.value());
+        std::unordered_set<Var, ObjectPtrHash, ObjectPtrEqual> counter_storages;
+        if (auto counters =
+                loop->control->annotations.Get(kMultiBufferCounterMap)) {
+          MultiBufferCounterMap counter_map =
+              Downcast<MultiBufferCounterMap>(counters.value());
+          for (const auto &[storage, _] : counter_map)
+            counter_storages.insert(storage);
+        }
+        for (const auto &[storage, guard] : guard_map) {
+          // Counter storages are bound once by RegisterCounterDomains. Their
+          // entries remain in this shared annotation only to serialize the
+          // canonical active guard alongside the physical counter binding.
+          if (counter_storages.count(storage))
+            continue;
+          int domain_id = InternDomain(EpochDomainKind::kLexical, loop, guard);
+          BindStorage(&lexical_bindings_, storage, loop, domain_id);
+        }
+      }
+      for (const auto &child : loop->children)
+        visit(child.get());
+    };
+    for (const auto &node : root)
+      visit(node.get());
+  }
+
+  void RegisterCounterDomains() {
+    for (const MultiBufferInfo &info : multi_buffer_plan_.Infos()) {
+      if (!info.UsesCounter())
+        continue;
+      for (const MultiBufferOwnerInfo &owner : info.owners) {
+        int domain_id = InternDomain(EpochDomainKind::kCounter, owner.loop,
+                                     owner.active_guard, info.counter);
+        BindStorage(&counter_bindings_, info.storage, owner.loop, domain_id);
+      }
+    }
+  }
+
+  void ReorderDomainsForProjection() {
+    size_t num_domains = domains_.size();
+    using ProjectionMatrix = std::vector<std::vector<bool>>;
+    std::map<const ControlNode *, ProjectionMatrix> projections_by_scope;
+    std::vector<std::vector<bool>> can_project(
+        num_domains, std::vector<bool>(num_domains, false));
+
+    ConstrSet empty_ctx;
+    for (const auto &[scope, _] : lexical_domain_ids_) {
+      const ConstrSet &ctx =
+          scope != nullptr ? scope->GetLoopBodyContext() : empty_ctx;
+      ProjectionMatrix &scope_projection = projections_by_scope[scope];
+      scope_projection.assign(num_domains,
+                              std::vector<bool>(num_domains, false));
+      for (size_t source = 0; source < num_domains; ++source) {
+        for (size_t target = 0; target < num_domains; ++target) {
+          scope_projection[source][target] =
+              source == target ||
+              GuardImplies(domains_[target].active_guard,
+                           domains_[source].active_guard, ctx);
+        }
+      }
+      for (size_t intermediate = 0; intermediate < num_domains;
+           ++intermediate) {
+        for (size_t source = 0; source < num_domains; ++source) {
+          if (!scope_projection[source][intermediate])
+            continue;
+          for (size_t target = 0; target < num_domains; ++target) {
+            scope_projection[source][target] =
+                scope_projection[source][target] ||
+                scope_projection[intermediate][target];
+          }
+        }
+      }
+      for (size_t source = 0; source < num_domains; ++source) {
+        for (size_t target = 0; target < num_domains; ++target) {
+          can_project[source][target] =
+              can_project[source][target] || scope_projection[source][target];
+        }
+      }
+    }
+    for (size_t intermediate = 0; intermediate < num_domains; ++intermediate) {
+      for (size_t source = 0; source < num_domains; ++source) {
+        if (!can_project[source][intermediate])
+          continue;
+        for (size_t target = 0; target < num_domains; ++target) {
+          can_project[source][target] =
+              can_project[source][target] || can_project[intermediate][target];
+        }
+      }
+    }
+
+    std::vector<size_t> order;
+    order.reserve(num_domains);
+    for (size_t i = 0; i < num_domains; ++i)
+      order.push_back(i);
+    std::stable_sort(order.begin(), order.end(), [&](size_t lhs, size_t rhs) {
+      size_t lhs_targets =
+          std::count(can_project[lhs].begin(), can_project[lhs].end(), true);
+      size_t rhs_targets =
+          std::count(can_project[rhs].begin(), can_project[rhs].end(), true);
+      if (lhs_targets != rhs_targets)
+        return lhs_targets < rhs_targets;
+      return domains_[lhs].id < domains_[rhs].id;
+    });
+
+    std::vector<int> old_to_new(num_domains + 1, 0);
+    std::vector<EpochDomain> reordered;
+    reordered.reserve(num_domains);
+    for (size_t old_index : order) {
+      EpochDomain domain = domains_[old_index];
+      int new_id = static_cast<int>(reordered.size()) + 1;
+      old_to_new[domain.id] = new_id;
+      domain.id = new_id;
+      reordered.push_back(std::move(domain));
+    }
+    domains_ = std::move(reordered);
+
+    auto remap = [&](int *domain_id) {
+      ICHECK(domain_id != nullptr);
+      ICHECK_GT(*domain_id, 0);
+      ICHECK_LT(static_cast<size_t>(*domain_id), old_to_new.size());
+      *domain_id = old_to_new[*domain_id];
+    };
+    for (auto &[_, domain_id] : lexical_domain_ids_)
+      remap(&domain_id);
+    for (auto &[_, by_scope] : lexical_bindings_) {
+      for (auto &[_, domain_id] : by_scope)
+        remap(&domain_id);
+    }
+    for (auto &[_, by_scope] : counter_bindings_) {
+      for (auto &[_, domain_id] : by_scope)
+        remap(&domain_id);
+    }
+
+    for (const auto &[scope, scope_projection] : projections_by_scope) {
+      auto &targets_by_source = projection_targets_[scope];
+      for (size_t old_source = 0; old_source < num_domains; ++old_source) {
+        std::vector<int> &targets =
+            targets_by_source[old_to_new[old_source + 1]];
+        for (size_t old_target = 0; old_target < num_domains; ++old_target) {
+          if (scope_projection[old_source][old_target])
+            targets.push_back(old_to_new[old_target + 1]);
+        }
+        std::sort(targets.begin(), targets.end());
+      }
+    }
+  }
+
+  void BindStorage(
+      std::unordered_map<Var, std::unordered_map<const ControlNode *, int>,
+                         ObjectPtrHash, ObjectPtrEqual> *bindings,
+      const Var &storage, ControlNode *owner, int domain_id) {
+    ICHECK(bindings != nullptr);
+    auto [_, inserted] = (*bindings)[storage].emplace(owner, domain_id);
+    ICHECK(inserted) << "Duplicate storage epoch binding for "
+                     << storage->name_hint;
+  }
+
+  const int *FindStorageBinding(
+      const std::unordered_map<Var,
+                               std::unordered_map<const ControlNode *, int>,
+                               ObjectPtrHash, ObjectPtrEqual> &bindings,
+      const Var &storage, const ControlNode *owner) const {
+    auto storage_it = bindings.find(storage);
+    if (storage_it == bindings.end())
+      return nullptr;
+    auto loop_it = storage_it->second.find(owner);
+    return loop_it == storage_it->second.end() ? nullptr : &loop_it->second;
+  }
+
+  int LexicalDomainId(const Var &storage, const ControlNode *owner) const {
+    if (const int *binding =
+            FindStorageBinding(lexical_bindings_, storage, owner)) {
+      return *binding;
+    }
+    return UnconditionalLexicalDomain(owner);
+  }
+
+  void AddLexicalScope(ControlNode *scope) {
+    int domain_id = InternDomain(EpochDomainKind::kLexical, scope, Bool(true));
+    auto [it, inserted] = lexical_domain_ids_.emplace(scope, domain_id);
+    ICHECK(inserted || it->second == domain_id)
+        << "A lexical scope has inconsistent unconditional domains";
+  }
+
+  const std::vector<Var> &TaskStorages(const TaskNode *task) const {
+    auto existing = task_storages_.find(task);
+    if (existing != task_storages_.end())
+      return existing->second;
+
+    std::vector<Var> storages;
+    std::unordered_set<Var, ObjectPtrHash, ObjectPtrEqual> seen_storages;
+    auto append = [&](const std::vector<BufferRegion> &regions) {
+      for (const BufferRegion &region : regions) {
+        const Var &storage = region->buffer->data;
+        if (!seen_storages.insert(storage).second)
+          continue;
+        std::string storage_scope = region->buffer.scope();
+        if (storage_scope == "local" || storage_scope == "local.var" ||
+            storage_scope == "local.fragment") {
+          continue;
+        }
+        if (const MultiBufferInfo *info = multi_buffer_plan_.Find(storage)) {
+          ICHECK(info->FindOwner(task) != nullptr)
+              << "Multi-buffer task is outside every owner for storage "
+              << info->storage->name_hint
+              << "; owner-external broadcast fills are not supported by the "
+                 "legacy adapter";
+        }
+        storages.push_back(storage);
+      }
+    };
+    append(task->GetReadRegions());
+    append(task->GetWriteRegions());
+    return task_storages_.emplace(task, std::move(storages)).first->second;
+  }
+
+  const MultiBufferPlan &multi_buffer_plan_;
+  std::vector<EpochDomain> domains_;
+  std::unordered_map<const ControlNode *, int> lexical_domain_ids_;
+  std::unordered_map<Var, std::unordered_map<const ControlNode *, int>,
+                     ObjectPtrHash, ObjectPtrEqual>
+      lexical_bindings_;
+  std::unordered_map<Var, std::unordered_map<const ControlNode *, int>,
+                     ObjectPtrHash, ObjectPtrEqual>
+      counter_bindings_;
+  std::map<const ControlNode *, std::map<int, std::vector<int>>>
+      projection_targets_;
+  // Pass-local lazy cache. EpochDomainRegistry is owned and consumed by one
+  // single-threaded kernel rewrite.
+  mutable std::unordered_map<const TaskNode *, std::vector<Var>> task_storages_;
+};
+
+} // namespace tvm::tl::ascend_sync

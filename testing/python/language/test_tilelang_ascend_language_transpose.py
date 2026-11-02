@@ -247,6 +247,49 @@ def test_transpose_fallback_int64(dtype, target, shape):
     run_test_transpose(M, N, dtype, target)
 
 
+@pytest.mark.parametrize("backend", ["upstream", "legacy"])
+@pytest.mark.parametrize(
+    "dtype,shape,pipe",
+    [
+        pytest.param("int64", (64, 64), "S", id="int64-scalar"),
+        pytest.param("float32", (8, 24), "S", id="b32-scalar", marks=pytest.mark.low_priority),
+        pytest.param("bfloat16", (16, 16), "S", id="bfloat16-scalar", marks=pytest.mark.low_priority),
+        pytest.param("int8", (32, 32), "S", id="int8-scalar", marks=pytest.mark.low_priority),
+        pytest.param("float16", (32, 32), "V", id="b16-vector", marks=pytest.mark.low_priority),
+        pytest.param("float32", (32, 32), "V", id="b32-vector", marks=pytest.mark.low_priority),
+    ],
+)
+def test_transpose_sync_matches_helper_pipeline(backend, dtype, shape, pipe):
+    """Exercise the actual helper without Bisheng repairing missing sync."""
+    pytest.importorskip("torch_npu")
+    if not hasattr(torch, "npu") or not torch.npu.is_available():
+        pytest.skip("requires Ascend NPU execution")
+    if backend == "upstream" and not tilelang.tvm.get_global_func("tl.ascend_sync.Z3ProofServiceAvailable")():
+        pytest.skip("requires USE_ASCEND_SYNC_Z3=ON")
+    tilelang.disable_cache()
+    configs = dict(PASS_CONFIGS)
+    configs.update({"tl.ascend_sync_backend": backend, "tl.ascend_auto_sync_vs": True})
+    kernel = tilelang.compile(
+        transpose_kernel(*shape, dtype),
+        out_idx=[-1],
+        target="ascendc",
+        platform="auto",
+        pass_configs=configs,
+        compile_flags=["--cce-auto-sync=off"],
+    )
+    source = kernel.get_kernel_source()
+    assert f"HardEvent::MTE2_{pipe}" in source
+    assert f"HardEvent::{pipe}_MTE3" in source
+
+    generator = torch.Generator().manual_seed(20261031)
+    input_cpu = torch.randint(-80, 81, shape, generator=generator, dtype=torch.int32).to(TORCH_DTYPE[dtype])
+    input_npu = input_cpu.npu()
+    expected = input_cpu.T.contiguous()
+    for _repeat in range(3):
+        actual = kernel(input_npu).cpu()
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
 # -----------------------------------------------------------------------------
 # Non-aligned shape raises ValueError at compile time
 # -----------------------------------------------------------------------------

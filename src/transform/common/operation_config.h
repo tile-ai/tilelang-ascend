@@ -461,15 +461,79 @@ GetWorkspaceOpConfigs() {
   return ops;
 }
 
-inline OperationConfig ResolveOperationConfig(const tvm::tir::CallNode *call) {
-  const auto *op_node = call->op.as<tvm::OpNode>();
-  ICHECK(op_node);
-  const auto config_it = GetOperationConfig().find(op_node->name);
+inline OperationConfig ResolveOperationConfig(const tvm::tir::CallNode *call,
+                                              const std::string &name,
+                                              size_t argument_offset) {
+  const bool scalar_binary =
+      name == "tl.ascend_adds" || name == "tl.ascend_muls" ||
+      name == "tl.ascend_subs" || name == "tl.ascend_divs" ||
+      name == "tl.ascend_maxs" || name == "tl.ascend_mins";
+  const bool scalar_compare = name == "tl.ascend_compare_scalar";
+  const bool external_scalar =
+      name == "AscendC::Adds" || name == "AscendC::Muls" ||
+      name == "AscendC::Subs" || name == "AscendC::Divs" ||
+      name == "AscendC::Maxs" || name == "AscendC::Mins" ||
+      name == "AscendC::CompareScalar";
+  ICHECK(!external_scalar)
+      << "Scalar call_extern operand ABI is not audited for " << name;
+  const auto config_it = GetOperationConfig().find(name);
   ICHECK(config_it != GetOperationConfig().end())
-      << "Missing operation configuration for " << op_node->name;
+      << "Missing operation configuration for " << name;
 
   OperationConfig config = config_it->second;
-  if (!GetWorkspaceOpConfigs().count(op_node)) {
+  if (scalar_binary || scalar_compare) {
+    ICHECK_EQ(argument_offset, 0U)
+        << "Scalar call_extern operand ABI is not audited for " << name;
+    // The public scalar intrinsics have two ABIs: a scalar value, or a
+    // buffer pointer followed by its scalar index. Do not discard that read
+    // when fixing the immediate-value form's overly broad catalog entry.
+    const size_t scalar_arity = scalar_compare ? 5U : 4U;
+    ICHECK_GE(call->args.size(), argument_offset);
+    const size_t arity = call->args.size() - argument_offset;
+    ICHECK(arity == scalar_arity || arity == scalar_arity + 1)
+        << "Malformed scalar operand arity in " << name;
+    const bool buffer_scalar = arity == scalar_arity + 1;
+    auto require_pointer = [&](size_t index) {
+      const auto *pointer =
+          call->args[argument_offset + index].as<tvm::tir::CallNode>();
+      ICHECK(pointer != nullptr &&
+             pointer->op.same_as(tvm::tir::builtin::tvm_access_ptr()) &&
+             pointer->args.size() == 5U)
+          << "Malformed buffer operand " << index << " in " << name;
+    };
+    auto require_integer = [&](size_t index) {
+      const DataType dtype = call->args[argument_offset + index].dtype();
+      ICHECK(dtype.is_scalar() && !dtype.is_bool() &&
+             (dtype.is_int() || dtype.is_uint()))
+          << "Malformed scalar index/count in " << name;
+    };
+    require_pointer(0);
+    require_pointer(1);
+    config.buffer_accesses = {{0, "write"}, {1, "read"}};
+    if (buffer_scalar) {
+      require_pointer(2);
+      require_integer(3);
+      config.buffer_accesses.emplace_back(2, "read");
+    } else {
+      const DataType dtype = call->args[argument_offset + 2].dtype();
+      ICHECK(dtype.is_scalar() && (dtype.is_int() || dtype.is_uint() ||
+                                   dtype.is_float() || dtype.is_bfloat16()))
+          << "Malformed scalar value in " << name;
+    }
+    require_integer(arity - 1);
+    if (scalar_compare) {
+      const auto *mode =
+          call->args[argument_offset + arity - 2].as<tvm::tir::StringImmNode>();
+      ICHECK(mode != nullptr && (mode->value == "EQ" || mode->value == "NE" ||
+                                 mode->value == "GT" || mode->value == "GE" ||
+                                 mode->value == "LT" || mode->value == "LE"))
+          << "Malformed scalar comparison mode in " << name;
+    }
+    return config;
+  }
+  const auto *op_node = call->op.as<tvm::OpNode>();
+  if (argument_offset != 0 || op_node == nullptr ||
+      !GetWorkspaceOpConfigs().count(op_node)) {
     return config;
   }
 
@@ -495,6 +559,79 @@ inline OperationConfig ResolveOperationConfig(const tvm::tir::CallNode *call) {
     }
   }
   return config;
+}
+
+inline OperationConfig ResolveOperationConfig(const tvm::tir::CallNode *call) {
+  const auto *op_node = call->op.as<tvm::OpNode>();
+  ICHECK(op_node);
+  return ResolveOperationConfig(call, op_node->name, 0);
+}
+
+// Shape-independent clients above only inspect operands and memory effects.
+// Synchronization clients must use this context-aware resolver because a
+// semantic intrinsic's default pipeline need not match its selected helper.
+inline OperationConfig ResolveOperationConfigWithPipeline(
+    const tvm::tir::CallNode *call, const std::string &name,
+    size_t argument_offset,
+    const Map<tir::Var, Array<PrimExpr>> &logic_buffer_shapes,
+    bool pto_transpose) {
+  OperationConfig config = ResolveOperationConfig(call, name, argument_offset);
+  if (name == "tl.ascend_transpose") {
+    // The execution resource is AIV even when the helper falls back to scalar
+    // GetValue/SetValue. PIPE_S alone does not identify an execution resource.
+    config.copy_resource_scope = 1;
+    if (pto_transpose) {
+      // PTO lowers this intrinsic to TTRANS, not the AscendC helper below.
+      return config;
+    }
+    ICHECK_EQ(argument_offset, 0U)
+        << "Transpose call_extern operand ABI is not audited";
+    ICHECK_EQ(call->args.size(), 2U) << "Malformed transpose operand arity";
+    const auto *source = call->args[1].as<tir::CallNode>();
+    ICHECK(source != nullptr &&
+           source->op.same_as(tir::builtin::tvm_access_ptr()) &&
+           source->args.size() == 5U)
+        << "Malformed transpose source access_ptr";
+    const auto *data = source->args[1].as<tir::VarNode>();
+    ICHECK(data != nullptr) << "Malformed transpose source storage";
+    const auto shape = logic_buffer_shapes.Get(GetRef<tir::Var>(data));
+    ICHECK(shape.defined() && shape.value().size() >= 2U)
+        << "Transpose synchronization requires its logical source shape";
+    const auto *rows = shape.value()[0].as<IntImmNode>();
+    const auto *columns = shape.value()[1].as<IntImmNode>();
+    const DataType dtype = source->args[0].dtype();
+    const bool integer = (dtype.is_int() || dtype.is_uint()) &&
+                         (dtype.bits() == 8 || dtype.bits() == 16 ||
+                          dtype.bits() == 32 || dtype.bits() == 64);
+    // The emitter spells other floating types as float, losing their width.
+    // Do not infer the helper branch from a dtype it cannot preserve.
+    ICHECK(dtype.is_scalar() &&
+           (integer || dtype == DataType::Float(16) ||
+            dtype == DataType::Float(32) || dtype == DataType::BFloat(16)))
+        << "Transpose synchronization requires an audited element type";
+    ICHECK(rows != nullptr && columns != nullptr && rows->value > 0 &&
+           columns->value > 0)
+        << "Transpose synchronization requires a static positive helper shape";
+    const int bytes = dtype.bytes();
+    // Keep this predicate identical to tl::ascend::transpose in common.h.
+    // B32 dimensions such as 8 and 24 are DMA-aligned but use the scalar path.
+    const bool vector_helper = (bytes == 2 || bytes == 4) &&
+                               !dtype.is_bfloat16() && rows->value % 16 == 0 &&
+                               columns->value % 16 == 0;
+    config.default_pipeline = vector_helper ? "PIPE_V" : "PIPE_S";
+    return config;
+  }
+  return config;
+}
+
+inline OperationConfig ResolveOperationConfigWithPipeline(
+    const tvm::tir::CallNode *call,
+    const Map<tir::Var, Array<PrimExpr>> &logic_buffer_shapes,
+    bool pto_transpose) {
+  const auto *op_node = call->op.as<tvm::OpNode>();
+  ICHECK(op_node);
+  return ResolveOperationConfigWithPipeline(call, op_node->name, 0,
+                                            logic_buffer_shapes, pto_transpose);
 }
 
 } // namespace tl

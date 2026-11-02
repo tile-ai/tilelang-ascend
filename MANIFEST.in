@@ -1,5 +1,6 @@
 include VERSION
 include CMakeLists.txt
+include cmake/modules/FindAscendSyncZ3.cmake
 include requirements.txt
 include requirements-test.txt
 include requirements-dev.txt

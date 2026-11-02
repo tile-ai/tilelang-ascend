@@ -368,6 +368,16 @@ def AscendMemoryPlanning():
     return _ffi_api.AscendMemoryPlanning()  # type: ignore
 
 
+def AscendInsertSync(target: Target, platform: str):
+    """Insert ordinary and V/S synchronization with the ported upstream engine.
+
+    This opt-in backend requires a build with USE_ASCEND_SYNC_Z3=ON. Unsupported
+    operation effects or pipeline provenance are reported instead of falling
+    back to the legacy algorithms.
+    """
+    return _ffi_api.AscendInsertSync(target, platform)  # type: ignore
+
+
 def AscendSyncInsert(target: Target, platform: str):
     """Auto insert sync for Ascend.
 

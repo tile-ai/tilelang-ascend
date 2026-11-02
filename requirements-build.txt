@@ -7,4 +7,5 @@ torch
 wheel
 tox
 auditwheel
-patchelf
+patchelf>=0.17.2
+z3-solver>=4.13.0,<4.15.5

@@ -388,14 +388,37 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
     rightPadding = 0;
   }
   if (maskShapeM != dstM || maskShapeN != dstN) {
-    if constexpr (IsDuplicateSupported_v<T>) {
-      SetFlag<HardEvent::MTE2_V>(0);
-      WaitFlag<HardEvent::MTE2_V>(0);
-      SetFlag<HardEvent::MTE3_V>(0);
-      WaitFlag<HardEvent::MTE3_V>(0);
-      AscendC::Duplicate<T>(dstTensor, padValue, dstM * dstN);
-      SetFlag<HardEvent::V_MTE2>(0);
-      WaitFlag<HardEvent::V_MTE2>(0);
+    constexpr bool wideInteger = std::is_same_v<T, int64_t>;
+    // Duplicate has no 64-bit overload on A2/A3. Zero and all-one padding
+    // consist of identical 32-bit halves, including DataCopyPad's b32 pad.
+    // Other wide padding values retain the existing unsupported path; the
+    // upstream importer rejects them before reaching this helper.
+    if constexpr (IsDuplicateSupported_v<T> || wideInteger) {
+      bool supportedPad = true;
+      if constexpr (wideInteger) {
+        supportedPad = padValue == T(0) || padValue == T(-1);
+      }
+      if (supportedPad) {
+        SetFlag<HardEvent::MTE2_V>(0);
+        WaitFlag<HardEvent::MTE2_V>(0);
+        SetFlag<HardEvent::MTE3_V>(0);
+        WaitFlag<HardEvent::MTE3_V>(0);
+        if constexpr (IsDuplicateSupported_v<T>) {
+          AscendC::Duplicate<T>(dstTensor, padValue, dstM * dstN);
+        } else {
+          AscendC::Duplicate<uint32_t>(
+              dstTensor.template ReinterpretCast<uint32_t>(),
+              static_cast<uint32_t>(padValue), uint64_t(dstM) * dstN * 2);
+        }
+        SetFlag<HardEvent::V_MTE2>(0);
+        WaitFlag<HardEvent::V_MTE2>(0);
+        // An empty logical tile still publishes its padded UB contents. Keep
+        // the V -> MTE2 completion boundary, but never submit an empty DMA or
+        // dereference the (possibly out-of-allocation) GM slice for that tile.
+        if (maskShapeM == 0 || maskShapeN == 0) {
+          return;
+        }
+      }
     }
   }
   AscendC::DataCopyExtParams dataCopyParams(

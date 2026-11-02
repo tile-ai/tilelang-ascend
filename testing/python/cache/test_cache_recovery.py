@@ -54,7 +54,12 @@ def install_tilelang_mocks(tmp_cache_dir: str):
 
     file_module = _load_standalone(FILE_HELPER_PATH, "tilelang_cache_file_helpers")
 
-    tvm = _make_module("tvm")
+    tvm = _make_module(
+        "tvm",
+        get_global_func=lambda name, allow_missing=False: (
+            (lambda: "test-engine-default") if name == "tl.ascend_sync.EngineCacheABI" else None
+        ),
+    )
     tvm_target = _make_module("tvm.target", Target=object)
     tvm_tir = _make_module("tvm.tir", PrimFunc=object)
     tvm.target = tvm_target
@@ -62,6 +67,9 @@ def install_tilelang_mocks(tmp_cache_dir: str):
 
     jit_kernel = mock.MagicMock()
     tilelang_jit = _make_module("tilelang.jit", JITKernel=jit_kernel)
+    # File-race recovery tests isolate synchronization semantics. The dedicated
+    # Ascend contract fixtures replace this stub with the real ABI validator.
+    tilelang_contract = _make_module("tilelang.jit.ascend_runtime_contract", sync_engine_cache_abi=lambda *args, **kwargs: None)
     tilelang_engine = _make_module("tilelang.engine")
     tilelang_engine_param = _make_module("tilelang.engine.param", KernelParam=object)
     tilelang_engine.param = tilelang_engine_param
@@ -97,6 +105,7 @@ def install_tilelang_mocks(tmp_cache_dir: str):
         "tvm.tir": tvm_tir,
         "tilelang": tilelang,
         "tilelang.jit": tilelang_jit,
+        "tilelang.jit.ascend_runtime_contract": tilelang_contract,
         "tilelang.engine": tilelang_engine,
         "tilelang.engine.param": tilelang_engine_param,
         "tilelang.env": tilelang_env,
@@ -235,6 +244,10 @@ class KernelCacheRecoveryMixin:
 class TestKernelCacheRecovery(KernelCacheRecoveryMixin, unittest.TestCase):
     def setUp(self):
         super().setUp()
+        # Cache recovery uses mock functions; allocator contract semantics are
+        # covered with the real helper in test_ascend_runtime_contract_cache.py.
+        contract_module = "tilelang.jit.ascend_runtime_contract"
+        self.modules[contract_module].prepare_auto_gm_contract = lambda func, *_args: func
         self.kernel_cache = _load_standalone(KERNEL_CACHE_PATH, "kernel_cache_under_test")
         self.kernel_cache.KernelCache._instance = None
         self.cache = self.kernel_cache.KernelCache(cache_dir=self.tmp.name)

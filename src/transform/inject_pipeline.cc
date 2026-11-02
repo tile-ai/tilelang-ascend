@@ -28,6 +28,7 @@
 
 #include <unordered_set>
 
+#include "common/pipeline_ring_provenance.h"
 #include "support/utils.h"
 #include "tir/schedule/utils.h"
 #include "tir/transforms/ir_utils.h"
@@ -265,11 +266,13 @@ public:
   PipelineRewriter(Map<Var, Buffer> buffer_data_to_buffer,
                    const Array<Buffer> &pipeline_allocs,
                    const For &pipeline_loop, const PipelineInfo &pipeline_info,
-                   PrimExpr predicate_condition = PrimExpr())
+                   PrimExpr predicate_condition = PrimExpr(),
+                   bool enable_physical_ring_provenance = false)
       : buffer_data_to_buffer_(std::move(buffer_data_to_buffer)),
         pipeline_allocs_(pipeline_allocs), pipeline_loop_(pipeline_loop),
         pipeline_info_(pipeline_info),
-        predicate_condition_(predicate_condition) {}
+        predicate_condition_(predicate_condition),
+        enable_physical_ring_provenance_(enable_physical_ring_provenance) {}
 
   std::pair<Stmt, Map<Var, PrimExpr>> BuildPipeline() {
     // Step 1: Analyze accesses to the buffers in the pipeline and compute the
@@ -279,7 +282,36 @@ public:
     for (const Buffer &buffer : pipeline_allocs_) {
       int num_versions = ComputeBufferVersions(buffer, infos.at(buffer));
       if (num_versions > 1) {
-        buffer_remap_.Set(buffer, RewriteAllocBuffer(buffer, num_versions));
+        Buffer rewritten = RewriteAllocBuffer(buffer, num_versions);
+        buffer_remap_.Set(buffer, rewritten);
+        if (!enable_physical_ring_provenance_)
+          continue;
+        // Record the actual physical stride after any layout padding. The
+        // first legacy ring contract uses static, zero-based lexical clocks;
+        // unsupported layouts keep their version count without a provenance
+        // record so the synchronization importer can reject them explicitly.
+        PrimExpr stride = rewritten->strides.empty()
+                              ? make_const(DataType::Int(64), 1)
+                              : cast(DataType::Int(64), rewritten->strides[0]);
+        if (rewritten->strides.empty()) {
+          for (size_t i = 1; i < rewritten->shape.size(); ++i)
+            stride = stride * cast(DataType::Int(64), rewritten->shape[i]);
+        }
+        const int64_t element_bits =
+            static_cast<int64_t>(rewritten->dtype.bits()) *
+            rewritten->dtype.lanes();
+        PrimExpr stride_bits = analyzer_.Simplify(
+            stride * make_const(DataType::Int(64), element_bits));
+        const auto *constant_stride = stride_bits.as<IntImmNode>();
+        const auto *original_min = pipeline_loop_->min.as<IntImmNode>();
+        if (constant_stride != nullptr && constant_stride->value > 0 &&
+            original_min != nullptr && original_min->value == 0) {
+          physical_rings_.Set(buffer->data,
+                              {Integer(1), Integer(num_versions), buffer->data,
+                               make_const(DataType::Int(64), 0), stride_bits,
+                               make_const(DataType::Int(64), element_bits),
+                               Integer(0)});
+        }
       }
     }
 
@@ -331,16 +363,21 @@ public:
     }
 
     // Step 2: Emit the pipeline prologue, body and epilogue.
-    Stmt prologue = EmitImpl(pipeline_loop_->min,
-                             pipeline_loop_->min + max_stage_, true, true);
-    Stmt body =
-        EmitImpl(pipeline_loop_->min + max_stage_,
-                 pipeline_loop_->min + pipeline_loop_->extent, false, false);
-    Stmt epilogue = EmitImpl(
-        pipeline_loop_->min + pipeline_loop_->extent,
-        pipeline_loop_->min + pipeline_loop_->extent + max_stage_, true, true);
+    Stmt prologue =
+        EmitImpl(pipeline_loop_->min, pipeline_loop_->min + max_stage_, true,
+                 true, kPipelinePrologue);
+    Stmt body = EmitImpl(pipeline_loop_->min + max_stage_,
+                         pipeline_loop_->min + pipeline_loop_->extent, false,
+                         false, kPipelineSteady);
+    Stmt epilogue =
+        EmitImpl(pipeline_loop_->min + pipeline_loop_->extent,
+                 pipeline_loop_->min + pipeline_loop_->extent + max_stage_,
+                 true, true, kPipelineEpilogue);
 
-    SeqStmt stmt = SeqStmt({prologue, body, epilogue});
+    Stmt stmt = SeqStmt({prologue, body, epilogue});
+    if (PublishPipelineMetadata())
+      stmt = AttrStmt(Array<Var>{pipeline_loop_->loop_var},
+                      kPhysicalPipelineExtent, pipeline_loop_->extent, stmt);
 
     // Step 3: Make a new block that contains new buffer allocations after
     // pipeline rewriting.
@@ -377,7 +414,23 @@ public:
     return {BlockRealize({}, Bool(true), block), buffer_versions};
   }
 
+  const PhysicalRingProvenance &PhysicalRings() const {
+    return physical_rings_;
+  }
+
+  PhysicalPipelineOwners PipelineOwners() const {
+    if (!PublishPipelineMetadata())
+      return {};
+    // schema, actual maximum stage (not ring B), original minimum, order count
+    return {{pipeline_loop_->loop_var,
+             {Integer(1), Integer(max_stage_), pipeline_loop_->min,
+              Integer(ordered_stmts_.size())}}};
+  }
+
 private:
+  bool PublishPipelineMetadata() const {
+    return enable_physical_ring_provenance_ && !physical_rings_.empty();
+  }
   /*!
    * \brief Analyze accesses to the buffers in the software pipeline.
    *
@@ -711,7 +764,7 @@ private:
    * \return The result loop.
    */
   Stmt EmitImpl(PrimExpr start, PrimExpr end, bool unroll_loop,
-                bool need_bound_check) {
+                bool need_bound_check, PhysicalPipelineSegment segment) {
     PrimExpr new_loop_var;
     PrimExpr extent = end - start;
     auto make_nop = []() {
@@ -765,6 +818,20 @@ private:
       }
       new_block = Downcast<Block>(Substitute(
           new_block, {{pipeline_loop_->loop_var, normalized_access_index}}));
+      std::unordered_set<Var, ObjectPtrHash, ObjectPtrEqual> ring_ids;
+      for (const Array<BufferRegion> &accesses :
+           {block->reads, block->writes}) {
+        for (const BufferRegion &access : accesses) {
+          const Var &id = access->buffer->data;
+          if (physical_rings_.count(id))
+            ring_ids.insert(id);
+        }
+      }
+      for (const Var &id : ring_ids) {
+        new_block.CopyOnWrite()->body =
+            AttrStmt(Array<Var>{id}, kPhysicalRingClock,
+                     normalized_access_index, new_block->body);
+      }
       if (predicate_condition_.defined()) {
         BlockNode *n = new_block.CopyOnWrite();
         n->body = IfThenElse(
@@ -788,6 +855,20 @@ private:
     PopulateWaitCounts(new_blocks, &async_states_local);
 
     auto stmts = CompletePipelineLoopStatements(new_blocks, async_states_local);
+    if (PublishPipelineMetadata()) {
+      for (size_t i = 0; i < stmts.size(); ++i) {
+        const auto &block = new_blocks[i];
+        // This wrapper encloses BlockRealize, including its generated bounds
+        // predicate. LowerOpaqueBlock therefore leaves the certificate around
+        // the actual If, rather than merely around its guarded payload.
+        stmts.Set(
+            i,
+            AttrStmt(Array<PrimExpr>{pipeline_loop_->loop_var, Integer(segment),
+                                     Integer(block.stage), Integer(block.order),
+                                     Integer(need_bound_check)},
+                     kPhysicalPipelineStage, block.access_index, stmts[i]));
+      }
+    }
 
     Stmt new_loop{nullptr};
 
@@ -820,8 +901,12 @@ private:
       async_states[stage_id].producer_head += extent;
     }
 
-    return BlockRealize({}, Bool(true),
-                        MakeBlock(std::move(new_loop), buffer_data_to_buffer_));
+    Stmt result = BlockRealize(
+        {}, Bool(true), MakeBlock(std::move(new_loop), buffer_data_to_buffer_));
+    if (PublishPipelineMetadata())
+      result = AttrStmt(Array<Var>{pipeline_loop_->loop_var},
+                        kPhysicalPipelineSegment, Integer(segment), result);
+    return result;
   }
 
   arith::Analyzer analyzer_;
@@ -830,8 +915,10 @@ private:
   For pipeline_loop_;
   PipelineInfo pipeline_info_;
   PrimExpr predicate_condition_;
+  bool enable_physical_ring_provenance_{false};
   int max_stage_ = -1;
   Map<Buffer, Buffer> buffer_remap_;
+  PhysicalRingProvenance physical_rings_;
   Array<Block> ordered_stmts_;
   std::map<int, AsyncStateGlobal> async_states;
 };
@@ -873,9 +960,9 @@ void BuildDependencyGraph(const Array<Block> &blocks,
 
 class PipelineInjector : private StmtExprMutator {
 public:
-  static Stmt Inject(PrimFunc &func) {
+  static Stmt Inject(PrimFunc &func, bool enable_physical_ring_provenance) {
     auto global_symbol = func->GetAttr<String>(tvm::attr::kGlobalSymbol);
-    PipelineInjector injector(global_symbol);
+    PipelineInjector injector(global_symbol, enable_physical_ring_provenance);
     for (const auto &kv : func->buffer_map) {
       const Buffer &buffer = kv.second;
       injector.buffer_data_to_buffer_.Set(buffer->data, buffer);
@@ -887,13 +974,27 @@ public:
       auto fn_attr = fptr->attrs.CopyOnWrite();
       fn_attr->dict.Set("buffer_versions", injector.collected_buffer_versions_);
     }
+    if (!injector.collected_physical_rings_.empty()) {
+      PrimFuncNode *fptr = func.CopyOnWrite();
+      auto fn_attr = fptr->attrs.CopyOnWrite();
+      fn_attr->dict.Set(kPhysicalRingProvenance,
+                        injector.collected_physical_rings_);
+    }
+    if (!injector.collected_pipeline_owners_.empty()) {
+      PrimFuncNode *fptr = func.CopyOnWrite();
+      auto fn_attr = fptr->attrs.CopyOnWrite();
+      fn_attr->dict.Set(kPhysicalPipelineOwners,
+                        injector.collected_pipeline_owners_);
+    }
 
     return result;
   }
 
 private:
-  explicit PipelineInjector(Optional<String> global_symbol)
-      : global_symbol_(global_symbol) {}
+  explicit PipelineInjector(Optional<String> global_symbol,
+                            bool enable_physical_ring_provenance)
+      : global_symbol_(global_symbol),
+        enable_physical_ring_provenance_(enable_physical_ring_provenance) {}
 
   /*!
    * \brief Check the pipeline satisfies the following conditions:
@@ -1046,13 +1147,22 @@ private:
     ValidatePipelineBody(pipeline_info, original_order);
 
     // Step 4: Rewrite the pipeline body.
-    auto [pipeline_stmt, buffer_versions] =
-        // Stmt pipeline =
-        PipelineRewriter(buffer_data_to_buffer_, pipeline_allocs,
-                         GetRef<For>(op), pipeline_info, predicate_condition)
-            .BuildPipeline();
+    PipelineRewriter rewriter(
+        buffer_data_to_buffer_, pipeline_allocs, GetRef<For>(op), pipeline_info,
+        predicate_condition, enable_physical_ring_provenance_);
+    auto [pipeline_stmt, buffer_versions] = rewriter.BuildPipeline();
     for (const auto &[buffer, version] : buffer_versions) {
       collected_buffer_versions_.Set(buffer, version);
+    }
+    for (const auto &[id, record] : rewriter.PhysicalRings()) {
+      ICHECK(!collected_physical_rings_.count(id))
+          << "A physical ring allocation belongs to multiple pipeline owners";
+      collected_physical_rings_.Set(id, record);
+    }
+    for (const auto &[id, record] : rewriter.PipelineOwners()) {
+      ICHECK(!collected_pipeline_owners_.count(id))
+          << "A physical pipeline owner was published twice";
+      collected_pipeline_owners_.Set(id, record);
     }
 
     if (const auto *realize = op->body.as<BlockRealizeNode>()) {
@@ -1098,7 +1208,10 @@ private:
 
   Map<Var, Buffer> buffer_data_to_buffer_;
   Optional<String> global_symbol_;
+  bool enable_physical_ring_provenance_{false};
   Map<Var, PrimExpr> collected_buffer_versions_;
+  PhysicalRingProvenance collected_physical_rings_;
+  PhysicalPipelineOwners collected_pipeline_owners_;
 };
 
 /*!
@@ -1109,7 +1222,10 @@ tir::transform::Pass InjectSoftwarePipeline() {
   using namespace tir::transform;
   auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {
     auto *fptr = f.CopyOnWrite();
-    fptr->body = PipelineInjector::Inject(f);
+    const bool enable_physical_ring_provenance =
+        ctx->GetConfig<String>("tl.ascend_sync_backend", String("legacy"))
+            .value() == "upstream";
+    fptr->body = PipelineInjector::Inject(f, enable_physical_ring_provenance);
     fptr->body = ConvertSSA(std::move(fptr->body));
     return f;
   };

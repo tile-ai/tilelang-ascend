@@ -122,8 +122,14 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     mod = tir.transform.RewriteUnsafeSelect()(mod)
     mod = tir.transform.HoistIfThenElse()(mod)
     mod = tilelang.transform.AscendMemoryPlanning()(mod)
-    mod = tilelang.transform.AscendSyncInsert(target, platform)(mod)
-    mod = tilelang.transform.AscendSyncInsertVS(target, platform)(mod)
+    sync_backend = pass_ctx.config.get("tl.ascend_sync_backend", "legacy")
+    if sync_backend == "upstream":
+        mod = tilelang.transform.AscendInsertSync(target, platform)(mod)
+    elif sync_backend == "legacy":
+        mod = tilelang.transform.AscendSyncInsert(target, platform)(mod)
+        mod = tilelang.transform.AscendSyncInsertVS(target, platform)(mod)
+    else:
+        raise ValueError(f"Unknown Ascend synchronization backend: {sync_backend!r}")
     if managed_vector_mask:
         # Materialize physical terminals only after every semantic analysis and
         # rewrite pass has completed. No TIR-transforming pass may run after

@@ -33,6 +33,7 @@
 
 #include "../op/ascend.h"
 #include "../op/builtin.h"
+#include "./common/attr.h"
 #include "./common/collector.h"
 #include "./common/operation_config.h"
 
@@ -61,6 +62,9 @@ public:
     auto size_map = f->GetAttr<Map<Var, PrimExpr>>("size_map")
                         .value_or(Map<Var, PrimExpr>());
     syncInserter.InitConfig(config_path, address_map, size_map);
+    syncInserter.logic_buffer_shapes_ =
+        f->GetAttr<Map<Var, Array<PrimExpr>>>(kLogicBufferShapes)
+            .value_or(Map<Var, Array<PrimExpr>>());
 
     PrimFuncNode *fptr = f.CopyOnWrite();
     auto fn_attr = fptr->attrs.CopyOnWrite();
@@ -1375,7 +1379,9 @@ private:
 
             auto config_it = operation_config_.find(normalized_name);
             if (config_it != operation_config_.end()) {
-              const OperationConfig config = ResolveOperationConfig(call);
+              const OperationConfig config = ResolveOperationConfigWithPipeline(
+                  call, logic_buffer_shapes_,
+                  target_->GetAttr<String>("model").value_or("") == "pto");
 
               std::unordered_map<std::string, BufferAccess> buffer_access_map;
 
@@ -1811,6 +1817,7 @@ private:
   Map<Var, PrimExpr> size_map_;
   std::string platform_;
   Target target_;
+  Map<Var, Array<PrimExpr>> logic_buffer_shapes_;
 };
 
 tvm::transform::Pass AscendSyncInsert(Target target, std::string platform) {

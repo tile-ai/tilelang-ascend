@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "status": "historical_results_not_current_source_acceptance",
+  "record_source_revision": "aa219a3f0ec8c5046feeef767e51a47d8fb67ba5",
+  "checkpoint": {
+    "name": "default-on-pypi-z3",
+    "recorded_at_utc": "2026-10-30T04:23:05.488193+00:00",
+    "native_engine_abi": "upstream-1c0f402e-legacy-v8",
+    "base_commit": "c00e8b66663ce7ddf7ea3215c2c808d657be2c27",
+    "exact_tested_commit": null
+  },
+  "source_at_cleanup": {
+    "base_commit": "aa219a3f0ec8c5046feeef767e51a47d8fb67ba5",
+    "native_engine_abi": "upstream-1c0f402e-legacy-v10",
+    "matching_full_validation_recorded": false,
+    "reason": "Unsigned-wraparound and truncating-division fixes followed the recorded v8 checkpoint. No native, device or package validation was rerun during this documentation cleanup."
+  },
+  "environment": {
+    "os": "Linux",
+    "architecture": "aarch64",
+    "python": "3.11.15",
+    "platform": "A3",
+    "use_llvm": false,
+    "isolated_gtest_auto_disabled": true,
+    "default_sync_backend": "legacy"
+  },
+  "test_suites": "test-suites.json",
+  "results": {
+    "host_on": {
+      "suite": "host",
+      "passed": 1056,
+      "skipped": 1,
+      "xfailed": 2,
+      "subtests_passed": 30
+    },
+    "host_off": {
+      "suite": "host",
+      "passed": 347,
+      "skipped": 712,
+      "subtests_passed": 30,
+      "z3_loaded": false
+    },
+    "a3_device": {
+      "suite": "device",
+      "passed": 75,
+      "cce_auto_sync": false,
+      "scope": "74 migrated-path cases and one independent wave-seal primitive with ordinary/VS synchronization disabled."
+    },
+    "legacy_vs": {
+      "suite": "legacy_vs",
+      "native_engine_abi": "upstream-1c0f402e-legacy-v8",
+      "passed": 101,
+      "scope": "Separate earlier v8 compile/IR/source suite, without marker filtering or NPU execution; not included in host_on."
+    }
+  },
+  "z3_version_matrix": {
+    "build_versions": ["4.13.0", "4.15.4"],
+    "runtime_versions": ["4.13.0", "4.15.4"],
+    "combinations": 4,
+    "per_combination": {
+      "passed": 133,
+      "skipped": 1
+    },
+    "exact_test_selection_retained": false
+  },
+  "package_checks": {
+    "isolated_wheel_build_install_and_native_proof": "reported_passed",
+    "pep660_editable_install_and_native_proof": "reported_passed",
+    "pip_installs_z3_runtime_dependency": "reported_passed",
+    "runtime_z3_provider_origin_and_no_bundled_z3": "reported_passed",
+    "cmake_compiler_install_and_license_checks": "reported_passed",
+    "default_on_explicit_off_cached_off_and_root_priority": "reported_passed",
+    "python_z3_and_native_solver_interoperability": "reported_passed_for_4.13.0_and_4.15.4"
+  },
+  "performance": "performance.json",
+  "limitations": [
+    "These are previously recorded results, not new measurements or acceptance of the v10 source. Earlier detailed records remain in Git history at record_source_revision.",
+    "Original logs, verification scripts, source manifests and build artifacts were referenced by local temporary paths; they are not retained in this repository. No persistent artifact URL was recorded.",
+    "The tested source snapshots retained two pre-existing uncommitted TVM changes excluded from the PR. Their hashes alone do not reconstruct the exact tested input, so a clean-checkout reproduction is not established.",
+    "Two host xfails cover the pre-existing A5 AscendC abs lowering limitation, also reproduced with legacy. The ON skip is the OFF-only diagnostic.",
+    "No A2/A5 device execution or all-repository-example acceptance is claimed. Z3 version testing covers the two listed endpoints, not every version in the dependency range.",
+    "The Z3 matrix used a temporary verification script whose exact core test selection was not retained; test-suites.json describes the host, device and separate legacy VS suites only.",
+    "Compiler installation checks do not establish standalone runtime-only loading. A separate v8 check failed with missing IRBuilderFrameNode RTTI and reproduced on v6.",
+    "Performance data is the latest retained v8 measurement of four small kernels, includes host launch gaps and does not establish device-only speedup or Persistent+SIP overhead."
+  ],
+  "test_suite_organization": {
+    "host_files": 30,
+    "note": "The current manifest reflects merged helper-admission and packaging tests. Historical v8 result counts above retain their original scope and were not rerun as part of this cleanup."
+  },
+  "scoped_cleanup_checks": {
+    "base_commit": "24965b7b17b169f22889b0f36ae6ddc0c85fbaa8",
+    "source_engine_abi": "upstream-1c0f402e-legacy-v10",
+    "scope": "Unused-code removal and test/document consolidation; no supported feature package removed.",
+    "packaging_tests": {
+      "platform": "WSL Linux x86_64, Python 3.14.4",
+      "passed": 37,
+      "skipped": 0,
+      "includes_real_elf_and_cross_soname_checks": true
+    },
+    "cpp_object_compilation": {
+      "compiler": "Zig 0.16.0 / Clang",
+      "target": "x86_64-linux-gnu",
+      "tvm_commit": "c2921fdaf795b1103d21abc962e83a209c7258d7",
+      "passed_translation_units": 18,
+      "includes_z3_on_off_and_ffi": true,
+      "full_library_link_or_runtime_tested": false
+    },
+    "preservation_checks": {
+      "active_cpp_paths_compared": 8,
+      "packaging_differential_cases": 13,
+      "helper_admission_cases_migrated": 17,
+      "merged_tail_copy_cases": 71,
+      "language_test_verification": "AST equivalence and parameter preservation, not native execution"
+    },
+    "format": "Ruff 0.6.5 lint/format and clang-format 18.1.8 passed on changed files.",
+    "full_native_npu_or_install_acceptance_rerun": false
+  }
+}
