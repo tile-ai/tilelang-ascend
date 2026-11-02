@@ -6,7 +6,6 @@ import torch
 import argparse
 from tilelang.ascend.a2a3.layout import make_zn_layout
 
-pytestmark = [pytest.mark.a2a3_device, pytest.mark.usefixtures("isolated_a2a3_cache")]
 
 
 def matmul(M, N, K, block_M, block_N, block_K, K_L1, dtype="float16", accum_dtype="float"):

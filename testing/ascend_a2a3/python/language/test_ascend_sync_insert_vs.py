@@ -75,11 +75,8 @@ import pytest
 import tilelang
 import tilelang.ascend.a2a3.language as T
 from tilelang import tvm
-from tilelang.env import CacheState
 from tilelang.ascend.a2a3 import transform as a2a3_transform
 from tilelang.ascend.a2a3.pipeline import LowerAndLegalize as _lower_phase
-
-pytestmark = pytest.mark.a2a3_native
 
 
 def LowerAndLegalize(mod, target):
@@ -201,9 +198,9 @@ _ANY_WAITFLAG = {
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(monkeypatch):
-    monkeypatch.setattr(CacheState, "_enabled", False)
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
+    tilelang.disable_cache()
     yield
 
 
@@ -1572,7 +1569,6 @@ def test_if_without_else_propagation(target):
 
 
 @pytest.mark.ci_skip
-@pytest.mark.skip(reason="Original TA A5 public-compile source retained outside A2/A3; modern A5 unverified")
 def test_a5_pto_pipe_v_v_barrier():
 
     @T.prim_func
@@ -1822,7 +1818,6 @@ def test_a5_ascendc_pipe_v_v_barrier():
 
 
 @pytest.mark.ci_skip
-@pytest.mark.skip(reason="Original TA A5 public-compile source retained outside A2/A3; modern A5 unverified")
 def test_a5_still_emits_event_pairs():
     """Platform A5 + S->V dependency -> S_V event pair still inserted.
 

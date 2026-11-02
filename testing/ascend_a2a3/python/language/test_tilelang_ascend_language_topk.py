@@ -256,8 +256,8 @@ def run_test_topk_fp16_index_large(buffer_size, actual_num, K, dtype, target):
 # -----------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(isolated_a2a3_cache):
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
     """Clear tilelang cache before tests."""
     kernel_cache.clear_cache()
     yield
@@ -280,7 +280,6 @@ def setup_random_seed():
 # -----------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.usefixtures("setup_random_seed")
 @pytest.mark.parametrize(
     "dtype",
@@ -311,7 +310,6 @@ def test_topk_basic(dtype, target, actual_num):
 # -----------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.usefixtures("setup_random_seed")
 @pytest.mark.parametrize(
     "dtype",
@@ -335,7 +333,6 @@ def test_topk_k_boundary(dtype, target, K):
 # -----------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.usefixtures("setup_random_seed")
 @pytest.mark.parametrize(
     "dtype",
@@ -358,7 +355,6 @@ def test_topk_2d(dtype, target):
 # -----------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.usefixtures("setup_random_seed")
 @pytest.mark.parametrize(
     "dtype",
@@ -384,7 +380,6 @@ def test_topk_src_inplace(dtype, target):
 # -----------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.low_priority
 @pytest.mark.usefixtures("setup_random_seed")
 @pytest.mark.parametrize("dtype", ["float32"])
@@ -407,7 +402,6 @@ def test_topk_large_actual_num(dtype, target):
 # -----------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.low_priority
 @pytest.mark.usefixtures("setup_random_seed")
 @pytest.mark.parametrize("dtype", ["float16"])
@@ -438,15 +432,6 @@ if __name__ == "__main__":
     parser.add_argument("--actual-num", type=int, default=51, help="Number of valid elements")
     parser.add_argument("--k", type=int, default=10, help="Number of top elements to extract")
     args = parser.parse_args()
-
-    import os
-    from pathlib import Path
-
-    if not os.environ.get("TILELANG_CACHE_DIR"):
-        raise RuntimeError("Set a dedicated TILELANG_CACHE_DIR before running this cache-clearing CLI")
-    if Path(tilelang.env.TILELANG_CACHE_DIR).resolve() != Path(os.environ["TILELANG_CACHE_DIR"]).resolve():
-        raise RuntimeError("TILELANG_CACHE_DIR conflicts with the active cache-directory override; clear was refused")
-    import torch_npu  # noqa: F401
 
     torch.manual_seed(0)
     kernel_cache.clear_cache()

@@ -135,7 +135,6 @@ def _bisheng_command(target, compile_flags, env=None):
     return captured["cmd"]
 
 
-@pytest.mark.a2a3_native
 def test_libgen_appends_flags():
     cmd = _bisheng_command("ascendc", ["-O3", "--cce-auto-sync=off"])
     assert "-O3" in cmd and "--cce-auto-sync=off" in cmd
@@ -146,7 +145,6 @@ def test_libgen_appends_flags():
     assert _bisheng_command("ascendc", ["-fPIC"]).count("-fPIC") == 1
 
 
-@pytest.mark.a2a3_native
 def test_libgen_direct_caller_falls_back_to_derived():
     # compile_flags=None (direct/legacy caller) -> framework defaults, env still honored.
     assert "-O2" in _bisheng_command("ascendc", None)
@@ -169,8 +167,7 @@ def _copy_kernel():
     return main
 
 
-@pytest.mark.a2a3_native
-def test_compile_resolves_and_threads_flags(clean_env, isolated_a2a3_cache):
+def test_compile_resolves_and_threads_flags(clean_env):
     """Public compile freezes derived flags once before adapter construction."""
     from tilelang.jit.kernel import JITKernel
     from tilelang.env import CacheState
@@ -197,8 +194,7 @@ def test_compile_resolves_and_threads_flags(clean_env, isolated_a2a3_cache):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
-def test_cache_key_scopes_flags(clean_env, isolated_a2a3_cache):
+def test_cache_key_scopes_flags(clean_env):
     func = _copy_kernel()
     target = _target()
     cache = A2A3CythonKernelCache()
@@ -222,7 +218,6 @@ def test_cache_key_scopes_flags(clean_env, isolated_a2a3_cache):
     assert key(True) == key(True)
 
 
-@pytest.mark.a2a3_native
 def test_autotuner_restore_threads_full_signature(tmp_path, clean_env):
     """Modern native restore delegates the complete frozen ABI to the cache."""
     import json
@@ -275,7 +270,6 @@ def test_autotuner_restore_threads_full_signature(tmp_path, clean_env):
     # covered by the real A2A3 cache tests, rather than the retired pickle files.
 
 
-@pytest.mark.a2a3_native
 def test_compile_args_hash_scopes_platform_and_flags(clean_env):
     from tilelang.autotuner.param import CompileArgs
 
@@ -330,7 +324,10 @@ def _build_sync_dependency_kernel(auto_sync):
     return build()
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not hasattr(torch, "npu") or not torch.npu.is_available(),
+    reason="requires an Ascend NPU",
+)
 def test_auto_sync_pass_prevents_dependency_hazard(clean_env):
     torch.manual_seed(0)
     a = torch.randn(256, 256).npu()

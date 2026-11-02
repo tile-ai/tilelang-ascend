@@ -194,7 +194,6 @@ def _workspace_bytes(workspace):
     return int(workspace.args[3]) * tvm.DataType(workspace.args[0].dtype).itemsize
 
 
-@pytest.mark.a2a3_native
 def test_every_workspace_api_exposes_the_public_tmp_contract():
     apis = [
         T.reduce_sum,
@@ -237,7 +236,6 @@ def test_every_workspace_api_exposes_the_public_tmp_contract():
         assert workspace.args[0].dtype == arena_dtype
 
 
-@pytest.mark.a2a3_native
 def test_explicit_tmp_arena_preserves_byte_geometry():
     reduce_src = tir.decl_buffer((4, 8), "float32")
     reduce_dst = tir.decl_buffer((4,), "float32")
@@ -354,7 +352,6 @@ def test_explicit_tmp_arena_validation():
             T.reduce_sum(input_buffer, output_buffer, tmp=tmp)
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize("model", ["ascendc", "pto"])
 @pytest.mark.parametrize(
     ("explicit", "arena_dtype"),
@@ -424,7 +421,6 @@ def test_every_workspace_api_has_the_target_specific_lowered_layout(model, expli
         assert allocation_names.count("tmp_ub") == 1
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize("op_name", sorted(PTO_UNSUPPORTED_WORKSPACE_OPS))
 def test_pto_unsupported_workspace_api_fails_before_codegen(op_name):
     calls_and_slots, buffers, _ = _workspace_api_calls(explicit=False)
@@ -571,7 +567,6 @@ def _explicit_merge_sort_program():
     return main
 
 
-@pytest.mark.a2a3_native
 def test_ascendc_merge_sort_codegen_has_no_workspace_argument():
     source = tilelang.lower(
         _explicit_merge_sort_program(),
@@ -591,7 +586,6 @@ def _run_pipeline_planning(program, model: str):
     return A2A3Transform.PipelinePlanning()(mod)["main"]
 
 
-@pytest.mark.a2a3_native
 def test_optional_workspace_metadata_uses_the_lowered_call_layout():
     def ub(name: str, extent: int):
         return tir.decl_buffer((extent,), "float32", name=name, scope="shared.ub")
@@ -662,7 +656,6 @@ def test_optional_workspace_metadata_uses_the_lowered_call_layout():
     assert list(planned_merge.body.block.body.annotations["software_pipeline_stage"]) == [0, 1]
 
 
-@pytest.mark.a2a3_native
 def test_pto_select_metadata_tracks_shifted_src_and_destination():
     def ub(name: str, dtype: str = "float32"):
         return tir.decl_buffer((64,), dtype, name=name, scope="shared.ub")
@@ -710,7 +703,6 @@ def test_pto_select_metadata_tracks_shifted_src_and_destination():
     assert _collect_calls(lowered, "tl.ascend_auto_wait_flag")
 
 
-@pytest.mark.a2a3_native
 def test_mixed_typed_implicit_calls_share_one_byte_arena():
     @T.prim_func
     def main():
@@ -743,7 +735,6 @@ def test_mixed_typed_implicit_calls_share_one_byte_arena():
     assert explicit_sort_tmp.args[1].name == "arena_ub"
 
 
-@pytest.mark.a2a3_native
 def test_implicit_workspace_names_do_not_collide_with_explicit_arenas():
     @T.prim_func
     def main():
@@ -766,7 +757,6 @@ def test_implicit_workspace_names_do_not_collide_with_explicit_arenas():
     assert "tmp_ub_reduce_out_1" in source
 
 
-@pytest.mark.a2a3_native
 def test_pto_zero_workspace_apis_elide_an_explicit_empty_arena():
     @T.prim_func
     def main():
@@ -810,7 +800,6 @@ def test_pto_zero_workspace_apis_elide_an_explicit_empty_arena():
     assert "TGATHER<" in source
 
 
-@pytest.mark.a2a3_native
 def test_typed_workspace_codegen_preserves_dtype_and_byte_address():
     program = _sort_program(explicit=True, use_region=True, arena_dtype="int16")
     expected = {
@@ -831,7 +820,6 @@ def test_typed_workspace_codegen_preserves_dtype_and_byte_address():
         assert "tmp_ub" not in source, model
 
 
-@pytest.mark.a2a3_native
 def test_pto_explicit_reduce_uses_byte_correct_row_and_column_views():
     @T.prim_func
     def main():
@@ -881,7 +869,6 @@ def test_pto_explicit_reduce_uses_byte_correct_row_and_column_views():
     assert "TADD(" in column_source
 
 
-@pytest.mark.a2a3_native
 def test_explicit_arena_capacity_contract():
     pto_func = _inject(_reduce_program(1, clear=False), "pto")
     pto_call = _collect_calls(pto_func, "tl.ascend_reduce")[0]
@@ -904,7 +891,6 @@ def test_explicit_arena_capacity_contract():
             _inject(_reduce_program(0), model)
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize("platform", ["A2", "A3", "A5"])
 def test_fp32_reduce_workspace_follows_platform(platform):
     program = _reduce_program(None, shape=(1, 1024)).with_attr("npu_platform", platform)
@@ -922,7 +908,6 @@ def test_fp32_reduce_workspace_follows_platform(platform):
         assert int(_collect_calls(_inject(explicit, "ascendc"), "tl.ascend_reduce")[0].args[3].args[3]) == 32
 
 
-@pytest.mark.a2a3_native
 def test_fp32_reduce_explicit_typed_arena_preserves_byte_offset_across_platforms():
     buffers = {
         "arena": _ub_buffer("arena", (4112,), "float16"),
@@ -941,7 +926,6 @@ def test_fp32_reduce_explicit_typed_arena_preserves_byte_offset_across_platforms
         assert int(workspace.args[3]) * itemsize == 8192
 
 
-@pytest.mark.a2a3_native
 def test_implicit_pto_reduce_allocations_follow_row_and_column_layouts():
     func = _inject(_reduce_program(None, clear=False), "pto")
     names = _allocated_buffer_names(func)
@@ -961,7 +945,6 @@ def test_implicit_pto_reduce_allocations_follow_row_and_column_layouts():
     assert not bool(column_call.args[4])
 
 
-@pytest.mark.a2a3_native
 def test_physical_row_remains_after_clear_false_and_two_tmp_views():
     arena_bytes = 160
     func = _inject(
@@ -980,7 +963,6 @@ def test_physical_row_remains_after_clear_false_and_two_tmp_views():
     assert int(call.args[6]) == 8
 
 
-@pytest.mark.a2a3_native
 def test_inject_tmp_buffer_is_idempotent_for_all_workspace_layouts():
     cases = [
         ("ascendc-implicit", _sort_program(explicit=False), "ascendc"),
@@ -994,7 +976,6 @@ def test_inject_tmp_buffer_is_idempotent_for_all_workspace_layouts():
         assert tvm.ir.structural_equal(once, twice, map_free_vars=True), case_id
 
 
-@pytest.mark.a2a3_native
 def test_ascendc_broadcast_codegen_preserves_explicit_tmp_region_offset():
     @T.prim_func
     def main(
@@ -1020,7 +1001,6 @@ def test_ascendc_broadcast_codegen_preserves_explicit_tmp_region_offset():
     assert "arena_ub[32]" in source
 
 
-@pytest.mark.a2a3_native
 def test_reduce_zero_workspace_paths_elide_explicit_and_implicit_tmp():
     func = _inject(_reduce_program(0, dim=0), "pto")
     call = _collect_calls(func, "tl.ascend_reduce")[0]
@@ -1040,7 +1020,6 @@ def test_reduce_zero_workspace_paths_elide_explicit_and_implicit_tmp():
     assert int(narrow_call.args[3].args[3]) > 0
 
 
-@pytest.mark.a2a3_native
 def test_ascendc_half_sum_reduce_needs_widen_workspace():
     # float16 sum lowers through a float32 widening (Cast -> ReduceSum<float>
     # -> Cast), so it now requires a workspace sized for the widened source
@@ -1052,7 +1031,6 @@ def test_ascendc_half_sum_reduce_needs_widen_workspace():
     assert int(call.args[3].args[3]) == 2048 + 32
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize(
     ("op", "shape", "dim", "expected_bytes"),
     [
@@ -1079,7 +1057,6 @@ def test_ascendc_implicit_reduce_uses_v2_or_fallback_workspace(
         assert view_dtype == "float32"
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize(
     ("op_name", "dtype", "count", "expected_dtype", "expected_bytes"),
     [
@@ -1146,7 +1123,6 @@ def test_ascendc_dav_2201_implicit_workspace_policy(
     assert _allocated_buffer_names(func).count("tmp_ub") == 1
 
 
-@pytest.mark.a2a3_native
 def test_ascendc_dav_2201_bilinear_workspace_policy():
     src0 = _ub_buffer("src0", (32,), "float32")
     src1 = _ub_buffer("src1", (64,), "float32")
@@ -1172,7 +1148,6 @@ def test_ascendc_dav_2201_bilinear_workspace_policy():
     assert _workspace_bytes(workspace) == (32 + 64) * 32
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize(
     ("dtype", "src_shape", "dst_shape", "axis", "expected_bytes"),
     [
@@ -1212,7 +1187,6 @@ def test_ascendc_dav_2201_broadcast_workspace_policy(
         assert workspace.args[0].dtype == "uint8"
 
 
-@pytest.mark.a2a3_native
 def test_ascendc_zero_workspace_codegen_uses_basic_intrinsics():
     @T.prim_func
     def main():
@@ -1235,7 +1209,6 @@ def test_ascendc_zero_workspace_codegen_uses_basic_intrinsics():
     assert "PopStackBuffer" not in source
 
 
-@pytest.mark.a2a3_native
 def test_ascendc_experimental_reduce_codegen_uses_source_dtype_workspace():
     @T.prim_func
     def main():
@@ -1252,7 +1225,6 @@ def test_ascendc_experimental_reduce_codegen_uses_source_dtype_workspace():
     assert "ReinterpretCast<uint8_t>()" not in reduce_line
 
 
-@pytest.mark.a2a3_native
 def test_pto_select_and_gather_codegen_preserve_workspace_region_offsets():
     @T.prim_func
     def main():
@@ -1296,7 +1268,6 @@ def test_pto_select_and_gather_codegen_preserve_workspace_region_offsets():
     assert source.count("TGATHER(") == 2
 
 
-@pytest.mark.a2a3_native
 def test_pto_half_sort_codegen_scales_typed_workspace_offset():
     @T.prim_func
     def main():

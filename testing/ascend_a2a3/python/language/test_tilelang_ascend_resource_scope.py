@@ -8,7 +8,6 @@ from tvm import IRModule, ir, tirx as tir
 from tilelang.ascend.a2a3 import transform as a2a3_transform
 from tvm.target import Target
 
-pytestmark = pytest.mark.a2a3_native
 
 
 def _target(dialect):

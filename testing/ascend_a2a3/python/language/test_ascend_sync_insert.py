@@ -7,8 +7,6 @@ from tilelang import tvm
 
 tir = tvm.tirx
 
-pytestmark = pytest.mark.a2a3_native
-
 
 def _buffers():
     return {

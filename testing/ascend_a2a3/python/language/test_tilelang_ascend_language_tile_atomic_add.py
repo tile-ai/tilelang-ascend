@@ -14,11 +14,9 @@ PASS_CONFIGS = {
 VEC_NUM = 2
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(monkeypatch):
-    from tilelang.env import CacheState
-
-    monkeypatch.setattr(CacheState, "_enabled", False)
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
+    tilelang.disable_cache()
     yield
 
 
@@ -76,7 +74,10 @@ def _run_atomic_add_case(program, shape, dtype, num_blocks, target):
     torch.testing.assert_close(out, expected, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="tile atomic_add correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("dtype", ["float32", "float16"])
 def test_tile_atomic_add_1d_accumulates_multiple_blocks_after_zeroing_gm(target, dtype):
@@ -90,7 +91,10 @@ def test_tile_atomic_add_1d_accumulates_multiple_blocks_after_zeroing_gm(target,
     _run_atomic_add_case(program, (tile_n,), dtype, num_blocks, target)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="tile atomic_add correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_tile_atomic_add_2d_region_accumulates_multiple_blocks_after_zeroing_gm(target):
     num_blocks = 4
@@ -151,7 +155,10 @@ def _run_atomic_add_l0c_gemm_case(program, block_M, block_N, block_K, dtype, acc
     torch.testing.assert_close(c, expected, rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="tile atomic_add correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("dtype", ["float16"])
 def test_tile_atomic_add_l0c_gemm_accumulates_multiple_blocks(target, dtype):

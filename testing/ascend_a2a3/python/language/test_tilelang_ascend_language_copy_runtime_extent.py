@@ -6,7 +6,6 @@ from tilelang.env import CacheState
 from tilelang.ascend.a2a3 import kernel_cache
 from unittest.mock import patch
 
-pytestmark = pytest.mark.a2a3_device
 
 """
 Regression test for a runtime inner-extent (dynamic column width) in the AscendC
@@ -53,8 +52,8 @@ VEC_PASS_CONFIGS = {
 }
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(isolated_a2a3_cache):
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
     """Clear the tilelang cache before the session (a stale kernel could mask a
     codegen regression -- a rebuilt kernel could otherwise return a cached one)."""
     kernel_cache.clear_cache()

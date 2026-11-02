@@ -6,12 +6,11 @@ import torch
 import tilelang
 import tilelang.ascend.a2a3.language as T
 from tilelang import tvm
-from tilelang.env import CacheState
 
 
-@pytest.fixture
-def optional_loop_kernel(monkeypatch):
-    monkeypatch.setattr(CacheState, "_enabled", False)
+@pytest.fixture(scope="module")
+def optional_loop_kernel():
+    tilelang.disable_cache()
     n = T.symbolic("n")
 
     @T.prim_func
@@ -49,7 +48,6 @@ def optional_loop_kernel(monkeypatch):
     )
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("trip_count", [0, 1, 3])
 def test_optional_loop_preserves_the_previous_alias_value(optional_loop_kernel, trip_count):
     source = torch.arange(64, dtype=torch.float32, device="npu")

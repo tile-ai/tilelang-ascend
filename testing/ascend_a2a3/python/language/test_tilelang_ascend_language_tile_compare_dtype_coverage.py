@@ -20,17 +20,14 @@ Known limitations (documented in docs/api_docs/T.tile.compare.md):
 import pytest
 import tilelang
 import tilelang.ascend.a2a3.language as T
-from tilelang.env import CacheState
 import torch
 
 
-@pytest.fixture(autouse=True)
-def _disable_cache(monkeypatch, request):
-    # Preserve the source's compile-every-call policy without changing the
-    # caller's raw cache state on exit. Device cases use the actual platform.
-    monkeypatch.setattr(CacheState, "_enabled", False)
-    if request.node.get_closest_marker("a2a3_device") is None:
-        monkeypatch.setenv("TL_PLATFORM", "A3")
+@pytest.fixture(scope="module", autouse=True)
+def _disable_cache():
+    tilelang.disable_cache()
+    yield
+    tilelang.enable_cache()
 
 
 PASS_CONFIGS = {
@@ -82,7 +79,6 @@ _DTYPE_TENSOR_1D = [
 ]
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("dtype", _DTYPE_TENSOR_1D)
 @pytest.mark.parametrize(
     "target",
@@ -126,7 +122,6 @@ _DTYPE_SCALAR_1D = [
 ]
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("dtype", _DTYPE_SCALAR_1D)
 @pytest.mark.parametrize(
     "target",
@@ -165,7 +160,6 @@ def test_compare_scalar_1d(dtype, target):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 def test_compare_dtype_mismatch_raises():
     """src0 and src1 must have the same dtype; mismatch should fail at compile time."""
 
@@ -194,7 +188,6 @@ def test_compare_dtype_mismatch_raises():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 def test_compare_invalid_mode_raises():
     """mode must be one of EQ/NE/GT/GE/LT/LE; invalid mode should raise during TIR construction."""
 
@@ -222,7 +215,6 @@ def test_compare_invalid_mode_raises():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 def test_compare_alignment_raises():
     """src0 total bytes must be 256-byte aligned; non-aligned should fail at compile time."""
 

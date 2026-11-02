@@ -12,13 +12,8 @@ DEV_CONFIGS = {
 }
 
 
-pytestmark = [pytest.mark.a2a3_native, pytest.mark.usefixtures("isolated_a2a3_cache")]
-
-
-@pytest.fixture(autouse=True)
-def clear_cache(isolated_a2a3_cache, monkeypatch):
-    # Explicit source-test platform; no runtime hardware inference is needed.
-    monkeypatch.setenv("TL_PLATFORM", "A3")
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
     kernel_cache.clear_cache()
 
 

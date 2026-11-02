@@ -22,7 +22,6 @@ from tilelang.ascend.a2a3.pipeline import LowerAndLegalize, _prepare_source_kern
 from tilelang.ascend.a2a3.pass_config import normalize_a2a3_pass_configs
 from tilelang.ascend.a2a3.platform import resolve_a2a3_platform
 
-pytestmark = pytest.mark.a2a3_native
 
 
 def _target(dialect):

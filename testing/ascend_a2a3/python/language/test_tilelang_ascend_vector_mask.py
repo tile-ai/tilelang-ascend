@@ -6,13 +6,11 @@ import tilelang
 import tilelang.ascend.a2a3.language as T
 from tilelang.ascend.a2a3.pipeline import LowerAndLegalize as _lower_phase, OptimizeForTarget
 from tilelang.ascend.a2a3 import transform as a2a3_transform
-from tilelang.env import CacheState
 from tvm import DataType, IRModule, arith, get_global_func, tirx as tir
 from tvm.ir import Op, assert_structural_equal
 from tvm.target import Target
 
 
-pytestmark = pytest.mark.a2a3_native
 
 # Every original test uses native selection/legalization. Its module-level
 # PrimFuncs require the backend before collection; do not create fake types.
@@ -26,10 +24,6 @@ def _target(dialect, platform):
     return Target({"kind": "ascend", "arch": "dav-2201", "model": platform, "keys": [dialect, "ascend"]})
 
 
-@pytest.fixture(autouse=True)
-def _restore_original_cache_bit(monkeypatch):
-    # Retain the original per-test disable calls while restoring the caller.
-    monkeypatch.setattr(CacheState, "_enabled", CacheState._enabled)
 
 
 def _bind_body(variable, value, body):

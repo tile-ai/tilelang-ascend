@@ -10,12 +10,7 @@ from tilelang.ascend.a2a3.pass_config import normalize_a2a3_pass_configs
 from tilelang.ascend.a2a3 import transform as A2A3Transform
 
 
-@pytest.fixture(autouse=True)
-def _disable_cache(monkeypatch):
-    from tilelang.env import CacheState
-
-    monkeypatch.setattr(CacheState, "_enabled", False)
-    yield
+tilelang.disable_cache()
 
 
 PASS_CONFIGS = {
@@ -75,7 +70,6 @@ def _source(func, target="auto", platform="A3"):
         return tilelang.lower(func, target=target).kernel_source
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("m,n,pitch,scratch_elements", [(1, 8192, 12288, 4096), (104, 373, 392, 6312)])
 @pytest.mark.parametrize("clear", [True, False])
 @pytest.mark.parametrize("poison", [-3.0, 100.0])
@@ -165,7 +159,6 @@ def _vid_reduction_scratch_guard_kernel(arena_elements=144, *, explicit=True, m=
     return main
 
 
-@pytest.mark.a2a3_device
 def test_fp32_row_reduce_preserves_bisheng_auto_sync():
     """Low-level compiler regression: DMA is explicit, Vector ordering is automatic."""
     config = {
@@ -187,7 +180,6 @@ def test_fp32_row_reduce_preserves_bisheng_auto_sync():
     torch.testing.assert_close(result.cpu(), expected, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("explicit", [False, True])
 def test_fp32_row_reduce_tmp_arena_sized_for_each_vector(explicit):
     compiled = tilelang.compile(
@@ -234,7 +226,6 @@ def _reduce_workspace_bytes(func):
     return sizes
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize(
     "m,n,threads,before_bytes,after_bytes",
     [(4, 8, 2, 576, 288), (8, 64, 2, 1664, 832), (512, 128, 2, 36992, 18496), (4, 8, 1, 288, 288)],
@@ -245,7 +236,6 @@ def test_fp32_row_reduce_vid_workspace_compensates_for_later_split(m, n, threads
     assert _reduce_workspace_bytes(after) == [after_bytes]
 
 
-@pytest.mark.a2a3_native
 def test_fp32_row_reduce_standalone_injection_does_not_assume_vid_split():
     mod = tvm.IRModule.from_expr(_vid_reduction_scratch_guard_kernel(explicit=False))
     target = _target("ascendc", "A3")
@@ -254,13 +244,11 @@ def test_fp32_row_reduce_standalone_injection_does_not_assume_vid_split():
     assert _reduce_workspace_bytes(injected["main"]) == [288]
 
 
-@pytest.mark.a2a3_native
 def test_fp32_row_reduce_vid_rejects_arena_that_becomes_too_small():
     with pytest.raises(tvm.error.InternalError, match="explicit tmp arena is too small"):
         _vid_workspace_stages(_vid_reduction_scratch_guard_kernel(arena_elements=72))
 
 
-@pytest.mark.a2a3_native
 def test_fp32_row_frontend_uses_backing_shape_and_checks_dtype():
     dst = tvm.tirx.decl_buffer((2,), "float32", scope="shared.ub")
     src = tvm.tirx.decl_buffer((4, 24), "float32", scope="shared.ub")
@@ -279,7 +267,6 @@ def test_fp32_row_frontend_uses_backing_shape_and_checks_dtype():
         T.reduce_sum(row, half_scalar)
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize("logical_width", [10, 9])
 def test_fp32_row_reduce_rejects_unaligned_multirow_pitch(logical_width):
     func = _kernel(2, logical_width, 10, "float32", "sum", True)
@@ -287,7 +274,6 @@ def test_fp32_row_reduce_rejects_unaligned_multirow_pitch(logical_width):
         _source(func, "ascendc")
 
 
-@pytest.mark.a2a3_device
 def test_fp32_row_reduce_allows_unaligned_single_row():
     func = _kernel(1, 10, 10, "float32", "sum", True)
     source = _source(func, "ascendc")
@@ -297,7 +283,6 @@ def test_fp32_row_reduce_allows_unaligned_single_row():
     torch.testing.assert_close(compiled(host.npu()).cpu(), host.sum(dim=1), rtol=0, atol=0)
 
 
-@pytest.mark.a2a3_device
 def test_fp32_reduce2d_v2_runtime_smoke():
     """One launch protects M/N tails, poisoned padding, and destination merge."""
     m, n, physical_row = 31, 95, 96
@@ -320,7 +305,6 @@ def test_fp32_reduce2d_v2_runtime_smoke():
     torch.testing.assert_close(result.cpu(), expected, rtol=0.0, atol=0.0)
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("width,clear", [(32, False), (96, True)])
 def test_fp32_sliced_max_supports_merge_and_wide_rows(width, clear):
     """The fp32 helper supports cases rejected by the legacy narrow path."""
@@ -364,7 +348,6 @@ def test_fp32_sliced_max_supports_merge_and_wide_rows(width, clear):
     torch.testing.assert_close(compiled(host.npu()).cpu(), expected, rtol=0, atol=0)
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize(
     "m,n,physical_row,scratch_bytes",
     [(247, 63, 184, 8928), (1, 16384, 16384, 9312), (1, 8, 8, 32)],
@@ -407,7 +390,6 @@ def _output_slice_kernel(m, n, physical_row, kind, clear):
     return main
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize(
     "m,n,physical_row,kind,clear",
     [
@@ -449,7 +431,6 @@ def test_fp32_row_reduce_preserves_output_slice_neighbors(m, n, physical_row, ki
     torch.testing.assert_close(compiled(host.npu(), initial.npu()).cpu(), expected, rtol=0, atol=0)
 
 
-@pytest.mark.a2a3_native
 def test_codegen_selects_v2_kinds_and_preserves_other_backends():
     for kind, enum_name in (("sum", "kSum"), ("max", "kMax"), ("min", "kMin")):
         fp32 = _source(
@@ -486,7 +467,6 @@ def test_codegen_original_a5_fallbacks_retained():
     assert "tmp_ub" not in narrow_a5
 
 
-@pytest.mark.a2a3_native
 def test_fp32_reduce2d_v2_uses_barriers_on_a2():
     func = _kernel(8, 32, 32, "float32", "max", True)
     a2 = _source(func, "ascendc", platform="A2")

@@ -5,7 +5,6 @@ import torch
 
 import tilelang
 import tilelang.ascend.a2a3.language as T
-from tilelang.env import CacheState
 
 """
 Regression test for the row-slice strideN bug (issue #1263) in the Ascend
@@ -65,11 +64,10 @@ PASS_CONFIGS = {
 }
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(monkeypatch, request):
-    monkeypatch.setattr(CacheState, "_enabled", False)
-    if request.node.get_closest_marker("a2a3_device") is None:
-        monkeypatch.setenv("TL_PLATFORM", "A3")
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
+    tilelang.disable_cache()
+    yield
 
 
 def _scatter_kernel():
@@ -141,7 +139,6 @@ def _ascendc_copy_strides(source):
     return strides
 
 
-@pytest.mark.a2a3_native
 def test_row_slice_copy_stride_codegen_ascendc():
     """Row-slice GM<->UB copies must use the row width (128) as strideN, not
     the whole-buffer size (32*128 for C2, 2*8*128 for CP)."""
@@ -154,7 +151,6 @@ def test_row_slice_copy_stride_codegen_ascendc():
     )
 
 
-@pytest.mark.a2a3_native
 def test_row_slice_atomic_add_stride_codegen_ascendc():
     """The AscendAtomicAdd fallback path shares the same strideN logic."""
     source = tilelang.lower(_atomic_kernel(), target="ascendc").kernel_source
@@ -163,7 +159,6 @@ def test_row_slice_atomic_add_stride_codegen_ascendc():
     assert strides == [BLOCK_N, BLOCK_N], f"row-slice atomic-add strideN must be {BLOCK_N}, got {strides}"
 
 
-@pytest.mark.a2a3_native
 def test_fold_middle_scalar_stride_codegen_ascendc():
     """An extent-1 dim between the row dim and the column dim must still be
     folded into the stride: for Q[1, BM, N2, G*D] the stride is N2*G*D."""
@@ -177,7 +172,6 @@ def test_fold_middle_scalar_stride_codegen_ascendc():
     )
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_row_slice_copy_stride_codegen(target):
     """Both backends consume the same lowered strideN arg. On the PTO side it
@@ -199,7 +193,6 @@ def test_row_slice_copy_stride_codegen(target):
         assert "pto::Stride<1, 1, 1, 2048, 1>" not in source
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_fold_middle_scalar_stride_codegen(target):
     """The fold pattern's strides keep the folded pitch (Q: N2*G*D = 384
@@ -230,7 +223,10 @@ def test_fold_middle_scalar_stride_codegen(target):
 # exact pto::Stride tuples via tilelang.lower and pass on CI.
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="row-slice scatter correctness requires an Ascend NPU runtime",
+)
 def test_row_slice_scatter_add_correctness():
     """The issue's kernel: read-modify-write rows of a packed 2D GM buffer
     through 1D UB tiles (out_idx=[] -- in-place buffer mutation)."""
@@ -253,7 +249,10 @@ def test_row_slice_scatter_add_correctness():
     torch.testing.assert_close(c2.cpu(), golden, rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="row-slice atomic_add correctness requires an Ascend NPU runtime",
+)
 def test_row_slice_atomic_add_correctness():
     """Row-slice atomic accumulation into a packed 2D GM buffer. Both vector
     cores run each block (the VEC_NUM=2 convention of the tile atomic_add
@@ -270,7 +269,10 @@ def test_row_slice_atomic_add_correctness():
     torch.testing.assert_close(c2.cpu(), src.cpu() * 2, rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="folded-stride copy correctness requires an Ascend NPU runtime",
+)
 def test_fold_middle_scalar_copy_correctness():
     """Multi-row copies whose rows straddle a scalar dim: the folded stride
     (N2*G*D) is what the DMA actually uses between rows."""

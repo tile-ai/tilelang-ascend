@@ -26,15 +26,14 @@ type-specific processing logic, only representative dtypes are tested.
 import pytest
 import tilelang
 import tilelang.ascend.a2a3.language as T
-from tilelang.env import CacheState
 import torch
 
 
-@pytest.fixture(autouse=True)
-def _disable_cache(monkeypatch, request):
-    monkeypatch.setattr(CacheState, "_enabled", False)
-    if request.node.get_closest_marker("a2a3_device") is None:
-        monkeypatch.setenv("TL_PLATFORM", "A3")
+@pytest.fixture(scope="module", autouse=True)
+def _disable_cache():
+    tilelang.disable_cache()
+    yield
+    tilelang.enable_cache()
 
 
 pass_configs = {
@@ -121,7 +120,6 @@ def _run_partial_write(dtype, target, buf_size=256, write_count=100, first_value
     torch.testing.assert_close(result.cpu()[:write_count], ref, rtol=0, atol=0)
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize(
     "dtype",
     [
@@ -140,7 +138,6 @@ def test_arith_progression_dtype(dtype, target):
     _run_one(dtype, target)
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize(
     "dtype",
     [
@@ -152,7 +149,6 @@ def test_arith_progression_dtype_float16_ascendc(dtype, target):
     _run_one(dtype, target)
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize(
     "dtype",
     [
@@ -172,7 +168,6 @@ def test_arith_progression_param_combinations(dtype, target, first_value, diff_v
     _run_one(dtype, target, first_value=first_value, diff_value=diff_value)
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.low_priority
 @pytest.mark.parametrize("dtype", ["float32"])
 @pytest.mark.parametrize("target", ["ascendc"])
@@ -180,7 +175,6 @@ def test_arith_progression_partial_write(dtype, target):
     _run_partial_write(dtype, target, buf_size=256, write_count=100, first_value=5, diff_value=2)
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize(
     "dtype,target",
     [
@@ -200,7 +194,6 @@ def test_arith_progression_unsupported_dtype_raises(dtype, target):
         tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
 
 
-@pytest.mark.a2a3_device
 def test_arith_progression_count_omitted():
     """Verify that omitting count auto-derives math.prod(buffer.shape).
 

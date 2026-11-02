@@ -20,17 +20,14 @@ dtypes are tested.
 import pytest
 import tilelang
 import tilelang.ascend.a2a3.language as T
-from tilelang.env import CacheState
 import torch
 
 
-@pytest.fixture(autouse=True)
-def _disable_cache(monkeypatch, request):
-    # Preserve the source's compile-every-call policy without changing the
-    # caller's raw cache state on exit. Device cases use the actual platform.
-    monkeypatch.setattr(CacheState, "_enabled", False)
-    if request.node.get_closest_marker("a2a3_device") is None:
-        monkeypatch.setenv("TL_PLATFORM", "A3")
+@pytest.fixture(scope="module", autouse=True)
+def _disable_cache():
+    tilelang.disable_cache()
+    yield
+    tilelang.enable_cache()
 
 
 PASS_CONFIGS = {
@@ -86,7 +83,6 @@ def _run_and_check(program, shape, dtype, num_blocks, target):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.skipif(
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="tile atomic_add correctness requires an Ascend NPU runtime",
@@ -110,7 +106,6 @@ def test_atomic_add_int32_1d(target):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 def test_atomic_add_dst_scope_violation_raises():
     """dst must be GM scope; using UB should raise during TIR construction."""
 
@@ -125,7 +120,6 @@ def test_atomic_add_dst_scope_violation_raises():
                 T.tile.atomic_add(dst_ub[0], src_ub)
 
 
-@pytest.mark.a2a3_native
 def test_atomic_add_src_scope_violation_raises():
     """src must be local scope; using GM should raise during TIR construction."""
 
@@ -145,7 +139,6 @@ def test_atomic_add_src_scope_violation_raises():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 def test_atomic_add_dtype_mismatch_raises():
     """dst and src dtype must match; mismatch should raise at compile time."""
 

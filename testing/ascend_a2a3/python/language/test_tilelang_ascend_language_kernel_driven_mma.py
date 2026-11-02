@@ -38,7 +38,6 @@ import tilelang
 import tilelang.ascend.a2a3.language as T
 from tilelang.ascend.a2a3 import kernel_cache
 
-pytestmark = [pytest.mark.a2a3_device, pytest.mark.usefixtures("isolated_a2a3_cache")]
 
 M, N, K = 64, 128, 256
 KL0 = 128  # kL0 tile width: K = 2 tiles

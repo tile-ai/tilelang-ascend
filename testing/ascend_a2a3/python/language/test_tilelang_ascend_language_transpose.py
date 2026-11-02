@@ -5,7 +5,6 @@ import tilelang
 import tilelang.ascend.a2a3.language as T
 from tilelang.ascend.a2a3 import kernel_cache
 
-pytestmark = pytest.mark.usefixtures("isolated_a2a3_cache")
 import torch
 
 tir = tilelang.tvm.tirx
@@ -120,7 +119,6 @@ transpose_dtype_target_params = [
 ]
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("dtype,target", transpose_dtype_target_params)
 @pytest.mark.parametrize("shape", [(16, 16)])
 def test_transpose_16x16(dtype, target, shape):
@@ -131,7 +129,6 @@ def test_transpose_16x16(dtype, target, shape):
 # -----------------------------------------------------------------------------
 # Block-transpose path (TransDataTo5HD): B16, H/W multiples of 16, non-16x16
 # -----------------------------------------------------------------------------
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize(
     "dtype",
     ["float16", pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("uint16", marks=pytest.mark.low_priority)],
@@ -160,7 +157,6 @@ def test_transpose_block_b16(dtype, target, shape):
 # -----------------------------------------------------------------------------
 # Block-transpose path (TransDataTo5HD): B32, H/W multiples of 16
 # -----------------------------------------------------------------------------
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize(
     "dtype",
     ["float32", pytest.param("int32", marks=pytest.mark.low_priority), pytest.param("uint32", marks=pytest.mark.low_priority)],
@@ -187,7 +183,6 @@ def test_transpose_block_b32(dtype, target, shape):
 # -----------------------------------------------------------------------------
 # B32 scalar-fallback path: H/W multiples of 8 but not 16 (e.g. 8, 24)
 # -----------------------------------------------------------------------------
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize(
     "dtype",
     ["float32", pytest.param("int32", marks=pytest.mark.low_priority), pytest.param("uint32", marks=pytest.mark.low_priority)],
@@ -209,7 +204,6 @@ def test_transpose_b32_scalar_fallback(dtype, target, shape):
 # -----------------------------------------------------------------------------
 # Scalar fallback path: int8 (32-byte aligned => H/W multiples of 32)
 # -----------------------------------------------------------------------------
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("dtype", ["int8"])
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize(
@@ -228,7 +222,6 @@ def test_transpose_fallback_int8(dtype, target, shape):
 # -----------------------------------------------------------------------------
 # Scalar fallback path: bfloat16 (32-byte aligned => H/W multiples of 16)
 # -----------------------------------------------------------------------------
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("dtype", ["bfloat16"])
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize(
@@ -247,7 +240,6 @@ def test_transpose_fallback_bfloat16(dtype, target, shape):
 # -----------------------------------------------------------------------------
 # Scalar fallback path: int64 (ascendc only; pto TTRANS does not support B64)
 # -----------------------------------------------------------------------------
-@pytest.mark.a2a3_device
 @pytest.mark.low_priority
 @pytest.mark.parametrize("dtype", ["int64"])
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.ci_skip)])
@@ -285,7 +277,6 @@ def test_transpose_non_aligned_raises(shape, dtype):
 # at compile time. The existing 32-byte alignment check also rejects H/W=1
 # for float16 (1*2 % 32 != 0) and empty/1D buffers.
 # -----------------------------------------------------------------------------
-@pytest.mark.a2a3_native
 @pytest.mark.low_priority
 @pytest.mark.parametrize("dtype", ["float16", "float32"])
 @pytest.mark.parametrize("target", ["ascendc"])
@@ -313,14 +304,5 @@ if __name__ == "__main__":
     parser.add_argument("--dtype", type=str, default="float16")
     parser.add_argument("--target", type=str, choices=["ascendc", "pto"], default="ascendc")
     args = parser.parse_args()
-
-    import os
-    from pathlib import Path
-
-    if not os.environ.get("TILELANG_CACHE_DIR"):
-        raise RuntimeError("Set a dedicated TILELANG_CACHE_DIR before running this cache-clearing CLI")
-    if Path(tilelang.env.TILELANG_CACHE_DIR).resolve() != Path(os.environ["TILELANG_CACHE_DIR"]).resolve():
-        raise RuntimeError("TILELANG_CACHE_DIR conflicts with the active cache-directory override; clear was refused")
-    import torch_npu  # noqa: F401
 
     run_test_transpose(args.m, args.n, args.dtype, args.target)

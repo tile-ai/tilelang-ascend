@@ -277,8 +277,8 @@ def run_test_merge_region(M, per_row, dtype="float32", target="ascendc"):
 # -----------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(isolated_a2a3_cache):
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
     """Clear tilelang cache before tests."""
     kernel_cache.clear_cache()
     yield
@@ -296,7 +296,6 @@ def setup_random_seed():
 # -----------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.usefixtures("setup_random_seed")
 def test_merge_sort_basic_ascendc():
     """2/3/4-way merge on ascendc: compile + run + precision."""
@@ -304,7 +303,6 @@ def test_merge_sort_basic_ascendc():
         run_test_merge(block_len=64, num_ways=num_ways, target="ascendc")
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.usefixtures("setup_random_seed")
 def test_merge_sort_sizes_ascendc():
     """Block lengths and unequal sources on ascendc."""
@@ -314,7 +312,6 @@ def test_merge_sort_sizes_ascendc():
     run_test_merge_unequal([48, 16], target="ascendc")
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.usefixtures("setup_random_seed")
 def test_merge_sort_edges_ascendc():
     """Boundary shapes on ascendc: min blockLen and BufferRegion slices."""
@@ -322,7 +319,6 @@ def test_merge_sort_edges_ascendc():
     run_test_merge_region(M=2, per_row=128, target="ascendc")
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.low_priority
 @pytest.mark.usefixtures("setup_random_seed")
 @pytest.mark.parametrize("num_ways", [2, 3, 4])
@@ -331,7 +327,6 @@ def test_merge_sort_basic_pto(num_ways):
     run_test_merge(block_len=64, num_ways=num_ways, target="pto")
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.low_priority
 @pytest.mark.usefixtures("setup_random_seed")
 @pytest.mark.parametrize(
@@ -348,7 +343,6 @@ def test_merge_sort_2way_sizes_low(target, block_len):
     run_test_merge(block_len=block_len, num_ways=2, target=target)
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.low_priority
 @pytest.mark.usefixtures("setup_random_seed")
 def test_merge_sort_region_pto():
@@ -356,7 +350,6 @@ def test_merge_sort_region_pto():
     run_test_merge_region(M=2, per_row=128, target="pto")
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.low_priority
 @pytest.mark.usefixtures("setup_random_seed")
 def test_merge_sort_min_blocklen_pto():
@@ -364,7 +357,6 @@ def test_merge_sort_min_blocklen_pto():
     run_test_merge(block_len=4, num_ways=2, target="pto")
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.low_priority
 @pytest.mark.usefixtures("setup_random_seed")
 @pytest.mark.parametrize(
@@ -376,7 +368,6 @@ def test_merge_sort_stability(target):
     run_test_merge_stability(block_len=64, target=target)
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.low_priority
 @pytest.mark.usefixtures("setup_random_seed")
 @pytest.mark.parametrize(
@@ -397,15 +388,6 @@ if __name__ == "__main__":
     parser.add_argument("--num-ways", type=int, choices=[2, 3, 4], default=3)
     parser.add_argument("--block-len", type=int, default=64, help="elements per source block")
     args = parser.parse_args()
-
-    import os
-    from pathlib import Path
-
-    if not os.environ.get("TILELANG_CACHE_DIR"):
-        raise RuntimeError("Set a dedicated TILELANG_CACHE_DIR before running this cache-clearing CLI")
-    if Path(tilelang.env.TILELANG_CACHE_DIR).resolve() != Path(os.environ["TILELANG_CACHE_DIR"]).resolve():
-        raise RuntimeError("TILELANG_CACHE_DIR conflicts with the active cache-directory override; clear was refused")
-    import torch_npu  # noqa: F401
 
     torch.manual_seed(0)
     kernel_cache.clear_cache()

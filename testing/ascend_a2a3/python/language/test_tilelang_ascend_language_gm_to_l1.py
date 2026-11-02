@@ -101,8 +101,8 @@ CUBE_CONFIGS = {
 }
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(isolated_a2a3_cache):
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
     """Clear tilelang cache before the session."""
     kernel_cache.clear_cache()
     yield
@@ -207,7 +207,6 @@ def run_test_full_copy_plain(M, N, K, block_M, block_N, K_L1, dtype, accum_dtype
         ("float16", "float32"),
     ],
 )
-@pytest.mark.a2a3_device
 def test_full_copy_annotated(dtype, accum_dtype):
     run_test_full_copy_annotated(64, 128, 128, dtype, accum_dtype)
 
@@ -219,7 +218,6 @@ def test_full_copy_annotated(dtype, accum_dtype):
         pytest.param("bfloat16", "float", marks=pytest.mark.low_priority),
     ],
 )
-@pytest.mark.a2a3_device
 def test_full_copy_plain(dtype, accum_dtype):
     run_test_full_copy_plain(128, 128, 128, 128, 128, 128, dtype, accum_dtype)
 
@@ -252,7 +250,6 @@ k_tail_configs = [
 
 
 @pytest.mark.parametrize("M,N,K,block_M,block_N,K_L1", k_tail_configs)
-@pytest.mark.a2a3_device
 def test_k_tail_gemm(M, N, K, block_M, block_N, K_L1):
     run_test_k_tail_gemm(M, N, K, block_M, block_N, K_L1, "float16", "float")
 
@@ -331,13 +328,11 @@ splice_unaligned = [
 
 
 @pytest.mark.parametrize("split", splice_aligned)
-@pytest.mark.a2a3_device
 def test_splice_2way_nz_aligned(split):
     run_test_splice_2way_nz(64, 128, 128, split, "bfloat16", "float32")
 
 
 @pytest.mark.parametrize("split", splice_unaligned)
-@pytest.mark.a2a3_device
 def test_splice_2way_nz_unaligned(split):
     run_test_splice_2way_nz(64, 128, 128, split, "bfloat16", "float32")
 
@@ -350,7 +345,6 @@ def test_splice_2way_nz_unaligned(split):
         pytest.param(96, marks=pytest.mark.low_priority),
     ],
 )
-@pytest.mark.a2a3_device
 def test_splice_2way_nz_float16(split):
     run_test_splice_2way_nz(64, 128, 128, split, "float16", "float32")
 
@@ -423,7 +417,6 @@ splice_3way_configs = [
 
 
 @pytest.mark.parametrize("s0,s1,s2,block_N", splice_3way_configs)
-@pytest.mark.a2a3_device
 def test_splice_3way_tail(s0, s1, s2, block_N):
     run_test_splice_3way_tail(64, block_N, 128, s0, s1, s2, "bfloat16", "float32")
 
@@ -487,7 +480,6 @@ def run_test_splice_2way_zn(block_M, block_N, K, split, dtype, accum_dtype):
         pytest.param(96, marks=pytest.mark.low_priority),
     ],
 )
-@pytest.mark.a2a3_device
 def test_splice_2way_zn(split):
     run_test_splice_2way_zn(128, 128, 128, split, "float16", "float")
 
@@ -559,7 +551,6 @@ splice_ktail_configs = [
 
 
 @pytest.mark.parametrize("block_M,block_N,dim,split,K_L1", splice_ktail_configs)
-@pytest.mark.a2a3_device
 def test_splice_with_k_tail(block_M, block_N, dim, split, K_L1):
     run_test_splice_with_k_tail(block_M, block_N, dim, split, K_L1, "float16", "float")
 
@@ -646,7 +637,6 @@ def run_test_splice_2way_nz_dynamic_batch(block_M, block_N, dim, split, batch, d
         pytest.param(96, marks=pytest.mark.low_priority),
     ],
 )
-@pytest.mark.a2a3_device
 def test_splice_2way_nz_dynamic_batch(batch, split):
     run_test_splice_2way_nz_dynamic_batch(64, 128, 128, split, batch, "bfloat16", "float32")
 
@@ -711,7 +701,6 @@ dynamic_k_configs = [
 
 
 @pytest.mark.parametrize("M,N,K,block_M,block_N,K_L1", dynamic_k_configs)
-@pytest.mark.a2a3_device
 def test_k_tail_gemm_dynamic_k(M, N, K, block_M, block_N, K_L1):
     run_test_k_tail_gemm_dynamic_k(M, N, K, block_M, block_N, K_L1, "float16", "float")
 
@@ -780,12 +769,10 @@ def run_test_splice_2way_nz_dynamic_split(block_M, block_N, dim, split, dtype, a
 
 @pytest.mark.low_priority
 @pytest.mark.parametrize("split", [16, 32, 64, 96, 127])
-@pytest.mark.a2a3_device
 def test_splice_2way_nz_dynamic_split(split):
     run_test_splice_2way_nz_dynamic_split(64, 128, 128, split, "bfloat16", "float32")
 
 
-@pytest.mark.a2a3_device
 def test_splice_2way_nz_dynamic_split_multi():
     """Compile once with symbolic split, then call with multiple runtime values.
 

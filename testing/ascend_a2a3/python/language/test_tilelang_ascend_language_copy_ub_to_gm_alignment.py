@@ -34,8 +34,6 @@ import torch
 import tilelang
 import tilelang.ascend.a2a3.language as T
 
-pytestmark = [pytest.mark.a2a3_device, pytest.mark.usefixtures("isolated_a2a3_cache")]
-
 
 @tilelang.jit(out_idx=[0], target="ascendc")
 def copy_packed(M: int = 16, N: int = 1, dtype: str = "float32"):

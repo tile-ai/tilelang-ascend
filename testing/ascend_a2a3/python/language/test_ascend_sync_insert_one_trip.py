@@ -2,7 +2,6 @@
 
 import pytest
 
-pytestmark = pytest.mark.a2a3_native
 
 from testing.ascend_a2a3.python.language.test_ascend_sync_insert import (
     _assert_handoff,

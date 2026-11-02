@@ -125,8 +125,8 @@ DEV_PASS_CONFIGS = {
 TARGETS = ["ascendc", "pto"]
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(isolated_a2a3_cache):
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
     """Clear tilelang cache before the session."""
     kernel_cache.clear_cache()
     yield
@@ -307,7 +307,6 @@ explicit_configs = [
     [("float16", "float"), pytest.param("bfloat16", "float", marks=pytest.mark.low_priority)],
 )
 @pytest.mark.parametrize("M,N,K,block_M,block_N,block_K", explicit_configs)
-@pytest.mark.a2a3_device
 def test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target):
     run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target)
 
@@ -389,7 +388,6 @@ def run_test_gemm_v0_implicit(M, N, K, block_M, block_N, block_K, transpose_B, d
         pytest.param(256, 256, 256, 128, 128, 64, marks=pytest.mark.low_priority),
     ],
 )
-@pytest.mark.a2a3_device
 def test_gemm_v0_implicit(M, N, K, block_M, block_N, block_K, transpose_B, dtype, accum_dtype, target):
     run_test_gemm_v0_implicit(M, N, K, block_M, block_N, block_K, transpose_B, dtype, accum_dtype, target)
 
@@ -415,7 +413,6 @@ k_tail_configs = [
     [("float16", "float"), pytest.param("bfloat16", "float", marks=pytest.mark.low_priority)],
 )
 @pytest.mark.parametrize("M,N,K,block_M,block_N,block_K", k_tail_configs)
-@pytest.mark.a2a3_device
 def test_k_tail_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target):
     run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target)
 
@@ -440,7 +437,6 @@ fractal_configs = [
     [("float16", "float"), pytest.param("bfloat16", "float", marks=pytest.mark.low_priority)],
 )
 @pytest.mark.parametrize("M,N,K,block_M,block_N,block_K", fractal_configs)
-@pytest.mark.a2a3_device
 def test_fractal_boundary(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target):
     run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target)
 
@@ -465,7 +461,6 @@ k_tiling_configs = [
     [("float16", "float"), pytest.param("bfloat16", "float", marks=pytest.mark.low_priority)],
 )
 @pytest.mark.parametrize("M,N,K,block_M,block_N,block_K", k_tiling_configs)
-@pytest.mark.a2a3_device
 def test_k_tiling_accumulation(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target):
     run_test_explicit_l1_to_l0_gemm(M, N, K, block_M, block_N, block_K, dtype, accum_dtype, target)
 
@@ -576,7 +571,6 @@ def run_test_layout_annotated_gemm(M, N, K, block_M, block_N, block_K, a_layout,
         (128, 128, 128, 128, 128, 128),
     ],
 )
-@pytest.mark.a2a3_device
 def test_layout_annotation(M, N, K, block_M, block_N, block_K, a_layout, b_layout, transpose_B, dtype, accum_dtype, target):
     run_test_layout_annotated_gemm(M, N, K, block_M, block_N, block_K, a_layout, b_layout, transpose_B, dtype, accum_dtype, target)
 
@@ -646,7 +640,6 @@ def run_test_persistent_gemm(M, N, K, block_M, block_N, block_K, core_num, dtype
         pytest.param(512, 256, 128, 128, 128, 64, 4, marks=pytest.mark.low_priority),  # 4x2 grid, 4 cores
     ],
 )
-@pytest.mark.a2a3_device
 def test_persistent_scheduling(M, N, K, block_M, block_N, block_K, core_num, dtype, accum_dtype, target):
     run_test_persistent_gemm(M, N, K, block_M, block_N, block_K, core_num, dtype, accum_dtype, target)
 
@@ -750,7 +743,6 @@ def sliced_3d_l1_to_l0a(STACK, BM, K, BLOCK_N, dtype="float16", accum_dtype="flo
         pytest.param(4, 64, 128, 64, marks=pytest.mark.low_priority),  # smaller rows
     ],
 )
-@pytest.mark.a2a3_native
 def test_sliced_3d_l1_to_l0b(STACK, ROWS, COLS, BM, dtype, accum_dtype, target):
     """3D L1 sliced -> L0B: codegen must size tile_row by the valid row count.
 
@@ -779,7 +771,6 @@ def test_sliced_3d_l1_to_l0b(STACK, ROWS, COLS, BM, dtype, accum_dtype, target):
         pytest.param(4, 64, 96, 64, marks=pytest.mark.low_priority),  # non-power-of-2 K, smaller BM, physical 256
     ],
 )
-@pytest.mark.a2a3_native
 def test_sliced_3d_l1_to_l0a(STACK, BM, K, BLOCK_N, dtype, accum_dtype, target):
     """3D L1 sliced -> L0A: codegen must use the slice-valid row, not physical.
 
@@ -845,7 +836,6 @@ def sliced_3d_l1_to_l0b_transpose(STACK, BLOCK_N, D, BM, dtype="float16", accum_
         pytest.param(2, 128, 128, 128, marks=pytest.mark.low_priority),  # [2,128,128] -> physical 256, valid 128 per slice
     ],
 )
-@pytest.mark.a2a3_native
 def test_sliced_3d_l1_to_l0b_transpose(STACK, ROWS, COLS, BM, dtype, accum_dtype, target):
     """3D L1 sliced + transpose -> L0B: transpose branch must use valid row.
 
@@ -938,7 +928,6 @@ def row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM, dtype="float16", accum_dtype="flo
         pytest.param(256, 128, 64, marks=pytest.mark.low_priority),  # slice_valid_row=64 < phys_row=256
     ],
 )
-@pytest.mark.a2a3_native
 def test_row_sliced_2d_l1_to_l0b(PHYS_ROW, COL, BM, dtype, accum_dtype, target):
     """2-D L1 row-sub-range -> L0B: tile_row must fit the L0B K capacity.
 

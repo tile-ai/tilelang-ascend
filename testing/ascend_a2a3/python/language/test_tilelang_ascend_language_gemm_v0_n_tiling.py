@@ -49,8 +49,8 @@ CUBE_CONFIGS = {
 }
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(isolated_a2a3_cache):
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
     """Clear the tilelang cache before the session (a stale kernel could mask a
     codegen regression -- a rebuilt kernel could otherwise return a cached one)."""
     kernel_cache.clear_cache()
@@ -116,7 +116,6 @@ gemm_configs = [
 ]
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
 @pytest.mark.parametrize("M,N,K", gemm_configs)
 def test_gemm_v0_n_tiling(M, N, K, dtype):

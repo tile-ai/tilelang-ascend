@@ -27,7 +27,6 @@ from tilelang.ascend.a2a3 import kernel_cache
 
 import torch
 
-pytestmark = [pytest.mark.a2a3_device, pytest.mark.usefixtures("isolated_a2a3_cache")]
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
@@ -35,8 +34,8 @@ pass_configs = {
 }
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(isolated_a2a3_cache):
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
     """Clear tilelang cache before tests."""
     kernel_cache.clear_cache()
     yield

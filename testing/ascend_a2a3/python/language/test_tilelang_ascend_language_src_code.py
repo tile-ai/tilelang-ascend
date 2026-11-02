@@ -3,9 +3,7 @@ import pytest
 import tilelang
 import tilelang.ascend.a2a3.language as T
 from tvm.target import Target
-from tilelang.env import CacheState
 
-pytestmark = pytest.mark.a2a3_native
 
 
 def _source_target(dialect):
@@ -13,18 +11,10 @@ def _source_target(dialect):
     return Target({"kind": "ascend", "arch": "dav-2201", "model": "A2", "keys": [dialect, "ascend"]})
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(scope="session", autouse=True)
 def clear_cache():
-    """Disable cache only during this source case, restoring its original state."""
-    was_enabled = CacheState.is_enabled()
+    """Clear tilelang cache before tests"""
     tilelang.disable_cache()
-    try:
-        yield
-    finally:
-        if was_enabled:
-            tilelang.enable_cache()
-        else:
-            tilelang.disable_cache()
 
 
 def test_src_code_basic_injection():

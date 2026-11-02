@@ -266,8 +266,8 @@ def run_test_sort_fp16_index_large(actual_num, dtype, target):
 # -----------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(isolated_a2a3_cache):
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
     """Clear tilelang cache before tests."""
     kernel_cache.clear_cache()
     yield
@@ -299,7 +299,6 @@ basic_params = [
 ]
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.usefixtures("setup_random_seed")
 @pytest.mark.parametrize(
     "dtype",
@@ -320,7 +319,6 @@ def test_sort_basic(dtype, target, actual_num):
 # -----------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.usefixtures("setup_random_seed")
 @pytest.mark.parametrize(
     "dtype",
@@ -348,7 +346,6 @@ def test_sort_2d(dtype, target, M, per_row_N):
 # -----------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.usefixtures("setup_random_seed")
 @pytest.mark.parametrize(
     "dtype",
@@ -369,7 +366,6 @@ def test_sort_min_actual_num(dtype, target):
 # -----------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.low_priority
 @pytest.mark.usefixtures("setup_random_seed")
 @pytest.mark.parametrize("dtype", ["float32"])
@@ -401,7 +397,6 @@ def test_sort_large_actual_num(dtype, target):
 # -----------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.usefixtures("setup_random_seed")
 @pytest.mark.parametrize(
     "dtype",
@@ -434,7 +429,6 @@ def test_sort_src_inplace(dtype, target, actual_num):
 # -----------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.low_priority
 @pytest.mark.usefixtures("setup_random_seed")
 @pytest.mark.parametrize("dtype", ["float16"])
@@ -462,7 +456,6 @@ def test_sort_fp16_index_precision(dtype, target, actual_num):
 # -----------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.ci_skip
 @pytest.mark.parametrize(
     "dtype",
@@ -512,15 +505,6 @@ if __name__ == "__main__":
     parser.add_argument("--actual-num", type=int, default=131, help="Number of valid elements")
     parser.add_argument("--m", type=int, default=1, help="Number of rows (for 2D test)")
     args = parser.parse_args()
-
-    import os
-    from pathlib import Path
-
-    if not os.environ.get("TILELANG_CACHE_DIR"):
-        raise RuntimeError("Set a dedicated TILELANG_CACHE_DIR before running this cache-clearing CLI")
-    if Path(tilelang.env.TILELANG_CACHE_DIR).resolve() != Path(os.environ["TILELANG_CACHE_DIR"]).resolve():
-        raise RuntimeError("TILELANG_CACHE_DIR conflicts with the active cache-directory override; clear was refused")
-    import torch_npu  # noqa: F401
 
     torch.manual_seed(0)
     kernel_cache.clear_cache()
