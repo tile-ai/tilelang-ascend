@@ -35,7 +35,6 @@ import tilelang
 import tilelang.ascend.a2a3.language as T
 from tilelang.ascend.a2a3 import kernel_cache
 
-pytestmark = pytest.mark.a2a3_device
 import torch
 
 
@@ -47,8 +46,8 @@ pass_configs = {
 }
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(isolated_a2a3_cache):
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
     kernel_cache.clear_cache()
     yield
 

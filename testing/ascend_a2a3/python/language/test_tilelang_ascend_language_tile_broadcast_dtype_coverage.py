@@ -20,17 +20,14 @@ Known limitations (documented in docs/api_docs/T.tile.broadcast.md):
 import pytest
 import tilelang
 import tilelang.ascend.a2a3.language as T
-from tilelang.env import CacheState
 import torch
 
 
-@pytest.fixture(autouse=True)
-def _disable_cache(monkeypatch, request):
-    # Preserve the source's compile-every-call policy without changing the
-    # caller's raw cache state on exit. Device cases use the actual platform.
-    monkeypatch.setattr(CacheState, "_enabled", False)
-    if request.node.get_closest_marker("a2a3_device") is None:
-        monkeypatch.setenv("TL_PLATFORM", "A3")
+@pytest.fixture(scope="module", autouse=True)
+def _disable_cache():
+    tilelang.disable_cache()
+    yield
+    tilelang.enable_cache()
 
 
 PASS_CONFIGS = {
@@ -91,7 +88,6 @@ def _make_2d_axis0(dtype, M=8, N=64):
     return main
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize(
     "dtype",
     [
@@ -134,7 +130,6 @@ def test_broadcast_2d_axis0(dtype, target):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize(
     "target",
     [
@@ -171,7 +166,6 @@ def test_broadcast_1d_to_2d_auto_infer(target):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
 def test_broadcast_1d_axis0_ascendc():
     N = 64
 
@@ -201,7 +195,6 @@ def test_broadcast_1d_axis0_ascendc():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 def test_broadcast_dtype_mismatch_raises():
     """dst and src dtype must match; mismatch should fail at compile time."""
 
@@ -227,7 +220,6 @@ def test_broadcast_dtype_mismatch_raises():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 def test_broadcast_shape_mismatch_axis0_raises():
     """src[0] != 1 and shapes don't match on axis=0 should raise during TIR construction."""
 
@@ -247,7 +239,6 @@ def test_broadcast_shape_mismatch_axis0_raises():
                     T.copy(dst_ub, B)
 
 
-@pytest.mark.a2a3_native
 def test_broadcast_shape_mismatch_axis1_raises():
     """src[1] != 1 and shapes don't match on axis=1 should raise during TIR construction."""
 
@@ -272,7 +263,6 @@ def test_broadcast_shape_mismatch_axis1_raises():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 def test_broadcast_invalid_axis_raises():
     """axis must be 0 or 1; axis=2 should raise during TIR construction."""
 
@@ -297,7 +287,6 @@ def test_broadcast_invalid_axis_raises():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 def test_broadcast_1d_uninferable_raises():
     """1D src that can't be inferred to 2D dst should raise during TIR construction."""
 

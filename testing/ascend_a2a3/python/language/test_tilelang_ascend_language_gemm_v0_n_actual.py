@@ -52,8 +52,8 @@ DEV_CONFIGS = {
 }
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(isolated_a2a3_cache):
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
     """Clear tilelang cache before the session."""
     kernel_cache.clear_cache()
     yield
@@ -117,7 +117,6 @@ configs = [
 ]
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
 @pytest.mark.parametrize("block_M,block_N,dim,n_actual", configs)
 def test_qk_n_actual(block_M, block_N, dim, n_actual, dtype):

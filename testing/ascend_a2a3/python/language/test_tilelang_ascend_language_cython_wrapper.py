@@ -26,7 +26,6 @@ NOTE: these cases execute on real NPU hardware (``.npu()``); they cannot run
 in a CPU-only environment.
 """
 
-import pytest
 import torch
 
 import tilelang
@@ -83,7 +82,6 @@ def _wrapper_module(kernel):
     return runtime.tvm.arith
 
 
-@pytest.mark.a2a3_device
 def test_static_shape_forward_does_not_construct_analyzer(monkeypatch):
     kernel = tilelang.compile(static_copy_kernel(), out_idx=[-1], pass_configs=VEC_PASS_CONFIGS, target="ascendc")
     wrapper_module = _wrapper_module(kernel)
@@ -100,7 +98,6 @@ def test_static_shape_forward_does_not_construct_analyzer(monkeypatch):
     torch.testing.assert_close(c, a, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.a2a3_device
 def test_symbolic_output_shape_constructs_analyzer_lazily(monkeypatch):
     torch.manual_seed(0)
     # Symbolic-var kernels must compile without the disk cache: pytest-xdist

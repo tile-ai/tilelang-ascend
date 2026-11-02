@@ -8,7 +8,6 @@ import torch
 import tilelang
 import tilelang.ascend.a2a3.language as T
 from tilelang import tvm
-from tilelang.env import CacheState
 from tilelang.ascend.a2a3.platform import resolve_a2a3_platform
 
 
@@ -19,28 +18,24 @@ PASS_CONFIGS = {
 }
 
 
-@pytest.fixture(autouse=True)
-def disable_cache(monkeypatch):
-    monkeypatch.setattr(CacheState, "_enabled", False)
+@pytest.fixture(scope="session", autouse=True)
+def disable_cache():
+    tilelang.disable_cache()
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def platform():
-    # The enclosing device fixture scopes TL_PLATFORM to the actual A2/A3 NPU.
     target = tvm.target.Target({"kind": "ascend", "arch": "dav-2201", "keys": ["ascendc", "ascend"]})
     return resolve_a2a3_platform(target)
 
 
-skip_A5 = pytest.mark.a2a3_original_skip_a5
+skip_A5 = pytest.mark.skipif(
+    resolve_a2a3_platform(tvm.target.Target({"kind": "ascend", "arch": "dav-2201"}), required=False) == "A5",
+    reason="Only test for non-A5 platform",
+)
 only_A5 = pytest.mark.skip(reason="Original TA A5-only source retained outside A2/A3; modern A5 unverified")
 target_skip_ascendc_in_A5 = pytest.mark.parametrize("target", [pytest.param("ascendc", marks=skip_A5), "pto"])
 # target = A2/A3: "ascend" & "pto"; A5: "pto" only
-
-
-@pytest.fixture(autouse=True)
-def _original_platform_requirement(request, platform):
-    if request.node.get_closest_marker("a2a3_original_skip_a5") is not None and platform == "A5":
-        pytest.skip("Only test for non-A5 platform")
 
 
 def _compile(program, target="pto", expert=False):
@@ -490,21 +485,18 @@ def _l0c_to_ub_case(
 
 @target_skip_ascendc_in_A5
 @pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
-@pytest.mark.a2a3_device
 def test_ub_to_l1(target, dtype, accum_dtype):
     M, N, K = 128, 128, 128
     _ub_to_l1_case(_ub_to_l1_kernel, M=M, N=N, K=K, dtype=dtype, accum_dtype=accum_dtype, target=target, expert=False)
 
 
 @target_skip_ascendc_in_A5
-@pytest.mark.a2a3_device
 def test_ub_to_l1_drop_vid(target):
     M, N, K = 128, 128, 128
     _ub_to_l1_case(_ub_to_l1_kernel_drop_vid, M=M, N=N, K=K, target=target, expert=False)
 
 
 @pytest.mark.parametrize("target", ["pto"])
-@pytest.mark.a2a3_device
 def test_ub_to_l1_lr(target):
     M, N, K = 128, 128, 128
     _ub_to_l1_case(_ub_to_l1_kernel_lr, M=M, N=N, K=K, target=target, expert=False)
@@ -512,7 +504,6 @@ def test_ub_to_l1_lr(target):
 
 @skip_A5
 @pytest.mark.parametrize("target", ["pto"])
-@pytest.mark.a2a3_device
 def test_ub_to_l1_expert_A2(target):
     M, N, K = 128, 128, 128
     _ub_to_l1_case(_ub_to_l1_kernel_expert_A2, M=M, N=N, K=K, target=target, expert=True, manual_workspace=True)
@@ -520,14 +511,12 @@ def test_ub_to_l1_expert_A2(target):
 
 @only_A5
 @pytest.mark.parametrize("target", ["pto"])
-@pytest.mark.a2a3_device
 def test_ub_to_l1_expert_A5(target):
     M, N, K = 128, 128, 128
     _ub_to_l1_case(_ub_to_l1_kernel_expert_A5, M=M, N=N, K=K, target=target, expert=True)
 
 
 @target_skip_ascendc_in_A5
-@pytest.mark.a2a3_device
 def test_ub_to_l1_special_shapes(target, platform):
     M, N, K = 16, 16, 16
     print(f"Case: {M = }, {N = }, {K = }")
@@ -544,28 +533,24 @@ def test_ub_to_l1_special_shapes(target, platform):
 
 @target_skip_ascendc_in_A5
 @pytest.mark.parametrize("dtype,accum_dtype", [("float16", "float"), ("bfloat16", "float")])
-@pytest.mark.a2a3_device
 def test_l0c_to_ub(target, dtype, accum_dtype):
     M, N, K = 128, 128, 128
     _l0c_to_ub_case(_l0c_to_ub_kernel, M=M, N=N, K=K, dtype=dtype, accum_dtype=accum_dtype, target=target, expert=False)
 
 
 @target_skip_ascendc_in_A5
-@pytest.mark.a2a3_device
 def test_l0c_to_ub_drop_vid(target):
     M, N, K = 128, 128, 128
     _l0c_to_ub_case(_l0c_to_ub_kernel_drop_vid, M=M, N=N, K=K, target=target, expert=False)
 
 
 @pytest.mark.parametrize("target", ["pto"])
-@pytest.mark.a2a3_device
 def test_l0c_to_ub_lr(target):
     M, N, K = 128, 128, 128
     _l0c_to_ub_case(_l0c_to_ub_kernel_lr, M=M, N=N, K=K, target=target, expert=False)
 
 
 @target_skip_ascendc_in_A5
-@pytest.mark.a2a3_device
 def test_l0c_to_ub_special_shapes(target, platform):
     M, N, K = 16, 16, 16
     print(f"Case: {M = }, {N = }, {K = }")
@@ -608,7 +593,6 @@ def _combined_case(kernel_func, M=128, N=128, K=128, target="pto"):
 
 
 @target_skip_ascendc_in_A5
-@pytest.mark.a2a3_device
 def test_combined(target):
     M, N, K = 128, 128, 128
     _combined_case(_combined_kernel, M=M, N=N, K=K, target=target)
@@ -698,7 +682,6 @@ def _copy_cv_experiment_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype
 
 @only_A5
 @pytest.mark.parametrize("target", ["pto"])
-@pytest.mark.a2a3_device
 def test_copy_vc_experiment(target):
     M, N, K = 128, 128, 128
     _ub_to_l1_case(_copy_vc_experiment_kernel, M=M, N=N, K=K, target=target, expert=True)
@@ -706,7 +689,6 @@ def test_copy_vc_experiment(target):
 
 @only_A5
 @pytest.mark.parametrize("target", ["pto"])
-@pytest.mark.a2a3_device
 def test_copy_cv_experiment(target):
     M, N, K = 128, 128, 128
     _l0c_to_ub_case(_copy_cv_experiment_kernel, M=M, N=N, K=K, target=target, expert=True)

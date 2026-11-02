@@ -16,11 +16,9 @@ SHAPE_CONFIGS = {
 }
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(monkeypatch):
-    from tilelang.env import CacheState
-
-    monkeypatch.setattr(CacheState, "_enabled", False)
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
+    tilelang.disable_cache()
     yield
 
 
@@ -95,7 +93,10 @@ def _run_precision_case(target, kL0Size, shape_group):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("kL0Size", [128, 64])
 @pytest.mark.parametrize("shape_group", ["A", "B", "C", "D"])
@@ -133,7 +134,10 @@ def _run_transpose_case(target, transpose_A, transpose_B):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("transpose_A,transpose_B", [(False, True), (True, False)])
 def test_gemm_v0_transpose(target, transpose_A, transpose_B):
@@ -160,31 +164,30 @@ def _run_default_case(target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_gemm_v0_default_kL0Size(target):
     _run_default_case(target)
 
 
-@pytest.mark.a2a3_native
 def test_gemm_v0_invalid_kL0Size_zero():
     with pytest.raises(AssertionError, match="must be a positive integer"):
         _gemm_v0_kernel(128, 128, 256, 128, 128, 256, "float16", "float", kL0Size=0)
 
 
-@pytest.mark.a2a3_native
 def test_gemm_v0_invalid_kL0Size_negative():
     with pytest.raises(AssertionError, match="must be a positive integer"):
         _gemm_v0_kernel(128, 128, 256, 128, 128, 256, "float16", "float", kL0Size=-16)
 
 
-@pytest.mark.a2a3_native
 def test_gemm_v0_invalid_kL0Size_not_aligned():
     with pytest.raises(AssertionError, match="multiple of 16"):
         _gemm_v0_kernel(128, 128, 256, 128, 128, 256, "float16", "float", kL0Size=100)
 
 
-@pytest.mark.a2a3_native
 def test_gemm_v0_invalid_kL0Size_exceeds_mmad_limit():
     with pytest.raises(AssertionError, match="4095"):
         _gemm_v0_kernel(128, 128, 256, 128, 128, 256, "float16", "float", kL0Size=4096)
@@ -300,14 +303,20 @@ def _run_int8_kl0split_case(transpose_A, transpose_B, kL0Size, K_L1):
     torch.testing.assert_close(c.cpu(), ref_c, rtol=0, atol=0)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize("transpose_A,transpose_B", [(True, False), (False, False)])
 def test_gemm_v0_int8_kl0split_gt1(transpose_A, transpose_B):
     # K_L1=256, kL0Size=128 -> kL0split=2: triggers the offset bug pre-fix.
     _run_int8_kl0split_case(transpose_A, transpose_B, kL0Size=128, K_L1=256)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize("transpose_A,transpose_B", [(True, False), (False, False)])
 def test_gemm_v0_int8_kl0split_eq1(transpose_A, transpose_B):
     # K_L1 == kL0Size -> kL0split=1: the masked case, must remain correct.
@@ -344,14 +353,20 @@ def _run_dtype_precision(dtype, accum_dtype, target, shape_group="A"):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_gemm_v0_bfloat16_precision(target):
     """bfloat16 precision test (existing tests only cover float16)."""
     _run_dtype_precision("bfloat16", "float", target)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize(
     "transpose_A,transpose_B",
     [
@@ -386,7 +401,6 @@ def test_gemm_v0_int8_transpose_full(target, transpose_A, transpose_B):
     torch.testing.assert_close(c.cpu(), ref_c, rtol=0, atol=0)
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_gemm_v0_dtype_mismatch(target):
     """A/B dtype mismatch should fail to compile."""
@@ -416,7 +430,10 @@ def test_gemm_v0_dtype_mismatch(target):
         _compile(main, target)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_gemm_v0_init_false_accumulation(target):
     """init=False accumulation: two gemm_v0 calls should equal one large-K call."""

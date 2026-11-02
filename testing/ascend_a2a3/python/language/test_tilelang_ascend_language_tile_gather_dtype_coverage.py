@@ -41,17 +41,14 @@ Known PTO limitations (documented in docs/api_docs/T.tile.gather.md):
 import pytest
 import tilelang
 import tilelang.ascend.a2a3.language as T
-from tilelang.env import CacheState
 import torch
 
 
-@pytest.fixture(autouse=True)
-def _disable_cache(monkeypatch, request):
-    # Preserve the source's compile-every-call policy without changing the
-    # caller's raw cache state on exit. Device cases use the actual platform.
-    monkeypatch.setattr(CacheState, "_enabled", False)
-    if request.node.get_closest_marker("a2a3_device") is None:
-        monkeypatch.setenv("TL_PLATFORM", "A3")
+@pytest.fixture(scope="module", autouse=True)
+def _disable_cache():
+    tilelang.disable_cache()
+    yield
+    tilelang.enable_cache()
 
 
 PASS_CONFIGS = {
@@ -86,7 +83,6 @@ def golden_gather(a_cpu, b_int32, elem_size, base_addr=0):
     return a_cpu[idx.long()]
 
 
-@pytest.mark.a2a3_device
 def test_gather_base_addr():
     """Non-zero src_base_addr (ftcheck example 2).
 
@@ -116,7 +112,6 @@ def test_gather_base_addr():
     torch.testing.assert_close(c, ref, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.a2a3_native
 def test_gather_dtype_mismatch_raises():
     """Constraint 1: dst and src must have the same dtype."""
 
@@ -139,7 +134,6 @@ def test_gather_dtype_mismatch_raises():
         tilelang.compile(main, out_idx=[-1], pass_configs=PASS_CONFIGS, target="ascendc")
 
 
-@pytest.mark.a2a3_native
 def test_gather_offset_dtype_raises():
     """Constraint 2: src_offset must be uint32 (enforced on ascendc)."""
 

@@ -1,5 +1,4 @@
 import argparse
-import os
 
 import pytest
 import torch
@@ -275,8 +274,8 @@ def run_test_inplace(op, form, M, N, dtype, target):
 # -----------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(isolated_a2a3_cache):
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
     """Clear tilelang cache before tests."""
     kernel_cache.clear_cache()
     yield
@@ -462,13 +461,6 @@ def test_tile_arith_buffer_size_unvalidated(target):
     torch.testing.assert_close(out.cpu().float(), (a + b[:64]).float(), rtol=RTOL, atol=ATOL)
 
 
-for _name, _test in tuple(globals().items()):
-    if _name.startswith("test_") and callable(_test):
-        pytest.mark.a2a3_native(_test) if _name in {
-            "test_tile_arith_size_mismatch_src0",
-            "test_tile_arith_size_mismatch_region",
-            "test_tile_arith_div_int_compile_error",
-        } else pytest.mark.a2a3_device(_test)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="T.tile.add/sub/mul/div test suite")
@@ -476,14 +468,6 @@ if __name__ == "__main__":
     parser.add_argument("--op", type=str, choices=["add", "sub", "mul", "div"], default="add")
     parser.add_argument("--mode", type=str, choices=["tensor", "scalar", "buffload", "slice", "inplace"], default="tensor")
     args = parser.parse_args()
-
-    if not os.environ.get("TILELANG_CACHE_DIR"):
-        raise RuntimeError("Set a dedicated TILELANG_CACHE_DIR before running this cache-clearing CLI")
-    from pathlib import Path
-
-    if Path(tilelang.env.TILELANG_CACHE_DIR).resolve() != Path(os.environ["TILELANG_CACHE_DIR"]).resolve():
-        raise RuntimeError("TILELANG_CACHE_DIR conflicts with the active cache-directory override; clear was refused")
-    import torch_npu  # noqa: F401
 
     torch.manual_seed(0)
     kernel_cache.clear_cache()

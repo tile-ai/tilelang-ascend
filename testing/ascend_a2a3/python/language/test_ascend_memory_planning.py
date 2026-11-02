@@ -28,7 +28,6 @@ import torch
 
 import tilelang
 import tilelang.ascend.a2a3.language as T
-from tilelang.env import CacheState
 from tilelang import tvm
 
 VEC_NUM = 2
@@ -43,11 +42,13 @@ PASS_LINEAR = {
 }
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(monkeypatch, request):
-    monkeypatch.setattr(CacheState, "_enabled", False)
-    if request.node.get_closest_marker("a2a3_device") is None:
-        monkeypatch.setenv("TL_PLATFORM", "A3")
+NPU_AVAILABLE = hasattr(torch, "npu") and torch.npu.is_available()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
+    tilelang.disable_cache()
+    yield
 
 
 def _get_buffer_offsets(kernel_source: str) -> dict[str, int]:
@@ -107,7 +108,6 @@ def _compile_and_get_offsets(program, pass_configs, target="ascendc", out_idx=No
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 def test_linear_mode_sequential_no_overlap():
     """Linear mode: sequential buffers get increasing offsets."""
 
@@ -129,7 +129,6 @@ def test_linear_mode_sequential_no_overlap():
     assert offsets["b_ub"] >= 64 * 128 * 4
 
 
-@pytest.mark.a2a3_native
 def test_auto_mode_overlapping_buffers_no_reuse():
     """Auto mode: simultaneously-live buffers must NOT share memory."""
 
@@ -162,7 +161,6 @@ def test_auto_mode_overlapping_buffers_no_reuse():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 def test_loop_buffer_before_loop_not_reused_inside():
     """Buffer defined before loop, read inside loop, must NOT be reused
     by a buffer allocated inside the loop body."""
@@ -192,7 +190,6 @@ def test_loop_buffer_before_loop_not_reused_inside():
     )
 
 
-@pytest.mark.a2a3_native
 def test_loop_buffer_inside_loop_can_reuse():
     """Buffer allocated and fully consumed inside a single loop iteration
     can be reused across iterations (same offset)."""
@@ -218,7 +215,6 @@ def test_loop_buffer_inside_loop_can_reuse():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 def test_nested_loop_outer_buffer_not_reused():
     """Buffer defined before outer loop, read in inner loop, must not be
     reused by inner-loop-allocated buffers."""
@@ -252,7 +248,6 @@ def test_nested_loop_outer_buffer_not_reused():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 def test_annotate_address_respected_in_auto_mode():
     """Pre-allocated buffer via annotate_address must keep its address
     in auto-plan mode."""
@@ -277,7 +272,6 @@ def test_annotate_address_respected_in_auto_mode():
     assert offsets["a_ub"] == 32768, f"Pre-allocated a_ub must be at 32768, got {offsets['a_ub']}"
 
 
-@pytest.mark.a2a3_native
 def test_annotate_address_no_conflict_in_auto_mode():
     """Auto-planned buffer must avoid pre-allocated buffer's address range."""
 
@@ -308,7 +302,6 @@ def test_annotate_address_no_conflict_in_auto_mode():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 def test_tmp_buffer_gets_address_in_auto_mode():
     """tmp_ub should receive a valid address in auto-plan mode."""
 
@@ -330,7 +323,6 @@ def test_tmp_buffer_gets_address_in_auto_mode():
     assert offsets["tmp_ub"] >= 0
 
 
-@pytest.mark.a2a3_native
 def test_tmp_buffer_does_not_overlap_user_buffers():
     """tmp_ub address must not overlap with user buffers."""
 
@@ -365,7 +357,6 @@ def test_tmp_buffer_does_not_overlap_user_buffers():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 def test_linear_mode_no_reuse():
     """Linear mode: even non-overlapping buffers get distinct addresses
     (no lifetime-based reuse)."""
@@ -392,7 +383,6 @@ def test_linear_mode_no_reuse():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 def test_multiple_scopes_independent_allocation():
     """Buffers in different scopes (UB vs L0C) get independent address
     spaces starting from 0."""
@@ -425,7 +415,6 @@ def test_multiple_scopes_independent_allocation():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_if_else_branch_buffers_no_overlap(target):
     """if/else branches each allocate a buffer; their addresses must not
@@ -455,7 +444,6 @@ def test_if_else_branch_buffers_no_overlap(target):
     _assert_no_overlap("x_ub", offsets["x_ub"], buf_size, "y_ub", offsets["y_ub"], buf_size)
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_if_else_branch_buffer_not_reuse_outer(target):
     """Buffer allocated before if/else and read inside a branch must not
@@ -507,7 +495,6 @@ def test_if_else_branch_buffer_not_reuse_outer(target):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_if_then_else_dynamic_index_buffers_no_overlap(target):
     """T.if_then_else computed dynamic index must not break memory planning:
@@ -532,7 +519,6 @@ def test_if_then_else_dynamic_index_buffers_no_overlap(target):
     _assert_no_overlap("a_ub", offsets["a_ub"], buf_size, "b_ub", offsets["b_ub"], buf_size)
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_if_then_else_in_loop_buffer_liveness(target):
     """Buffer defined before a loop that uses T.if_then_else for dynamic
@@ -571,7 +557,6 @@ def test_if_then_else_in_loop_buffer_liveness(target):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_if_else_boundary_last_block(target):
     """Boundary: the last block takes a different code path via if/else,
@@ -601,7 +586,6 @@ def test_if_else_boundary_last_block(target):
     _assert_no_overlap("a_ub", offsets["a_ub"], buf_size, "b_ub", offsets["b_ub"], buf_size)
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_if_then_else_min_buffer_boundary(target):
     """Boundary: minimum 32B-aligned buffer (8 float32 elements) together
@@ -629,7 +613,10 @@ def test_if_then_else_min_buffer_boundary(target):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not NPU_AVAILABLE,
+    reason="NPU correctness requires an Ascend NPU runtime",
+)
 def test_npu_loop_liveness_correctness():
     """NPU correctness: buffer before loop + buffer inside loop.
     If liveness is wrong, data corruption will cause assertion failure."""
@@ -659,7 +646,10 @@ def test_npu_loop_liveness_correctness():
     torch.testing.assert_close(b[:3, :], ref[:3, :], rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not NPU_AVAILABLE,
+    reason="NPU correctness requires an Ascend NPU runtime",
+)
 def test_npu_nested_loop_correctness():
     """NPU correctness: nested loop with cross-iteration buffer."""
 
@@ -686,7 +676,10 @@ def test_npu_nested_loop_correctness():
     torch.testing.assert_close(b, ref, rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not NPU_AVAILABLE,
+    reason="NPU correctness requires an Ascend NPU runtime",
+)
 def test_npu_reduce_with_auto_planning():
     """NPU correctness: reduce_max with auto memory planning."""
 
@@ -711,7 +704,10 @@ def test_npu_reduce_with_auto_planning():
     torch.testing.assert_close(b, ref, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not NPU_AVAILABLE,
+    reason="NPU correctness requires an Ascend NPU runtime",
+)
 def test_npu_sequential_ops_correctness():
     """NPU correctness: multiple sequential operations in a loop,
     verifying no data corruption from incorrect memory reuse."""
@@ -743,7 +739,10 @@ def test_npu_sequential_ops_correctness():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not NPU_AVAILABLE,
+    reason="NPU correctness requires an Ascend NPU runtime",
+)
 def test_npu_if_else_branch_correctness():
     """NPU correctness: runtime-selected if/else branch must produce the
     expected output, proving branch buffers are not corrupted by planning."""
@@ -778,7 +777,10 @@ def test_npu_if_else_branch_correctness():
     torch.testing.assert_close(b_neg[0], a[1] * 3, rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not NPU_AVAILABLE,
+    reason="NPU correctness requires an Ascend NPU runtime",
+)
 def test_npu_if_then_else_dynamic_index_correctness():
     """NPU correctness: T.if_then_else computed offset selects the right
     source tile, proving dynamic indexing + planning is sound."""
@@ -806,7 +808,10 @@ def test_npu_if_then_else_dynamic_index_correctness():
     torch.testing.assert_close(b_lo, a[64:128, :], rtol=1e-3, atol=1e-3)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not NPU_AVAILABLE,
+    reason="NPU correctness requires an Ascend NPU runtime",
+)
 def test_npu_if_else_in_loop_correctness():
     """NPU correctness: if/else inside a loop with a cross-iteration base
     buffer; both branches must keep the base buffer intact."""
@@ -851,7 +856,6 @@ def test_npu_if_else_in_loop_correctness():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_letstmt_buffer_load_shared_no_crash(target):
     """Regression: a scalar read from a shared-scope UB buffer produces a

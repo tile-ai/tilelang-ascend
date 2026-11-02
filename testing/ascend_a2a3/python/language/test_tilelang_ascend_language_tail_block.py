@@ -98,8 +98,8 @@ def _vec_configs(tail_mask):
     return {**VEC_PASS_CONFIGS, tilelang.PassConfigKey.TL_ASCEND_TAIL_MASK: tail_mask}
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(isolated_a2a3_cache):
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
     """Clear tilelang cache before the session."""
     kernel_cache.clear_cache()
     yield
@@ -168,7 +168,6 @@ cube_tail_configs = [
 ]
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("M,N,K,block_M,block_N,K_L1", cube_tail_configs)
 def test_cube_matmul_tail(M, N, K, block_M, block_N, K_L1, target):
@@ -278,7 +277,6 @@ vec_tail_configs = [
 ]
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("tail_mask", [False, True])
 @pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
@@ -287,7 +285,6 @@ def test_vec_add_tail(M, N, block_M, block_N, dtype, target, tail_mask):
     run_test_vec_add_tail(M, N, block_M, block_N, dtype, target=target, tail_mask=tail_mask)
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("tail_mask", [False, True])
 @pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
@@ -354,7 +351,6 @@ reduce_tail_configs = [
 
 # With tail-mask enabled, this explicit real_shape does not match the physical
 # tile and therefore stays on the native real_shape path on both backends.
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("tail_mask", [False, True])
 @pytest.mark.parametrize("dtype", ["float"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
@@ -414,7 +410,6 @@ REDUCE_TAIL_KINDS = (
 REDUCE_TAIL_AXIS0_DIMS = (0, -2)
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("kind", REDUCE_TAIL_KINDS)
 @pytest.mark.parametrize("dim", REDUCE_TAIL_AXIS0_DIMS)
 @pytest.mark.parametrize("target", REDUCE_TAIL_TARGETS)
@@ -436,7 +431,6 @@ def test_reduce_axis0_tail(M, N, block_M, block_N, target, kind, dim):
     torch.testing.assert_close(out, ref, rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize(
     ("kind", "sign"),
     [
@@ -463,7 +457,6 @@ def test_reduce_axis0_tail_does_not_consume_zero_padding(target, kind, sign):
 # semantics rather than part of the shared valid-region contract. Keep this
 # exact-bit regression scoped to the AscendC helper until PTO documents and
 # validates an equivalent guarantee on hardware.
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize(
     "kind",
     [
@@ -592,7 +585,6 @@ def compare_select_tail_expert(M, N, block_M, block_N):
     return main
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("scalar_compare,scalar_select", [(False, False), (True, True)])
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
@@ -627,7 +619,6 @@ def test_compare_select_tail(target, dtype, scalar_compare, scalar_select):
     torch.testing.assert_close(packed, _pack_compare_mask(condition).npu(), rtol=0, atol=0)
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_compare_select_tail_expert(target):
     M, N, block_M, block_N = 5, 69, 4, 64
@@ -662,7 +653,6 @@ def broadcast_axis1_tail(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 def test_broadcast_axis1_tail(target, dtype):
@@ -702,7 +692,6 @@ def broadcast_axis0_tail(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 def test_broadcast_axis0_tail(target, dtype):
@@ -767,7 +756,6 @@ def mixed_broadcast_compare_select_tail(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 def test_mixed_broadcast_compare_select_tail(target, dtype):
@@ -823,7 +811,6 @@ def mixed_unary_scalar_select_tail(M, N, block_M, block_N, dtype="float"):
     return main
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 def test_mixed_unary_scalar_select_tail(target, dtype):
@@ -929,7 +916,6 @@ cv_tail_configs = [
 ]
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 @pytest.mark.parametrize("M,N,K,block_M,block_N,block_K", cv_tail_configs)
 def test_cv_matmul_add_tail(M, N, K, block_M, block_N, block_K, target):

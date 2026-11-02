@@ -75,11 +75,9 @@ SINGLE_TILE_CONFIGS = [
 ]
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(monkeypatch):
-    from tilelang.env import CacheState
-
-    monkeypatch.setattr(CacheState, "_enabled", False)
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
+    tilelang.disable_cache()
     yield
 
 
@@ -180,7 +178,10 @@ def _run(kernel_fn, ref_fn, shapes):
     torch.testing.assert_close(tensors[-1].float(), ref, rtol=2e-2, atol=2e-2)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize("M,N,K", SINGLE_TILE_CONFIGS)
 def test_gemm_v0_ktail_single_l1_tile(M, N, K):
     """Issue #1341: unaligned kL0Tail with kL0split >= 2 on a single L1 tile."""
@@ -191,7 +192,10 @@ def test_gemm_v0_ktail_single_l1_tile(M, N, K):
     )
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize("K,K_L1", [(200, 200), (456, 200), (200, 128), (264, 128)])
 def test_gemm_v0_ktail_blocked(K, K_L1):
     """Unaligned K with a T.Parallel epilogue (lost-annotation defect) and an
@@ -205,7 +209,10 @@ def test_gemm_v0_ktail_blocked(K, K_L1):
     )
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize("transpose_A,transpose_B", [(True, False), (False, True), (True, True)])
 def test_gemm_v0_ktail_transpose(transpose_A, transpose_B):
     """Unaligned K through the transpose-A / transpose-B (QK-style) paths."""
@@ -231,7 +238,10 @@ def test_gemm_v0_ktail_transpose(transpose_A, transpose_B):
     )
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize("K", [200, 264, 1000])
 def test_gemm_v0_ktail_kl0size_64(K):
     """Same unaligned tails with a finer kL0Size=64 split (kL0split doubles)."""
@@ -243,7 +253,10 @@ def test_gemm_v0_ktail_kl0size_64(K):
     )
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
 def test_gemm_v0_ktail_dtypes(dtype):
     """bf16 shares the fp16 fractal geometry (ELE_NUM_PER_C0 == 16)."""
@@ -261,7 +274,10 @@ def test_gemm_v0_ktail_dtypes(dtype):
     torch.testing.assert_close(c.float(), ref, rtol=2e-2, atol=2e-2)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize(
     "K,expected",
     [
@@ -322,7 +338,10 @@ def test_gemm_v0_ktail_int8(K, expected):
     torch.testing.assert_close(c, ref)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize("K,num_stages", [(200, 2), (200, 3), (456, 2), (256, 2)])
 def test_gemm_v0_ktail_pipeline(K, num_stages):
     """Pipelined K-loop with an unaligned K-tail: software pipelining
@@ -370,7 +389,10 @@ def test_gemm_v0_ktail_pipeline(K, num_stages):
     torch.testing.assert_close(c.float(), ref, rtol=2e-2, atol=2e-2)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize(
     "kL0Size,expected",
     [
@@ -426,7 +448,10 @@ def test_gemm_v0_ktail_int8_kl0size_c0(kL0Size, expected):
     torch.testing.assert_close(c, ref)
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize("K_L1", [200, 152])
 def test_gemm_v0_ktail_pipeline_parallel(K_L1):
     """Pipelined K-loop with an unaligned K_L1 AND a T.Parallel epilogue (the

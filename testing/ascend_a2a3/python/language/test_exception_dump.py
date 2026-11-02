@@ -19,7 +19,6 @@ import torch
 import tilelang
 import tilelang.ascend.a2a3.language as T
 from tilelang.tools.ascend.a2a3.ascend_exception_dump_bin import parse_exception_dump
-from tilelang.env import CacheState
 from tilelang import tvm
 
 PASS_AUTO = {
@@ -32,10 +31,13 @@ PASS_AUTO = {
 _MSAICERR_PATH = os.path.join(os.environ.get("ASCEND_HOME_PATH", ""), "tools", "msaicerr", "msaicerr.py")
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(monkeypatch):
-    # Preserve the caller's underlying cache-enable bit after this case.
-    monkeypatch.setattr(CacheState, "_enabled", False)
+NPU_AVAILABLE = hasattr(torch, "npu") and torch.npu.is_available()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
+    tilelang.disable_cache()
+    yield
 
 
 def _make_kernel():
@@ -61,7 +63,7 @@ def _make_kernel():
 
 
 @pytest.mark.ci_skip
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(not NPU_AVAILABLE, reason="NPU not available")
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_exception_dump_npu_correctness(target):
     """Kernel with exception dump still produces correct results on NPU."""
@@ -80,7 +82,7 @@ def test_exception_dump_npu_correctness(target):
 
 
 @pytest.mark.ci_skip
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(not NPU_AVAILABLE, reason="NPU not available")
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_exception_dump_callback_magic_not_found(target):
     """Verify callback returns -2 when MAGIC is not found in args (silently)."""
@@ -162,7 +164,7 @@ time.sleep(2)
 
 
 @pytest.mark.ci_skip
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(not NPU_AVAILABLE, reason="NPU not available")
 @pytest.mark.skipif(not os.path.isfile(_MSAICERR_PATH), reason=f"msaicerr.py not found at {_MSAICERR_PATH}")
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_exception_dump_callback_via_hw_exception(target, tmp_path):
@@ -227,7 +229,6 @@ def test_exception_dump_callback_via_hw_exception(target, tmp_path):
     np.testing.assert_array_equal(y_dumped, y_expected)
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize("dialect", ["ascendc", "pto"])
 def test_exception_dump_source_registration(dialect):
     """Inspect the real source without provoking a hardware exception."""

@@ -1,6 +1,4 @@
 import pytest
-from unittest.mock import patch
-from tilelang.env import CacheState
 from tilelang.ascend.a2a3 import kernel_cache
 import tilelang
 import tilelang.ascend.a2a3.language as T
@@ -135,8 +133,8 @@ VEC_MIN_CONFIGS = {
 TARGETS = ["ascendc", "pto"]
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(isolated_a2a3_cache):
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
     """Clear tilelang cache before the session."""
     kernel_cache.clear_cache()
     yield
@@ -251,7 +249,6 @@ regular_2d_configs = [
 
 @pytest.mark.parametrize("target", TARGETS)
 @pytest.mark.parametrize("M,N,block_M,block_N,dtype,use_vid", regular_2d_configs)
-@pytest.mark.a2a3_device
 def test_gm_ub_gm_2d(M, N, block_M, block_N, dtype, use_vid, target):
     run_test_gm_ub_gm_2d(M, N, block_M, block_N, dtype, use_vid, target)
 
@@ -265,7 +262,6 @@ def test_gm_ub_gm_2d(M, N, block_M, block_N, dtype, use_vid, target):
         pytest.param(256, 32, "int32", marks=pytest.mark.low_priority),
     ],
 )
-@pytest.mark.a2a3_device
 def test_gm_ub_gm_1d(N, block_N, dtype, target):
     run_test_gm_ub_gm_1d(N, block_N, dtype, target)
 
@@ -300,7 +296,6 @@ boundary_configs = [
 
 @pytest.mark.parametrize("target", TARGETS)
 @pytest.mark.parametrize("M,N,block_M,block_N,dtype,use_vid", boundary_configs)
-@pytest.mark.a2a3_device
 def test_boundary(M, N, block_M, block_N, dtype, use_vid, target):
     run_test_boundary(M, N, block_M, block_N, dtype, use_vid, target)
 
@@ -414,7 +409,6 @@ tail_configs = [
     ["float", pytest.param("float16", marks=pytest.mark.low_priority)],
 )
 @pytest.mark.parametrize("M,N,block_M,block_N", tail_configs)
-@pytest.mark.a2a3_device
 def test_tail_identity(M, N, block_M, block_N, dtype, target):
     run_test_tail_identity(M, N, block_M, block_N, dtype, use_vid=False, target=target)
 
@@ -422,7 +416,6 @@ def test_tail_identity(M, N, block_M, block_N, dtype, target):
 @pytest.mark.parametrize("target", TARGETS)
 @pytest.mark.parametrize("dtype", ["float"])
 @pytest.mark.parametrize("M,N,block_M,block_N", [(100, 100, 64, 64)])
-@pytest.mark.a2a3_device
 def test_tail_identity_vid(M, N, block_M, block_N, dtype, target):
     """Tail + vid split: the per-vid row offset ``bx*block_M + vid*rows`` must
     also be clamped by the framework for the last block.  One config/dtype is
@@ -444,7 +437,6 @@ def test_tail_identity_vid(M, N, block_M, block_N, dtype, target):
     ],
 )
 @pytest.mark.parametrize("M,N,block_M,block_N", [(50, 50, 64, 64)])
-@pytest.mark.a2a3_device
 def test_tail_pad_full(M, N, block_M, block_N, dtype, pad_value, pad_torch):
     run_test_tail_pad_full(M, N, block_M, block_N, dtype, pad_value, pad_torch)
 
@@ -524,7 +516,6 @@ def run_test_high4d(B, H, M, N, block_M, block_N, dtype, target):
         pytest.param(3, 128, 256, 64, 128, "float16", marks=pytest.mark.low_priority),
     ],
 )
-@pytest.mark.a2a3_device
 def test_high3d(B, M, N, block_M, block_N, dtype, target):
     run_test_high3d(B, M, N, block_M, block_N, dtype, target)
 
@@ -537,7 +528,6 @@ def test_high3d(B, M, N, block_M, block_N, dtype, target):
         pytest.param(2, 4, 128, 128, 64, 64, "float16", marks=pytest.mark.low_priority),
     ],
 )
-@pytest.mark.a2a3_device
 def test_high4d(B, H, M, N, block_M, block_N, dtype, target):
     run_test_high4d(B, H, M, N, block_M, block_N, dtype, target)
 
@@ -597,10 +587,10 @@ def run_test_dyn_m(N, block_M, block_N, dtype, target, M_values):
     # (thread-safe) but NOT file-level locking (process-safe), so pytest-xdist
     # workers racing on the same disk cache entry can corrupt params.pkl and
     # lose the dynamic_symbolic_map -> KeyError: 'Unfounded symbolic var: M'.
-    with patch.object(CacheState, "_enabled", False):
-        func = dyn_m_copy(N, block_M, block_N, dtype)
-        func = tilelang.compile(func, out_idx=[-1], pass_configs=VEC_PASS_CONFIGS, target=target)
-
+    tilelang.disable_cache()
+    func = dyn_m_copy(N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=VEC_PASS_CONFIGS, target=target)
+    tilelang.enable_cache()
     td = _torch_dtype(dtype)
     for M in M_values:
         if dtype in ("int32", "int16"):
@@ -617,10 +607,10 @@ def run_test_dyn_mn(block_M, block_N, dtype, target, shapes):
     # Same cache-disable rationale as run_test_dyn_m: two symbolic vars (M+N)
     # make the dynamic_symbolic_map even more sensitive to cross-process
     # cache corruption under pytest-xdist.
-    with patch.object(CacheState, "_enabled", False):
-        func = dyn_mn_copy(block_M, block_N, dtype)
-        func = tilelang.compile(func, out_idx=[-1], pass_configs=VEC_PASS_CONFIGS, target=target)
-
+    tilelang.disable_cache()
+    func = dyn_mn_copy(block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=VEC_PASS_CONFIGS, target=target)
+    tilelang.enable_cache()
     td = _torch_dtype(dtype)
     for M, N in shapes:
         a = torch.randn(M, N, dtype=td).npu()
@@ -634,14 +624,12 @@ def run_test_dyn_mn(block_M, block_N, dtype, target, shapes):
     "dtype",
     ["float", pytest.param("float16", marks=pytest.mark.low_priority)],
 )
-@pytest.mark.a2a3_device
 def test_dyn_m(target, dtype):
     # N divisible by block_N; M spans divisible, non-divisible, and single-block.
     run_test_dyn_m(128, 64, 64, dtype, target, M_values=[64, 128, 192, 50])
 
 
 @pytest.mark.parametrize("target", TARGETS)
-@pytest.mark.a2a3_device
 def test_dyn_m_single_block(target):
     """Dynamic M with a single output block (M <= block_M): the grid is 1 and
     the load clamp handles M < block_M entirely at runtime."""
@@ -656,7 +644,6 @@ def test_dyn_m_single_block(target):
         pytest.param([(50, 70), (200, 150)], marks=pytest.mark.low_priority),  # both dims non-divisible
     ],
 )
-@pytest.mark.a2a3_device
 def test_dyn_mn(target, shapes):
     run_test_dyn_mn(64, 64, "float", target, shapes)
 
@@ -788,7 +775,6 @@ def run_test_gm_slice_offset_load(M, N, block_M, block_N, dtype, target):
         pytest.param(256, 256, 64, 64, "int32", marks=pytest.mark.low_priority),
     ],
 )
-@pytest.mark.a2a3_device
 def test_gm_slice_to_ub(M, N, block_M, block_N, dtype, target):
     run_test_gm_slice_to_ub(M, N, block_M, block_N, dtype, target)
 
@@ -801,7 +787,6 @@ def test_gm_slice_to_ub(M, N, block_M, block_N, dtype, target):
         pytest.param(32, 32, 32, 32, "bfloat16", marks=pytest.mark.low_priority),
     ],
 )
-@pytest.mark.a2a3_device
 def test_ub_subregion_copy(M, N, block_M, block_N, dtype, target):
     run_test_ub_subregion_copy(M, N, block_M, block_N, dtype, target)
 
@@ -813,7 +798,6 @@ def test_ub_subregion_copy(M, N, block_M, block_N, dtype, target):
         (256, 256, 64, 64, "float"),
     ],
 )
-@pytest.mark.a2a3_device
 def test_gm_slice_offset_load(M, N, block_M, block_N, dtype, target):
     run_test_gm_slice_offset_load(M, N, block_M, block_N, dtype, target)
 
@@ -949,7 +933,6 @@ def run_test_load_compute_abs(M, N, block_M, block_N, dtype, target):
         pytest.param(128, 128, 64, 64, "int32", marks=pytest.mark.low_priority),
     ],
 )
-@pytest.mark.a2a3_device
 def test_load_compute_add(M, N, block_M, block_N, dtype, target):
     run_test_load_compute_add(M, N, block_M, block_N, dtype, target)
 
@@ -962,7 +945,6 @@ def test_load_compute_add(M, N, block_M, block_N, dtype, target):
         pytest.param(64, 64, 64, 64, "int32", marks=pytest.mark.low_priority),
     ],
 )
-@pytest.mark.a2a3_device
 def test_load_compute_scale(M, N, block_M, block_N, dtype, target):
     run_test_load_compute_scale(M, N, block_M, block_N, dtype, target)
 
@@ -974,7 +956,6 @@ def test_load_compute_scale(M, N, block_M, block_N, dtype, target):
         (128, 128, 64, 64, "float"),
     ],
 )
-@pytest.mark.a2a3_device
 def test_load_compute_abs(M, N, block_M, block_N, dtype, target):
     run_test_load_compute_abs(M, N, block_M, block_N, dtype, target)
 
@@ -1063,7 +1044,6 @@ row_grid_configs = [
 
 @pytest.mark.parametrize("target", TARGETS)
 @pytest.mark.parametrize("M,N,block_N,dtype,use_vid", row_grid_configs)
-@pytest.mark.a2a3_device
 def test_row_grid(M, N, block_N, dtype, use_vid, target):
     run_test_row_grid(M, N, block_N, dtype, use_vid, target)
 
@@ -1079,7 +1059,6 @@ col_grid_configs = [
 
 @pytest.mark.parametrize("target", TARGETS)
 @pytest.mark.parametrize("M,N,block_M,dtype,use_vid", col_grid_configs)
-@pytest.mark.a2a3_device
 def test_col_grid(M, N, block_M, dtype, use_vid, target):
     run_test_col_grid(M, N, block_M, dtype, use_vid, target)
 
@@ -1102,7 +1081,6 @@ pad_ext_configs = [
 
 
 @pytest.mark.parametrize("M,N,block_M,block_N,dtype,pad_value,pad_torch", pad_ext_configs)
-@pytest.mark.a2a3_device
 def test_pad_value_extended(M, N, block_M, block_N, dtype, pad_value, pad_torch):
     """Verify pad_value filling for 0.0, 1.0, 3.14, and -5.0 across float and
     float16, on the ascendc target only (PTO emits PadValue::Null)."""
@@ -1174,7 +1152,6 @@ def run_test_multi_buffer_fused(M, N, block_M, block_N, dtype, target):
         pytest.param(64, 64, 64, 64, "int32", marks=pytest.mark.low_priority),
     ],
 )
-@pytest.mark.a2a3_device
 def test_multi_buffer_fused(M, N, block_M, block_N, dtype, target):
     run_test_multi_buffer_fused(M, N, block_M, block_N, dtype, target)
 

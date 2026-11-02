@@ -3,7 +3,6 @@ import tilelang
 import tilelang.ascend.a2a3.language as T
 from tilelang.ascend.a2a3 import kernel_cache
 
-pytestmark = pytest.mark.usefixtures("isolated_a2a3_cache")
 import torch
 import argparse
 
@@ -368,7 +367,6 @@ BLOCK_M = {"float16": 128, "float32": 32}
 BLOCK_N = {"float16": 256, "float32": 256}
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize(
     "dtype",
     [
@@ -401,7 +399,6 @@ def test_select_tensor_op(dtype, target, shape):
         run_test_mod2(M, N, BLOCK_M[dtype], BLOCK_N[dtype], dtype, target)
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize(
     "dtype",
     [
@@ -434,7 +431,6 @@ def test_select_scalar_op(dtype, target, shape):
         run_test_mod1(M, N, BLOCK_M[dtype], BLOCK_N[dtype], dtype, target)
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.low_priority
 @pytest.mark.parametrize("dtype", ["float16", "float32"])
 @pytest.mark.parametrize(
@@ -458,15 +454,6 @@ if __name__ == "__main__":
     parser.add_argument("--dtype", type=str, choices=["float16", "float32"], default="float16")
     parser.add_argument("--target", type=str, choices=["ascendc", "pto"], default="ascendc")
     args = parser.parse_args()
-
-    import os
-    from pathlib import Path
-
-    if not os.environ.get("TILELANG_CACHE_DIR"):
-        raise RuntimeError("Set a dedicated TILELANG_CACHE_DIR before running this cache-clearing CLI")
-    if Path(tilelang.env.TILELANG_CACHE_DIR).resolve() != Path(os.environ["TILELANG_CACHE_DIR"]).resolve():
-        raise RuntimeError("TILELANG_CACHE_DIR conflicts with the active cache-directory override; clear was refused")
-    import torch_npu  # noqa: F401
 
     # Align N to a multiple of 8
     final_n = args.n if args.n % 8 == 0 else (args.n // 8 + 1) * 8

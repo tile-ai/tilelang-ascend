@@ -27,22 +27,13 @@ pass_configs = {
 # Python-side validation that might front-run the backend check.
 COMPILE_ERRORS = (tvm.TVMError, ValueError)
 
-pytestmark = pytest.mark.a2a3_native
 
 TARGET = {"kind": "ascend", "arch": "dav-2201", "model": "A3", "keys": ["ascendc", "ascend"]}
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(isolated_a2a3_cache):
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
     """Clear tilelang cache before tests."""
-    from tilelang.ascend.a2a3 import compiler
-
-    # Public compile freezes its toolchain before lowering. The invalid loop
-    # must fail before invoking it, but discovery still needs the source SDK.
-    try:
-        compiler.resolve_compile_config(tvm.target.Target(TARGET))
-    except FileNotFoundError as error:
-        pytest.skip(f"requires the actual AscendC toolchain configuration: {error}")
     kernel_cache.clear_cache()
     yield
 

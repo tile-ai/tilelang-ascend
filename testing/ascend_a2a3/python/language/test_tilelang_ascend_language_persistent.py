@@ -10,18 +10,8 @@ from tvm import tirx as tir
 
 WAVE_SIZE = 20
 
-pytestmark = [
-    pytest.mark.a2a3_native,
-    pytest.mark.skipif(
-        tvm.get_global_func("tl.A2A3Persistent", allow_missing=True) is None,
-        reason="requires the native A2/A3 Persistent producer built with USE_ASCEND=ON",
-    ),
-]
 
 
-@pytest.fixture(autouse=True)
-def _source_platform(monkeypatch):
-    monkeypatch.setenv("TL_PLATFORM", "A3")
 
 
 def _persistent_kernel(rows, cols=2):

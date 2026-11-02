@@ -2,27 +2,7 @@ import pytest
 
 import tilelang
 import tilelang.ascend.a2a3.language as T
-from tilelang.ascend.a2a3 import compiler
 from tilelang import tvm
-
-
-pytestmark = pytest.mark.a2a3_native
-
-
-@pytest.fixture(autouse=True)
-def source_toolchain(monkeypatch, isolated_a2a3_cache):
-    # These original tests inspect source through public compile(), with a
-    # confirmed representative A3 target and no device execution.
-    monkeypatch.setenv("TL_PLATFORM", "A3")
-    monkeypatch.setenv("TL_RUN_MODE", "npu")
-    target = tvm.target.Target({"kind": "ascend", "arch": "dav-2201", "model": "A3", "keys": ["pto", "ascend"]})
-    try:
-        compiler.resolve_compile_config(target)
-    except FileNotFoundError as error:
-        pytest.skip(f"requires the actual PTO/CANN toolchain and resources: {error}")
-    torch_npu = pytest.importorskip("torch_npu", reason="Cython adapter requires Torch NPU device-type registration")
-    for name in ("current_device", "current_stream", "synchronize"):
-        monkeypatch.setattr(torch_npu.npu, name, lambda *args, **kwargs: pytest.fail("source-only compile must not execute NPU"))
 
 
 pass_configs = {

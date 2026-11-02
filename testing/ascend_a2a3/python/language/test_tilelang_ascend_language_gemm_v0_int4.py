@@ -29,11 +29,9 @@ PASS_CONFIGS = {
 # =============================================================================
 
 
-@pytest.fixture(autouse=True)
-def clear_cache(monkeypatch):
-    from tilelang.env import CacheState
-
-    monkeypatch.setattr(CacheState, "_enabled", False)
+@pytest.fixture(scope="session", autouse=True)
+def clear_cache():
+    tilelang.disable_cache()
     yield
 
 
@@ -114,7 +112,10 @@ def _gemm_v0_int4_kernel(M, N, K, block_M, block_N, K_L1):
     return main
 
 
-requires_npu = pytest.mark.a2a3_device
+requires_npu = pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="W4A4 correctness requires an Ascend NPU runtime",
+)
 
 requires_torch_int4 = pytest.mark.skipif(
     not hasattr(torch, "int4"),

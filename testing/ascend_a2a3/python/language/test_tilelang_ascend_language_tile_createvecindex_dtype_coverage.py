@@ -31,17 +31,14 @@ Single-backend: float16 (ascendc only), uint16/uint32 (pto only)
 import pytest
 import tilelang
 import tilelang.ascend.a2a3.language as T
-from tilelang.env import CacheState
 import torch
 
 
-@pytest.fixture(autouse=True)
-def _disable_cache(monkeypatch, request):
-    # Preserve the source's compile-every-call policy without changing the
-    # caller's raw cache state on exit. Device cases use the actual platform.
-    monkeypatch.setattr(CacheState, "_enabled", False)
-    if request.node.get_closest_marker("a2a3_device") is None:
-        monkeypatch.setenv("TL_PLATFORM", "A3")
+@pytest.fixture(scope="module", autouse=True)
+def _disable_cache():
+    tilelang.disable_cache()
+    yield
+    tilelang.enable_cache()
 
 
 PASS_CONFIGS = {
@@ -84,7 +81,6 @@ def make_ref(dtype_str, first_value, count):
     return ref
 
 
-@pytest.mark.a2a3_device
 @pytest.mark.parametrize(
     "dtype",
     [
@@ -112,7 +108,6 @@ def test_createvecindex_1d(dtype, target):
     torch.testing.assert_close(c, ref, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize(
     "dtype,target",
     [
@@ -140,7 +135,6 @@ def test_createvecindex_unsupported_dtype_raises(dtype, target):
         tilelang.compile(main, out_idx=[-1], pass_configs=PASS_CONFIGS, target=target)
 
 
-@pytest.mark.a2a3_device
 def test_create_vec_index_snake_case_alias():
     """snake_case alias must accept first_value= keyword argument."""
 

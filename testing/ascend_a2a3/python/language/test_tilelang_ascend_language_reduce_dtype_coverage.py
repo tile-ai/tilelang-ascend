@@ -13,12 +13,11 @@ import tilelang.ascend.a2a3.language as T
 import torch
 
 
-@pytest.fixture(autouse=True)
-def _disable_cache(monkeypatch):
-    from tilelang.env import CacheState
-
-    monkeypatch.setattr(CacheState, "_enabled", False)
+@pytest.fixture(scope="module", autouse=True)
+def _disable_cache():
+    tilelang.disable_cache()
     yield
+    tilelang.enable_cache()
 
 
 pass_configs = {
@@ -83,7 +82,10 @@ def _make_clear_false_2d_kernel(op, dtype, init_value, M=16, N=128):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_device
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="reduce correctness requires an Ascend NPU runtime",
+)
 @pytest.mark.parametrize(
     "op", ["sum", pytest.param("max", marks=pytest.mark.low_priority), pytest.param("min", marks=pytest.mark.low_priority)]
 )
@@ -136,7 +138,6 @@ def test_reduce_clear_false_2d(op, dtype, target):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize(
     "op", ["sum", pytest.param("max", marks=pytest.mark.low_priority), pytest.param("min", marks=pytest.mark.low_priority)]
 )
@@ -155,7 +156,6 @@ def test_reduce_unsupported_dtype(op, dtype, target):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_reduce_out_shape_mismatch(target):
     """out shape not matching reduced/keepdim shape should raise DiagnosticError."""
@@ -174,7 +174,6 @@ def test_reduce_out_shape_mismatch(target):
         tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.low_priority
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_dim_not_int(target):
@@ -194,7 +193,6 @@ def test_reduce_dim_not_int(target):
         tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.low_priority
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_real_shape_wrong_length(target):
@@ -214,7 +212,6 @@ def test_reduce_real_shape_wrong_length(target):
         tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.low_priority
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_real_shape_exceed_extent(target):
@@ -234,7 +231,6 @@ def test_reduce_real_shape_exceed_extent(target):
         tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.low_priority
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_1d_invalid_dim(target):
@@ -254,7 +250,6 @@ def test_reduce_1d_invalid_dim(target):
         tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_reduce_2d_invalid_dim(target):
     """2D buffer with dim=2 should raise DiagnosticError (only 0/1/-1/-2 valid)."""
@@ -273,7 +268,6 @@ def test_reduce_2d_invalid_dim(target):
         tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
 
 
-@pytest.mark.a2a3_native
 @pytest.mark.low_priority
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_reduce_rank_too_high(target):
