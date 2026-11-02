@@ -226,8 +226,7 @@ class KernelCacheRecoveryMixin(_Files):
         if "ascend" not in tvm.target.Target.list_kinds():
             self.skipTest("requires the actual USE_ASCEND=ON Target kind for strict A2/A3 context")
         for dialect in ("ascendc", "pto"):
-            target = {"kind": "ascend", "arch": "dav-2201", "model": "A3", "keys": [dialect, "ascend"]}
-            args = CompileArgs(target=target, execution_backend="cython", out_idx=[0]).freeze()
+            args = CompileArgs(target=dialect, execution_backend="cython", out_idx=[0]).freeze()
             entry = self.result_path(key + "_" + dialect)
             lib = self.strict_entry(entry, args._frozen.context)
 

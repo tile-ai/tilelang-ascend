@@ -72,26 +72,33 @@ def _get_soc_name() -> str | None:
     return None
 
 
-def detect_a2a3_arch() -> str | None:
-    """Select A2/A3 only when requested or detected; unknown devices use A5."""
-    env_platform = os.environ.get("TL_PLATFORM")
-    if env_platform:
-        platform = env_platform.strip().upper()
-        if platform in ("A2", "A3"):
-            return "dav-2201"
-        if platform == "A5":
-            return None
-        raise ValueError(f"Invalid TL_PLATFORM={env_platform!r}; expected A2, A3, or A5")
+def determine_platform(platform: str = "auto") -> str | None:
+    """Resolve A2/A3/A5 from an explicit platform, environment, or known SoC."""
+    automatic = platform == "auto"
+    requested = os.environ.get("TL_PLATFORM") if automatic else platform
+    if requested or not automatic:
+        value = requested.strip().upper()
+        if value in ("A2", "A3", "A5"):
+            return value
+        source = "TL_PLATFORM" if automatic else "platform"
+        raise ValueError(f"Invalid {source}={requested!r}; expected A2, A3, or A5")
 
     soc_name = _get_soc_name()
     if soc_name is None:
         return None
     soc_name = soc_name.upper()
     if "950" in soc_name or "910_95" in soc_name:
-        return None
-    if any(model in soc_name for model in ("910B", "910C", "910_93")):
-        return "dav-2201"
+        return "A5"
+    if "910B" in soc_name:
+        return "A2"
+    if "910C" in soc_name or "910_93" in soc_name:
+        return "A3"
     return None
+
+
+def detect_a2a3_arch() -> str | None:
+    """Select the A2/A3 architecture for a confirmed A2/A3 platform."""
+    return "dav-2201" if determine_platform() in ("A2", "A3") else None
 
 
 def _detected_ascend_target(*, pto: bool = False) -> Target:

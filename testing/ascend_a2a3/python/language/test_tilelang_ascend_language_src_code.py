@@ -2,13 +2,6 @@ import pytest
 
 import tilelang
 import tilelang.ascend.a2a3.language as T
-from tvm.target import Target
-
-
-
-def _source_target(dialect):
-    # Explicit representative A2 target: these are source tests, with no NPU probe.
-    return Target({"kind": "ascend", "arch": "dav-2201", "model": "A2", "keys": [dialect, "ascend"]})
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -32,7 +25,7 @@ def test_src_code_basic_injection():
                 T._src_code("// Injected by _src_code test")
                 T.copy(a_ub, B[cid * 128])
 
-    mod = tilelang.lower(main, target=_source_target("ascendc"))
+    mod = tilelang.lower(main, target="ascendc")
     source = mod.kernel_source
 
     assert "// Injected by _src_code test" in source, f"Source code did not contain injected string.\nSource:\n{source}"
@@ -53,7 +46,7 @@ def test_src_code_multiline():
                 T._src_code("int var1 = 0;\nint var2 = 1;\n// end of block")
                 T.copy(a_ub, B[cid * 128])
 
-    mod = tilelang.lower(main, target=_source_target("ascendc"))
+    mod = tilelang.lower(main, target="ascendc")
     source = mod.kernel_source
 
     assert "int var1 = 0;" in source
@@ -76,7 +69,7 @@ def test_src_code_empty_string():
                 T._src_code("")
                 T.copy(a_ub, B[cid * 128])
 
-    mod = tilelang.lower(main, target=_source_target("ascendc"))
+    mod = tilelang.lower(main, target="ascendc")
     source = mod.kernel_source
 
     assert "main_kernel" in source.lower() or "main" in source.lower()
@@ -99,7 +92,7 @@ def test_src_code_multiple_injections():
                 T.copy(a_ub, B[cid * 128])
                 T._src_code("// MARKER_C")
 
-    mod = tilelang.lower(main, target=_source_target("ascendc"))
+    mod = tilelang.lower(main, target="ascendc")
     source = mod.kernel_source
 
     assert "// MARKER_A" in source
@@ -126,7 +119,7 @@ def test_src_code_pto_backend():
                 T._src_code("// PTO_injected_marker_12345")
                 T.copy(a_ub, B[cid * 128])
 
-    mod = tilelang.lower(main, target=_source_target("pto"))
+    mod = tilelang.lower(main, target="pto")
     source = mod.kernel_source
 
     assert "// PTO_injected_marker_12345" in source, f"PTO source did not contain injected string.\nSource:\n{source}"

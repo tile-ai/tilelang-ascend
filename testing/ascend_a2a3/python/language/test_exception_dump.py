@@ -232,9 +232,8 @@ def test_exception_dump_callback_via_hw_exception(target, tmp_path):
 @pytest.mark.parametrize("dialect", ["ascendc", "pto"])
 def test_exception_dump_source_registration(dialect):
     """Inspect the real source without provoking a hardware exception."""
-    target = {"kind": "ascend", "arch": "dav-2201", "model": "A2", "keys": [dialect, "ascend"]}
     with tvm.transform.PassContext(config=PASS_AUTO):
-        artifact = tilelang.lower(_make_kernel(), target=target)
+        artifact = tilelang.lower(_make_kernel(), target=dialect)
     source = artifact.kernel_source
     assert '#include "ascend/a2a3/tl_templates/ascend/exception_dump.h"' in source
     assert "tilelang_register_exception_dump_callback();" in source

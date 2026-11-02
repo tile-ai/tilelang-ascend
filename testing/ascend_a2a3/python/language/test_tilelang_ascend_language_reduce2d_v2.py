@@ -206,7 +206,7 @@ def test_fp32_row_reduce_tmp_arena_sized_for_each_vector(explicit):
 
 def _vid_workspace_stages(func):
     mod = tvm.IRModule.from_expr(func)
-    target = _target("ascendc", "A3")
+    target = tvm.target.Target({"kind": "ascend", "arch": "dav-2201"})
     mod = _materialize_launch(mod, target)
     mod = A2A3Transform.AscendInferBufferScope()(mod)
     before = A2A3Transform.InjectTmpBuffer(target, plan_vid_reduction=True)(mod)
@@ -238,7 +238,7 @@ def test_fp32_row_reduce_vid_workspace_compensates_for_later_split(m, n, threads
 
 def test_fp32_row_reduce_standalone_injection_does_not_assume_vid_split():
     mod = tvm.IRModule.from_expr(_vid_reduction_scratch_guard_kernel(explicit=False))
-    target = _target("ascendc", "A3")
+    target = tvm.target.Target({"kind": "ascend", "arch": "dav-2201"})
     mod = _materialize_launch(mod, target)
     injected = A2A3Transform.InjectTmpBuffer(target)(mod)
     assert _reduce_workspace_bytes(injected["main"]) == [288]

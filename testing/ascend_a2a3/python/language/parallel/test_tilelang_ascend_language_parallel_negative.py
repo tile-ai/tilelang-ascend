@@ -28,7 +28,7 @@ pass_configs = {
 COMPILE_ERRORS = (tvm.TVMError, ValueError)
 
 
-TARGET = {"kind": "ascend", "arch": "dav-2201", "model": "A3", "keys": ["ascendc", "ascend"]}
+TARGET = "ascendc"
 
 
 @pytest.fixture(scope="session", autouse=True)

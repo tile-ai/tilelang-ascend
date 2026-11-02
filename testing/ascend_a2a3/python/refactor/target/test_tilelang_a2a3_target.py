@@ -22,32 +22,36 @@ _requires_ascend_kind = pytest.mark.skipif(not _ASCEND_KIND_AVAILABLE, reason="T
 def test_platform_override(monkeypatch, platform, expected_arch):
     monkeypatch.setenv("TL_PLATFORM", platform)
     monkeypatch.setattr(ascend_target, "_get_soc_name", lambda: None)
+    assert ascend_target.determine_platform() == platform.upper()
     assert ascend_target.detect_a2a3_arch() == expected_arch
 
 
 def test_invalid_platform_override_is_actionable(monkeypatch):
     monkeypatch.setenv("TL_PLATFORM", "unknown")
     with pytest.raises(ValueError, match="Invalid TL_PLATFORM.*expected A2, A3, or A5"):
+        ascend_target.determine_platform()
+    with pytest.raises(ValueError, match="Invalid TL_PLATFORM.*expected A2, A3, or A5"):
         determine_target("ascend", return_object=True)
 
 
 @pytest.mark.parametrize(
-    ("soc", "expected_arch"),
+    ("soc", "expected_platform", "expected_arch"),
     [
-        ("Ascend910B1", "dav-2201"),
-        ("Ascend910C", "dav-2201"),
-        ("Ascend910_9392", "dav-2201"),
-        ("Ascend950PR_9599", None),
-        ("Ascend910_9599", None),
-        ("unknown", None),
-        ("Ascend910Z", None),
-        ("Ascend910A", None),
-        (None, None),
+        ("Ascend910B1", "A2", "dav-2201"),
+        ("Ascend910C", "A3", "dav-2201"),
+        ("Ascend910_9392", "A3", "dav-2201"),
+        ("Ascend950PR_9599", "A5", None),
+        ("Ascend910_9599", "A5", None),
+        ("unknown", None, None),
+        ("Ascend910Z", None, None),
+        ("Ascend910A", None, None),
+        (None, None, None),
     ],
 )
-def test_soc_detection(monkeypatch, soc, expected_arch):
+def test_soc_detection(monkeypatch, soc, expected_platform, expected_arch):
     monkeypatch.delenv("TL_PLATFORM", raising=False)
     monkeypatch.setattr(ascend_target, "_get_soc_name", lambda: soc)
+    assert ascend_target.determine_platform() == expected_platform
     assert ascend_target.detect_a2a3_arch() == expected_arch
 
 

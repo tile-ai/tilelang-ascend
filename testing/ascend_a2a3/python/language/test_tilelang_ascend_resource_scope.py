@@ -11,7 +11,7 @@ from tvm.target import Target
 
 
 def _target(dialect):
-    return Target({"kind": "ascend", "arch": "dav-2201", "model": "A3", "keys": [dialect, "ascend"]})
+    return Target({"kind": "ascend", "arch": "dav-2201", "keys": [dialect, "ascend"]})
 
 
 def _bind_body(variable, value, body):
@@ -88,19 +88,19 @@ def test_default_combine_lowers_vector_kernel_with_optional_scope(explicit_scope
                 T.copy(b, B[vid, :])
 
     with tilelang.transform.PassContext():
-        default_source = tilelang.lower(main, target=_target(target)).kernel_source
+        default_source = tilelang.lower(main, target=target).kernel_source
     with tilelang.transform.PassContext(config={"tl.ascend_auto_cv_combine": True}):
-        explicit_source = tilelang.lower(main, target=_target(target)).kernel_source
+        explicit_source = tilelang.lower(main, target=target).kernel_source
     assert default_source == explicit_source
     add = "AscendC::Add<float, false>" if target == "ascendc" else "TADD("
     assert default_source.count(add) == 1
     with tilelang.transform.PassContext(config={"tl.ascend_auto_cv_combine": False}):
         if explicit_scope:
-            manual_source = tilelang.lower(main, target=_target(target)).kernel_source
+            manual_source = tilelang.lower(main, target=target).kernel_source
             assert manual_source.count(add) == 1
         else:
             with pytest.raises(Exception, match="must be inside T.Scope"):
-                tilelang.lower(main, target=_target(target))
+                tilelang.lower(main, target=target)
 
 
 def test_default_combine_preserves_explicit_owners_and_rejects_conflicts():
@@ -207,7 +207,7 @@ def test_default_combine_keeps_dependencies_across_explicit_vector_blocks(produc
 
     for enabled in [False, True]:
         with tilelang.transform.PassContext(config={sync_key: enabled}):
-            source = tilelang.lower(main, target=_target("ascendc")).kernel_source
+            source = tilelang.lower(main, target="ascendc").kernel_source
         assert (expected in source) == enabled
         if enabled and producer == "copy":
             assert source.count("HardEvent::MTE2_V") == 2  # one matched Set/Wait
@@ -227,7 +227,7 @@ def test_default_combine_does_not_use_local_events_for_cross_core_dependencies(s
                 T.copy(a, B)
 
     with tilelang.transform.PassContext(config={sync_key: True}):
-        source = tilelang.lower(main, target=_target("ascendc")).kernel_source
+        source = tilelang.lower(main, target="ascendc").kernel_source
     # A Cube scalar write requires a cross-core protocol to publish it to
     # Vector; a local S->MTE2 event must never be used as that protocol.
     assert "HardEvent::S_MTE2" not in source
@@ -373,7 +373,7 @@ def test_pipeline_with_nested_serial_loop_lowers_after_cv_split(dynamic):
         "tl.ascend_memory_planning": True,
     }
     with tilelang.transform.PassContext(config=config):
-        source = tilelang.lower(main, target=_target("ascendc")).kernel_source
+        source = tilelang.lower(main, target="ascendc").kernel_source
     assert "AscendC::Add<float, false>" in source
     assert "copy_gm_to_ub" in source and "copy_ub_to_gm" in source
     if dynamic:
@@ -420,7 +420,7 @@ def test_explicit_blocks_keep_separate_cpp_local_scopes():
                 T._src_code("int scalar_value = 2;")
                 T._src_code("A.SetValue(1, scalar_value);")
 
-    source = tilelang.lower(main, target=_target("ascendc")).kernel_source
+    source = tilelang.lower(main, target="ascendc").kernel_source
     first = source.index("int scalar_value = 1;")
     second = source.index("int scalar_value = 2;")
     between = source[first:second]
@@ -440,7 +440,7 @@ def test_explicit_gm_dcci_reaches_both_codegen_paths():
                 T.tile.datacachecleanandinvalid_experiment(A, "SINGLE_CACHE_LINE", "CACHELINE_OUT")
 
     with tilelang.transform.PassContext(config={"tl.ascend_auto_sync": True}):
-        source = tilelang.lower(main, target=_target("ascendc")).kernel_source
+        source = tilelang.lower(main, target="ascendc").kernel_source
     assert source.count("DataCacheCleanAndInvalid") == 2
     assert "HardEvent::S_V" not in source
     assert "PipeBarrier<PIPE_S>" not in source

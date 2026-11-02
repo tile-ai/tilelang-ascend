@@ -21,7 +21,7 @@ PTO_UNSUPPORTED_WORKSPACE_OPS = {
 
 
 def _target(model: str):
-    return tvm.target.Target({"kind": "ascend", "arch": "dav-2201", "model": "A3", "keys": [model, "ascend"]})
+    return tvm.target.Target({"kind": "ascend", "arch": "dav-2201", "keys": [model, "ascend"]})
 
 
 def _materialize_launch(mod, target):

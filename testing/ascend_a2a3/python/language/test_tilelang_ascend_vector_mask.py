@@ -20,8 +20,6 @@ if get_global_func("tl.transform.A2A3AscendVectorInstructionSelection", allow_mi
 ASCENDC = Target({"kind": "ascend", "arch": "dav-2201", "keys": ["ascendc", "ascend"]})
 
 
-def _target(dialect, platform):
-    return Target({"kind": "ascend", "arch": "dav-2201", "model": platform, "keys": [dialect, "ascend"]})
 
 
 
@@ -593,7 +591,7 @@ def test_dynamic_normal_mask_and_repeat_preserve_exact_state(dtype, operation):
 
     body = tir.stmt_functor.ir_transform(template.body, None, replace, ["tirx.Call"])
     program = tir.PrimFunc([*template.params, length, repeat], body, buffer_map=template.buffer_map, attrs=template.attrs)
-    source = tilelang.lower(program, target=_target("ascendc", "A2")).kernel_source
+    source = tilelang.lower(program, target="ascendc").kernel_source
     assert "0xffffffffffffffffULL" in source
     assert "18446744073709551615" not in source
 
@@ -640,7 +638,7 @@ def test_fp16_narrow_reduce_retains_unsupported_case_rejections(width, clear, me
                 T.copy(out_ub, out)
 
     with pytest.raises(Exception, match=message):
-        tilelang.lower(main, target=_target("ascendc", "A2"))
+        tilelang.lower(main, target="ascendc")
 
 
 def test_mixed_scalar_buffers_are_specific_to_floating_divs_and_subs():
@@ -1062,7 +1060,7 @@ def test_codegen_accepts_conditional_scalar(operation):
 
     body = tir.stmt_functor.ir_transform(template.body, None, replace, ["tirx.Call"])
     program = tir.PrimFunc([*template.params, condition], body, buffer_map=template.buffer_map, attrs=template.attrs)
-    source = tilelang.lower(program, target=_target("ascendc", "A2")).kernel_source
+    source = tilelang.lower(program, target="ascendc").kernel_source
     assert "AscendC::" + operation.capitalize() + "<float," in source
     assert "condition" in source and "} else {" in source
 
@@ -1084,7 +1082,7 @@ def test_codegen_compiles_conditional_count():
     tilelang.disable_cache()
     tilelang.compile(
         main,
-        target=_target("ascendc", "A2"),
+        target="ascendc",
         out_idx=[1],
         pass_configs={tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True},
     )
@@ -1106,7 +1104,7 @@ def test_codegen_compiles_dynamic_gather_count():
                 T.copy(dst, out)
 
     tilelang.disable_cache()
-    tilelang.compile(main, target=_target("ascendc", "A2"), out_idx=[2], pass_configs={tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True})
+    tilelang.compile(main, target="ascendc", out_idx=[2], pass_configs={tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True})
 
 
 def test_codegen_compiles_dynamic_bilinear_mask():
@@ -1133,7 +1131,7 @@ def test_codegen_compiles_dynamic_bilinear_mask():
                 T.copy(dst, out)
 
     tilelang.disable_cache()
-    tilelang.compile(main, target=_target("ascendc", "A2"), out_idx=[3], pass_configs={tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True})
+    tilelang.compile(main, target="ascendc", out_idx=[3], pass_configs={tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True})
 
 
 @pytest.mark.parametrize("pipe,owner", [("PIPE_V", 1), ("PIPE_MTE1", 0)])
@@ -1152,13 +1150,13 @@ def test_resource_scope_checks_automatic_barriers(pipe, owner):
 
 def test_codegen_uses_raw_false_overloads_and_reuses_mask_state():
     tilelang.disable_cache()
-    normal = tilelang.compile(_two_adds, target=_target("ascendc", "A2"), out_idx=[2])
+    normal = tilelang.compile(_two_adds, target="ascendc", out_idx=[2])
     normal_source = normal.get_kernel_source()
     assert normal_source.count("AscendC::SetMaskNorm();") == 1
     assert normal_source.count("AscendC::SetVectorMask<uint8_t>") == 1
     assert normal_source.count("AscendC::Add<float, false>") == 2
 
-    counter = tilelang.compile(_counter_add, target=_target("ascendc", "A2"), out_idx=[2])
+    counter = tilelang.compile(_counter_add, target="ascendc", out_idx=[2])
     counter_source = counter.get_kernel_source()
     assert counter_source.count("AscendC::SetMaskCount();") == 1
     assert counter_source.count("AscendC::SetVectorMask<uint8_t>((uint64_t)0, (uint64_t)96);") == 1
@@ -1167,7 +1165,7 @@ def test_codegen_uses_raw_false_overloads_and_reuses_mask_state():
 
     conservative = tilelang.compile(
         _two_adds,
-        target=_target("ascendc", "A2"),
+        target="ascendc",
         out_idx=[2],
         pass_configs={tilelang.PassConfigKey.TL_ASCEND_VECTOR_MASK_REUSE: False},
     )
@@ -1181,12 +1179,12 @@ def test_codegen_uses_raw_false_overloads_and_reuses_mask_state():
         (_exp_experiment(1, 2048), "repeat stride=256 must fit uint8_t"),
     ]:
         with pytest.raises(Exception, match=message):
-            tilelang.lower(program, target=_target("ascendc", "A2"))
+            tilelang.lower(program, target="ascendc")
 
 
 def test_mixed_axpy_is_selected_but_reverse_mixed_has_no_fallback():
     tilelang.disable_cache()
-    kernel = tilelang.compile(_mixed_axpy, target=_target("ascendc", "A2"), out_idx=[2])
+    kernel = tilelang.compile(_mixed_axpy, target="ascendc", out_idx=[2])
     source = kernel.get_kernel_source()
     assert source.count("AscendC::Axpy<float, half, false>") == 1
 
@@ -1211,7 +1209,7 @@ def test_half_sum_keeps_float32_accumulation(dim, clear):
                 T.reduce_sum(a_ub, out_ub, dim=dim, clear=clear)
                 T.copy(out_ub, out)
 
-    source = tilelang.lower(main, target=_target("ascendc", "A2")).kernel_source
+    source = tilelang.lower(main, target="ascendc").kernel_source
     assert "tl::ascend::reduce_sum<float," in source
     assert source.count("AscendC::Cast(") == (2 if clear else 3)
     assert "reduce_sum_half" not in source
@@ -1223,5 +1221,5 @@ def test_target_scope_keeps_a5_and_pto_unchanged():
     assert "tl.ascend_add_raw" not in _names(a5.body)
 
     tilelang.disable_cache()
-    pto_source = tilelang.lower(_two_adds, target=_target("pto", "A2")).kernel_source
+    pto_source = tilelang.lower(_two_adds, target="pto").kernel_source
     assert "tl.ascend_add_raw" not in pto_source
