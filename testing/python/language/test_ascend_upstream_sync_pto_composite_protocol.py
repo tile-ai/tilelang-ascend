@@ -97,7 +97,7 @@ def _operation(call):
     return name
 
 
-def _program(function, k, *, legacy_protocol=False):
+def _program(function, k, *, legacy_protocol=False, outer_trip_count=1):
     queues = {pipe: [] for pipe in _PIPES}
     addresses, sizes = function.attrs["address_map"], function.attrs["size_map"]
     analyzer = tvm.arith.Analyzer()
@@ -126,14 +126,44 @@ def _program(function, k, *, legacy_protocol=False):
         # These are the real first-profile template parameters. Both buffers
         # use one hidden 4096-byte slot, including the two-chunk K256 case.
         assert call.args[0].value == f"gemm_v0<half, float, 16, 16, {k}, false, false, 128>"
-        assert integer(call.args[4], bindings) == 1
+        epoch = calculations["tl.ascend_gemm_v0"] - 1
+        clear = integer(call.args[4], bindings)
+        assert clear == int(epoch == 0)
         assert integer(call.args[5], bindings) == 16
         left, right, accumulator = (span(call.args[index], bindings) for index in (1, 2, 3))
         assert len(left) == len(right) == 16 * k * 2
         assert len(accumulator) == 16 * 16 * 4
         # M=N=16 makes each full 128-K fractal band contiguous in both
         # actual L1 operands. Each hidden slot spans exactly 4096 bytes.
-        _helper_commands(emit, k // 128, left, right, accumulator, legacy_protocol=legacy_protocol)
+        chunks = (k + 127) // 128
+
+        def emit_invocation(pipe, kind, **fields):
+            if outer_trip_count > 1:
+                reads = list(fields.get("reads", ()))
+                # The first internal MAD accumulates the preceding external
+                # invocation when clear is false. Match the exact prior epoch.
+                if kind == "mad" and fields["tag"] == ("c", 0) and not clear:
+                    reads.extend((byte, ("c", epoch - 1, chunks - 1)) for byte in accumulator)
+                fields["reads"] = tuple(
+                    (
+                        address,
+                        (tag[0], epoch, *tag[1:]) if len(tag) <= 2 else tag,
+                    )
+                    for address, tag in reads
+                )
+                if "tag" in fields:
+                    tag = fields["tag"]
+                    fields["tag"] = (tag[0], epoch, *tag[1:])
+            emit(pipe, kind, **fields)
+
+        _helper_commands(
+            emit_invocation,
+            chunks,
+            left,
+            right,
+            accumulator,
+            legacy_protocol=legacy_protocol,
+        )
 
     def visit(statement, bindings, resource=None):
         if isinstance(statement, tir.SeqStmt):
@@ -188,16 +218,21 @@ def _program(function, k, *, legacy_protocol=False):
                 pointer = call.args[2]
                 gemm = _gemms(function)[0]
                 label = "a" if pointer.args[1].same_as(gemm.args[1].args[1]) else "b"
-                emit("MTE2", "load", writes=span(pointer, bindings), tag=(label,))
+                epoch = calculations["tl.ascend_gemm_v0"]
+                tag = (label, epoch) if outer_trip_count > 1 else (label,)
+                emit("MTE2", "load", writes=span(pointer, bindings), tag=tag)
             elif operation == "tl.ascend_gemm_v0":
                 calculations[operation] += 1
                 helper(call, bindings)
             elif operation == "copy_l0c_to_gm":
                 calculations[operation] += 1
+                tag = ("c", (k + 127) // 128 - 1)
+                if outer_trip_count > 1:
+                    tag = ("c", outer_trip_count - 1, tag[1])
                 emit(
                     "FIX",
                     "store",
-                    reads=tuple((byte, ("c", k // 128 - 1)) for byte in span(call.args[1], bindings)),
+                    reads=tuple((byte, tag) for byte in span(call.args[1], bindings)),
                 )
             else:
                 raise AssertionError(f"unmodelled operation: {operation}")
@@ -205,7 +240,11 @@ def _program(function, k, *, legacy_protocol=False):
             raise AssertionError(f"unmodelled shell: {type(statement)}")
 
     visit(function.body, {})
-    assert calculations == {"copy_gm_to_l1": 2, "tl.ascend_gemm_v0": 1, "copy_l0c_to_gm": 1}
+    assert calculations == {
+        "copy_gm_to_l1": 2 * outer_trip_count,
+        "tl.ascend_gemm_v0": outer_trip_count,
+        "copy_l0c_to_gm": 1,
+    }
     return tuple(tuple(queues[pipe]) for pipe in _PIPES)
 
 

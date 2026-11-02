@@ -2,6 +2,7 @@
   "host": [
     "testing/python/language/test_ascend_upstream_sync_codegen_matrix.py",
     "testing/python/language/test_ascend_upstream_sync_composite.py",
+    "testing/python/language/test_ascend_upstream_sync_composite_invocation.py",
     "testing/python/language/test_ascend_upstream_sync_composite_loop.py",
     "testing/python/language/test_ascend_upstream_sync_cross_core.py",
     "testing/python/language/test_ascend_upstream_sync_cross_core_loop.py",
@@ -16,6 +17,7 @@
     "testing/python/language/test_ascend_upstream_sync_pipeline.py",
     "testing/python/language/test_ascend_upstream_sync_policy.py",
     "testing/python/language/test_ascend_upstream_sync_pto_composite.py",
+    "testing/python/language/test_ascend_upstream_sync_pto_composite_loop.py",
     "testing/python/language/test_ascend_upstream_sync_pto_composite_protocol.py",
     "testing/python/language/test_ascend_upstream_sync_runtime_contract.py",
     "testing/python/language/test_ascend_upstream_sync_runtime_contract_cache_compile.py",

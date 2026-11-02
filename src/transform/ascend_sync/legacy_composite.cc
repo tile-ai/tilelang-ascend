@@ -19,6 +19,7 @@
 #include <unordered_set>
 #include <utility>
 
+#include "../../tl_templates/ascend/gemm_layout.h"
 #include "../common/attr.h"
 #include "../common/pipeline_ring_provenance.h"
 #include "legacy_helper_type.h"
@@ -258,6 +259,17 @@ void ValidateAllocationFootprints(LegacyCompositeOperation &operation,
   }
 }
 
+void ValidateAscendCResources(const LegacyCompositeOperation &operation) {
+  const auto arguments = TemplateArguments(operation.call.get());
+  const ::tl::ascend::GemmV0Layout geometry(
+      operation.m, operation.n, operation.k, operation.k_l0,
+      ElementType(arguments[0]).bytes(), arguments[6] == "true",
+      arguments[5] == "true");
+  ICHECK(geometry.valid() && operation.buffers[2].required_bytes <= 131072)
+      << "Composite gemm_v0 physical L0A/L0B/L0C footprint exceeds capacity "
+         "or lacks aligned complete internal N tiles";
+}
+
 bool IsKLoopBarrier(const CallNode *call) {
   const bool manual = call->op.same_as(Op::Get("tl.ascend_pipe_barrier"));
   const bool automatic = call->op.same_as(Op::Get("tl.ascend_auto_barrier"));
@@ -390,23 +402,37 @@ void PtoPure(const PrimExpr &value) {
       << kPtoProfile << ": mutable or opaque expressions are unsupported";
 }
 
-PrimExpr PtoInteger(const PrimExpr &value, ProofAnalyzer *analyzer) {
-  PtoPure(value);
+// A failed optional normalization must leave the original control intact.
+// Mandatory helper audits use the same checker and retain a precise diagnostic.
+bool TryPtoInteger(const PrimExpr &value, ProofAnalyzer *analyzer,
+                   const char **failure) {
+  auto reject = [&](const char *message) {
+    *failure = message;
+    return false;
+  };
+  if (!value.defined() || SideEffect(value) > CallEffectKind::kPure)
+    return reject("mutable or opaque expressions are unsupported");
   const DataType dtype = value.dtype();
-  ICHECK(dtype.is_scalar() && !dtype.is_bool() &&
-         ((dtype.is_int() && dtype.bits() <= 64) ||
-          (dtype.is_uint() && dtype.bits() <= 32)))
-      << kPtoProfile << ": requires a value-preserving scalar index";
-  ICHECK(!ContainsUnsignedWrappingArithmetic(value))
-      << kPtoProfile << ": wrapping unsigned index arithmetic is unsupported";
-  // Prove intermediate signed arithmetic representable before using
-  // mathematical address bounds. This prevents overflow/cancellation from
-  // manufacturing a seemingly in-range final pointer.
+  if (!dtype.is_scalar() || dtype.is_bool() ||
+      !((dtype.is_int() && dtype.bits() <= 64) ||
+        (dtype.is_uint() && dtype.bits() <= 32)))
+    return reject("requires a value-preserving scalar index");
+  if (ContainsUnsignedWrappingArithmetic(value))
+    return reject("wrapping unsigned index arithmetic is unsupported");
+  bool valid = true;
   PostOrderVisit(value, [&](const ObjectRef &node) {
+    if (!valid)
+      return;
     const auto *expression = node.as<PrimExprNode>();
     if (!expression || expression->dtype.is_bool() ||
         (!expression->dtype.is_int() && !expression->dtype.is_uint()))
       return;
+    const DataType type = expression->dtype;
+    const int bits = type.bits();
+    if (!type.is_scalar() || bits > (type.is_uint() ? 32 : 64)) {
+      valid = reject("requires a value-preserving scalar index");
+      return;
+    }
     PrimExpr divisor;
     if (const auto *operation = node.as<FloorDivNode>())
       divisor = operation->b;
@@ -416,51 +442,99 @@ PrimExpr PtoInteger(const PrimExpr &value, ProofAnalyzer *analyzer) {
       divisor = operation->b;
     else if (const auto *operation = node.as<ModNode>())
       divisor = operation->b;
-    if (divisor.defined())
-      ICHECK(analyzer->CanProve(divisor != make_zero(divisor.dtype())))
-          << kPtoProfile << ": index division requires a nonzero divisor";
-    const int bits = expression->dtype.bits();
-    const bool unsigned_type = expression->dtype.is_uint();
-    ICHECK_LE(bits, unsigned_type ? 32 : 64) << kPtoProfile;
+    if (divisor.defined() &&
+        !analyzer->z3_prover.CanProve(divisor != make_zero(divisor.dtype()))) {
+      valid = reject("index division requires a nonzero divisor");
+      return;
+    }
     const int64_t minimum =
-        unsigned_type ? 0
-                      : (bits == 64 ? std::numeric_limits<int64_t>::min()
-                                    : -(int64_t(1) << (bits - 1)));
+        type.is_uint() ? 0
+                       : (bits == 64 ? std::numeric_limits<int64_t>::min()
+                                     : -(int64_t(1) << (bits - 1)));
     const int64_t maximum =
-        unsigned_type ? (int64_t(1) << bits) - 1
-                      : (bits == 64 ? std::numeric_limits<int64_t>::max()
-                                    : (int64_t(1) << (bits - 1)) - 1);
+        type.is_uint() ? (int64_t(1) << bits) - 1
+                       : (bits == 64 ? std::numeric_limits<int64_t>::max()
+                                     : (int64_t(1) << (bits - 1)) - 1);
     if (const auto *conversion = node.as<CastNode>()) {
       const DataType source_type = conversion->value.dtype();
-      ICHECK(source_type.is_scalar() &&
-             ((source_type.is_int() && source_type.bits() <= 64) ||
-              (source_type.is_uint() && source_type.bits() <= 32)))
-          << kPtoProfile << ": index casts require integer source values";
+      if (!source_type.is_scalar() ||
+          !((source_type.is_int() && source_type.bits() <= 64) ||
+            (source_type.is_uint() && source_type.bits() <= 32))) {
+        valid = reject("index casts require integer source values");
+        return;
+      }
       const PrimExpr source = cast(DataType::Int(64), conversion->value);
-      ICHECK(analyzer->CanProve(source >= IntImm(DataType::Int(64), minimum) &&
-                                source <= IntImm(DataType::Int(64), maximum)))
-          << kPtoProfile << ": lossy index casts are unsupported";
+      if (!analyzer->z3_prover.CanProve(
+              source >= IntImm(DataType::Int(64), minimum) &&
+              source <= IntImm(DataType::Int(64), maximum))) {
+        valid = reject("lossy index casts are unsupported");
+        return;
+      }
     }
     const PrimExpr wide = cast(DataType::Int(64), GetRef<PrimExpr>(expression));
-    ICHECK(analyzer->CanProve(wide >= IntImm(DataType::Int(64), minimum) &&
-                              wide <= IntImm(DataType::Int(64), maximum)))
-        << kPtoProfile << ": cannot prove nonwrapping signed index arithmetic";
+    // Avoid the legacy folder, which can wrap narrow constant intermediates.
+    if (!analyzer->z3_prover.CanProve(
+            wide >= IntImm(DataType::Int(64), minimum) &&
+            wide <= IntImm(DataType::Int(64), maximum)))
+      valid = reject("cannot prove nonwrapping signed index arithmetic");
   });
+  return valid;
+}
+
+PrimExpr PtoInteger(const PrimExpr &value, ProofAnalyzer *analyzer) {
+  const char *failure = "invalid index";
+  ICHECK(TryPtoInteger(value, analyzer, &failure))
+      << kPtoProfile << ": " << failure;
   return cast(DataType::Int(64), value);
 }
 
-void PtoPredicate(const PrimExpr &predicate, const ConstrSet &context) {
-  PtoPure(predicate);
-  ICHECK(predicate.dtype().is_scalar() && predicate.dtype().is_bool())
-      << kPtoProfile << ": assumptions require a pure scalar boolean predicate";
-  ProofAnalyzer analyzer;
-  context.Populate(analyzer);
+bool TryPtoPredicate(const PrimExpr &predicate, ProofAnalyzer *analyzer,
+                     const char **failure) {
+  if (!predicate.defined() || !predicate.dtype().is_scalar() ||
+      !predicate.dtype().is_bool() ||
+      SideEffect(predicate) > CallEffectKind::kPure) {
+    *failure = "assumptions require a pure scalar boolean predicate";
+    return false;
+  }
+  bool valid = true;
   PostOrderVisit(predicate, [&](const ObjectRef &node) {
     const auto *expression = node.as<PrimExprNode>();
-    if (expression && !expression->dtype.is_bool() &&
+    if (valid && expression && !expression->dtype.is_bool() &&
         (expression->dtype.is_int() || expression->dtype.is_uint()))
-      PtoInteger(GetRef<PrimExpr>(expression), &analyzer);
+      valid = TryPtoInteger(GetRef<PrimExpr>(expression), analyzer, failure);
   });
+  return valid;
+}
+
+void PtoPredicate(const PrimExpr &predicate, const ConstrSet &context) {
+  ProofAnalyzer analyzer;
+  context.Populate(analyzer);
+  const char *failure = "invalid predicate";
+  ICHECK(TryPtoPredicate(predicate, &analyzer, &failure))
+      << kPtoProfile << ": " << failure;
+}
+
+// Replay definitions before using their mathematical values. In particular a
+// later assumption cannot justify an earlier overflowing Let or loop bound.
+bool TryPopulateCompositeContext(const ConstrSet &context,
+                                 ProofAnalyzer *analyzer,
+                                 const char **failure) {
+  for (const Constr &constraint : context.constrs_) {
+    if (constraint.kind == Constr::kBindRange) {
+      if (!TryPtoInteger(constraint.range->min, analyzer, failure) ||
+          !TryPtoInteger(constraint.range->extent, analyzer, failure) ||
+          !TryPtoInteger(Add(constraint.range->min, constraint.range->extent),
+                         analyzer, failure))
+        return false;
+    } else if (constraint.value.dtype().is_bool()) {
+      if (!TryPtoPredicate(constraint.value, analyzer, failure))
+        return false;
+    } else if (!TryPtoInteger(constraint.value, analyzer, failure)) {
+      return false;
+    }
+    constraint.Populate(*analyzer);
+  }
+  return true;
 }
 
 // Fold only a pure choice between the same GEMM invocation. Executable
@@ -472,12 +546,9 @@ class CompositeBranchNormalizer : public StmtExprMutator {
     const ConstrSet saved = context_;
     if (SideEffect(op->min) <= CallEffectKind::kPure &&
         SideEffect(op->extent) <= CallEffectKind::kPure) {
-      ProofAnalyzer analyzer;
-      context_.Populate(analyzer);
-      PtoInteger(op->min, &analyzer);
-      PtoInteger(op->extent, &analyzer);
       context_.AddConstr(op->loop_var,
                          Range::FromMinExtent(op->min, op->extent));
+      context_.AddConstr(op->extent > 0);
     }
     Stmt result = StmtExprMutator::VisitStmt_(op);
     context_ = saved;
@@ -490,9 +561,6 @@ class CompositeBranchNormalizer : public StmtExprMutator {
         (op->value.dtype().is_int() || op->value.dtype().is_uint()) &&
         !op->value.dtype().is_bool() &&
         SideEffect(op->value) <= CallEffectKind::kPure) {
-      ProofAnalyzer analyzer;
-      context_.Populate(analyzer);
-      PtoInteger(op->value, &analyzer);
       context_.AddConstr(op->var, op->value);
     }
     Stmt result = StmtExprMutator::VisitStmt_(op);
@@ -504,9 +572,6 @@ class CompositeBranchNormalizer : public StmtExprMutator {
     const ConstrSet saved = context_;
     if (op->attr_key == "thread_extent" || op->attr_key == "virtual_thread") {
       if (const auto *iteration = op->node.as<IterVarNode>()) {
-        ProofAnalyzer analyzer;
-        context_.Populate(analyzer);
-        PtoInteger(op->value, &analyzer);
         context_.AddConstr(
             iteration->var,
             Range::FromMinExtent(make_zero(op->value.dtype()), op->value));
@@ -516,7 +581,6 @@ class CompositeBranchNormalizer : public StmtExprMutator {
                 op->attr_key == "tilelang_assume") &&
                op->node.as<PrimExprNode>()) {
       const PrimExpr predicate = Downcast<PrimExpr>(op->node);
-      PtoPredicate(predicate, context_);
       context_.AddConstr(predicate, true);
     }
     Stmt result = StmtExprMutator::VisitStmt_(op);
@@ -534,7 +598,6 @@ class CompositeBranchNormalizer : public StmtExprMutator {
           evaluation ? evaluation->value.as<CallNode>() : nullptr;
       if (call && call->op.same_as(builtin::assume()) &&
           call->args.size() == 1U) {
-        PtoPredicate(call->args[0], context_);
         context_.AddConstr(call->args[0], true);
       }
     }
@@ -556,16 +619,17 @@ class CompositeBranchNormalizer : public StmtExprMutator {
     for (size_t index : {0U, 1U, 3U, 4U})
       if (!equal(a->args[index], b->args[index]))
         return false;
-    PtoPredicate(guard, context_);
-    ConstrSet guarded = context_;
-    guarded.AddConstr(guard, true);
     ProofAnalyzer analyzer;
-    guarded.Populate(analyzer);
-    // The else pointer will execute on both paths after folding. Validate its
-    // offset (and the original then offset) before proving guarded equality.
-    const PrimExpr a_offset = PtoInteger(a->args[2], &analyzer);
-    const PrimExpr b_offset = PtoInteger(b->args[2], &analyzer);
-    return analyzer.CanProve(a_offset == b_offset);
+    const char *failure = "optional branch equivalence is unproved";
+    if (!TryPopulateCompositeContext(context_, &analyzer, &failure) ||
+        !TryPtoPredicate(guard, &analyzer, &failure))
+      return false;
+    analyzer.EnterConstraint(guard, true);
+    if (!TryPtoInteger(a->args[2], &analyzer, &failure) ||
+        !TryPtoInteger(b->args[2], &analyzer, &failure))
+      return false;
+    return analyzer.CanProve(cast(DataType::Int(64), a->args[2]) ==
+                             cast(DataType::Int(64), b->args[2]));
   }
 
   Stmt VisitStmt_(const IfThenElseNode *op) final {
@@ -670,29 +734,26 @@ struct PtoGemmDescriptor {
         << kPtoProfile << ": helper footprint exceeds L0A/L0B capacity";
   }
   void ValidateAscendCResources() const {
-    const int64_t n_max = 32768 / PtoProduct(k_l0, 2);
-    ICHECK_GT(n_max, 0) << "AscendC GEMM N tile cannot fit L0B";
-    const int64_t n_tile = std::min(n, n_max);
-    ICHECK(n_tile % 16 == 0 && n % n_tile == 0)
-        << "AscendC GEMM requires aligned complete internal N tiles";
-    const int64_t steps = PtoProduct(chunks, n / n_tile);
-    const int64_t slot_budget = 65536 / (steps > 1 ? 2 : 1);
-    ICHECK(PtoProduct(PtoProduct(m, k_l0), 2) <= slot_budget &&
-           PtoProduct(PtoProduct(n_tile, k_l0), 2) <= slot_budget)
-        << "AscendC GEMM ping-pong footprint exceeds its L0 slot budget";
+    const ::tl::ascend::GemmV0Layout geometry(m, n, k, k_l0, 2, false);
+    ICHECK(geometry.valid())
+        << "AscendC GEMM physical ping-pong footprint exceeds its L0 slot "
+           "budget or lacks aligned complete internal N tiles";
   }
 };
 
 struct PtoFlatLeaf {
   Call call;
   ConstrSet context;
+  bool in_k_loop{false};
 };
 
 // Preserve lexical proof scopes. In particular an assumption in one sibling
 // scope must never justify a different sibling's GM address.
 class PtoFlatLeaves {
 public:
-  std::vector<PtoFlatLeaf> Run(const Stmt &body) {
+  std::vector<PtoFlatLeaf> Run(const Stmt &body,
+                               const ForNode *k_loop = nullptr) {
+    k_loop_ = k_loop;
     Walk(body, {}, -1);
     return std::move(leaves_);
   }
@@ -715,6 +776,20 @@ private:
       for (const Stmt &child : sequence->seq)
         if (!Assume(child, &context))
           Walk(child, context, resource);
+    } else if (const auto *loop = statement.as<ForNode>()) {
+      ICHECK(loop == k_loop_ && !in_k_loop_)
+          << kPtoProfile << ": requires one audited external K loop";
+      ProofAnalyzer analyzer;
+      context.Populate(analyzer);
+      PtoInteger(loop->min, &analyzer);
+      PtoInteger(loop->extent, &analyzer);
+      PtoInteger(Add(loop->min, loop->extent), &analyzer);
+      context.AddConstr(loop->loop_var,
+                        Range::FromMinExtent(loop->min, loop->extent));
+      context.AddConstr(loop->extent > 0);
+      in_k_loop_ = true;
+      Walk(loop->body, std::move(context), resource);
+      in_k_loop_ = false;
     } else if (const auto *attribute = statement.as<AttrStmtNode>()) {
       PtoPure(attribute->value);
       if (attribute->node.as<PrimExprNode>())
@@ -768,17 +843,21 @@ private:
       if (name == "set_flag" || name == "wait_flag" ||
           name == "auto_set_flag" || name == "auto_wait_flag")
         return; // Validated independently against the helper reservations.
+      if (k_loop_ != nullptr && IsKLoopBarrier(call))
+        return;
       ICHECK(name == "copy_gm_to_l1" || name == "gemm_v0" ||
              name == "copy_l0c_to_gm")
           << kPtoProfile
           << ": extra compute or mixed C/V needs a separate protocol";
-      leaves_.push_back({GetRef<Call>(call), std::move(context)});
+      leaves_.push_back({GetRef<Call>(call), std::move(context), in_k_loop_});
     } else {
       LOG(FATAL) << kPtoProfile
                  << ": For/If/rings require a separate invocation protocol";
     }
   }
   std::vector<PtoFlatLeaf> leaves_;
+  const ForNode *k_loop_{nullptr};
+  bool in_k_loop_{false};
 };
 
 class PtoGemmAudit {
@@ -796,8 +875,9 @@ public:
   }
   void AuditPipelineFix(const PtoFlatLeaf &leaf) const { Fix(leaf, true); }
 
-  void Run() {
-    PtoConstant(operation_.call->args[4], 1);
+  void Run(const ForNode *k_loop = nullptr) {
+    if (k_loop == nullptr)
+      PtoConstant(operation_.call->args[4], 1);
     geometry_.ValidatePtoResources();
     const auto shapes =
         function_->GetAttr<Map<Var, Array<PrimExpr>>>(kLogicBufferShapes);
@@ -853,11 +933,21 @@ public:
     ICHECK(!roots[0].same_as(roots[1]) &&
            (bases[0] + spans[0] <= bases[1] || bases[1] + spans[1] <= bases[0]))
         << kPtoProfile << ": A/B L1 allocations overlap";
-    const auto leaves = PtoFlatLeaves().Run(function_->body);
+    const auto leaves = PtoFlatLeaves().Run(function_->body, k_loop);
     ICHECK(leaves.size() == 4U && leaves[2].call.same_as(operation_.call) &&
            OperationName(leaves[3].call.get()) == "copy_l0c_to_gm")
         << kPtoProfile
         << ": requires two full GM refreshes, one helper and one final FIX";
+    if (k_loop != nullptr) {
+      for (size_t index = 0; index < leaves.size(); ++index)
+        ICHECK_EQ(leaves[index].in_k_loop, index < 3)
+            << kPtoProfile << ": final FIX must follow the complete K loop";
+      ProofAnalyzer analyzer;
+      leaves[2].context.Populate(analyzer);
+      ICHECK(analyzer.CanProveEqual(operation_.call->args[4],
+                                    k_loop->loop_var == 0))
+          << kPtoProfile << ": external K loop requires clear=(k == 0)";
+    }
     for (size_t index = 0; index < 2; ++index) {
       const Call &copy = leaves[index].call;
       ValidateKLoopCopy(copy, operation_.buffers[index].access_ptr, "half",
@@ -1028,6 +1118,529 @@ void ValidatePtoFlat(const PrimFunc &function,
       << ": multiple helper invocations need a separate protocol";
   PtoGemmAudit(function, plan.operations.begin()->second).Run();
 }
+
+constexpr const char *kInvocation = "Composite gemm_v0 invocation contract: ";
+
+PrimExpr CompositeInteger(const PrimExpr &value, ProofAnalyzer *analyzer) {
+  const char *failure = "invalid index";
+  ICHECK(TryPtoInteger(value, analyzer, &failure)) << kInvocation << failure;
+  return cast(DataType::Int(64), value);
+}
+
+void PopulateInvocationContext(const ConstrSet &context,
+                               ProofAnalyzer *analyzer) {
+  const char *failure = "invalid lexical context";
+  ICHECK(TryPopulateCompositeContext(context, analyzer, &failure))
+      << kInvocation << failure;
+}
+
+// Only collect proof contexts. All executable leaves and control remain in the
+// original TIR and are subsequently imported by the synchronization engine.
+class CompositeInvocationLeaves {
+public:
+  std::vector<PtoFlatLeaf> Run(const PrimFunc &function) {
+    ConstrSet context;
+    for (const auto &[parameter, buffer] : function->buffer_map)
+      for (const PrimExpr &dimension : buffer->shape)
+        if (dimension.as<VarNode>() && dimension.dtype().is_int())
+          context.AddConstr(dimension >= make_zero(dimension.dtype()));
+    Walk(function->body, std::move(context));
+    return std::move(leaves_);
+  }
+
+private:
+  static void Assume(const PrimExpr &predicate, ConstrSet *context) {
+    ProofAnalyzer analyzer;
+    PopulateInvocationContext(*context, &analyzer);
+    const char *failure = "invalid assumption";
+    ICHECK(TryPtoPredicate(predicate, &analyzer, &failure))
+        << kInvocation << failure;
+    context->AddConstr(predicate, true);
+  }
+
+  static bool Assume(const Stmt &statement, ConstrSet *context) {
+    const auto *evaluation = statement.as<EvaluateNode>();
+    const auto *call = evaluation ? evaluation->value.as<CallNode>() : nullptr;
+    if (!call || !call->op.same_as(builtin::assume()))
+      return false;
+    ICHECK_EQ(call->args.size(), 1U) << kInvocation;
+    Assume(call->args[0], context);
+    return true;
+  }
+
+  void Walk(const Stmt &statement, ConstrSet context) {
+    if (const auto *sequence = statement.as<SeqStmtNode>()) {
+      for (const Stmt &child : sequence->seq)
+        if (!Assume(child, &context))
+          Walk(child, context);
+    } else if (const auto *loop = statement.as<ForNode>()) {
+      ICHECK((loop->kind == ForKind::kSerial ||
+              loop->kind == ForKind::kUnrolled) &&
+             loop->annotations.empty())
+          << kInvocation
+          << "requires serial/unrolled loops without pipeline annotations";
+      ProofAnalyzer analyzer;
+      PopulateInvocationContext(context, &analyzer);
+      CompositeInteger(loop->min, &analyzer);
+      CompositeInteger(loop->extent, &analyzer);
+      CompositeInteger(Add(loop->min, loop->extent), &analyzer);
+      context.AddConstr(loop->loop_var,
+                        Range::FromMinExtent(loop->min, loop->extent));
+      context.AddConstr(loop->extent > 0);
+      Walk(loop->body, std::move(context));
+    } else if (const auto *binding = statement.as<LetStmtNode>()) {
+      ICHECK(SideEffect(binding->value) <= CallEffectKind::kReadState)
+          << kInvocation << "opaque Let definitions are unsupported";
+      // A mutable load is a captured scalar, not a future reread. Leave its
+      // value unknown here; the importer retains its actual scalar effects.
+      if (SideEffect(binding->value) <= CallEffectKind::kPure &&
+          (binding->value.dtype().is_int() ||
+           binding->value.dtype().is_uint())) {
+        ProofAnalyzer analyzer;
+        PopulateInvocationContext(context, &analyzer);
+        const char *failure = "invalid Let definition";
+        ICHECK(binding->value.dtype().is_bool()
+                   ? TryPtoPredicate(binding->value, &analyzer, &failure)
+                   : TryPtoInteger(binding->value, &analyzer, &failure))
+            << kInvocation << failure;
+        context.AddConstr(binding->var, binding->value);
+      }
+      Walk(binding->body, std::move(context));
+    } else if (const auto *attribute = statement.as<AttrStmtNode>()) {
+      if (attribute->attr_key == "thread_extent" ||
+          attribute->attr_key == "virtual_thread") {
+        const auto *iteration = attribute->node.as<IterVarNode>();
+        ICHECK(iteration != nullptr)
+            << kInvocation << "malformed thread domain";
+        ProofAnalyzer analyzer;
+        PopulateInvocationContext(context, &analyzer);
+        CompositeInteger(attribute->value, &analyzer);
+        context.AddConstr(
+            iteration->var,
+            Range::FromMinExtent(make_zero(attribute->value.dtype()),
+                                 attribute->value));
+        context.AddConstr(attribute->value > 0);
+      } else if (attribute->attr_key == "tl.assume" ||
+                 attribute->attr_key == "tilelang_assume") {
+        ICHECK(attribute->node.as<PrimExprNode>()) << kInvocation;
+        Assume(Downcast<PrimExpr>(attribute->node), &context);
+      }
+      Walk(attribute->body, std::move(context));
+    } else if (const auto *allocation = statement.as<AllocateNode>()) {
+      ICHECK(is_one(allocation->condition))
+          << kInvocation << "predicated allocations are unsupported";
+      Walk(allocation->body, std::move(context));
+    } else if (const auto *declaration = statement.as<DeclBufferNode>()) {
+      Walk(declaration->body, std::move(context));
+    } else if (const auto *evaluation = statement.as<EvaluateNode>()) {
+      if (evaluation->value.as<IntImmNode>() || Assume(statement, &context))
+        return;
+      if (const auto *call = evaluation->value.as<CallNode>())
+        leaves_.push_back({GetRef<Call>(call), std::move(context)});
+    } else {
+      ICHECK(!statement.as<IfThenElseNode>() && !statement.as<WhileNode>())
+          << kInvocation << "If/While requires a separate invocation protocol";
+      // Scalar stores, assertions and unknown effects are still checked by
+      // full import; none is replaced by the composite contract.
+    }
+  }
+
+  std::vector<PtoFlatLeaf> leaves_;
+};
+
+class CompositeInvocationAudit {
+public:
+  CompositeInvocationAudit(const PrimFunc &function,
+                           const LegacyCompositePlan &plan)
+      : function_(function), plan_(plan) {}
+
+  void Run() const {
+    for (const auto &[call, operation] : plan_.operations) {
+      for (const auto &effect : operation.buffers)
+        LocalAllocation(Downcast<Var>(effect.access_ptr->args[1]),
+                        effect.access_ptr->args[0].dtype(),
+                        effect.required_bytes);
+    }
+    for (const auto &leaf : CompositeInvocationLeaves().Run(function_)) {
+      const std::string name = OperationName(leaf.call.get());
+      if (name == "gemm_v0") {
+        ICHECK(plan_.Find(leaf.call.get()) != nullptr) << kInvocation;
+        ProofAnalyzer analyzer;
+        PopulateInvocationContext(leaf.context, &analyzer);
+        const char *failure = "invalid clear condition";
+        ICHECK(TryPtoPredicate(leaf.call->args[4], &analyzer, &failure))
+            << kInvocation << failure;
+      } else if (name == "copy_gm_to_l1") {
+        Copy(leaf);
+      } else if (name == "copy_l0c_to_gm") {
+        Fix(leaf);
+      } else if (name == "pipe_barrier" || name == "auto_barrier") {
+        ICHECK(IsKLoopBarrier(leaf.call.get()))
+            << kInvocation
+            << "barrier requires its configured native operation";
+      } else if (name == "set_flag" || name == "wait_flag" ||
+                 name == "auto_set_flag" || name == "auto_wait_flag") {
+        ICHECK(leaf.call->op.same_as(Op::Get("tl.ascend_" + name)))
+            << kInvocation
+            << "manual event requires its configured native operation";
+      }
+    }
+  }
+
+private:
+  static PrimExpr I64(int64_t value) {
+    return IntImm(DataType::Int(64), value);
+  }
+
+  void LocalAllocation(const Var &root, DataType dtype,
+                       int64_t required_bytes) const {
+    const std::string scope = StorageScope(root);
+    ICHECK(scope == "shared.l1" || scope == "wmma.accumulator")
+        << kInvocation << "copy/composite requires a real L1 or L0C allocation";
+    // These are the A3 codegen pool capacities, not logical tensor limits.
+    const int64_t capacity = scope == "shared.l1" ? 524032 : 131072;
+    const auto addresses =
+        function_->GetAttr<Map<Var, PrimExpr>>("address_map");
+    const auto sizes = function_->GetAttr<Map<Var, PrimExpr>>("size_map");
+    ICHECK(addresses.defined() && sizes.defined())
+        << kInvocation << "requires authoritative physical allocation maps";
+    const auto address = addresses.value().Get(root);
+    const auto size = sizes.value().Get(root);
+    const auto *base =
+        address.defined() ? address.value().as<IntImmNode>() : nullptr;
+    const auto *span = size.defined() ? size.value().as<IntImmNode>() : nullptr;
+    ICHECK(base && span && base->value >= 0 && span->value > 0 &&
+           base->value % 32 == 0 && span->value <= capacity &&
+           base->value <= capacity - span->value &&
+           required_bytes <= span->value)
+        << kInvocation
+        << "actual allocation footprint exceeds its physical pool";
+    size_t allocations = 0;
+    int64_t allocation_bytes = 0;
+    PostOrderVisit(function_->body, [&](const ObjectRef &node) {
+      const auto *allocation = node.as<AllocateNode>();
+      if (!allocation || !allocation->buffer_var.same_as(root))
+        return;
+      ++allocations;
+      ICHECK(allocation->dtype == dtype && is_one(allocation->condition))
+          << kInvocation
+          << "actual allocation dtype/condition disagrees with the helper";
+      allocation_bytes = dtype.bytes();
+      for (const PrimExpr &extent : allocation->extents) {
+        const auto *constant = extent.as<IntImmNode>();
+        ICHECK(constant && constant->value > 0)
+            << kInvocation << "requires a static positive physical allocation";
+        allocation_bytes = PtoProduct(allocation_bytes, constant->value);
+      }
+    });
+    ICHECK(allocations == 1U && allocation_bytes <= span->value)
+        << kInvocation
+        << "actual allocation does not cover its padded physical footprint";
+    bool covers_footprint = allocation_bytes >= required_bytes;
+    if (!covers_footprint && scope == "shared.l1") {
+      const auto shapes =
+          function_->GetAttr<Map<Var, Array<PrimExpr>>>(kLogicBufferShapes);
+      const auto shape = shapes.defined() ? shapes.value().Get(root) : NullOpt;
+      if (shape.defined() && shape.value().size() == 4U) {
+        // Flatten2DBuffer can retain a logical Allocate while reserving the
+        // full zN backing in its physical descriptor. Reconstruct that exact
+        // contract from a real helper's logical geometry; a large size_map or
+        // an unrelated descriptor cannot justify a shortened allocation.
+        auto matches = [&](int64_t rows, int64_t columns) {
+          if (PtoProduct(PtoProduct(rows, columns), dtype.bytes()) !=
+              allocation_bytes)
+            return false;
+          const int64_t c0 = 32 / dtype.bytes();
+          const int64_t padded_rows = (rows + 15) / 16 * 16;
+          const int64_t padded_columns = (columns + c0 - 1) / c0 * c0;
+          const int64_t fractal_elements =
+              PtoProduct(padded_rows, padded_columns);
+          const int64_t physical_rows = 1 + (fractal_elements - 1) / columns;
+          const std::array<int64_t, 4> expected = {physical_rows, columns,
+                                                   physical_rows, columns};
+          for (size_t axis = 0; axis < expected.size(); ++axis) {
+            const auto *constant = shape.value()[axis].as<IntImmNode>();
+            if (!constant || constant->value != expected[axis])
+              return false;
+          }
+          const int64_t described_bytes =
+              PtoProduct(PtoProduct(physical_rows, columns), dtype.bytes());
+          if (described_bytes > capacity)
+            return false;
+          // AscendMemoryPlanning rounds this descriptor's byte count to 32.
+          const int64_t planned_bytes = (described_bytes + 31) / 32 * 32;
+          return span->value == planned_bytes &&
+                 planned_bytes >= required_bytes;
+        };
+        for (const auto &[call, operation] : plan_.operations) {
+          const auto arguments = TemplateArguments(operation.call.get());
+          for (size_t index = 0; index < 2; ++index) {
+            if (!root.same_as(operation.buffers[index].access_ptr->args[1]))
+              continue;
+            const bool transpose = arguments[index == 0 ? 5 : 6] == "true";
+            const int64_t rows = index == 0
+                                     ? (transpose ? operation.k : operation.m)
+                                     : (transpose ? operation.n : operation.k);
+            const int64_t columns =
+                index == 0 ? (transpose ? operation.m : operation.k)
+                           : (transpose ? operation.k : operation.n);
+            covers_footprint |= matches(rows, columns);
+          }
+        }
+        PostOrderVisit(function_->body, [&](const ObjectRef &node) {
+          const auto *copy = node.as<CallNode>();
+          if (covers_footprint || !copy ||
+              !copy->op.same_as(builtin::call_extern()) ||
+              OperationName(copy) != "copy_gm_to_l1" || copy->args.size() != 8U)
+            return;
+          const auto *destination = copy->args[2].as<CallNode>();
+          if (!destination || destination->args.size() != 5U ||
+              !destination->args[1].same_as(root))
+            return;
+          const CopyGeometry geometry = ParseCopy(GetRef<Call>(copy));
+          if (geometry.dtype == dtype)
+            covers_footprint = matches(geometry.rows, geometry.columns);
+        });
+      }
+    }
+    ICHECK(covers_footprint)
+        << kInvocation
+        << "actual allocation does not cover its padded physical footprint";
+    // Each interval is within its real pool. Their union is therefore bounded;
+    // do not sum intervals, since valid lifetime planning can reuse an address.
+  }
+
+  struct CopyGeometry {
+    DataType dtype;
+    int64_t rows;
+    int64_t columns;
+  };
+
+  static CopyGeometry ParseCopy(const Call &copy) {
+    const auto *literal = copy->args[0].as<StringImmNode>();
+    ICHECK(literal) << kInvocation
+                    << "GM-to-L1 requires a literal helper template";
+    std::string symbol = literal->value;
+    symbol.erase(
+        std::remove_if(symbol.begin(), symbol.end(),
+                       [](unsigned char c) { return std::isspace(c); }),
+        symbol.end());
+    const std::string prefix = "tl::ascend::copy_gm_to_l1<";
+    ICHECK(symbol.rfind(prefix, 0) == 0 && symbol.back() == '>')
+        << kInvocation << "GM-to-L1 requires its configured helper template";
+    const size_t first = symbol.find(',', prefix.size());
+    const size_t second = first == std::string::npos
+                              ? std::string::npos
+                              : symbol.find(',', first + 1);
+    ICHECK(first != std::string::npos && second != std::string::npos &&
+           symbol.find(',', second + 1) == std::string::npos)
+        << kInvocation << "GM-to-L1 requires dtype, rows and columns";
+    return {
+        ElementType(symbol.substr(prefix.size(), first - prefix.size())),
+        PositiveInteger(symbol.substr(first + 1, second - first - 1)),
+        PositiveInteger(symbol.substr(second + 1, symbol.size() - second - 2))};
+  }
+
+  void CompatibleCopies(const Var &root, const CopyGeometry &geometry) const {
+    for (const auto &[call, operation] : plan_.operations) {
+      const auto arguments = TemplateArguments(operation.call.get());
+      for (size_t index = 0; index < 2; ++index) {
+        if (!root.same_as(operation.buffers[index].access_ptr->args[1]))
+          continue;
+        const bool transpose = arguments[index == 0 ? 5 : 6] == "true";
+        const int64_t rows = index == 0
+                                 ? (transpose ? operation.k : operation.m)
+                                 : (transpose ? operation.n : operation.k);
+        const int64_t columns = index == 0
+                                    ? (transpose ? operation.m : operation.k)
+                                    : (transpose ? operation.k : operation.n);
+        ICHECK(geometry.dtype == ElementType(arguments[0]) &&
+               geometry.rows == rows && geometry.columns == columns)
+            << kInvocation
+            << "shared L1 views require matching physical geometry";
+      }
+    }
+  }
+
+  const LegacyCompositeOperation &Matching(const Call &pointer, size_t begin,
+                                           size_t end, size_t *matched) const {
+    const LegacyCompositeOperation *result = nullptr;
+    for (const auto &[call, operation] : plan_.operations)
+      for (size_t index = begin; index < end; ++index)
+        if (pointer->args[1].same_as(
+                operation.buffers[index].access_ptr->args[1])) {
+          if (result != nullptr) {
+            ICHECK(operation.buffers[index].required_bytes ==
+                   result->buffers[*matched].required_bytes)
+                << kInvocation
+                << "shared operands require matching physical geometry";
+          } else {
+            result = &operation;
+            *matched = index;
+          }
+        }
+    ICHECK(result != nullptr)
+        << kInvocation << "copy has no audited GEMM operand";
+    return *result;
+  }
+
+  PrimExpr Capacity(const Buffer &buffer, ProofAnalyzer *analyzer) const {
+    ICHECK(buffer->strides.empty() && is_zero(buffer->elem_offset) &&
+           !buffer->shape.empty())
+        << kInvocation << "requires dense GM parameter roots";
+    PrimExpr capacity = I64(1);
+    for (const PrimExpr &dimension : buffer->shape) {
+      const PrimExpr extent = CompositeInteger(dimension, analyzer);
+      ICHECK(analyzer->CanProve(
+          extent >= I64(0) &&
+          capacity <= floordiv(I64(std::numeric_limits<int64_t>::max()),
+                               max(extent, I64(1)))))
+          << kInvocation
+          << "GM capacity cannot be represented without overflow";
+      capacity = capacity * extent;
+    }
+    return capacity;
+  }
+
+  void GM(const PtoFlatLeaf &leaf, const Call &pointer, DataType dtype,
+          int64_t rows, int64_t columns, int access) const {
+    ICHECK(pointer->op.same_as(builtin::tvm_access_ptr()) &&
+           pointer->args.size() == 5U && pointer->args[0].dtype() == dtype)
+        << kInvocation << "GM pointer dtype disagrees with the helper";
+    PtoConstant(pointer->args[4], access);
+    Optional<Buffer> parameter;
+    for (const auto &[key, buffer] : function_->buffer_map)
+      if (buffer->data.same_as(pointer->args[1])) {
+        ICHECK(!parameter.defined())
+            << kInvocation << "ambiguous GM parameter root";
+        parameter = buffer;
+      }
+    ICHECK(parameter.defined() && parameter.value()->dtype == dtype &&
+           (parameter.value().scope().empty() ||
+            parameter.value().scope() == "global"))
+        << kInvocation << "requires an untyped-view-free GM parameter root";
+    ProofAnalyzer analyzer;
+    PopulateInvocationContext(leaf.context, &analyzer);
+    const PrimExpr capacity = Capacity(parameter.value(), &analyzer);
+    const PrimExpr offset = CompositeInteger(pointer->args[2], &analyzer);
+    const PrimExpr extent = CompositeInteger(pointer->args[3], &analyzer);
+    const PrimExpr stride = CompositeInteger(leaf.call->args[3], &analyzer);
+    const PrimExpr raw_rows = CompositeInteger(leaf.call->args[4], &analyzer);
+    const PrimExpr raw_columns =
+        CompositeInteger(leaf.call->args[5], &analyzer);
+    const PrimExpr valid_rows = Select(raw_rows == I64(0), I64(rows), raw_rows);
+    const PrimExpr valid_columns =
+        Select(raw_columns == I64(0), I64(columns), raw_columns);
+    const PrimExpr width =
+        CompositeInteger(parameter.value()->shape.back(), &analyzer);
+    const PrimExpr abi_max = I64(std::numeric_limits<uint32_t>::max());
+    ICHECK(analyzer.CanProve(stride >= I64(1) && stride <= abi_max &&
+                             raw_rows >= I64(0) && raw_rows <= abi_max &&
+                             raw_columns >= I64(0) && raw_columns <= abi_max &&
+                             valid_rows > I64(0) && valid_rows <= I64(rows) &&
+                             valid_columns > I64(0) &&
+                             valid_columns <= I64(columns) &&
+                             stride >= valid_columns && extent >= I64(0)))
+        << kInvocation << "invalid GM copy tail or uint32 stride";
+    ICHECK(analyzer.CanProve(
+        valid_rows - I64(1) <=
+        floordiv(I64(std::numeric_limits<int64_t>::max()) - valid_columns,
+                 stride)))
+        << kInvocation << "strided GM span overflows int64";
+    const PrimExpr span = (valid_rows - I64(1)) * stride + valid_columns;
+    ICHECK(analyzer.CanProve(
+        width > I64(0) && offset >= I64(0) && span <= capacity &&
+        offset <= capacity - span &&
+        floormod(offset, width) <= width - valid_columns &&
+        (valid_rows == I64(1) || floormod(stride, width) == I64(0))))
+        << kInvocation << "complete strided GM rectangle exceeds its parameter";
+    if (access == 1)
+      ICHECK(analyzer.CanProve((valid_rows - I64(1)) * stride <= abi_max))
+          << kInvocation << "GM-to-L1 fallback row offset exceeds uint32";
+  }
+
+  void Copy(const PtoFlatLeaf &leaf) const {
+    const Call &copy = leaf.call;
+    ICHECK(copy->op.same_as(builtin::call_extern()) && copy->args.size() == 8U)
+        << kInvocation << "requires the canonical GM-to-L1 copy ABI";
+    const auto *source = copy->args[1].as<CallNode>();
+    const auto *destination = copy->args[2].as<CallNode>();
+    ICHECK(source && destination &&
+           source->op.same_as(builtin::tvm_access_ptr()) &&
+           destination->op.same_as(builtin::tvm_access_ptr()) &&
+           source->args.size() == 5U && destination->args.size() == 5U)
+        << kInvocation << "malformed GM-to-L1 pointer";
+    const CopyGeometry geometry = ParseCopy(copy);
+    const int64_t rows = geometry.rows;
+    const int64_t columns = geometry.columns;
+    const DataType dtype = geometry.dtype;
+    const Var root = Downcast<Var>(destination->args[1]);
+    CompatibleCopies(root, geometry);
+    PtoConstant(destination->args[2], 0);
+    PtoConstant(destination->args[3], PtoProduct(rows, columns));
+    PtoConstant(destination->args[4], 2);
+    PtoConstant(copy->args[6], rows);
+    PtoConstant(copy->args[7], columns);
+    ICHECK(destination->args[0].dtype() == dtype)
+        << kInvocation << "L1 pointer dtype disagrees with GEMM geometry";
+    const int64_t row_padding = (rows + 15) / 16 * 16;
+    const int64_t c0 = 32 / dtype.bytes();
+    const int64_t column_padding = (columns + c0 - 1) / c0 * c0;
+    const int64_t padded_bytes =
+        PtoProduct(PtoProduct(row_padding, column_padding), dtype.bytes());
+    ICHECK(padded_bytes / 32 <= std::numeric_limits<uint16_t>::max())
+        << kInvocation << "padded L1 clear exceeds the InitConstValue field";
+    LocalAllocation(root, dtype, padded_bytes);
+    GM(leaf, GetRef<Call>(source), dtype, rows, columns, 1);
+  }
+
+  void Fix(const PtoFlatLeaf &leaf) const {
+    const Call &call = leaf.call;
+    ICHECK(call->op.same_as(builtin::call_extern()) && call->args.size() == 10U)
+        << kInvocation << "requires canonical FIX operands";
+    const auto *source = call->args[1].as<CallNode>();
+    const auto *destination = call->args[2].as<CallNode>();
+    ICHECK(source && destination &&
+           source->op.same_as(builtin::tvm_access_ptr()) &&
+           destination->op.same_as(builtin::tvm_access_ptr()) &&
+           source->args.size() == 5U && destination->args.size() == 5U)
+        << kInvocation << "malformed FIX pointer";
+    size_t index = 2;
+    const auto &operation = Matching(GetRef<Call>(source), 2, 3, &index);
+    const auto arguments = TemplateArguments(operation.call.get());
+    const DataType input = ElementType(arguments[1]);
+    const DataType output = destination->args[0].dtype();
+    const std::string output_name =
+        CanonicalHelperElementType(output == DataType::Float(16)   ? "half"
+                                   : output == DataType::Float(32) ? "float"
+                                   : output == DataType::Int(32)   ? "int32_t"
+                                                                   : "");
+    ICHECK(!output_name.empty())
+        << kInvocation << "unsupported FIX output type";
+    std::string symbol = Downcast<StringImm>(call->args[0])->value;
+    symbol.erase(
+        std::remove_if(symbol.begin(), symbol.end(),
+                       [](unsigned char c) { return std::isspace(c); }),
+        symbol.end());
+    ICHECK_EQ(symbol, "tl::ascend::copy_l0c_to_gm<" + arguments[1] + "," +
+                          output_name + ",layout::RowMajor," +
+                          std::to_string(operation.m) + "," +
+                          std::to_string(operation.n) + ",0>")
+        << kInvocation << "unsupported FIX template";
+    ICHECK(source->args[0].dtype() == input) << kInvocation;
+    PtoConstant(source->args[2], 0);
+    PtoConstant(source->args[3], PtoProduct(operation.m, operation.n));
+    PtoConstant(source->args[4], 1);
+    PtoConstant(call->args[6], operation.m);
+    PtoConstant(call->args[7], operation.n);
+    PtoConstant(call->args[8], 0);
+    PtoConstant(call->args[9], 0);
+    GM(leaf, GetRef<Call>(destination), output, operation.m, operation.n, 2);
+  }
+
+  PrimFunc function_;
+  const LegacyCompositePlan &plan_;
+};
 
 // A certificate of the materialized schedule, not a second scheduler. Logical
 // role coverage and read-before-reuse follow the actual stage/order topology;
@@ -1582,9 +2195,6 @@ public:
         function->GetAttr<PhysicalRingProvenance>(kPhysicalRingProvenance)
             .value_or(PhysicalRingProvenance{});
     const bool cube_pipeline = !rings.empty();
-    if (pto && !cube_pipeline)
-      ICHECK(!has_pipeline_ && loops_.empty())
-          << kPtoProfile << " requires B1 flat execution without For/rings";
     ICHECK(cube_pipeline || !has_pipeline_)
         << "Composite gemm_v0 software pipelines require certified Cube rings";
     ICHECK(!has_conditional_)
@@ -1631,6 +2241,8 @@ public:
     for (const Call &call : calls_) {
       LegacyCompositeOperation operation = AnalyzeOperation(call);
       ValidateAllocationFootprints(operation, function, rings);
+      if (!pto)
+        ValidateAscendCResources(operation);
       if (pto) {
         operation.acquire = ResourcePipe::kMTE2;
         operation.completion = ResourcePipe::kFixpipe;
@@ -1641,9 +2253,17 @@ public:
       StaticCubePipelineAudit(function, plan).Run();
       plan.static_cube_pipeline = true;
     } else if (pto) {
-      ValidatePtoFlat(function, plan);
-    } else {
+      if (loops_.empty()) {
+        ValidatePtoFlat(function, plan);
+      } else {
+        ValidatePtoKLoop(function, plan);
+        plan.requires_single_cube = true;
+      }
+    } else if (HasLegacyKLoopShape(plan)) {
       ValidateKLoop(plan);
+    } else {
+      CompositeInvocationAudit(function, plan).Run();
+      plan.requires_single_cube = true;
     }
     return plan;
   }
@@ -1653,6 +2273,104 @@ private:
     ValidatePhysicalRingRecord(record);
     return Downcast<IntImm>(record[kPhysicalRingVersions])->value;
   }
+  // Classify structurally, rather than catching a failed mandatory audit.
+  // Original supported inputs retain their original validation/reservation
+  // path.
+  static bool LegacyLeaves(const Stmt &statement, int resource,
+                           std::vector<Call> *leaves) {
+    if (const auto *sequence = statement.as<SeqStmtNode>()) {
+      for (const Stmt &child : sequence->seq)
+        if (!LegacyLeaves(child, resource, leaves))
+          return false;
+      return true;
+    }
+    if (const auto *binding = statement.as<LetStmtNode>())
+      return SideEffect(binding->value) <= CallEffectKind::kPure &&
+             LegacyLeaves(binding->body, resource, leaves);
+    if (const auto *attribute = statement.as<AttrStmtNode>()) {
+      const auto *owner = attribute->value.as<IntImmNode>();
+      return attribute->attr_key == "resource_scope" && owner &&
+             owner->value == 0 && LegacyLeaves(attribute->body, 0, leaves);
+    }
+    const auto *evaluation = statement.as<EvaluateNode>();
+    if (!evaluation)
+      return false;
+    if (const auto *literal = evaluation->value.as<IntImmNode>())
+      return literal->value == 0;
+    const auto *call = evaluation->value.as<CallNode>();
+    if (!call || (resource != -1 && resource != 0))
+      return false;
+    if (call->op.same_as(Op::Get("tl.ascend_pipe_barrier")) ||
+        call->op.same_as(Op::Get("tl.ascend_auto_barrier")))
+      return true; // The mandatory legacy path validates its exact pipe.
+    leaves->push_back(GetRef<Call>(call));
+    return true;
+  }
+
+  static bool FullCopyShape(const Call &call, int64_t rows, int64_t columns) {
+    if (OperationName(call.get()) != "copy_gm_to_l1" || call->args.size() != 8U)
+      return false;
+    for (size_t index : {1U, 2U}) {
+      const auto *pointer = call->args[index].as<CallNode>();
+      if (!pointer || pointer->args.size() != 5U)
+        return false;
+      const auto *extent = pointer->args[3].as<IntImmNode>();
+      if (!extent || extent->value != rows * columns)
+        return false;
+    }
+    for (size_t index : {4U, 5U, 6U, 7U}) {
+      const auto *mask = call->args[index].as<IntImmNode>();
+      if (!mask || mask->value != (index % 2 == 0 ? rows : columns))
+        return false;
+    }
+    return true;
+  }
+
+  bool HasLegacyKLoopShape(const LegacyCompositePlan &plan) const {
+    if (loops_.empty())
+      return true;
+    if (loops_.size() != 1U || calls_.size() != 1U)
+      return false;
+    const auto &[loop, resource] = loops_.front();
+    const auto *minimum = loop->min.as<IntImmNode>();
+    const auto *extent = loop->extent.as<IntImmNode>();
+    if (loop->kind != ForKind::kSerial || !minimum || minimum->value != 0 ||
+        !extent || extent->value <= 0 || !loop->annotations.empty())
+      return false;
+    std::vector<Call> leaves;
+    if (!LegacyLeaves(loop->body, resource, &leaves) || leaves.size() != 3U ||
+        !leaves.back().same_as(calls_.front()))
+      return false;
+    ProofAnalyzer analyzer;
+    analyzer.Bind(loop->loop_var,
+                  Range::FromMinExtent(loop->min, loop->extent));
+    if (!analyzer.CanProveEqual(calls_.front()->args[4], loop->loop_var == 0))
+      return false;
+    const auto &operation = *plan.Find(calls_.front().get());
+    const auto arguments = TemplateArguments(calls_.front().get());
+    const bool transpose_a = arguments[5] == "true";
+    const bool transpose_b = arguments[6] == "true";
+    return FullCopyShape(leaves[0], transpose_a ? operation.k : operation.m,
+                         transpose_a ? operation.m : operation.k) &&
+           FullCopyShape(leaves[1], transpose_b ? operation.n : operation.k,
+                         transpose_b ? operation.k : operation.n);
+  }
+
+  void ValidatePtoKLoop(const PrimFunc &function,
+                        const LegacyCompositePlan &plan) const {
+    ICHECK(loops_.size() == 1U && calls_.size() == 1U)
+        << kPtoProfile
+        << ": requires one external static positive serial K loop";
+    const auto *loop = loops_.front().first;
+    const auto *minimum = loop->min.as<IntImmNode>();
+    const auto *extent = loop->extent.as<IntImmNode>();
+    ICHECK(loop->kind == ForKind::kSerial && minimum && minimum->value == 0 &&
+           extent && extent->value > 0 && loop->annotations.empty())
+        << kPtoProfile
+        << ": requires one external static positive serial K loop";
+    PtoGemmAudit(function, *plan.Find(calls_.front().get())).Run(loop);
+  }
+
   void ValidateKLoop(const LegacyCompositePlan &plan) const {
     if (loops_.empty())
       return;

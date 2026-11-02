@@ -117,6 +117,72 @@ Vector/DMA 同步。一般 Developer 自动同步应同时开启 ordinary 与 VS
 - native ABI 升至 v21；新增主机协议/独立字节依赖检查和设备回归列入
   `validation/test-suites.json`。原始 examples 不作为兼容性修复的一部分修改。
 
+### v22 GM→L1 尾块与单 Cube GEMM 调用
+
+以下记录新增实现契约，不代表本轮原始样例已经完整通过；实际验收及恢复数以对应
+源码冻结后的主机、设备与完整样例运行日志为准。
+
+- A3 AscendC/`auto` 的非流水 B1 GEMM 调用按真实 GM→L1 helper 参数审核刷新：
+  证明有效行列、stride、完整 strided GM 读取范围及完整分形 L1 容量，保留目标
+  base=0、dtype/template 一致和原始整数中间值不溢出检查。此 helper 的 tail=0
+  表示使用模板整块，不是空块；发生尾块清零时，物理写效果覆盖整个 padded L1
+  allocation。认证 ring 路径继续使用原有严格刷新契约。
+- L1 容量证明同时核对真实 Allocate、helper 的逻辑几何、四维
+  `kLogicBufferShapes` 和内存规划器按 32 字节对齐的实际物理容量。允许
+  Flatten2DBuffer 保留小于分形 backing 的逻辑 Allocate，但必须从真实 helper
+  几何重建并匹配完整描述；仅有较大的 `size_map` 不能证明容量。L0C 不借用此
+  L1 规则，仍要求实际 Allocate 覆盖其完整物理 footprint。
+- 原有 flat、静态 K-loop、已认证 ring 等准入优先保留；新增逐调用路径支持没有
+  流水注解的 serial/unrolled For，包括嵌套、动态次数与零次循环。保留全部实际
+  计算、数据搬运、GM store、控制树及循环回边，不把循环合并成一个联合效果。
+  全部效果导入后仍要求唯一 Cube owner，且 ordinary 自动同步开启；不能仅凭
+  显式 scope 推断满足该契约。
+- 新路径保留原始纯 scalar bool `clear`，不要求每个调用都具有固定的两次刷新
+  或 `clear=(k==0)` 结构。A/B 始终读、C 始终写；无法证明 clear 为真时，C 保守
+  建模为读写。同一函数内的调用另共享一个内部隐藏 L0/event 池读写效果，以覆盖
+  用户 A/B/C 均不重叠时的跨调用及跨迭代依赖；它按内部对象身份识别，不生成真实
+  内存分配或改变运行 TIR。AscendC 仍使用 MTE1 acquire / Cube completion 边界，
+  保留 helper 的入口握手、两 slot prime/drain 及原隐藏事件预留。
+- PTO 使用独立的单个静态正数、min=0 外部 K-loop 契约：每次完整刷新 A/B、一个
+  GEMM、`clear=(k==0)`，循环后完成一个完整 FIX。沿用参数化的对齐 FP16→FP32、
+  无 transpose descriptor、真实 GM 范围及 L1/L0 容量校验，不添加示例尺寸白名单。
+  获取与完成边界仍为 MTE2 acquire / FIX completion，隐藏单 L0 slot 和 ID1 协议
+  独立于 AscendC 两 slot 模型。
+- 相同 GEMM 两分支的规范化按需证明真正参与折叠的词法事实，不再提前审计所有
+  无关控制表达式。无法证明则保留原分支，不将未经审核的整数事实用于折叠。
+  新调用契约仍拒绝剩余 If/While、混合 C/V、未认证 ring/流水、用户 L0A/B 与裸 MMA
+  混用；allocation、原生指令字段和事件容量门禁保持有效。
+- 原生证明服务将纯 scalar `tir.if_then_else` 按原条件解释为 Z3 `ite`，保留
+  cid、零 extent 等表达式之间的真实相关性，不再把整个条件表达式当作独立未知值。
+  此变换仅用于证明，不改运行 TIR，也不把任一分支谓词提升为无条件假设；可变或
+  opaque 表达式仍保持原有未知值处理。
+- A3 AscendC 的 FP32、非 transpose B 的 L1→L0B 路径使用 SDK
+  `LoadData3DParamsV2<float>`：将 zN 源解释为 NC1HWCo，以 1×1 LoadData3D 转成
+  nZ，避免使用仅适用于 B16 的 LoadData2D `ifTranspose`。保留 descriptor 字段
+  范围检查，整个搬运仍位于 MTE1，不增加 scratch 或事件；原 half/bfloat16/int8
+  及 transpose B 路径继续使用原实现。本轮范围不扩展为 A2/A5 设备验收结论。
+- native ABI 升至 v22，隔离同步语义变化前的编译缓存。新增调用及 PTO 循环主机
+  回归登记于 `validation/test-suites.json`，设备回归扩展既有 composite/PTO 套件；
+  原始 examples 不随此契约修改。
+
+### v23 GEMM 物理 L0 槽与内部 N 切块
+
+- AscendC helper 与全部 AscendC composite 准入共用 `GemmV0Layout`：L0A zZ
+  按 `roundUp16(M) × roundUpC0(kL0Size)`，L0B nZ 按
+  `roundUp16(nTile) × roundUpC0(kL0Size)` 计算物理跨度；int8 transpose A
+  和非 transpose B 的实际转置搬运为完整 32×32 块，因此各自将 M、N 槽跨度
+  补齐至 32，覆盖整条指令的读写。ping-pong 基址使用该跨度。全部槽满足
+  512 字节对齐；槽数由真实 N/K step 数决定，
+  单步可用 64 KiB，多步每槽 32 KiB。
+- 非 transpose B 保留完整、均匀的内部 N tile。若整 N 的物理 footprint 不超过
+  32 KiB，保持整 N；否则从容量允许的 tile 中选择满足 L1 C0 与 L0B 16 列分形
+  对齐、且整除 N 的最大 tile。这个规则来自布局及容量，不依赖示例名称或 shape
+  白名单；不改变原始 GEMM 尺寸或引入新的尾 N 调度。无合法切块则明确拒绝。
+- 非 transpose A 的 K 子块源步进使用 `roundUp16(M)`，transpose B 使用
+  `roundUp16(N)`，与实际 L1 分形布局一致；已有 int8 K 尾块及 C0 对齐门禁保留。
+- PTO 仍采用独立的单槽 descriptor 和资源审核。native ABI 升至 v23，避免重用
+  旧同步证明与旧 helper 编译结果。本条记录实现契约，验证结论以本轮实际日志为准。
+
 ## 当前支持与拒绝边界
 
 已验证范围：

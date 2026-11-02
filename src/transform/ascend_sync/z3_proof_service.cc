@@ -21,7 +21,8 @@
 // Source: src/target/z3/z3_prover_on.cc. Changes isolate the service from
 // Analyzer and adapt public TIR/container APIs. Local safety fixes are marked
 // below: scoped memo restoration, explicit binding override, cast capability,
-// unsigned bit-vector interpretation, and shift-domain validation.
+// unsigned bit-vector interpretation, shift-domain validation, and native
+// scalar conditional expressions.
 
 #include "z3_proof_service.h"
 #include <tvm/node/structural_equal.h>
@@ -718,11 +719,25 @@ private:
     return res;
   }
 
+  // Keep the runtime conditional intact: this only supplies its mathematical
+  // value to proofs. Mutable/opaque calls retain their existing unknown-value
+  // treatment, and no branch predicate becomes an unconditional assumption.
+  static bool IsNativeConditional(const CallNode *op) {
+    return op && op->op.same_as(tir::builtin::if_then_else()) &&
+           op->args.size() == 3U && IsValidDType(op->dtype) &&
+           op->args[0].dtype().is_bool() && op->args[0].dtype().lanes() == 1 &&
+           op->args[1].dtype() == op->dtype &&
+           op->args[2].dtype() == op->dtype &&
+           SideEffect(GetRef<PrimExpr>(op)) <= CallEffectKind::kPure;
+  }
+
   /// @brief Check if the expression is a free node having no constraints
   bool IsFreeNode(const PrimExpr &e) {
     if (memo_.count(e)) {
       return false;
     }
+    if (IsNativeConditional(e.as<CallNode>()))
+      return false;
     return e->IsInstance<CallNode>() || e->IsInstance<BufferLoadNode>() ||
            e->IsInstance<ProducerLoadNode>() || e->IsInstance<ReduceNode>() ||
            (e->IsInstance<CastNode>() &&
@@ -884,8 +899,13 @@ private:
 
   // Bitwise operations
   z3::expr VisitExpr_(const CallNode *op) override {
-    // Check if this is a bitwise operation
-    if (op->op.same_as(tir::builtin::bitwise_and())) {
+    if (IsNativeConditional(op)) {
+      const auto condition = VisitBool(op->args[0]);
+      if (op->dtype.is_bool())
+        return z3::ite(condition, VisitBool(op->args[1]),
+                       VisitBool(op->args[2]));
+      return z3::ite(condition, VisitInt(op->args[1]), VisitInt(op->args[2]));
+    } else if (op->op.same_as(tir::builtin::bitwise_and())) {
       return VisitBitwiseOp(z3::operator&, op);
     } else if (op->op.same_as(tir::builtin::bitwise_or())) {
       return VisitBitwiseOp(z3::operator|, op);

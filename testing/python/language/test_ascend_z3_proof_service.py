@@ -93,6 +93,111 @@ def test_expression_binding_and_explicit_override(prover: Service) -> None:
     assert not _prove(prover, y < 48)
 
 
+@pytest.mark.parametrize("materialize_first", [False, True], ids=["lazy", "eager"])
+@pytest.mark.parametrize("cores,active,stride", [(20, 1, 16384), (7, 3, 64)])
+def test_native_conditional_retains_grid_stride_and_zero_trip_correlations(
+    prover: Service,
+    materialize_first: bool,
+    cores: int,
+    active: int,
+    stride: int,
+) -> None:
+    core = tir.Var("core", "int32")
+    iteration = tir.Var("iteration", "int32")
+    _bind_range(prover, core, 0, cores)
+    if materialize_first:
+        assert _prove(prover, core >= 0)
+    trip_count = tir.if_then_else(core < active, 1, 0)
+    start = tir.if_then_else(core < active, core, active)
+    assert isinstance(trip_count, tir.Call)
+    prover(
+        "bind_range",
+        iteration,
+        tvm.ir.Range.from_min_extent(0, trip_count),
+        False,
+    )
+    offset = start * stride + iteration * stride
+    with _constraint(prover, trip_count > 0):
+        assert _prove(prover, core < active)
+        assert _prove(prover, iteration == 0)
+        assert _prove(prover, offset == core * stride)
+        assert _prove(prover, offset >= 0)
+        assert _prove(prover, offset <= (active - 1) * stride)
+        widened = tir.Cast("int64", offset)
+        assert _prove(prover, widened <= tir.IntImm("int64", (1 << 31) - 1))
+    assert not _prove(prover, core < active)
+    with _constraint(prover, trip_count == 0):
+        assert _prove(prover, core >= active)
+        assert not _prove(prover, iteration == 0)
+        assert not _prove(prover, core < active)
+
+
+def test_native_boolean_conditional_is_proved_without_assuming_a_branch(
+    prover: Service,
+) -> None:
+    value = tir.Var("conditional_value", "int32")
+    _bind_range(prover, value, 0, 8)
+    always_true = tir.if_then_else(value < 4, value >= 0, value < 8)
+    always_false = tir.if_then_else(value < 4, value < 0, value >= 8)
+    assert isinstance(always_true, tir.Call)
+    assert _prove(prover, always_true)
+    assert _prove(prover, tir.Not(always_false))
+    assert not _prove(prover, value < 4)
+    assert not _prove(prover, value >= 4)
+
+
+@pytest.mark.parametrize("dtype", ["int32", "int64", "uint32"])
+def test_native_conditional_calls_share_values_without_leaking_guard_scopes(
+    prover: Service,
+    dtype: str,
+) -> None:
+    value = tir.Var("conditional_index", dtype)
+    _bind_range(prover, value, 0, 8)
+    choice = tir.if_then_else(value < 4, tir.const(7, dtype), tir.const(11, dtype))
+    repeated = tir.Call(choice.dtype, choice.op, list(choice.args))
+    assert _prove(prover, choice == repeated)
+    assert _prove(prover, choice >= 7)
+    assert _prove(prover, choice <= 11)
+    assert not _prove(prover, choice == 7)
+    with _constraint(prover, value < 4):
+        assert _prove(prover, choice == 7)
+        assert not _prove(prover, choice == 11)
+    assert not _prove(prover, choice == 7)
+    with _constraint(prover, value >= 4):
+        assert _prove(prover, repeated == 11)
+        assert not _prove(prover, repeated == 7)
+    assert not _prove(prover, value >= 4)
+    assert not _prove(prover, repeated == 11)
+
+
+def test_native_conditional_does_not_invent_semantics_for_opaque_branches(
+    prover: Service,
+) -> None:
+    value = tir.Var("opaque_branch_index", "int32")
+    _bind_range(prover, value, 0, 8)
+    opaque = tir.call_pure_extern("int32", "unknown_integer_function", value)
+    choice = tir.if_then_else(value < 4, opaque, 0)
+    assert not _prove(prover, opaque == 0)
+    assert not _prove(prover, choice == 0)
+    with _constraint(prover, value >= 4):
+        assert _prove(prover, choice == 0)
+        assert not _prove(prover, opaque == 0)
+    assert not _prove(prover, choice == 0)
+
+
+def test_native_conditional_does_not_add_its_guard_as_a_global_assumption(
+    prover: Service,
+) -> None:
+    value = tir.Var("conditional_divisor", "int32")
+    _bind_range(prover, value, -4, 9)
+    choice = tir.if_then_else(value != 0, tir.floordiv(8, value), 0)
+    with _constraint(prover, value == 0):
+        assert _prove(prover, choice == 0)
+        assert not _prove(prover, value != 0)
+        assert not _prove(prover, value == 99)
+    assert not _prove(prover, value != 0)
+
+
 def test_distinct_variables_with_the_same_name_are_not_aliased(prover: Service) -> None:
     left = tir.Var("duplicate", "int32")
     right = tir.Var("duplicate", "int32")

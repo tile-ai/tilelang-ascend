@@ -37,6 +37,9 @@ struct ImportedLegacySyncIR {
   MultiBufferPlan multibuffer;
   BufferVersionMap manual_buffer_versions;
   std::shared_ptr<PhysicalStorageResolver> physical_storage;
+  // Analysis-only storage for the helper's shared hidden L0/event pool. Its
+  // identity is private to this import and never appears in emitted TIR.
+  Optional<tir::Buffer> composite_hidden_pool;
   std::shared_ptr<LegacyExportState> export_state;
 
   ConflictOracle MakeOracle() const;

@@ -754,6 +754,11 @@ public:
     }
     const bool mixed = (selected_resources_ & kCoreCube) != 0 &&
                        (selected_resources_ & kCoreVector) != 0;
+    if (composites_.requires_single_cube) {
+      ICHECK(ordinary_sync_ && selected_resources_ == kCoreCube)
+          << "General GEMM invocation synchronization requires complete "
+             "ordinary automatic synchronization on one Cube resource";
+    }
     // A proven forward local protocol can be replaced only after every real
     // operation has passed effect import. Cross-core publication has different
     // semantics and cannot borrow this local event normalization contract.
@@ -1201,6 +1206,18 @@ private:
                         target_->GetAttr<String>("model").value_or("") ==
                             "pto");
     effects.Analyze(statement);
+    if (result_->composite_hidden_pool.defined()) {
+      const auto *evaluation = statement.as<EvaluateNode>();
+      const auto *call =
+          evaluation ? evaluation->value.as<CallNode>() : nullptr;
+      if (call != nullptr && composites_.Find(call) != nullptr) {
+        const Buffer &pool = result_->composite_hidden_pool.value();
+        BufferRegion region(pool,
+                            {Range::FromMinExtent(Integer(0), Integer(1))});
+        task->AddReadRegion(region);
+        task->AddWriteRegion(region);
+      }
+    }
     task_owners_[task.get()] =
         SelectResource(explicit_resource, effects.InferredResource());
     all_tasks_.push_back(task);
@@ -1345,7 +1362,24 @@ private:
 
 ConflictOracle ImportedLegacySyncIR::MakeOracle() const {
   ICHECK(physical_storage != nullptr);
-  return physical_storage->MakeOracle();
+  auto physical = physical_storage->MakeOracle();
+  if (!composite_hidden_pool.defined())
+    return physical;
+  const Var pool = composite_hidden_pool.value()->data;
+  return [physical = std::move(physical),
+          pool](const PhysicalConflictQuery &query) -> std::optional<bool> {
+    const bool producer_pool =
+        query.producer_region->buffer->data.same_as(pool);
+    const bool consumer_pool =
+        query.consumer_region->buffer->data.same_as(pool);
+    // The private pool conflicts with itself across every call/iteration,
+    // including helpers whose user operands occupy disjoint allocations.
+    // It is not real memory and cannot alias any user buffer. Identify it by
+    // object identity, never by a name or an attribute supplied by user TIR.
+    if (producer_pool || consumer_pool)
+      return producer_pool && consumer_pool;
+    return physical(query);
+  };
 }
 
 ImportedLegacySyncIR
@@ -1389,6 +1423,9 @@ ImportLegacySync(const PrimFunc &function, const Target &target,
       std::move(normalized.mutable_bindings);
   const auto composites =
       AnalyzeLegacyComposites(imported.original_function, target, platform);
+  if (composites.requires_single_cube)
+    imported.composite_hidden_pool = decl_buffer(
+        {Integer(1)}, DataType::UInt(8), "composite_hidden_pool", "global");
   LegacyTailCopyPlan tail_copies(imported.original_function, target, platform);
   LegacyImporter(&imported, target, platform, ordinary_sync, composites,
                  &tail_copies, pipeline_case, persistent, manual.normalized,

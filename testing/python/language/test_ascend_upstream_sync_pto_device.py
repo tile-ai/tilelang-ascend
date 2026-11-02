@@ -12,6 +12,7 @@ from tilelang import tvm
 from test_ascend_pipeline_ring_provenance import _pipelined_abs
 from test_ascend_upstream_sync_codegen_matrix import _same_pipe_abs
 from test_ascend_upstream_sync_device import _PASS_CONFIGS
+from test_ascend_upstream_sync_pto_composite_loop import _pto_k_loop
 from test_tilelang_ascend_language_gemm_v0_n_tiling import gemm_nt
 
 
@@ -72,6 +73,28 @@ def test_a3_pto_gemm_single_scratch_slot_is_drained_between_calls(k):
     for _invocation in range(3):
         first = (torch.randn((16, k), generator=generator) * 0.25).half()
         second = (torch.randn((k, 16), generator=generator) * 0.25).half()
+        expected = (first.float() @ second.float()).half()
+        actual = kernel(first.npu(), second.npu())
+        torch.npu.synchronize()
+        torch.testing.assert_close(actual.cpu(), expected, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("geometry", [(16, 16, 64, 3, 128), (128, 256, 64, 16, 128)])
+def test_a3_pto_external_k_loop_accumulates_tail_only_chunks(geometry):
+    m, n, k_l1, trips, _k_l0 = geometry
+    tilelang.disable_cache()
+    kernel = tilelang.compile(
+        _pto_k_loop(*geometry),
+        out_idx=[-1],
+        target="pto",
+        platform="A3",
+        pass_configs=_PASS_CONFIGS,
+        compile_flags=["--cce-auto-sync=off"],
+    )
+    generator = torch.Generator().manual_seed(2203 + m)
+    for _ in range(3):
+        first = (torch.randn((m, trips * k_l1), generator=generator) * 0.25).half()
+        second = (torch.randn((trips * k_l1, n), generator=generator) * 0.25).half()
         expected = (first.float() @ second.float()).half()
         actual = kernel(first.npu(), second.npu())
         torch.npu.synchronize()

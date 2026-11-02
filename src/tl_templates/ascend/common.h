@@ -15,6 +15,7 @@
 #endif
 
 #include "shmem.h"
+#include "tl_templates/ascend/gemm_layout.h"
 #include "tl_templates/ascend/reduce_2d_v2.h"
 
 #define CUDART_INF_F 1.0f / 0.0f
@@ -146,8 +147,31 @@ CATLASS_DEVICE void copy_l1_to_l0b(LocalTensor<T> dstTensor,
   auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutBInL0),
                              AscendC::TPosition::B2>(dstTensor, layoutBInL0);
 
-  TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
-  tileCopier(dst, src);
+  if constexpr (std::is_same_v<T, float> && !transpose) {
+    // LoadData2D's ifTranspose is a B16 operation. A zN FP32 source has
+    // 16x8-element fractals, whereas L0B nZ has 8x16-element fractals.
+    // Interpret zN as NC1HWCo with HW=roundUp16(srcM), C0=8. A 1x1
+    // LoadData3D with transpose performs that layout conversion on MTE1,
+    // including partial final C0 groups, without extra storage or events.
+    constexpr uint32_t c0 = BYTE_PER_C0 / sizeof(T);
+    constexpr uint64_t padded_rows =
+        (uint64_t(srcM) + C0_NUM_PER_FRCATLASSAL - 1) / C0_NUM_PER_FRCATLASSAL *
+        C0_NUM_PER_FRCATLASSAL;
+    constexpr uint64_t padded_columns = (uint64_t(srcN) + c0 - 1) / c0 * c0;
+    static_assert(padded_rows <= 65535 && padded_columns <= 65535,
+                  "FP32 L1-to-L0B source exceeds LoadData3D descriptor fields");
+    AscendC::LoadData3DParamsV2<float> params;
+    params.l1H = 1;
+    params.l1W = padded_rows;
+    params.channelSize = padded_columns;
+    params.mExtension = (dstM + c0 - 1) / c0 * c0;
+    params.kExtension = (dstN + c0 - 1) / c0 * c0;
+    params.enTranspose = true;
+    AscendC::LoadData(dstTensor, srcTensor, params);
+  } else {
+    TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
+    tileCopier(dst, src);
+  }
 }
 
 template <typename T1, typename T2, uint32_t M, uint32_t N>
@@ -1289,13 +1313,19 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
   // byte-identical. Physical L0B/L0C layout and the template N/K stay
   // compile-time; only "how many columns are actually computed" changes (dual
   // to the runtime K already threaded through mma).
-  static_assert(kL0Size % 16 == 0, "kL0Size must be a multiple of 16");
+  static_assert(kL0Size > 0 && kL0Size % 16 == 0,
+                "kL0Size must be a positive multiple of 16");
+  constexpr GemmV0Layout geometry(M, N, K, kL0Size, sizeof(T1), transpose_B,
+                                  transpose_A);
+  static_assert(geometry.valid(),
+                "gemm_v0: physical L0A/L0B slots must fit their pool and have "
+                "aligned complete internal N tiles");
   // Elements per C0 block (32 bytes). Equals 16 only for half; for int8 it is
   // 32, for float it is 8. The fractal (zN/zZ/nZ) K-stride used below to step
   // between L0 K-tiles is ELE_NUM_PER_C0 * kL0Size, so hardcoding 16 breaks
   // int8 (and any dtype where sizeof(T1) != 2) once kL0split > 1.
   constexpr uint32_t ELE_NUM_PER_C0 = BYTE_PER_C0 / sizeof(T1);
-  constexpr uint32_t kL0split = (K + kL0Size - 1) / kL0Size;
+  constexpr uint32_t kL0split = geometry.k_tiles;
   auto l0a = l0a_.Get<T1>();
   auto l0b = l0b_.Get<T1>();
   uint32_t kL0Tail = K - (kL0split - 1) * kL0Size;
@@ -1334,46 +1364,14 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
       "kL0Size makes every mma consume more K-slots than the L1 fractal "
       "layout provides and desynchronizes the L0 ping-pong bases.");
 
-  // ---- N tiling -----------------------------------------------------------
-  // The B operand tile loaded into L0B is (kL0Size x nTile); L0B holds 64KB,
-  // and with the kL0 ping-pong the per-slot budget is 32KB. So a single mma
-  // over the whole N (l0b slot = N*kL0Size) overflows L0B once N is large
-  // (e.g. the PV matmul's N = headDim = 512 -> 512*128*2 = 128KB). Tile N into
-  // nTile columns just like the Ascend C reference (N_SPLIT_SIZE = 128): each
-  // tile loads its own (kL0Size x nTile) B sub-block and writes its own column
-  // band of the L0C accumulator. Only the non-transpose-B path is tiled; the
-  // transpose-B callers (e.g. QK with N = block_I <= 128) already fit, so they
-  // keep nTile == N (a single pass, byte-for-byte the original behaviour) and
-  // need no L1 column-offset formula. Compatibility: any existing caller with
-  // N <= nMaxByL0B (transpose or not) sees nL0split == 1 and identical codegen.
-  //
-  // Sub-tile offsets come straight from the catlass tla fractal layouts:
-  //   L0C column n0  ->  n0 * roundUp16(M)   (tla::MakeLayoutL0C N1 stride)
-  //   L1 zN B col n0 ->  n0 * roundUp16(K)   (tla::MakeLayout<zN>  C1 stride)
-  // both of which are consistent with the original K-offset
-  // B[kL0Idx*ELE_NUM_PER_C0*kL0Size] (zN K-row stride) already used below.
-  constexpr uint32_t nMaxByL0B = (32u * 1024u) / (kL0Size * sizeof(T1));
-  constexpr uint32_t nTile = (transpose_B || N <= nMaxByL0B) ? N : nMaxByL0B;
-  static_assert(transpose_B || (N % nTile == 0),
-                "gemm_v0 N-tiling requires N divisible by the N tile size");
-  constexpr uint32_t nL0split = N / nTile;
-  // L0A and L0B are each 64KB. The kL0/N ping-pong uses two slots only when
-  // there is more than one (N-tile, K-tile) step; a single step uses one slot
-  // and may occupy the whole 64KB -- which is why a transpose-B caller with a
-  // single K-tile and N up to 64KB/(kL0Size*sizeof(T)) fits (e.g. fp32 N=128 =
-  // 64KB). So the per-slot budget is 64KB for a single step, 32KB once the
-  // ping-pong actually alternates.
-  constexpr uint32_t kNumSteps = ((K + kL0Size - 1) / kL0Size) * nL0split;
-  constexpr uint32_t kL0Budget = (64u * 1024u) / (kNumSteps > 1 ? 2u : 1u);
-  // The B tile in L0B is (kL0Size x nTile) -- only the transpose-B path keeps
-  // nTile == N, so a large-N transpose-B caller could overflow its L0B slot.
-  static_assert(nTile * kL0Size * sizeof(T1) <= kL0Budget,
-                "gemm_v0: the (kL0Size x nTile) B tile does not fit its L0B "
-                "ping-pong slot");
-  // M is not tiled, so a large M would overflow its L0A slot.
-  static_assert(M * kL0Size * sizeof(T1) <= kL0Budget,
-                "gemm_v0: the (M x kL0Size) A tile does not fit its L0A "
-                "ping-pong slot");
+  // Non-transpose B uses uniform complete N tiles. The shared geometry
+  // chooses the largest aligned divisor that fits a physical 32 KiB slot,
+  // including its nZ column padding. Existing aligned tiles remain unchanged.
+  // Transpose B keeps the full N; a single step may use the full 64 KiB pool.
+  // The fallback only avoids a secondary division-by-zero diagnostic after
+  // the geometry static_assert has already rejected an invalid template.
+  constexpr uint32_t nTile = geometry.n_tile == 0 ? 1 : geometry.n_tile;
+  constexpr uint32_t nL0split = geometry.n_tiles;
   // L0C is caller-allocated (the `C` operand) and holds the full (M x N)
   // accumulator: roundUp16(M) * N * sizeof(T2). It must fit the target's L0C
   // (A2/A3 128KB, A5 256KB) -- e.g. M=128, N=512, fp32 needs 256KB and only
@@ -1384,7 +1382,8 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
   // (ASCEND_*_L0C_SIZE live in the host codegen), so a literal guard would
   // reject a valid A5 caller or silently pass on A2/A3. The constraint is
   // therefore documented here; the caller sizes its L0C tile accordingly.
-  constexpr uint32_t mRound = ((M + 15u) / 16u) * 16u;
+  constexpr uint32_t mRound = geometry.m_round;
+  constexpr uint32_t nRound = geometry.n_round;
   constexpr uint32_t kRound = ((K + 15u) / 16u) * 16u;
 
   // ---- Pipelined main loop. Prime/drain the L0A/L0B ping-pong buffers ONCE
@@ -1419,13 +1418,13 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
       uint32_t kSize = (kL0Idx == kL0split - 1) ? kL0Tail : kL0Size;
       uint32_t pp = (tileIdx & 1);
 
-      uint32_t l0a_base = pp * (M * kL0Size);
-      uint32_t l0b_base = pp * (nTile * kL0Size);
+      uint32_t l0a_base = pp * geometry.l0a_elements;
+      uint32_t l0b_base = pp * geometry.l0b_elements;
 
       WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT + pp);
       if constexpr (!transpose_A) {
-        tl::ascend::copy_l1_to_l0a<T1, M, K>(l0a[l0a_base],
-                                             A[kL0Idx * M * kL0Size], M, kSize);
+        tl::ascend::copy_l1_to_l0a<T1, M, K>(
+            l0a[l0a_base], A[kL0Idx * mRound * kL0Size], M, kSize);
       } else {
         tl::ascend::copy_l1_to_l0a<T1, K, M, true>(
             l0a[l0a_base], A[kL0Idx * ELE_NUM_PER_C0 * kL0Size], M, kSize);
@@ -1439,7 +1438,7 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
         // [n_actual:N] columns stay unloaded (masked downstream). n_actual
         // defaults to N (full width) -> byte-identical for non-window callers.
         tl::ascend::copy_l1_to_l0b<T1, N, K, true>(
-            l0b[l0b_base], B[kL0Idx * N * kL0Size], kSize, n_actual);
+            l0b[l0b_base], B[kL0Idx * nRound * kL0Size], kSize, n_actual);
       }
       SetFlag<HardEvent::MTE1_M>(L0AB_EVENT + pp);
       WaitFlag<HardEvent::MTE1_M>(L0AB_EVENT + pp);

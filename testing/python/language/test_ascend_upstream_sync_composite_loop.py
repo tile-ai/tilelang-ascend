@@ -59,27 +59,71 @@ def _operation(call):
     return name
 
 
+def _helper_events(call):
+    # Derive the actual flattened N/K loop from the template. The helper primes
+    # and drains both slots even for one step, including K < kL0Size.
+    name, _, parameters = call.args[0].value.partition("<")
+    fields = [field.strip() for field in parameters.removesuffix(">").split(",")]
+    assert name == "gemm_v0" and len(fields) == 8
+    element_bytes = {"half": 2, "bfloat16_t": 2, "float": 4}[fields[0]]
+    assert fields[1] == "float"
+    m, n, k = (int(field) for field in fields[2:5])
+    transpose_a, transpose_b = fields[5:7]
+    k_l0 = int(fields[7])
+    assert min(m, n, k, k_l0) > 0
+    assert transpose_a in ("true", "false") and transpose_b in ("true", "false")
+    c0 = 32 // element_bytes
+    k_stride = ((k_l0 + c0 - 1) // c0) * c0
+    n_capacity = (32 * 1024) // (k_stride * element_bytes)
+    assert n_capacity > 0
+    n_tile = n
+    if transpose_b == "false" and ((n + 15) // 16) * 16 > n_capacity:
+        # Every uniform N subtile must start on both the source C0 and L0B
+        # column-fractal boundaries. Derive the helper's step count while the
+        # separate shared-layout probe checks the actual physical intervals.
+        n_alignment = max(16, c0)
+        candidates = range((n_capacity // n_alignment) * n_alignment, 0, -n_alignment)
+        n_tile = next(candidate for candidate in candidates if n % candidate == 0)
+    assert n % n_tile == 0
+    steps = ((k + k_l0 - 1) // k_l0) * (n // n_tile)
+    return _helper_event_sequence(steps)
+
+
 def _single_step_helper_events():
-    # common.h gemm_v0:1375-1439. This test factory has M=N=16, K=kL0Size=64,
-    # hence exactly one internal (N, K) step, while both slots are primed/drained.
-    return [
+    # Existing Cube SIP fixtures use one internal step per invocation.
+    return _helper_event_sequence(1)
+
+
+def _helper_event_sequence(steps):
+    events = [
         ("set", "MTE2_MTE1", 0),
         ("wait", "MTE2_MTE1", 0),
         ("set", "FIX_M", 0),
         ("wait", "FIX_M", 0),
         ("set", "M_MTE1", 0),
         ("set", "M_MTE1", 1),
-        ("wait", "M_MTE1", 0),
-        ("set", "MTE1_M", 0),
-        ("wait", "MTE1_M", 0),
-        ("set", "M_MTE1", 0),
-        ("wait", "M_MTE1", 0),
-        ("wait", "M_MTE1", 1),
-        ("set", "MTE1_MTE2", 0),
-        ("wait", "MTE1_MTE2", 0),
-        ("set", "M_FIX", 0),
-        ("wait", "M_FIX", 0),
     ]
+    for step in range(steps):
+        slot = step % 2
+        events.extend(
+            [
+                ("wait", "M_MTE1", slot),
+                ("set", "MTE1_M", slot),
+                ("wait", "MTE1_M", slot),
+                ("set", "M_MTE1", slot),
+            ],
+        )
+    events.extend(
+        [
+            ("wait", "M_MTE1", 0),
+            ("wait", "M_MTE1", 1),
+            ("set", "MTE1_MTE2", 0),
+            ("wait", "MTE1_MTE2", 0),
+            ("set", "M_FIX", 0),
+            ("wait", "M_FIX", 0),
+        ]
+    )
+    return events
 
 
 class _CompletionOracle:
@@ -93,12 +137,15 @@ class _CompletionOracle:
 
     _PIPES = ("MTE2", "MTE1", "M", "FIX")
 
-    def __init__(self):
+    def __init__(self, *, hidden_pool=False):
         self.clocks = {pipe: [0] * len(self._PIPES) for pipe in self._PIPES}
         self.tokens = {}
         self.l1_writes = {}
         self.l1_read_completions = {}
         self.c_writes = {}
+        self.c_reads = {}
+        self.hidden_pool = hidden_pool
+        self.hidden_completion = None
 
     def _step(self, pipe, incoming=None):
         clock = self.clocks[pipe]
@@ -142,31 +189,42 @@ class _CompletionOracle:
     def gemm(self, call):
         first, second, accumulator = (call.args[index].args[1] for index in (1, 2, 3))
         acquire = self._step("MTE1")
+        if self.hidden_pool and self.hidden_completion is not None:
+            self._require_before(self.hidden_completion, acquire, "before hidden L0 pool reuse")
         for operand in (first, second):
             assert operand in self.l1_writes
             self._require_before(self.l1_writes[operand], acquire, "before GEMM L1 read")
         if accumulator in self.c_writes:
             self._require_before(self.c_writes[accumulator], acquire, "before accumulating GEMM acquire")
+        if accumulator in self.c_reads:
+            self._require_before(
+                self.c_reads[accumulator],
+                acquire,
+                "before overwriting a FIX source",
+            )
         completion = self._step("M", acquire)
         for operand in (first, second):
             self.l1_read_completions[operand] = completion
         self.c_writes[accumulator] = completion
+        self.hidden_completion = completion
 
     def store_c(self, call):
         source = call.args[1].args[1]
         assert source in self.c_writes
-        self._require_before(self.c_writes[source], self._step("FIX"), "before final FIX read")
+        now = self._step("FIX")
+        self._require_before(self.c_writes[source], now, "before final FIX read")
+        self.c_reads[source] = now
 
     def finish(self):
         assert not self.tokens, f"undrained generated completion flags: {self.tokens}"
 
 
-def _execute_k_protocol(function):
+def _execute_k_protocol(function, bindings=None, *, hidden_pool=False):
     events = []
     computations = Counter()
     clear_conditions = []
     analyzer = tvm.arith.Analyzer()
-    completion_oracle = _CompletionOracle()
+    completion_oracle = _CompletionOracle(hidden_pool=hidden_pool)
 
     def integer(expression, bindings):
         substitutions = {var: tir.const(value, var.dtype) for var, value in bindings.items()}
@@ -179,7 +237,7 @@ def _execute_k_protocol(function):
             for child in statement.seq:
                 visit(child, bindings, resource)
         elif isinstance(statement, tir.For):
-            assert statement.kind == tir.ForKind.SERIAL
+            assert statement.kind in (tir.ForKind.SERIAL, tir.ForKind.UNROLLED)
             minimum = integer(statement.min, bindings)
             extent = integer(statement.extent, bindings)
             assert extent >= 0
@@ -231,11 +289,10 @@ def _execute_k_protocol(function):
                 computations[operation] += 1
                 if operation == "tl.ascend_gemm_v0":
                     completion_oracle.gemm(call)
-                    assert call.args[0].value == "gemm_v0<half, float, 16, 16, 64, false, false, 64>"
                     clear_conditions.append(integer(call.args[4], bindings))
                     # Compose the audited internal protocol with actual generated
                     # flags, proving hidden reservations prevent collisions.
-                    events.extend(_single_step_helper_events())
+                    events.extend(_helper_events(call))
                 elif operation == "copy_gm_to_l1":
                     completion_oracle.load_l1(call)
                 else:
@@ -243,7 +300,7 @@ def _execute_k_protocol(function):
         else:
             raise AssertionError(f"unsupported protocol shell: {type(statement).__name__}")
 
-    visit(function.body, {})
+    visit(function.body, bindings or {})
     completion_oracle.finish()
     return events, computations, clear_conditions
 
@@ -367,28 +424,24 @@ def test_k_loop_rejects_unvalidated_barriers(ordinary_k_loops, change):
 
 
 @pytest.mark.parametrize("clear", [True, False])
-def test_k_loop_cannot_clear_every_iteration_or_skip_initialization(ordinary_k_loops, clear):
+def test_k_loop_preserves_the_programs_pure_clear_expression(ordinary_k_loops, clear):
     from test_ascend_upstream_sync_composite import _changed_call, _rewrite_gemm
 
     original = _rewrite_gemm(
         ordinary_k_loops[2],
         lambda call: tir.Evaluate(_changed_call(call, clear=tir.const(clear, "bool"))),
     )
-    with pytest.raises(tvm.error.TVMError, match="(?i)(external For|clear=)"):
-        _run(original)
+    result = _run(original)
+    tvm.ir.assert_structural_equal(_gemms(original)[0], _gemms(result)[0])
+    assert int(_gemms(result)[0].args[3].args[4]) == 3
 
 
 @pytest.mark.parametrize(
     "change",
-    ["dynamic", "nonzero_min", "nested", "parallel", "no_refresh", "fix_inside", "partial_copy"],
+    ["dynamic", "nonzero_min", "parallel"],
 )
 def test_k_loop_rejects_unvalidated_control_and_storage_forms(ordinary_k_loops, change):
     original = ordinary_k_loops[2]
-    final_store = next(
-        node
-        for node in _nodes(original.body, tir.Evaluate)
-        if isinstance(node.value, tir.Call) and _operation(node.value) == "copy_l0c_to_gm"
-    )
     dynamic_extent = tir.Var("dynamic_extent", "int32")
 
     def rewrite(loop):
@@ -397,19 +450,8 @@ def test_k_loop_rejects_unvalidated_control_and_storage_forms(ordinary_k_loops, 
             extent = dynamic_extent
         elif change == "nonzero_min":
             minimum = tir.IntImm("int32", 1)
-        elif change == "nested":
-            body = tir.For(tir.Var("nested", "int32"), 0, 2, tir.ForKind.SERIAL, body)
         elif change == "parallel":
             kind = tir.ForKind.PARALLEL
-        elif change == "no_refresh":
-            body = tir.Evaluate(_gemms(original)[0])
-        elif change == "fix_inside":
-            body = tir.SeqStmt([body, final_store])
-        elif change == "partial_copy":
-            first, *rest = list(body.seq)
-            arguments = list(first.value.args)
-            arguments[4] = tir.IntImm("int32", 8)
-            body = tir.SeqStmt([tir.Evaluate(tir.Call(first.value.dtype, first.value.op, arguments)), *rest])
         return tir.For(loop.loop_var, minimum, extent, kind, body)
 
     original = _rewrite_loop(original, rewrite)
@@ -421,8 +463,42 @@ def test_k_loop_rejects_unvalidated_control_and_storage_forms(ordinary_k_loops, 
             original.buffer_map,
             original.attrs,
         )
-    with pytest.raises(tvm.error.TVMError, match="(?i)(external For|nested control|GM-to-L1)"):
+    with pytest.raises(
+        tvm.error.TVMError,
+        match="(?i)(external For|invocation|GM-to-L1|refresh|nonwrapping)",
+    ):
         _run(original)
+
+
+@pytest.mark.parametrize("change", ["nested", "fix_inside", "partial_copy"])
+def test_k_loop_preserves_supported_control_store_and_partial_refresh(ordinary_k_loops, change):
+    original = ordinary_k_loops[2]
+    final_store = next(
+        node
+        for node in _nodes(original.body, tir.Evaluate)
+        if isinstance(node.value, tir.Call) and _operation(node.value) == "copy_l0c_to_gm"
+    )
+
+    def rewrite(loop):
+        body = loop.body
+        if change == "nested":
+            body = tir.For(tir.Var("nested", "int32"), 0, 2, tir.ForKind.SERIAL, body)
+        elif change == "fix_inside":
+            body = tir.SeqStmt([body, final_store])
+        else:
+            first, *rest = list(body.seq)
+            arguments = list(first.value.args)
+            arguments[4] = tir.IntImm("int32", 8)
+            body = tir.SeqStmt(
+                [tir.Evaluate(tir.Call(first.value.dtype, first.value.op, arguments)), *rest],
+            )
+        return tir.For(loop.loop_var, loop.min, loop.extent, loop.kind, body)
+
+    result = _run(_rewrite_loop(original, rewrite), target_kind="llvm")
+    events, computations, _ = _execute_k_protocol(result, hidden_pool=True)
+    _assert_balanced_events(events, set())
+    assert computations["tl.ascend_gemm_v0"] == (4 if change == "nested" else 2)
+    assert computations["copy_l0c_to_gm"] == (3 if change == "fix_inside" else 1)
 
 
 @pytest.mark.parametrize("remove", ["set", "wait"])

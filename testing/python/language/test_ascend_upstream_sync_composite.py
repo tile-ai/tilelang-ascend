@@ -204,13 +204,22 @@ def test_nonconflicting_manual_id_stays_reserved_for_generated_flags(flat_gemms)
     assert all(event_id not in (0, 7) for event_id in ids)
 
 
-def test_external_k_loop_is_rejected_until_separate_hardware_acceptance(flat_gemms):
+def test_external_loop_can_reuse_already_refreshed_operands(flat_gemms):
     original = _rewrite_gemm(
         flat_gemms[64],
         lambda call: tir.For(tir.Var("outer_k", "int32"), 0, 2, tir.ForKind.SERIAL, tir.Evaluate(call)),
     )
-    with pytest.raises(tvm.error.TVMError, match="(?i)(composite.*For|external.*loop)"):
-        _run(original)
+    result = _run(original, target_kind="llvm")
+    assert len(_nodes(result.body, tir.For)) == 1
+    tvm.ir.assert_structural_equal(_gemms(original)[0], _gemms(result)[0])
+    from test_ascend_upstream_sync_composite_loop import _execute_k_protocol
+
+    events, calculations, clears = _execute_k_protocol(result, hidden_pool=True)
+    from test_ascend_upstream_sync_pipeline import _assert_balanced_events
+
+    _assert_balanced_events(events, set())
+    assert calculations["tl.ascend_gemm_v0"] == 2
+    assert clears == [1, 1]
 
 
 def test_software_pipeline_annotation_is_not_treated_as_a_flat_helper(flat_gemms):
