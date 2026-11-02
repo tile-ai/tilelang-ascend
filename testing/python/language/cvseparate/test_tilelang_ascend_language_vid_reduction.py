@@ -294,6 +294,57 @@ def test_vid_reduction_tile_ops(setup_random_seed, target):
 
 
 # ============================================================
+# 4a-2) sigmoid / round tile ops
+#
+# Guards the IsTileOp whitelist entries for tl.ascend_sigmoid and
+# tl.ascend_round (both added to ascend_vid_reduction.cc).
+# Without the whitelist entries, threads=2 generates
+# calCount = full tile size while each sub-block buffer is only
+# half — violating the AscendC API contract.
+# Chain: a -> sigmoid(a) -> * 100 -> round -> output
+# ============================================================
+
+
+def tile_sigmoid_round_kernel(M, N, block_M, block_N, dtype="float32"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(A: T.Tensor((M, N), dtype), B: T.Tensor((M, N), dtype)):
+        with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_shared((block_M, block_N), dtype)
+            b_ub = T.alloc_shared((block_M, block_N), dtype)
+            temp_ub = T.alloc_shared((block_M, block_N), dtype)
+
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+
+            # sigmoid: size = prod(dst_extent) — whitelist entry
+            T.tile.sigmoid(b_ub, a_ub)
+            # scale up so rounding produces distinguishable values
+            T.tile.mul(temp_ub, b_ub, 100.0)
+            # round: count = prod — whitelist entry
+            T.tile.round(b_ub, temp_ub, block_M * block_N)
+
+            T.copy(b_ub, B[bx * block_M, by * block_N])
+
+    return main
+
+
+@pytest.mark.parametrize("target", ["ascendc"])
+def test_vid_reduction_tile_sigmoid_round(setup_random_seed, target):
+    M, N, block_M, block_N = 256, 128, 64, 128
+    func = tilelang.compile(tile_sigmoid_round_kernel(M, N, block_M, block_N), out_idx=[1], pass_configs=pass_configs, target=target)
+    a = torch.randn(M, N, dtype=torch.float32).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    torch.npu.synchronize()
+    ref = torch.round(torch.sigmoid(a) * 100)
+    torch.testing.assert_close(b, ref, rtol=1e-2, atol=1e-2)
+
+
+# ============================================================
 # 4b) cast / mul_add_dst / silu tile ops
 #
 # Mirrors: T.tile.cast(w0, w_half0, "CAST_NONE", dim_per_core) /
