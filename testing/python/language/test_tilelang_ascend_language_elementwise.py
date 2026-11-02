@@ -1077,6 +1077,76 @@ def test_bitwise_not_buffer_region(target):
     assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
 
 
+def run_test_bitwise_not_slice_contiguous(target, mode):
+    """Contiguous slices with non-zero offsets must process exactly the slice.
+
+    Every element outside the slice keeps its sentinel value untouched.
+    This pins the contiguous-slice contract: the frontend flattens a region
+    to (start, count), so only physically contiguous slices (full-width
+    row ranges or single-row column ranges) are valid operands.
+    """
+    shape = (4, 32)
+    dtype = "int16"
+
+    if mode == "row-range":
+
+        @T.prim_func
+        def main(
+            A: T.Tensor(shape, dtype),  # type: ignore
+            B: T.Tensor(shape, dtype),  # type: ignore
+        ):
+            with T.Kernel(1, is_npu=True) as (_, vid):
+                a_ub = T.alloc_ub(shape, dtype)
+                if vid == 0:
+                    T.copy(A, a_ub)
+                    T.tile.bitwise_not(a_ub[2:4, 0:32], a_ub[2:4, 0:32])
+                    T.copy(a_ub, B)
+
+    else:
+
+        @T.prim_func
+        def main(
+            A: T.Tensor(shape, dtype),  # type: ignore
+            B: T.Tensor(shape, dtype),  # type: ignore
+        ):
+            with T.Kernel(1, is_npu=True) as (_, vid):
+                a_ub = T.alloc_ub(shape, dtype)
+                if vid == 0:
+                    T.copy(A, a_ub)
+                    T.tile.bitwise_not(a_ub[0:1, 16:32], a_ub[0:1, 16:32])
+                    T.copy(a_ub, B)
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    a = torch.arange(-64, 64, dtype=torch.int16).reshape(shape).npu()
+    b = func(a)
+    torch.npu.synchronize()
+    out = b.cpu()
+    a_cpu = a.cpu()
+    changed = out != a_cpu
+    rows, cols = torch.meshgrid(torch.arange(shape[0]), torch.arange(shape[1]), indexing="ij")
+    if mode == "row-range":
+        expected = rows >= 2
+    else:
+        expected = (rows == 0) & (cols >= 16)
+    assert bool((changed == expected).all()), (
+        f"slice mode {mode}: processed {int(changed.sum())} elements, expected {int(expected.sum())}"
+        " - out-of-region corruption or missed region"
+    )
+    assert bool((out[expected] == ~a_cpu[expected]).all()), "inverted values wrong inside the slice"
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "row-range",
+        "row+col",
+    ],
+)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_bitwise_not_slice_contiguous(mode, target):
+    run_test_bitwise_not_slice_contiguous(target, mode)
+
+
 def bitwise_rshift(M, N, block_M, block_N, scalarvalue, dtype="int32"):
     m_num = M // block_M
     n_num = N // block_N

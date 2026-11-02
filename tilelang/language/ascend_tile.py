@@ -1447,7 +1447,10 @@ def bitwise_not(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
         - Ascend C: int16, uint16.
         - PTO: int8, uint8, int16, uint16.
 
-    BufferRegion slice operands are supported.
+    Physically contiguous BufferRegion slice operands are supported
+    (full-width row ranges, single-row column ranges, and 1D ranges);
+    non-contiguous regions (e.g. multi-row column slices such as
+    buf[:, a:b]) are not.
 
     Note (Ascend C): for a full 2-D tile, the current Ascend C implementation
     requires each row's logical byte width to be a multiple of 32. For
