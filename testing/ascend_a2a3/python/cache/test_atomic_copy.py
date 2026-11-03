@@ -1,6 +1,6 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
-"""Host-only cache publication tests for the current atomic writer."""
+"""Host-only cache publication tests; no device is required."""
 
 import mmap
 import os
