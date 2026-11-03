@@ -37,7 +37,7 @@ def sub(
 | Ascend A2 / A3 | float16, float32, int16, int32 | float16, float32, int16, int32 | 同 dst |
 
 - src1 为 tensor 时，dtype 必须与 dst 一致；src1 为 scalar 时自动转换为 buffer 的 dtype
-- src1 为 BufferLoad 时：float16/float32 两个后端均支持；int16/int32 仅 pto 后端支持（ascendc 编译失败）
+- src1 为 BufferLoad 时，float16/float32/int16/int32 在 ascendc 和 pto 后端均支持
 
 #### 2.3.2 Shape 支持
 
@@ -54,8 +54,7 @@ def sub(
 5. 操作数地址需 32 字节对齐（硬件约束）
 6. 仅支持整行/整 buffer 的连续区域；2D 列偏移切片（如 `buf[0, 8:40]`）会产生错误结果或触发 aicore 异常（507015），不支持
 7. src1 为 buffer 元素访问时仅支持 1D 单索引（如 `buf[i]`）；多维元素访问只取第一个索引，结果错误（实测行为，两后端一致）
-8. src1 为 BufferLoad 且 dtype 为 int16/int32 时，仅 pto 后端支持（ascendc codegen 生成 float 标量与 int 张量混用导致编译失败）
-9. 标量仅支持作为 src1（右操作数）：减法不可交换，`标量 - Buffer` 形式（如 `2.0 - buf`）当前无法表达；Ascend C `Subs` 接口原生支持（flexible scalar），TileLang 前端暂未暴露该形式（缺口记录）
+8. 标量仅支持作为 src1（右操作数）：减法不可交换，`标量 - Buffer` 形式（如 `2.0 - buf`）当前无法表达；Ascend C `Subs` 接口原生支持（flexible scalar），TileLang 前端暂未暴露该形式（缺口记录）
 
 ## 3. 示例代码
 

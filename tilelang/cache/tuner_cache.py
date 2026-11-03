@@ -2,12 +2,14 @@
 # Licensed under the MIT License.
 """The cache utils with class and database persistence - KernelCache Class"""
 
+from __future__ import annotations
+
 import os
 import json
 import shutil
 from pathlib import Path
 from hashlib import sha256
-from typing import Callable, List, Literal, Union, Optional
+from typing import Callable, Literal
 from tvm.target import Target
 from tvm.tir import PrimFunc
 from tilelang.jit import JITKernel
@@ -18,6 +20,7 @@ import logging
 
 from tilelang.env import TILELANG_CACHE_DIR, is_cache_enabled
 from tilelang.version import __version__
+from tilelang.utils.file import atomic_copy, error_reports_missing_path, is_file_missing
 
 KERNEL_PATH = "kernel.cu"
 WRAPPED_KERNEL_PATH = "wrapped_kernel.cu"
@@ -67,11 +70,11 @@ class AutoTunerCache:
     def _generate_key(
         self,
         func: Callable,
-        out_idx: List[int],
+        out_idx: list[int],
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         args=None,
-        target: Union[str, Target] = "auto",
-        target_host: Union[str, Target] = None,
+        target: str | Target = "auto",
+        target_host: str | Target = None,
         pass_configs: dict = None,
     ) -> str:
         """
@@ -93,9 +96,7 @@ class AutoTunerCache:
             "version": __version__,
             "func": sha256(func_binary).hexdigest(),  # Use SHA256 to generate hash key
             "out_idx": (tuple(out_idx) if isinstance(out_idx, (list, tuple)) else [out_idx]),
-            "args_repr": tuple(
-                repr(arg) for arg in args
-            ),  # Use repr to serialize arguments, may need more robust serialization
+            "args_repr": tuple(repr(arg) for arg in args),  # Use repr to serialize arguments, may need more robust serialization
             "target": str(target),
             "target_host": str(target_host) if target_host else None,
             "execution_backend": execution_backend,
@@ -107,10 +108,10 @@ class AutoTunerCache:
     def cached(
         self,
         func: PrimFunc = None,
-        out_idx: List[int] = None,
+        out_idx: list[int] = None,
         *args,
-        target: Union[str, Target] = "auto",
-        target_host: Union[str, Target] = None,
+        target: str | Target = "auto",
+        target_host: str | Target = None,
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         verbose: bool = False,
         pass_configs: dict = None,
@@ -151,13 +152,13 @@ class AutoTunerCache:
         with self._lock:
             # First check in-memory cache
             if key in self._memory_cache:
-                self.logger.warning("Found kernel in memory cache. For better performance," \
-                                    " consider using `@tilelang.jit` instead of direct kernel caching.")
+                self.logger.warning(
+                    "Found kernel in memory cache. For better performance, consider using `@tilelang.jit` instead of direct kernel caching."
+                )
                 return self._memory_cache[key]
 
             # Then check disk cache
-            kernel = self._load_kernel_from_disk(key, target, target_host, out_idx,
-                                                 execution_backend, pass_configs, func)
+            kernel = self._load_kernel_from_disk(key, target, target_host, out_idx, execution_backend, pass_configs, func)
             if kernel is not None:
                 # Populate memory cache with disk result
                 self._memory_cache[key] = kernel
@@ -242,7 +243,13 @@ class AutoTunerCache:
             - params.pkl: The serialized kernel parameters
         """
         cache_path = self._get_cache_path(key)
-        os.makedirs(cache_path, exist_ok=True)  # Ensure directory exists
+        try:
+            os.makedirs(cache_path, exist_ok=True)  # Ensure directory exists
+        except FileNotFoundError:
+            # The cache directory disappeared while publishing; the compiled
+            # kernel is still usable, so abandon the save without failing.
+            self.logger.warning("Cache directory disappeared while saving kernel; skipping save: %s", cache_path)
+            return
 
         # Save kernel source code
         try:
@@ -264,7 +271,7 @@ class AutoTunerCache:
         try:
             kernel_lib_path = os.path.join(cache_path, KERNEL_LIB_PATH)
             src_lib_path = kernel.adapter.libpath
-            shutil.copy(src_lib_path, kernel_lib_path)
+            atomic_copy(src_lib_path, kernel_lib_path)
         except Exception as e:
             self.logger.error(f"Error saving kernel library to disk: {e}")
 
@@ -279,9 +286,9 @@ class AutoTunerCache:
     def _load_kernel_from_disk(
         self,
         key: str,
-        target: Union[str, Target] = "auto",
-        target_host: Union[str, Target] = None,
-        out_idx: List[int] = None,
+        target: str | Target = "auto",
+        target_host: str | Target = None,
+        out_idx: list[int] = None,
         execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
         pass_configs: dict = None,
         func: Callable = None,
@@ -305,12 +312,12 @@ class AutoTunerCache:
         if not os.path.exists(cache_path):
             return None
 
-        kernel_global_source: Optional[str] = None
-        kernel_params: Optional[List[KernelParam]] = None
+        kernel_global_source: str | None = None
+        kernel_params: list[KernelParam] | None = None
 
         try:
             wrapped_kernel_path = os.path.join(cache_path, WRAPPED_KERNEL_PATH)
-            with open(wrapped_kernel_path, "r") as f:
+            with open(wrapped_kernel_path) as f:
                 kernel_global_source = f.read()
         except Exception as e:
             self.logger.error(f"Error loading wrapped kernel source code from disk: {e}")
@@ -326,24 +333,41 @@ class AutoTunerCache:
             self.logger.error(f"Error loading kernel parameters from disk: {e}")
 
         if kernel_global_source and kernel_params:
-            return JITKernel.from_database(
-                func=func,
-                kernel_global_source=kernel_global_source,
-                kernel_lib_path=kernel_lib_path,
-                params=kernel_params,
-                target=target,
-                target_host=target_host,
-                out_idx=out_idx,
-                execution_backend=execution_backend,
-                pass_configs=pass_configs,
-            )
+            try:
+                return JITKernel.from_database(
+                    func=func,
+                    kernel_global_source=kernel_global_source,
+                    kernel_lib_path=kernel_lib_path,
+                    params=kernel_params,
+                    target=target,
+                    target_host=target_host,
+                    out_idx=out_idx,
+                    execution_backend=execution_backend,
+                    pass_configs=pass_configs,
+                )
+            except PermissionError:
+                # The entry is present but unreadable; recompiling would hit the
+                # same permission on the save path, so keep the original error.
+                raise
+            except OSError as error:
+                if not error_reports_missing_path(error, kernel_lib_path):
+                    # A dependency, ELF/ABI, or other loader error: not this cache
+                    # entry going missing, so preserve it.
+                    raise
+                if is_file_missing(kernel_lib_path):
+                    self.logger.warning(
+                        "Cached kernel library %s disappeared while loading; recompiling.",
+                        kernel_lib_path,
+                    )
+                    return None
+                raise
         else:
             return None
 
     def _clear_disk_cache(self):
         """
         Removes all cached kernels from disk.
-        
+
         Note:
             This operation will delete the entire cache directory and recreate it empty.
             Use with caution as this operation cannot be undone.

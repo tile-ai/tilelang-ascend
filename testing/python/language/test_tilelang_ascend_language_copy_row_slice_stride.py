@@ -59,7 +59,6 @@ DTYPE = "float32"
 F_BM, F_N2, F_G, F_D = 4, 3, 2, 64
 
 PASS_CONFIGS = {
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: False,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
 }
