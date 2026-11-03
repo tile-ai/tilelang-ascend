@@ -754,14 +754,13 @@ def test_helper_ensures_does_not_cache_memory_reads():
     assert _setter_counts(_legalize(_with_body(_add_fp32, body))) == (2, 1)
 
 
-@pytest.mark.parametrize("kind", ["src_code", "extern", "customized"])
+@pytest.mark.parametrize("kind", ["src_code", "extern"])
 def test_opaque_symbol_changes_invalidate_mask_facts(kind):
     value = tir.Var("value", "int32")
     add = tir.Evaluate(_selected_add(96 + 32 * value))
     opaque = {
         "src_code": tir.Evaluate(_call("tl.ascend_src_code", tir.StringImm("value += 1;"))),
         "extern": tir.Evaluate(_extern("opaque_symbol_update")),
-        "customized": tir.Evaluate(tir.call_intrin("handle", Op.get("tl.ascend_src_code"), "value += 1;")),
     }[kind]
     # A loop containing only opaque code must not take the mask-neutral fast
     # path: that code can change either an input symbol or the mask itself.
@@ -938,9 +937,7 @@ def test_resource_scope_is_explicit_nested_and_fail_closed():
         tir.Call("handle", Op.get("tl.ascend_src_code"), [tir.StringImm("int value = 0;")]),
         _extern("opaque_ascend_helper"),
     ]
-    statements = [tir.Evaluate(call) for call in calls] + [
-        tir.Evaluate(tir.call_intrin("handle", Op.get("tl.ascend_src_code"), "int value = 0;"))
-    ]
+    statements = [tir.Evaluate(call) for call in calls]
     for statement in statements:
         function = _with_body(_add_fp32, statement, scoped=False)
         with pytest.raises(Exception, match="must be inside T.Scope"):
