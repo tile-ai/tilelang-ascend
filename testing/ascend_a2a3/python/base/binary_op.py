@@ -9,7 +9,7 @@ import torch
 import tilelang
 import tilelang.ascend.a2a3.language as T
 
-from .common import DTYPE_MAP, DEFAULT_PASS_CONFIGS, assert_close_npu, make_test_data, skip_if_missing
+from base.common import DTYPE_MAP, DEFAULT_PASS_CONFIGS, assert_close_npu, make_test_data, skip_if_missing
 
 
 def make_binary_kernel(tile_op):
