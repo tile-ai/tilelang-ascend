@@ -316,8 +316,14 @@ def foo(A: T.Tensor((K,), "float32")):
 dtype用于指定Tile的数据类型，支持的类型列表有：
 
 ```
-float16, float32, bfloat16, int8, int16, int32, int64, uint8, uint16, uint32, uint64
+float16, float32, bfloat16, int4, int8, int16, int32, int64, uint8, uint16, uint32, uint64
 ```
+
+`int4` 为半字节打包类型（两个元素共享一个字节，低 nibble 为偶数元素），GM 上的 int4
+tensor 按行打包：`(M, N)` tensor 的第 r 行起始于字节 `r * N / 2`（行宽需为偶数）。
+当前 int4 仅支持在默认 `ascendc` target 下用于 `T.gemm_v0` 的 W4A4（int4×int4→int32）
+矩阵乘（要求 K、N 为 64 的倍数，暂不支持 `transpose_A` / `transpose_B`）以及
+`T.tile.cast` 的 fp16→int4 量化，其余算子暂未支持。参考示例：`examples/w4a4_matmul/`。
 
 
 
