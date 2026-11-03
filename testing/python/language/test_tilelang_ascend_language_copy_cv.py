@@ -268,6 +268,48 @@ def _ub_to_l1_kernel_expert_A5(M=128, N=128, K=128, dtype="float16", accum_dtype
     return main
 
 
+def _ub_to_l1_explicit_mma_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
+    """Test kernel: GM→UB→pipe→L1→L0A with explicit copy + mma.
+
+    Unlike the gemm_v0 variants, the explicit T.copy(A_l1, A_l0) exposes the
+    auto-sync dependency between copy_pipe_to_l1 (consumer MTE2 on A2/A3,
+    MTE1 bind on A5) and the L1→L0A load (MTE1)."""
+    VEC_NUM = 2
+    M_half = M // VEC_NUM
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), dtype),  # type: ignore
+        B: T.Tensor((K, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), accum_dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            A_ub = T.alloc_ub((M_half, K), dtype)
+            A_ub_Nz = T.alloc_ub((M_half, K), dtype)
+            A_l1 = T.alloc_L1((M, K), dtype)
+            B_l1 = T.alloc_L1((K, N), dtype)
+            A_l0 = T.alloc_L0A((M, K), dtype)
+            B_l0 = T.alloc_L0B((K, N), dtype)
+            C_l0c = T.alloc_L0C((M, N), accum_dtype)
+
+            # GM → L1 → L0B
+            T.copy(B, B_l1)
+            T.copy(B_l1, B_l0)
+
+            # GM → UB → pipe → L1 → L0A
+            T.copy(A[vid * M_half : (vid + 1) * M_half, :], A_ub)
+            T.copy(A_ub, A_l1, tmp=A_ub_Nz)
+            T.copy(A_l1, A_l0)
+
+            # MMA
+            T.mma(A_l0, B_l0, C_l0c, init=True)
+
+            # L0C → GM
+            T.copy(C_l0c, C)
+
+    return main
+
+
 def _l0c_to_ub_kernel(M=128, N=128, K=128, dtype="float16", accum_dtype="float"):
     """Test kernel: GM→L1→GEMM→L0C→UB→GM"""
     VEC_NUM = 2
@@ -495,6 +537,25 @@ def test_ub_to_l1_drop_vid(target):
 def test_ub_to_l1_lr(target):
     M, N, K = 128, 128, 128
     _ub_to_l1_case(_ub_to_l1_kernel_lr, M=M, N=N, K=K, target=target, expert=False)
+
+
+@pytest.mark.parametrize("target", ["pto"])
+def test_ub_to_l1_explicit_mma(target):
+    """A × identity must return A exactly; any stale L1 read after
+    copy_pipe_to_l1 breaks the equality (issue #1780)."""
+    M, N, K = 128, 128, 128
+    program = _ub_to_l1_explicit_mma_kernel(M=M, N=N, K=K)
+    kernel = _compile(program, target=target)
+
+    a = torch.randint(-7, 8, (M, K), dtype=torch.int16).to(torch.float16).npu()
+    b = torch.eye(N, dtype=torch.float16, device="npu")
+    c = torch.empty((M, N), dtype=torch.float32, device="npu")
+    torch.npu.synchronize()
+
+    for _ in range(5):
+        kernel(a, b, c)
+        torch.npu.synchronize()
+        torch.testing.assert_close(c, a.to(torch.float32), rtol=0, atol=0)
 
 
 @skip_A5
