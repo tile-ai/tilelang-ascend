@@ -2351,9 +2351,11 @@ def bitwise_xor(
     # (the union of the backend domains); each backend still enforces its own
     # subset during code generation.
     _supported = ("int8", "uint8", "int16", "uint16")
-    dst_dtype = _underlying_buffer(dst).dtype
-    src0_dtype = _underlying_buffer(src0).dtype
-    src1_dtype = _underlying_buffer(src1).dtype
+    # BufferRegion / vectorized accesses may surface a lane-suffixed dtype
+    # (e.g. "int16x256"); compare against the scalar element type only.
+    dst_dtype = _underlying_buffer(dst).dtype.split("x")[0]
+    src0_dtype = _underlying_buffer(src0).dtype.split("x")[0]
+    src1_dtype = _underlying_buffer(src1).dtype.split("x")[0]
     if dst_dtype not in _supported or src0_dtype not in _supported or src1_dtype not in _supported:
         raise ValueError(
             "tilelang.language.bitwise_xor: unsupported operand dtype "
