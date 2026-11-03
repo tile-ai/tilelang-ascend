@@ -660,6 +660,13 @@ jobs:
                 cp -ra build-cache/* build/ 
               fi
 
+              # 0. 将所有子模块重置到主仓库记录的版本，清除上次运行残留的修改（例如 TVM 补丁）
+              #    actions/checkout 只清理主仓库，self-hosted runner 上的子模块工作区会跨运行保留
+              git submodule update --init --recursive --force
+              git submodule foreach --recursive 'git reset -q --hard && git clean -qffdx'
+              # 在干净的子模块上应用 TVM 补丁；补丁无法应用时由 set -e 中止构建
+              bash 3rdparty/patches/apply_tvm_patches.sh
+
               # 1. 增量编译项目
               bash install_ascend.sh \$INCREMENTAL_FLAG
               # 保存编译产物
