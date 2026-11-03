@@ -353,11 +353,25 @@ def fill(buffer: Buffer | BufferRegion, value: PrimExpr):
     """Fill a buffer or buffer region with a specified value.
 
     Args:
-        buffer: Either a TVM buffer or buffer region to be filled
-        value: The value to fill the buffer with
+        buffer: Either a TVM buffer or buffer region to be filled.
+        value: The value to fill the buffer with.  Can be a Python scalar
+               or PrimExpr.  When the value dtype differs from the buffer
+               dtype, the frontend automatically casts it without range
+               checks.  Out-of-range values may be silently truncated or
+               wrapped.
 
     Returns:
-        A TVM intrinsic call that performs the fill operation
+        A TVM intrinsic call that performs the fill operation.
+
+    Note:
+        On AscendC, dtype support: float16, float32, bfloat16,
+        int16, uint16, int32, uint32.  int8/uint8 are not supported.
+        On PTO, int8 and uint8 are additionally supported.
+        The buffer should reside in UB (Unified Buffer) memory.  A buffer
+        allocated by ``T.alloc_shared`` is supported only when memory planning
+        infers it as UB.  Buffer regions must be physically contiguous; 2D
+        column-offset slices are unsupported and may silently write incorrect
+        locations.
     """
     if isinstance(buffer, BufferRegion):
         buffer_ptr, buffer_extent = _handle_buffer_region(buffer, "w")
@@ -376,12 +390,11 @@ def fill(buffer: Buffer | BufferRegion, value: PrimExpr):
     )
 
 
-def clear(buffer: Buffer | tir.Var):
+def clear(buffer: Buffer | BufferRegion):
     """Clear a buffer or buffer region by filling with zeros.
 
     Args:
-        buffer: The buffer, buffer region, or variable to be cleared.
-                If a tir.Var is provided, it will be resolved automatically.
+        buffer: The buffer or buffer region to be cleared.
 
     Returns:
         A TVM intrinsic call that fills the buffer with zeros.
@@ -1612,9 +1625,14 @@ def bitwise_lshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scal
 def bitwise_rshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalarValue: PrimExpr):  # noqa: F821
     """Performs element-wise bitwise right shift: dst = src0 >> scalarValue.
 
+    The shift is **arithmetic** for signed types (sign bit preserved) and
+    **logical** for unsigned types (high bits filled with 0).
+
+    Supported dtypes on A2/A3: int16, uint16, int32, uint32.
+
     Args:
-        dst: The destination buffer.
-        src0: The source buffer.
+        dst: The destination buffer (UB).
+        src0: The source buffer (UB), must have the same size and dtype as dst.
         scalarValue: The number of bits to shift (scalar).
     """
     if isinstance(dst, BufferRegion):
@@ -2320,9 +2338,11 @@ def bitwise_xor(
     Args:
         dst: The destination buffer where the result will be stored.
         src0: The first source operand buffer.
-        src1: The second source operand buffer.
-        tmp: Optional complete UB scratch storage. Its scalar dtype is
-            reinterpreted by lowering and has no semantic meaning.
+        src1: The second source operand buffer. Scalar operands are unsupported.
+        tmp: Optional one-dimensional UB scratch buffer. When omitted, the
+            framework allocates the workspace automatically.
+
+    Supported dtypes: int16, uint16.
 
     Returns:
         A TVM intrinsic call that performs the bitwise XOR operation.
