@@ -27,11 +27,8 @@ def platform():
     return determine_platform()
 
 
-skip_A5 = pytest.mark.skipif(
-    determine_platform() == "A5",
-    reason="Only test for non-A5 platform",
-)
-only_A5 = pytest.mark.skip(reason="Original TA A5-only source retained outside A2/A3; modern A5 unverified")
+skip_A5 = pytest.mark.skipif(determine_platform() == "A5", reason="Only test for non-A5 platform")
+only_A5 = pytest.mark.skipif(determine_platform() != "A5", reason="Only test for A5 platform")
 target_skip_ascendc_in_A5 = pytest.mark.parametrize("target", [pytest.param("ascendc", marks=skip_A5), "pto"])
 # target = A2/A3: "ascend" & "pto"; A5: "pto" only
 

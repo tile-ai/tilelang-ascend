@@ -1,5 +1,6 @@
 import pytest
-from unittest.mock import Mock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import tilelang
 import tilelang.ascend.a2a3.language as T
@@ -139,7 +140,7 @@ def _compile_and_get_source(target):
         patch("tilelang.jit.adapter.libgen.LibraryGenerator.compile_lib") as mock_compile,
         patch(
             "tilelang.jit.adapter.libgen.LibraryGenerator.load_lib",
-            return_value=Mock(),
+            return_value=SimpleNamespace(call=SimpleNamespace()),
         ),
     ):
         mock_compile.return_value = None
@@ -158,7 +159,7 @@ def _compile_ub_and_get_source(target):
         patch("tilelang.jit.adapter.libgen.LibraryGenerator.compile_lib") as mock_compile,
         patch(
             "tilelang.jit.adapter.libgen.LibraryGenerator.load_lib",
-            return_value=Mock(),
+            return_value=SimpleNamespace(call=SimpleNamespace()),
         ),
     ):
         mock_compile.return_value = None
@@ -294,7 +295,7 @@ def _compile_symbolic_and_get_source(prim_func, target):
         patch("tilelang.jit.adapter.libgen.LibraryGenerator.compile_lib") as mock_compile,
         patch(
             "tilelang.jit.adapter.libgen.LibraryGenerator.load_lib",
-            return_value=Mock(),
+            return_value=SimpleNamespace(call=SimpleNamespace()),
         ),
     ):
         mock_compile.return_value = None

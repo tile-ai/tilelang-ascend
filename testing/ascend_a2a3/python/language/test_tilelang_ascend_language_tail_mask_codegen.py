@@ -20,8 +20,7 @@ import tilelang.ascend.a2a3.language as T
 from tilelang import tvm
 from tilelang.ascend.a2a3.pipeline import LowerAndLegalize, _prepare_source_kernel, _record_pto_cthread_modes
 from tilelang.ascend.a2a3.pass_config import normalize_a2a3_pass_configs
-from tilelang.ascend.a2a3.platform import resolve_a2a3_platform
-
+from tilelang.ascend.target import determine_platform
 
 
 def _target(dialect):
@@ -558,7 +557,7 @@ def _source(func, target="ascendc", tail_mask=True):
 def _lowered_tir(func, target="ascendc"):
     """Return post-tail-pass TIR without invoking backend source codegen."""
     target_obj = _target(target)
-    platform = resolve_a2a3_platform(target_obj)
+    platform = determine_platform("auto")
     mod = tvm.IRModule({func.attrs["global_symbol"]: func})
     for gvar, prim_func in mod.functions_items():
         mod[gvar] = prim_func.with_attr("npu_platform", platform)

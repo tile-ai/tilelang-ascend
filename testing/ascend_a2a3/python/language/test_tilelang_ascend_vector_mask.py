@@ -11,17 +11,7 @@ from tvm.ir import Op, assert_structural_equal
 from tvm.target import Target
 
 
-
-# Every original test uses native selection/legalization. Its module-level
-# PrimFuncs require the backend before collection; do not create fake types.
-if get_global_func("tl.transform.A2A3AscendVectorInstructionSelection", allow_missing=True) is None:
-    pytest.skip("requires USE_ASCEND=ON with the A2/A3 mask compiler", allow_module_level=True)
-
 ASCENDC = Target({"kind": "ascend", "arch": "dav-2201", "keys": ["ascendc", "ascend"]})
-
-
-
-
 
 
 def _bind_body(variable, value, body):
@@ -771,7 +761,7 @@ def test_opaque_symbol_changes_invalidate_mask_facts(kind):
     opaque = {
         "src_code": tir.Evaluate(_call("tl.ascend_src_code", tir.StringImm("value += 1;"))),
         "extern": tir.Evaluate(_extern("opaque_symbol_update")),
-        "customized": tir.Evaluate(T._src_code("value += 1;")),
+        "customized": tir.Evaluate(tir.call_intrin("handle", Op.get("tl.ascend_src_code"), "value += 1;")),
     }[kind]
     # A loop containing only opaque code must not take the mask-neutral fast
     # path: that code can change either an input symbol or the mask itself.
@@ -948,7 +938,9 @@ def test_resource_scope_is_explicit_nested_and_fail_closed():
         tir.Call("handle", Op.get("tl.ascend_src_code"), [tir.StringImm("int value = 0;")]),
         _extern("opaque_ascend_helper"),
     ]
-    statements = [tir.Evaluate(call) for call in calls] + [tir.Evaluate(T._src_code("int value = 0;"))]
+    statements = [tir.Evaluate(call) for call in calls] + [
+        tir.Evaluate(tir.call_intrin("handle", Op.get("tl.ascend_src_code"), "int value = 0;"))
+    ]
     for statement in statements:
         function = _with_body(_add_fp32, statement, scoped=False)
         with pytest.raises(Exception, match="must be inside T.Scope"):

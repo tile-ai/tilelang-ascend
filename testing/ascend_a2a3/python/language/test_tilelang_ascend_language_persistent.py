@@ -11,9 +11,6 @@ from tvm import tirx as tir
 WAVE_SIZE = 20
 
 
-
-
-
 def _persistent_kernel(rows, cols=2):
     @T.prim_func
     def main(O: T.Tensor((rows, cols), "int32")):

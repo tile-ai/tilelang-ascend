@@ -191,7 +191,6 @@ def test_copy_ub_to_gm_nonmultiple_pitch_single_burst(M, N, src_pitch, dst_pitch
 
 _TRAP_SCRIPT = r"""
 import ctypes, sys, torch
-import torch_npu
 
 lib = ctypes.CDLL(sys.argv[1])
 call_fn = lib.call
