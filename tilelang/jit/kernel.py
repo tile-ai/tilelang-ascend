@@ -144,7 +144,18 @@ class JITKernel:
         """
         from tilelang.jit.ascend_runtime_contract import validate_cached_auto_gm_manifest
 
-        validate_cached_auto_gm_manifest(func, execution_backend, auto_gm_idx, len(params), auto_gm_manifest, pass_configs, target)
+        validate_cached_auto_gm_manifest(
+            func,
+            execution_backend,
+            auto_gm_idx,
+            len(params),
+            auto_gm_manifest,
+            pass_configs,
+            target,
+            out_idx,
+            workspace_idx,
+            params,
+        )
         instance = cls(
             func=func,
             out_idx=out_idx,
@@ -227,11 +238,18 @@ class JITKernel:
         from tilelang.jit.ascend_runtime_contract import (
             prepare_auto_gm_contract,
             validate_cached_auto_gm_contract,
+            validate_fresh_runtime_signature,
         )
 
         # Also cover direct JITKernel construction, outside public compile's
         # cache path. Never mutate the caller's original PrimFunc.
-        tilelang_func = prepare_auto_gm_contract(tilelang_func, execution_backend, target)
+        tilelang_func = prepare_auto_gm_contract(
+            tilelang_func,
+            execution_backend,
+            target,
+            out_idx,
+            workspace_idx,
+        )
         self.prim_func = tilelang_func
 
         # Compile the function with TVM, optimizing with shared memory lowering.
@@ -262,7 +280,16 @@ class JITKernel:
                 self._auto_gm_idx = target_prim_func.attrs["auto_gm_indices"]
                 self._auto_gm_idx = [int(item.value) for item in self._auto_gm_idx]
 
-        validate_cached_auto_gm_contract(tilelang_func, execution_backend, self._auto_gm_idx, len(artifact.params))
+        validate_fresh_runtime_signature(tilelang_func, target_prim_func, artifact.params)
+        validate_cached_auto_gm_contract(
+            tilelang_func,
+            execution_backend,
+            self._auto_gm_idx,
+            len(artifact.params),
+            out_idx,
+            workspace_idx,
+            target,
+        )
 
         # Create an adapter based on the specified execution backend.
         if execution_backend == "dlpack":

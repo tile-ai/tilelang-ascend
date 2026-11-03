@@ -174,7 +174,7 @@ class KernelCache:
 
         # Direct cached() calls need the same allocator contract as compile().
         # Prepare it before hashing so cache lookup and publication agree.
-        func = prepare_auto_gm_contract(func, execution_backend, target)
+        func = prepare_auto_gm_contract(func, execution_backend, target, out_idx, workspace_idx)
 
         key = self._generate_key(
             func=func,
@@ -289,14 +289,14 @@ class KernelCache:
             - params.pkl: The serialized kernel parameters
         """
         attributes = getattr(func, "attrs", None)
-        compiled_attributes = getattr(getattr(kernel, "prim_func", None), "attrs", None)
-        if (
-            compiled_attributes is not None
-            and "tl.ascend_auto_gm_fresh_contract" in compiled_attributes
-            and not (attributes is not None and "tl.ascend_auto_gm_fresh_contract" in attributes)
-        ):
-            self.logger.warning("Skipping automatic GM artifact without its prepared cache key")
-            return
+        compiled_function = getattr(kernel, "prim_func", None)
+        compiled_attrs = getattr(compiled_function, "attrs", None)
+        if compiled_attrs is not None and "tl.ascend_auto_gm_fresh_contract" in compiled_attrs:
+            from tilelang.jit.ascend_runtime_contract import fresh_allocation_contract_matches
+
+            if not fresh_allocation_contract_matches(func, compiled_function):
+                self.logger.warning("Skipping automatic GM artifact without its prepared cache key")
+                return
         cache_path = self._get_cache_path(key)
         try:
             os.makedirs(cache_path, exist_ok=True)  # Ensure directory exists
@@ -367,6 +367,9 @@ class KernelCache:
                     len(kernel.params),
                     contract_configs,
                     contract_target,
+                    kernel.out_idx,
+                    kernel.workspace_idx,
+                    kernel.params,
                 )
                 with open(os.path.join(cache_path, AUTO_GM_MANIFEST_PATH), "w") as f:
                     json.dump(manifest, f)
@@ -465,6 +468,9 @@ class KernelCache:
                     manifest,
                     pass_configs,
                     target,
+                    out_idx,
+                    workspace_idx,
+                    kernel_params,
                 )
                 runtime_contract_kwargs["auto_gm_manifest"] = manifest
             except (OSError, ValueError) as error:

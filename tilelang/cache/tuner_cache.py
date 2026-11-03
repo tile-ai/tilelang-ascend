@@ -248,13 +248,15 @@ class AutoTunerCache:
             - params.pkl: The serialized kernel parameters
         """
         attributes = getattr(func, "attrs", None)
-        compiled_attributes = getattr(getattr(kernel, "prim_func", None), "attrs", None)
+        compiled_function = getattr(kernel, "prim_func", None)
+        compiled_attrs = getattr(compiled_function, "attrs", None)
         marked = attributes is not None and "tl.ascend_auto_gm_fresh_contract" in attributes
-        if compiled_attributes is not None and "tl.ascend_auto_gm_fresh_contract" in compiled_attributes and not marked:
-            # This legacy entry point did not prepare the function before its
-            # cache key. Never publish a fresh-sensitive binary under that key.
-            self.logger.warning("Skipping automatic GM artifact without its prepared cache key")
-            return
+        if compiled_attrs is not None and "tl.ascend_auto_gm_fresh_contract" in compiled_attrs:
+            from tilelang.jit.ascend_runtime_contract import fresh_allocation_contract_matches
+
+            if not fresh_allocation_contract_matches(func, compiled_function):
+                self.logger.warning("Skipping automatic GM artifact without its prepared cache key")
+                return
         cache_path = self._get_cache_path(key)
         try:
             os.makedirs(cache_path, exist_ok=True)  # Ensure directory exists
@@ -309,7 +311,15 @@ class AutoTunerCache:
             try:
                 indices = kernel.auto_gm_idx
                 manifest = build_cached_auto_gm_manifest(
-                    func, kernel.execution_backend, indices, len(kernel.params), contract_configs, contract_target
+                    func,
+                    kernel.execution_backend,
+                    indices,
+                    len(kernel.params),
+                    contract_configs,
+                    contract_target,
+                    kernel.out_idx,
+                    kernel.workspace_idx,
+                    kernel.params,
                 )
                 with open(os.path.join(cache_path, AUTO_GM_IDX_PATH), "w") as f:
                     json.dump(indices, f)
@@ -393,6 +403,9 @@ class AutoTunerCache:
                     manifest,
                     pass_configs,
                     target,
+                    out_idx,
+                    None,
+                    kernel_params,
                 )
                 runtime_contract_kwargs = {
                     "auto_gm_idx": indices,

@@ -58,15 +58,18 @@ bool SyncTargetPolicy::UsesFlag(const std::string &producer,
   return producer != consumer || (producer == "V" && platform == "A5");
 }
 
-void SyncTargetPolicy::RequireEvent(const std::string &event) const {
+bool SyncTargetPolicy::SupportsEvent(const std::string &event) const {
   const auto &mapping = GetEventMapping();
-  for (const auto &entry : mapping) {
+  for (const auto &entry : mapping)
     if (entry.second == event)
-      return;
-  }
-  LOG(FATAL) << "Ascend synchronization event " << event
-             << " is unsupported by the legacy operation catalog on "
-             << platform;
+      return true;
+  return false;
+}
+
+void SyncTargetPolicy::RequireEvent(const std::string &event) const {
+  ICHECK(SupportsEvent(event))
+      << "Ascend synchronization event " << event
+      << " is unsupported by the legacy operation catalog on " << platform;
 }
 
 } // namespace tvm::tl::ascend_sync

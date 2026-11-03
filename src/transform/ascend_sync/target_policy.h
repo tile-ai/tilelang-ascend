@@ -39,6 +39,7 @@ struct SyncTargetPolicy {
                        const std::string &consumer) const;
   bool HasImplicitSamePipeOrder(const std::string &pipe) const;
   bool UsesFlag(const std::string &producer, const std::string &consumer) const;
+  bool SupportsEvent(const std::string &event) const;
   void RequireEvent(const std::string &event) const;
 };
 

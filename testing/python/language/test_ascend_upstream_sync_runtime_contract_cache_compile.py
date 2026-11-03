@@ -64,7 +64,11 @@ def test_real_cython_store_disk_hit_and_damaged_metadata_miss(tmp_path: Path, mo
         assert json.loads(metadata.read_text()) == [3]
         manifest_path = metadata.parent / AUTO_GM_MANIFEST_PATH
         manifest = json.loads(manifest_path.read_text())
-        assert manifest["schema"] == 2
+        assert manifest["schema"] == 3
+        assert manifest["result_indices"] == [2]
+        assert manifest["workspace_indices"] == []
+        assert manifest["allocated_indices"] == [2, 3]
+        assert len(manifest["runtime_signature"]) == 4
         assert manifest["sync_engine_abi"] == sync_engine_cache_abi(configs, "ascendc")
         assert manifest["param_count"] == 4
         assert manifest["auto_gm_indices"] == [3]
@@ -127,6 +131,17 @@ def test_real_cython_store_disk_hit_and_damaged_metadata_miss(tmp_path: Path, mo
         cache._memory_cache.clear()
         with pytest.raises(CompileAttempted, match="cache miss reached real lowering"):
             compile_kernel()
+
+        for field, changed in (
+            ("result_indices", []),
+            ("workspace_indices", [1]),
+            ("allocated_indices", [3]),
+            ("runtime_signature", []),
+        ):
+            manifest_path.write_text(json.dumps({**manifest, field: changed}))
+            cache._memory_cache.clear()
+            with pytest.raises(CompileAttempted, match="cache miss reached real lowering"):
+                compile_kernel()
 
         manifest_path.write_text(json.dumps(manifest))
         cache._memory_cache.clear()

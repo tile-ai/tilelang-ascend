@@ -183,6 +183,57 @@ Vector/DMA 同步。一般 Developer 自动同步应同时开启 ordinary 与 VS
 - PTO 仍采用独立的单槽 descriptor 和资源审核。native ABI 升至 v23，避免重用
   旧同步证明与旧 helper 编译结果。本条记录实现契约，验证结论以本轮实际日志为准。
 
+### v24 显式分配来源与单次 C→V 发布
+
+- Cython/AscendC 的 fresh-v2 契约记录真实 `out_idx`、`workspace_idx` 分配角色，
+  与编译器新增的 auto GM 合并；不修改 `tir.noalias`。原参数前缀和最终签名按 Var
+  identity 绑定，负索引按实际最终参数数量解析，保留重叠、重复角色的分配语义。
+  Cython 调用器对这些参数每次执行真实分配；其他 adapter 和 PTO 不借用该保证。
+- JIT、KernelCache、AutoTunerCache、AutotuneResult 及 database 恢复核对实际角色、
+  参数数量、形状、dtype、源码与 native ABI。schema3 绑定实际 fresh union；元数据
+  或角色不一致时拒绝恢复，不将已有 binary 重新标为另一种分配契约。v1 auto GM
+  契约保留独立兼容路径。
+- 完整显式分配 fresh 事实只供闭合发布 preflight 和成功验证后的局部图消费；普通
+  局部图继续使用原 compiler-added auto GM 事实。两种 scope 都完整验证 v2 配方和
+  参数来源，oracle 按值固定 scope，不通过失败回退切换。更精确 alias 可能删除原有
+  串行链、增加事件生命周期重叠，因此不将新事实自动用于其他尚未验证的局部优化。
+- 新增单次 mode-2 FIX C→V 发布契约：保留真实 owner-pure serial/unrolled For
+  控制树与本地循环依赖，Set/Wait 位于循环外，接受 MTE2 或空 consumer intent。
+  空 intent Wait 的 Scalar acquire 仍须由本地引擎产生实际 S→MTE2 依赖。
+- 发布区间内允许额外只读 GM 输入，以及由同一 Set/Wait 完整覆盖的 RAW/WAR/WAW。
+  无显式 noalias 时，每个 GM 写根必须有真实 fresh-v2 来源；不以推测的输入内容或
+  用户属性替代运行时分配事实。原有 flat/noalias 和 v1 路径按结构保留。
+- 按 canonical DMA helper 的真实模板、stride、完整 mask、dtype、实际 local
+  allocation、GM 容量和硬件字段审核二维矩形。跨 workgroup 和同组两 AIV 使用
+  独立执行变量及行选择变量证明真实行列不相交，不用 dense span 包络代替 strided
+  footprint；额外 workgroup 轴、未知布局或未证明的整数溢出继续拒绝。
+- GEMM 隐藏池仅按内部 Var identity 排除真实 GM 发布审核，Cube 本地读写依赖仍
+  完整保留。整数证明核心提取到私有共用头，仍先审核原宽度中间值再使用词法事实，
+  不改运行 TIR。native ABI 升至 v24，隔离旧证明与缓存。
+- 完成真实调用审核的 AscendC GEMM helper 具有独立的 M acquire site：其真实前缀
+  M→MTE1 prime 支配全部 L1/L0 用户访问。这是 helper 的资源契约，单 Cube 与闭合
+  C/V 发布路径共用；默认 MTE1 site 不变，仅在默认事件不被硬件支持、备用事件合法
+  时选择备用 site，例如 FIX→M。token 分配和生命周期均按所选物理管线处理，两外部
+  acquire site 之间不虚构 happens-before。PTO 不借用该授权；MTE2→MTE1 保持原路由。
+- 编译、缓存和实际 Cython membership 共用普通整数索引快照；`operator.index`
+  可接收的可变对象或自定义整数不能继续留在执行配方中，避免构造后 mutation 或
+  自定义比较使实际分配根与编译证明分离。
+- 多 channel、跨循环发布、双向 ready/free、ring、If/While 与 PTO 跨核协议仍需要
+  各自的生命周期证明。本条记录实现契约；最终恢复数及设备结论以冻结后的日志为准。
+
+### v25 旧 flat 准入与 v2 分配角色兼容
+
+- 复用完整旧 flat 准入分析及其私有证明结果；不再仅因存在 fresh-v2 标记就选择
+  closed planner。分析阶段不修改真实任务或 TIR，成功结果中的 fence 和 reservation
+  直接供选定路径使用，避免分流检查与实际证明分别维护。
+- flat 的 freshness membership 和物理 oracle 统一使用 compiler-added auto GM
+  事实；读取这些事实时仍完整校验 v2 的角色、原参数来源与最终签名。实际由显式角色
+  分配的输出可在旧证明中保守视作未知别名，保留既有 RAW/WAR/WAW 检查。
+- 无旧 flat 证明且具备 noalias 或可信 v2 授权的程序，仍须通过完整 closed 证明。
+  只有该证明成功后才授予后续局部图完整分配事实；不捕获 closed 失败后回退。
+- 分配角色的负索引、重复及重叠语义不变，不添加样例或 shape 分支，也不修改 examples。
+  native ABI 升至 v25，隔离此前的分流证明和编译缓存。验证结论以本轮实际日志为准。
+
 ## 当前支持与拒绝边界
 
 已验证范围：
@@ -226,7 +277,7 @@ Vector/DMA 同步。一般 Developer 自动同步应同时开启 ordinary 与 VS
   锚点，发布必须在整个循环及其最终 FIX 之后，V epilogue 保持 flat。跨核验证使用
   真实 leaf 与控制区间；全 GM 参数 shadow 仅用于释放/获得证明，防止循环变量逃出
   词法域。无整函数 noalias 的输出复用 A/B 场景也已设备验收。
-- 上述发布可使用显式 `tir.noalias`；Cython JIT 也可通过版本化 fresh workspace 契约
+- 上述发布可使用显式 `tir.noalias`；Cython JIT 的 v1 fresh workspace 契约可
   运行无整函数 noalias 的首片：单工作组、V GM 只读可信 workspace 集合、单一外部 GM
   输出且真实 DMA/vid footprint 不交叠；WAR shadow 保证 C 输入读完后才覆盖输出。
   原始 lower/AOT/其他 adapter 不从裸 `auto_gm_indices` 推断 fresh。

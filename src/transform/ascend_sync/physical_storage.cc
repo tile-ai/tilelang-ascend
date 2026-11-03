@@ -106,6 +106,7 @@ struct PhysicalStorageResolver::State {
   bool noalias{false};
   std::unordered_map<Var, Record, ObjectPtrHash, ObjectPtrEqual> records;
   std::unordered_set<Var, ObjectPtrHash, ObjectPtrEqual> parameter_data;
+  std::unordered_set<Var, ObjectPtrHash, ObjectPtrEqual> automatic_gm_data;
   std::unordered_set<Var, ObjectPtrHash, ObjectPtrEqual> fresh_gm_data;
   std::unordered_set<Var, ObjectPtrHash, ObjectPtrEqual> accessed_data;
   std::unordered_set<Var, ObjectPtrHash, ObjectPtrEqual> scalar_data;
@@ -136,6 +137,10 @@ struct PhysicalStorageResolver::State {
       }
     }
     Collector(this)(this->function->body);
+    // Both readers validate the complete contract, including explicit roles
+    // that an ordinary local oracle deliberately does not consume.
+    for (const Var &storage : ReadTrustedAutoGMStorages(this->function))
+      automatic_gm_data.insert(storage);
     for (const Var &storage : ReadTrustedFreshGMStorages(this->function))
       fresh_gm_data.insert(storage);
     for (const Var &data : accessed_data)
@@ -568,7 +573,8 @@ struct PhysicalStorageResolver::State {
                                 AsInt64(sizes.at(root), "allocation size"));
   }
 
-  std::optional<bool> MayConflict(const PhysicalConflictQuery &query) const {
+  std::optional<bool> MayConflict(const PhysicalConflictQuery &query,
+                                  GMFreshnessScope scope) const {
     const Var &a = query.producer_region->buffer->data;
     const Var &b = query.consumer_region->buffer->data;
     const Var a_root = StorageRoot(a);
@@ -581,9 +587,11 @@ struct PhysicalStorageResolver::State {
       return false;
 
     if (a_pool == "gm" && !a_root.same_as(b_root)) {
+      const auto &fresh = scope == GMFreshnessScope::kRuntimeRecipe
+                              ? fresh_gm_data
+                              : automatic_gm_data;
       if (parameter_data.count(a_root) && parameter_data.count(b_root) &&
-          (noalias || fresh_gm_data.count(a_root) ||
-           fresh_gm_data.count(b_root)))
+          (noalias || fresh.count(a_root) || fresh.count(b_root)))
         return false;
       return std::nullopt;
     }
@@ -693,9 +701,11 @@ PhysicalStorageResolver::InvocationProjection(const BufferRegion &region) {
   return state_->InvocationProjection(region);
 }
 
-ConflictOracle PhysicalStorageResolver::MakeOracle() const {
-  return [state = state_](const PhysicalConflictQuery &query) {
-    return state->MayConflict(query);
+ConflictOracle
+PhysicalStorageResolver::MakeOracle(GMFreshnessScope scope) const {
+  // Keep the proof-consumption scope immutable for every issued oracle.
+  return [state = state_, scope](const PhysicalConflictQuery &query) {
+    return state->MayConflict(query, scope);
   };
 }
 

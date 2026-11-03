@@ -122,6 +122,9 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     mod = tir.transform.RewriteUnsafeSelect()(mod)
     mod = tir.transform.HoistIfThenElse()(mod)
     mod = tilelang.transform.AscendMemoryPlanning()(mod)
+    from tilelang.jit.ascend_runtime_contract import bind_final_auto_gm_contracts
+
+    mod = bind_final_auto_gm_contracts(mod)
     sync_backend = pass_ctx.config.get("tl.ascend_sync_backend", "legacy")
     if sync_backend == "upstream":
         mod = tilelang.transform.AscendInsertSync(target, platform)(mod)

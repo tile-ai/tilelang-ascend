@@ -61,6 +61,7 @@ using namespace tir;
 namespace {
 
 std::string SyncBoundaryPipeName(TaskNode *task, bool at_beginning);
+std::optional<std::string> SyncAlternateAcquirePipeName(TaskNode *task);
 bool IsSyncOptionalControl(IRStructure *node);
 bool IsSyncStaticCubePipelineControl(ControlNode *node);
 
@@ -78,12 +79,17 @@ struct SyncInsertionSite {
   PrimExpr guard{Bool(true)};
 
   SyncInsertionSite(IRStructure *path_begin, TaskNode *task, bool at_beginning,
-                    CoreMask core, const EpochDomain &domain)
+                    CoreMask core, const EpochDomain &domain,
+                    const std::string &alternate_acquire = {})
       : path_begin(path_begin), path_end(nullptr), at_beginning(at_beginning),
-        core(core), pipe(SyncBoundaryPipeName(task, at_beginning)),
+        core(core), pipe(alternate_acquire.empty()
+                             ? SyncBoundaryPipeName(task, at_beginning)
+                             : alternate_acquire),
         domain_id(domain.id) {
     ICHECK(path_begin != nullptr);
     ICHECK(task != nullptr);
+    ICHECK(alternate_acquire.empty() || at_beginning)
+        << "Alternate helper gates are incoming boundaries only";
     ICHECK(IsCoreLocalMask(core));
     ICHECK_GT(domain_id, 0);
     if (domain.IsCounter()) {
@@ -194,8 +200,23 @@ using SyncInsertionSiteList = std::vector<SyncInsertionSite>;
 
 // Inputs needed to look up a collected insertion site without reconstructing
 // it. Domain ids are pass-local and reconstructed from canonical guards.
-using SyncInsertionSiteKey =
-    std::tuple<IRStructure *, TaskNode *, bool, CoreMask, int>;
+struct SyncInsertionSiteKey {
+  IRStructure *path_begin;
+  TaskNode *task;
+  bool at_beginning;
+  CoreMask core;
+  int domain;
+  // Empty selects the original primary boundary. A certified alternate has
+  // its own physical pipe and therefore its own event lifetime/reuse identity.
+  std::string alternate_acquire{};
+
+  bool operator<(const SyncInsertionSiteKey &other) const {
+    return std::tie(path_begin, task, at_beginning, core, domain,
+                    alternate_acquire) <
+           std::tie(other.path_begin, other.task, other.at_beginning,
+                    other.core, other.domain, other.alternate_acquire);
+  }
+};
 
 struct DepEdge {
   size_t src;
@@ -310,7 +331,9 @@ public:
       if (task->GetCoreMask() == kCoreUnassigned)
         continue;
       has_asymmetric_boundaries_ |=
-          SyncBoundaryPipeName(task, true) != SyncBoundaryPipeName(task, false);
+          SyncBoundaryPipeName(task, true) !=
+              SyncBoundaryPipeName(task, false) ||
+          SyncAlternateAcquirePipeName(task).has_value();
       for (IRStructure *path_begin : task->PathFrom()) {
         SyncInsertionSiteList inner_sites;
         IRStructure *parent = path_begin->GetParent();
@@ -330,9 +353,16 @@ public:
             SiteDomainsForTaskAtScope(task, parent_scope);
         for (const SyncInsertionSite &inner_site : inner_sites) {
           for (int parent_domain_id : parent_domain_ids) {
-            SyncInsertionSiteKey parent_key{parent, task,
-                                            inner_site.at_beginning,
-                                            inner_site.core, parent_domain_id};
+            SyncInsertionSiteKey parent_key{
+                parent,
+                task,
+                inner_site.at_beginning,
+                inner_site.core,
+                parent_domain_id,
+                inner_site.at_beginning &&
+                        inner_site.pipe != SyncBoundaryPipeName(task, true)
+                    ? inner_site.pipe
+                    : ""};
             auto parent_it = keyed_sites.find(parent_key);
             ICHECK(parent_it != keyed_sites.end())
                 << "Synchronization insertion site is missing its parent site";
@@ -359,10 +389,17 @@ public:
     // endpoint by toggling direction while retaining this endpoint's pipe.
     boundary_site_ids_.resize(sites_.size());
     for (const auto &[key, site_id] : site_ids_) {
-      const auto &[path_begin, task, at_beginning, core, domain] = key;
+      const auto &[path_begin, task, at_beginning, core, domain, alternative] =
+          key;
+      if (!at_beginning)
+        continue;
       const size_t opposite = FindSiteId(
-          SyncInsertionSiteKey{path_begin, task, !at_beginning, core, domain});
+          SyncInsertionSiteKey{path_begin, task, false, core, domain});
+      // Several independently sufficient acquires share one real completion.
+      // Pair every gate with that completion; never assert an order between
+      // the gates themselves or reinterpret MTE1 event lifetimes as M events.
       boundary_site_ids_[site_id].push_back(opposite);
+      boundary_site_ids_[opposite].push_back(site_id);
     }
     for (auto &opposites : boundary_site_ids_) {
       std::sort(opposites.begin(), opposites.end());
@@ -583,21 +620,27 @@ private:
       const std::vector<int> &domain_ids, SyncInsertionSiteList &sites,
       std::map<SyncInsertionSiteKey, SyncInsertionSite> &keyed_sites) const {
     for (bool at_beginning : {false, true}) {
+      std::vector<std::string> gates{""};
+      if (at_beginning)
+        if (auto alternate = SyncAlternateAcquirePipeName(task))
+          gates.push_back(alternate.value());
       for (CoreMask core : cores_) {
         if (!HasCore(task->GetCoreMask(), core))
           continue;
-        auto add = [&](int domain_id) {
-          const EpochDomain &domain = domains_.Domain(domain_id);
-          sites.emplace_back(path_begin, task, at_beginning, core, domain);
-          const SyncInsertionSite &site = sites.back();
-          SyncInsertionSiteKey key{path_begin, task, at_beginning, core,
-                                   site.EpochDomainId()};
-          auto [it, inserted] = keyed_sites.emplace(std::move(key), site);
-          ICHECK(inserted || it->second == site)
-              << "Synchronization insertion-site key has inconsistent sites";
-        };
-        for (int domain_id : domain_ids)
-          add(domain_id);
+        for (int domain_id : domain_ids) {
+          for (const std::string &gate : gates) {
+            const EpochDomain &domain = domains_.Domain(domain_id);
+            sites.emplace_back(path_begin, task, at_beginning, core, domain,
+                               gate);
+            const SyncInsertionSite &site = sites.back();
+            SyncInsertionSiteKey key{path_begin,           task,
+                                     at_beginning,         core,
+                                     site.EpochDomainId(), gate};
+            auto [it, inserted] = keyed_sites.emplace(std::move(key), site);
+            ICHECK(inserted || it->second == site)
+                << "Synchronization insertion-site key has inconsistent sites";
+          }
+        }
       }
     }
   }
@@ -606,13 +649,17 @@ private:
                            const std::vector<int> &domain_ids,
                            std::vector<size_t> &site_ids) const {
     for (bool at_beginning : {false, true}) {
+      std::vector<std::string> gates{""};
+      if (at_beginning)
+        if (auto alternate = SyncAlternateAcquirePipeName(task))
+          gates.push_back(alternate.value());
       for (CoreMask core : cores_) {
         if (!HasCore(task->GetCoreMask(), core))
           continue;
-        for (int domain_id : domain_ids) {
-          site_ids.push_back(FindSiteId(SyncInsertionSiteKey{
-              path_begin, task, at_beginning, core, domain_id}));
-        }
+        for (int domain_id : domain_ids)
+          for (const std::string &gate : gates)
+            site_ids.push_back(FindSiteId(SyncInsertionSiteKey{
+                path_begin, task, at_beginning, core, domain_id, gate}));
       }
     }
   }
@@ -1292,6 +1339,18 @@ private:
                 : FindSharedDependencyDomain(producer, consumer, loop);
         std::string producer_pipe = SyncBoundaryPipeName(producer, false);
         std::string consumer_pipe = SyncBoundaryPipeName(consumer, true);
+        std::string alternate_acquire;
+        auto supported = [&](const std::string &pipe) {
+          return !policy_.UsesFlag(producer_pipe, pipe) ||
+                 policy_.SupportsEvent(GetHardEvent(producer_pipe, pipe));
+        };
+        if (!supported(consumer_pipe)) {
+          if (auto alternative = SyncAlternateAcquirePipeName(consumer))
+            if (supported(alternative.value())) {
+              consumer_pipe = alternative.value();
+              alternate_acquire = consumer_pipe;
+            }
+        }
         if (!policy_.EnabledForPipes(producer_pipe, consumer_pipe))
           continue;
         std::string hard_event = GetHardEvent(producer_pipe, consumer_pipe);
@@ -1310,9 +1369,10 @@ private:
             size_t producer_site = site_registry_.FindSiteId(
                 SyncInsertionSiteKey{dep.prod_node, producer, false,
                                      producer_core, pair_domain_id});
-            size_t consumer_site = site_registry_.FindSiteId(
-                SyncInsertionSiteKey{dep.cons_node, consumer, true,
-                                     consumer_core, pair_domain_id});
+            size_t consumer_site =
+                site_registry_.FindSiteId(SyncInsertionSiteKey{
+                    dep.cons_node, consumer, true, consumer_core,
+                    pair_domain_id, alternate_acquire});
             DepEdge edge(producer_site, consumer_site, distance, true);
             const DepEdge original_edge = edge;
             const auto &source = site_registry_.Sites()[producer_site];
@@ -2344,6 +2404,7 @@ class SyncInsertionExtraInfo final : public IRExtraInfo {
 public:
   std::optional<SyncPlacement> placement;
   std::optional<std::pair<ResourcePipe, ResourcePipe>> boundary_pipes;
+  std::optional<ResourcePipe> alternate_acquire;
   bool optional_control{false};
   bool static_cube_pipeline{false};
   std::unique_ptr<IRExtraInfo> Clone() const final {
@@ -2379,6 +2440,13 @@ std::string SyncBoundaryPipeName(TaskNode *task, bool at_beginning) {
     return GetResourcePipeName(task->GetPipeMask());
   return GetResourcePipeName(
       PipeMask(at_beginning ? boundary->first : boundary->second));
+}
+
+std::optional<std::string> SyncAlternateAcquirePipeName(TaskNode *task) {
+  const auto &alternate = GetSyncInsertionExtraInfo(task)->alternate_acquire;
+  if (!alternate.has_value())
+    return std::nullopt;
+  return GetResourcePipeName(PipeMask(alternate.value()));
 }
 
 bool IsSyncOptionalControl(IRStructure *node) {
@@ -2635,6 +2703,16 @@ void SetSyncBoundaryPipes(TaskNode *task, ResourcePipe acquire,
          IsSingleResourcePipe(PipeMask(completion)))
       << "Synchronization boundaries require concrete single hardware pipes";
   GetSyncInsertionExtraInfo(task)->boundary_pipes = {acquire, completion};
+}
+
+void SetSyncAlternateAcquirePipe(TaskNode *task, ResourcePipe acquire) {
+  ICHECK(task != nullptr && IsSingleResourcePipe(PipeMask(acquire)));
+  auto *extra = GetSyncInsertionExtraInfo(task);
+  ICHECK(extra->boundary_pipes.has_value() &&
+         extra->boundary_pipes->first != acquire)
+      << "Alternate acquire requires a distinct audited primary helper "
+         "boundary";
+  extra->alternate_acquire = acquire;
 }
 
 void SetSyncOptionalControl(ControlNode *control) {

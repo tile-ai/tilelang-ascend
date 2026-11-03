@@ -280,3 +280,461 @@ def test_manifest_does_not_relax_backend_or_actual_metadata_validation() -> None
         validate_cached_auto_gm_manifest(function, "cython", [True], 2, manifest)
     with pytest.raises(ValueError, match="requires an explicit index list"):
         build_cached_auto_gm_manifest(function, "cython", None, 2)
+
+
+def _allocator_function():
+    buffers = [tvm.tir.decl_buffer((4 + i,), name=f"arg{i}", dtype="float32") for i in range(3)]
+    params = [tvm.tir.Var(f"arg{i}_handle", "handle") for i in range(3)]
+    return tvm.tir.PrimFunc(
+        params,
+        tvm.tir.Evaluate(0),
+        buffer_map=dict(zip(params, buffers)),
+    ).with_attr("global_symbol", "allocator_contract")
+
+
+def _append_workspace(function):
+    param = tvm.tir.Var("auto_workspace", "handle")
+    buffer = tvm.tir.decl_buffer((7,), name="auto_workspace", dtype="float32")
+    return tvm.tir.PrimFunc(
+        list(function.params) + [param],
+        function.body,
+        buffer_map={**dict(function.buffer_map), param: buffer},
+        attrs=function.attrs,
+    ).with_attr("auto_gm_indices", [3])
+
+
+def _runtime_params(function):
+    from tilelang.engine.param import KernelParam
+
+    return [KernelParam.from_buffer(function.buffer_map[param]) for param in function.params]
+
+
+def test_v2_snapshots_raw_roles_and_normalizes_against_appended_final_parameters():
+    from tilelang.jit.ascend_runtime_contract import (
+        CYTHON_RESULT_INDICES_ATTR,
+        bind_final_auto_gm_contract,
+        has_cython_allocator_fresh_contract,
+        validate_fresh_runtime_signature,
+    )
+
+    results, workspaces = [-2, -2, True], [-1, True]
+    original = _allocator_function()
+    prepared = prepare_auto_gm_contract(original, "cython", "ascendc", results, workspaces)
+    results.clear()
+    workspaces.clear()
+    assert has_cython_allocator_fresh_contract(prepared)
+    assert [int(index) for index in prepared.attrs[CYTHON_RESULT_INDICES_ATTR]] == [-2, -2, 1]
+    assert "tir.noalias" not in prepared.attrs
+    assert AUTO_GM_FRESH_CONTRACT_ATTR not in original.attrs
+    lowered = bind_final_auto_gm_contract(_append_workspace(prepared))
+    validate_cached_auto_gm_contract(prepared, "cython", [3], 4, [2, 2, 1], [3, 1])
+    validate_fresh_runtime_signature(prepared, lowered, _runtime_params(lowered))
+    with pytest.raises(ValueError, match="actual allocator roles"):
+        validate_cached_auto_gm_contract(prepared, "cython", [3], 4, [1, 1, 1], [2, 1])
+
+
+@pytest.mark.parametrize("change", ["reorder", "insert", "remove", "replace"])
+def test_v2_refuses_original_parameter_identity_changes_before_binding(change):
+    from tilelang.jit.ascend_runtime_contract import bind_final_auto_gm_contract
+
+    prepared = prepare_auto_gm_contract(_allocator_function(), "cython", "ascendc", [-1])
+    params = list(prepared.params)
+    if change == "reorder":
+        params[0], params[1] = params[1], params[0]
+    elif change == "insert":
+        params.insert(0, tvm.tir.Var("inserted", "handle"))
+    elif change == "remove":
+        params.pop(0)
+    else:
+        params[0] = tvm.tir.Var(params[0].name, "handle")
+    changed = tvm.tir.PrimFunc(params, prepared.body, attrs=prepared.attrs)
+    with pytest.raises(ValueError, match="signature changed"):
+        bind_final_auto_gm_contract(changed)
+
+
+@pytest.mark.parametrize("change", ["append", "reorder", "remove"])
+def test_v2_refuses_final_signature_changes_after_binding(change):
+    from tilelang.jit.ascend_runtime_contract import bind_final_auto_gm_contract
+
+    prepared = prepare_auto_gm_contract(_allocator_function(), "cython", "ascendc", [-1])
+    bound = bind_final_auto_gm_contract(_append_workspace(prepared))
+    params = list(bound.params)
+    if change == "append":
+        params.append(tvm.tir.Var("later_workspace", "handle"))
+    elif change == "reorder":
+        params[2], params[3] = params[3], params[2]
+    else:
+        params.pop()
+    changed = tvm.tir.PrimFunc(params, bound.body, attrs=bound.attrs)
+    with pytest.raises(ValueError, match="signature changed"):
+        bind_final_auto_gm_contract(changed)
+
+
+@pytest.mark.parametrize("change", ["unbound", "shape", "count", "recipe", "source"])
+def test_v2_checks_runtime_params_and_source_provenance_after_lowering(change):
+    from tilelang.jit.ascend_runtime_contract import (
+        CYTHON_FINAL_SIGNATURE_ATTR,
+        CYTHON_INPUT_SIGNATURE_ATTR,
+        CYTHON_RESULT_INDICES_ATTR,
+        bind_final_auto_gm_contract,
+        validate_fresh_runtime_signature,
+    )
+
+    prepared = prepare_auto_gm_contract(_allocator_function(), "cython", "ascendc", [-1])
+    lowered = bind_final_auto_gm_contract(_append_workspace(prepared))
+    params = _runtime_params(lowered)
+    if change == "unbound":
+        lowered = lowered.without_attr(CYTHON_FINAL_SIGNATURE_ATTR)
+    elif change == "shape":
+        params[0].shape = [999]
+    elif change == "count":
+        params.pop()
+    elif change == "recipe":
+        lowered = lowered.with_attr(CYTHON_RESULT_INDICES_ATTR, [tvm.tir.IntImm("int64", 2)])
+    else:
+        # A cloned source with same textual names has different Var provenance.
+        other = prepare_auto_gm_contract(_allocator_function(), "cython", "ascendc", [-1])
+        prepared = prepared.with_attr(CYTHON_INPUT_SIGNATURE_ATTR, other.params)
+    with pytest.raises(ValueError):
+        validate_fresh_runtime_signature(prepared, lowered, params)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [None, "result", "workspace", "union", "boolean_union", "shape", "dtype", "count"],
+)
+def test_v2_cache_manifest_binds_actual_roles_union_and_runtime_parameters(change):
+    from copy import deepcopy
+    from tilelang.jit.ascend_runtime_contract import bind_final_auto_gm_contract
+
+    prepared = prepare_auto_gm_contract(
+        _allocator_function(),
+        "cython",
+        "ascendc",
+        [-2, -2],
+        [-1, -2],
+    )
+    lowered = bind_final_auto_gm_contract(_append_workspace(prepared))
+    params = _runtime_params(lowered)
+    manifest = build_cached_auto_gm_manifest(
+        prepared,
+        "cython",
+        [3],
+        4,
+        out_idx=[2, 2],
+        workspace_idx=[3, 2],
+        runtime_params=params,
+    )
+    assert manifest["schema"] == 3
+    assert manifest["allocated_indices"] == [2, 3]
+    manifest = deepcopy(manifest)
+    if change == "result":
+        manifest["result_indices"] = [1, 1]
+    elif change == "workspace":
+        manifest["workspace_indices"] = [1, 2]
+    elif change == "union":
+        manifest["allocated_indices"] = [1, 2, 3]
+    elif change == "boolean_union":
+        manifest["allocated_indices"] = [True, 3]
+    elif change == "shape":
+        manifest["runtime_signature"][0]["shape"] = ["999"]
+    elif change == "dtype":
+        manifest["runtime_signature"][0]["dtype"] = "torch.float16"
+    elif change == "count":
+        params.pop()
+    if change is None:
+        validate_cached_auto_gm_manifest(
+            prepared,
+            "cython",
+            [3],
+            4,
+            manifest,
+            out_idx=[2, 2],
+            workspace_idx=[3, 2],
+            runtime_params=params,
+        )
+    else:
+        with pytest.raises(ValueError):
+            validate_cached_auto_gm_manifest(
+                prepared,
+                "cython",
+                [3],
+                4,
+                manifest,
+                out_idx=[2, 2],
+                workspace_idx=[3, 2],
+                runtime_params=params,
+            )
+
+
+def test_cython_wrapper_allocates_fresh_union_on_every_call_even_with_full_args(monkeypatch):
+    import torch
+    from tilelang.engine.param import KernelParam
+    from tilelang.jit.adapter.cython.adapter import CythonKernelWrapper
+
+    calls = []
+    allocations = []
+    real_empty = torch.empty
+
+    def allocate(*args, **kwargs):
+        tensor = real_empty(*args, **kwargs)
+        allocations.append(tensor)
+        return tensor
+
+    monkeypatch.setattr(torch, "empty", allocate)
+    # Cython never invokes this captured getter when CPU tensors supply a device.
+    monkeypatch.setattr(torch.npu, "current_device", lambda: 0)
+    results, workspaces, auto = [3, 3], [2, 3], [2]
+    params = [KernelParam(torch.float32, [4])] * 3 + [KernelParam(torch.float16, [2])]
+    wrapper = CythonKernelWrapper(
+        results,
+        workspaces,
+        auto,
+        params,
+        SimpleNamespace(call=lambda *args: calls.append(args)),
+    )
+    for setter in (
+        wrapper.set_dynamic_symbolic_map,
+        wrapper.set_buffer_dtype_map,
+        wrapper.set_static_shape_map,
+        wrapper.set_buffer_device_map,
+        wrapper.set_ptr_map,
+    ):
+        setter({})
+    results.clear()
+    workspaces.clear()
+    auto.clear()
+    source = torch.ones(4)
+    supplied = torch.ones(2, dtype=torch.float16)
+    first = wrapper.forward([source, source, source, supplied], stream=0)
+    second = wrapper.forward([source, source, source, supplied], stream=0)
+    assert first[0] is first[1]
+    assert second[0] is second[1]
+    assert first[0].dtype == torch.float16
+    assert first[0].data_ptr() != second[0].data_ptr()
+    assert len(allocations) == 4  # Two distinct fresh slots, each allocated once per call.
+    for call, allocated in zip(calls, (allocations[:2], allocations[2:])):
+        assert call[0].value == call[1].value == source.data_ptr()
+        assert call[2].value == allocated[0].data_ptr()
+        assert call[3].value == allocated[1].data_ptr()
+        assert call[3].value != supplied.data_ptr()
+
+
+def test_cython_database_adapter_snapshots_caller_roles_without_inplace_normalization(monkeypatch):
+    import torch
+    from tilelang.jit.adapter.cython import adapter as cython_adapter
+    from tilelang.jit.ascend_runtime_contract import bind_final_auto_gm_contract
+
+    function = prepare_auto_gm_contract(_allocator_function(), "cython", "ascendc", [-1, -1], [-1])
+    lowered = bind_final_auto_gm_contract(_append_workspace(function))
+    params = _runtime_params(lowered)
+    monkeypatch.setattr(torch.npu, "current_device", lambda: 0)
+    for name in ("dynamic_symbolic", "buffer_dtype", "static_shape", "ptr_map", "buffer_device"):
+        monkeypatch.setattr(cython_adapter.CythonKernelAdapter, f"_process_{name}", lambda self: {})
+    library = SimpleNamespace(call=lambda *args: None)
+    monkeypatch.setattr(
+        cython_adapter,
+        "LibraryGenerator",
+        lambda *args: SimpleNamespace(load_lib=lambda **kwargs: library),
+    )
+    results, workspaces, auto = [-1, -1], [-1], [3]
+    adapter = cython_adapter.CythonKernelAdapter.from_database(
+        params,
+        results,
+        workspaces,
+        auto,
+        "ascendc",
+        "A3",
+        function,
+        "",
+        "/unused.so",
+    )
+    assert results == [-1, -1] and workspaces == [-1] and auto == [3]
+    assert adapter.result_idx == [3, 3] and adapter.workspace_idx == [3]
+    results.clear()
+    workspaces.clear()
+    auto.clear()
+    outputs = adapter(torch.ones(4), torch.ones(5), torch.ones(6), stream=0)
+    assert outputs[0] is outputs[1]
+    assert outputs[0].shape == (7,)
+
+
+@pytest.mark.parametrize("target", ["pto", "llvm", tvm.target.Target("llvm")])
+def test_v2_database_adapter_refuses_unsupported_target_before_loading_library(monkeypatch, target):
+    from tilelang.jit.adapter.cython import adapter as cython_adapter
+    from tilelang.jit.ascend_runtime_contract import bind_final_auto_gm_contract
+
+    function = prepare_auto_gm_contract(_allocator_function(), "cython", "ascendc", [-1])
+    lowered = bind_final_auto_gm_contract(_append_workspace(function))
+
+    def unexpected_load(*args, **kwargs):
+        pytest.fail("incompatible allocator target reached the library loader")
+
+    monkeypatch.setattr(cython_adapter, "LibraryGenerator", unexpected_load)
+    with pytest.raises(ValueError, match="AscendC target"):
+        cython_adapter.CythonKernelAdapter.from_database(
+            _runtime_params(lowered),
+            [-1],
+            None,
+            [3],
+            target,
+            "A3",
+            function,
+            "",
+            "/unused.so",
+        )
+
+
+class _MembershipIndex(int):
+    """An integer index whose equality does not describe its integer value."""
+
+    def __eq__(self, other):
+        return other == 0
+
+
+@pytest.mark.parametrize("role_name", ["result", "workspace", "auto_gm"])
+@pytest.mark.parametrize("kind", ["custom_equality", "mutable_scalar"])
+def test_cython_wrapper_freezes_integer_value_instead_of_mutable_membership(
+    monkeypatch,
+    role_name,
+    kind,
+):
+    import torch
+    from tilelang.jit.adapter.cython.adapter import CythonKernelWrapper
+
+    monkeypatch.setattr(torch.npu, "current_device", lambda: 0)
+    role = _MembershipIndex(2) if kind == "custom_equality" else torch.tensor(2)
+    recipe = [role]
+    raw_roles = {"result": [], "workspace": [], "auto_gm": []}
+    raw_roles[role_name] = recipe
+    function = prepare_auto_gm_contract(
+        _allocator_function(),
+        "cython",
+        "ascendc",
+        raw_roles["result"],
+        raw_roles["workspace"],
+    )
+    canonical = {"result": [], "workspace": [], "auto_gm": []}
+    canonical[role_name] = [2]
+    validate_cached_auto_gm_contract(
+        function,
+        "cython",
+        canonical["auto_gm"],
+        3,
+        canonical["result"],
+        canonical["workspace"],
+    )
+    calls = []
+    wrapper = CythonKernelWrapper(
+        raw_roles["result"],
+        raw_roles["workspace"],
+        raw_roles["auto_gm"],
+        _runtime_params(function),
+        SimpleNamespace(call=lambda *args: calls.append(args)),
+    )
+    for setter in (
+        wrapper.set_dynamic_symbolic_map,
+        wrapper.set_buffer_dtype_map,
+        wrapper.set_static_shape_map,
+        wrapper.set_buffer_device_map,
+        wrapper.set_ptr_map,
+    ):
+        setter({})
+    if kind == "mutable_scalar":
+        role.fill_(0)
+    recipe[:] = [0]
+    source = torch.ones(4)
+    other = torch.ones(5)
+    supplied = torch.ones(6)
+    output = wrapper.forward([source, other, supplied], stream=0)
+    assert calls[0][0].value == source.data_ptr()
+    assert calls[0][1].value == other.data_ptr()
+    assert calls[0][2].value not in (source.data_ptr(), other.data_ptr(), supplied.data_ptr())
+    if role_name == "result":
+        assert output.data_ptr() == calls[0][2].value
+
+
+@pytest.mark.parametrize("kind", ["custom_equality", "mutable_scalar"])
+def test_cython_database_adapter_uses_same_canonical_integer_recipe_as_compiler(
+    monkeypatch,
+    kind,
+):
+    import torch
+    from tilelang.jit.adapter.cython import adapter as cython_adapter
+
+    monkeypatch.setattr(torch.npu, "current_device", lambda: 0)
+    role = _MembershipIndex(2) if kind == "custom_equality" else torch.tensor(2)
+    results = [role, role]
+    workspaces = [role]
+    auto = [role]
+    function = prepare_auto_gm_contract(
+        _allocator_function(),
+        "cython",
+        "ascendc",
+        results,
+        workspaces,
+    )
+    for name in ("dynamic_symbolic", "buffer_dtype", "static_shape", "ptr_map", "buffer_device"):
+        monkeypatch.setattr(cython_adapter.CythonKernelAdapter, f"_process_{name}", lambda self: {})
+    calls = []
+    library = SimpleNamespace(call=lambda *args: calls.append(args))
+    monkeypatch.setattr(
+        cython_adapter,
+        "LibraryGenerator",
+        lambda *args: SimpleNamespace(load_lib=lambda **kwargs: library),
+    )
+    adapter = cython_adapter.CythonKernelAdapter.from_database(
+        _runtime_params(function),
+        results,
+        workspaces,
+        auto,
+        "ascendc",
+        "A3",
+        function,
+        "",
+        "/unused.so",
+    )
+    assert adapter.result_idx == [2, 2]
+    assert adapter.workspace_idx == adapter.auto_gm_idx == [2]
+    assert all(type(index) is int for index in adapter.result_idx + adapter.workspace_idx)
+    if kind == "mutable_scalar":
+        role.fill_(0)
+    results[:] = workspaces[:] = auto[:] = [0]
+    source, other, supplied = torch.ones(4), torch.ones(5), torch.ones(6)
+    output = adapter(source, other, supplied, stream=0)
+    assert output[0] is output[1]
+    assert calls[0][0].value == source.data_ptr()
+    assert calls[0][1].value == other.data_ptr()
+    assert calls[0][2].value == output[0].data_ptr() != supplied.data_ptr()
+
+
+def test_cython_database_adapter_rejects_index_mutation_since_compilation(monkeypatch):
+    import torch
+    from tilelang.jit.adapter.cython import adapter as cython_adapter
+
+    role = torch.tensor(2)
+    results = [role]
+    function = prepare_auto_gm_contract(
+        _allocator_function(),
+        "cython",
+        "ascendc",
+        results,
+    )
+    role.fill_(0)
+
+    def unexpected_load(*args, **kwargs):
+        pytest.fail("mutated allocator recipe reached the library loader")
+
+    monkeypatch.setattr(cython_adapter, "LibraryGenerator", unexpected_load)
+    with pytest.raises(ValueError, match="actual allocator roles"):
+        cython_adapter.CythonKernelAdapter.from_database(
+            _runtime_params(function),
+            results,
+            None,
+            [],
+            "ascendc",
+            "A3",
+            function,
+            "",
+            "/unused.so",
+        )

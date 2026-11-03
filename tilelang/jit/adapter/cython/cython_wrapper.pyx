@@ -11,6 +11,7 @@ from tvm import tir
 from tvm.tir import stmt_functor
 from tvm.arith import Analyzer
 from tilelang.utils.tensor import map_torch_type
+from tilelang.jit.ascend_runtime_contract import _normalized_recipe
 
 cdef class CythonKernelWrapper:
     # Class attributes to store kernel configuration and library reference
@@ -31,9 +32,9 @@ cdef class CythonKernelWrapper:
         object get_current_device
     def __cinit__(self, result_idx, workspace_idx, auto_gm_idx, params, lib):
         # Initialize wrapper with kernel configuration
-        self.result_idx = result_idx
-        self.workspace_idx = workspace_idx
-        self.auto_gm_idx = auto_gm_idx
+        self.result_idx = _normalized_recipe(result_idx, len(params))
+        self.workspace_idx = _normalized_recipe(workspace_idx, len(params))
+        self.auto_gm_idx = _normalized_recipe(auto_gm_idx, len(params))
         self.params = params
         self.lib = lib
         # Convert TVM types to native Python types during initialization

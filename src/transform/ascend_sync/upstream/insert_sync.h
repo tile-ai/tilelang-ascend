@@ -44,6 +44,15 @@ std::unique_ptr<IRExtraInfo> MakeSyncExtraInfo();
 void SetSyncBoundaryPipes(TaskNode *task, ResourcePipe acquire,
                           ResourcePipe completion);
 
+// Add an independently sufficient acquire boundary for an audited helper.
+// The helper must gate every real memory access behind this pipe as well as
+// behind its primary acquire. Neither gate implies an ordering between the
+// two external waits, and neither certifies helper completion at return.
+// Selection uses this alternative only when the primary hard-event is absent
+// from the target catalog. Grant to exact audited TaskNodes before planning;
+// ordinary tasks and unchanged single-owner profiles retain one acquire site.
+void SetSyncAlternateAcquirePipe(TaskNode *task, ResourcePipe acquire);
+
 // Mark an adapter's explicit For(0, Select(condition, 1, 0)) representation
 // of an optional statement. Its before/after physical boundaries still exist
 // when its payload does not execute. Only these audited controls may use the

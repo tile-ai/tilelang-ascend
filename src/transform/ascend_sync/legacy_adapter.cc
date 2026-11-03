@@ -33,6 +33,7 @@
 #include "legacy_manual_events.h"
 #include "legacy_persistent_pipeline.h"
 #include "legacy_pipeline_partition.h"
+#include "legacy_runtime_contract.h"
 #include "legacy_snapshot.h"
 #include "legacy_tail_copy.h"
 #include "upstream/insert_sync.h"
@@ -504,6 +505,18 @@ private:
     if (const auto *composite = composites_.Find(call)) {
       task_->SetPipeMask(PipeMask(composite->completion));
       SetSyncBoundaryPipes(task_, composite->acquire, composite->completion);
+      if (composites_.helper_profile ==
+              LegacyCompositePlan::HelperProfile::kAscendC &&
+          composite->execution_owner == kCoreCube &&
+          composite->acquire == ResourcePipe::kMTE1 &&
+          composite->completion == ResourcePipe::kCube) {
+        // The audited helper's entry FIX_M wait precedes both M_MTE1 slot
+        // primes. Every L1/L0 user access follows those slot waits, so an
+        // external M acquire is independently sufficient. This property
+        // belongs to the exact audited helper, irrespective of allocation
+        // freshness or whether the complete program also contains V tasks.
+        SetSyncAlternateAcquirePipe(task_, ResourcePipe::kCube);
+      }
       inferred_resource_ = composite->execution_owner;
       if (composite->pipeline_clock.defined()) {
         ProofAnalyzer analyzer;
@@ -754,7 +767,7 @@ public:
     }
     const bool mixed = (selected_resources_ & kCoreCube) != 0 &&
                        (selected_resources_ & kCoreVector) != 0;
-    if (composites_.requires_single_cube) {
+    if (composites_.requires_single_cube && !mixed) {
       ICHECK(ordinary_sync_ && selected_resources_ == kCoreCube)
           << "General GEMM invocation synchronization requires complete "
              "ordinary automatic synchronization on one Cube resource";
@@ -790,49 +803,82 @@ public:
     std::vector<LegacyOwnedTask> owned;
     std::vector<LegacyOwnedControl> controls;
     std::vector<std::pair<std::shared_ptr<IRStructure>, CoreMask>> owned_roots;
-    auto add_owned_task = [&](const std::shared_ptr<IRStructure> &node) {
-      ICHECK(node->IsTask())
-          << "Mixed C/V requires flat input except one static C-only prefix "
-             "For; nested or conditional controls are unsupported";
-      auto task = std::static_pointer_cast<TaskNode>(node);
-      const auto owner = task_owners_.find(task.get());
-      ICHECK(owner != task_owners_.end() && owner->second != kCoreUnassigned)
-          << "Mixed C/V synchronization requires a definite task owner";
-      task->SetCoreMask(owner->second);
-      owned.push_back(
-          {task, result_->export_state->original_statements.at(task.get()),
-           owner->second,
-           result_->export_state->original_occurrences.at(task.get())});
-      return owner->second;
-    };
-    for (const auto &node : result_->roots) {
+    std::function<CoreMask(const std::shared_ptr<IRStructure> &)> add_owned;
+    add_owned = [&](const std::shared_ptr<IRStructure> &node) -> CoreMask {
       if (node->IsTask()) {
-        owned_roots.push_back({node, add_owned_task(node)});
-        continue;
+        auto task = std::static_pointer_cast<TaskNode>(node);
+        const auto owner = task_owners_.find(task.get());
+        ICHECK(owner != task_owners_.end() && owner->second != kCoreUnassigned)
+            << "Mixed C/V synchronization requires a definite task owner";
+        task->SetCoreMask(owner->second);
+        owned.push_back(
+            {task, result_->export_state->original_statements.at(task.get()),
+             owner->second,
+             result_->export_state->original_occurrences.at(task.get())});
+        return owner->second;
       }
-      auto control = std::static_pointer_cast<ControlNode>(node);
       const Stmt &original =
           result_->export_state->original_statements.at(node.get());
-      ICHECK(node->IsControl() && original.as<ForNode>() &&
-             control->control.same_as(original) && control->task != nullptr &&
-             !control->children.empty())
-          << "Mixed C/V requires flat input except one static C-only prefix "
-             "For; conditional controls are unsupported";
-      for (const auto &child : control->children)
-        ICHECK_EQ(add_owned_task(child), kCoreCube)
-            << "Mixed C/V requires flat input on V and C-only prefix controls";
-      // Keep the real loop and its scalar header in the C graph. Its children
-      // retain their parent/index and original statement anchors; a union of
-      // effects is not a replacement for loop-exit/backedge analysis.
-      control->task->SetCoreMask(kCoreCube);
+      ICHECK(node->IsControl())
+          << "Mixed C/V requires real owner-pure For trees";
+      auto control = std::static_pointer_cast<ControlNode>(node);
+      ICHECK(original.as<ForNode>() && control->control.same_as(original) &&
+             control->task != nullptr && !control->children.empty())
+          << "Mixed C/V requires real owner-pure For trees; conditional "
+             "controls "
+             "are unsupported";
+      CoreMask owner = kCoreUnassigned;
+      for (const auto &child : control->children) {
+        const CoreMask child_owner = add_owned(child);
+        ICHECK(owner == kCoreUnassigned || owner == child_owner)
+            << "Mixed C/V requires each complete For tree to have one owner";
+        owner = child_owner;
+      }
+      control->task->SetCoreMask(owner);
       controls.push_back(
-          {control, original, kCoreCube,
+          {control, original, owner,
            result_->export_state->original_occurrences.at(node.get())});
-      owned_roots.push_back({node, kCoreCube});
-    }
+      return owner;
+    };
+    for (const auto &node : result_->roots)
+      owned_roots.push_back({node, add_owned(node)});
+    // Prefer a complete proof under the established compiler-added facts.
+    // Merely recording more allocator roles cannot narrow that old profile.
+    auto flat = AnalyzeLegacyFlatEligibility(
+        result_->original_function, target_, platform_, owned,
+        result_->MakeOracle(GMFreshnessScope::kCompilerAdded), controls,
+        composites_.requires_single_cube);
+    const bool noalias =
+        result_->original_function->GetAttr<Bool>("tir.noalias")
+            .value_or(Bool(false));
+    const bool fresh_v2 =
+        HasTrustedFreshGMV2Contract(result_->original_function);
+    if (composites_.requires_single_cube)
+      ICHECK(noalias || fresh_v2)
+          << "General GEMM invocation synchronization requires complete "
+             "ordinary "
+             "automatic synchronization on one Cube resource or a closed C/V "
+             "fresh-v2 publication certificate";
+    const bool closed = !flat.IsEligible();
+    if (closed)
+      ICHECK(noalias || fresh_v2)
+          << flat.Rejection()
+          << "; closed publication requires explicit noalias or a trusted "
+             "Cython fresh-v2 allocation contract";
     const auto plan =
-        PlanLegacyFlatCrossCore(result_->original_function, target_, platform_,
-                                owned, result_->MakeOracle(), controls);
+        closed ? PlanLegacyClosedCrossCore(
+                     result_->original_function, target_, platform_, owned,
+                     result_->MakeOracle(GMFreshnessScope::kRuntimeRecipe),
+                     controls,
+                     result_->composite_hidden_pool.defined()
+                         ? Optional<Var>(
+                               result_->composite_hidden_pool.value()->data)
+                         : NullOpt,
+                     flat.Rejection())
+               : flat.TakePlan();
+    // Only successful complete publication admission grants full allocation
+    // facts to the later owner-local runs; a failed proof cannot fall back.
+    result_->has_closed_publication_plan = closed;
     for (const auto &shadow : plan.shadows) {
       shadow.task->SetPipeMask(shadow.pipe_mask);
       for (const auto &region : shadow.reads)
@@ -1361,8 +1407,14 @@ private:
 } // namespace
 
 ConflictOracle ImportedLegacySyncIR::MakeOracle() const {
+  return MakeOracle(has_closed_publication_plan
+                        ? GMFreshnessScope::kRuntimeRecipe
+                        : GMFreshnessScope::kCompilerAdded);
+}
+
+ConflictOracle ImportedLegacySyncIR::MakeOracle(GMFreshnessScope scope) const {
   ICHECK(physical_storage != nullptr);
-  auto physical = physical_storage->MakeOracle();
+  auto physical = physical_storage->MakeOracle(scope);
   if (!composite_hidden_pool.defined())
     return physical;
   const Var pool = composite_hidden_pool.value()->data;

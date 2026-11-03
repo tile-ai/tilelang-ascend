@@ -76,6 +76,25 @@ struct LegacyCrossCorePlan {
   std::vector<LegacyOwnedFlagReservation> reservations;
 };
 
+// Pass-local certificate for the complete old flat proof. Successful analysis
+// owns its plan; callers neither recreate the proof nor attach partial effects.
+// This grants only compiler-added workspace facts, never full recipe authority.
+class LegacyFlatEligibility {
+public:
+  bool IsEligible() const { return plan_.has_value(); }
+  const std::string &Rejection() const { return rejection_; }
+  LegacyCrossCorePlan TakePlan();
+
+private:
+  std::optional<LegacyCrossCorePlan> plan_;
+  std::string rejection_;
+
+  friend LegacyFlatEligibility AnalyzeLegacyFlatEligibility(
+      const tir::PrimFunc &, const Target &, const std::string &,
+      const std::vector<LegacyOwnedTask> &, const ConflictOracle &,
+      const std::vector<LegacyOwnedControl> &, bool);
+};
+
 // Mixed-resource contract: A2/A3 AscendC, B1, flat V and at most one static
 // positive C-only prefix For. C control trees stay in their local graph;
 // only their real leaves participate in cross-resource preflight.
@@ -87,11 +106,31 @@ struct LegacyCrossCorePlan {
 // rejected. Every real cross-resource RAW/WAR/WAW is checked with the physical
 // oracle. The caller must enable ordinary synchronization for both owner-local
 // runs. No input Task or original statement is changed by this function.
+// Expected profile/proof misses return a rejection, without catching errors or
+// mutating tasks. The oracle must use GMFreshnessScope::kCompilerAdded. Generic
+// mixed GEMM invocations require the closed proof even if their real GM effects
+// otherwise fit the old profile. Malformed shared contracts remain errors.
+LegacyFlatEligibility
+AnalyzeLegacyFlatEligibility(const tir::PrimFunc &function,
+                             const Target &target, const std::string &platform,
+                             const std::vector<LegacyOwnedTask> &tasks,
+                             const ConflictOracle &compiler_added_oracle,
+                             const std::vector<LegacyOwnedControl> &controls,
+                             bool requires_generic_composite);
+
+// Single existing C->V publication over owner-pure static For trees. This
+// profile audits actual DMA rectangles across workgroups and AIV executions;
+// unknown aliases/geometry reject. The optional private pool identity belongs
+// only to composite helper analysis and remains in all owner-local graphs.
+// flat_rejection is diagnostic-only context appended after the actual closed
+// failure; it cannot change proof conditions or trigger another planner.
 LegacyCrossCorePlan
-PlanLegacyFlatCrossCore(const tir::PrimFunc &function, const Target &target,
-                        const std::string &platform,
-                        const std::vector<LegacyOwnedTask> &tasks,
-                        const ConflictOracle &physical_conflict_oracle,
-                        const std::vector<LegacyOwnedControl> &controls = {});
+PlanLegacyClosedCrossCore(const tir::PrimFunc &function, const Target &target,
+                          const std::string &platform,
+                          const std::vector<LegacyOwnedTask> &tasks,
+                          const ConflictOracle &physical_conflict_oracle,
+                          const std::vector<LegacyOwnedControl> &controls,
+                          Optional<tir::Var> private_composite_pool = NullOpt,
+                          const std::string &flat_rejection = {});
 
 } // namespace tvm::tl::ascend_sync

@@ -304,7 +304,7 @@ def test_vector_control_is_not_admitted_by_cube_prefix_support():
         return node
 
     changed = original.with_body(tir.stmt_functor.ir_transform(original.body, None, replace, ["tir.AttrStmt"]))
-    with pytest.raises(tvm.error.TVMError, match="flat input"):
+    with pytest.raises(tvm.error.TVMError, match="flat input|closed C/V|outside"):
         _run(changed)
 
 

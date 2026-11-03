@@ -86,11 +86,14 @@ def test_only_versioned_allocator_contract_proves_workspace_disjoint() -> None:
 
 @pytest.mark.parametrize("indices", [[-1], [2], [1, 1], [True], [0, 1, 0]])
 def test_invalid_fresh_workspace_parameter_positions_reject(indices: list[object]) -> None:
-    with pytest.raises(tvm.error.TVMError, match="fresh-allocation contract"):
+    with pytest.raises(
+        tvm.error.TVMError,
+        match="fresh-allocation contract|fresh allocation index",
+    ):
         _run(_contract(_single_resource(), indices))
 
 
-@pytest.mark.parametrize("version", ["", "cython-auto-gm-v2", 1])
+@pytest.mark.parametrize("version", ["", "cython-auto-gm-v999", 1])
 def test_unknown_fresh_workspace_schema_rejects(version: object) -> None:
     function = _single_resource().with_attr(AUTO_GM_FRESH_CONTRACT_ATTR, version)
     with pytest.raises(tvm.error.TVMError, match="fresh-allocation contract"):

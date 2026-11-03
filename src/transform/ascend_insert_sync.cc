@@ -14,6 +14,7 @@
 #include "ascend_sync/legacy_persistent_normalize.h"
 #include "ascend_sync/legacy_persistent_pipeline.h"
 #include "ascend_sync/legacy_pipeline_partition.h"
+#include "ascend_sync/legacy_runtime_contract.h"
 #include "ascend_sync/upstream/insert_sync.h"
 #include "ascend_sync/z3_proof_service.h"
 
@@ -22,7 +23,7 @@ namespace {
 
 constexpr const char *kSyncProof = "tl.ascend_sync_proof";
 constexpr const char *kSyncBackend = "tl.ascend_sync_backend";
-constexpr const char *kSyncEngineVersion = "upstream-1c0f402e-legacy-v23";
+constexpr const char *kSyncEngineVersion = "upstream-1c0f402e-legacy-v25";
 
 String SyncInputHash(tir::PrimFunc function) {
   return std::to_string(
@@ -69,6 +70,7 @@ tir::PrimFunc InsertUpstreamSync(tir::PrimFunc function, const Target &target,
            "pre-sync IR";
     return function;
   }
+  function = ascend_sync::BindTrustedCythonFreshFinalSignature(function);
   if (!ordinary && !vector_scalar) {
     return function;
   }

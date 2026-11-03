@@ -31,7 +31,51 @@ class _StringImm:
         self.value = value
 
 
+class _IntImm:
+    dtype = "int64"
+
+    def __init__(self, value):
+        self.value = value
+
+    def __int__(self):
+        return self.value
+
+
+class _Var:
+    def same_as(self, other):
+        return self is other
+
+
 class _ManifestCacheChecks:
+    def _v2_output_kernel(self):
+        self.modules["tvm"].ir = SimpleNamespace(container=SimpleNamespace(Array=list))
+        self.modules["tvm.tir"].IntImm = _IntImm
+        self.modules["tvm.tir"].Var = _Var
+        self.func.params = [_Var(), _Var(), _Var()]
+        self.func.attrs = {
+            self.contract.AUTO_GM_FRESH_CONTRACT_ATTR: _StringImm(
+                self.contract.CYTHON_ALLOCATOR_FRESH_CONTRACT_VERSION,
+            ),
+            self.contract.CYTHON_RESULT_INDICES_ATTR: [_IntImm(-2)],
+            self.contract.CYTHON_WORKSPACE_INDICES_ATTR: [],
+            self.contract.CYTHON_INPUT_SIGNATURE_ATTR: self.func.params[:],
+        }
+        kernel = self._compiled_kernel()
+        kernel.params = [SimpleNamespace(dtype="torch.float32", shape=[i + 4]) for i in range(4)]
+        kernel.out_idx = [2]
+        return kernel
+
+    def test_v2_output_cache_roundtrip_and_wrong_roles_fail_before_library_load(self):
+        self._save(self._v2_output_kernel())
+        manifest = json.loads((self.entry / self.contract.AUTO_GM_MANIFEST_PATH).read_text())
+        self.assertEqual(manifest["schema"], 3)
+        self.assertEqual(manifest["allocated_indices"], [2, 3])
+        self.assertIs(self._load(out_idx=[-2]), self.kernel)
+        self.jit_kernel.from_database.assert_called_once()
+        self.jit_kernel.from_database.reset_mock()
+        self.assertIsNone(self._load(out_idx=[1]))
+        self.jit_kernel.from_database.assert_not_called()
+
     def test_upstream_writer_and_loader_bind_the_native_engine_abi(self):
         configs = {"tl.ascend_sync_backend": "upstream"}
         version = ["test-engine-v1"]
@@ -127,6 +171,8 @@ class _ManifestCacheChecks:
             target="auto",
             params=[1, 2, 3, 4],
             auto_gm_idx=[3],
+            out_idx=None,
+            workspace_idx=None,
         )
 
     def _write_manifest(self, indices, param_count=1, **changes):
@@ -212,6 +258,21 @@ class _ManifestCacheChecks:
 
 
 class _KeyedContractWriterChecks:
+    def test_writer_skips_v2_binary_under_a_v1_source_key(self):
+        kernel = self._v2_output_kernel()
+        old_source = SimpleNamespace(
+            params=self.func.params,
+            attrs={
+                self.contract.AUTO_GM_FRESH_CONTRACT_ATTR: _StringImm(
+                    self.contract.AUTO_GM_FRESH_CONTRACT_VERSION,
+                ),
+            },
+        )
+        key = "v2_binary_v1_key"
+        entry = Path(self.cache._get_cache_path(key))
+        self.cache._save_kernel_to_disk(key, kernel, old_source)
+        self.assertFalse(entry.exists())
+
     def test_writer_skips_marked_artifact_under_an_unprepared_legacy_key(self):
         key = "unprepared_legacy_key"
         entry = Path(self.cache._get_cache_path(key))
@@ -238,9 +299,74 @@ class TestAscendRuntimeContractCache(_KeyedContractWriterChecks, _ManifestCacheC
         self.func = SimpleNamespace(
             params=["A", "B", "C"],
             script=lambda: "marked Ascend source(A, B, C): cython-auto-gm-v1",
-            attrs={self.contract.AUTO_GM_FRESH_CONTRACT_ATTR: _StringImm(self.contract.AUTO_GM_FRESH_CONTRACT_VERSION)},
+            attrs={
+                self.contract.AUTO_GM_FRESH_CONTRACT_ATTR: _StringImm(
+                    self.contract.AUTO_GM_FRESH_CONTRACT_VERSION,
+                ),
+            },
         )
         self._write_manifest([])
+
+    def _prepare_v2_entry(self):
+        self.modules["tvm"].ir = SimpleNamespace(container=SimpleNamespace(Array=list))
+        self.modules["tvm.tir"].IntImm = _IntImm
+        self.modules["tvm.tir"].Var = _Var
+        self.func.params = [_Var(), _Var(), _Var()]
+        self.func.attrs = {
+            self.contract.AUTO_GM_FRESH_CONTRACT_ATTR: _StringImm(
+                self.contract.CYTHON_ALLOCATOR_FRESH_CONTRACT_VERSION,
+            ),
+            self.contract.CYTHON_RESULT_INDICES_ATTR: [_IntImm(-2), _IntImm(-2)],
+            self.contract.CYTHON_WORKSPACE_INDICES_ATTR: [_IntImm(-1), _IntImm(-2)],
+            self.contract.CYTHON_INPUT_SIGNATURE_ATTR: self.func.params[:],
+        }
+        kernel = self._compiled_kernel()
+        kernel.params = [SimpleNamespace(dtype="torch.float32", shape=[i + 4]) for i in range(4)]
+        kernel.out_idx = [2, 2]
+        kernel.workspace_idx = [3, 2]
+        self._save(kernel)
+        return kernel
+
+    def test_v2_cache_roundtrip_checks_final_count_raw_roles_and_real_metadata(self):
+        kernel = self._prepare_v2_entry()
+        manifest = json.loads((self.entry / self.contract.AUTO_GM_MANIFEST_PATH).read_text())
+        self.assertEqual(manifest["schema"], 3)
+        self.assertEqual(manifest["allocated_indices"], [2, 3])
+        self.assertIs(self._load(out_idx=[-2, -2], workspace_idx=[-1, -2]), self.kernel)
+        kwargs = self.jit_kernel.from_database.call_args.kwargs
+        self.assertEqual(kwargs["auto_gm_manifest"], manifest)
+        self.assertEqual(kwargs["params"], kernel.params)
+        self.assertEqual(kwargs["out_idx"], [-2, -2])
+
+    def test_v2_cache_wrong_actual_roles_miss_before_loading_library(self):
+        self._prepare_v2_entry()
+        self.assertIsNone(self._load(out_idx=[1, 1], workspace_idx=[3, 2]))
+        self.jit_kernel.from_database.assert_not_called()
+
+    def test_v2_cache_changed_runtime_parameter_metadata_misses_before_loading(self):
+        kernel = self._prepare_v2_entry()
+        kernel.params[2].shape = [999]
+        with open(self.entry / "params.pkl", "wb") as stream:
+            pickle.dump(kernel.params, stream)
+        self.assertIsNone(self._load(out_idx=[2, 2], workspace_idx=[3, 2]))
+        self.jit_kernel.from_database.assert_not_called()
+
+    def test_v2_cache_manifest_cannot_omit_or_change_an_allocation_role(self):
+        self._prepare_v2_entry()
+        path = self.entry / self.contract.AUTO_GM_MANIFEST_PATH
+        original = json.loads(path.read_text())
+        for field in (
+            "result_indices",
+            "workspace_indices",
+            "allocated_indices",
+            "runtime_signature",
+        ):
+            with self.subTest(field=field):
+                manifest = original.copy()
+                del manifest[field]
+                path.write_text(json.dumps(manifest))
+                self.assertIsNone(self._load(out_idx=[2, 2], workspace_idx=[3, 2]))
+        self.jit_kernel.from_database.assert_not_called()
 
     def _write_indices(self, indices):
         (self.entry / "auto_gm_idx.pkl").write_text(json.dumps(indices))
@@ -330,7 +456,11 @@ class _AdditionalContractLoaderMixin(_ManifestCacheChecks, KernelCacheRecoveryMi
         self.func = SimpleNamespace(
             params=["A", "B", "C"],
             script=lambda: "marked Ascend source(A, B, C): cython-auto-gm-v1",
-            attrs={self.contract.AUTO_GM_FRESH_CONTRACT_ATTR: _StringImm(self.contract.AUTO_GM_FRESH_CONTRACT_VERSION)},
+            attrs={
+                self.contract.AUTO_GM_FRESH_CONTRACT_ATTR: _StringImm(
+                    self.contract.AUTO_GM_FRESH_CONTRACT_VERSION,
+                ),
+            },
         )
         self.kernel = object()
         self.jit_kernel.from_database.return_value = self.kernel

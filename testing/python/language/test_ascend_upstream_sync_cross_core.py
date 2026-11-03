@@ -140,6 +140,8 @@ def _function(
         other_tag = "threadIdx.x" if topology_tag == "blockIdx.y" else "blockIdx.y"
         other = tir.IterVar(None, tir.Var("other_vid", "int32"), tir.IterVar.ThreadIndex, other_tag)
         body = tir.AttrStmt(other, "thread_extent", 2, body)
+    workgroup = tir.IterVar(None, tir.Var("bx", "int32"), tir.IterVar.ThreadIndex, "blockIdx.x")
+    body = tir.AttrStmt(workgroup, "thread_extent", 1, body)
     function = (
         tir.PrimFunc(
             [buffer.data for buffer in parameters],
@@ -245,7 +247,7 @@ def test_local_event_reservations_are_independent_between_cube_and_vector() -> N
         ({"noalias": False}, "tir.noalias"),
         ({"mode": 4}, "mode-2"),
         ({"set_pipe": "MTE2"}, "mode-2 FIX"),
-        ({"wait_pipe": ""}, "MTE2 consumer intent"),
+        ({"wait_pipe": "V"}, "MTE2 consumer intent|unsupported GM DMA helper"),
         ({"set_id": 16}, "cross event ID"),
         ({"wait_id": 4}, "matching literal C->V channel"),
         ({"duplicate_set": True}, "exactly one mode-2"),
@@ -255,8 +257,8 @@ def test_local_event_reservations_are_independent_between_cube_and_vector() -> N
         ({"vector_write": True}, "uncovered cross-resource"),
         ({"cross_l1_alias": True}, "uncovered cross-resource"),
         ({"vector_extent": 1}, "C1/V2|subgroup extent"),
-        ({"control": "for"}, "flat input"),
-        ({"control": "if"}, "flat input"),
+        ({"control": "for"}, "flat input|closed C/V|outside|owner-pure For trees"),
+        ({"control": "if"}, "flat input|closed C/V|outside|owner-pure For trees"),
         ({"version": 2}, "B1|version|provenance"),
     ],
 )

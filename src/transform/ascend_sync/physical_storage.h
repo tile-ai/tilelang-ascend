@@ -20,6 +20,12 @@ namespace tvm::tl::ascend_sync {
 
 using PhysicalRingClockMap = Map<tir::Var, PrimExpr>;
 
+// Explicit runtime roles are additional true facts, but consuming them can
+// change event pressure. Ordinary local analysis retains its established
+// compiler-added workspace facts; a closed-publication proof opts into the
+// complete validated allocation recipe.
+enum class GMFreshnessScope { kCompilerAdded, kRuntimeRecipe };
+
 class PhysicalStorageResolver {
 public:
   // The one-argument form reads address_map/size_map from function attributes.
@@ -51,7 +57,8 @@ public:
   // The closure owns its analysis state and can outlive the resolver. Every
   // oracle call compares byte regions under the original logical contexts and
   // iteration relation through the upstream RegionsMayConflict implementation.
-  ConflictOracle MakeOracle() const;
+  ConflictOracle
+  MakeOracle(GMFreshnessScope scope = GMFreshnessScope::kCompilerAdded) const;
 
 private:
   struct State;

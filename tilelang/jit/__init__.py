@@ -90,8 +90,8 @@ def compile(
     # Resolve once here so the same flag list feeds both the cache key and codegen.
     compile_flags = resolve_compile_flags(target, pass_configs, compile_flags)
     # This versioned allocator contract must participate in the cache key.
-    # It describes automatic GM workspaces only, not aliasing between inputs.
-    func = prepare_auto_gm_contract(func, execution_backend, target)
+    # It describes real Cython allocations, retaining aliasing between inputs.
+    func = prepare_auto_gm_contract(func, execution_backend, target, out_idx, workspace_idx)
 
     return cached(
         func=func,

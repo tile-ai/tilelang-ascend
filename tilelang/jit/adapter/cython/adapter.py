@@ -10,6 +10,7 @@ from typing import Callable, Any
 from tilelang import tvm as tvm
 from tvm.target import Target
 from tilelang.engine.param import KernelParam
+from tilelang.jit.ascend_runtime_contract import _allocation_recipe
 from tvm import tir
 from tvm.relay import TensorType
 from tilelang.jit.adapter.wrapper import TLWrapper
@@ -236,15 +237,26 @@ class CythonKernelAdapter(BaseKernelAdapter):
             verbose: Enable verbose logging
         """
         self.params = params
-        self.result_idx = self._legalize_auto_memory_idx(result_idx, "result_idx")
-        self.workspace_idx = self._legalize_auto_memory_idx(workspace_idx, "workspace_idx")
-        self.auto_gm_idx = self._legalize_auto_memory_idx(auto_gm_idx, "auto_gm_idx")
+        self.result_idx = self._legalize_auto_memory_idx(
+            _allocation_recipe(result_idx),
+            "result_idx",
+        )
+        self.workspace_idx = self._legalize_auto_memory_idx(
+            _allocation_recipe(workspace_idx),
+            "workspace_idx",
+        )
+        self.auto_gm_idx = self._legalize_auto_memory_idx(
+            _allocation_recipe(auto_gm_idx),
+            "auto_gm_idx",
+        )
         self.kernel_global_source = kernel_global_source
 
         if isinstance(func_or_mod, tir.PrimFunc):
             self.ir_module = tvm.IRModule({func_or_mod.attrs["global_symbol"]: func_or_mod})
         else:
             self.ir_module = func_or_mod
+
+        self._validate_fresh_allocation_roles(target)
 
         # # self.target = Target.canon_target(determine_target(target))
         # self.target = tvm.target.Target.from_device('cpu')
@@ -304,9 +316,18 @@ class CythonKernelAdapter(BaseKernelAdapter):
     ):
         adapter = cls.__new__(cls)
         adapter.params = params
-        adapter.result_idx = adapter._legalize_auto_memory_idx(result_idx, "result_idx")
-        adapter.workspace_idx = adapter._legalize_auto_memory_idx(workspace_idx, "workspace_idx")
-        adapter.auto_gm_idx = adapter._legalize_auto_memory_idx(auto_gm_idx, "auto_gm_idx")
+        adapter.result_idx = adapter._legalize_auto_memory_idx(
+            _allocation_recipe(result_idx),
+            "result_idx",
+        )
+        adapter.workspace_idx = adapter._legalize_auto_memory_idx(
+            _allocation_recipe(workspace_idx),
+            "workspace_idx",
+        )
+        adapter.auto_gm_idx = adapter._legalize_auto_memory_idx(
+            _allocation_recipe(auto_gm_idx),
+            "auto_gm_idx",
+        )
         adapter.kernel_global_source = kernel_global_source
         adapter.wrapped_source = kernel_global_source
         adapter.pass_configs = pass_configs
@@ -316,6 +337,8 @@ class CythonKernelAdapter(BaseKernelAdapter):
             adapter.ir_module = tvm.IRModule({func_or_mod.attrs["global_symbol"]: func_or_mod})
         else:
             adapter.ir_module = func_or_mod
+
+        adapter._validate_fresh_allocation_roles(target)
 
         # target = determine_target(target, return_object=True)
         # adapter.target = Target.canon_target(determine_target(target))
@@ -347,6 +370,21 @@ class CythonKernelAdapter(BaseKernelAdapter):
 
         adapter._post_init()
         return adapter
+
+    def _validate_fresh_allocation_roles(self, target: str | Target) -> None:
+        from tilelang.jit.ascend_runtime_contract import validate_cached_auto_gm_contract
+
+        for function in self.ir_module.functions.values():
+            if isinstance(function, tir.PrimFunc):
+                validate_cached_auto_gm_contract(
+                    function,
+                    "cython",
+                    self.auto_gm_idx,
+                    len(self.params),
+                    self.result_idx,
+                    self.workspace_idx,
+                    target,
+                )
 
     def _process_dynamic_symbolic(self) -> dict[tir.Var, tuple[int, int]]:
         """Extract information about dynamic shapes from the TIR function.

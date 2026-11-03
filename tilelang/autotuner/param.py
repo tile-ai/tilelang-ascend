@@ -256,6 +256,9 @@ class AutotuneResult:
                     len(kernel.params),
                     contract_configs,
                     contract_target,
+                    kernel.out_idx,
+                    kernel.workspace_idx,
+                    kernel.params,
                 )
                 with open(os.path.join(cache_path, AUTO_GM_MANIFEST_PATH), "w") as f:
                     json.dump(manifest, f)
@@ -355,6 +358,9 @@ class AutotuneResult:
                     manifest,
                     pass_configs,
                     target,
+                    out_idx,
+                    None,
+                    kernel_params,
                 )
                 runtime_contract_kwargs["auto_gm_manifest"] = manifest
             except (OSError, ValueError) as error:
