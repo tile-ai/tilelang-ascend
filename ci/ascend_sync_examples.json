@@ -1,0 +1,1316 @@
+[
+  {
+    "path": "examples/activation/gelu_grad.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/activation/sigmoid.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/activation/sigmoidv2.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/activation/silu.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/activation/swi_glu.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/activation/swi_glu_v2.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/elementwise/elementwise_add.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/elementwise/elementwise_add_pipeline.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/developer_mode/flash_attn_bshd_developer.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/developer_mode/gelu_mul_developer.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/developer_mode/gemm_developer.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/developer_mode/matmul_add_developer_vec_cast.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/developer_mode/sparse_flash_attn_developer_vid_reduce.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/gemm/example_gemm.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/gemm/example_gemm_infer_scope.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/gemm/example_gemm_intrinsic_persistent.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/gemm/example_gemm_pto_developer.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/gemm/example_gemm_transpose_l1.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/pad/example_broadcast_pipeline.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/reduce/example_reduce_min.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/reduce/example_reduce_min_pipeline.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/tail_mask/example_tail_add.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/HISA/block_sparse_mqa_attn_expert_test.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/HISA/paged_block_sparse_mqa_attn_expert.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/add_rms_norm_dynamic_quant/add_rms_norm_dynamic_quant.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/attention_sink/example_gqa_sink_bwd_bhsd/test_gqa_sink_bwd_bhsd.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/attention_sink/example_gqa_sink_fwd_varlen/test_gqa_sink_fwd_varlen.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/autotune/example_gemm_carver.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/batch_gemm/test_batch_gemm.py",
+    "mode": "pytest",
+    "reason": "Pytest test functions without a __main__ entry; collect and execute with pytest.",
+    "device": 0,
+    "pytest_markers": "not bench"
+  },
+  {
+    "path": "examples/cann-bench/dilation_2d/dilation_2d.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/cann-bench/gather/gather.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/cann-bench/gru/gru.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/cann-bench/lstm/lstm.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/cann-bench/situ_glu_grad/example_situ_glu_grad.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/cann-bench/situ_glu_grad/test_example_situ_glu_grad.py",
+    "device": 0
+  },
+  {
+    "path": "examples/cann-bench/sparse_flash_attention/sparse_flash_attention.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/cann-bench/transpose/test_transpose.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/causal_conv1d/causal_conv1d.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/causal_conv1d/causal_conv1d_pto.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/cross_entropy_loss/example_cross_entro.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "timeout_seconds": 300,
+    "device": 0
+  },
+  {
+    "path": "examples/deepseek_v4/hc_split_sinkhorn.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/deepseek_v4/test_hc_split_sinkhorn.py",
+    "device": 0
+  },
+  {
+    "path": "examples/deepseek_v4/lightning_indexer.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/deepseek_v4/sparse_flash_mla/sparse_flash_mla_api.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/deepseek_v4/sparse_flash_mla/sparse_flash_mla_kernel.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/deepseek_v4/test_hc_split_sinkhorn.py",
+    "mode": "pytest",
+    "reason": "Pytest test functions without a __main__ entry; collect and execute with pytest.",
+    "device": 0,
+    "pytest_markers": "not bench"
+  },
+  {
+    "path": "examples/deepseek_v4/test_sparse_attention.py",
+    "mode": "pytest",
+    "reason": "Pytest test functions without a __main__ entry; collect and execute with pytest.",
+    "device": 0,
+    "pytest_markers": "not bench"
+  },
+  {
+    "path": "examples/dynamic_quant/dynamic_quant.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/flash_attention/fa_opt/auto_pipeline/h16_d128.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/flash_attention/fa_opt/expert_v1/kernel.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/flash_attention/fa_opt/expert_v3/kernel.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/flash_attention/fa_opt/plot.py",
+    "mode": "skip",
+    "reason": "Plotting utility requiring external benchmark CSV; does not execute a kernel.",
+    "device": 0
+  },
+  {
+    "path": "examples/flash_attention/fa_opt/run.py",
+    "mode": "skip",
+    "reason": "Profiler/simulator subprocess orchestrator; independently selected kernels covered separately.",
+    "device": 0
+  },
+  {
+    "path": "examples/flash_attention/flash_attn_bhsd_cc_sync.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/flash_attention/test_flash_attn_bhsd.py",
+    "mode": "pytest",
+    "reason": "Pytest test functions without a __main__ entry; collect and execute with pytest.",
+    "device": 0,
+    "pytest_markers": "not bench"
+  },
+  {
+    "path": "examples/fusedmoe/example_fusedmoe.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/gemm_aot/example_gemm.py",
+    "mode": "skip",
+    "reason": "Coordinated AOT build/test workflow via run_example_gemm_aot.sh; direct scripts either generate a library or require prebuilt kernel_lib.so and bypass the JIT compile hook.",
+    "device": 0
+  },
+  {
+    "path": "examples/gemv/example_gemv_c.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/generative_recommendation/golden.py",
+    "mode": "skip",
+    "reason": "Golden/reference or utility support imported by runnable examples/tests.",
+    "device": 0
+  },
+  {
+    "path": "examples/generative_recommendation/testcase.py",
+    "mode": "skip",
+    "reason": "Input-case generation support imported by the runnable attention example.",
+    "device": 0
+  },
+  {
+    "path": "examples/gqa_fwd_varlen/perf_gqa_fwd_varlen.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/lightning_indexer/example_lightning_indexer.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/linear_attention_and_rnn/gdn/__init__.py",
+    "mode": "skip",
+    "reason": "Package initialization; no standalone sample.",
+    "device": 0
+  },
+  {
+    "path": "examples/linear_attention_and_rnn/gdn/gdn_chunk_h.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/linear_attention_and_rnn/gdn/gdn_chunk_scaled_dot_kkt.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/linear_attention_and_rnn/gdn/gdn_wy_fast.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/linear_attention_and_rnn/linear_attention_causal.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/linear_attention_and_rnn/opt_gdn/__init__.py",
+    "mode": "skip",
+    "reason": "Package initialization; no standalone sample.",
+    "device": 0
+  },
+  {
+    "path": "examples/linear_attention_and_rnn/opt_gdn/opt_gdn_chunk_h.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/linear_attention_and_rnn/opt_gdn/opt_gdn_chunk_scaled_dot_kkt.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/linear_attention_and_rnn/opt_gdn/opt_gdn_wy_fast.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/mha_sink_fwd_bhsd/mha_sink_fwd_bhsd.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/mhc_post/example_mhc_post.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/moe_token_permute/moe_token_permute_grad.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/moe_token_permute/moe_token_unpermute_grad.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/normalization/layer_norm.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/pipeline/flash_attn_bshd_pipeline.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/pipeline/matmul_add_pipeline.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/pipeline/sparse_flash_attn_gqa_pipeline_pto.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/pos_embedding/rms_norm.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/pos_embedding/test_rms_norm_pos_embedding.py",
+    "device": 0
+  },
+  {
+    "path": "examples/pos_embedding/rms_rope_fused_mask.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/pos_embedding/test_rms_rope_fused_mask.py",
+    "device": 0
+  },
+  {
+    "path": "examples/pos_embedding/rope_mask.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/pos_embedding/test_rope_mask.py",
+    "device": 0
+  },
+  {
+    "path": "examples/pos_embedding/test_rms_norm_pos_embedding.py",
+    "mode": "pytest",
+    "reason": "Pytest test functions without a __main__ entry; collect and execute with pytest.",
+    "device": 0,
+    "pytest_markers": "not bench"
+  },
+  {
+    "path": "examples/pos_embedding/test_rms_rope_fused_mask.py",
+    "mode": "pytest",
+    "reason": "Pytest test functions without a __main__ entry; collect and execute with pytest.",
+    "device": 0,
+    "pytest_markers": "not bench"
+  },
+  {
+    "path": "examples/pos_embedding/test_rope_mask.py",
+    "mode": "pytest",
+    "reason": "Pytest test functions without a __main__ entry; collect and execute with pytest.",
+    "device": 0,
+    "pytest_markers": "not bench"
+  },
+  {
+    "path": "examples/pos_embedding/test_rope_mask_bwd.py",
+    "mode": "pytest",
+    "reason": "Pytest test functions without a __main__ entry; collect and execute with pytest.",
+    "timeout_seconds": 360,
+    "device": 0,
+    "pytest_markers": "not bench"
+  },
+  {
+    "path": "examples/print/elementwise_print.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/quant_batch_matmul/example_quant_matmul.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/shmem/shmem_mm_test_put_nbi.py",
+    "mode": "skip",
+    "reason": "Requires coordinated SHMEM multi-process/multi-device launch (default 8 ranks); not a standalone single-device entry.",
+    "device": 0
+  },
+  {
+    "path": "examples/shmem/shmem_mm_test_ub_put_nbi.py",
+    "mode": "skip",
+    "reason": "Requires coordinated SHMEM multi-process/multi-device launch (default 8 ranks); not a standalone single-device entry.",
+    "device": 0
+  },
+  {
+    "path": "examples/simple_fusion/matmul_add_infer_scope.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/situ_glu/situ_glu.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/situ_glu/test_situ_glu.py",
+    "device": 0
+  },
+  {
+    "path": "examples/softmax/example_online_softmax.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/sparse_flash_attention/bench_sfa/bench_sfa.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/sparse_flash_attention/bench_sfa/sparse_flash_attn_pa_baseline.py",
+    "mode": "skip",
+    "reason": "Kernel-only module driven by bench_sfa.py --file sparse_flash_attn_pa_baseline.",
+    "device": 0
+  },
+  {
+    "path": "examples/sparse_flash_attention/bench_sfa/sparse_flash_attn_pa_no_cv_pipeline.py",
+    "mode": "skip",
+    "reason": "Kernel-only module driven by the default bench_sfa.py entry.",
+    "device": 0
+  },
+  {
+    "path": "examples/sparse_flash_attention/example_sparse_flash_attn_dynamic_shape.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/sparse_flash_attention/example_sparse_flash_attn_gqa_pto.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/sparse_flash_attention/example_sparse_flash_attn_mask.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 0
+  },
+  {
+    "path": "examples/sparse_flash_attention/sfa_golden.py",
+    "mode": "skip",
+    "reason": "Golden/reference or utility support imported by runnable examples/tests.",
+    "device": 0
+  },
+  {
+    "path": "examples/tile_kernels/moe/moe_aux_fi.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0,
+    "timeout_seconds": 300
+  },
+  {
+    "path": "examples/tile_kernels/moe/moe_topk_sum_and_topk_group_idx.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/tile_kernels/moe/test_moe_topk_sum_and_topk_group_idx.py",
+    "device": 0
+  },
+  {
+    "path": "examples/tile_kernels/moe/test_moe_topk_sum_and_topk_group_idx.py",
+    "mode": "pytest",
+    "reason": "Pytest test functions without a __main__ entry; collect and execute with pytest.",
+    "timeout_seconds": 240,
+    "device": 0,
+    "pytest_markers": "not bench and not low_priority and not ci_skip"
+  },
+  {
+    "path": "examples/tile_kernels/quant/per_block_cast_lossless_kernel.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/tile_kernels/quant/test_per_block_cast_lossless_kernel.py",
+    "device": 0
+  },
+  {
+    "path": "examples/tile_kernels/quant/utils.py",
+    "mode": "skip",
+    "reason": "Golden/reference or utility support imported by runnable examples/tests.",
+    "device": 0
+  },
+  {
+    "path": "examples/torch_tl_ascend/compile_tl_op/__init__.py",
+    "mode": "skip",
+    "reason": "LibTorch/Python package integration, setup or support; requires its coordinated build/test shell workflow.",
+    "device": 0
+  },
+  {
+    "path": "examples/torch_tl_ascend/compile_tl_op/util/__init__.py",
+    "mode": "skip",
+    "reason": "LibTorch/Python package integration, setup or support; requires its coordinated build/test shell workflow.",
+    "device": 0
+  },
+  {
+    "path": "examples/torch_tl_ascend/demo_libtorch/prepare.py",
+    "mode": "skip",
+    "reason": "LibTorch/Python package integration, setup or support; requires its coordinated build/test shell workflow.",
+    "device": 0
+  },
+  {
+    "path": "examples/torch_tl_ascend/src/torch_tl_ascend/__init__.py",
+    "mode": "skip",
+    "reason": "LibTorch/Python package integration, setup or support; requires its coordinated build/test shell workflow.",
+    "device": 0
+  },
+  {
+    "path": "examples/torch_tl_ascend/test_source.py",
+    "mode": "skip",
+    "reason": "LibTorch/Python package integration, setup or support; requires its coordinated build/test shell workflow.",
+    "device": 0
+  },
+  {
+    "path": "examples/unsorted_segment_sum/unsorted_segment_sum.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/xattention/expert_v1/paged.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 0
+  },
+  {
+    "path": "examples/xllm_kernels/fused_gdn_gating.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/xllm_kernels/test_fused_gdn_gating.py",
+    "device": 0
+  },
+  {
+    "path": "examples/xllm_kernels/split_qkv_rmsnorm_mrope.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/xllm_kernels/test_split_qkv_rmsnorm_mrope.py",
+    "device": 0
+  },
+  {
+    "path": "examples/xllm_kernels/test_rope_xllm_kernels.py",
+    "mode": "pytest",
+    "reason": "Pytest test functions without a __main__ entry; collect and execute with pytest.",
+    "device": 0,
+    "pytest_markers": "not bench"
+  },
+  {
+    "path": "examples/xllm_kernels/utils.py",
+    "mode": "skip",
+    "reason": "Golden/reference or utility support imported by runnable examples/tests.",
+    "device": 0
+  },
+  {
+    "path": "examples/activation/gelu_mul.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/activation/sigmoidv2_slice.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/activation/swi_glu_grad.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/activation/tanh.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/elementwise/setvalue_example.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/developer_mode/matmul_add_developer.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/developer_mode/sparse_flash_attn_developer.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/gemm/example_gemm_fp8_pto.py",
+    "mode": "skip",
+    "reason": "FP8 TMATMUL requires A5 hardware; current run uses A3. The script exits successfully with [SKIP] on non-A5 devices.",
+    "device": 1
+  },
+  {
+    "path": "examples/gemm/example_gemm_intrinsic.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/gemm/example_gemm_persistent.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/gemm/example_gemm_tail_block_developer.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/pad/example_broadcast.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/reduce/example_col_reduce_max_slice_buffer.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/reduce/example_row_reduce_max_slice_buffer.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/HISA/block_sparse_mqa_attn_expert_test_for_a5.py",
+    "mode": "skip",
+    "reason": "A5-specific HISA test; current hardware is A3.",
+    "device": 1
+  },
+  {
+    "path": "examples/aclgraph/rms_rope_aclgraph.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/attention_sink/example_gqa_sink_bwd_bhsd/example_gqa_sink_bwd_bhsd.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/attention_sink/example_gqa_sink_fwd_varlen/example_gqa_sink_fwd_varlen.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/autotune/example_gemm_autotune.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/batch_gemm/batch_gemm.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/batch_gemm/test_batch_gemm.py",
+    "device": 1
+  },
+  {
+    "path": "examples/cann-bench/cummin/example_cummin.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "timeout_seconds": 300,
+    "device": 1
+  },
+  {
+    "path": "examples/cann-bench/dilation_2d/test_dilation_2d.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/cann-bench/group_norm/example_group_norm.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/cann-bench/gru/test_gru.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/cann-bench/lstm/test_lstm.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/cann-bench/situ_glu_grad/test_example_situ_glu_grad.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/cann-bench/sparse_flash_attention/test_sparse_flash_attention.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/cann-bench/transpose/transpose.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/causal_conv1d/causal_conv1d_decode.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/compile_flags/compile_flags_example.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/deepseek_v4/act_quant.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/deepseek_v4/test_act_quant.py",
+    "device": 1
+  },
+  {
+    "path": "examples/deepseek_v4/int8_gemm.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/deepseek_v4/test_int8_gemm.py",
+    "device": 1
+  },
+  {
+    "path": "examples/deepseek_v4/sparse_attention.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/deepseek_v4/test_sparse_attention.py",
+    "device": 1
+  },
+  {
+    "path": "examples/deepseek_v4/sparse_flash_mla/sparse_flash_mla_golden.py",
+    "mode": "skip",
+    "reason": "Golden/reference or utility support imported by runnable examples/tests.",
+    "device": 1
+  },
+  {
+    "path": "examples/deepseek_v4/test_act_quant.py",
+    "mode": "pytest",
+    "reason": "Pytest test functions without a __main__ entry; collect and execute with pytest.",
+    "device": 1,
+    "pytest_markers": "not bench"
+  },
+  {
+    "path": "examples/deepseek_v4/test_int8_gemm.py",
+    "mode": "pytest",
+    "reason": "Pytest test functions without a __main__ entry; collect and execute with pytest.",
+    "device": 1,
+    "pytest_markers": "not bench"
+  },
+  {
+    "path": "examples/dispatch_combine/dispatch_combine_shmem.py",
+    "mode": "skip",
+    "reason": "Requires 16 distributed devices/processes; only two A3 devices available.",
+    "device": 1
+  },
+  {
+    "path": "examples/exception_dump_test/example_exception_dump.py",
+    "mode": "skip",
+    "reason": "Intentionally triggers AI Core hardware exception using a null output pointer; excluded from ordinary sample runs.",
+    "device": 1
+  },
+  {
+    "path": "examples/flash_attention/fa_opt/auto_pipeline/h32_d512.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/flash_attention/fa_opt/expert_v2/kernel.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/flash_attention/fa_opt/expert_v3/tools/preprocess.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/flash_attention/fa_opt/reference/ascendc.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/flash_attention/flash_attn_bhsd.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/flash_attention/test_flash_attn_bhsd.py",
+    "device": 1
+  },
+  {
+    "path": "examples/flash_attention/paged_flash_attn_bhsd.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/fused_sigmoid_gating_delta_rule/fused_sigmoid_gating_delta_rule_varlen.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/fusedmoe/test_fusedmoe.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/gemm_aot/test_example_gemm.py",
+    "mode": "skip",
+    "reason": "Coordinated AOT build/test workflow via run_example_gemm_aot.sh; direct scripts either generate a library or require prebuilt kernel_lib.so and bypass the JIT compile hook.",
+    "device": 1
+  },
+  {
+    "path": "examples/gemv/example_gemv_v.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/generative_recommendation/mtgr_ragged_segment_attention.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/gqa_fwd_varlen/gqa_fwd_varlen.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/gqa_fwd_varlen/test_gqa_fwd_varlen.py",
+    "device": 1
+  },
+  {
+    "path": "examples/gqa_fwd_varlen/test_gqa_fwd_varlen.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/lightning_indexer/example_lightning_indexer_dynamic_shape.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/linear_attention_and_rnn/gdn/gdn_chunk_cumsum.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/linear_attention_and_rnn/gdn/gdn_chunk_o.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/linear_attention_and_rnn/gdn/gdn_solve_tril.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/linear_attention_and_rnn/gdn_full.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/linear_attention_and_rnn/linear_attention_normalize.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/linear_attention_and_rnn/opt_gdn/opt_gdn_chunk_cumsum.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/linear_attention_and_rnn/opt_gdn/opt_gdn_chunk_o.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/linear_attention_and_rnn/opt_gdn/opt_gdn_solve_tril.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/linear_attention_and_rnn/opt_gdn_full.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/mha_sink_fwd_bhsd/test_mha_sink_fwd_bhsd.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/moe_token_permute/moe_token_permute.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/moe_token_permute/moe_token_unpermute.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/moe_token_permute/moe_token_utils.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/normalization/rms_norm.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/pipeline/gemm_v0_pipeline.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/pipeline/sparse_flash_attn_gqa_pipeline.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/pos_embedding/RotaryPositionEmbedding/rope_half_interleaved.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/pos_embedding/rms_rope_fused.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/pos_embedding/test_rms_rope_fused.py",
+    "device": 1
+  },
+  {
+    "path": "examples/pos_embedding/rope.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/pos_embedding/test_rope.py",
+    "device": 1
+  },
+  {
+    "path": "examples/pos_embedding/rope_mask_bwd.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/pos_embedding/test_rope_mask_bwd.py",
+    "device": 1
+  },
+  {
+    "path": "examples/pos_embedding/test_rms_rope_fused.py",
+    "mode": "pytest",
+    "reason": "Pytest test functions without a __main__ entry; collect and execute with pytest.",
+    "device": 1,
+    "pytest_markers": "not bench"
+  },
+  {
+    "path": "examples/pos_embedding/test_rope.py",
+    "mode": "pytest",
+    "reason": "Pytest test functions without a __main__ entry; collect and execute with pytest.",
+    "device": 1,
+    "pytest_markers": "not bench"
+  },
+  {
+    "path": "examples/quant_batch_matmul/example_quant_batch_matmul.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/shmem/shmem_mm_test_get_nbi.py",
+    "mode": "skip",
+    "reason": "Requires coordinated SHMEM multi-process/multi-device launch (default 8 ranks); not a standalone single-device entry.",
+    "device": 1
+  },
+  {
+    "path": "examples/shmem/shmem_mm_test_ub_get_nbi.py",
+    "mode": "skip",
+    "reason": "Requires coordinated SHMEM multi-process/multi-device launch (default 8 ranks); not a standalone single-device entry.",
+    "device": 1
+  },
+  {
+    "path": "examples/simple_fusion/matmul_add.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/situ_glu/bench_situ_glu.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/situ_glu/test_situ_glu.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/sort/example_merge_sort.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/sparse_flash_attention/bench_sfa/sparse_flash_attn_pa.py",
+    "mode": "skip",
+    "reason": "Kernel-only module driven by bench_sfa.py --file sparse_flash_attn_pa.",
+    "device": 1
+  },
+  {
+    "path": "examples/sparse_flash_attention/bench_sfa/sparse_flash_attn_pa_developer.py",
+    "mode": "skip",
+    "reason": "Kernel-only module driven by bench_sfa.py --file sparse_flash_attn_pa_developer.",
+    "device": 1
+  },
+  {
+    "path": "examples/sparse_flash_attention/example_sparse_flash_attn.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/sparse_flash_attention/example_sparse_flash_attn_gqa.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/sparse_flash_attention/example_sparse_flash_attn_gqa_pto_developer.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/sparse_flash_attention/example_sparse_flash_attn_mask_pa.py",
+    "mode": "script",
+    "reason": "Execute existing top-level sample/test code with runpy.",
+    "device": 1
+  },
+  {
+    "path": "examples/tile_kernels/mhc/head_compute_mix_kernel.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/tile_kernels/moe/moe_topk_gate.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1,
+    "timeout_seconds": 300
+  },
+  {
+    "path": "examples/tile_kernels/quant/test_per_block_cast_lossless_kernel.py",
+    "mode": "pytest",
+    "reason": "Pytest test functions without a __main__ entry; collect and execute with pytest.",
+    "timeout_seconds": 180,
+    "device": 1,
+    "pytest_markers": "not bench and not low_priority and not ci_skip"
+  },
+  {
+    "path": "examples/topk_selector/example_topk_selector.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/torch_tl_ascend/compile_tl_op/flash_attention.py",
+    "mode": "skip",
+    "reason": "LibTorch/Python package integration, setup or support; requires its coordinated build/test shell workflow.",
+    "device": 1
+  },
+  {
+    "path": "examples/torch_tl_ascend/compile_tl_op/util/wrap_libgen.py",
+    "mode": "skip",
+    "reason": "LibTorch/Python package integration, setup or support; requires its coordinated build/test shell workflow.",
+    "device": 1
+  },
+  {
+    "path": "examples/torch_tl_ascend/setup.py",
+    "mode": "skip",
+    "reason": "LibTorch/Python package integration, setup or support; requires its coordinated build/test shell workflow.",
+    "device": 1
+  },
+  {
+    "path": "examples/torch_tl_ascend/src/torch_tl_ascend/op_source/__init__.py",
+    "mode": "skip",
+    "reason": "LibTorch/Python package integration, setup or support; requires its coordinated build/test shell workflow.",
+    "device": 1
+  },
+  {
+    "path": "examples/torch_tl_ascend/test_torch.py",
+    "mode": "skip",
+    "reason": "LibTorch/Python package integration, setup or support; requires its coordinated build/test shell workflow.",
+    "device": 1
+  },
+  {
+    "path": "examples/xattention/expert_v1/kernel.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/xattention/expert_v2/kernel.py",
+    "mode": "script",
+    "reason": "Run the existing __main__ entry with its default sample/test settings.",
+    "device": 1
+  },
+  {
+    "path": "examples/xllm_kernels/rope.py",
+    "mode": "skip",
+    "reason": "Migrated operator source; execute its registered test instead: examples/xllm_kernels/test_rope_xllm_kernels.py",
+    "device": 1
+  },
+  {
+    "path": "examples/xllm_kernels/test_fused_gdn_gating.py",
+    "mode": "pytest",
+    "reason": "Pytest test functions without a __main__ entry; collect and execute with pytest.",
+    "device": 1,
+    "pytest_markers": "not bench"
+  },
+  {
+    "path": "examples/xllm_kernels/test_split_qkv_rmsnorm_mrope.py",
+    "mode": "pytest",
+    "reason": "Pytest test functions without a __main__ entry; collect and execute with pytest.",
+    "device": 1,
+    "pytest_markers": "not bench"
+  }
+]
