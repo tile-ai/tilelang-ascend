@@ -237,6 +237,62 @@ class SearchCoverageTest(unittest.TestCase):
             event["identity"]["physical_dataflow"]["route_experiment"] = False
         self.assert_invalid(record)
 
+    def contiguous_vector_record(self) -> dict:
+        """Represent a DMA/UB/vector path without indexed access or register reorder."""
+        record = self.simple_record()
+        record["cases"][0]["source_window"]["baseline_route_kind"] = "OTHER"
+        record["cases"][0]["source_window"]["baseline_writeback_kind"] = "CONTIGUOUS"
+        for event in record["candidate_events"]:
+            event["identity"]["physical_dataflow"].update(
+                {
+                    "description": "Contiguous DMA to UB, vector arithmetic, contiguous DMA writeback.",
+                    "route_kind": "OTHER",
+                    "source_access": "CONTIGUOUS",
+                    "writeback_kind": "CONTIGUOUS",
+                    "full_payload_materialization": False,
+                    "register_lane_reorder": False,
+                    "indexed_lane_access": False,
+                    "route_experiment": False,
+                }
+            )
+        return record
+
+    def test_contiguous_vector_baseline_accepts_other_route(self) -> None:
+        record = self.contiguous_vector_record()
+        self.assertEqual(self.validate(record), "VALID_RECORD")
+        self.assertEqual(self.validate(record, final=True), "TARGET_MET")
+
+    def test_unknown_baseline_route_is_rejected(self) -> None:
+        record = self.contiguous_vector_record()
+        record["cases"][0]["source_window"]["baseline_route_kind"] = "UNRECOGNIZED"
+        self.assert_invalid(record)
+
+    def test_other_baseline_still_checks_writeback_route_changes(self) -> None:
+        record = self.contiguous_vector_record()
+        for event in record["candidate_events"]:
+            event["identity"]["physical_dataflow"]["writeback_kind"] = "STRIDED"
+        self.assert_invalid(record)
+        for event in record["candidate_events"]:
+            event["identity"]["physical_dataflow"]["route_experiment"] = True
+        self.assertEqual(self.validate(record), "VALID_RECORD")
+
+    def test_other_baseline_does_not_skip_indexed_route_coverage(self) -> None:
+        record = self.load_example()
+        record["cases"][0]["source_window"]["baseline_route_kind"] = "OTHER"
+        self.assertEqual(self.validate(record), "VALID_RECORD")
+        obligation = next(item for item in record["obligations"] if item["kind"] == "physical_dataflow_routes")
+        obligation["route_plan"] = [item for item in obligation["route_plan"] if item["route_kind"] != "MATERIALIZED_TRANSFORM"]
+        self.assert_invalid(record)
+
+    def test_other_route_does_not_finish_pending_search(self) -> None:
+        record = self.contiguous_vector_record()
+        record["cases"][0]["performance_target"] = None
+        obligation = record["obligations"][0]
+        obligation["status"] = "ACTIVE"
+        obligation["case_dispositions"][0]["status"] = "PENDING"
+        self.assertEqual(self.validate(record), "VALID_RECORD")
+        self.assert_invalid(record, final=True)
+
     def test_rejecting_unexecuted_candidate_requires_control_evidence(self) -> None:
         record = self.simple_record()
         result = record["candidate_events"][1]

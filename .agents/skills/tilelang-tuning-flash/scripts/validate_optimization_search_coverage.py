@@ -466,7 +466,7 @@ def validate_case(case: dict, obligation_ids: set[str]) -> None:
             f"case {case_id}: source window must check row/chunk decomposition",
         )
     require(
-        source.get("baseline_route_kind") in ROUTE_KINDS,
+        source.get("baseline_route_kind") in ALL_ROUTE_KINDS,
         f"case {case_id}: source_window needs baseline_route_kind",
     )
     require(

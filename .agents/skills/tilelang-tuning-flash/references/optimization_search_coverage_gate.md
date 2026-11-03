@@ -155,6 +155,8 @@
 
 `source_window` 把路由条件变成机器事实：访问类型、有界性、span、实际消费字节、density、所需寄存器数、寄存器窗口是否可实施、基线输入/写回路线、索引规律和证据。这里的窗口必须是“生成一个 Vector 输出 chunk 所需的最小可重复热循环窗口”，不是带 row stride 空洞的整张 patch、整行 group 或完整语义 segment；若能逐 row/chunk 流式处理，就按分解后的窗口计算 span、density 和寄存器数，并写 `decomposition_checked=true`。`INDEXED_OR_REORDERED` 会自动触发物理路线义务。
 
+`baseline_route_kind` 与候选的 `route_kind` 使用相同取值范围。普通连续 DMA → UB → Vector 计算 → 连续写回等不属于上述四类的路径使用 `OTHER`，并在 source-window 证据和候选 description 中说明实际数据流，不能虚报寄存器重排、索引访问或物化转换。`OTHER` 不关闭任何搜索义务；索引/重排 case 仍须逐一裁决四类路线，`route_experiment` 仍按基线路线与写回方式核对。
+
 A3 的 `register_window_feasible` 有三种状态：
 
 - `null`：当前后端可实施性尚待确认，`window_vregs` 可为 `null`；保留 direct route 的 `PENDING` 裁决并继续查当前 API/lowering。可先探索其他已有依据的路线，但不能把 null 作为证据收敛的终态。
