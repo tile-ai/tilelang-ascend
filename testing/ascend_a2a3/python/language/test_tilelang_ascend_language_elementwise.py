@@ -1131,6 +1131,10 @@ def test_bitwise_rshift_slice(dtype, target, shape):
     run_test_bitwise_rshift_slice(M, N, 128, 256, scalarvalue=scalarvalue, dtype=dtype, target=target)
 
 
+# ---------------------------------------------------------------------------
+# Factcheck tests for T.tile.bitwise_rshift
+# ---------------------------------------------------------------------------
+
 _TORCH_INT_DTYPE_RSHIFT = {
     "int16": torch.int16,
     "uint16": torch.uint16,
@@ -1427,6 +1431,8 @@ def test_bitwise_xor_slice(dtype, target, shape):
     M, N = shape
     run_test_bitwise_xor_slice(M, N, 128, 256, dtype, target)
 
+
+# ---- Factcheck: extended bitwise_xor tests ----
 
 _TORCH_INT_DTYPE_XOR = {
     "int8": torch.int8,
@@ -1952,8 +1958,6 @@ def test_cast_scale(dtype, target, shape):
 
 
 _TILE_CLAMP_INPUT_PATTERN = [-20, -3, -2, -1, 0, 1, 2, 3, 4, 20]
-
-
 _TILE_CLAMP_TORCH_DTYPES = {
     "float": torch.float32,
     "float16": torch.float16,
@@ -3198,6 +3202,121 @@ def test_clear(dtype, target, shape):
     run_test_clear(M, N, 64, 32, dtype, target=target)
 
 
+@pytest.mark.low_priority
+@pytest.mark.parametrize("dtype", ["int8", "uint8"])
+@pytest.mark.parametrize("target", ["pto"])
+@pytest.mark.parametrize("shape", [(1024, 1024)])
+def test_clear_pto_int8(dtype, target, shape):
+    M, N = shape
+    run_test_clear(M, N, 64, 32, dtype, target=target)
+
+
+def clear_1d(N, block_N, dtype="float"):
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(A: T.Tensor((N,), dtype)):  # type: ignore
+        with T.Kernel(n_num, is_npu=True) as (cid, _):
+            a_ub = T.alloc_ub((block_N,), dtype)
+
+            T.tile.fill(a_ub, 10.0)
+            T.tile.clear(a_ub)
+            T.copy(a_ub, A[cid * block_N])
+
+    return main
+
+
+def run_test_clear_1d(N, block_N, dtype, target):
+    func = clear_1d(N, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch.npu.synchronize()
+
+    b = func()
+
+    torch_dtype_map = {
+        "float": torch.float32,
+        "float16": torch.float16,
+        "int32": torch.int32,
+        "int8": torch.int8,
+    }
+    torch_dtype = torch_dtype_map.get(dtype, torch.float32)
+    ref_b = torch.zeros((N,), dtype=torch_dtype).npu()
+
+    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        "float",
+        pytest.param("float16", marks=pytest.mark.low_priority),
+        pytest.param("int32", marks=pytest.mark.low_priority),
+    ],
+)
+@pytest.mark.parametrize(
+    "target",
+    [
+        "ascendc",
+        pytest.param("pto", marks=pytest.mark.low_priority),
+    ],
+)
+def test_clear_1d(dtype, target):
+    run_test_clear_1d(1024, 128, dtype, target=target)
+
+
+def clear_buffer_region(M, N, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(A: T.Tensor((M, N), dtype)):  # type: ignore
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            T.tile.fill(a_ub, 10.0)
+            T.tile.clear(a_ub[0:block_M, 0:block_N])
+            T.copy(a_ub, A[bx * block_M, by * block_N])
+
+    return main
+
+
+def run_test_clear_buffer_region(M, N, block_M, block_N, dtype, target):
+    func = clear_buffer_region(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch.npu.synchronize()
+
+    b = func()
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    ref_b = torch.zeros((M, N), dtype=torch_dtype).npu()
+
+    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        "float",
+        pytest.param("float16", marks=pytest.mark.low_priority),
+    ],
+)
+@pytest.mark.parametrize(
+    "target",
+    [
+        "ascendc",
+        pytest.param("pto", marks=pytest.mark.low_priority),
+    ],
+)
+@pytest.mark.parametrize("shape", [(1024, 1024)])
+def test_clear_buffer_region(dtype, target, shape):
+    M, N = shape
+    run_test_clear_buffer_region(M, N, 64, 32, dtype, target=target)
+
+
 def gather(M, N, block_M, block_N, dtype="int32"):
     m_num = M // block_M
     n_num = N // block_N
@@ -3391,121 +3510,6 @@ def test_gather_larger_src(dtype, target):
     block_N_src = N_src
     block_N = N
     run_test_gather_larger_src(M, N_src, N, block_M, block_N_src, block_N, dtype, target)
-
-
-@pytest.mark.low_priority
-@pytest.mark.parametrize("dtype", ["int8", "uint8"])
-@pytest.mark.parametrize("target", ["pto"])
-@pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_clear_pto_int8(dtype, target, shape):
-    M, N = shape
-    run_test_clear(M, N, 64, 32, dtype, target=target)
-
-
-def clear_1d(N, block_N, dtype="float"):
-    n_num = N // block_N
-
-    @T.prim_func
-    def main(A: T.Tensor((N,), dtype)):  # type: ignore
-        with T.Kernel(n_num, is_npu=True) as (cid, _):
-            a_ub = T.alloc_ub((block_N,), dtype)
-
-            T.tile.fill(a_ub, 10.0)
-            T.tile.clear(a_ub)
-            T.copy(a_ub, A[cid * block_N])
-
-    return main
-
-
-def run_test_clear_1d(N, block_N, dtype, target):
-    func = clear_1d(N, block_N, dtype)
-    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-
-    torch.npu.synchronize()
-
-    b = func()
-
-    torch_dtype_map = {
-        "float": torch.float32,
-        "float16": torch.float16,
-        "int32": torch.int32,
-        "int8": torch.int8,
-    }
-    torch_dtype = torch_dtype_map.get(dtype, torch.float32)
-    ref_b = torch.zeros((N,), dtype=torch_dtype).npu()
-
-    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
-
-
-@pytest.mark.parametrize(
-    "dtype",
-    [
-        "float",
-        pytest.param("float16", marks=pytest.mark.low_priority),
-        pytest.param("int32", marks=pytest.mark.low_priority),
-    ],
-)
-@pytest.mark.parametrize(
-    "target",
-    [
-        "ascendc",
-        pytest.param("pto", marks=pytest.mark.low_priority),
-    ],
-)
-def test_clear_1d(dtype, target):
-    run_test_clear_1d(1024, 128, dtype, target=target)
-
-
-def clear_buffer_region(M, N, block_M, block_N, dtype="float"):
-    m_num = M // block_M
-    n_num = N // block_N
-
-    @T.prim_func
-    def main(A: T.Tensor((M, N), dtype)):  # type: ignore
-        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
-            bx = cid // n_num
-            by = cid % n_num
-            a_ub = T.alloc_ub((block_M, block_N), dtype)
-
-            T.tile.fill(a_ub, 10.0)
-            T.tile.clear(a_ub[0:block_M, 0:block_N])
-            T.copy(a_ub, A[bx * block_M, by * block_N])
-
-    return main
-
-
-def run_test_clear_buffer_region(M, N, block_M, block_N, dtype, target):
-    func = clear_buffer_region(M, N, block_M, block_N, dtype)
-    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-
-    torch.npu.synchronize()
-
-    b = func()
-
-    torch_dtype = torch.float32 if dtype == "float" else torch.float16
-    ref_b = torch.zeros((M, N), dtype=torch_dtype).npu()
-
-    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
-
-
-@pytest.mark.parametrize(
-    "dtype",
-    [
-        "float",
-        pytest.param("float16", marks=pytest.mark.low_priority),
-    ],
-)
-@pytest.mark.parametrize(
-    "target",
-    [
-        "ascendc",
-        pytest.param("pto", marks=pytest.mark.low_priority),
-    ],
-)
-@pytest.mark.parametrize("shape", [(1024, 1024)])
-def test_clear_buffer_region(dtype, target, shape):
-    M, N = shape
-    run_test_clear_buffer_region(M, N, 64, 32, dtype, target=target)
 
 
 def gather(M, N, block_M, block_N, dtype="int32"):  # noqa: F811
@@ -6534,7 +6538,7 @@ def test_reduce_slice_buffer_physical_output_shape_is_accepted(input_shape, real
     output_buffer = tir.decl_buffer(out_shape, "float32")
     result = T.reduce_sum(input_buffer, output_buffer, dim=dim, real_shape=list(real_shape))
     assert isinstance(result, tir.Call)
-    assert result.op.same_as(tilelang.tvm.ir.Op.get("tl.ascend_reduce"))
+    assert result.op.same_as(tir.op.Op.get("tl.ascend_reduce"))
 
 
 def brcb_experiment_kernel(M, dtype="float"):

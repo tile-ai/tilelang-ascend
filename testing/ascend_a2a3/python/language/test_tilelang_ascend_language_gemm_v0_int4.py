@@ -257,4 +257,4 @@ def test_int4_pto_target_clear_error():
 
 
 if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))
+    pytest.main([__file__])

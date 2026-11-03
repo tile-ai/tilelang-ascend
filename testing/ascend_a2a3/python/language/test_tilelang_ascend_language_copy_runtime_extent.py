@@ -4,7 +4,6 @@ import tilelang.ascend.a2a3.language as T
 import torch
 from tilelang.env import CacheState
 from tilelang.ascend.a2a3 import kernel_cache
-from unittest.mock import patch
 
 
 """
@@ -100,7 +99,8 @@ def run_test_runtime_inner_extent(M, block_M, ub_width, dtype, n_values):
     torch.manual_seed(0)
     # Disable cache for the symbolic-var kernel (same rationale as the gm_to_ub
     # dynamic-shape suite: the disk cache is not process-safe under pytest-xdist).
-    with patch.object(CacheState, "_enabled", False):
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(CacheState, "_enabled", False)
         func = gm_ub_gm_runtime_inner_extent(M, block_M, ub_width, dtype)
         func = tilelang.compile(func, out_idx=[-1], pass_configs=VEC_PASS_CONFIGS, target=TARGET)
     td = _torch_dtype(dtype)
@@ -147,7 +147,8 @@ def gm_atomic_add_runtime_inner_extent(M, block_M, ub_width, dtype):
 
 def run_test_atomic_add_runtime_inner_extent(M, block_M, ub_width, dtype, n_values):
     torch.manual_seed(0)
-    with patch.object(CacheState, "_enabled", False):
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(CacheState, "_enabled", False)
         func = gm_atomic_add_runtime_inner_extent(M, block_M, ub_width, dtype)
         func = tilelang.compile(func, pass_configs=VEC_PASS_CONFIGS, target=TARGET)
     td = _torch_dtype(dtype)

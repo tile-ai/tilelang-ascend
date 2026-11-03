@@ -2,7 +2,6 @@ import pytest
 
 import tilelang
 import tilelang.ascend.a2a3.language as T
-from tilelang import tvm
 
 
 pass_configs = {

@@ -75,21 +75,6 @@ import pytest
 import tilelang
 import tilelang.ascend.a2a3.language as T
 from tilelang import tvm
-from tilelang.ascend.a2a3 import transform as a2a3_transform
-from tilelang.ascend.a2a3.pipeline import LowerAndLegalize as _lower_phase
-
-
-def LowerAndLegalize(mod, target):
-    # Keep the original raw A5 metadata; only materialize neutral launch IR.
-    mod = tvm.tirx.transform.BindTarget(target)(mod)
-    mod = tilelang.transform.MaterializeKernelLaunch(
-        lower_grid_binding=True,
-        lower_thread_binding=False,
-        default_threads=None,
-        unsupported_annotations=["cluster_dims"],
-        launch_dim_tags=["cthread"],
-    )(mod)
-    return _lower_phase(mod, target)
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +197,10 @@ def clear_cache():
 def _compile_and_get_source(program, pass_configs, target="ascendc", platform="auto", out_idx=None):
     kwargs = {"pass_configs": pass_configs, "target": target}
     if platform == "A5":
-        kwargs["target"] = tvm.target.Target({"kind": "ascend", "arch": "dav-2201", "model": "A5", "keys": [target, "ascend"]})
+        # Map the original explicit A5 request to the modern A5 target.
+        kwargs["target"] = tvm.target.Target(
+            {"kind": "ascend", "model": "A5", "keys": ["pto", "ascend"] if target == "pto" else ["ascend"]}
+        )
     if out_idx is not None:
         kwargs["out_idx"] = out_idx
     kernel = tilelang.compile(program, **kwargs)
@@ -1754,7 +1742,8 @@ def test_a5_ascendc_pipe_v_v_barrier():
     AscendC A5 codegen is unsupported, so inspect the real pass output before
     source generation rather than JIT-compiling it with dav-2201 flags.
     """
-    from tilelang.ascend.a2a3.pipeline import OptimizeForTarget
+    from tilelang.ascend.a2a3 import transform as a2a3_transform
+    from tilelang.ascend.a2a3.pipeline import LowerAndLegalize, OptimizeForTarget
     from tvm import IRModule, ir, tirx as tir
     from tvm.target import Target
 
@@ -1771,9 +1760,16 @@ def test_a5_ascendc_pipe_v_v_barrier():
             T.tile.exp(b_ub, b_ub)
             T.copy(b_ub, B[:, :])
 
-    target = Target({"kind": "ascend", "arch": "dav-2201", "keys": ["ascendc", "ascend"]})
+    target = Target({"kind": "ascend", "arch": "dav-2201"})
     mod = IRModule({"main": main.with_attr("npu_platform", "A5")})
     with tilelang.transform.PassContext(config=PASS_VS_ONLY):
+        mod = tilelang.transform.MaterializeKernelLaunch(
+            lower_grid_binding=True,
+            lower_thread_binding=False,
+            default_threads=None,
+            unsupported_annotations=["cluster_dims"],
+            launch_dim_tags=["cthread"],
+        )(mod)
         mod = OptimizeForTarget(LowerAndLegalize(mod, target), target, "A5")
         selected = a2a3_transform.AscendVectorInstructionSelection(target, "A5")(mod)
         legalized = a2a3_transform.AscendVectorMaskLegalize(target, "A5")(selected)

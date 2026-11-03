@@ -33,18 +33,18 @@ def _fill(dst):
 def _run(buffers, statements, b_offset=0, scalars=()):
     body = statements[0] if len(statements) == 1 else tir.SeqStmt(statements)
     offsets = {"a": 0, "b": b_offset, "tmp": 4096, "other": 8192}
-    # Source nested Allocate scopes all span this same body. TIRX represents
-    # the same buffers as ordered lexical allocation declarations.
-    body = tir.SeqStmt([*[tir.AllocBuffer(buffers[name]) for name in reversed(offsets)], body])
+    for name in offsets:
+        buffer = buffers[name]
+        body = tir.SeqStmt([tir.AllocBuffer(buffer), body])
     inputs = [buffers["input"], buffers["output"]]
     function = tir.PrimFunc(
         [buffer.data for buffer in inputs] + list(scalars),
         body,
         buffer_map={buffer.data: buffer for buffer in inputs},
     )
-    function = function.with_attr("address_map", {buffers[name].data: tir.IntImm("int32", value) for name, value in offsets.items()})
-    function = function.with_attr("size_map", {buffers[name].data: tir.IntImm("int32", 256) for name in offsets})
-    target = tvm.target.Target({"kind": "c", "keys": ["ascend"], "model": "ascendc"})
+    function = function.with_attr("address_map", {buffers[name].data: value for name, value in offsets.items()})
+    function = function.with_attr("size_map", {buffers[name].data: 256 for name in offsets})
+    target = tvm.target.Target({"kind": "ascend", "arch": "dav-2201"})
     with tvm.transform.PassContext(config={"tl.ascend_auto_sync": True}):
         module = a2a3_transform.AscendSyncInsert(target, "A3")(tvm.IRModule({"main": function}))
     return module["main"]

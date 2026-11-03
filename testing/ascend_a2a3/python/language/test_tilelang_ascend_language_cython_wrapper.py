@@ -2,7 +2,7 @@
 
 The default ``execution_backend="cython"`` routes every kernel call through
 ``CythonKernelWrapper.forward()`` (tilelang/jit/adapter/cython/cython_wrapper.pyx).
-The TA wrapper (modern A2/A3 allocation resolver) used to construct a TVM ``Analyzer()`` unconditionally on every
+The wrapper used to construct a TVM ``Analyzer()`` unconditionally on every
 call (~0.28 ms of host overhead per launch on Ascend 910B3) even though the
 analyzer is only needed when a result/workspace shape is a symbolic
 expression: the ``dynamic_symbolic_map`` must be non-empty AND a shape dim
@@ -76,10 +76,9 @@ def dyn_m_copy_kernel():
 
 
 def _wrapper_module(kernel):
-    """Patch the Analyzer factory used by modern A2/A3 allocation resolution."""
-    from tilelang.ascend.a2a3 import runtime
-
-    return runtime.tvm.arith
+    """The TVM module owning the ``Analyzer`` global that
+    ``CythonKernelWrapper.forward()`` uses through the allocation resolver."""
+    return tilelang.tvm.arith
 
 
 def test_static_shape_forward_does_not_construct_analyzer(monkeypatch):

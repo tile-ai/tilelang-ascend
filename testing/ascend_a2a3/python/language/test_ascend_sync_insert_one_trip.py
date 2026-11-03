@@ -2,8 +2,7 @@
 
 import pytest
 
-
-from testing.ascend_a2a3.python.language.test_ascend_sync_insert import (
+from test_ascend_sync_insert import (
     _assert_handoff,
     _buffers,
     _copy,
