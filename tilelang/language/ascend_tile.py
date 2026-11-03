@@ -82,36 +82,21 @@ def _handle_buffer_region(br: BufferRegion, mask):
 
 
 def _scalar_load_offset(load: BufferLoad) -> PrimExpr:
-    """Resolve a scalar BufferLoad into its element offset in the buffer.
+    """Resolve a scalar BufferLoad into its logical element offset.
 
     A multi-dimensional element access such as ``s_ub[1, 3]`` must address the
     requested element; forwarding only the first index would silently read
     ``s_ub.flatten()[1]``.
 
-    ``shared.ub`` buffers are physically laid out with each row padded to a
-    32-byte boundary (MTE burst granularity on AscendC, aligned columns in
-    PTO's ``TileUbDataND``, mirrored by ``Flatten2DBuffer``'s 256-bit
-    inner-dim alignment and the UB memory planner), so their row stride is the
-    padded one. 1-D buffers, unit-inner-dim buffers (PTO stores them as a flat
-    ``[1, M]`` DN tile) and non-UB buffers keep dense row-major offsets.
+    Only the dense row-major offset is resolved here. The *physical* layout is
+    not known at frontend time: a ``T.alloc_shared`` buffer is only inferred as
+    UB/L1 by AscendInferBufferScope afterwards, and ``shared.ub`` rows are then
+    padded to a 32-byte boundary by Flatten2DBuffer. The backends' codegen
+    upgrades this dense offset against the final storage scope and the padded
+    shape recorded in ``kLogicBufferShapes`` -- the same address rule the write
+    side (DMA copy) applies -- so both ends agree after layout determination.
     """
-    buf = load.buffer
-    indices = load.indices
-    if len(indices) <= 1 or buf.scope() != "shared.ub":
-        return buf.offset_of(indices)[0]
-    last_dim = buf.shape[-1]
-    if isinstance(last_dim, IntImm) and last_dim.value == 1:
-        return buf.offset_of(indices)[0]
-    bits = DataType(buf.dtype).bits
-    elem_align = 256 // bits if bits <= 256 else 1
-    if isinstance(last_dim, IntImm):
-        stride = -(-last_dim.value // elem_align) * elem_align
-    else:
-        stride = (last_dim + (elem_align - 1)) // elem_align * elem_align
-    outer = indices[0]
-    for dim, idx in zip(buf.shape[1:-1], indices[1:-1]):
-        outer = outer * dim + idx
-    return outer * stride + indices[-1]
+    return load.buffer.offset_of(load.indices)[0]
 
 
 def _is_const_one(val) -> bool:
