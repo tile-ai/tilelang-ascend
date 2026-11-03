@@ -23,7 +23,7 @@ namespace {
 
 constexpr const char *kSyncProof = "tl.ascend_sync_proof";
 constexpr const char *kSyncBackend = "tl.ascend_sync_backend";
-constexpr const char *kSyncEngineVersion = "upstream-1c0f402e-legacy-v25";
+constexpr const char *kSyncEngineVersion = "upstream-1c0f402e-legacy-v26";
 
 String SyncInputHash(tir::PrimFunc function) {
   return std::to_string(

@@ -12,6 +12,7 @@ from tvm.tir import stmt_functor
 from tvm.arith import Analyzer
 from tilelang.utils.tensor import map_torch_type
 from tilelang.jit.ascend_runtime_contract import _normalized_recipe
+from tilelang.jit.adapter.cython.shape import checked_shape_value
 
 cdef class CythonKernelWrapper:
     # Class attributes to store kernel configuration and library reference
@@ -95,9 +96,11 @@ cdef class CythonKernelWrapper:
 
         analyzer = Analyzer()
         sym_val_by_name = {}
+        shape_values = []
         for key, (ref_tensor_idx, ref_shape_idx) in self.dynamic_symbolic_map.items():
-            val = int(inputs[ref_tensor_idx].shape[ref_shape_idx])
+            val = checked_shape_value(key, inputs[ref_tensor_idx].shape[ref_shape_idx])
             sym_val_by_name[str(key)] = val
+            shape_values.append(val)
 
         # Prepare input and output tensors
         for i in range(len(self.params)):
@@ -188,8 +191,8 @@ cdef class CythonKernelWrapper:
         #                raise ValueError(f"Static shape mismatch for parameter {param}: expected {shape} at index {shape_idx}, got {tensor_list[buffer_idx].shape}")
 
         # Add dynamic dimension values to kernel arguments
-        for _, (buffer_idx, shape_idx) in self.dynamic_symbolic_map.items():
-            call_args.append(ctypes.c_int64(inputs[buffer_idx].shape[shape_idx]))
+        for shape_value in shape_values:
+            call_args.append(ctypes.c_int64(shape_value))
 
         # Add npu stream to kernel arguments
         call_args.append(ctypes.c_void_p(stream))
@@ -202,4 +205,3 @@ cdef class CythonKernelWrapper:
             return tensor_list[self.result_idx[0]]
         else:
             return [tensor_list[i] for i in self.result_idx]
-    

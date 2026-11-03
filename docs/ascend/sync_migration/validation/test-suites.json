@@ -1,5 +1,6 @@
 {
   "host": [
+    "testing/python/language/test_ascend_shape_index_width.py",
     "testing/python/language/test_ascend_upstream_sync_codegen_matrix.py",
     "testing/python/language/test_ascend_upstream_sync_composite.py",
     "testing/python/language/test_ascend_upstream_sync_composite_invocation.py",
@@ -34,6 +35,7 @@
     "testing/python/language/test_ascend_sync_insert_one_trip.py",
     "testing/python/language/test_tilelang_ascend_language_persistent.py",
     "testing/python/test_ascend_runtime_contract.py",
+    "testing/python/test_ascend_shape_runtime.py",
     "testing/python/test_ascend_sync_cache_abi.py",
     "testing/python/cache/test_ascend_runtime_contract_cache.py",
     "testing/python/test_pypi_z3_runtime.py"

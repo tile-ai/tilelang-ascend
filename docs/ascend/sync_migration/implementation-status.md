@@ -234,6 +234,28 @@ Vector/DMA 同步。一般 Developer 自动同步应同时开启 ordinary 与 VS
 - 分配角色的负索引、重复及重叠语义不变，不添加样例或 shape 分支，也不修改 examples。
   native ABI 升至 v25，隔离此前的分流证明和编译缓存。验证结论以本轮实际日志为准。
 
+### v26 动态形状派生索引
+
+- A2/A3 AscendC/auto 的 upstream lowering 在首次简化前合法化动态形状派生的
+  索引计算，并在 NarrowDataType 后复核。保留原始隐式 int32 shape Var、参数、
+  buffer_map 和函数属性身份；先转换操作数再做 int64 加乘及 ceildiv，派生的
+  For/Let/Block 轴同步改宽。已经证明安全的窄化结果可以保留。
+- 形状派生索引中的 signed 窄化仅在逐个原位宽中间值的保守区间证明其保值时规范化；
+  不先简化表达式以消去可能溢出的中间值。数据值、有损或未证实的显式 Cast、
+  unsigned 运算和未知调用的参数语义不借此扩宽。局部 buffer
+  view 的 shape/stride/offset、Block region、thread domain 及语句元数据同步映射，
+  不留下已替换的旧绑定变量。静态 shape、显式标量参数及其他后端沿用原有路径。
+- 内部绑定变量按稳定顺序预先建立映射，覆盖 DSL 前置纯 Let 对后置循环变量的
+  引用；动态 Persistent 仍须通过原有规范化和同步证明，不按算子名称豁免。
+- Cython 在分配输出和调用内核前，按原 shape 声明校验实际维度可表示，且符合
+  int64 调用 ABI；分配与调用复用同一次形状快照。数据库恢复使用同一检查路径。
+- GM→UB tail 契约的私有 analyzer 使用有限的 1000000-step Z3 预算，覆盖动态
+  二维除法、乘积和完整 strided GM 范围证明。核心证明服务默认预算及全部原安全
+  谓词保持不变；有损 cast、溢出、DMA stride 超硬件字段和未证明的访问仍拒绝。
+- native ABI 升至 v26，隔离旧编译缓存。新增 host 回归覆盖整数边界、真实二维
+  copy、数据语义、局部 view/元数据和 Cython 运行时范围；原始入口恢复数以完整
+  入口的实际运行证据为准，不将 host 测试或局部 case 通过计为样例恢复。
+
 ## 当前支持与拒绝边界
 
 已验证范围：

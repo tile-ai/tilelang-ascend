@@ -317,6 +317,11 @@ def LoopVectorizeDynamic():
     return _ffi_api.LoopVectorizeDynamic()  # type: ignore
 
 
+def AscendLegalizeShapeIndices(target: Target):
+    """Align dynamic shape index arithmetic with the AscendC int64 shape ABI."""
+    return _ffi_api.AscendLegalizeShapeIndices(target)  # type: ignore
+
+
 def ConfigIndexBitwidth():
     """Config index bitwidth.
 

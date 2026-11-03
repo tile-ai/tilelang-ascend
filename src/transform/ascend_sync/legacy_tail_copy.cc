@@ -93,7 +93,8 @@ void AuditIntegerArithmetic(const PrimExpr &value, ProofAnalyzer *analyzer) {
     // Z3 directly about the original mathematical expression instead.
     ICHECK(analyzer->z3_prover.CanProve(wide >= I64(minimum) &&
                                         wide <= I64(maximum)))
-        << kError << "cannot prove nonwrapping signed index arithmetic";
+        << kError << "cannot prove nonwrapping signed index arithmetic: "
+        << GetRef<PrimExpr>(expression) << " (" << dtype << ")";
   });
 }
 
@@ -442,6 +443,10 @@ LegacyTailCopyPlan::AuditCall(const CallNode *call, size_t offset,
                              columns == I64(shape.columns)))
     return std::nullopt;
   ProofAnalyzer analyzer;
+  // Dynamic two-dimensional copies need relational division/product proofs
+  // for both original-width arithmetic and the complete strided GM bounds.
+  // Keep that larger, finite budget local to this mandatory tail contract.
+  analyzer.z3_prover.SetRLimit(1000000);
   // Audit definitions before binding their mathematical values. Otherwise a
   // Let could hide overflow, or a later guard could justify an earlier
   // overflowing computation. Predicates and loop bounds need the same audit.

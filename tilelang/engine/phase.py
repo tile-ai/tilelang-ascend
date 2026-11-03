@@ -47,6 +47,7 @@ def allow_vectorize(pass_ctx: PassContext | None = None) -> bool:
 
 
 def LowerAndLegalize(mod: IRModule, target: Target) -> IRModule:
+    mod = tilelang.transform.AscendLegalizeShapeIndices(target)(mod)
     # Workspace sizing must see the same UB scopes as VidReduction.
     mod = tilelang.transform.AscendInferBufferScope()(mod)
     # allocate the tmp buffer for vector api
@@ -108,6 +109,7 @@ def OptimizeForTarget(mod: IRModule, target: Target, platform: str) -> IRModule:
     mod = tilelang.transform.InjectSoftwarePipeline()(mod)
     mod = tilelang.transform.AscendLowerOpaqueBlock()(mod)
     mod = tir.transform.NarrowDataType(32)(mod)
+    mod = tilelang.transform.AscendLegalizeShapeIndices(target)(mod)
     mod = tilelang.transform.ConfigIndexBitwidth()(mod)
     # Collect buffer shape and flatten buffer shape to 2D
     mod = tilelang.transform.Flatten2DBuffer()(mod)
