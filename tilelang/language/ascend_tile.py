@@ -2342,11 +2342,21 @@ def bitwise_xor(
         tmp: Optional one-dimensional UB scratch buffer. When omitted, the
             framework allocates the workspace automatically.
 
-    Supported dtypes: int16, uint16.
+    Supported dtypes: int8, uint8, int16, uint16.
 
     Returns:
         A TVM intrinsic call that performs the bitwise XOR operation.
     """
+    _supported = ("int8", "uint8", "int16", "uint16")
+    dst_dtype = _underlying_buffer(dst).dtype
+    src0_dtype = _underlying_buffer(src0).dtype
+    src1_dtype = _underlying_buffer(src1).dtype
+    if dst_dtype not in _supported or src0_dtype not in _supported or src1_dtype not in _supported:
+        raise ValueError(
+            "tilelang.language.bitwise_xor supports only int8, uint8, int16, uint16 "
+            f"data operands on Ascend A2/A3; got dst={dst_dtype}, src0={src0_dtype}, src1={src1_dtype}."
+        )
+
     if isinstance(dst, BufferRegion):
         dst_ptr, _ = _handle_buffer_region(dst, "w")
     else:

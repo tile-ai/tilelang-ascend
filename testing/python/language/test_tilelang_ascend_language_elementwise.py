@@ -1593,6 +1593,35 @@ def test_bitwise_xor_non_aligned_size(target):
     assert_close_npu(c, ref_c, "int16", rtol=0, atol=0)
 
 
+@pytest.mark.parametrize("dtype", ["int32", "uint32"])
+def test_bitwise_xor_unsupported_dtype_raises(dtype):
+    """int32/uint32 data operands must be rejected with a clear diagnostic."""
+    src0 = tir.decl_buffer((64, 128), dtype)
+    src1 = tir.decl_buffer((64, 128), dtype)
+    dst = tir.decl_buffer((64, 128), dtype)
+    with pytest.raises(ValueError, match="bitwise_xor supports only int8, uint8, int16, uint16"):
+        T.tile.bitwise_xor(dst, src0, src1)
+
+
+def test_bitwise_xor_operand_dtype_raises():
+    """Each of dst/src0/src1 is validated independently."""
+    src16 = tir.decl_buffer((64, 128), "int16")
+    src32 = tir.decl_buffer((64, 128), "int32")
+    with pytest.raises(ValueError, match="bitwise_xor supports only"):
+        T.tile.bitwise_xor(src32, src16, src16)
+    with pytest.raises(ValueError, match="bitwise_xor supports only"):
+        T.tile.bitwise_xor(src16, src32, src16)
+    with pytest.raises(ValueError, match="bitwise_xor supports only"):
+        T.tile.bitwise_xor(src16, src16, src32)
+
+
+def test_bitwise_xor_unsupported_dtype_buffer_region_raises():
+    """BufferRegion operands route through the same dtype validation."""
+    buf = tir.decl_buffer((64, 128), "int32")
+    with pytest.raises(ValueError, match="bitwise_xor supports only"):
+        T.tile.bitwise_xor(buf[0:64, 0:128], buf[0:64, 0:128], buf[0:64, 0:128])
+
+
 def block_reduce_max(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockNum, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
