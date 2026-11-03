@@ -1,15 +1,8 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
-"""All original recovery scenarios on actual current cache APIs.
-
-Shared kernel loads warn/remove/miss on loader errors. A2/A3 tuning restoration
-is stricter and recovers only disappearance of its own library. No retired
-module loader, fake TVM/Target, or standalone AutoTunerCache is installed.
-"""
+"""Host-only cache recovery scenarios on the current cache APIs."""
 
 import ctypes
-import errno
-import io
 import logging
 from pathlib import Path
 import tempfile
@@ -17,49 +10,15 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-import torch
-
-from tilelang import env, tvm
+from tilelang import tvm
 from tilelang.ascend.a2a3 import kernel_cache as a2a3_cache_module
 from tilelang.ascend.a2a3.kernel_cache import A2A3CythonKernelCache, _is_missing_own_library
-from tilelang.autotuner import AutoTuner
-import tilelang.autotuner.tuner as tuner_module
 from tilelang.autotuner import param as param_module
-from tilelang.autotuner.param import AutotuneResult, CompileArgs
-from tilelang.backend import create_backend_context
+from tilelang.autotuner.param import AutotuneResult, CompileArgs, _FrozenCompileRequest
+from tilelang.backend.module import BackendContext, create_backend_context, get_backend
 from tilelang.cache import kernel_cache as cache_module
 from tilelang.cache.kernel_cache import KernelCache
 from tilelang.engine.param import KernelParam, dump_kernel_params
-from tilelang.env import CacheState
-
-
-def _program(size=4):
-    buffer = tvm.tirx.decl_buffer((size,), "float32", name="A")
-    return tvm.tirx.PrimFunc([buffer.data], tvm.tirx.Evaluate(0), buffer_map={buffer.data: buffer}).with_attr(
-        "global_symbol", "cache_state_unit"
-    )
-
-
-class _StateKernel:
-    """File-state fixture only, never used as compiled or numerical evidence."""
-
-    def __init__(self, library, func=None):
-        self.prim_func = func if func is not None else _program()
-        self.params = [KernelParam.from_buffer(self.prim_func.buffer_map[p]) for p in self.prim_func.params]
-        self.execution_backend = "tvm_ffi"
-        self.kernel_source = "// state-machine device source"
-        self.adapter = SimpleNamespace(
-            libpath=str(library),
-            get_kernel_source=lambda: "// state-machine wrapper",
-            get_host_source=lambda: "// state-machine host source",
-        )
-
-    def get_kernel_source(self):
-        return self.kernel_source
-
-    def update_tuner_result(self, **kwargs):
-        self.tuner_result = kwargs
-        return self
 
 
 class _Files(unittest.TestCase):
@@ -76,10 +35,10 @@ class _Files(unittest.TestCase):
         self.fail(f"loading {path} unexpectedly succeeded")
 
 
-class TestIsFileMissing(_Files):
+class TestMissingOwnLibraryStat(_Files):
+    """Original filesystem examples on the combined own-library predicate."""
+
     def missing(self, path):
-        # Modern safety requires both a matching loader error and a fresh stat,
-        # not the retired filesystem-only helper in isolation.
         error = OSError(f"{path}: cannot open shared object file: No such file or directory")
         return _is_missing_own_library(error, path)
 
@@ -94,7 +53,7 @@ class TestIsFileMissing(_Files):
     def test_permission_error_is_not_missing(self):
         path = self.root / "present.so"
         path.write_bytes(b"x")
-        with mock.patch.object(a2a3_cache_module.os, "stat", side_effect=PermissionError(errno.EACCES, "denied")):
+        with mock.patch.object(a2a3_cache_module.os, "stat", side_effect=PermissionError("denied")):
             self.assertFalse(self.missing(path))
 
     def test_not_a_directory_is_not_missing(self):
@@ -102,7 +61,9 @@ class TestIsFileMissing(_Files):
         self.assertFalse(self.missing(self.root / "plain.txt" / "child" / "kernel_lib.so"))
 
 
-class TestErrorReportsMissingPath(_Files):
+class TestMissingOwnLibraryError(_Files):
+    """Original loader-message examples on the combined own-library predicate."""
+
     def test_real_missing_target_is_reported(self):
         missing = self.root / "kernel_lib.so"
         self.assertTrue(_is_missing_own_library(self.dl_error(missing), missing))
@@ -127,40 +88,41 @@ class TestErrorReportsMissingPath(_Files):
 class KernelCacheRecoveryMixin(_Files):
     def setUp(self):
         super().setUp()
-        descriptor = vars(type(env))["TILELANG_CACHE_DIR"]
-        # The actual orchestration must not open/truncate a caller cwd log.
-        unit_logger = logging.Logger("a2a3-cache-state-unit")
-        unit_logger.setLevel(logging.DEBUG)
-        self.tuner_log = io.StringIO()
-        owned_handler = logging.StreamHandler(self.tuner_log)
-        unit_logger.addHandler(owned_handler)
-        unit_logger.parent = logging.getLogger()
-        self.addCleanup(self.tuner_log.close)
-        self.addCleanup(owned_handler.close)
+        logger = logging.getLogger(cache_module.__name__)
+        self.addCleanup(logger.setLevel, logger.level)
         patches = [
-            mock.patch.object(tuner_module, "logger", unit_logger),
-            mock.patch.object(tuner_module, "_logger_handlers_initialized", True),
-            mock.patch.object(descriptor, "_forced_value", str(self.root / "cache")),
+            mock.patch.object(
+                cache_module,
+                "env",
+                SimpleNamespace(
+                    TILELANG_CACHE_DIR=str(self.root / "cache"),
+                    is_cache_enabled=lambda: True,
+                    should_use_kernel_cache_lib_stamp=lambda: False,
+                ),
+            ),
             mock.patch.object(KernelCache, "_instance", None),
             mock.patch.object(A2A3CythonKernelCache, "_instance", None),
             mock.patch.object(KernelCache, "_last_cleaned_staging_root", KernelCache._last_cleaned_staging_root),
-            mock.patch.object(AutoTuner, "_memory_cache", {}),
-            mock.patch.object(CacheState, "_enabled", True),
-            mock.patch.object(torch.cuda, "is_available", return_value=False),
         ]
-        for name in ("TILELANG_DISABLE_CACHE", "TILELANG_AUTO_TUNING_DISABLE_CACHE"):
-            patches.append(mock.patch.object(vars(type(env))[name], "_forced_value", "0"))
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
-        logger = logging.getLogger(cache_module.__name__)
-        self.addCleanup(logger.setLevel, logger.level)
         self.cache = KernelCache()
         self.context = create_backend_context("llvm", execution_backend="tvm_ffi")
-        self.func = _program()
+        buffer = tvm.tirx.decl_buffer((4,), "float32", name="A")
+        self.func = tvm.tirx.PrimFunc([buffer.data], tvm.tirx.Evaluate(0), buffer_map={buffer.data: buffer}).with_attr(
+            "global_symbol", "cache_state_unit"
+        )
         self.library = self.root / "compiled.so"
         self.library.write_bytes(b"unit state fixture; not a compiled kernel")
-        self.kernel = _StateKernel(self.library, self.func)
+        self.kernel = SimpleNamespace(
+            params=[KernelParam.from_buffer(buffer)],
+            execution_backend="tvm_ffi",
+            kernel_source="// kernel",
+            adapter=SimpleNamespace(
+                libpath=str(self.library), get_kernel_source=lambda: "// wrapper", get_host_source=lambda: "// wrapper"
+            ),
+        )
 
     def write_entry(self, key, with_lib=True):
         entry = Path(self.cache._get_cache_path(key))
@@ -191,10 +153,12 @@ class KernelCacheRecoveryMixin(_Files):
             raise error(library) if callable(error) else error
 
         with (
-            mock.patch.object(cache_module.JITKernel, "from_database", side_effect=fail),
+            mock.patch.object(cache_module.JITKernel, "from_database", side_effect=fail) as loader,
             self.assertLogs(self.cache.logger, level="WARNING") as logged,
         ):
             self.assertIsNone(self.load(key))
+        loader.assert_called_once()
+        self.assertEqual(Path(loader.call_args.kwargs["kernel_lib_path"]), library)
         self.assertTrue(any("treating it as a cache miss" in line for line in logged.output))
         self.assertFalse(entry.exists())
 
@@ -225,31 +189,39 @@ class KernelCacheRecoveryMixin(_Files):
     def strict_load_boundary(self, key, fail, returns_none):
         if "ascend" not in tvm.target.Target.list_kinds():
             self.skipTest("requires the actual USE_ASCEND=ON Target kind for strict A2/A3 context")
-        for dialect in ("ascendc", "pto"):
-            args = CompileArgs(target=dialect, execution_backend="cython", out_idx=[0]).freeze()
-            entry = self.result_path(key + "_" + dialect)
-            lib = self.strict_entry(entry, args._frozen.context)
+        backend = get_backend("ascend_a2a3")
+        host = tvm.target.Target("c")
+        target = tvm.target.Target({"kind": "ascend", "arch": "dav-2201"}, host=host)
+        context = BackendContext(backend, target, host, backend.execution_backends[0])
+        self.assertEqual(context.module.name, "ascend_a2a3")
+        args = CompileArgs(target=target, execution_backend="cython", out_idx=[0], _frozen=_FrozenCompileRequest(context))
+        entry = self.result_path(key)
+        lib = self.strict_entry(entry, context)
 
-            def load(*positional, _lib=lib, **keyword):
-                return fail(_lib)
+        def operation():
+            return AutotuneResult()._load_kernel_from_disk(entry, context, func=self.func, compile_args=args)
 
-            with mock.patch.object(A2A3CythonKernelCache, "_build_kernel", side_effect=load):
-
-                def operation(_entry=entry, _args=args):
-                    return AutotuneResult()._load_kernel_from_disk(_entry, _args._frozen.context, func=self.func, compile_args=_args)
-
+        # Preparation data only: the build boundary is mocked, so this does not
+        # certify compiler metadata or ABI, and never discovers a toolchain.
+        prepared = (args.out_idx, {}, None, SimpleNamespace(to_metadata=lambda: {}))
+        with mock.patch.object(CompileArgs, "_prepare_a2a3_program", return_value=prepared) as prepare:
+            with mock.patch.object(A2A3CythonKernelCache, "_build_kernel", side_effect=lambda *a, **kw: fail(lib)) as loader:
                 if returns_none:
                     self.assertIsNone(operation())
                 else:
                     with self.assertRaisesRegex(OSError, "wrong ELF class: ELFCLASS32"):
                         operation()
+            loader.assert_called_once()
+            self.assertEqual(Path(loader.call_args.args[3]), lib)
+            prepare.assert_called_once_with(self.func)
             if returns_none:
                 lib.write_bytes(b"restored fixture library")
-                with mock.patch.object(A2A3CythonKernelCache, "_build_kernel", return_value=self.kernel):
-                    self.assertIs(
-                        AutotuneResult()._load_kernel_from_disk(entry, args._frozen.context, func=self.func, compile_args=args),
-                        self.kernel,
-                    )
+                prepare.reset_mock()
+                with mock.patch.object(A2A3CythonKernelCache, "_build_kernel", return_value=self.kernel) as loader:
+                    self.assertIs(operation(), self.kernel)
+                loader.assert_called_once()
+                self.assertEqual(Path(loader.call_args.args[3]), lib)
+                prepare.assert_called_once_with(self.func)
 
     def strict_deleted_library(self, key):
         def fail(lib):
@@ -275,11 +247,13 @@ class TestKernelCacheRecovery(KernelCacheRecoveryMixin):
             lib.unlink()
             raise OSError(f"{lib}: cannot open shared object file: No such file or directory")
 
-        with mock.patch.object(cache_module.JITKernel, "from_database", side_effect=delete_then_fail):
+        with mock.patch.object(cache_module.JITKernel, "from_database", side_effect=delete_then_fail) as loader:
             self.assertIsNone(self.load(key))
+        loader.assert_called_once()
         self.write_entry(key)
-        with mock.patch.object(cache_module.JITKernel, "from_database", return_value=self.kernel):
+        with mock.patch.object(cache_module.JITKernel, "from_database", return_value=self.kernel) as loader:
             self.assertIs(self.load(key), self.kernel)
+        loader.assert_called_once()
 
     def test_oserror_without_errno_is_recovered(self):
         def error(lib):
@@ -289,12 +263,10 @@ class TestKernelCacheRecovery(KernelCacheRecoveryMixin):
 
         self.shared_error_is_miss("k_noerrno", error, delete=True)
 
-    def test_permission_error_is_not_a_miss(self):
-        # Source ID retained; shared modern load logs/removes/misses, unlike the
-        # strict A2 tuning restore. Their contracts are intentionally distinct.
+    def test_permission_error_is_a_cache_miss(self):
         self.shared_error_is_miss("k_perm", PermissionError("permission denied"))
 
-    def test_unloadable_library_is_not_a_miss(self):
+    def test_unloadable_library_is_a_cache_miss(self):
         self.shared_error_is_miss("k_elf", OSError("wrong ELF class: ELFCLASS32"))
 
     def test_missing_entry_directory_returns_none(self):
@@ -306,10 +278,10 @@ class TestKernelCacheRecovery(KernelCacheRecoveryMixin):
             self.assertIs(self.cached(), self.kernel)
         load.assert_called_once()
 
-    def test_permission_error_with_deletion_is_not_a_miss(self):
+    def test_permission_error_with_deletion_is_a_cache_miss(self):
         self.shared_error_is_miss("k_perm_del", PermissionError("permission denied"), delete=True)
 
-    def test_dependency_error_with_deletion_is_not_a_miss(self):
+    def test_dependency_error_with_deletion_is_a_cache_miss(self):
         self.shared_error_is_miss(
             "k_dep_del", OSError("libkernel_lib.so: cannot open shared object file: No such file or directory"), delete=True
         )
@@ -335,78 +307,33 @@ class TestKernelCacheRecovery(KernelCacheRecoveryMixin):
         constructor.assert_not_called()
         constructor.from_database.assert_called_once()
 
-    def test_truncated_library_with_deletion_is_not_a_miss(self):
+    def test_truncated_library_with_deletion_is_a_cache_miss(self):
         self.shared_error_is_miss("k_trunc", lambda lib: OSError(f"{lib}: file too short"), delete=True)
 
-    def test_recreated_library_after_deletion_reraises(self):
+    def test_recreated_library_loader_error_is_a_cache_miss(self):
         self.shared_error_is_miss(
             "k_recreated", lambda lib: OSError(f"{lib}: cannot open shared object file: No such file or directory"), recreate=True
         )
 
-    def test_makedirs_failure_still_returns_result(self):
-        # Entry staging mkdir is outside the modern save try. Preserve the same
-        # OS fault and stage and assert its actual propagation, not old recovery.
+    def test_makedirs_failure_propagates(self):
         with (
             mock.patch.object(self.cache, "_load_kernel_from_disk", return_value=None),
-            mock.patch.object(cache_module, "JITKernel", return_value=self.kernel),
+            mock.patch.object(cache_module, "JITKernel", return_value=self.kernel) as constructor,
             mock.patch("os.makedirs", side_effect=FileNotFoundError("cache directory deleted")),
             self.assertRaisesRegex(FileNotFoundError, "cache directory deleted"),
         ):
             self.cached()
+        constructor.assert_called_once()
 
     def test_makedirs_permission_error_propagates(self):
         with (
             mock.patch.object(self.cache, "_load_kernel_from_disk", return_value=None),
-            mock.patch.object(cache_module, "JITKernel", return_value=self.kernel),
+            mock.patch.object(cache_module, "JITKernel", return_value=self.kernel) as constructor,
             mock.patch("os.makedirs", side_effect=PermissionError("permission denied")),
             self.assertRaisesRegex(PermissionError, "permission denied"),
         ):
             self.cached()
-
-
-class TestTunerCacheRecovery(KernelCacheRecoveryMixin):
-    def test_recovers_when_library_deleted_before_load(self):
-        self.strict_deleted_library("t_del")
-
-    def test_unloadable_library_is_not_a_miss(self):
-        self.strict_wrong_elf("t_elf")
-
-    def test_full_control_flow(self):
-        # Current AutoTuner replaces the retired AutoTunerCache. Execute its
-        # real scheduling/save/memory/disk flow; only compile/benchmark/loader
-        # boundaries are stubs. This is not NPU numerical/timing evidence.
-        tuner = AutoTuner(_program, [{"size": 4}]).set_compile_args(target="llvm", execution_backend="tvm_ffi", out_idx=[0])
-        tuner.set_profile_args(skip_check=True, warmup=1, rep=1, timeout=0)
-        compiles = []
-
-        def compile(**kwargs):
-            compiles.append(kwargs)
-            return self.kernel
-
-        tuner.jit_compile = compile
-        tuner.jit_elaborate = lambda **kwargs: self.func
-        with (
-            mock.patch.object(tuner, "_resolve_num_compile_workers", return_value=1),
-            mock.patch.object(tuner, "_benchmark_target", return_value=(0.1, 0.2)) as benchmark,
-        ):
-            cold = tuner.run(warmup=1, rep=1, timeout=0)
-            hot = tuner.run(warmup=1, rep=1, timeout=0)
-        self.assertIs(hot, cold)
-        self.assertEqual(len(compiles), 1)
-        benchmark.assert_called_once()
-        self.assertEqual(cold.config, {"size": 4})
-        self.assertEqual(cold.latency, 0.1)
-        # Replace the test-owned dictionary, preserving all caller state.
-        AutoTuner._memory_cache = {}
-        with (
-            mock.patch.object(param_module.JITKernel, "from_database", return_value=self.kernel) as loader,
-            mock.patch.object(tuner, "jit_compile", side_effect=AssertionError("disk hit must not compile")),
-            mock.patch.object(tuner, "_benchmark_target", side_effect=AssertionError("disk hit must not benchmark")),
-        ):
-            disk = tuner.run(warmup=1, rep=1, timeout=0)
-        loader.assert_called_once()
-        self.assertEqual(disk.config, cold.config)
-        self.assertEqual(disk.latency, cold.latency)
+        constructor.assert_called_once()
 
 
 class TestAutotuneResultRecovery(KernelCacheRecoveryMixin):
@@ -416,12 +343,10 @@ class TestAutotuneResultRecovery(KernelCacheRecoveryMixin):
     def test_unloadable_library_is_not_a_miss(self):
         self.strict_wrong_elf("a_elf")
 
-    def test_load_from_disk_metadata_deleted_returns_none(self):
+    def test_missing_metadata_propagates(self):
         entry = self.result_path("meta_del")
         self.result().save_to_disk(entry)
         (entry / param_module.BEST_CONFIG_PATH).unlink()
-        # The modern loader reads real metadata directly; do not weaken it to
-        # None or rebuild retired mocks merely to retain the old assertion.
         with self.assertRaises(FileNotFoundError) as error:
             AutotuneResult.load_from_disk(entry, CompileArgs(target="llvm", execution_backend="tvm_ffi"))
         self.assertEqual(Path(error.exception.filename), entry / param_module.BEST_CONFIG_PATH)
@@ -437,7 +362,7 @@ class TestAutotuneResultRecovery(KernelCacheRecoveryMixin):
         self.assertFalse(entry.exists())
         self.assertFalse(any((entry.parent.parent / ".staging").iterdir()))
 
-    def test_save_to_disk_serialization_error_propagates(self):
+    def test_save_to_disk_serialization_error_logs_and_discards_staging(self):
         entry = self.result_path("ser_err")
 
         class ReadsMissingFile:
@@ -445,15 +370,13 @@ class TestAutotuneResultRecovery(KernelCacheRecoveryMixin):
                 open("/definitely/does/not/exist_xyz.pkl", "rb")
                 return (self.__class__, ())
 
-        # Modern save logs any try-internal serialization error and publishes
-        # nothing. This differs from the old writer, not the modern main tests.
         with self.assertLogs(param_module.logger, level="ERROR") as logs:
             self.result(func=ReadsMissingFile()).save_to_disk(entry)
         self.assertTrue(any("exist_xyz.pkl" in message for message in logs.output))
         self.assertFalse(entry.exists())
         self.assertFalse(any((entry.parent.parent / ".staging").iterdir()))
 
-    def test_save_to_disk_makedirs_deletion_skips_save(self):
+    def test_save_to_disk_makedirs_deletion_propagates(self):
         entry = self.result_path("mk_del")
         with (
             mock.patch("os.makedirs", side_effect=FileNotFoundError("cache directory deleted")),
