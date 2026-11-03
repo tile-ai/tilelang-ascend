@@ -1,4 +1,4 @@
-# A2/A3 Convolution 优化索引
+# Convolution 优化索引
 
 ## 支持路径
 
@@ -12,4 +12,4 @@ Python factory 固化 N/C/H/W、kernel、stride、padding、dilation、groups �
 
 ## 当前参考范围
 
-上述通用 im2col/grouped GEMM 是 `DESIGN_ONLY`，没有在本次迁移中取得 A2/A3 编译或上板证据。`examples/causal_conv1d/causal_conv1d.py` 可提供核内卷积、常驻权重和流水的源码参考，但不是通用二维卷积模板。GEMM 示例只证明矩阵乘实现结构存在，不能代替 im2col、group 和边缘窗口验证。详细流程见 [Conv 实现流程](conv_common_perf_experience.md)。
+上述通用 im2col/grouped GEMM 是 `DESIGN_ONLY`，尚无对应实现的编译或设备验证证据。`examples/causal_conv1d/causal_conv1d.py` 可提供核内卷积、常驻权重和流水的源码参考，但不是通用二维卷积模板。GEMM 示例只证明矩阵乘实现结构存在，不能代替 im2col、group 和边缘窗口验证。详细流程见 [Conv 实现流程](conv_common_perf_experience.md)。

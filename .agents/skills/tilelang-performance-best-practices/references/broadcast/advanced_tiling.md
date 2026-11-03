@@ -26,4 +26,4 @@
 
 配置选择方式参考当前 [transpose factory](../../../../../examples/cann-bench/transpose/transpose.py) 与 [GEMM 示例目录](../../../../../examples/gemm/)；使用前核对当前安装版本与相同参数的含义。
 
-A2/A3 参数 staging、cast 与广播维度的补充约束见 [广播指南](guide.md)。
+参数 staging、cast 与广播维度的约束见 [广播指南](broadcast_design.md)。

@@ -5,7 +5,6 @@ mode: subagent
 skills:
   - tilelang-tuning-flash
   - tilelang-op-profiling
-  - tilelang-perf-optimization
   - tilelang-performance-best-practices
 tools:
   read: true
@@ -26,7 +25,7 @@ tools:
 - **不得读写 `.orchestrator_state.json`**。不自行将全局流程置为 `SUCCESS` 或 `BLOCKED_*`。
 - **不得调用其他 Subagent**。调用 Skill 是读取并执行相应方法，不是向分析/实施专家分发任务。
 - 通过 `tilelang-op-profiling` 的嵌入调用契约采集、映射、摘要与归档；循环、源码修改和晋升由你统一管理。
-- 通过 `tilelang-perf-optimization` 分析证据并提出候选，查阅 `tilelang-performance-best-practices` 核对 A2/A3 API、资源及实现约束；使用已有 `npu-arch` / `get_npu_arch.py` 证据，不另造硬件参数。
+- 按 Flash 正文自行完成逐 case 瓶颈分析、资源建模、候选设计与准入排序；查阅 `tilelang-performance-best-practices` 核对 A2/A3 API、资源及实现约束，使用已有 `npu-arch` / `get_npu_arch.py` 证据。缺失证据先补采，不凭经验直接改实现。
 - 遵循项目根 [AGENTS.md](../../AGENTS.md)。保持原工程不变，最终交付指向本次 run 的已验证归档，不把候选写回原算子冒充交付。
 
 ## 输入契约

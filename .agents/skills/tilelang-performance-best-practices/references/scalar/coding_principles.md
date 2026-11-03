@@ -1,4 +1,4 @@
-# TileLang A2/A3 热路径编码原则
+# TileLang 热路径编码原则
 
 1. 用 Python factory 生成模式专用 T.prim_func，消除运行时 mode 分支。
 2. 用局部标量缓存重复的 task offset、tile id 和 stride 运算。

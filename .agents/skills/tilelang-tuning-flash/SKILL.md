@@ -6,10 +6,10 @@ description: 执行 Ascend A2/A3 TileLang 算子的完整 Flash 调优会话，�
 # A2/A3 Flash 调优工作流
 
 由当前执行者完成整次调优会话。Stage 3 中执行者是 `tilelang-op-perf-tuner`；直接调用
-本 Skill 时是当前 Agent。按名称加载下列 Skill，不再分发性能分析或实施子 Agent：
+本 Skill 时是当前 Agent。执行者自身完成瓶颈分析、候选设计、实施与验证；按名称加载
+下列 Skill 获取测量证据和实现知识，不再分发性能分析或实施子 Agent：
 
 - `tilelang-op-profiling`：以 `execution_mode: collect_only` 采集、映射、摘要和归档。
-- `tilelang-perf-optimization`：消费证据，提出候选及逐 case 搜索义务。
 - `tilelang-performance-best-practices`：查询 A2/A3 API、lowering、实现约束和知识成熟度。
 - `npu-arch`：结合现有设备证据确认硬件规格；复用
   `../tilelang-custom-skill/tilelang-env-check/scripts/get_npu_arch.py --json`。
@@ -121,10 +121,28 @@ python3 "$FLASH_SKILL_DIR/scripts/validate_optimization_search_coverage.py" \
 只有普通校验通过才开始新候选。它检查记录结构和门禁一致性，不验证文件引用内容的
 真实性；执行者仍须打开测试日志、metadata、源码和生成代码核实证据。
 
-将基线/当前最佳证据及实现约束交给 optimization Skill，取得最多三个已准入方案和
-全部结构义务；队列大小不限制义务数。分析 Skill 返回缺失证据时先补采，不凭经验猜
-候选。每项记录可证伪假设、适用 case、收益上界、当前后端依据、风险和验证成本。
-按瓶颈、目标差距、证据成熟度与成本排序；没有生成代码差异的等价写法合并处理。
+执行者在本次 run 内组织分析，依据当前 B0/B*/Ci 身份、冻结的 case、实现/整链约束、
+用户预算和已有搜索义务生成候选。分析记录与对应源码和 measurement 绑定；缺少逐 case
+测量、分支映射或实现依据时先补证据，不猜测瓶颈、具体参数或收益。
+
+1. 按实际 dispatch/kernel 路径、dtype/累加精度、对齐与尾块及实测瓶颈分组，全部 case
+   各归入一个基线瓶颈组。以源码工作量、生成代码和测量交叉判断计算、搬运、索引/调度、
+   并行度或 launch 开销；不能仅由 pipe ratio 或经验阈值认定瓶颈。
+2. 对每组整理任务数/核数/尾差、tile 与 padded footprint、buffer 生命周期及版本、
+   搬运/计算量和重复工作。离散索引路径还要计入整数运算、分支及 live state；按实际
+   lowering 核验硬件容量、编译器预留和全部存活 buffer，不能用任意容量上限代替账本。
+3. 从当前瓶颈和知识库生成可证伪候选，允许组合或扩展已有原理，不把模板清单当作搜索
+   空间的上限。按 `tilelang-performance-best-practices` 的代码准入规则核对当前 API、
+   lowering、布局与适用范围；引用模板时还须核对成熟度，当前源码证据可独立准入，
+   不因模板库未收录而降级。缺少当前实现依据或兼容性未知的候选记为 `DESIGN_ONLY`，
+   列出待核验项，不能扩大 dispatch 或直接实施。
+4. 每个方案关联 case ID、已有 obligation ID（或明确新建的义务）、六轴候选身份，写明
+   假设、可消除工作量/收益上界、实现位置、当前后端依据、验证需求与回退条件。历史失败
+   仅在相同结构和上下文下复用；理论收益只能作为上界，不能当作实测加速。
+5. 按瓶颈、目标差距、证据成熟度、风险与验证成本排序，将最多三个已准入的
+   `IMPLEMENTABLE` / `EXPERIMENT` 方案放入当前执行队列。队列大小不限制搜索义务数，
+   未入队方向及有交互的组合仍保留裁决依据或未决状态；没有生成代码差异的等价写法
+   合并处理。分析完成后由同一执行者更新账本，晋升与终态仍按后文门禁判断。
 
 每轮：
 
@@ -212,7 +230,7 @@ python3 "$FLASH_SKILL_DIR/scripts/validate_optimization_search_coverage.py" \
 
 迁移自 CANNBot `9cd449120897368cde5a45c12ca45a133be157d7` 的
 `plugins-official/tilelang-op-orchestrator/workflows/Ascend950/` Flash 工作流与搜索门禁，
-按本仓 A3 的 pytest、profiling、分析 Skill 和三阶段主控适配。多 CLI 注册与 CANNBot
+按本仓 A3 的 pytest、profiling、性能知识库和三阶段主控适配。多 CLI 注册与 CANNBot
 回同步另行处理。
 
 ```bash

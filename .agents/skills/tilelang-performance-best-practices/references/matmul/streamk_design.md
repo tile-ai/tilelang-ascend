@@ -1,12 +1,10 @@
-# A2/A3 Stream-K / Split-K 两阶段设计
-
-> 迁移来源：Ascend950 同路径文档。保留可复用原文结构与门禁，仅改写 A2/A3 平台、后端、API、路径和证据范围。本页是设计/源码参考；本次未进行 NPU 编译、精度或性能验证，不继承950模板的验证状态。
+# Stream-K / Split-K 两阶段设计
 
 ## 适用条件
 
 普通 M/N tile 数显著少于 Cube 核数且 K 很长，常规 tile 调整仍无法提供并行度。
 
-## TileLang A2/A3 实现流程
+## TileLang 实现流程
 
 Kernel A 按 output-tile×K-partition 生成 fp32 partial 到 workspace；Kernel B 让每个输出 tile 由唯一 owner 以确定顺序归约 partial 并转换输出。两个 kernel 由 Python host wrapper 顺序调用，不依赖未验证的 grid barrier 或 atomic 累加。
 
@@ -22,8 +20,8 @@ workspace 和最终累加均为 fp32；对不同 partition 数单独评估加法
 
 端到端统计两个 launch 和 workspace GM 流量。只有完整路径胜过普通 GEMM 才 dispatch，不能只比较 Kernel A。
 
-对每个候选运行编译、目标 A2/A3 后端的定向精度测试和统一 benchmark。报告 latency、TFLOPS、Cube/MTE2 时间、GM 字节、L1/L0/UB 占用、核利用率和生成代码体积。只有完整算子端到端更快且没有精度回退时进入 dispatch。
+对每个候选运行编译、目标后端的定向精度测试和统一 benchmark。报告 latency、TFLOPS、Cube/MTE2 时间、GM 字节、L1/L0/UB 占用、核利用率和生成代码体积。只有完整算子端到端更快且没有精度回退时进入 dispatch。
 
 ## 命名与实现状态
 
-源文标题称 Stream-K，但上述固定 output-tile×K-partition 的两阶段结构也是常见 Split-K 形式；不等于已实现动态 work-centric Stream-K scheduler。本仓尚未因此获得端到端实现，状态为 `DESIGN_ONLY`。核内分层 K 与本方案不同，见 [分层 tiling](tiling_design.md)。
+上述固定 output-tile×K-partition 的两阶段结构属于常见 Split-K 形式；不等于已实现动态 work-centric Stream-K scheduler。该设计尚无端到端实现验证证据，状态为 `DESIGN_ONLY`。核内分层 K 与本方案不同，见 [分层 tiling](tiling_design.md)。

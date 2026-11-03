@@ -1,4 +1,4 @@
-# TileLang A2/A3 实现指南
+# TileLang 实现指南
 
 ## 目录
 
@@ -17,8 +17,10 @@
 1. 当前目标算子与 `examples/**/*.py`：实现结构与 API 参考，性能状态按具体示例和当前验证结果判断。
 2. 用 `python -c 'import tilelang; print(tilelang.__file__)'` 定位实际导入源码，不按兄弟目录名推断版本。
 3. 实际 TileLang 源码的 `examples/` 与 `testing/`：可运行示例、API 边界和 lowering 回归。
-4. 实际 TileLang 源码的 `tilelang/language/` 与 当前后端 lowering：API 定义和后端约束。
+4. 实际 TileLang 源码的 `tilelang/language/` 与当前后端 lowering：API 定义和后端约束。
 5. 当前后端 codegen/lowering：确认目标工程已选后端下确实支持。
+
+API 入口见 [API 最佳实践](../../tilelang-custom-skill/tilelang-api-best-practices/SKILL.md)，模式和 pass 配置见 [编程模式指南](../../tilelang-custom-skill/tilelang-programming-model-guide/SKILL.md)。接口分别定位到 [ascend.py](../../../../tilelang/language/ascend.py)、[ascend_tile.py](../../../../tilelang/language/ascend_tile.py) 与 [Persistent](../../../../tilelang/language/persistent.py)。GEMM 结构见 [基础 GEMM](../../../../examples/gemm/example_gemm.py)，示意代码不能替代目标版本的编译、精度与性能验证。
 
 ## 执行域
 
@@ -42,7 +44,10 @@ def make_kernel(n: int, num_cores: int):
 - L1/L0A/L0B/L0C 与 `T.gemm_v0` / `T.mma`：Cube 矩阵计算。
 - `cid/vid`、`threads` 与 workspace 的划分按 [公共语言参考](../../../../docs/language_ref/primitives.md) 和 [编程模式指南](../../tilelang-custom-skill/tilelang-programming-model-guide/SKILL.md) 核对。执行侧变更必须通过精度与性能实测。
 
-不能将其他后端的 Kernel / threads / 执行域规则直接套入 A2/A3；`T.tile.*`、GEMM 或手写 scope 的存在也不能单独决定编程模式或要求关闭全部 pass。
+- 自动划分 C/V 不等于数据依赖已同步；核内、跨核和 workspace 的生产消费分别验证。手动同步遵循当前 LOCK DSL，不能未经核验复制历史 raw flag。
+- `get_kernel_source()` 用于检查实际执行侧、地址、同步和指令，是否重叠与更快仍需上板证据。
+
+不能将其他后端的 Kernel / threads / 执行域规则直接套入当前实现；`T.tile.*`、GEMM 或手写 scope 的存在也不能单独决定编程模式或要求关闭全部 pass。
 
 ## 内存与流水
 
@@ -70,6 +75,8 @@ UB 预算公式：`Σ(buffer_elems × dtype_bytes × versions) + padding + resid
 - 尾块不得读取未初始化 UB lane；完整 Vector 访问需要清零、填充或正确 mask。
 - 容差沿用同类仓库测试并结合数值尺度；不得为掩盖 dtype、尾块或累加错误而扩大容差。
 
+- 融合前先验证代数等价，再核对舍入、dtype 和饱和模式。整数转浮点前证明值域，NaN/tie/signed zero 与索引语义按原接口验证。
+
 ## 性能规则
 
 1. 先减少 GM traffic：常驻复用数据、融合中间结果、避免重复回写。
@@ -78,6 +85,8 @@ UB 预算公式：`Σ(buffer_elems × dtype_bytes × versions) + padding + resid
 4. 核数不超过 `min(硬件核数, 独立任务数)`。每核存在常量搬入、索引构造等固定段时，同时 A/B 较少核数 + Persistent 多 task/core，按固定段复制成本、wave、负载均衡与实测选择。
 5. UB、寄存器、指令体积共同约束 tile；性能下降时检查 spill、代码膨胀和占用。
 6. 性能比较保持输入分布、shape、dtype、输出语义、warmup/repeat 和并发设置一致。
+
+- 不把 reshape 当作改变物理 stride 的操作；Host 预处理、输出后处理和额外 launch 都计入完整路径。测试 golden 的 CPU 工作不等于产品路径可消除开销。
 
 ## 算子模式
 
@@ -98,10 +107,12 @@ GM→UB，当前 `T.Parallel` / `T.tile.*` 计算，UB→GM。标量权重按当
 - 索引向量无法表达的 dtype 使用仓库已验证的 UB-local 或合法 DMA 路径；通用 int64 不经有损浮点中转。
 - `T.assume` 只表达调用方真实保证的约束，测试覆盖每个允许的余数类。
 
+- 改布局、dtype、batch 或 stage 时先验证专题定义的 kernel 合同，再接通 planner；多阶段路径包含所有中间空间与有效范围。
+
 ### GEMM
 
 ```python
-# 当前 A2/A3 示例的结构示意；完整调用从 examples/gemm/example_gemm.py 派生。
+# 当前示例的结构示意；完整调用从 examples/gemm/example_gemm.py 派生。
 with T.Kernel(num_cube_cores, is_npu=True) as (block_id, _):
     a_l1 = T.alloc_L1((tile_m, tile_k), dtype)
     b_l1 = T.alloc_L1((tile_k, tile_n), dtype)
@@ -116,7 +127,7 @@ with T.Kernel(num_cube_cores, is_npu=True) as (block_id, _):
         T.copy(c_l0, c_gm_slice)
 ```
 
-这是当前 A2/A3 样例的结构示意，不是 `T.gemm_v0` / `T.mma` 的唯一合法布局。流水是单独验证的优化候选，不能将示意中的保守 barrier 作为性能模板。切片、padding 和输出搬运必须从同类已运行样例适配；嵌套 K 子循环时只在首个有效子 tile（例如 `kt == 0 and sk == 0`）清零。不要假设任意 M/N/K 尾块会自动正确处理。
+这是当前样例的结构示意，不是 `T.gemm_v0` / `T.mma` 的唯一合法布局。流水是单独验证的优化候选，不能将示意中的保守 barrier 作为性能模板。切片、padding 和输出搬运必须从同类已运行样例适配；嵌套 K 子循环时只在首个有效子 tile（例如 `kt == 0 and sk == 0`）清零。不要假设任意 M/N/K 尾块会自动正确处理。
 
 ## 验证矩阵
 
@@ -136,13 +147,3 @@ pytest <test_file>
 仅在确认 worker 设备绑定和隔离机制后增加 `-n`，并发不超过可用设备数，否则串行；OOM 时降低并发，不减少用例。benchmark 保持设备独占。
 
 失败时分别记录：收集数、通过数、首个失败 case、异常类型和根因。`NotImplementedError` 表示覆盖到了尚未实现的仓库路径，不是容差问题；实现该路径后必须从定向精度测试重新验证。
-
-## A2/A3 接口与参考补充
-
-API 入口见 [API 最佳实践](../../tilelang-custom-skill/tilelang-api-best-practices/SKILL.md)，模式和 pass 配置见 [编程模式指南](../../tilelang-custom-skill/tilelang-programming-model-guide/SKILL.md)。接口分别定位到 [ascend.py](../../../../tilelang/language/ascend.py)、[ascend_tile.py](../../../../tilelang/language/ascend_tile.py) 与 [Persistent](../../../../tilelang/language/persistent.py)。GEMM 结构见 [基础 GEMM](../../../../examples/gemm/example_gemm.py)，所有代码块仅解释结构，不代表本轮编译或性能验证。
-
-- 自动划分 C/V 不等于数据依赖已同步；核内、跨核和 workspace 的生产消费分别验证。手动同步遵循当前 LOCK DSL，不能未经核验复制历史 raw flag。
-- `get_kernel_source()` 用于检查实际执行侧、地址、同步和指令，是否重叠与更快仍需上板证据。
-- 不把 reshape 当作改变物理 stride 的操作；Host 预处理、输出后处理和额外 launch 都计入完整路径。测试 golden 的 CPU 工作不等于产品路径可消除开销。
-- 融合前先验证代数等价，再核对舍入、dtype 和饱和模式。整数转浮点前证明值域，NaN/tie/signed zero 与索引语义按原接口验证。
-- 改布局、dtype、batch 或 stage 时先验证专题定义的 kernel 合同，再接通 planner；多阶段路径包含所有中间空间与有效范围。

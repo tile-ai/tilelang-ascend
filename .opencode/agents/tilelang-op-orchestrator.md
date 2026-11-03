@@ -486,7 +486,6 @@ python3 .agents/skills/tilelang-tuning-flash/scripts/validate_optimization_searc
 | `tilelang-op-develop` | Stage 2 执行过任意 attempt |
 | `tilelang-tuning-flash` | Stage 3 执行过 Flash 会话 |
 | `tilelang-op-profiling` | Stage 3 实际采集过性能数据 |
-| `tilelang-perf-optimization` | Stage 3 执行过优化分析 |
 | `tilelang-performance-best-practices` | Stage 3 执行过任意迭代 |
 
 各 Subagent 摘要里的 `skills_consulted` 字段（如查 `tilelang-api-best-practices`、`tilelang-debug-helper` 等）需追加合并。

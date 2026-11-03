@@ -28,7 +28,6 @@ disable: true
    ▼             ▼              ▼
 [op-design] [op-develop]   [tuning-flash]
                               ├─ profiling (collect_only)
-                              ├─ perf-optimization
                               └─ performance-best-practices
                               ← Skill 层，无新增 Subagent
 ```
@@ -80,9 +79,9 @@ disable: true
 | 0 | 环境预检 | ✅ 一次性 | `tilelang-env-check` | `env_check_passed=true` |
 | 1 | 算子设计 | ✅ | `tilelang-op-design` | `DESIGN.md` + `proto.yaml` |
 | 2 | 代码实现+测试+精度调试 | ✅ | `tilelang-op-develop` + 内置精度调试方法学 | `{op}.py` + `test_{op}.py` + 精度调试备份 |
-| 3 | Flash 性能调优 | ⭕ 用户授权 | `tilelang-tuning-flash`，接入 profiling / optimization / best-practices | `perf_tuning/flash_<run_id>/` |
+| 3 | Flash 性能调优 | ⭕ 用户授权 | `tilelang-tuning-flash`，接入 profiling / best-practices | `perf_tuning/flash_<run_id>/` |
 
-Stage 3 一次委派给 `tilelang-op-perf-tuner` 执行完整 Flash 会话。它按 [Flash 正文](../../.agents/skills/tilelang-tuning-flash/SKILL.md) 在隔离候选中完成搜索、实施和验证，不再分发分析/实施子 Agent。`tilelang-op-profiling` 以 `execution_mode: collect_only` 采集/归档；`tilelang-perf-optimization` 只分析已有证据；`tilelang-performance-best-practices` 提供 A2/A3 实现知识。
+Stage 3 一次委派给 `tilelang-op-perf-tuner` 执行完整 Flash 会话。它按 [Flash 正文](../../.agents/skills/tilelang-tuning-flash/SKILL.md) 自行分析瓶颈、设计候选，在隔离候选中完成搜索、实施和验证，不再分发分析/实施子 Agent。`tilelang-op-profiling` 以 `execution_mode: collect_only` 采集/归档；`tilelang-performance-best-practices` 提供 A2/A3 实现知识。
 
 候选精度验证覆盖相关 shape，性能测量覆盖全部目标 case；最终执行完整目标 pytest、同口径 B0/B* 复测和搜索终局校验。原工程保持不变，最终交付为 run 内 `final_optimized/`。
 
@@ -166,7 +165,6 @@ Orchestrator 唯一会反向询问的关键信息：
 | `/tilelang-op-develop` | 只生成 kernel 代码 |
 | `/tilelang-tuning-flash` | 对已有正确实现执行完整调优会话或恢复指定 run |
 | `/tilelang-op-profiling` | 采集、核对和归档设备性能证据；Flash 使用 collect_only |
-| `/tilelang-perf-optimization` | 根据已有精度与性能证据分析优化方案，不采集数据、不修改 kernel |
 | `/tilelang-performance-best-practices` | 查阅 A2/A3 优化知识、适用条件与实现约束 |
 | `/tilelang-env-check` | 单独跑环境检查 |
 

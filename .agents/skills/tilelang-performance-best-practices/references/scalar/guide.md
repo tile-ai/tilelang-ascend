@@ -1,4 +1,4 @@
-# TileLang A2/A3 标量调度索引
+# TileLang 标量调度索引
 
 使用 Python kernel factory 与静态 DSL 结构减少运行时标量工作：shape/dtype/mode/tile/stage 在编译前选择，动态值只保留真实输入维和 task id。热循环采用 T.Persistent、T.Pipelined、T.Parallel、T.unroll；地址公共子表达式保存为局部变量。
 

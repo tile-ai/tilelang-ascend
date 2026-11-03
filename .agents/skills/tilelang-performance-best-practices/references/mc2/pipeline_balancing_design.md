@@ -1,4 +1,4 @@
-# 通信与 A2/A3 GEMM 流水配平
+# 通信与 GEMM 流水配平
 
 将 M 或 token 维切为 chunk。每个 chunk 具有通信时间 C_i 与 GEMM 时间 G_i；host wrapper 通过异步 collective 和两个 stream 形成流水。chunk size 由系统搜索选择，不写死经验比例。
 

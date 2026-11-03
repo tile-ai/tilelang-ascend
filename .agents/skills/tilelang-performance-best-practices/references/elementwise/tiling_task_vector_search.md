@@ -17,6 +17,8 @@
 
 大 item 的耗时明显高于其他 case 时，不能只因为它沿用 fallback 就忽略此检查。若展平后每个任务过小，再比较一个任务合并若干相邻 chunk 的粒度。
 
+Fixed Core 的具体分配与 owner 约束见 [任务映射](../common/task_mapping.md)。
+
 首次修改前为每个 case 记录工作树、outer/flattened waves、payload、实测时间、下界和主要 pipe。结构触发的待验证方向独立于当前候选池；候选排序变化不能使它们消失。具体落盘格式和状态由调用本指南的调优工作流规定。
 
 ## 2. 枚举有来源的 tile 边界
@@ -27,7 +29,9 @@
 2. **SIMD 边界**：lane 数、单条 load/select/gather/scatter 的有效 payload，以及整数个 vector chunk。
 3. **DMA 边界**：连续 burst、二维 copy 的整行宽度、对齐和 stride 限制。
 4. **容量边界**：把所有常驻 buffer、索引、padding、安全余量和 1/2/3 个版本计入后的 UB/L1 最大值。
-5. **并行边界**：至少一波、两波及稳态多波所需的任务数；同时记录尾 tile 比例。
+5. **并行边界**：至少一波、两波及稳态多波所需的任务数；同时记录最长核负载和尾 tile 比例。
+
+对指令边界分别核对 dtype 对齐、compare/select、transpose 与 cast 的完整 footprint。最小合法粒度也超限时修改数据流，不返回伪合法最小值；候选可按几何步进补齐，但不能用任意 cap=512/1024 代替边界搜索。
 
 将这些边界去重后形成小型候选集合，先用资源公式淘汰不合法值，再实测有不同数据流含义的值。可以设置安全余量，但必须说明它保护的具体 lowering 或临时存储；不得用任意 cap 代替完整连续单元或容量极限候选。
 
@@ -44,7 +48,9 @@
 | register-resident Vector | 连续 Vector load 后在寄存器内 select/shuffle/pack/convert/算术，最后写出 | 连续 load/store、寄存器重排、转换和 live register 压力 |
 | materialized transform | 先在 UB/L1 物化中间布局，再 transpose/permute/DMA 或连续写出 | 额外完整读写、临时容量、同步和对齐 |
 
-这些名称描述物理数据路线，不规定固定 intrinsic；一个实现可以组合多个族。 A2/A3 不能继承源平台 SIMD-Regbase/线程域能力；register-resident 路线只有当前 API、架构和 lowering 均有证据时才可实施，否则记录 DESIGN_ONLY 或确定的不适用证据，不能强制实现。只有当前接口语义、实际 TileLang API/lowering 或数据依赖证明某一族不适用时，才能以逐 case 证据关闭。
+这些名称描述物理数据路线，不规定固定 intrinsic；一个实现可以组合多个族。 register-resident 路线只有当前 API、架构和 lowering 均有证据时才可实施，否则记录 DESIGN_ONLY 或确定的不适用证据，不能强制实现。只有当前接口语义、实际 TileLang API/lowering 或数据依赖证明某一族不适用时，才能以逐 case 证据关闭。
+
+当前可表达的路线还包括连续 DMA + tile 运算、块 DMA + UB-local 重排与标量 fallback。UB 内局部 `SetValue` 不必然差于逐元素 GM DMA，参见 [dtype 适配](../conversion/dtype_adaptation.md)。
 
 物理路线按数据从源到结果经过的完整层级分类，不能只看最后一条算术指令。先把交错/离散数据写成完整 planar、transpose 或 scratch 布局，再连续 load 到寄存器，属于 `MATERIALIZED_TRANSFORM`；只有从原始或分段源窗口直接连续 load，并在寄存器内完成 select/shuffle/pack、没有完整中间 payload 写回，才属于 `CONTIGUOUS_LOAD_REGISTER_REORDER`。
 
@@ -94,7 +100,7 @@ source_reuse = 同一窗口产生的有效输出或复用次数
 - **register-resident**：后续重排只操作寄存器，没有把完整中间布局写回 UB/L1；
 - **lane index**：寄存器内的 lane 编号，不是 UB 地址。它不要求固定步长，但每个索引都必须落在该次可选择的寄存器窗口内。
 
-源平台的固定寄存器宽度和 vld/vselr 代码不移入 A2/A3 可执行模板。若当前 API 无法表达所需寄存器选择，就保留当前可执行的 Vector/UB-local 路线；不能把 UB 中物化的布局称为 register-resident。
+寄存器宽度和选择原语以实际架构、API 与 lowering 为依据。若当前 API 无法表达所需寄存器选择，就保留当前可执行的 Vector/UB-local 路线；不能把 UB 中物化的布局称为 register-resident。
 
 若所需窗口跨多个寄存器，不得把全局索引直接交给单个寄存器选择。应将源范围切成可证明的局部窗口，为每段重映射 index，再合并/写出；若跨寄存器选择和 pack 成本高于逐 lane UB 访问，则与当前可执行的索引路线实测比较。索引单位、源 dtype、随路扩宽、lane 数和后续算术必须从当前实现核验。
 
@@ -108,7 +114,7 @@ source_reuse = 同一窗口产生的有效输出或复用次数
 4. 目标精度允许时，是否能在较窄浮点上用当前支持且数学等价的融合 affine，避免无必要的 FP32 扩宽、交织和最终 pack；
 5. 当前映射是否匹配当前已支持的 load distribution、store distribution 或其他已 lowering 的原生排布操作，避免手工复制其功能。
 
-对窄整数字段，先整数扩宽再转目标浮点可作为待核验的低成本形态；源平台 vcvt/vmadd 代码不作为当前 A2/A3 实现。实际 cast/融合分别核对 [ascend_tile.py](../../../../../tilelang/language/ascend_tile.py) 与所选后端。
+对窄整数字段，先整数扩宽再转目标浮点可作为待核验的低成本形态。实际 cast/融合分别核对 [ascend_tile.py](../../../../../tilelang/language/ascend_tile.py) 与所选后端。
 
 若直接 `u8 -> f16 -> f32` 的代表需要多个分片转换、数次交织和 pack，而上述整数扩宽或其他当前 lowering 路径尚未裁决，则在候选失败原因中注明该实现不具代表性：候选本身可以按工作流状态淘汰，但不能关闭直接寄存器重排路线，并须新建最低成本代表。反之，gather 的随路扩宽也必须计入其优势，不能只比较连续 load 与索引访问单条指令名称。
 
@@ -158,11 +164,14 @@ output-order index → indexed load(raw UB) → Vector compute → contiguous st
 候选记录至少包含：tile/group、任务映射、执行域、关键指令序列、buffer 版本、流水控制流和尾部策略。一次失败只否决这个组合：
 
 - 某个 gather 索引格式精度失败，不否决其他 SIMD select/shuffle 或索引格式；
+- 某个 dtype、cast 链或 mask 格式失败，不否决其他精度合法的路线；
 - planar/materialized Vector 失败，不否决无完整中间 payload 的连续 load + register reorder；
 - 小 group 失败或收益不足，不否决来源值不同的完整连续语义单元；
 - 某个 tile 的 stage 2 变慢，不否决其他 tile/控制流的 stage 2；
 - 自动 buffer version 不 eligible，不否决显式 storage 的手动多版本；
 - 动态 stage 地址 lowering 失败，不否决静态 stage body。
+
+多阶段布局失败必须区分 planner、单 stage 边界与 dtype 路径，不能用 fallback 通过冒充优化通过。
 
 只有生成代码证明候选实质等价时，才能合并失败结论。若两个改动位于不同正交轴，候选记录必须明确说明它们的组合是已实测、无交互，还是因确定证据不可实施。
 
@@ -185,48 +194,3 @@ output-order index → indexed load(raw UB) → Vector compute → contiguous st
 | 尾部与小任务低开销路径 |  |  |  |
 
 初始及后续重开的高收益候选必须有实测结果或确定的不适用/淘汰证据；存在未裁决项时，不满足证据收敛停止条件。具体状态名由调用它的优化工作流定义。
-
----
-
-## A2/A3 实现补充与约束
-
-## Tiling、任务与 Vector 数据流搜索
-
-### 1. 从任务树开始
-
-每 case 写出 `outer row/patch/token/segment → inner independent chunks`，记录 outer 数、chunk 数、核数、outer/flattened waves、单任务有效 payload、kernel latency 与主要 pipe。outer 少不等于可并行工作少；若 inner 无归约或重叠写依赖，展平 `(outer,chunk)` 与原映射比较。展平后任务过小，再合并连续 chunk。映射方法见 [Fixed Core](../common/task_mapping.md)。
-
-### 2. 有来源的候选边界
-
-| 边界 | 推导内容 |
-|---|---|
-| 完整连续语义单元 | 整行、segment、record group；不跨 metadata/batch |
-| 指令边界 | dtype 对齐、compare/select、transpose、cast 的完整 footprint |
-| DMA 边界 | 合法地址、单次长度、stride/gap、二维矩形 |
-| 容量边界 | 所有 padding、常驻、scratch、版本之后的最大可行 tile |
-| 并行边界 | 一波/多波任务数、最长核负载、尾 tile 比例 |
-
-去重并以资源公式先淘汰非法候选；大小按几何步进补充，不能任意 cap=512/1024 后宣称完成搜索。完整连续单元可能改变 DMA 次数、索引摊销和重排路线，不能因小 group 失败直接排除。最小合法粒度超限时修改数据流，不返回伪合法最小值。
-
-### 3. 比较完整物理路径
-
-候选按数据实际经过的层级分类：连续 DMA + tile 运算、带索引的内存访问、块 DMA + UB-local 重排、临时布局物化、标量 fallback 等。当前 A2/A3 API/lowering 不支持的寄存器重排不能用另一分支 intrinsic 假装实现；算法方向可保留为待验证设计。
-
-索引变换记录 `source_span_bytes`、消费字节/跨度（density）、访问规律、窗口复用、合法边界和临时容量。稠密有界窗口适合评估连续载入；宽跨度稀疏消费适合评估索引访问；分段连续则分段比较。先在 UB 物化完整 planar/scratch 再连续读取仍是临时物化，不能算“无中间写回”。
-
-固定有效输出量统计 GM/UB 读写、索引生成、cast、算术、mask、临时物化、同步、活跃 lane 和代码量。输入路线与输出落盘组合分别记录；“指令更多”“代码复杂”不是严格成本证明。已有 fallback 的局部 `SetValue` 也不必然差于逐元素 GM DMA，参见 [dtype 适配](../conversion/dtype_adaptation.md)。
-
-### 4. 正交轴与交互
-
-候选身份包含 `(tile/group, task mapping, physical route, precision, stage/ownership, tail)`。任一轴改变即为新组合，保留旧结果。至少比较基线、单独 tiling、单独数据流、两者组合；资源/语义/lowering 不支持时写明证据。
-
-较大 group 可能让新数据流摊薄固定成本，也可能把瓶颈从 DMA 转到 Vector。每轮结果后重新判断主瓶颈；“group+旧路径失败”和“小 group+新路径失败”不能否决“大 group+新路径”。
-
-### 5. 准确限定失败与覆盖
-
-- 自动流水失败不否决合法手工 ownership；动态地址失败不否决可表示的静态槽位变体。
-- 某个 dtype、cast 链或 mask 格式失败不否决其他精度合法的路线。
-- 单个 tile 的 stage 2 慢不否决其他 tile 的流水。
-- 多阶段布局失败必须区分 planner、单 stage 边界与 dtype 路径，不能用 fallback 通过冒充优化通过。
-
-停止前记录连续边界、任务映射、索引成本、可实施数据流、交互组合、流水和尾部的验证/不适用结论。未测试不等于失败，源码等价且生成访存相同才可合并候选。候选状态和落盘格式由调优流程入口维护。

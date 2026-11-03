@@ -65,7 +65,6 @@ Orchestrator 会自动驱动 3 阶段状态机：
 /tilelang-op-develop        # 只生成 kernel 代码
 /tilelang-tuning-flash       # 对已有正确实现执行完整调优会话
 /tilelang-op-profiling       # 采集与分析性能证据
-/tilelang-perf-optimization  # 根据已有证据分析性能优化方案
 /tilelang-performance-best-practices  # 查阅 A2/A3 性能知识与实现约束
 /tilelang-env-check          # 单独跑环境检查
 ```
@@ -243,7 +242,7 @@ Stage 2: 代码实现 + 测试 + 精度调试（一站式）→ @tilelang-op-dev
 
 **适用场景**：已有正确实现，准备性能调优或恢复未完成 run。Flash 是工作组织方式，适用于不同算子。
 
-**执行方式**：由 perf-tuner（或直接调用时的当前 Agent）统一分析、实施和验证，不再分发分析/实施子 Agent。调用 profiling 的 `collect_only` 接口和现有分析/知识 Skill，建立 B0/B*/Ci 隔离版本与搜索记录。
+**执行方式**：由 perf-tuner（或直接调用时的当前 Agent）按 Flash 正文完成逐 case 瓶颈分析、资源建模、候选设计、实施和验证，不再分发分析/实施子 Agent。调用 profiling 的 `collect_only` 接口并查阅性能知识库，建立 B0/B*/Ci 隔离版本与搜索记录。
 
 **验证与交付**：候选验证相关 shape，性能比较覆盖全部目标 case；最终执行完整目标 pytest、同口径 B0/B* 复测和搜索终局校验，交付 `final_optimized/`，原工程保持不变。预算耗尽不等于收敛，完整规范见 [SKILL.md](skills/tilelang-tuning-flash/SKILL.md)。
 
@@ -252,14 +251,6 @@ Stage 2: 代码实现 + 测试 + 精度调试（一站式）→ @tilelang-op-dev
 **适用场景**：采集当前源码与全部目标 case 的设备性能证据，核对 kernel/launch 映射，保存原始数据、metadata 和 summary。
 
 **Flash 接口**：`execution_mode: collect_only`，显式传入当前版本身份与独立测量输出目录；不在采集内部启动候选修改或第二套调优循环。已有独立使用方式见 [SKILL.md](skills/tilelang-op-profiling/SKILL.md)。
-
-#### `tilelang-perf-optimization` — 性能方案分析
-
-**适用场景**：精度通过且已有逐 case 性能证据，需要定位瓶颈、设计优化方案。
-
-**输入与输出**：输入当前 kernel、调用入口、测试约束、精度结果和同口径性能证据；输出 case 分组、资源模型、候选方案及验证计划。证据不足时返回缺失项，不自行采集或修改 kernel。
-
-**执行边界**：Stage 3 由 `tilelang-op-perf-tuner` 按 Flash 正文统一控制候选；分析 Skill 返回方案与搜索义务，不负责循环、采集或改源码。记录保存在 `perf_tuning/flash_<run_id>/`。
 
 #### `tilelang-performance-best-practices` — A2/A3 性能知识库
 
