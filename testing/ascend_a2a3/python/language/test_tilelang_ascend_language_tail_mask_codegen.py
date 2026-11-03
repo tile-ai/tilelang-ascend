@@ -18,7 +18,7 @@ import pytest
 import tilelang
 import tilelang.ascend.a2a3.language as T
 from tilelang import tvm
-from tilelang.ascend.a2a3.pipeline import LowerAndLegalize, _prepare_source_kernel, _record_pto_cthread_modes
+from tilelang.ascend.a2a3.pipeline import LowerAndLegalize, _prepare_source_kernel
 from tilelang.ascend.a2a3.pass_config import normalize_a2a3_pass_configs
 from tilelang.ascend.target import determine_platform
 
@@ -573,8 +573,6 @@ def _lowered_tir(func, target="ascendc"):
             unsupported_annotations=["cluster_dims"],
             launch_dim_tags=["cthread"],
         )(mod)
-        if target == "pto":
-            mod = _record_pto_cthread_modes(mod)
         mod = LowerAndLegalize(mod, target_obj)
     return str(mod)
 
