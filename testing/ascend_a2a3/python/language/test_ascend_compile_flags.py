@@ -19,13 +19,10 @@ import tilelang
 import tilelang.ascend.a2a3.language as T
 from tilelang import tvm
 from tilelang.ascend.a2a3 import compiler
+from tilelang.transform.pass_config import PassConfigKey
 from tilelang.ascend.a2a3.pass_config import normalize_a2a3_pass_configs
-from tilelang.transform.pass_config import (
-    PassConfigKey,
-    normalize_pass_configs,
-)
 from tilelang.ascend.a2a3.compiler import LibraryGenerator, resolve_compile_flags, normalize_compiler_options
-from tilelang.ascend.a2a3.kernel_cache import A2A3CythonKernelCache, stamp_runtime_request
+from tilelang.cache.kernel_cache import KernelCache
 
 VS_ON = {PassConfigKey.TL_ASCEND_AUTO_SYNC_VS: True}
 VS_OFF = {PassConfigKey.TL_ASCEND_AUTO_SYNC_VS: False}
@@ -41,14 +38,8 @@ def clean_env():
 
 
 def _pc(target, vs):
-    """Effective VS input for the compiler-only tests, without target probing.
-
-    The public PTO default is tested by the native normalization/compile cases;
-    these pure flag tests supply that known effective default explicitly.
-    """
-    if vs is None and target == "pto":
-        vs = True
-    return normalize_pass_configs(None if vs is None else (VS_ON if vs else VS_OFF))
+    """pass_configs for `target`; vs=None means the target's own default."""
+    return normalize_a2a3_pass_configs(_target(target), None if vs is None else (VS_ON if vs else VS_OFF))
 
 
 def _target(dialect="ascendc", platform="A3"):
@@ -104,15 +95,15 @@ def test_no_environ_mutation(clean_env):
 
 
 def _bisheng_command(target, compile_flags, env=None):
-    """Freeze a real native target request and capture its compiler argv."""
+    """Build the bisheng command without running it."""
     captured = {}
 
-    def _run(cmd, *a, **k):
-        from pathlib import Path
+    class _Ret:
+        returncode = 0
 
+    def _run(cmd, *a, **k):
         captured["cmd"] = list(cmd)
-        Path(cmd[-1]).write_bytes(b"captured compiler output")
-        return types.SimpleNamespace(returncode=0)
+        return _Ret()
 
     with (
         mock.patch("tilelang.ascend.a2a3.compiler._get_ascend_home_path", return_value="/a"),
@@ -156,19 +147,15 @@ def test_libgen_direct_caller_falls_back_to_derived():
 # ---------------------------------------------------------------------------
 
 
-def _copy_kernel():
-    # Keep the original kernel body; defer native elaboration so pure flag
-    # regressions remain importable with USE_ASCEND=OFF.
-    @T.prim_func
-    def main(A: T.Tensor((16, 16), "float16"), B: T.Tensor((16, 16), "float16")):
-        with T.Kernel(1, is_npu=True) as (cid, vid):
-            T.copy(A, B)
-
-    return main
+@T.prim_func
+def _copy_kernel(A: T.Tensor((16, 16), "float16"), B: T.Tensor((16, 16), "float16")):
+    with T.Kernel(1, is_npu=True) as (cid, vid):
+        T.copy(A, B)
 
 
 def test_compile_resolves_and_threads_flags(clean_env):
-    """Public compile freezes derived flags once before adapter construction."""
+    """compile() resolves the flags once and hands them to JITKernel -- the hop
+    that makes them kernel-scoped. Adapter creation (and lowering) is stubbed."""
     from tilelang.jit.kernel import JITKernel
     from tilelang.env import CacheState
 
@@ -182,11 +169,12 @@ def test_compile_resolves_and_threads_flags(clean_env):
     with (
         mock.patch.object(CacheState, "_enabled", False),
         mock.patch.object(JITKernel, "_compile_and_create_adapter", _spy),
-        mock.patch.object(JITKernel, "_set_adapter"),
     ):
-        tilelang.compile(_copy_kernel(), target=_target(), out_idx=[1], compile_flags=["-O3"])
-    assert seen["flags"] == ["-O3"]  # current public API retains the caller request
-    assert seen["config"].flags == ("-O2", "-O3")  # actual command has last-wins order
+        tilelang.compile(_copy_kernel, target="ascendc", out_idx=[1], compile_flags=["-O3"])
+
+    # derived "-O2" first, caller "-O3" appended last (last-wins).
+    assert seen["flags"] == ["-O3"]
+    assert seen["config"].flags == ("-O2", "-O3")
 
 
 # ---------------------------------------------------------------------------
@@ -195,86 +183,102 @@ def test_compile_resolves_and_threads_flags(clean_env):
 
 
 def test_cache_key_scopes_flags(clean_env):
-    func = _copy_kernel()
-    target = _target()
-    cache = A2A3CythonKernelCache()
-
-    def key(vs):
-        configs = normalize_a2a3_pass_configs(target, VS_ON if vs else VS_OFF)
-        config = compiler.resolve_compile_config(target, configs)
-        derived = stamp_runtime_request(func, [], config)
-        return cache._generate_key(
-            func=derived,
+    def key(flags):
+        return KernelCache()._generate_key(
+            func=_copy_kernel,
             out_idx=[1],
             execution_backend="cython",
             args=(),
-            target=target,
+            target="ascendc",
             target_host=None,
-            pass_configs=configs,
-            compile_flags=None,
+            pass_configs={},
+            compile_flags=flags,
         )
 
-    assert key(True) != key(False)
-    assert key(True) == key(True)
+    # VS-on and VS-off kernels resolve to different flags and must not alias.
+    on = resolve_compile_flags("ascendc", _pc("ascendc", True))
+    off = resolve_compile_flags("ascendc", _pc("ascendc", False))
+    assert on != off and key(on) != key(off)
+    assert key(on) == key(on)  # deterministic
 
 
-def test_autotuner_restore_threads_full_signature(tmp_path, clean_env):
-    """Modern native restore delegates the complete frozen ABI to the cache."""
-    import json
+def test_autotuner_restore_threads_full_signature(tmp_path):
+    """Regression: disk restore must supply every required JITKernel argument
+    and thread compile_flags, persisted auto_gm_idx and the resolved platform."""
+    import inspect
+    import json as _json
+
+    from tilelang.jit.kernel import JITKernel
     from tilelang.autotuner import param as ap
     from tilelang.engine.lower import extrac_params
     from tilelang.engine.param import dump_kernel_params
-    from tilelang.ascend.a2a3.execution_backend import COMPILER_CONFIG_ATTR, WORKSPACE_IDX_ATTR
+    from tilelang.ascend.a2a3.kernel_cache import A2A3CythonKernelCache
+    from tilelang.ascend.a2a3.runtime import dump_runtime_signature
 
-    program = _copy_kernel()
-    request = ap.CompileArgs(target=_target(), out_idx=[1], workspace_idx=[], compile_flags=["-O3"]).freeze()
-    context = request._frozen.context
-    (tmp_path / ap.HOST_KERNEL_PATH).write_text("// wrapped")
-    (tmp_path / ap.DEVICE_KERNEL_PATH).write_text("// device")
+    required = {
+        n
+        for n, p in inspect.signature(JITKernel.from_database).parameters.items()
+        if p.default is inspect.Parameter.empty and n not in ("cls", "self")
+    }
+    (tmp_path / ap.HOST_KERNEL_PATH).write_text("// x")
+    (tmp_path / ap.DEVICE_KERNEL_PATH).write_text("// x")
     (tmp_path / ap.KERNEL_LIB_PATH).write_bytes(b"")
-    (tmp_path / ap.PARAMS_PATH).write_text(dump_kernel_params(extrac_params(program)))
-    (tmp_path / A2A3CythonKernelCache.runtime_metadata_path).write_text("{}")
+    gm = tvm.tirx.decl_buffer((1,), "uint8", name="auto_gm")
+    signature = (
+        tvm.tirx.PrimFunc(
+            [*_copy_kernel.params, gm.data],
+            tvm.tirx.Evaluate(0),
+            buffer_map={**dict(_copy_kernel.buffer_map), gm.data: gm},
+        )
+        .with_attr("global_symbol", _copy_kernel.attrs["global_symbol"])
+        .with_attr("auto_gm_indices", [2])
+    )
+    (tmp_path / ap.PARAMS_PATH).write_text(dump_kernel_params(extrac_params(signature)))
+
     captured = {}
 
-    def _spy(self, func, host_source, device_source, library, params, backend_context, out_idx, pass_configs, compile_flags):
-        captured.update(
-            func=func,
-            host=host_source,
-            device=device_source,
-            library=library,
-            params=params,
-            context=backend_context,
-            out_idx=out_idx,
-            pass_configs=pass_configs,
-            compile_flags=compile_flags,
-        )
+    def _spy(**kw):
+        captured.update(kw)
         return "K"
 
     with (
-        mock.patch.object(A2A3CythonKernelCache, "_build_kernel", _spy),
-        mock.patch.dict("os.environ", {"TL_PLATFORM": "A2", "TL_CCE_OPT_LEVEL": "0"}),
+        mock.patch.object(JITKernel, "from_database", _spy),
+        mock.patch("tilelang.ascend.a2a3.compiler._get_ascend_home_path", return_value="/a"),
+        mock.patch("tilelang.ascend.a2a3.compiler._get_tl_root", return_value="/t"),
+        mock.patch("tilelang.ascend.a2a3.compiler.shutil.which", return_value="/a/bin/bisheng"),
+        mock.patch.dict("os.environ", {"TL_PLATFORM": "A3", "TL_RUN_MODE": "npu"}),
     ):
+        request = ap.CompileArgs(target="ascendc", out_idx=[1], workspace_idx=[], compile_flags=["-O3"]).freeze()
+        _, _, _, config = request._prepare_a2a3_program(_copy_kernel)
+        metadata = {
+            "schema_version": 1,
+            "workspace_idx": [],
+            "auto_gm_idx": [2],
+            "compiler_config": config.to_metadata(),
+            "runtime_signature": dump_runtime_signature(signature),
+        }
+        (tmp_path / A2A3CythonKernelCache.runtime_metadata_path).write_text(_json.dumps(metadata))
         result = ap.AutotuneResult._load_kernel_from_disk(
-            ap.AutotuneResult, tmp_path, backend_context=context, func=program, compile_args=request
+            ap.AutotuneResult,
+            tmp_path,
+            backend_context=request._frozen.context,
+            func=_copy_kernel,
+            compile_args=request,
         )
+
     assert result == "K"
-    assert captured["context"] is context
-    assert str(context.target.attrs["model"]) == "A3"
-    assert captured["out_idx"] == [1]
+    assert not (required - set(captured))  # all required args supplied (the bug)
+    assert captured["auto_gm_idx"] == [2]  # persisted auto_gm_idx restored
     assert captured["compile_flags"] == ["-O3"]
-    assert len(captured["params"]) == 2
-    assert list(captured["func"].attrs[WORKSPACE_IDX_ATTR]) == []
-    saved = compiler.CompileConfig.from_metadata(json.loads(str(captured["func"].attrs[COMPILER_CONFIG_ATTR])))
-    assert saved.platform == "A3" and saved.flags == ("-O2", "-O3")
-    # Sidecar schema/autoGM validation and actual fresh-process restoration are
-    # covered by the real A2A3 cache tests, rather than the retired pickle files.
+    assert str(captured["target"].attrs["model"]) == "A3"  # auto platform resolved via TL_PLATFORM
 
 
-def test_compile_args_hash_scopes_platform_and_flags(clean_env):
+def test_compile_args_hash_scopes_platform_and_flags():
     from tilelang.autotuner.param import CompileArgs
 
-    assert hash(CompileArgs(target=_target(platform="A2")).freeze()) != hash(CompileArgs(target=_target(platform="A3")).freeze())
-    assert hash(CompileArgs(target=_target(), compile_flags=["-O3"]).freeze()) != hash(CompileArgs(target=_target()).freeze())
+    # Distinct platforms / compile flags -> distinct auto-tuner cache keys.
+    assert hash(CompileArgs(target=_target(platform="A2"))) != hash(CompileArgs(target=_target(platform="A3")))
+    assert hash(CompileArgs(compile_flags=["-O3"])) != hash(CompileArgs())
 
 
 # ---------------------------------------------------------------------------
