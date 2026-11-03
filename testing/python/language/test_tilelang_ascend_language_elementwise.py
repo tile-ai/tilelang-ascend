@@ -545,6 +545,50 @@ def test_bitwise_and_noncontiguous_region_rejected():
         T.tile.bitwise_and(dst[:, 16:32], src0[:, 16:32], src1[:, 16:32])
 
 
+def run_test_bitwise_and_uint8_odd_width(shape, target):
+    """uint8 odd-width tiles must not drop the tail byte on the PTO path."""
+    dtype = "uint8"
+
+    @T.prim_func
+    def main(
+        A: T.Tensor(shape, dtype),  # type: ignore
+        B: T.Tensor(shape, dtype),  # type: ignore
+        C: T.Tensor(shape, dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            a_ub = T.alloc_ub(shape, dtype)
+            b_ub = T.alloc_ub(shape, dtype)
+            c_ub = T.alloc_ub(shape, dtype)
+            if vid == 0:
+                T.copy(A, a_ub)
+                T.copy(B, b_ub)
+                T.tile.bitwise_and(c_ub, a_ub, b_ub)
+                T.copy(c_ub, C)
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    a = torch.randint(0, 100, shape, dtype=torch.uint8).npu()
+    b = torch.randint(0, 100, shape, dtype=torch.uint8).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    ref_c = a & b
+    assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (255,),
+        (4, 101),
+    ],
+    ids=["odd-1d", "odd-2d"],
+)
+@pytest.mark.parametrize("target", ["pto"])
+def test_bitwise_and_uint8_odd_width(shape, target):
+    """PTO widens uint8 via uint16 reinterpreting; odd valid widths must not
+    lose the tail byte (the u16 view used floor(ColValid / 2))."""
+    run_test_bitwise_and_uint8_odd_width(shape, target)
+
+
 def axpy(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
