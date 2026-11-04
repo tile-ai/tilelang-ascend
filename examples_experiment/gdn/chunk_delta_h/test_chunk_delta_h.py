@@ -78,6 +78,8 @@ import torch
 from example_chunk_delta_h import (
     _PRIVATE_TMP_DIR,
     chunk_delta_h,
+    chunk_local_cumsum,
+    prepare_gate_scale,
     prepare_input,
     prepare_k_gated,
     prepare_m,
@@ -329,13 +331,22 @@ def _get_kernel(
     store_final_state,
     save_new_value,
     block_DV,
+    gate_scale=None,
 ):
     """Compile the kernel for one config, or reuse an in-process copy.
 
     The boundary suite's 6 cases share one config — memoization replaces 6
     identical compiles with 1. tilelang.disable_cache() in main only disables
     the on-disk cache; this dict cache is independent of it.
+
+    gate_scale (host fp32 tensor, optional): when given with use_g=True the
+    public wrapper's weak-gate detector may route the compile to the
+    fp32-state 2-GEMM structure — a DIFFERENT compiled kernel — so the
+    routing verdict is part of the memoization key.
     """
+    from example_chunk_delta_h import is_weak_gate
+
+    weak_route = use_g and gate_scale is not None and is_weak_gate(gate_scale)
     key = (
         B,
         S,
@@ -348,6 +359,7 @@ def _get_kernel(
         store_final_state,
         save_new_value,
         block_DV,
+        weak_route,
     )
     if key not in _KERNEL_CACHE:
         _KERNEL_CACHE[key] = _test_run_with_retry(
@@ -367,6 +379,7 @@ def _get_kernel(
                 accum_dtype="float32",
                 state_dtype="float32",
                 block_DV=block_DV,
+                gate_scale=gate_scale,
             )
         )
     return _KERNEL_CACHE[key]
@@ -429,6 +442,7 @@ def _run_one_case(
     save_new_value=True,
     vrange=None,
     special=None,
+    gate_seq=None,
     level_tag="L0",
     blocking=True,
 ):
@@ -495,6 +509,15 @@ def _run_one_case(
             U = U[:, :S]
             G = G[:, :S]
 
+        # Weak-gate override: replace the random logsigmoid gate with a
+        # constant per-token gate (weak decay). G/K_gated/gate_scale are all
+        # re-derived below via the re-derivation branch.
+        if gate_seq is not None:
+            G = chunk_local_cumsum(
+                torch.full((B, gen_S, H), float(gate_seq), dtype=torch.float32),
+                chunk_size,
+            )
+
         # Boundary mutation (zero / inf / nan / dtype-boundary).
         if special is not None:
             K, W, U = special(K, W, U)
@@ -512,7 +535,7 @@ def _run_one_case(
         # Re-derive kernel inputs from the (possibly mutated / truncated)
         # originals when needed. gate_scale depends only on G — it is
         # recomputed never, only sliced for the tail case.
-        if (gen_S != S) or special is not None or vrange_active:
+        if (gen_S != S) or special is not None or vrange_active or gate_seq is not None:
             K_k = K[:, :S_aligned]
             W_k = W[:, :S_aligned]
             U_k = U[:, :S_aligned]
@@ -522,6 +545,8 @@ def _run_one_case(
             U_cm = to_chunk_major(U_k, chunk_size)
             if gen_S != S:
                 gate_scale = gate_scale[:, :BS_actual]
+            if gate_seq is not None:
+                gate_scale = prepare_gate_scale(G_k, chunk_size, block_DV, use_g=use_g)
 
         print(f"[{level_tag}:{name}] compiling kernel ...")
         kernel = _get_kernel(
@@ -536,6 +561,8 @@ def _run_one_case(
             store_final_state=store_final_state,
             save_new_value=save_new_value,
             block_DV=block_DV,
+            # host routing hint: only meaningful for weak-gate (gate_seq) cases
+            gate_scale=gate_scale if gate_seq is not None else None,
         )
 
         # M (M-form) must be derived AFTER any re-derivation above
@@ -687,6 +714,32 @@ def run_l0_tests():
         use_g=True,
     )
     results.append(("l0_main_config", r3))
+
+    # Weak-gate regression (review :1639): K/W/U zeroed + initial_state
+    # random + constant per-token gate -1/65536 -> per-chunk decay
+    # exp(-1/1024)=0.9990239, below the bf16 resolution of the M-form state
+    # carrier AND of M's g*I diagonal. Unpatched M-form: the recurrence
+    # pins at the initial magnitude (golden decays to 0.999^512=0.60653 of
+    # it, 64.9% deviation). With the gate_scale routing hint the wrapper
+    # compiles the fp32-state 2-GEMM structure and the decay is carried
+    # exactly. Pure-decay shape (GEMM terms identically zero), so the
+    # assertion closes on the carrier precision alone.
+    print("\n[L0:l0_weak_gate_decay] WARNING: S=32768 compilation may take >10min ...")
+    r4 = _run_one_case(
+        "l0_weak_gate_decay",
+        B=1,
+        S=32768,
+        H=2,
+        DK=64,
+        DV=64,
+        chunk_size=64,
+        block_DV=64,
+        use_g=True,
+        use_initial_state=True,
+        gate_seq=-1.0 / 65536,
+        special=_special_zero,
+    )
+    results.append(("l0_weak_gate_decay", r4))
 
     print("=" * 60)
     all_passed = True
@@ -930,6 +983,28 @@ L1_CASES = [
         "block_DV": 128,
         "use_g": True,
         "tags": ["D-PARAM-chunk_size"],
+    },
+    # --- D-GATE: weak-gate regression (review :1639), mixed-input variant ---
+    # Random K/W/U at a small value range + initial_state + the constant
+    # weak gate: the routing hint compiles the fp32-state 2-GEMM structure
+    # with NON-trivial GEMM terms. 64 chunks keeps the accumulated bf16
+    # operand-quantization drift (sqrt(64)*~0.4%*|M@h|/|h|, dominated by the
+    # small vrange) inside the bf16 gates; the pure-decay 512-chunk variant
+    # is l0_weak_gate_decay.
+    {
+        "name": "l1_weak_gate_mixed",
+        "B": 1,
+        "S": 4096,
+        "H": 4,
+        "DK": 128,
+        "DV": 128,
+        "chunk_size": 64,
+        "block_DV": 128,
+        "use_g": True,
+        "use_initial_state": True,
+        "gate_seq": -1.0 / 65536,
+        "vrange": (-0.03, 0.03),
+        "tags": ["D-GATE-WEAK", "D-SHAPE-ALIGNED", "D-DTYPE-bf16", "D-DTYPE-fp32"],
     },
 ]
 
