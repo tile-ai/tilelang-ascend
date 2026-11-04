@@ -42,12 +42,13 @@ logits[r,p] = sum_h relu( dot(q[r,h,:], decode(k_cache[blk, off, :])) * scale_ca
 | Baseline | none published for this operator on Ascend (absolute numbers below) |
 | Measurement | NPUGraph capture-replay, kernel-only; 10/4/1 calls per graph depending on the shape, 20 replays; medians of three runs |
 
-## 3. Architecture (two kernels per call)
+## 3. Architecture (one kernel per call)
 
 | Component | Choice | Reason |
 |-----------|--------|--------|
-| Mask kernel | one AIV per 64-pool tile builds a per-lane 0 / -inf mask from `pool_starts`/`pool_ends` and the page validity | the 64-lane compare/select and the index generator are exact on a single AIV; small-vector compare needs 256B alignment |
-| Main kernel | one block per (row, 64-pool page); two AIVs each own a 32-pool half: clamped page-table lookup, bulk 32x128B gather, whole-half E4M3 decode; Cube runs one 64x32x128 GEMM per block; Vector does scale, ReLU, per-head weights and the 32-head reduce; one static-extent write | bulk half-page copies keep gmem scalar accesses O(pages); the page-sized GEMM satisfies the L0 fractal constraints with an 8KB L0C accumulator |
+| Main kernel | one block owns `pages_per_block` consecutive 64-pool pages of one row; two AIVs each own a 32-pool half of every page: clamped page-table lookup, bulk 32x128B gather, whole-half E4M3 decode; Cube runs one 64x32x128 GEMM per page; Vector does scale, ReLU, per-head weights, 32-head reduce and the mask; one static-extent write per half-page | batching pages amortizes the per-block query load, page-table metadata and cross-core handshake; the page-sized GEMM satisfies the L0 fractal constraints with an 8KB L0C accumulator |
+| Page batching | `pages_per_block` defaults to enough pages to cover the device's AI Cores once per row, capped at 8 | 8 pages/block measured faster than 1, 2, 4 and 16 pages/block on 910B3; the auto cross-core sync emits one flag pair per page, and the flag counter saturates above 16 pages |
+| Validity mask | built in-kernel on a `[32 pools, 32 heads]` tile (0 inside the range with a valid page, -inf otherwise) and added after the head reduce | removes a separate mask kernel (previously ~25% of device time) and keeps every compare/select above the 256B vector-op floor |
 | CV exchange | explicit `workspace_keys` / `workspace_scores` GM buffers, one producer/consumer pair each; auto cross-core sync | the `threads=2` vid-reduction path mis-splits this kernel's sub-region copies and small compare/broadcast/index ops (confirmed with probes) |
 | FP8 path | `k_cache` uint8 + in-kernel bit-level E4M3 decode | A2/A3 has no FP8 data path; bytes match the reference cache exactly |
 | Host adapter | metadata-only validation (no `.item()`/device reads); padded output + view | keeps the D2H round-trip out of the hot path |
@@ -57,51 +58,62 @@ logits[r,p] = sum_h relu( dot(q[r,h,:], decode(k_cache[blk, off, :])) * scale_ca
 Shape: page_size=64, head_dim=128, 32 indexer heads, full valid pool ranges,
 page table backing every page (the pattern used by the upstream tests).
 
-| R (rows) | max_num_pools | num_blocks | pool-tiles (R x tiles) | kernel-only (us) | ns / pool-row |
-|----------|---------------|------------|------------------------|------------------|---------------|
-| 2 | 128 | 4 | 4 | 13.6 | 53.1 |
-| 8 | 1,024 | 16 | 128 | 55.1 | 6.7 |
-| 4 | 32,768 | 512 | 2,048 | 664.9 | 5.1 |
-| 32 | 32,768 | 512 | 16,384 | 4,978.9 | 4.7 |
+| R (rows) | max_num_pools | grid (blocks) | pages/block | kernel-only (us) | ns / pool-row |
+|----------|---------------|---------------|-------------|------------------|---------------|
+| 2 | 128 | 4 | 1 | 9.6 | 37.5 |
+| 8 | 1,024 | 16 | 8 | 32.2 | 3.9 |
+| 4 | 32,768 | 256 | 8 | 330.5 | 2.5 |
+| 32 | 32,768 | 2,048 | 8 | 2,557.5 | 2.4 |
 
 ## 5. Performance Analysis
 
-- Device split (graph replay, R=4 / 32,768 pools): mask kernel **163.9 us** +
-  main kernel **476.2 us**. The mask kernel is ~1/4 of the device time even
-  though its arithmetic is tiny: it launches one AIV per 64-pool tile and each
-  block is dominated by the scalar metadata reads and small compare/select ops.
-- The main kernel is CV: per block two 32-pool E4M3 decodes (Vector), one
-  64x32x128 GEMM (Cube), then the 32x32 post-processing (scale by row, ReLU,
-  per-head weights by column, 32-head reduce) and one 128B write per half.
-- Time scales linearly with the number of pool tiles: 2,048 -> 16,384
-  blocks costs 665 -> 4,979 us (7.5x).
-- Under msprof the two kernels of one call report 270 us / 537 us (profiler
-  overhead included); the Cube pipe is active only in the main kernel.
+msprof (`op`, R=4 / 32,768 pools, profiler overhead included: Task Duration
+338.6 us, Block Dim 256):
+
+| Pipe (AIV, normalized by 40 AIVs) | Utilization |
+|-----------------------------------|-------------|
+| scalar | 69.2% |
+| vector | 52.8% |
+| MTE2 | 16.3% |
+| MTE3 | 8.3% |
+
+- The AIV is busy ~94% of the block duration; scalar and vector are both well
+  above 50%, so the kernel is instruction-issue bound, not memory bound.
+  Effective bandwidth is roughly 120 MB / 330 us ~ 365 GB/s, about 30% of the
+  1.2 TB/s HBM peak.
+- The E4M3 bit-level decode is the largest single cost: replacing it with a
+  trivial cast drops R=4 / 32,768 pools from 330 us to 232 us, i.e. the decode
+  chain is ~30% of the kernel.  The Cube is nearly idle (cube 1.8%, MTE 6.7%,
+  FIX 5.4% of the AIC time) because one 64x32x128 GEMM per page is tiny.
+- Batching pages is what removed the per-block overhead: at one page per block
+  the same kernel takes 543 us; at 8 pages per block it takes 330 us.  Larger
+  batches are capped by the cross-core flag counter (16 pages hang, 8 are safe).
 
 ## 6. End-to-end (host adapter included, wall clock)
 
 | R (rows) | max_num_pools | E2E (us) |
 |----------|---------------|----------|
-| 2 | 128 | 1,196 |
-| 8 | 1,024 | 1,224 |
-| 4 | 32,768 | 1,225 |
-| 32 | 32,768 | 5,312 |
+| 2 | 128 | 387 |
+| 8 | 1,024 | 401 |
+| 4 | 32,768 | 354 |
+| 32 | 32,768 | 2,565 |
 
-E2E is dominated by the two per-call kernel launches on this stack (~0.45 ms
-per call host overhead) for the small and mid shapes; it is not part of the
-kernel contribution. The host adapter performs metadata-only validation (no
+For the small shapes E2E is host-bound: the kernel itself is 9.6-32 us and one
+call costs ~350-400 us on this stack (validation + JIT dispatch + workspace
+allocation + launch).  The host adapter performs metadata-only validation (no
 device reads), so the wall clock contains no D2H round-trip beyond the launch
 path itself.
 
 ## 7. Accuracy
 
-All tests in `test_example_glm53_kpool_fp8_mqa_logits.py` pass (8/8). The
+All tests in `test_example_glm53_kpool_fp8_mqa_logits.py` pass (10/10). The
 comparison is position-sensitive: the exact `-inf` mask is compared first, then
 the finite logits are checked with `rtol=2^-10`, `atol=2^-16` (the smoke case
 reports max diff 1.953e-3, within tolerance). Metadata (`uint8` bytes, `int32`
 indices) is compared exactly. The cases cover full ranges, partial/empty/
-page-unaligned ranges, invalid page entries, non-multiple `max_num_pools`, the
-empty-input no-launch paths and metadata rejection. Test data uses non-negative
-head weights (the gated-indexer regime), where the 32-head sum has no
-cancellation and the fp32 tolerance holds; mixed-sign weights can cancel and
-are out of the documented tolerance regime.
+page-unaligned ranges, invalid page entries, non-multiple `max_num_pools`,
+batched pages (including a non-page-aligned batched tail), the empty-input
+no-launch paths and metadata rejection. Test data uses non-negative head
+weights (the gated-indexer regime), where the 32-head sum has no cancellation
+and the fp32 tolerance holds; mixed-sign weights can cancel and are out of the
+documented tolerance regime.

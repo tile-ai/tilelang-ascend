@@ -82,7 +82,7 @@ def _make_case(
     return inputs
 
 
-def _run(example: ModuleType, inputs, max_num_pools: int):
+def _run(example: ModuleType, inputs, max_num_pools: int, pages_per_block: int | None = None):
     expected = example.glm53_kpool_fp8_mqa_logits_reference(
         inputs["query"],
         inputs["k_cache"],
@@ -104,6 +104,7 @@ def _run(example: ModuleType, inputs, max_num_pools: int):
         inputs["pool_starts"].npu(),
         inputs["pool_ends"].npu(),
         max_num_pools=max_num_pools,
+        pages_per_block=pages_per_block,
     )
     torch.npu.synchronize()
     return actual.cpu(), expected
@@ -214,6 +215,26 @@ def test_glm53_kpool_logits_non_multiple_max_pools() -> None:
     actual, expected = _run(example, inputs, 100)
     _assert_logits(actual, expected)
     assert actual.shape == (3, 100)
+
+
+def test_glm53_kpool_logits_batched_pages() -> None:
+    """Several 64-pool pages per block (batched-page kernel path)."""
+    example = _load_example()
+    example.tilelang.disable_cache()
+
+    inputs = _make_case(8, 1024, 16, table_shape=(8, 16), starts=[0] * 8, ends=[1024] * 8)
+    actual, expected = _run(example, inputs, 1024, pages_per_block=4)
+    _assert_logits(actual, expected)
+
+
+def test_glm53_kpool_logits_batched_pages_partial_tile() -> None:
+    """Batched pages with a non-page-aligned max_num_pools tail."""
+    example = _load_example()
+    example.tilelang.disable_cache()
+
+    inputs = _make_case(3, 100, 4, table_shape=(3, 2), starts=[0, 5, 36], ends=[100, 99, 100])
+    actual, expected = _run(example, inputs, 100, pages_per_block=3)
+    _assert_logits(actual, expected)
 
 
 def test_glm53_kpool_logits_empty_inputs() -> None:
