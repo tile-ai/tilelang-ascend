@@ -68,6 +68,7 @@ def _chunk_delta_h_jit(
     accum_dtype,
     state_dtype,
     block_DV=128,
+    gate_weak_route=False,
 ):
     """Chunk delta h forward kernel (Developer mode, bf16 GEMM fusion route).
 
@@ -79,6 +80,16 @@ def _chunk_delta_h_jit(
 
     use_g=False — 2-GEMM structure. No-gate configs are all S<=256 (perf
     irrelevant), keeping the numerically safer non-gate path.
+
+    gate_weak_route=True — weak-gate inputs whose per-chunk decay
+    exp(g_last) is below the bf16 resolution of the M-form state carrier
+    AND of M's g*I diagonal (the recurrence pins at 1.0 while the fp32
+    reference keeps decaying; reproduced at -1/65536 per-token gate). These
+    are routed to the 2-GEMM structure with use_g=True: its fp32 UB state
+    (`h = h*exp(g_last) + kv`, gate_scale consumed as an fp32 scalar)
+    carries the decay exactly at the cost of the slower cross-core
+    recursion. Detected host-side by is_weak_gate(); pass via the public
+    chunk_delta_h(gate_scale=...) wrapper.
 
     Args:
         M (input 5): host-precomputed g*I - K_gated^T@W, bf16 (B,BS,H,DK,DK).
@@ -92,8 +103,10 @@ def _chunk_delta_h_jit(
     total_blocks = bv_num * B * H
     # U staging slots: 1 (init configs) or 2 (ping-pong, non-init)
     u_slots = 1 if use_initial_state else 2
-    # M-form structure switch (Python-level branch, only taken arm is traced)
-    mform = use_g
+    # M-form structure switch (Python-level branch, only taken arm is traced).
+    # Weak-gate inputs leave the M-form (bf16 M diagonal + bf16 state carrier
+    # both absorb sub-resolution decay) for the fp32-state 2-GEMM path.
+    mform = use_g and not gate_weak_route
     # W/K_gated L1 ping-pong slots
     l1_slots = 1 if (mform or use_initial_state) else u_slots
     # U UB slots: 1 for mform (lagging consumer), ping-pong for non-gate
@@ -1400,12 +1413,27 @@ def _ensure_private_tmpdir():
     Sets BOTH tempfile.tempdir (the cached value — overrides any earlier
     tempfile.gettempdir() call during import) and the TMPDIR env var
     (inherited by compiler subprocesses). The directory is removed at exit.
+
+    Ownership check: a claimed directory is reused only when THIS process
+    created it (owner pid match). Subprocesses inherit the env var, and a
+    child rebinding to the parent's directory would let the child's atexit
+    rmtree / stale-.so cleanup delete the parent's in-flight compile
+    artifacts (cross-process deletion). An inherited-but-foreign directory
+    is ignored and a fresh per-process one is created in its place.
     """
     claimed = os.environ.get("CHUNK_DELTA_H_PRIVATE_TMPDIR")
-    if claimed and os.path.isdir(claimed):
+    owner_pid = os.environ.get("CHUNK_DELTA_H_PRIVATE_TMPDIR_PID")
+    if claimed and owner_pid == str(os.getpid()) and os.path.isdir(claimed):
         return claimed
+    # Drop an inherited TMPDIR first: otherwise this process's directory
+    # would be created INSIDE the parent's, and the parent's atexit rmtree
+    # would tear it down from under a still-running child. (A deliberate
+    # caller-set TMPDIR is dropped too — the private dir replaces it below.)
+    os.environ.pop("TMPDIR", None)
+    tempfile.tempdir = None  # reset the cached value -> gettempdir() re-resolves
     d = tempfile.mkdtemp(prefix="chunk_delta_h_")
     os.environ["CHUNK_DELTA_H_PRIVATE_TMPDIR"] = d
+    os.environ["CHUNK_DELTA_H_PRIVATE_TMPDIR_PID"] = str(os.getpid())
     os.environ["TMPDIR"] = d
     tempfile.tempdir = d
     atexit.register(shutil.rmtree, d, ignore_errors=True)
@@ -1468,9 +1496,36 @@ def _run_with_retry(fn, retries=2):
     raise last_err
 
 
+def is_weak_gate(gate_scale, thresh=2**-7):
+    """Weak-gate detector for M-form routing (host-side, fp32).
+
+    True when EVERY chunk's exp(g_last) sits within `thresh` of 1.0: the
+    per-chunk decay is at/below the bf16 resolution around the M-form state
+    magnitude (~2^-8 relative), so both the bf16 M diagonal and the bf16
+    state carrier absorb it entirely — the recurrence pins at 1.0 while the
+    fp32 reference keeps decaying (reproduced with a -1/65536 per-token
+    gate: 512 chunks -> kernel 1.0000 vs fp32 0.60653). Such inputs are
+    routed to the fp32-state 2-GEMM path (gate_weak_route=True).
+
+    thresh defaults to 2^-7 (4x the bf16 half-step around 1.0) to also
+    cover the grey zone where per-chunk decay is only a few grid steps and
+    cumulative rounding drifts past the precision gate.
+    """
+    gs = gate_scale.detach().float()
+    if gs.device.type != "cpu":
+        gs = gs.cpu()
+    return bool(torch.all(gs >= 1.0 - thresh))
+
+
 def chunk_delta_h(**kwargs):
     """Public kernel factory = _chunk_delta_h_jit + compile retry (2 retries).
-    Host-side asserts fail fast on budget/alignment violations before compile."""
+    Host-side asserts fail fast on budget/alignment violations before compile.
+
+    Optional kwarg `gate_scale` (the host fp32 (B,BS,H,block_DV) tensor from
+    prepare_gate_scale): when provided with use_g=True, weak-gate inputs are
+    detected (is_weak_gate) and routed to the fp32-state 2-GEMM path instead
+    of the M-form (whose bf16 M/state quantization absorbs sub-resolution
+    decay). Omit it to keep the previous behavior (always M-form)."""
     _DK = kwargs["DK"]
     _DV = kwargs["DV"]
     _block_DV = kwargs.get("block_DV", 128)
@@ -1510,7 +1565,13 @@ def chunk_delta_h(**kwargs):
     )
     _block_S = _chunk_size
     _use_g = kwargs.get("use_g", True)
-    _mform = _use_g
+    _gate_scale = kwargs.pop("gate_scale", None)
+    _gate_weak_route = False
+    if _use_g and _gate_scale is not None:
+        _gate_weak_route = is_weak_gate(_gate_scale)
+        if _gate_weak_route:
+            print("[chunk_delta_h] weak gate (per-chunk decay below the bf16 M-form resolution) -> routing to the fp32-state 2-GEMM path")
+    _mform = _use_g and not _gate_weak_route
     _ssplit = _mform and _block_S > 128
     _n1 = _mform and not _ssplit and _block_S in (64, 128)
     if _ssplit:
@@ -1529,7 +1590,7 @@ def chunk_delta_h(**kwargs):
             f"— reduce chunk_size or DK"
         )
 
-    return _run_with_retry(lambda: _chunk_delta_h_jit(**kwargs))
+    return _run_with_retry(lambda: _chunk_delta_h_jit(**kwargs, gate_weak_route=_gate_weak_route))
 
 
 # ============================================================================
