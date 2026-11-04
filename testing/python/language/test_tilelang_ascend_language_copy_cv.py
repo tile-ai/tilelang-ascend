@@ -542,7 +542,7 @@ def test_ub_to_l1_lr(target):
 @pytest.mark.parametrize("target", ["pto"])
 def test_ub_to_l1_explicit_mma(target):
     """A × identity must return A exactly; any stale L1 read after
-    copy_pipe_to_l1 breaks the equality (issue #1780)."""
+    copy_pipe_to_l1 breaks the equality."""
     M, N, K = 128, 128, 128
     program = _ub_to_l1_explicit_mma_kernel(M=M, N=N, K=K)
     kernel = _compile(program, target=target)
