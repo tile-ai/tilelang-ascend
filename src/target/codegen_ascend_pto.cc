@@ -3589,7 +3589,7 @@ void CodeGenTileLangAscendPto::CastCodegen(const CallNode *op,
 
 // Round is lowered through a single same-dtype TCVT. Two constraints follow
 // from that lowering and are validated here instead of being silently
-// violated (issues #1648 / #1637 / #1649 / #1650):
+// violated:
 //   1. Only float32 is accepted. A same-dtype float16 TCVT has no verified
 //      semantics on hardware and previously produced garbage output.
 //   2. count must equal the destination tile extent. TCVT carries no scalar
@@ -3607,7 +3607,7 @@ void CodeGenTileLangAscendPto::RoundCodegen(const CallNode *op) {
   const DataType dtype = GetAccessPtrDtypePto(op->args[1].as<CallNode>());
   ICHECK(dtype.is_float() && dtype.bits() == 32)
       << "PTO round only supports float32: same-dtype float16 TCVT has no "
-      << "verified lowering (issues #1637/#1649), got " << dtype;
+      << "verified lowering, got " << dtype;
 
   const ShapeInfo dst_shape_info = GetSliceInfo(op->args[0].as<CallNode>());
   const auto *count_imm = count.as<IntImmNode>();
