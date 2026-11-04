@@ -599,9 +599,7 @@ def tile_sigmoid_kernel(M, N, block_M, block_N, dtype="float32"):
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_vid_reduction_tile_sigmoid(setup_random_seed, target):
     M, N, block_M, block_N = 256, 128, 64, 128
-    func = tilelang.compile(
-        tile_sigmoid_kernel(M, N, block_M, block_N), out_idx=[1], pass_configs=pass_configs, target=target
-    )
+    func = tilelang.compile(tile_sigmoid_kernel(M, N, block_M, block_N), out_idx=[1], pass_configs=pass_configs, target=target)
     if target == "ascendc":
         src = func.get_kernel_source()
         half = block_M * block_N // 2
@@ -646,9 +644,7 @@ def tile_clamp_max_round_kernel(M, N, block_M, block_N, dtype="float16"):
 @pytest.mark.parametrize("target", ["ascendc"])
 def test_vid_reduction_tile_clamp_max_round(setup_random_seed, target):
     M, N, block_M, block_N = 256, 128, 64, 128
-    func = tilelang.compile(
-        tile_clamp_max_round_kernel(M, N, block_M, block_N), out_idx=[1], pass_configs=pass_configs, target=target
-    )
+    func = tilelang.compile(tile_clamp_max_round_kernel(M, N, block_M, block_N), out_idx=[1], pass_configs=pass_configs, target=target)
     if target == "ascendc":
         src = func.get_kernel_source()
         half = block_M * block_N // 2
