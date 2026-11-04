@@ -29,10 +29,10 @@ Scenarios covered (mirroring patterns from
    → UB (``ModifyBufferRegions``).
 8. **Baseline threads=1** — Pass is a no-op.
 9. **sigmoid / clamp_max / round tile ops** — unary high-level API count
-   halved (issue #1897); the AscendC ``calCount`` must match the halved
-   per-sub-core buffer.  The on-device result stays correct even when the
-   count is wrong (the overrun lands in scratch space), so the regression
-   is asserted on the generated source.
+   halved; the AscendC ``calCount`` must match the halved per-sub-core
+   buffer.  An oversized count overruns into adjacent scratch space and
+   stays numerically invisible, so the regression is asserted on the
+   generated source.
 """
 
 import re
@@ -563,7 +563,7 @@ def test_no_vid_reduction_threads1_elementwise(setup_random_seed, target):
 
 
 # ============================================================
-# 9) sigmoid / clamp_max / round tile ops (issue #1897)
+# 9) sigmoid / clamp_max / round tile ops
 #
 # Mirrors: T.tile.sigmoid(b_ub, a_ub) / T.tile.clamp_max(b_ub, a_ub,
 #          2.0, block_M * block_N) / T.tile.round(c_ub, b_ub,
@@ -571,13 +571,10 @@ def test_no_vid_reduction_threads1_elementwise(setup_random_seed, target):
 # Pass: unary high-level API count (last arg) halved together with the
 # per-sub-core buffer (ModifyTileOpSize + IsTileOp in
 # ascend_vid_reduction.cc).
-# Before the fix the AscendC calCount kept the full-block value (e.g.
-# ``Sigmoid(b_ub[0], a_ub[0], tmp_ub[0], 4096)`` against
-# ``GetWithOffset<float>(2048, ...)``), violating the AscendC
-# ``calCount <= srcTensor.GetSize()`` contract.  The overrun landed in
-# scratch space, so the on-device result stayed correct — the regression
-# is therefore asserted on the generated kernel source, plus a numeric
-# run to guard against over-halving.
+# The AscendC calCount must satisfy ``calCount <= srcTensor.GetSize()``;
+# an oversized count overruns into adjacent scratch space and stays
+# numerically invisible, so the contract is asserted on the generated
+# kernel source, plus a numeric run to guard against over-halving.
 # ============================================================
 
 
