@@ -22,11 +22,10 @@ def bitwise_or(
 |--------|----------|------|------|----------|
 | dst | 输出 | 存放按位或运算结果 | 张量（tensor） | 必填 |
 | src0 | 输入 | 第一个源操作数 | 张量（tensor） | 必填 |
-| src1 | 输入 | 第二个源操作数 | 张量（tensor）/ 标量（scalar） | 必填 |
+| src1 | 输入 | 第二个源操作数 | 张量（tensor） | 必填 |
 
 > **类型说明**：
-> - **tensor**：通过 `T.alloc_ub`、`T.alloc_shared` 等分配的缓冲区（Buffer），或其切片（BufferRegion）
-> - **scalar**：单个元素值，可以是 buffer 元素访问（BufferLoad）或 Python 标量/表达式（PrimExpr）
+> - **tensor**：通过 `T.alloc_ub`、`T.alloc_shared` 等分配的缓冲区（Buffer），或其**物理连续**的切片（BufferRegion）。二维切片需占满整行（如 `buf[r0:r1, :]`）或仅涉及单行（如 `buf[0:1, a:b]`）；跨多行的列切片（如 `buf[:, a:b]`）不受支持，前端将在编译期报错拒绝
 
 ### 2.3 参数规格
 
@@ -45,7 +44,7 @@ def bitwise_or(
 
 1. 输入和输出张量必须位于 UB 内存
 2. dst 与 src0 的元素个数必须相同
-3. 当 src1 为切片时，其元素个数也必须与 dst 相同
+3. src1 的元素个数不得少于 dst：当 src1 为完整 Buffer 时只使用前 dst.size 个元素（超出部分被忽略）；当 src1 为切片时，元素个数必须与 dst 完全相同。前端会检查不满足的用法
 4. src0 和 src1 的 dtype 必须与 dst 一致
 5. Ascend C 后端支持 uint8、int16 和 uint16；int8 仅在 PTO 后端支持（Ascend C 向量指令选择器不支持有符号 int8）
 6. 操作数地址需 32 字节对齐（硬件约束）
@@ -56,6 +55,7 @@ def bitwise_or(
    要求。当前实现对此类输入可能编译并运行成功但返回错误结果，且暂无编译期
    拒绝检查。起始地址对齐（第 6 条）与行宽约束是相互独立的两个条件，需分别满足。
 8. 当前 src1 仅支持张量，标量暂不可用
+9. PTO 后端额外要求三个操作数的 shape 完全一致：仅元素个数相同并不足够，例如 dst 为 `(4, 16)`、src1 为 `(2, 32)`（元素数均为 64）时，PTO 编译将失败
 
 ## 3. 示例代码
 

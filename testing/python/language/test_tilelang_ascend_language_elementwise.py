@@ -1,5 +1,6 @@
 import os
 import random
+import traceback
 
 import pytest
 
@@ -4683,9 +4684,15 @@ def run_test_bitwise_or_scalar(target):
 
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_bitwise_or_scalar_not_registered_raises(target):
-    """Scalar src1 path uses tl.ascend_bitwise_ors which is not registered in C++."""
-    with pytest.raises((Exception, SystemExit)):  # noqa: B017
+    """Scalar src1 path uses tl.ascend_bitwise_ors which is not registered in C++.
+
+    The failure diagnostic must actually point at the unregistered op - a bare
+    wide catch would also pass on unrelated failures (e.g. NameError).
+    """
+    with pytest.raises((Exception, SystemExit)) as excinfo:  # noqa: B017
         run_test_bitwise_or_scalar(target)
+    diagnostic = "".join(traceback.format_exception(type(excinfo.value), excinfo.value, excinfo.tb))
+    assert "ascend_bitwise_ors" in diagnostic, f"expected the tl.ascend_bitwise_ors unregistered-op diagnostic, got: {diagnostic[:300]}"
 
 
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
@@ -4726,6 +4733,139 @@ def test_bitwise_or_buffer_region(target):
     c = func(a, b)
     ref_c = a | b
     assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
+
+
+def run_test_bitwise_or_slice_contiguous(target, mode):
+    """Contiguous slices with non-zero offsets must process exactly the slice.
+
+    Every element outside the slice keeps its sentinel value untouched,
+    pinning the contiguous-slice contract: only physically contiguous
+    regions (full-width row ranges or single-row column ranges) are valid.
+    """
+    shape = (4, 32)
+    dtype = "int16"
+
+    if mode == "row-range":
+
+        @T.prim_func
+        def main(
+            A: T.Tensor(shape, dtype),  # type: ignore
+            B: T.Tensor(shape, dtype),  # type: ignore
+            C_in: T.Tensor(shape, dtype),  # type: ignore
+            C_out: T.Tensor(shape, dtype),  # type: ignore
+        ):
+            with T.Kernel(1, is_npu=True) as (_, vid):
+                a_ub = T.alloc_ub(shape, dtype)
+                b_ub = T.alloc_ub(shape, dtype)
+                c_ub = T.alloc_ub(shape, dtype)
+                if vid == 0:
+                    T.copy(A, a_ub)
+                    T.copy(B, b_ub)
+                    T.copy(C_in, c_ub)
+                    T.tile.bitwise_or(c_ub[2:4, 0:32], a_ub[2:4, 0:32], b_ub[2:4, 0:32])
+                    T.copy(c_ub, C_out)
+
+    else:
+
+        @T.prim_func
+        def main(
+            A: T.Tensor(shape, dtype),  # type: ignore
+            B: T.Tensor(shape, dtype),  # type: ignore
+            C_in: T.Tensor(shape, dtype),  # type: ignore
+            C_out: T.Tensor(shape, dtype),  # type: ignore
+        ):
+            with T.Kernel(1, is_npu=True) as (_, vid):
+                a_ub = T.alloc_ub(shape, dtype)
+                b_ub = T.alloc_ub(shape, dtype)
+                c_ub = T.alloc_ub(shape, dtype)
+                if vid == 0:
+                    T.copy(A, a_ub)
+                    T.copy(B, b_ub)
+                    T.copy(C_in, c_ub)
+                    T.tile.bitwise_or(c_ub[0:1, 16:32], a_ub[0:1, 16:32], b_ub[0:1, 16:32])
+                    T.copy(c_ub, C_out)
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    a = torch.randint(1, 100, shape, dtype=torch.int16).npu()
+    b = torch.randint(1, 100, shape, dtype=torch.int16).npu()
+    sentinel = torch.arange(1000, 1000 + shape[0] * shape[1], dtype=torch.int16).reshape(shape)
+    c_out = func(a, b, sentinel.npu())
+    torch.npu.synchronize()
+    out = c_out.cpu()
+    rows, cols = torch.meshgrid(torch.arange(shape[0]), torch.arange(shape[1]), indexing="ij")
+    expected = (rows >= 2) if mode == "row-range" else ((rows == 0) & (cols >= 16))
+    assert bool((out[~expected] == sentinel[~expected]).all()), "out-of-slice sentinel corrupted"
+    assert bool((out[expected] == (a.cpu() | b.cpu())[expected]).all()), "wrong values inside the slice"
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "row-range",
+        "row+col",
+    ],
+)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_bitwise_or_slice_contiguous(mode, target):
+    run_test_bitwise_or_slice_contiguous(target, mode)
+
+
+def test_bitwise_or_noncontiguous_region_rejected():
+    """Non flat-contiguous BufferRegions are rejected at trace time.
+
+    binary_op lowers a region to a single linear vector operation, so
+    column-offset slices would silently lose their per-row layout; the
+    frontend validation rejects them with a clear ValueError instead
+    (see test_binary_op_region_validation). Lock the protection in for
+    bitwise_or specifically.
+    """
+    dst = tir.decl_buffer((2, 32), "int16", scope="shared.ub")
+    src0 = tir.decl_buffer((2, 32), "int16", scope="shared.ub")
+    src1 = tir.decl_buffer((2, 32), "int16", scope="shared.ub")
+    with pytest.raises(ValueError, match=r"must be contiguous when flattened"):
+        T.tile.bitwise_or(dst[:, 16:32], src0[:, 16:32], src1[:, 16:32])
+
+
+def run_test_bitwise_or_uint8_slice_tail_sentinel(target):
+    """Odd-width slices must process the tail byte without touching the byte
+    after the slice: processing the straddling uint16 pair would clobber
+    out-of-slice data (e.g. buf[0:255] on a 256-byte buffer turns c[255]
+    into a|b)."""
+    shape_full = (256,)
+
+    @T.prim_func
+    def main(
+        A: T.Tensor(shape_full, "uint8"),  # type: ignore
+        B: T.Tensor(shape_full, "uint8"),  # type: ignore
+        C_in: T.Tensor(shape_full, "uint8"),  # type: ignore
+        C_out: T.Tensor(shape_full, "uint8"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            a_ub = T.alloc_ub(shape_full, "uint8")
+            b_ub = T.alloc_ub(shape_full, "uint8")
+            c_ub = T.alloc_ub(shape_full, "uint8")
+            if vid == 0:
+                T.copy(A, a_ub)
+                T.copy(B, b_ub)
+                T.copy(C_in, c_ub)
+                T.tile.bitwise_or(c_ub[0:255], a_ub[0:255], b_ub[0:255])
+                T.copy(c_ub, C_out)
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    a = torch.randint(1, 100, shape_full, dtype=torch.uint8)
+    b = torch.randint(1, 100, shape_full, dtype=torch.uint8)
+    c_in = torch.full(shape_full, 0x0F, dtype=torch.uint8)
+    c_in[255] = 0xA5
+    c_out = func(a.npu(), b.npu(), c_in.npu())
+    torch.npu.synchronize()
+    out = c_out.cpu()
+    assert bool((out[:255] == (a[:255] | b[:255])).all()), "in-slice values wrong"
+    assert out[255] == 0xA5, f"out-of-slice sentinel corrupted: {int(out[255]):#04x}"
+
+
+@pytest.mark.parametrize("target", ["pto"])
+def test_bitwise_or_uint8_slice_tail_sentinel(target):
+    run_test_bitwise_or_uint8_slice_tail_sentinel(target)
 
 
 def vec_pow(M, N, block_M, block_N, dtype="float"):

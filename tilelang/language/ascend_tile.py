@@ -1113,6 +1113,7 @@ def binary_op(
             size_0,
         )
     else:
+        assert size_0 <= math.prod(src1.shape), "src1 must have at least dst.size elements"
         return T.call_intrin(
             "handle",
             tir.op.Op.get(f"tl.ascend_{op}"),
