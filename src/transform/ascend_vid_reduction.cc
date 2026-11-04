@@ -581,7 +581,11 @@ private:
         "tl.ascend_sin", "tl.ascend_cos", "tl.ascend_fill",
         // cast/mul_add_dst/silu: last arg is the element count, all buffer
         // extents must match (see tilelang/language/ascend_tile.py)
-        "tl.ascend_cast", "tl.ascend_mul_add_dst", "tl.ascend_silu"};
+        "tl.ascend_cast", "tl.ascend_mul_add_dst", "tl.ascend_silu",
+        // sigmoid/round/clamp: last arg is the element count, buffer extents
+        // must match (see tilelang/language/ascend_tile.py)
+        "tl.ascend_sigmoid", "tl.ascend_round", "tl.ascend_clamp",
+        "tl.ascend_clamp_max", "tl.ascend_clamp_min"};
     return tile_ops.find(op_name) != tile_ops.end();
   }
 

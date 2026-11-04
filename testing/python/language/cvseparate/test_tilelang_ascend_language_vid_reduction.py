@@ -28,7 +28,14 @@ Scenarios covered (mirroring patterns from
 7. **BufferRegion** — ``T.copy(ws[cid, 0:v_block, :], acc_s_ub_)`` GM slice
    → UB (``ModifyBufferRegions``).
 8. **Baseline threads=1** — Pass is a no-op.
+9. **sigmoid / clamp_max / round tile ops** — unary high-level API count
+   halved (issue #1897); the AscendC ``calCount`` must match the halved
+   per-sub-core buffer.  The on-device result stays correct even when the
+   count is wrong (the overrun lands in scratch space), so the regression
+   is asserted on the generated source.
 """
+
+import re
 
 import pytest
 import tilelang
@@ -553,6 +560,117 @@ def test_no_vid_reduction_threads1_elementwise(setup_random_seed, target):
     torch.npu.synchronize()
     ref = a * 2.0 + 1.0
     torch.testing.assert_close(out, ref, rtol=1e-2, atol=1e-2)
+
+
+# ============================================================
+# 9) sigmoid / clamp_max / round tile ops (issue #1897)
+#
+# Mirrors: T.tile.sigmoid(b_ub, a_ub) / T.tile.clamp_max(b_ub, a_ub,
+#          2.0, block_M * block_N) / T.tile.round(c_ub, b_ub,
+#          block_M * block_N)
+# Pass: unary high-level API count (last arg) halved together with the
+# per-sub-core buffer (ModifyTileOpSize + IsTileOp in
+# ascend_vid_reduction.cc).
+# Before the fix the AscendC calCount kept the full-block value (e.g.
+# ``Sigmoid(b_ub[0], a_ub[0], tmp_ub[0], 4096)`` against
+# ``GetWithOffset<float>(2048, ...)``), violating the AscendC
+# ``calCount <= srcTensor.GetSize()`` contract.  The overrun landed in
+# scratch space, so the on-device result stayed correct — the regression
+# is therefore asserted on the generated kernel source, plus a numeric
+# run to guard against over-halving.
+# ============================================================
+
+
+def tile_sigmoid_kernel(M, N, block_M, block_N, dtype="float32"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(A: T.Tensor((M, N), dtype), B: T.Tensor((M, N), dtype)):
+        with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_shared((block_M, block_N), dtype)
+            b_ub = T.alloc_shared((block_M, block_N), dtype)
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+            T.tile.sigmoid(b_ub, a_ub)
+            T.copy(b_ub, B[bx * block_M, by * block_N])
+
+    return main
+
+
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_vid_reduction_tile_sigmoid(setup_random_seed, target):
+    M, N, block_M, block_N = 256, 128, 64, 128
+    func = tilelang.compile(
+        tile_sigmoid_kernel(M, N, block_M, block_N), out_idx=[1], pass_configs=pass_configs, target=target
+    )
+    if target == "ascendc":
+        src = func.get_kernel_source()
+        half = block_M * block_N // 2
+        # Per-sub-core buffer is half of the block.
+        assert f"GetWithOffset<float>({half}," in src
+        # Sigmoid calCount (last arg) must match the halved buffer.
+        m = re.search(r"AscendC::Sigmoid\([^;]*\);", src)
+        assert m is not None, "Sigmoid call not found in generated source"
+        assert m.group(0).endswith(f", {half});"), m.group(0)
+    a = torch.randn(M, N, dtype=torch.float32).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    torch.npu.synchronize()
+    torch.testing.assert_close(b, torch.sigmoid(a), rtol=1e-4, atol=1e-4)
+
+
+def tile_clamp_max_round_kernel(M, N, block_M, block_N, dtype="float16"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(A: T.Tensor((M, N), dtype), B: T.Tensor((M, N), dtype)):
+        with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_shared((block_M, block_N), dtype)
+            b_ub = T.alloc_shared((block_M, block_N), dtype)
+            c_ub = T.alloc_shared((block_M, block_N), dtype)
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+            # clamp_max / round: count is the full-block element count; the
+            # pass must halve it together with the per-sub-core buffers.
+            T.tile.clamp_max(b_ub, a_ub, 2.0, block_M * block_N)
+            T.tile.round(c_ub, b_ub, block_M * block_N)
+            T.copy(c_ub, B[bx * block_M, by * block_N])
+
+    return main
+
+
+# PTO is not parametrized here: the PTO round lowering is broken
+# independently of VidReduction (fails numerically even with threads=1),
+# which is outside the scope of this pass's tests.
+@pytest.mark.parametrize("target", ["ascendc"])
+def test_vid_reduction_tile_clamp_max_round(setup_random_seed, target):
+    M, N, block_M, block_N = 256, 128, 64, 128
+    func = tilelang.compile(
+        tile_clamp_max_round_kernel(M, N, block_M, block_N), out_idx=[1], pass_configs=pass_configs, target=target
+    )
+    if target == "ascendc":
+        src = func.get_kernel_source()
+        half = block_M * block_N // 2
+        assert f"GetWithOffset<half>({half}," in src
+        # clamp_max (f16, no tmp): mask count must match the halved buffer.
+        m = re.search(r"AscendC::SetVectorMask<uint8_t>\([^;]*\);", src)
+        assert m is not None, "SetVectorMask not found in generated source"
+        assert m.group(0).endswith(f"{half});"), m.group(0)
+        # round (f16, tmp-injected): calCount (last arg) must match the
+        # halved buffer.
+        m = re.search(r"AscendC::Round\([^;]*\);", src)
+        assert m is not None, "Round call not found in generated source"
+        assert m.group(0).endswith(f", {half});"), m.group(0)
+    a = (torch.randn(M, N, dtype=torch.float32) * 3).half().npu()
+    torch.npu.synchronize()
+    b = func(a)
+    torch.npu.synchronize()
+    ref = torch.round(torch.clamp_max(a, 2.0))
+    torch.testing.assert_close(b, ref, rtol=0, atol=0)
 
 
 if __name__ == "__main__":
