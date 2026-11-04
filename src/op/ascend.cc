@@ -255,11 +255,21 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       // width) would put a non-const expr in the template -> invalid C++ ("use
       // of undeclared identifier"). Use the buffer's compile-time shape for the
       // template; the runtime width is already carried by the maskShapeN
-      // function arg (validCol_dst). A const extent stays byte-identical (==
-      // shape for a full copy, or the const slice width), so every existing
-      // caller is unchanged -- only the previously-uncompilable runtime-slice
-      // case changes.
+      // function arg (validCol_dst).
       PrimExpr gm2ub_tmpl_n = dst_extents[dst->shape.size() - 1];
+      // A PROPER COLUMN SLICE with a compile-time-const width (extent < the
+      // buffer's row pitch) must also instantiate the template with the
+      // PHYSICAL row pitch, not the slice width: copy_gm_to_ub derives the
+      // DataCopyExtParams dstStride as (dstN - maskShapeN) 32B blocks, so
+      // dstN == slice width makes dstStride 0 and the rows land PACKED from
+      // the slice offset, silently overwriting neighbour columns (the
+      // flattening bug). dstN == pitch reproduces the production AscendC
+      // DataCopyPad pattern (blockLen/srcStride in bytes, UB dstStride in 32B
+      // blocks of the physical pitch), and mirrors what the PTO path already
+      // does with the buffer's full shape (codegen_ascend_pto.cc GMCopyCall).
+      // 1-D destinations keep the old behaviour: a single row has no pitch to
+      // stride, so extent == dstN is already correct there.
+      bool gm2ub_col_slice = false;
       if (!gm2ub_tmpl_n->IsInstance<IntImmNode>()) {
         gm2ub_tmpl_n = dst->shape[dst->shape.size() - 1];
         // The shape fallback must itself be a compile-time constant; a buffer
@@ -269,10 +279,45 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
             << "copy_gm_to_ub: the inner (column) dimension of the destination "
                "buffer shape must be a compile-time constant, but got "
             << gm2ub_tmpl_n;
+      } else if (dst->shape.size() > 1) {
+        const auto *ext_imm = gm2ub_tmpl_n.as<IntImmNode>();
+        const auto *pitch_imm =
+            dst->shape[dst->shape.size() - 1].as<IntImmNode>();
+        // The fix is only taken when the DataCopyPad 32B-block stepping can
+        // express it exactly: dstStride = (pitch - width) * sizeof(T) / 32
+        // truncates unless BOTH the slice width and the UB row pitch are
+        // 32B-aligned (a non-aligned width, e.g. a 63 x fp16 slice, would
+        // compute the same wrong stride as before and additionally trip the
+        // template's isPad tail padding into the neighbour columns). Such
+        // slices keep the legacy instantiation unchanged.
+        if (pitch_imm != nullptr && ext_imm->value < pitch_imm->value &&
+            (ext_imm->value * dst->dtype.bytes()) % 32 == 0 &&
+            (pitch_imm->value * dst->dtype.bytes()) % 32 == 0) {
+          gm2ub_col_slice = true;
+          gm2ub_tmpl_n = dst->shape[dst->shape.size() - 1];
+          // DataCopyPad needs a 32B-aligned UB destination; the UB buffer base
+          // is aligned, so a CONST column offset must be a multiple of 32B.
+          // A RUNTIME column offset cannot be checked here: the caller must
+          // keep offset * sizeof(T) % 32 == 0 (device: MTE2 ADDR_MISALIGN).
+          PrimExpr col_off = dst_range[dst_range.size() - 1]->min;
+          if (const auto *off_imm = col_off.as<IntImmNode>()) {
+            ICHECK((off_imm->value * dst->dtype.bytes()) % 32 == 0)
+                << "copy_gm_to_ub: column-slice destination offset ("
+                << off_imm->value << " x " << dst->dtype.bytes()
+                << "B) must be 32B-aligned for DataCopyPad";
+          }
+        }
       }
       ss << gm2ub_tmpl_n;
       if (dst->shape.size() > 1) {
         ss << ", " << compute_blocklen(dst, dst_extents);
+      }
+      if (gm2ub_col_slice) {
+        // padGap=false: the tail-pad Duplicate pre-fill would wipe the whole
+        // dstM*pitch destination (including neighbour slices' assembled
+        // columns) and uses fixed event ids 0; the gap of a column slice is
+        // other data, not this copy's pad region.
+        ss << ", false";
       }
       ss << ">";
     } else if (dst.scope() == "global") {
@@ -284,7 +329,8 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       ss << get_dtype(dst) << ", ";
       // See copy_gm_to_ub above: a runtime inner-extent must use the buffer's
       // compile-time shape for the template col dim (runtime width is carried
-      // by the maskShapeN function arg); const extents are byte-identical.
+      // by the maskShapeN function arg); const extents keep their
+      // instantiation, except proper column slices (handled below).
       PrimExpr ub2gm_tmpl_n = src_extents[src->shape.size() - 1];
       if (!ub2gm_tmpl_n->IsInstance<IntImmNode>()) {
         ub2gm_tmpl_n = src->shape[src->shape.size() - 1];
@@ -293,6 +339,36 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
             << "copy_ub_to_gm: the inner (column) dimension of the source "
                "buffer shape must be a compile-time constant, but got "
             << ub2gm_tmpl_n;
+      } else if (src->shape.size() > 1) {
+        const auto *ext_imm = ub2gm_tmpl_n.as<IntImmNode>();
+        const auto *pitch_imm =
+            src->shape[src->shape.size() - 1].as<IntImmNode>();
+        // Read-side mirror of the copy_gm_to_ub flattening bug: with srcN ==
+        // slice width, copy_ub_to_gm's packed check (srcN == maskShapeN &&
+        // realdstN == maskShapeN) collapses a multi-row column-slice store
+        // into ONE flat burst that reads the UB rows contiguously from the
+        // slice offset (neighbour columns' data), and the non-packed path
+        // would compute srcStride = (bytes(srcN) - blockLen) / 32 from the
+        // slice width instead of the physical row pitch. Instantiating with
+        // the pitch restores the correct 32B-block stepping. Gated on 32B
+        // alignment exactly like copy_gm_to_ub (the srcStride division must
+        // be exact); non-aligned widths keep the legacy instantiation.
+        if (pitch_imm != nullptr && ext_imm->value < pitch_imm->value &&
+            (ext_imm->value * src->dtype.bytes()) % 32 == 0 &&
+            (pitch_imm->value * src->dtype.bytes()) % 32 == 0) {
+          ub2gm_tmpl_n = src->shape[src->shape.size() - 1];
+          // MTE3 bursts read 32B blocks; the UB buffer base is aligned, so a
+          // CONST column offset must be a multiple of 32B. A RUNTIME column
+          // offset cannot be checked here: the caller must keep
+          // offset * sizeof(T) % 32 == 0 (device: MTE3 ADDR_MISALIGN).
+          PrimExpr col_off = src_range[src_range.size() - 1]->min;
+          if (const auto *off_imm = col_off.as<IntImmNode>()) {
+            ICHECK((off_imm->value * src->dtype.bytes()) % 32 == 0)
+                << "copy_ub_to_gm: column-slice source offset ("
+                << off_imm->value << " x " << src->dtype.bytes()
+                << "B) must be 32B-aligned for the MTE3 burst stepping";
+          }
+        }
       }
       ss << ub2gm_tmpl_n;
       if (src->shape.size() > 1) {
