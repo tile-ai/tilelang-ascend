@@ -115,7 +115,6 @@ def _chunk_delta_h_jit(
     threads = 2 if mform else 1
     # S-split at C>128: GEMM1 output exceeds L0C budget, split into (128, block_DV) segments
     ssplit = mform and block_S > 128
-    _n1_c64 = mform and not ssplit and block_S in (64, 128)
     half_S = block_S // 2 if ssplit else block_S
     # S-split segments: nseg = block_S // 128 (2 @C=256, 4 @C=512, 8 @C=1024)
     nseg = (block_S // 128) if ssplit else 1
@@ -146,7 +145,6 @@ def _chunk_delta_h_jit(
     _L0C_BUDGET = 128 * 1024  # 128KB L0C hard limit
     _L1_BUDGET = 524032  # ~512KB L1
     _UB_PER_PROGRAM_BUDGET = 196352  # ~192KB UB per program (threads=2)
-    _L0A_BUDGET = 64 * 1024  # 64KB L0A
 
     # (3) L0C budget (kv_l0c + V_wh tile)
     _vwh_rows = (seg if ssplit else block_S) if mform else block_S
@@ -271,12 +269,6 @@ def _chunk_delta_h_jit(
             )
             # kv_l0c doubles as M-form hnew accumulator (C + M@h, fp32)
             kv_l0c = T.alloc_L0C((DK, block_DV), accum_dtype)
-            # L0A/L0B staging for T.mma (C=64/128 M-form only)
-            K_l0a = T.alloc_L0A((DK, block_S) if _n1_c64 else (1, 1), input_dtype)
-            M_l0a = T.alloc_L0A((DK, DK) if _n1_c64 else (1, 1), input_dtype)
-            W_l0a = T.alloc_L0A((block_S, DK) if _n1_c64 else (1, 1), input_dtype)
-            h_l0b = T.alloc_L0B((DK, block_DV) if _n1_c64 else (1, 1), input_dtype)
-            U_l0b = T.alloc_L0B((block_S, block_DV) if _n1_c64 else (1, 1), input_dtype)
 
             # --- UB buffers (Vector, element-wise) ---
             # Non-gate-only tiles become (1,1) dummies under mform
@@ -1150,39 +1142,29 @@ def _chunk_delta_h_jit(
                             U_l1,
                         )
                         T.copy(W[bb, i_s, bh, 0:block_S, 0:DK], W_l1[0, :, :])
-                        if block_S in (64, 128):
-                            # T.mma batch: explicit L0A/L0B staging, h_l0b shared by GEMM_a + GEMM1
-                            # GEMM_b: kv_l0c = K^T @ U (init=True)
-                            T.copy(K_gated_l1[0, :, :], K_l0a, transpose=True)
-                            T.copy(U_l1, U_l0b)
-                            T.mma(K_l0a, U_l0b, kv_l0c, init=True)
-                            # GEMM_a: kv_l0c += M @ h (shared h_l0b)
-                            T.copy(M_l1, M_l0a)
-                            T.copy(h_l1[p, :, :], h_l0b)
-                            T.mma(M_l0a, h_l0b, kv_l0c, init=False)
-                            # GEMM1: V_wh = W @ h (reuse h_l0b)
-                            T.copy(W_l1[0, :, :], W_l0a)
-                            T.mma(W_l0a, h_l0b, V_wh_l0c, init=True)
-                        else:
-                            # [AIC] dual-GEMM accumulate: C = K^T@U (init=True) + M@h (accumulate) -> h_new in one fp32 L0C
-                            # kL0Size=32 enables internal L0A/L0B ping-pong (numerically neutral K-split)
-                            T.gemm_v0(
-                                K_gated_l1[0, :, :],
-                                U_l1,
-                                kv_l0c,
-                                transpose_A=True,
-                                init=True,
-                                kL0Size=32,
-                            )
-                            T.gemm_v0(M_l1, h_l1[p, :, :], kv_l0c, init=False, kL0Size=32)
-                            # [AIC] V_wh = W @ h (V_new output path)
-                            T.gemm_v0(
-                                W_l1[0, :, :],
-                                h_l1[p, :, :],
-                                V_wh_l0c,
-                                init=True,
-                                kL0Size=64,
-                            )
+                        # [AIC] dual-GEMM accumulate: C = K^T@U (init=True) + M@h (accumulate) -> h_new in one fp32 L0C
+                        # kL0Size=32 enables internal L0A/L0B ping-pong (numerically neutral K-split)
+                        # (review :1143: the former C=64/128 hand-written L0A/L0B staging + T.mma
+                        # sequence was A/B-tested against this gemm_v0 route on both calibers —
+                        # compiles, precision identical, timing within run-to-run noise — and
+                        # replaced by it for readability.)
+                        T.gemm_v0(
+                            K_gated_l1[0, :, :],
+                            U_l1,
+                            kv_l0c,
+                            transpose_A=True,
+                            init=True,
+                            kL0Size=32,
+                        )
+                        T.gemm_v0(M_l1, h_l1[p, :, :], kv_l0c, init=False, kL0Size=32)
+                        # [AIC] V_wh = W @ h (V_new output path)
+                        T.gemm_v0(
+                            W_l1[0, :, :],
+                            h_l1[p, :, :],
+                            V_wh_l0c,
+                            init=True,
+                            kL0Size=64,
+                        )
                         # [AIC] state carrier: fixpipe fp32 -> bf16 GM, reload into other h_l1 slot (ping-pong)
                         T.copy(kv_l0c, h_state_gm[cid, 0, 0])
                         T.copy(h_state_gm[cid, 0, 0], h_l1[1 - p, :, :])
@@ -1573,21 +1555,12 @@ def chunk_delta_h(**kwargs):
             print("[chunk_delta_h] weak gate (per-chunk decay below the bf16 M-form resolution) -> routing to the fp32-state 2-GEMM path")
     _mform = _use_g and not _gate_weak_route
     _ssplit = _mform and _block_S > 128
-    _n1 = _mform and not _ssplit and _block_S in (64, 128)
     if _ssplit:
         assert _chunk_size % 128 == 0, (
             f"chunk_size={_chunk_size} not a multiple of 128: the S-split "
             "structure (use_g=True, chunk_size>128) requires full 128-row "
             "segments — floor(chunk_size/128) segments would silently drop "
             "the tail rows from the V_new output path"
-        )
-    _L0A_BUDGET = 64 * 1024  # 64KB L0A ping-pong budget
-    if _n1:
-        _l0a_peak = _DK * _block_S * 2 + _DK * _DK * 2
-        assert _l0a_peak <= _L0A_BUDGET, (
-            f"L0A budget (M-form T.mma): peak(K_l0a,W_l0a)+M_l0a "
-            f"= {_l0a_peak}B > {_L0A_BUDGET}B (DK={_DK}, block_S={_block_S}) "
-            f"— reduce chunk_size or DK"
         )
 
     return _run_with_retry(lambda: _chunk_delta_h_jit(**kwargs, gate_weak_route=_gate_weak_route))
