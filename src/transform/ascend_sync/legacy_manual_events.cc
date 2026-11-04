@@ -436,10 +436,17 @@ private:
 
 } // namespace
 
-LegacyManualEventResult NormalizeLegacyManualEvents(const PrimFunc &function) {
+LegacyManualEventResult
+NormalizeLegacyManualEvents(const PrimFunc &function,
+                            LegacyManualEventPolicy policy) {
   FlagDiscovery discovery;
   discovery.Run(function->body);
-  if (!discovery.NeedsNormalization())
+  const bool epoch =
+      policy == LegacyManualEventPolicy::kForEpoch && discovery.HasCrossFlags();
+  ICHECK(!epoch || !discovery.HasAutomaticFlags())
+      << kDiagnostic << "epoch composition cannot retain automatic hard flags";
+  if (!discovery.NeedsNormalization() &&
+      !(epoch && discovery.HasFlags(function->body)))
     return {function, false};
   ICHECK(!discovery.HasAutomaticFlags())
       << kDiagnostic

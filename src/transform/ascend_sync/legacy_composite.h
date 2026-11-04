@@ -59,6 +59,9 @@ struct LegacyCompositePlan {
   // after complete effect import, never inferred from an explicit scope alone.
   // Its calls also share an analysis-only hidden L0/event pool dependency.
   bool requires_single_cube{false};
+  // A structural candidate, never a publication certificate. Mixed residual
+  // If control must pass the complete finite epoch proof before use.
+  bool has_conditional_control{false};
   Optional<tir::Var> cube_pipeline_loop;
   std::unordered_map<const tir::CallNode *, std::pair<tir::Var, int64_t>>
       cube_ring_copies;
@@ -71,7 +74,8 @@ struct LegacyCompositePlan {
 // operand's physical slot lifecycle from injector provenance. This does not
 // synthesize another schedule or assume a particular lead, period or order
 // count. Nonpipeline single-Cube invocations additionally support audited
-// serial/unrolled outer loops; mixed C/V and residual If/While remain separate.
+// serial/unrolled outer loops and lexical If contexts. Mixed C/V additionally
+// requires a complete publication proof; While remains unsupported.
 // PTO/A3 uses parameterized aligned FP16-to-FP32 geometry and a conservative
 // MTE2 acquire / FIX completion envelope. AscendC retains its internal N/K
 // ping-pong protocol. Hidden event pools are reserved for each real backend.

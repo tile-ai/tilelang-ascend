@@ -1066,11 +1066,38 @@ private:
     return true;
   }
 
-  void Walk(const Stmt &statement, ConstrSet context) {
+  static void Barrier(const Call &call, CoreMask owner) {
+    const bool automatic = OperationName(call.get()) == "auto_barrier";
+    ICHECK(call->op.same_as(Op::Get(automatic ? "tl.ascend_auto_barrier"
+                                              : "tl.ascend_pipe_barrier")))
+        << kInvocation << "barrier requires its configured native operation";
+    ICHECK_EQ(call->args.size(), 1U) << kInvocation << "malformed barrier ABI";
+    const auto *literal = call->args[0].as<StringImmNode>();
+    ICHECK(literal) << kInvocation << "barrier requires a literal pipeline";
+    std::string pipe = literal->value;
+    if (automatic) {
+      ICHECK(pipe.rfind("PIPE_", 0) == 0)
+          << kInvocation << "automatic barrier requires a PIPE_ prefix";
+      pipe.erase(0, 5);
+    }
+    static const std::unordered_set<std::string> pipes{
+        "ALL", "MTE1", "MTE2", "MTE3", "M", "V", "FIX", "S"};
+    ICHECK(pipes.count(pipe)) << kInvocation << "unknown barrier pipeline";
+    const bool cube = pipe == "M" || pipe == "MTE1" || pipe == "FIX";
+    // Preserve the existing implicit single-Cube case. Full import unifies
+    // unassigned tasks on that resource; mixed execution still requires a
+    // definite owner for every task before publication can be proved.
+    ICHECK((!cube || owner != kCoreVector) &&
+           (pipe != "V" || owner == kCoreVector))
+        << kInvocation << "barrier pipeline disagrees with execution owner";
+  }
+
+  void Walk(const Stmt &statement, ConstrSet context,
+            CoreMask owner = kCoreUnassigned) {
     if (const auto *sequence = statement.as<SeqStmtNode>()) {
       for (const Stmt &child : sequence->seq)
         if (!Assume(child, &context))
-          Walk(child, context);
+          Walk(child, context, owner);
     } else if (const auto *loop = statement.as<ForNode>()) {
       ICHECK((loop->kind == ForKind::kSerial ||
               loop->kind == ForKind::kUnrolled) &&
@@ -1085,7 +1112,18 @@ private:
       context.AddConstr(loop->loop_var,
                         Range::FromMinExtent(loop->min, loop->extent));
       context.AddConstr(loop->extent > 0);
-      Walk(loop->body, std::move(context));
+      Walk(loop->body, std::move(context), owner);
+    } else if (const auto *branch = statement.as<IfThenElseNode>()) {
+      // Audit the decision in the parent context before using either path's
+      // facts. These proof-only copies never change the executable control or
+      // grant the other branch (or a later sibling) the same assumption.
+      ConstrSet then_context = context;
+      Assume(branch->condition, &then_context);
+      Walk(branch->then_case, std::move(then_context), owner);
+      if (branch->else_case.defined()) {
+        Assume(!branch->condition, &context);
+        Walk(branch->else_case.value(), std::move(context), owner);
+      }
     } else if (const auto *binding = statement.as<LetStmtNode>()) {
       ICHECK(SideEffect(binding->value) <= CallEffectKind::kReadState)
           << kInvocation << "opaque Let definitions are unsupported";
@@ -1103,7 +1141,7 @@ private:
             << kInvocation << failure;
         context.AddConstr(binding->var, binding->value);
       }
-      Walk(binding->body, std::move(context));
+      Walk(binding->body, std::move(context), owner);
     } else if (const auto *attribute = statement.as<AttrStmtNode>()) {
       if (attribute->attr_key == "thread_extent" ||
           attribute->attr_key == "virtual_thread") {
@@ -1118,26 +1156,35 @@ private:
             Range::FromMinExtent(make_zero(attribute->value.dtype()),
                                  attribute->value));
         context.AddConstr(attribute->value > 0);
+      } else if (attribute->attr_key == "resource_scope") {
+        const auto *resource = attribute->value.as<IntImmNode>();
+        ICHECK(resource && (resource->value == 0 || resource->value == 1))
+            << kInvocation << "requires a literal C/V execution owner";
+        owner = resource->value == 0 ? kCoreCube : kCoreVector;
       } else if (attribute->attr_key == "tl.assume" ||
                  attribute->attr_key == "tilelang_assume") {
         ICHECK(attribute->node.as<PrimExprNode>()) << kInvocation;
         Assume(Downcast<PrimExpr>(attribute->node), &context);
       }
-      Walk(attribute->body, std::move(context));
+      Walk(attribute->body, std::move(context), owner);
     } else if (const auto *allocation = statement.as<AllocateNode>()) {
       ICHECK(is_one(allocation->condition))
           << kInvocation << "predicated allocations are unsupported";
-      Walk(allocation->body, std::move(context));
+      Walk(allocation->body, std::move(context), owner);
     } else if (const auto *declaration = statement.as<DeclBufferNode>()) {
-      Walk(declaration->body, std::move(context));
+      Walk(declaration->body, std::move(context), owner);
     } else if (const auto *evaluation = statement.as<EvaluateNode>()) {
       if (evaluation->value.as<IntImmNode>() || Assume(statement, &context))
         return;
-      if (const auto *call = evaluation->value.as<CallNode>())
+      if (const auto *call = evaluation->value.as<CallNode>()) {
+        const std::string name = OperationName(call);
+        if (name == "pipe_barrier" || name == "auto_barrier")
+          Barrier(GetRef<Call>(call), owner);
         leaves_.push_back({GetRef<Call>(call), std::move(context)});
+      }
     } else {
-      ICHECK(!statement.as<IfThenElseNode>() && !statement.as<WhileNode>())
-          << kInvocation << "If/While requires a separate invocation protocol";
+      ICHECK(!statement.as<WhileNode>())
+          << kInvocation << "While requires a separate invocation protocol";
       // Scalar stores, assertions and unknown effects are still checked by
       // full import; none is replaced by the composite contract.
     }
@@ -1172,10 +1219,6 @@ public:
         Copy(leaf);
       } else if (name == "copy_l0c_to_gm") {
         Fix(leaf);
-      } else if (name == "pipe_barrier" || name == "auto_barrier") {
-        ICHECK(IsKLoopBarrier(leaf.call.get()))
-            << kInvocation
-            << "barrier requires its configured native operation";
       } else if (name == "set_flag" || name == "wait_flag" ||
                  name == "auto_set_flag" || name == "auto_wait_flag") {
         ICHECK(leaf.call->op.same_as(Op::Get("tl.ascend_" + name)))
@@ -2095,9 +2138,12 @@ public:
     const bool cube_pipeline = !rings.empty();
     ICHECK(cube_pipeline || !has_pipeline_)
         << "Composite gemm_v0 software pipelines require certified Cube rings";
-    ICHECK(!has_conditional_)
-        << "Composite gemm_v0 external If/While control requires separate "
-           "hardware validation; the first contract is flat";
+    ICHECK(!has_while_)
+        << "Composite gemm_v0 external While requires a separate invocation "
+           "protocol";
+    ICHECK(!has_if_ || (!pto && !cube_pipeline))
+        << "Composite gemm_v0 external If requires an AscendC invocation "
+           "without physical rings";
     ICHECK(!user_l0ab_ && !has_mma_)
         << "Composite gemm_v0 owns hidden L0A/L0B pools; user L0A/B and bare "
            "mma mixing is unsupported";
@@ -2157,11 +2203,12 @@ public:
         ValidatePtoKLoop(function, plan);
         plan.requires_single_cube = true;
       }
-    } else if (HasLegacyKLoopShape(plan)) {
+    } else if (!has_if_ && HasLegacyKLoopShape(plan)) {
       ValidateKLoop(plan);
     } else {
       CompositeInvocationAudit(function, plan).Run();
       plan.requires_single_cube = true;
+      plan.has_conditional_control = has_if_;
     }
     return plan;
   }
@@ -2361,12 +2408,12 @@ private:
   }
 
   void VisitStmt_(const IfThenElseNode *op) final {
-    has_conditional_ = true;
+    has_if_ = true;
     StmtExprVisitor::VisitStmt_(op);
   }
 
   void VisitStmt_(const WhileNode *op) final {
-    has_conditional_ = true;
+    has_while_ = true;
     StmtExprVisitor::VisitStmt_(op);
   }
 
@@ -2425,7 +2472,7 @@ private:
   std::vector<Call> manual_flags_;
   std::vector<std::pair<const ForNode *, int>> loops_;
   bool has_pipeline_{false};
-  bool has_conditional_{false};
+  bool has_if_{false}, has_while_{false};
   bool user_l0ab_{false};
   bool has_mma_{false};
   int resource_{-1};

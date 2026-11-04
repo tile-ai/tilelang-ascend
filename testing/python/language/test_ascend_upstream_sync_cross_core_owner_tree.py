@@ -464,11 +464,14 @@ def _byte_completion_oracle(
     missing_internal=None,
     publication=True,
     input_count=3,
+    cross_wait_blocks_issue=False,
 ):
     """Interpret real row/column bytes and event happens-before, not IR order.
 
     CrossSet only publishes FIX operations completed by its actual drain. A
-    CrossWait completes S; a later MTE2 read needs its own local handoff.
+    The conservative default transfers CrossWait to S only. Epoch tests can
+    additionally model its native blocking of every subsequent issue; this
+    never completes any earlier asynchronous ticket.
     Other memory dependencies, including UB reuse and repeated GM stores, must
     be carried by actual local events. A real GEMM expands the helper's entry,
     ping-pong and drain protocol; its lexical return transfers no clock.
@@ -632,7 +635,7 @@ def _byte_completion_oracle(
             if name in ("tl.ascend_auto_set_flag", "tl.ascend_auto_wait_flag"):
                 kind = "set" if name.endswith("set_flag") else "wait"
                 flag(actor, kind, call.args[0].value, integer(call.args[1]))
-            elif name == "tl.ascend_auto_barrier":
+            elif name in ("tl.ascend_auto_barrier", "tl.ascend_pipe_barrier"):
                 pipe = call.args[0].value.removeprefix("PIPE_")
                 completed[actor, pipe] = step(actor, pipe)
             elif name.endswith("set_cross_flag"):
@@ -648,7 +651,11 @@ def _byte_completion_oracle(
                 release, consumed = published[key]
                 assert vid not in consumed, "cross token consumed twice"
                 consumed.add(vid)
-                step(actor, "S", release)
+                acquired = step(actor, "S", release)
+                if cross_wait_blocks_issue:
+                    for pipeline in pipes:
+                        clock = clocks[actor, pipeline]
+                        clock[:] = [max(own, other) for own, other in zip(clock, acquired)]
                 counts["cross_wait"] += 1
             elif name in ("copy_gm_to_l1", "copy_l0c_to_gm", "copy_gm_to_ub", "copy_ub_to_gm"):
                 symbol = call.args[0].value

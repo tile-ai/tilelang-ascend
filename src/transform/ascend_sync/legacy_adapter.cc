@@ -770,6 +770,11 @@ public:
     }
     const bool mixed = (selected_resources_ & kCoreCube) != 0 &&
                        (selected_resources_ & kCoreVector) != 0;
+    // A residual If needs the same complete epoch proof regardless of whether
+    // a local manual-event protocol happened to request normalization first.
+    // This is a proof request only; no ordering/freshness is granted here.
+    const bool epoch_candidate =
+        normalized_cross_core_ || composites_.has_conditional_control;
     if (composites_.requires_single_cube && !mixed) {
       ICHECK(ordinary_sync_ && selected_resources_ == kCoreCube)
           << "General GEMM invocation synchronization requires complete "
@@ -779,7 +784,7 @@ public:
     // operation has passed effect import. Mixed candidates must additionally
     // prove the complete three-instance epoch protocol below.
     ICHECK(!normalized_manual_events_ ||
-           (ordinary_sync_ && (!mixed || normalized_cross_core_)))
+           (ordinary_sync_ && (!mixed || epoch_candidate)))
         << "Manual event normalization requires complete ordinary automatic "
            "synchronization on one execution resource";
     ICHECK(!normalized_cross_core_ || mixed)
@@ -831,18 +836,18 @@ public:
       auto control = std::static_pointer_cast<ControlNode>(node);
       const bool real_loop =
           original.as<ForNode>() && control->control.same_as(original);
-      const bool epoch_branch = normalized_cross_core_ &&
+      const bool epoch_branch = epoch_candidate &&
                                 original.as<IfThenElseNode>() &&
                                 control->control.as<ForNode>();
       ICHECK((real_loop || epoch_branch) && control->task != nullptr &&
-             (normalized_cross_core_ || !control->children.empty()))
+             (epoch_candidate || !control->children.empty()))
           << "Mixed C/V requires real owner-pure For trees; conditional "
              "controls "
              "are unsupported";
       CoreMask owner = kCoreUnassigned;
       if (control->children.empty()) {
         const auto lexical = control_owners_.find(control.get());
-        ICHECK(normalized_cross_core_ && lexical != control_owners_.end() &&
+        ICHECK(epoch_candidate && lexical != control_owners_.end() &&
                (lexical->second == kCoreCube || lexical->second == kCoreVector))
             << "Empty epoch controls require an explicit execution owner";
         owner = lexical->second;
@@ -853,7 +858,7 @@ public:
             << "Mixed C/V requires each complete For tree to have one owner";
         owner = child_owner;
       }
-      if (normalized_cross_core_) {
+      if (epoch_candidate) {
         const auto lexical = control_owners_.find(control.get());
         if (lexical != control_owners_.end() &&
             lexical->second != kCoreUnassigned)
@@ -878,7 +883,7 @@ public:
             ? Optional<Var>(result_->composite_hidden_pool.value()->data)
             : NullOpt;
     const auto plan = [&]() {
-      if (normalized_cross_core_) {
+      if (epoch_candidate) {
         ICHECK(noalias || fresh_v2)
             << "Cross-core epoch publication requires explicit noalias or a "
                "trusted Cython fresh-v2 allocation contract";
@@ -920,7 +925,7 @@ public:
     result_->export_state->epoch_epilogues = plan.epilogues;
     for (const auto &shadow : plan.shadows) {
       shadow.task->SetPipeMask(shadow.pipe_mask);
-      if (normalized_cross_core_) {
+      if (epoch_candidate) {
         const auto flag = DecodeLegacyCrossFlag(shadow.task->stmt);
         ICHECK(flag.has_value());
         GrantNativeCrossOrdering(shadow.task.get(),
@@ -1516,6 +1521,25 @@ ImportLegacySync(const PrimFunc &function, const Target &target,
     }
   }
   ICHECK(manual_error.empty()) << manual_error;
+  auto composites =
+      AnalyzeLegacyComposites(normalized.function, target, platform);
+  if (ordinary_sync && composites.has_conditional_control &&
+      !manual.normalized) {
+    // The epoch proof models cross flags, not retained hard-event scheduling.
+    // Reuse the complete local token proof even for flat literal pairs before
+    // admitting their removal. Automatic hard flags remain unsupported here.
+    auto epoch_manual = NormalizeLegacyManualEvents(
+        function, LegacyManualEventPolicy::kForEpoch);
+    if (epoch_manual.normalized) {
+      manual = std::move(epoch_manual);
+      normalized = NormalizeLegacySnapshots(
+          NormalizeLegacyCompositeBranches(manual.function));
+      manual_error = ManualFlagValidator().TryRun(normalized.function->body);
+      ICHECK(manual_error.empty()) << manual_error;
+      composites =
+          AnalyzeLegacyComposites(normalized.function, target, platform);
+    }
+  }
   ImportedLegacySyncIR imported;
   imported.original_function = std::move(normalized.function);
   imported.physical_storage = persistent != nullptr
@@ -1525,8 +1549,6 @@ ImportLegacySync(const PrimFunc &function, const Target &target,
   imported.export_state = std::make_shared<LegacyExportState>();
   imported.export_state->mutable_bindings =
       std::move(normalized.mutable_bindings);
-  const auto composites =
-      AnalyzeLegacyComposites(imported.original_function, target, platform);
   if (composites.requires_single_cube)
     imported.composite_hidden_pool = decl_buffer(
         {Integer(1)}, DataType::UInt(8), "composite_hidden_pool", "global");

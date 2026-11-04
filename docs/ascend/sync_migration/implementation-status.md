@@ -21,6 +21,22 @@ typed GEMM、既有 C→V 发布及静态 C-prefix K-loop、Persistent、受限 
 
 ## 构建和使用
 
+### v29 条件 GEMM 组合
+
+A3 AscendC/auto 的非流水 `gemm_v0` 调用支持保留原 `If`，复用通用调用审计、
+隐藏 L0/事件池依赖和 optional-control 同步。分支条件在父词法上下文检查原位宽
+算术后，才给各自分支加入事实；这些事实不能用于另一分支或后续语句。屏障按实际
+C/V 作用域检查 native ABI 和管线，保留旧单 Cube 的隐式归属推断。
+
+混合 C/V 的条件调用请求已有的完整 epoch 证明，入口不再依赖手工事件是否恰好
+触发归一化。有显式手工事件时先执行同一个 token 证明，再删除事件并重新分析；
+该组合不接纳保留的自动 hard flags。noalias/fresh、几何、GM 字节范围、死锁、
+容量和预算约束保持，只有完整证明成功才授予 freshness/native ordering。
+
+While、PTO 条件调用、条件物理 ring、无法证明的运行时发布控制仍拒绝。本次没有
+修改 examples，也没有提高有限证明预算。测试清单新增条件 GEMM 的主机和设备回归；
+历史验收摘要的计数不代表 v29 的全量复测结果。
+
 安装与构建方式见 [Z3 默认启用与 PyPI 依赖](z3-pypi-install.md)。
 `USE_ASCEND_SYNC_Z3` 当前默认 ON，pip 构建及运行均依赖 z3-solver，Python 包从
 运行环境加载 Z3。直接 CMake 构建需先安装构建依赖，或显式指定包含头文件与原生库的

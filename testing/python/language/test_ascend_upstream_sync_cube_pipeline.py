@@ -350,9 +350,9 @@ def test_static_cube_sip_keeps_true_b2_and_independent_lead_one(cube_pipelines, 
     loops = _nodes(before.body, tir.For)
     assert len(loops) == 1 and int(loops[0].extent) == trip_count - 1
     assert len(_gemms(before)) == 2, "one steady GEMM and one epilogue GEMM"
-    assert not any(_operation(call) == "copy_l0c_to_gm" for call in _nodes(envelope[0].body, tir.Call)), (
-        "final FIX must remain outside the SIP owner"
-    )
+    assert not any(
+        _operation(call) == "copy_l0c_to_gm" for call in _nodes(envelope[0].body, tir.Call)
+    ), "final FIX must remain outside the SIP owner"
     assert not _events(before)
     _assert_maps_and_clocks_preserved(before, after)
     generated = _events(after)
@@ -525,7 +525,7 @@ def test_same_root_logical_cube_rings_remain_rejected(cube_pipelines, memory_pla
     records = list(merged.attrs[_RINGS].values())
     assert records[0][2].same_as(records[1][2])
     assert [int(record[1]) for record in records] == [2, 2]
-    with pytest.raises(tvm.error.TVMError, match="(?i)(multiple logical|independent.*root|same.*root)"):
+    with pytest.raises(tvm.error.TVMError, match="(?i)(multiple logical|multiple rings in one root|independent.*root|same.*root)"):
         _run(merged, target_kind="llvm")
 
 

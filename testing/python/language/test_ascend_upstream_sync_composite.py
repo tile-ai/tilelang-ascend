@@ -245,25 +245,17 @@ def test_cube_ring_version_metadata_is_not_discarded(flat_gemms):
         _run(original)
 
 
-@pytest.mark.parametrize("control", ["if", "while"])
-def test_external_conditional_control_is_outside_the_first_flat_contract(flat_gemms, control):
+def test_external_while_still_requires_an_invocation_protocol(flat_gemms):
     loop_enabled = tir.Var("loop_enabled", "bool")
-
-    def rewrite(call):
-        if control == "if":
-            return tir.IfThenElse(tir.const(True, "bool"), tir.Evaluate(call), None)
-        return tir.While(loop_enabled, tir.Evaluate(call))
-
-    original = _rewrite_gemm(flat_gemms[64], rewrite)
-    if control == "while":
-        original = tir.PrimFunc(
-            [*original.params, loop_enabled],
-            original.body,
-            original.ret_type,
-            original.buffer_map,
-            original.attrs,
-        )
-    with pytest.raises(tvm.error.TVMError, match="(?i)(composite.*If/While|contract.*flat)"):
+    original = _rewrite_gemm(flat_gemms[64], lambda call: tir.While(loop_enabled, tir.Evaluate(call)))
+    original = tir.PrimFunc(
+        [*original.params, loop_enabled],
+        original.body,
+        original.ret_type,
+        original.buffer_map,
+        original.attrs,
+    )
+    with pytest.raises(tvm.error.TVMError, match="Composite gemm_v0 external While"):
         _run(original)
 
 

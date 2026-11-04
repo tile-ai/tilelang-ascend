@@ -3,6 +3,7 @@
     "testing/python/language/test_ascend_shape_index_width.py",
     "testing/python/language/test_ascend_upstream_sync_codegen_matrix.py",
     "testing/python/language/test_ascend_upstream_sync_composite.py",
+    "testing/python/language/test_ascend_upstream_sync_composite_control.py",
     "testing/python/language/test_ascend_upstream_sync_composite_invocation.py",
     "testing/python/language/test_ascend_upstream_sync_composite_loop.py",
     "testing/python/language/test_ascend_upstream_sync_cross_core.py",
@@ -43,6 +44,7 @@
   ],
   "device": [
     "testing/python/language/test_ascend_upstream_sync_composite_device.py",
+    "testing/python/language/test_ascend_upstream_sync_composite_control_device.py",
     "testing/python/language/test_ascend_upstream_sync_control_device.py",
     "testing/python/language/test_ascend_upstream_sync_cross_core_device.py",
     "testing/python/language/test_ascend_upstream_sync_cross_core_loop_device.py",

@@ -262,7 +262,7 @@ def test_pto_retains_common_typed_and_physical_input_checks(pto_flat_gemms, chan
     "change,diagnostic",
     [
         ("outer_for", _PROFILE),
-        ("outer_if", _PROFILE + "|Composite gemm_v0 external If/While"),
+        ("outer_if", "Composite gemm_v0 external If requires an AscendC invocation"),
         ("ring_b2", _PROFILE + "|Composite gemm_v0 physical B>1/version"),
         ("user_l0ab", _PROFILE + "|Composite gemm_v0 owns hidden L0A/L0B pools"),
         ("vector_owner", _PROFILE + "|Composite gemm_v0 execution owner must be Cube"),
