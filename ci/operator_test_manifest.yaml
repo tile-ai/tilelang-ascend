@@ -40,7 +40,9 @@ mappings:
 
   # examples/cann-bench
   examples/cann-bench/cummin/example_cummin.py: examples/cann-bench/cummin/test_example_cummin.py
+  examples/cann-bench/depthwise_conv_2d/depthwise_conv_2d.py: examples/cann-bench/depthwise_conv_2d/test_depthwise_conv_2d.py
   examples/cann-bench/group_norm/example_group_norm.py: examples/cann-bench/group_norm/test_example_group_norm.py
+  examples/cann-bench/situ_glu_grad/example_situ_glu_grad.py: examples/cann-bench/situ_glu_grad/test_example_situ_glu_grad.py
 
   # examples/causal_conv1d
   examples/causal_conv1d/causal_conv1d.py: examples/causal_conv1d/test_causal_conv1d.py
@@ -73,10 +75,10 @@ mappings:
   examples/elementwise/setvalue_example.py: examples/elementwise/test_setvalue_example.py
 
   # examples/flash_attention/fa_opt
-  examples/flash_attention/fa_opt/flash_attn_bhsd_ascendc.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_ascendc.py
-  examples/flash_attention/fa_opt/flash_attn_bhsd_auto_pipeline_h16_d128.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_auto_pipeline_h16_d128.py
-  examples/flash_attention/fa_opt/flash_attn_bhsd_auto_pipeline_h32_d512.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_auto_pipeline_h32_d512.py
-  examples/flash_attention/fa_opt/flash_attn_bhsd_expert_h16_d128.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_expert_h16_d128.py
+  examples/flash_attention/fa_opt/reference/ascendc.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_ascendc.py
+  examples/flash_attention/fa_opt/auto_pipeline/h16_d128.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_auto_pipeline_h16_d128.py
+  examples/flash_attention/fa_opt/auto_pipeline/h32_d512.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_auto_pipeline_h32_d512.py
+  examples/flash_attention/fa_opt/expert_v1/kernel.py: examples/flash_attention/fa_opt/test_flash_attn_bhsd_expert_h16_d128.py
 
   # examples/flash_attention
   examples/flash_attention/flash_attn_bhsd.py: examples/flash_attention/test_flash_attn_bhsd.py
@@ -107,6 +109,9 @@ mappings:
   # examples/gqa_fwd_varlen
   examples/gqa_fwd_varlen/gqa_fwd_varlen.py: examples/gqa_fwd_varlen/test_gqa_fwd_varlen.py
   examples/gqa_fwd_varlen/perf_gqa_fwd_varlen.py: examples/gqa_fwd_varlen/test_perf_gqa_fwd_varlen.py
+
+  # examples/kpool
+  examples/kpool/example_glm53_kpool_compress.py: examples/kpool/test_example_glm53_kpool_compress.py
 
   # examples/lightning_indexer
   examples/lightning_indexer/example_lightning_indexer.py: examples/lightning_indexer/test_example_lightning_indexer.py
@@ -180,8 +185,11 @@ mappings:
   examples/reduce/example_row_reduce_max_slice_buffer.py: examples/reduce/test_example_row_reduce_max_slice_buffer.py
 
   # examples/simple_fusion
-  examples/simple_fusion/matmul_add.py: examples/simple_fusion/test_matmul_add.py
-  examples/simple_fusion/matmul_add_infer_scope.py: examples/simple_fusion/test_matmul_add_infer_scope.py
+  examples/simple_fusion/example_simple_fusion.py: examples/simple_fusion/test_example_simple_fusion.py
+
+  # examples/situ_glu
+  examples/situ_glu/situ_glu.py: examples/situ_glu/test_situ_glu.py
+
 
   # examples/softmax
   examples/softmax/example_online_softmax.py: examples/softmax/test_example_online_softmax.py
@@ -218,8 +226,8 @@ mappings:
   examples/unsorted_segment_sum/unsorted_segment_sum.py: examples/unsorted_segment_sum/test_unsorted_segment_sum.py
 
   # examples/xattention
-  examples/xattention/xattention.py: examples/xattention/test_xattention.py
-  examples/xattention/xattention_paged.py: examples/xattention/test_xattention_paged.py
+  examples/xattention/expert_v1/kernel.py: examples/xattention/test_xattention.py
+  examples/xattention/expert_v1/paged.py: examples/xattention/test_xattention_paged.py
 
   # examples/xllm_kernels
   examples/xllm_kernels/fused_gdn_gating.py: examples/xllm_kernels/test_fused_gdn_gating.py

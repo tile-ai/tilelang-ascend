@@ -191,6 +191,13 @@ int32_t GetTypeLen(std::string type) {
     typeSize = 2;
   } else if (type == "int" || type == "uint32_t") {
     typeSize = 4;
+  } else if (type == "int4b_t") {
+    LOG(FATAL) << "int4 is not supported by the pto target: the pto-isa "
+                  "instruction set currently lacks the int4 instructions "
+                  "(mad_s4 for W4A4 matmul, vconv_f162s4 / vconv_s42f16 for "
+                  "quantization), see "
+                  "https://gitcode.com/cann/pto-isa/issues/115. Use the "
+                  "default ascendc target for int4 kernels.";
   } else {
     ICHECK(false) << "Unsupported datatype";
   }
@@ -3415,18 +3422,70 @@ void CodeGenTileLangAscendPto::BinaryVecClampOpsCodegen(
   ShapeInfo src_shape_info = GetSliceInfo(op->args[2].as<CallNode>());
   ShapeInfo dst_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
 
-  auto scalar_min = PrintExpr(op->args[op->args.size() - 3]);
-  auto scalar_max = PrintExpr(op->args[op->args.size() - 2]);
-
   std::string src_name = ResolveUbSliceName(src_shape_info);
   std::string dst_name = ResolveUbSliceName(dst_shape_info);
 
+  const bool min_is_tensor = op->args[op->args.size() - 3].as<CallNode>();
+  const bool max_is_tensor = op->args[op->args.size() - 2].as<CallNode>();
+
+  // --- Lower bound: max(src, min_val) ---
+  if (min_is_tensor) {
+    // Tile-to-tile TMAX — no broadcast needed.
+    ShapeInfo min_shape_info =
+        GetSliceInfo(op->args[op->args.size() - 3].as<CallNode>());
+    std::string min_name = ResolveUbSliceName(min_shape_info);
+    this->PrintIndent();
+    this->stream << "TMAX(" << dst_name << ", " << src_name << ", " << min_name
+                 << ");\n";
+  } else {
+    // Scalar lower bound: A2/A3 PTO TMAXS is not effective at runtime.
+    // Materialize via TEXPANDS into an internal temp tile, then TMAX.
+    auto scalar_min = PrintExpr(op->args[op->args.size() - 3]);
+    bool use_slice = dst_shape_info.is_slice || src_shape_info.is_slice;
+    int32_t row = use_slice ? dst_shape_info.slice_row : dst_shape_info.row;
+    int32_t col = use_slice ? dst_shape_info.slice_col : dst_shape_info.col;
+    std::string min_name =
+        GetTempVarName(dst_shape_info.ub_name) + "_clamp_min";
+
+    int32_t elem_bytes = GetTypeLen(dst_shape_info.type);
+    int64_t tmp_buffer_size = static_cast<int64_t>(row) * col * elem_bytes;
+    int64_t tmp_addr = max_ub_addr_;
+    max_ub_addr_ += tmp_buffer_size;
+    max_ub_addr_ =
+        ((max_ub_addr_ + kUbAlignmentBytes - 1) / kUbAlignmentBytes) *
+        kUbAlignmentBytes;
+
+    this->PrintIndent();
+    this->stream << kAscendPtoScope << "TileUbDataND<" << dst_shape_info.type
+                 << ", " << row << ", " << col << "> " << min_name << ";\n";
+    this->PrintIndent();
+    this->stream << "TASSIGN(" << min_name << ", " << tmp_addr << ");\n";
+    this->PrintIndent();
+    this->stream << "TEXPANDS(" << min_name << ", " << scalar_min << ");\n";
+    this->PrintIndent();
+    this->stream << "TL_PIPE_V_BARRIER();\n";
+    this->PrintIndent();
+    this->stream << "TMAX(" << dst_name << ", " << src_name << ", " << min_name
+                 << ");\n";
+  }
+
   this->PrintIndent();
-  this->stream << "TMAXS(" << dst_name << ", " << src_name << ", " << scalar_min
-               << ");\n";
-  this->PrintIndent();
-  this->stream << "TMINS(" << dst_name << ", " << dst_name << ", " << scalar_max
-               << ");\n";
+  this->stream << "TL_PIPE_V_BARRIER();\n";
+
+  // --- Upper bound: min(dst, max_val) ---
+  if (max_is_tensor) {
+    ShapeInfo max_shape_info =
+        GetSliceInfo(op->args[op->args.size() - 2].as<CallNode>());
+    std::string max_name = ResolveUbSliceName(max_shape_info);
+    this->PrintIndent();
+    this->stream << "TMIN(" << dst_name << ", " << dst_name << ", " << max_name
+                 << ");\n";
+  } else {
+    auto scalar_max = PrintExpr(op->args[op->args.size() - 2]);
+    this->PrintIndent();
+    this->stream << "TMINS(" << dst_name << ", " << dst_name << ", "
+                 << scalar_max << ");\n";
+  }
 }
 
 void CodeGenTileLangAscendPto::SigmoidCodegen(const CallNode *op,

@@ -99,7 +99,7 @@
    - 禁止将新算子放入 `normalization/`、`activation/` 等已有分类目录，禁止直接在 `examples/` 根目录创建 `.py`
 6. **编程模式必须由用户明确指定**
    - 设计算子时必须先询问 Developer / Expert / 混合，**禁止用默认值绕过**
-   - Developer：`alloc_shared/fragment` + 自动同步 + 全部 pass_configs 开启
+   - Developer：`alloc_shared/fragment` + 自动同步；沿用默认 C/V 划分，按实际依赖选择同步与内存规划配置，见 `tilelang-programming-model-guide`
    - Expert：显式 `alloc_L1/ub/L0A/L0B/L0C` + 手动 `T.Scope("C"/"V")` + 手动 `T.barrier_all/set_flag/wait_flag`
    - 详细对照见 `tilelang-programming-model-guide`
 7. **遇到错误先分析原因，不绕过门禁**

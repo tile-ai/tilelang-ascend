@@ -22,6 +22,8 @@ skip = [
 ]
 
 [tool.pytest.ini_options]
+pythonpath = ["testing/python", "."]
+testpaths = ["testing"]
 markers = [
     "low_priority: marks tests as low priority (only run in full test and scheduled tasks)",
     "ci_skip: marks tests to be skipped in all CI test scenarios",

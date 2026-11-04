@@ -60,7 +60,7 @@ dim 的合法取值取决于 buffer 的维度（rank）：
 3. 仅支持单轴归约（dim 为单个整数），不支持多维同时归约
 4. real_shape 若提供，长度必须为 2，且每个元素 ≤ 对应 buffer extent
 5. buffer 地址需 32 字节对齐（硬件约束）
-6. out 起始地址需 2 字节对齐（float16）/ 4 字节对齐（float32）（硬件约束）
+6. AscendC A2/A3 静态 float32 末轴归约的输出对齐和填充要求见[统一规范](../language_ref/tilelibrary.md#static-fp32-row-reductions)；其余路径的 out 起始地址需 2 字节对齐（float16）/ 4 字节对齐（float32）
 7. A2/A3 平台 ReduceSum 在 tensor 前 n 个数据接口采用顺序累加方式，高维切分接口采用二叉树累加方式（硬件约束）
 8. BufferRegion 切片输入（`buffer[:, a:b]`）仅在 ascendc 后端支持，pto 后端不支持
 9. float16 的列归约（dim=0/dim=-2）仅在 pto 后端支持，ascendc 后端不支持
