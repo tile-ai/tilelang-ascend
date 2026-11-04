@@ -90,7 +90,7 @@ TileLang 的解决方案是在编译时将一个 `ParamSizeInfo` 结构体附加
 
 特性通过 `TL_ASCEND_EXCEPTION_DUMP` 编译配置控制，**默认关闭**。默认关闭的原因：
 
-1. 该功能依赖 CANN 提供的 `aclrtSetExceptionInfoCallback`、`acldumpSaveExceptionInfo` 等 API，旧版 CANN 可能不支持
+1. 该功能依赖 CANN 提供的 `aclrtExceptionInfoCallbackRegister`、`acldumpSaveExceptionInfo` 等 API，旧版 CANN 可能不支持
 2. 开启后 kernel 签名会附加额外参数，改变编译产物 ABI
 3. 异常回调注册会改变 CANN 运行时行为
 
@@ -102,13 +102,13 @@ TileLang 的解决方案是在编译时将一个 `ParamSizeInfo` 结构体附加
 
 ### 3.1 CANN 版本要求
 
-**CANN >= 9.3.0**
+**CANN >= 9.2.0**（已在 9.2.0 上验证通过；使用 `aclrtExceptionInfoCallbackRegister` 注册回调，旧接口 `aclrtSetExceptionInfoCallback` 在 9.2.0 起已 deprecated）
 
 需要 CANN 提供以下 API（见 `acl/acl_rt.h` 和 `acl/acl_dump.h`）：
 
 | API | 作用 |
 |-----|------|
-| `aclrtSetExceptionInfoCallback` | 注册异常回调 |
+| `aclrtExceptionInfoCallbackRegister` | 注册异常回调 |
 | `aclrtGetArgsFromExceptionInfo` | 从异常信息获取 kernel args |
 | `acldumpSaveExceptionInfo` | 保存 tensor 数据到 dump 文件 |
 
@@ -192,7 +192,7 @@ except Exception as e:
 | `type` | `str` | `"input"` / `"output"` / `"workspace"` |
 | `index` | `int` | 同类型 tensor 的序号 |
 | `dtype` | `str` | 数据类型字符串，如 `"float16"` |
-| `file` | `str` | `.bin` 文件路径 |
+| `file` | `str` | tensor 文件路径（`.bin` 或 `.npy`） |
 
 ### 4.5 手动解析（可选）
 
@@ -233,13 +233,13 @@ data = read_msaicerr_bin(
             └── <kernel_name>.custom.<timestamp>   # dump 文件
 ```
 
-msaicerr.py 解析后生成 per-tensor `.bin` 文件，命名格式：
+msaicerr.py 解析后生成 per-tensor tensor 文件（扩展名为 `.bin` 或 `.npy`，取决于 CANN 版本：9.2.0 输出 `.npy`），命名格式：
 
 ```
-<kernel_name>.custom.<timestamp>.<tensor_type>.<tensor_index>.<dtype>.bin
+<kernel_name>.custom.<timestamp>.<tensor_type>.<tensor_index>.<dtype>.bin|.npy
 ```
 
-例如：`main_kernel.custom.20260731191027177.input.0.float16.bin`
+例如：`main_kernel.custom.20260731191027177.input.0.float16.npy`
 
 ---
 
