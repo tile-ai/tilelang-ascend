@@ -1,12 +1,3 @@
-# ----------------------------------------------------------------------------
-# Copyright (c) 2026 Huawei Technologies Co., Ltd.
-# This program is free software, you can redistribute it and/or modify it under
-# the terms of the CANN Open Software License Agreement Version 2.0 (the
-# "License"). You may not use this file except in compliance with the License.
-# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY
-# KIND, EITHER EXPRESS OR IMPLIED.
-# ----------------------------------------------------------------------------
-
 """DepthwiseConv2D TileLang kernel (Expert mode, pure Vector).
 
 Design (rev2, perf-tuned):
@@ -92,7 +83,7 @@ def _pad_to(v, a):
 
 
 @tilelang.jit(out_idx=[-1], pass_configs=PASS_CONFIGS)
-def _dwconv_pad(H, W, Hp, Wp, NC, ph, pw, dtype="float16"):
+def _dwconv_pad(H, W, Hp, Wp, Wc, NC, ph, pw, dtype="float16"):
     """xp[nc, i, j] = x[nc, i-ph, j-pw] with zeros outside the image.
 
     Hp is padded to a multiple of RB so each vector core's row count is static,
@@ -125,7 +116,9 @@ def _dwconv_pad(H, W, Hp, Wp, NC, ph, pw, dtype="float16"):
             nrows = sv1 - sv0
 
             zero_buf = T.alloc_ub((HRB, Wp), dtype)
-            data_buf = T.alloc_ub((HRB, W), dtype)
+            # Wc keeps the staging pitch 32B-aligned; the data load's tail
+            # masking zero-fills the pad columns (see the copy below)
+            data_buf = T.alloc_ub((HRB, Wc), dtype)
             if zr > 0:
                 T.tile.fill(zero_buf, 0.0)
             for j in range(CPB):
@@ -134,8 +127,12 @@ def _dwconv_pad(H, W, Hp, Wp, NC, ph, pw, dtype="float16"):
                     if zr > 0:
                         T.copy(zero_buf[0:zr, 0:Wp], xp[nc, i0 : i0 + zr, 0:Wp])
                     if nrows > 0:
-                        T.copy(x[nc, sv0:sv1, 0:W], data_buf[0:nrows, 0:W])
-                        T.copy(data_buf[0:nrows, 0:W], xp[nc, sv0 + ph : sv0 + ph + nrows, pw : pw + W])
+                        # W-wide GM source into a Wc-wide UB view: the load's
+                        # tail masking pads the (Wc - W) pad columns with
+                        # zeros, so both the load and the store see the same
+                        # 32B-aligned row pitch
+                        T.copy(x[nc, sv0:sv1, 0:W], data_buf[0:nrows, 0:Wc])
+                        T.copy(data_buf[0:nrows, 0:Wc], xp[nc, sv0 + ph : sv0 + ph + nrows, pw : pw + Wc])
 
     return main
 
@@ -183,7 +180,14 @@ def _dwconv_1x1(NC, C, HW, dtype="float16"):
                 T.tile.fill(acc[r, 0:BCW], b32[r])
                 T.tile.axpy(acc[r, 0:BCW], x32[r, 0:BCW], w32[r])
             T.tile.cast(y_buf, acc, "CAST_RINT", HR * BCW)
-            T.copy(y_buf[0:HR, 0:ncw], y[r0 : r0 + HR, c0 : c0 + ncw])
+            if c0 + BCW <= HW:
+                # full band: slice width equals the buffer pitch, a legal
+                # multi-row DMA source
+                T.copy(y_buf[0:HR, 0:ncw], y[r0 : r0 + HR, c0 : c0 + ncw])
+            else:
+                # tail band: store row by row (see the conv epilogue note)
+                for r in range(HR):
+                    T.copy(y_buf[r, 0:ncw], y[r0 + r, c0 : c0 + ncw])
 
     return main
 
@@ -217,7 +221,13 @@ def _conv_geometry(N, C, H, W, KH, KW, SH, SW, PH, PW, DH, DW, Ho, Wo, dtype_str
 
     hp = H + 2 * PH
     hp = max(hp, (h_tiles - 1) * RB * SH + nr)
+    # pad's staging column pitch: multi-row UB->GM row copies need a
+    # 32B-multiple source pitch, so data rows are staged at the 32B-rounded
+    # width and the store carries the pad columns (zeros) into xp's padding.
+    wc_align = 16 if not is_fp32 else 8
+    Wc = _pad_to(W, wc_align)
     wp = PW + W + PW
+    wp = max(wp, PW + Wc)
     if KW > 0:
         wp = max(wp, (w_tiles - 1) * BW * SW + max(rho_of) + win_w)
     # xp row stride must stay a multiple of 16: the conv's 2-D strided load
@@ -234,6 +244,7 @@ def _conv_geometry(N, C, H, W, KH, KW, SH, SW, PH, PW, DH, DW, Ho, Wo, dtype_str
         nr=nr,
         Hp=hp,
         Wp=wp,
+        Wc=Wc,
         pow2_sw=pow2_sw,
         region=(not is_fp32 and unit),
         region32=(is_fp32 and unit),
@@ -513,11 +524,27 @@ def _build_conv(N, C, H, W, KH, KW, SH, SW, PH, PW, DH, DW, Ho, Wo, dtype_str):
                                 T.tile.cast(y_allB[0:RB, 0:BW], acc[0:RB, 0:BW], "CAST_RINT", RB * BW)
                             T.set_flag("v", "mte3", 3)
                             T.wait_flag("v", "mte3", 3)
-                            if rows_v > 0:
-                                if c_local % 2 == 0:
-                                    T.copy(y_allA[0:rows_v, 0:vw], y[c_abs, oh0 : oh0 + rows_v, ow : ow + vw])
-                                else:
-                                    T.copy(y_allB[0:rows_v, 0:vw], y[c_abs, oh0 : oh0 + rows_v, ow : ow + vw])
+                            if Wo % BW == 0:
+                                # every column tile is full-width: the store
+                                # slice width equals the buffer pitch, which
+                                # keeps the multi-row DMA source representable
+                                if rows_v > 0:
+                                    if c_local % 2 == 0:
+                                        T.copy(y_allA[0:rows_v, 0:vw], y[c_abs, oh0 : oh0 + rows_v, ow : ow + vw])
+                                    else:
+                                        T.copy(y_allB[0:rows_v, 0:vw], y[c_abs, oh0 : oh0 + rows_v, ow : ow + vw])
+                            else:
+                                # partial-width tiles: a 2-D slice whose width
+                                # is below the buffer pitch is not a legal
+                                # multi-row DMA source (the slice view carries
+                                # a sub-32B row pitch), so store row by row
+                                for r in range(RB):
+                                    oh = oh0 + r
+                                    if oh < Ho:
+                                        if c_local % 2 == 0:
+                                            T.copy(y_allA[r, 0:vw], y[c_abs, oh, ow : ow + vw])
+                                        else:
+                                            T.copy(y_allB[r, 0:vw], y[c_abs, oh, ow : ow + vw])
                         if is_fp32:
                             if c_local < half_C - 1:
                                 if ch0 + c_lo + c_local + 1 < C:
@@ -539,7 +566,7 @@ def _build_conv(N, C, H, W, KH, KW, SH, SW, PH, PW, DH, DW, Ho, Wo, dtype_str):
         return main
 
     conv = _dwconv_conv(dtype=dtype_str)
-    pad = _dwconv_pad(H, W, Hp, Wp, NC, PH, PW, dtype=dtype_str)
+    pad = _dwconv_pad(H, W, Hp, Wp, g["Wc"], NC, PH, PW, dtype=dtype_str)
     return pad, conv
 
 

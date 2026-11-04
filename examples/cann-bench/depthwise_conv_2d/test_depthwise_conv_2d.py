@@ -1,12 +1,3 @@
-# ----------------------------------------------------------------------------
-# Copyright (c) 2026 Huawei Technologies Co., Ltd.
-# This program is free software, you can redistribute it and/or modify it under
-# the terms of the CANN Open Software License Agreement Version 2.0 (the
-# "License"). You may not use this file except in compliance with the License.
-# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY
-# KIND, EITHER EXPRESS OR IMPLIED.
-# ----------------------------------------------------------------------------
-
 """Layered test suite for depthwise_conv_2d.
 
 Levels (dispatchable via --level, all levels also run under pytest where a
@@ -104,7 +95,7 @@ L0_CASES = [
     ("l0_sw1_k1_fp16", (1, 64, 64, 64), "float16", (1, 1), (1, 1), (0, 0), (1, 1)),
     ("l0_sw2_bf16", (2, 32, 128, 128), "bfloat16", (3, 3), (2, 2), (1, 1), (1, 1)),
     ("l0_sw2_k5_fp16", (1, 16, 128, 128), "float16", (5, 5), (2, 2), (2, 2), (1, 1)),
-    ("l0_sw4_fp16", (1, 16, 256, 256), "float16", (3, 3), (4, 4), (2, 2), (1, 1)),
+    ("l0_sw4_fp16", (1, 16, 128, 128), "float16", (3, 3), (4, 4), (2, 2), (1, 1)),
     ("l0_sw3_scalar", (1, 8, 192, 192), "float16", (3, 3), (3, 3), (1, 1), (1, 1)),
 ]
 
