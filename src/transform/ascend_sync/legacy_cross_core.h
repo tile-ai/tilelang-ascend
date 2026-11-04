@@ -1,8 +1,9 @@
 // Copyright (c) Tile-AI Organization.
 // Licensed under the MIT License.
 
-// Admission and fence effects for existing legacy mode-2 C->V publication.
-// This module never creates, moves, or renumbers a cross-core instruction.
+// Admission and fence effects for legacy mode-2 publication. Original cross
+// instructions are never moved or renumbered. A complete epoch proof may add
+// terminal Waits for symmetric unused credits, but never a publication Set.
 
 #pragma once
 
@@ -12,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "upstream/dependency_analysis.h"
@@ -74,6 +76,9 @@ struct LegacyCrossCorePlan {
   std::vector<LegacyCrossShadowEffect> shadows;
   Array<tir::Var> shared_gm_storages;
   std::vector<LegacyOwnedFlagReservation> reservations;
+  // Only the finite epoch proof may append these uniform owner-local Waits,
+  // after every original actor has completed and no real payload remains.
+  std::vector<std::pair<CoreMask, tir::Stmt>> epilogues;
 };
 
 // Pass-local certificate for the complete old flat proof. Successful analysis
@@ -132,5 +137,17 @@ PlanLegacyClosedCrossCore(const tir::PrimFunc &function, const Target &target,
                           const std::vector<LegacyOwnedControl> &controls,
                           Optional<tir::Var> private_composite_pool = NullOpt,
                           const std::string &flat_rejection = {});
+
+// Complete finite C1/V2 epoch proof for retained mode-2 channels. Every
+// concrete workgroup and both Vector actors are checked; unsupported dynamic
+// control, unbounded traces, unproved channel reuse or unordered physical GM
+// effects are rejected before any fence effects are granted.
+LegacyCrossCorePlan
+PlanLegacyEpochCrossCore(const tir::PrimFunc &function, const Target &target,
+                         const std::string &platform,
+                         const std::vector<LegacyOwnedTask> &tasks,
+                         const ConflictOracle &physical_conflict_oracle,
+                         const std::vector<LegacyOwnedControl> &controls,
+                         Optional<tir::Var> private_composite_pool = NullOpt);
 
 } // namespace tvm::tl::ascend_sync

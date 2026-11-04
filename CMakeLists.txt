@@ -129,6 +129,7 @@ list(APPEND TILE_LANG_SRCS
   src/transform/ascend_sync/legacy_composite.cc
   src/transform/ascend_sync/legacy_cross_core.cc
   src/transform/ascend_sync/legacy_manual_events.cc
+  src/transform/ascend_sync/legacy_protocol_context.cc
   src/transform/ascend_sync/legacy_pipeline_partition.cc
   src/transform/ascend_sync/legacy_persistent_normalize.cc
   src/transform/ascend_sync/legacy_persistent_pipeline.cc

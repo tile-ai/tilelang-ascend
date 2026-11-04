@@ -64,6 +64,22 @@ void SetSyncOptionalControl(ControlNode *control);
 // This marks the real steady For, never a public attribute or synthetic epoch.
 void SetSyncStaticCubePipelineControl(ControlNode *control);
 
+// Instruction issue ordering is independent of asynchronous completion.
+// Ordinary tasks keep the engine's existing pipe and dependency ordering.
+enum class SyncIssueOrdering {
+  kOrdinary,
+  kBlocksFollowingIssue,
+};
+
+enum class NativeCrossInstruction { kSet, kWait };
+
+// Grant only after a complete protocol proof, on the original audited native
+// instruction. Both native identities are checked; Set retains ordinary issue
+// ordering, while Wait blocks later issue. Neither capability drains earlier
+// asynchronous work or certifies scalar-to-pipeline completion. The engine
+// applies issue blocking only in compatible A2/A3 control/execution domains.
+void GrantNativeCrossOrdering(TaskNode *task, NativeCrossInstruction kind);
+
 struct SyncPlacement {
   IRStructure *anchor{nullptr};
   bool at_beginning{false};

@@ -256,6 +256,34 @@ Vector/DMA 同步。一般 Developer 自动同步应同时开启 ordinary 与 VS
   copy、数据语义、局部 view/元数据和 Cython 运行时范围；原始入口恢复数以完整
   入口的实际运行证据为准，不将 host 测试或局部 case 通过计为样例恢复。
 
+### v28 有限跨核 epoch 协议
+
+- A2/A3 AscendC（`model=ascendc/auto`）的 C1/V2 mode-2 协议可以通过有限静态证明
+  接入普通自动同步。PTO 的 DMA 几何、padding 与隐藏效果需单独证明，本路径拒绝准入。
+  按全部工作组和 C、V0、V1 分别解释已证明的整数控制流。所有入口使用同一组
+  硬件和证明规则；未知路径或资源预算耗尽仍拒绝。
+- 手工硬事件按执行域分别验证 token 生命周期，只有完整效果导入与跨核证明
+  均成功后才提交局部事件替换。原跨核 Set/Wait 保留原位；C→V 广播和双 V→C
+  汇聚分别建模，不能把两个 AIV 合并成任意一个 token 流。
+- 真实 typed DMA 继续检查字段、对齐、局部容量与完整 GM 范围。所有可变 GM
+  根按实际字节区间证明 RAW/WAR/WAW 顺序，跨工作组无隐式顺序；跨 C/V 的
+  非 GM 冲突及不同参数根的潜在别名必须由物理 oracle 证明不冲突。
+- 每个原 Set/Wait 的 fence 效果覆盖全部可变 GM 根，包括仅由 AIV 使用的根。
+  局部引擎负责 Set 前异步流水完成。已证明的 A2/A3 原生 CrossWait 只在同域、
+  同父控制、stage=0 的后续位置提供强 issue-acquire，不据此 drain 先前下发的
+  工作，也不增加不存在的 `S_FIX` 硬件事件。
+- 按 [CANN CrossCoreWaitFlag 契约](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/910/API/ascendcopapi/docs/api/SIMD-API/基础API/同步控制/核间同步/CrossCoreWaitFlag_ISASI.md)
+  的 0–15 计数范围证明所有调度下的容量，不以单次模拟的队列长度代替证明。
+  原执行流完整结束后，仅对双 AIV 对称、每通道至多一个、且全部工作组终态
+  同构的未使用通知，在对应执行域尾部追加 Wait；不补 Set，不解除原始死锁。
+- 移除局部事件后产生的空 If/For 仅在 epoch 路径继承明确的词法 C/V 执行域。
+  整数求值区分惰性 `tir.if_then_else` 和两分支均须审计的 `Select`，保留原位宽
+  中间值检查；未知值及可能溢出不能借分支选择获得证明。
+- 旧 flat/closed 路径保持原证明权限。native/cache ABI 升至 v28，隔离曾扩大 PTO
+  准入的中间版本缓存；新增回归覆盖
+  双向复用、多个 credit、异步完成、非法范围与重叠、尾通知清理及重复调用。
+  原始入口恢复数量以完整入口复测为准，不把后续拒绝或局部成功计为恢复。
+
 ## 当前支持与拒绝边界
 
 已验证范围：

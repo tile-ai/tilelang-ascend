@@ -9,8 +9,10 @@
 #include <tvm/tir/stmt_functor.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
+#include <deque>
 #include <limits>
 #include <map>
 #include <sstream>
@@ -20,8 +22,10 @@
 #include <unordered_set>
 #include <utility>
 
+#include "../../op/ascend.h"
 #include "../common/pipeline_ring_provenance.h"
 #include "legacy_integer_proof.h"
+#include "legacy_protocol_context.h"
 #include "legacy_runtime_contract.h"
 
 namespace tvm::tl::ascend_sync {
@@ -77,13 +81,15 @@ bool RejectFlat(std::string *failure, std::string message) {
   return false;
 }
 
+enum class CrossCoreControlPolicy { kFlatPrefix, kClosedStatic, kFiniteEpoch };
+
 class FlatInputValidator : public StmtExprVisitor {
 public:
-  FlatInputValidator(const PrimFunc &function,
-                     const std::vector<LegacyOwnedTask> &tasks,
-                     const std::vector<LegacyOwnedControl> &controls,
-                     bool closed = false)
-      : closed_(closed) {
+  FlatInputValidator(
+      const PrimFunc &function, const std::vector<LegacyOwnedTask> &tasks,
+      const std::vector<LegacyOwnedControl> &controls,
+      CrossCoreControlPolicy policy = CrossCoreControlPolicy::kFlatPrefix)
+      : policy_(policy) {
     if (auto ratio = function->GetAttr<ObjectRef>("npu_cv_ratio")) {
       const auto *literal = ratio.value().as<StringImmNode>();
       if (!(literal != nullptr && literal->value == "cv_1_2")) {
@@ -103,7 +109,7 @@ public:
         return;
       }
     }
-    if (!(closed_ || controls.size() <= 1U)) {
+    if (!(AllowsOwnerTrees() || controls.size() <= 1U)) {
       Reject(kDiagnostic,
              " requires flat input except one static C-only prefix For");
       return;
@@ -111,7 +117,7 @@ public:
     for (const auto &control : controls) {
       if (!(control.control != nullptr && control.control->task != nullptr &&
             (control.owner == kCoreCube ||
-             (closed_ && control.owner == kCoreVector)) &&
+             (AllowsOwnerTrees() && control.owner == kCoreVector)) &&
             control.control->task->GetCoreMask() == control.owner &&
             controls_.emplace(control.order, &control).second)) {
         Reject(
@@ -162,6 +168,7 @@ public:
   bool HasSingleWorkgroup() const {
     return workgroups_.size() == 1 && is_one(workgroups_[0]);
   }
+  PrimExpr WorkgroupExtent() const { return workgroups_.at(0); }
 
   void CheckPublicationAfterPrefix(const LegacyOwnedTask &set) {
     for (const auto &[begin, end] : control_spans_)
@@ -184,7 +191,8 @@ private:
     if (!(statement.as<SeqStmtNode>() || statement.as<AttrStmtNode>() ||
           statement.as<AllocateNode>() || statement.as<DeclBufferNode>() ||
           statement.as<LetStmtNode>() || statement.as<EvaluateNode>() ||
-          statement.as<BufferStoreNode>() || statement.as<ForNode>())) {
+          statement.as<BufferStoreNode>() || statement.as<ForNode>() ||
+          (EvaluatesConcreteControl() && statement.as<IfThenElseNode>()))) {
       Reject(kDiagnostic,
              " requires flat input without For/If/While or "
              "unlowered control: ",
@@ -210,19 +218,19 @@ private:
       Reject(kDiagnostic, " requires an explicit, unsplit C or V owner");
       return;
     }
-    if (record.task->HasConditions()) {
+    if (!EvaluatesConcreteControl() && record.task->HasConditions()) {
       Reject(kDiagnostic, " does not support subcore/conditional predicates");
       return;
     }
-    if (inside_c_loop_) {
-      if (!((closed_ || record.owner == kCoreCube) &&
+    if (inside_c_loop_ && !EvaluatesConcreteControl()) {
+      if (!((AllowsOwnerTrees() || record.owner == kCoreCube) &&
             !DecodeLegacyCrossFlag(record.task->stmt).has_value())) {
         Reject(kDiagnostic,
                " requires all cross flags outside the C prefix For");
         return;
       }
       for (const BufferRegion &region : record.task->GetWriteRegions())
-        if (!(closed_ || !IsGM(region))) {
+        if (!(AllowsOwnerTrees() || !IsGM(region))) {
           Reject(kDiagnostic, " C-only prefix For may read GM but cannot "
                               "publish or overwrite GM inside the loop");
           return;
@@ -250,7 +258,7 @@ private:
     const auto *call = op->value.as<CallNode>();
     const auto *operation = call ? call->op.as<OpNode>() : nullptr;
     const bool assumption =
-        closed_ && operation && operation->name == "tir.assume";
+        AllowsOwnerTrees() && operation && operation->name == "tir.assume";
     if (!op->value.as<IntImmNode>() && !assumption)
       CheckTask(GetRef<Stmt>(op));
     StmtExprVisitor::VisitStmt_(op);
@@ -271,7 +279,7 @@ private:
   void VisitStmt_(const ForNode *op) final {
     const size_t begin = occurrence_;
     auto found = controls_.find(begin);
-    if (!(found != controls_.end() && (closed_ || !inside_c_loop_) &&
+    if (!(found != controls_.end() && (AllowsOwnerTrees() || !inside_c_loop_) &&
           found->second->owner == owner_ &&
           found->second->original_statement.same_as(GetRef<Stmt>(op)) &&
           found->second->control->control.same_as(GetRef<For>(op)))) {
@@ -282,8 +290,9 @@ private:
     const auto *minimum = op->min.as<IntImmNode>();
     const auto *extent = op->extent.as<IntImmNode>();
     if (!((op->kind == ForKind::kSerial ||
-           (closed_ && op->kind == ForKind::kUnrolled)) &&
-          minimum && minimum->value == 0 && extent && extent->value > 0 &&
+           (AllowsOwnerTrees() && op->kind == ForKind::kUnrolled)) &&
+          (EvaluatesConcreteControl() ||
+           (minimum && minimum->value == 0 && extent && extent->value > 0)) &&
           op->annotations.empty() && !op->thread_binding.defined())) {
       Reject(kDiagnostic, " requires a static positive serial C-only prefix "
                           "For with min=0");
@@ -298,12 +307,24 @@ private:
     ++seen_controls_;
   }
 
+  void VisitStmt_(const IfThenElseNode *op) final {
+    auto found = controls_.find(occurrence_);
+    if (!(EvaluatesConcreteControl() && found != controls_.end() &&
+          found->second->owner == owner_ &&
+          found->second->original_statement.same_as(GetRef<Stmt>(op)))) {
+      Reject(kDiagnostic, " requires a complete owner-pure epoch branch");
+      return;
+    }
+    StmtExprVisitor::VisitStmt_(op);
+    ++seen_controls_;
+  }
+
   void VisitStmt_(const AllocateNode *op) final {
     if (!is_one(op->condition)) {
       Reject(kDiagnostic, " does not support predicated allocation");
       return;
     }
-    if (closed_) {
+    if (AllowsOwnerTrees()) {
       int64_t elements = 1;
       for (const PrimExpr &extent : op->extents) {
         const auto *literal = extent.as<IntImmNode>();
@@ -337,6 +358,11 @@ private:
       }
       const int resource = static_cast<int>(resource_value->value);
       owner_ = resource == 0 ? kCoreCube : kCoreVector;
+      if (EvaluatesConcreteControl() && previous != kCoreUnassigned &&
+          previous != owner_) {
+        Reject(kDiagnostic, " has conflicting nested C/V resource scopes");
+        return;
+      }
     } else if (op->attr_key == "thread_extent") {
       const auto *iteration = op->node.as<IterVarNode>();
       if (iteration == nullptr) {
@@ -373,7 +399,7 @@ private:
           return;
         }
         workgroups_.push_back(op->value);
-        if (closed_) {
+        if (AllowsOwnerTrees()) {
           if (workgroup_.defined()) {
             Reject(kDiagnostic, " has duplicate workgroup axes");
             return;
@@ -393,7 +419,8 @@ private:
   void VisitExpr(const PrimExpr &expression) final {
     if (!IsValid())
       return;
-    if (subcore_.defined() && expression.dtype().is_bool()) {
+    if (!EvaluatesConcreteControl() && subcore_.defined() &&
+        expression.dtype().is_bool()) {
       if (!(!UsesVar(expression, [&](const VarNode *var) {
             return subcore_.value().same_as(GetRef<Var>(var));
           }))) {
@@ -419,7 +446,13 @@ private:
   int vector_topologies_{0};
   bool developer_ratio_{false};
   bool inside_c_loop_{false};
-  bool closed_{false};
+  bool AllowsOwnerTrees() const {
+    return policy_ != CrossCoreControlPolicy::kFlatPrefix;
+  }
+  bool EvaluatesConcreteControl() const {
+    return policy_ == CrossCoreControlPolicy::kFiniteEpoch;
+  }
+  CrossCoreControlPolicy policy_;
   std::string failure_;
 };
 
@@ -1071,11 +1104,16 @@ struct ClosedGMRectangle {
   bool write;
 };
 
+enum class LocalTileOffsetPolicy { kZeroBase, kCompleteTileAligned };
+
 class ClosedDMAAudit {
 public:
   ClosedDMAAudit(const PrimFunc &function, const FlatInputValidator &validation,
-                 const ClosedDiagnostic &diagnostic)
-      : function_(function), validation_(validation), diagnostic_(diagnostic) {}
+                 const ClosedDiagnostic &diagnostic,
+                 LocalTileOffsetPolicy local_offset_policy =
+                     LocalTileOffsetPolicy::kZeroBase)
+      : function_(function), validation_(validation), diagnostic_(diagnostic),
+        local_offset_policy_(local_offset_policy) {}
 
   ClosedGMRectangle Run(const LegacyOwnedTask &record,
                         const BufferRegion &region, bool write) const {
@@ -1252,8 +1290,11 @@ public:
         local_offset <= ClosedI64(allocation->second.elements - volume)))
         << diagnostic(" complete DMA footprint exceeds its local allocation");
     if (to_l1 || fix)
-      ICHECK(analyzer.CanProve(local_offset == ClosedI64(0)))
-          << diagnostic(" requires the complete L1/L0 tile base");
+      ICHECK(analyzer.CanProve(
+          local_offset_policy_ == LocalTileOffsetPolicy::kCompleteTileAligned
+              ? floormod(local_offset, ClosedI64(volume)) == ClosedI64(0)
+              : local_offset == ClosedI64(0)))
+          << diagnostic(" requires an aligned complete L1/L0 tile base");
     if (record.owner == kCoreCube) {
       std::unordered_set<Var, ObjectPtrHash, ObjectPtrEqual> dependent;
       dependent.insert(validation_.Subcore());
@@ -1278,6 +1319,7 @@ private:
   PrimFunc function_;
   const FlatInputValidator &validation_;
   const ClosedDiagnostic &diagnostic_;
+  LocalTileOffsetPolicy local_offset_policy_;
 };
 
 enum class ClosedRelation { kDifferentWorkgroups, kDifferentAIVs };
@@ -1369,7 +1411,8 @@ LegacyCrossCorePlan PlanLegacyClosedCrossCore(
   if (auto rings =
           function->GetAttr<PhysicalRingProvenance>(kPhysicalRingProvenance))
     ICHECK(rings.value().empty()) << diagnostic(" rejects physical rings");
-  FlatInputValidator validation(function, tasks, controls, true);
+  FlatInputValidator validation(function, tasks, controls,
+                                CrossCoreControlPolicy::kClosedStatic);
   validation.Run(function->body);
   ICHECK(validation.IsValid())
       << diagnostic(" structural validation failed: ", validation.Failure());
@@ -1547,6 +1590,789 @@ LegacyCrossCorePlan PlanLegacyClosedCrossCore(
       " requires unique parameter identities for all publication roots");
   plan.shadows.push_back(std::move(release));
   plan.shadows.push_back(std::move(acquire));
+  return plan;
+}
+
+namespace {
+
+constexpr const char *kEpochDiagnostic = "Legacy C/V epoch protocol: ";
+constexpr size_t kEpochActionBudget = 2000000;
+constexpr size_t kEpochStepBudget = 500000;
+constexpr size_t kEpochIntervalBudget = 1000000;
+constexpr size_t kEpochHistoryBudget = 4000000;
+constexpr int64_t kEpochWorkgroupBudget = 128;
+// CANN CrossCoreWaitFlag documents the hardware counter domain as [0, 15].
+constexpr size_t kEpochCounterCapacity = 15;
+
+struct EpochClock {
+  int64_t group;
+  int actor;
+  std::array<uint64_t, 3> time{};
+};
+
+bool EpochBefore(const EpochClock &before, const EpochClock &after) {
+  if (before.group != after.group)
+    return false;
+  for (size_t actor = 0; actor < before.time.size(); ++actor)
+    if (before.time[actor] > after.time[actor])
+      return false;
+  return true;
+}
+
+void EpochJoin(EpochClock *clock, const EpochClock &other) {
+  ICHECK_EQ(clock->group, other.group);
+  for (size_t actor = 0; actor < clock->time.size(); ++actor)
+    clock->time[actor] = std::max(clock->time[actor], other.time[actor]);
+}
+
+bool EpochSameClock(const EpochClock &a, const EpochClock &b) {
+  return a.group == b.group && a.actor == b.actor && a.time == b.time;
+}
+
+struct EpochRoot {
+  Buffer buffer;
+  int64_t bytes;
+  CoreMask owners{kCoreUnassigned};
+  bool written{false};
+};
+
+struct EpochDMA {
+  Var root;
+  int64_t offset, stride, rows, columns, bytes;
+  bool write;
+};
+
+struct EpochStep {
+  const LegacyOwnedTask *record;
+  std::optional<LegacyCrossFlag> flag;
+  std::vector<EpochDMA> accesses;
+};
+
+struct EpochProgram {
+  Stmt statement;
+  CoreMask owner{kCoreUnassigned};
+  const LegacyOwnedTask *record{nullptr};
+  std::vector<std::unique_ptr<EpochProgram>> children;
+  bool relevant{false};
+};
+
+using EpochRoots =
+    std::unordered_map<Var, EpochRoot, ObjectPtrHash, ObjectPtrEqual>;
+using EpochFootprints =
+    std::unordered_map<const TaskNode *, std::vector<ClosedGMRectangle>>;
+
+// Compile the original occurrence tree once. Shared Stmt identities may occur
+// at different positions; task lookup must retain the occurrence, not a name.
+class EpochProgramBuilder {
+public:
+  EpochProgramBuilder(const std::vector<LegacyOwnedTask> &tasks,
+                      const EpochFootprints &footprints,
+                      const EpochRoots &roots)
+      : footprints_(footprints), roots_(roots) {
+    for (const auto &record : tasks)
+      records_.emplace(record.order, &record);
+  }
+
+  std::unique_ptr<EpochProgram> Run(const Stmt &statement) {
+    return Build(statement, kCoreUnassigned);
+  }
+
+private:
+  std::unique_ptr<EpochProgram> Build(const Stmt &statement, CoreMask owner) {
+    ICHECK_LT(occurrence_, kEpochActionBudget)
+        << kEpochDiagnostic << "statement occurrence budget exceeded";
+    auto node = std::make_unique<EpochProgram>();
+    node->statement = statement;
+    node->owner = owner;
+    auto record = records_.find(++occurrence_);
+    if (record != records_.end()) {
+      node->record = record->second;
+      ICHECK(node->record->original_statement.same_as(statement))
+          << kEpochDiagnostic << "mismatched original task occurrence";
+      node->relevant =
+          DecodeLegacyCrossFlag(node->record->task->stmt).has_value();
+      auto footprint = footprints_.find(node->record->task.get());
+      if (footprint != footprints_.end())
+        for (const auto &access : footprint->second)
+          node->relevant |= roots_.at(access.buffer->data).written;
+    }
+    auto add = [&](const Stmt &body, CoreMask child_owner) {
+      auto child = Build(body, child_owner);
+      node->relevant |= child->relevant;
+      node->children.push_back(std::move(child));
+    };
+    if (const auto *sequence = statement.as<SeqStmtNode>()) {
+      for (const Stmt &child : sequence->seq)
+        add(child, owner);
+    } else if (const auto *attribute = statement.as<AttrStmtNode>()) {
+      CoreMask child_owner = owner;
+      if (attribute->attr_key == "resource_scope") {
+        const auto *resource = attribute->value.as<IntImmNode>();
+        ICHECK(resource && (resource->value == 0 || resource->value == 1))
+            << kEpochDiagnostic << "requires an explicit C or V owner";
+        child_owner = resource->value == 0 ? kCoreCube : kCoreVector;
+      }
+      add(attribute->body, child_owner);
+    } else if (const auto *binding = statement.as<LetStmtNode>()) {
+      add(binding->body, owner);
+    } else if (const auto *loop = statement.as<ForNode>()) {
+      add(loop->body, owner);
+    } else if (const auto *branch = statement.as<IfThenElseNode>()) {
+      add(branch->then_case, owner);
+      if (branch->else_case.defined())
+        add(branch->else_case.value(), owner);
+    } else if (const auto *allocation = statement.as<AllocateNode>()) {
+      add(allocation->body, owner);
+    } else if (const auto *declaration = statement.as<DeclBufferNode>()) {
+      add(declaration->body, owner);
+    } else {
+      ICHECK(statement.as<EvaluateNode>() || statement.as<BufferStoreNode>())
+          << kEpochDiagnostic << "unsupported original statement";
+    }
+    return node;
+  }
+
+  const EpochFootprints &footprints_;
+  const EpochRoots &roots_;
+  std::map<size_t, const LegacyOwnedTask *> records_;
+  size_t occurrence_{0};
+};
+
+class EpochTrace {
+public:
+  EpochTrace(const EpochFootprints &footprints, const EpochRoots &roots,
+             size_t *actions, size_t *steps)
+      : footprints_(footprints), roots_(roots), actions_(actions),
+        steps_(steps) {}
+
+  std::vector<EpochStep> Run(const EpochProgram &program, const Var &workgroup,
+                             const Var &subcore, int64_t group, int actor) {
+    const auto workgroup_scope = context_.Bind(workgroup, group);
+    const auto subcore_scope =
+        context_.Bind(subcore, actor == 0 ? 0 : actor - 1);
+    const auto owner_scope = context_.EnterOwner(
+        actor == 0 ? LegacyProtocolOwner::kCube : LegacyProtocolOwner::kVector);
+    Execute(program);
+    return std::move(trace_);
+  }
+
+private:
+  int64_t Integer(const PrimExpr &value, const char *what) const {
+    const auto result = context_.Evaluate(value);
+    ICHECK(result.has_value()) << kEpochDiagnostic << "requires a finite pure "
+                               << what << ": " << value;
+    return result.value();
+  }
+
+  void Budget() {
+    ICHECK_LT((*actions_)++, kEpochActionBudget)
+        << kEpochDiagnostic << "finite execution budget exceeded";
+  }
+
+  void Emit(const EpochProgram &program) {
+    if (!program.record)
+      return;
+    const auto &record = *program.record;
+    EpochStep step{&record, DecodeLegacyCrossFlag(record.task->stmt), {}};
+    const auto footprint = footprints_.find(record.task.get());
+    if (footprint != footprints_.end()) {
+      for (const auto &access : footprint->second) {
+        if (!roots_.at(access.buffer->data).written)
+          continue;
+        step.accesses.push_back(
+            {access.buffer->data, Integer(access.offset, "mutable GM address"),
+             Integer(access.stride, "mutable GM stride"), access.rows,
+             access.columns, access.buffer->dtype.bytes(), access.write});
+      }
+    }
+    if (!step.flag.has_value() && step.accesses.empty())
+      return;
+    ICHECK_LT((*steps_)++, kEpochStepBudget)
+        << kEpochDiagnostic << "finite trace budget exceeded";
+    trace_.push_back(std::move(step));
+  }
+
+  void Execute(const EpochProgram &program) {
+    const CoreMask owner = context_.Owner() == LegacyProtocolOwner::kCube
+                               ? kCoreCube
+                               : kCoreVector;
+    if (!program.relevant ||
+        (program.owner != kCoreUnassigned && program.owner != owner))
+      return;
+    Budget();
+    if (const auto *binding = program.statement.as<LetStmtNode>()) {
+      Emit(program);
+      const auto scope =
+          context_.Bind(binding->var, context_.Evaluate(binding->value));
+      Execute(*program.children[0]);
+      return;
+    }
+    if (const auto *loop = program.statement.as<ForNode>()) {
+      ICHECK(SideEffect(loop->min) <= CallEffectKind::kPure &&
+             SideEffect(loop->extent) <= CallEffectKind::kPure)
+          << kEpochDiagnostic << "mutable protocol loop bounds";
+      const int64_t minimum = Integer(loop->min, "loop minimum");
+      const int64_t extent = Integer(loop->extent, "loop extent");
+      ICHECK(extent >= 0 && uint64_t(extent) <= kEpochActionBudget)
+          << kEpochDiagnostic << "invalid or excessive loop extent";
+      const DataType dtype = loop->loop_var.dtype();
+      const __int128 end = __int128(minimum) + extent;
+      ICHECK(dtype.is_scalar() && dtype.is_int() && dtype.bits() <= 64 &&
+             end >= -(__int128(1) << (dtype.bits() - 1)) &&
+             end <= (__int128(1) << (dtype.bits() - 1)) - 1)
+          << kEpochDiagnostic << "nonrepresentable loop endpoint";
+      auto binding = context_.Bind(loop->loop_var, std::nullopt);
+      for (int64_t iteration = 0; iteration < extent; ++iteration) {
+        Budget();
+        binding.Set(minimum + iteration);
+        Execute(*program.children[0]);
+      }
+      return;
+    }
+    if (const auto *branch = program.statement.as<IfThenElseNode>()) {
+      ICHECK(SideEffect(branch->condition) <= CallEffectKind::kPure)
+          << kEpochDiagnostic << "data-dependent epoch branch";
+      const int64_t condition = Integer(branch->condition, "branch condition");
+      if (condition)
+        Execute(*program.children[0]);
+      else if (program.children.size() == 2)
+        Execute(*program.children[1]);
+      return;
+    }
+    Emit(program);
+    for (const auto &child : program.children)
+      Execute(*child);
+  }
+
+  const EpochFootprints &footprints_;
+  const EpochRoots &roots_;
+  size_t *actions_;
+  size_t *steps_;
+  LegacyProtocolContext context_;
+  std::vector<EpochStep> trace_;
+};
+
+struct EpochSegment {
+  std::optional<EpochClock> writer;
+  std::vector<EpochClock> readers;
+};
+
+class EpochMemory {
+public:
+  explicit EpochMemory(const EpochRoots &roots) : roots_(roots) {}
+
+  bool HasPublication() const { return has_publication_; }
+
+  void Access(const EpochDMA &access, const EpochClock &clock) {
+    const EpochRoot &root = roots_.at(access.root);
+    auto found = memory_.find(access.root);
+    if (found == memory_.end()) {
+      auto &intervals = memory_[access.root];
+      intervals.emplace(0, EpochSegment{});
+      intervals.emplace(root.bytes, EpochSegment{});
+      intervals_ += 2;
+      found = memory_.find(access.root);
+    }
+    const int64_t contiguous_rows =
+        access.stride == access.columns ? access.rows : 1;
+    for (int64_t row = 0; row < access.rows; row += contiguous_rows) {
+      const __int128 start =
+          (__int128(access.offset) + __int128(row) * access.stride) *
+          access.bytes;
+      const __int128 end =
+          start + __int128(contiguous_rows) * access.columns * access.bytes;
+      ICHECK(start >= 0 && end > start && end <= root.bytes)
+          << kEpochDiagnostic << "instantiated GM row exceeds its allocation";
+      auto &intervals = found->second;
+      auto end_it = Split(&intervals, static_cast<int64_t>(end));
+      auto begin_it = Split(&intervals, static_cast<int64_t>(start));
+      size_t parts = 0;
+      for (auto it = begin_it; it != end_it; ++it) {
+        ++parts;
+        ICHECK_LT(++visits_, kEpochHistoryBudget)
+            << kEpochDiagnostic
+            << "physical interval execution budget exceeded";
+        auto &segment = it->second;
+        if (segment.writer.has_value()) {
+          RequireBefore(segment.writer.value(), clock, access);
+          has_publication_ |=
+              !access.write && segment.writer->actor == 0 && clock.actor != 0;
+        }
+        if (access.write) {
+          for (const auto &reader : segment.readers)
+            RequireBefore(reader, clock, access);
+          histories_ -= segment.readers.size();
+          segment.readers.clear();
+          segment.writer = clock;
+        } else {
+          auto reader = std::find_if(
+              segment.readers.begin(), segment.readers.end(),
+              [&](const EpochClock &value) {
+                return value.group == clock.group && value.actor == clock.actor;
+              });
+          if (reader == segment.readers.end()) {
+            ICHECK_LT(++histories_, kEpochHistoryBudget)
+                << kEpochDiagnostic
+                << "physical reader history budget exceeded";
+            segment.readers.push_back(clock);
+          } else {
+            *reader = clock;
+          }
+        }
+      }
+      if (access.write && parts > 1) {
+        // A complete write replaces every prior reader/writer after their
+        // clocks were checked. Keep one interval for the resulting state.
+        intervals.erase(std::next(begin_it), end_it);
+        intervals_ -= parts - 1;
+      }
+      Coalesce(&intervals, begin_it, root.bytes);
+    }
+  }
+
+private:
+  using Intervals = std::map<int64_t, EpochSegment>;
+
+  static bool SameState(const EpochSegment &a, const EpochSegment &b) {
+    if (a.writer.has_value() != b.writer.has_value() ||
+        a.readers.size() != b.readers.size())
+      return false;
+    if (a.writer.has_value() &&
+        !EpochSameClock(a.writer.value(), b.writer.value()))
+      return false;
+    for (size_t index = 0; index < a.readers.size(); ++index)
+      if (!EpochSameClock(a.readers[index], b.readers[index]))
+        return false;
+    return true;
+  }
+
+  void Coalesce(Intervals *intervals, Intervals::iterator begin,
+                int64_t capacity) {
+    if (begin != intervals->begin()) {
+      auto previous = std::prev(begin);
+      if (SameState(previous->second, begin->second)) {
+        histories_ -= begin->second.readers.size();
+        intervals->erase(begin);
+        --intervals_;
+        begin = previous;
+      }
+    }
+    auto next = std::next(begin);
+    while (next != intervals->end() && next->first != capacity &&
+           SameState(begin->second, next->second)) {
+      histories_ -= next->second.readers.size();
+      next = intervals->erase(next);
+      --intervals_;
+    }
+  }
+
+  Intervals::iterator Split(Intervals *intervals, int64_t position) {
+    auto next = intervals->lower_bound(position);
+    if (next != intervals->end() && next->first == position)
+      return next;
+    ICHECK(next != intervals->begin());
+    const auto &previous = std::prev(next)->second;
+    ICHECK_LT(++intervals_, kEpochIntervalBudget)
+        << kEpochDiagnostic << "physical interval partition budget exceeded";
+    histories_ += previous.readers.size();
+    ICHECK_LE(histories_, kEpochHistoryBudget)
+        << kEpochDiagnostic << "physical reader history budget exceeded";
+    return intervals->emplace_hint(next, position, previous);
+  }
+
+  static void RequireBefore(const EpochClock &before, const EpochClock &after,
+                            const EpochDMA &access) {
+    ICHECK(EpochBefore(before, after))
+        << kEpochDiagnostic << "unordered physical GM RAW/WAR/WAW on "
+        << access.root << " between group/actor " << before.group << "/"
+        << before.actor << " and " << after.group << "/" << after.actor;
+  }
+
+  const EpochRoots &roots_;
+  std::unordered_map<Var, Intervals, ObjectPtrHash, ObjectPtrEqual> memory_;
+  size_t intervals_{0}, histories_{0}, visits_{0};
+  bool has_publication_{false};
+};
+
+struct EpochEdge {
+  std::deque<EpochClock> pending;
+  std::vector<EpochClock> consumed;
+  size_t produced{0};
+};
+
+using EpochDrains = std::vector<std::pair<CoreMask, int>>;
+
+class EpochExecution {
+public:
+  explicit EpochExecution(EpochMemory *memory) : memory_(memory) {}
+
+  EpochDrains Run(const std::array<std::vector<EpochStep>, 3> &traces,
+                  int64_t group) {
+    std::array<size_t, 3> positions{};
+    std::array<EpochClock, 3> clocks{EpochClock{group, 0, {}},
+                                     EpochClock{group, 1, {}},
+                                     EpochClock{group, 2, {}}};
+    for (int actor = 0; actor < 3; ++actor)
+      clocks[actor].time[actor] = 1;
+    size_t remaining = traces[0].size() + traces[1].size() + traces[2].size();
+    while (remaining) {
+      bool progress = false;
+      for (int actor = 0; actor < 3; ++actor) {
+        if (positions[actor] == traces[actor].size())
+          continue;
+        const EpochStep &step = traces[actor][positions[actor]];
+        if (step.flag.has_value() &&
+            step.flag->kind == LegacyCrossFlagKind::kWait &&
+            !CanWait(actor, step.flag->id))
+          continue;
+        auto &clock = clocks[actor];
+        if (step.flag.has_value() &&
+            step.flag->kind == LegacyCrossFlagKind::kWait)
+          Wait(actor, step.flag->id, &clock);
+        if (step.flag.has_value() &&
+            step.flag->kind == LegacyCrossFlagKind::kSet) {
+          ++clock.time[actor];
+          Set(actor, step.flag->id, clock);
+          // Payload after Set belongs to a phase outside that release.
+          ++clock.time[actor];
+        }
+        for (const auto &access : step.accesses)
+          memory_->Access(access, clock);
+        ++positions[actor];
+        --remaining;
+        progress = true;
+      }
+      ICHECK(progress) << kEpochDiagnostic
+                       << "deadlock or unmatched cross-core Wait in group "
+                       << group;
+    }
+    // Cleanup cannot supply a missing producer or unblock an original Wait:
+    // every original actor and real memory effect has already completed.
+    EpochDrains drains;
+    auto pending = [&](int channel, int producer, int consumer) {
+      const auto found = edges_.find({channel, producer, consumer});
+      return found == edges_.end() ? size_t(0) : found->second.pending.size();
+    };
+    for (int channel = 0; channel < 16; ++channel) {
+      const size_t to_v0 = pending(channel, 0, 1);
+      const size_t to_v1 = pending(channel, 0, 2);
+      const size_t from_v0 = pending(channel, 1, 0);
+      const size_t from_v1 = pending(channel, 2, 0);
+      ICHECK(to_v0 == to_v1 && from_v0 == from_v1 && to_v0 <= 1 &&
+             from_v0 <= 1 && !(to_v0 && from_v0))
+          << kEpochDiagnostic
+          << "terminal credits require a symmetric single-credit cleanup";
+      if (to_v0) {
+        drains.emplace_back(kCoreVector, channel);
+        Wait(1, channel, &clocks[1]);
+        Wait(2, channel, &clocks[2]);
+      }
+      if (from_v0) {
+        drains.emplace_back(kCoreCube, channel);
+        Wait(0, channel, &clocks[0]);
+      }
+    }
+    for (const auto &[key, edge] : edges_)
+      ICHECK(edge.pending.empty() && edge.produced == edge.consumed.size())
+          << kEpochDiagnostic << "cross-core credits are not drained at exit";
+    return drains;
+  }
+
+private:
+  EpochEdge &Edge(int channel, int producer, int consumer) {
+    return edges_[{channel, producer, consumer}];
+  }
+
+  bool CanWait(int actor, int channel) {
+    if (actor == 0)
+      return !Edge(channel, 1, 0).pending.empty() &&
+             !Edge(channel, 2, 0).pending.empty();
+    return !Edge(channel, 0, actor).pending.empty();
+  }
+
+  void Wait(int actor, int channel, EpochClock *clock) {
+    auto consume = [&](int producer) {
+      auto &edge = Edge(channel, producer, actor);
+      EpochJoin(clock, edge.pending.front());
+      edge.pending.pop_front();
+    };
+    if (actor == 0) {
+      consume(1);
+      consume(2);
+    } else {
+      consume(0);
+    }
+    ++clock->time[actor];
+    auto record = [&](int producer) {
+      Edge(channel, producer, actor).consumed.push_back(*clock);
+    };
+    if (actor == 0) {
+      record(1);
+      record(2);
+    } else {
+      record(0);
+    }
+  }
+
+  void Set(int actor, int channel, const EpochClock &clock) {
+    auto publish = [&](int consumer) {
+      auto &edge = Edge(channel, actor, consumer);
+      // Queue size in this chosen execution is insufficient: the 16th Set
+      // must be causally after the first Wait in EVERY legal interleaving.
+      if (edge.produced >= kEpochCounterCapacity) {
+        const size_t prior_wait = edge.produced - kEpochCounterCapacity;
+        ICHECK(prior_wait < edge.consumed.size() &&
+               EpochBefore(edge.consumed[prior_wait], clock))
+            << kEpochDiagnostic
+            << "cannot prove hardware counter capacity before channel reuse";
+      }
+      ICHECK_LT(edge.pending.size(), kEpochCounterCapacity)
+          << kEpochDiagnostic
+          << "cross-core hardware counter capacity exceeded";
+      edge.pending.push_back(clock);
+      ++edge.produced;
+    };
+    if (actor == 0) {
+      publish(1);
+      publish(2);
+    } else {
+      publish(0);
+    }
+  }
+
+  EpochMemory *memory_;
+  std::map<std::array<int, 3>, EpochEdge> edges_;
+};
+
+} // namespace
+
+LegacyCrossCorePlan
+PlanLegacyEpochCrossCore(const PrimFunc &function, const Target &target,
+                         const std::string &platform,
+                         const std::vector<LegacyOwnedTask> &tasks,
+                         const ConflictOracle &physical_conflict_oracle,
+                         const std::vector<LegacyOwnedControl> &controls,
+                         Optional<Var> private_pool) {
+  const String model = target.defined()
+                           ? target->GetAttr<String>("model").value_or(String())
+                           : String();
+  ICHECK(target.defined() && (model == "ascendc" || model == "auto") &&
+         (platform == "A2" || platform == "A3"))
+      << kEpochDiagnostic << "supports A2/A3 AscendC typed legacy effects only";
+  ICHECK(static_cast<bool>(physical_conflict_oracle))
+      << kEpochDiagnostic << "requires the physical conflict oracle";
+  const bool noalias =
+      function->GetAttr<Bool>("tir.noalias").value_or(Bool(false));
+  ICHECK(noalias || HasTrustedFreshGMV2Contract(function))
+      << kEpochDiagnostic << "requires noalias or the complete fresh-v2 recipe";
+  FlatInputValidator validation(function, tasks, controls,
+                                CrossCoreControlPolicy::kFiniteEpoch);
+  validation.Run(function->body);
+  ICHECK(validation.IsValid()) << kEpochDiagnostic << validation.Failure();
+  const ClosedDiagnostic diagnostic("");
+  const Var workgroup = validation.Workgroup(diagnostic);
+  const auto groups =
+      EvaluateLegacyProtocolInteger(validation.WorkgroupExtent(), {});
+  ICHECK(groups.has_value() && groups.value() > 0 &&
+         groups.value() <= kEpochWorkgroupBudget)
+      << kEpochDiagnostic << "requires finite bounded workgroups";
+  EpochRoots roots;
+  std::unordered_set<Var, ObjectPtrHash, ObjectPtrEqual> fresh;
+  for (const Var &root : ReadTrustedFreshGMStorages(function))
+    fresh.insert(root);
+  for (const auto &[parameter, buffer] : function->buffer_map) {
+    ICHECK(!roots.count(buffer->data))
+        << kEpochDiagnostic << "ambiguous GM parameter identity";
+    int64_t bytes = buffer->dtype.bytes();
+    for (const PrimExpr &dimension : buffer->shape) {
+      const auto *literal = dimension.as<IntImmNode>();
+      ICHECK(literal && literal->value > 0 &&
+             bytes <= std::numeric_limits<int64_t>::max() / literal->value)
+          << kEpochDiagnostic << "requires static nonoverflowing GM capacity";
+      bytes *= literal->value;
+    }
+    roots.emplace(buffer->data, EpochRoot{buffer, bytes});
+  }
+  EpochFootprints footprints;
+  ClosedDMAAudit dma(function, validation, diagnostic,
+                     LocalTileOffsetPolicy::kCompleteTileAligned);
+  std::map<int, CoreMask> producers;
+  LegacyCrossCorePlan plan;
+  auto real_gm = [&](const BufferRegion &region) {
+    return IsGM(region) &&
+           (!private_pool.defined() ||
+            !region->buffer->data.same_as(private_pool.value()));
+  };
+  std::vector<std::pair<const LegacyOwnedTask *, BufferRegion>> effects;
+  struct PhysicalEffect {
+    const LegacyOwnedTask *record;
+    BufferRegion region;
+    bool write;
+  };
+  std::vector<PhysicalEffect> physical_effects;
+  Map<Var, PrimExpr> oracle_variables[2];
+  for (const Var &variable : validation.PrivateVariables()) {
+    oracle_variables[0].Set(variable, variable.copy_with_suffix("_epoch_left"));
+    oracle_variables[1].Set(variable,
+                            variable.copy_with_suffix("_epoch_right"));
+  }
+  auto oracle_region = [&](const BufferRegion &region, int side) {
+    Array<Range> ranges;
+    for (const Range &range : region->region)
+      ranges.push_back(Range::FromMinExtent(
+          Substitute(range->min, oracle_variables[side]),
+          Substitute(range->extent, oracle_variables[side])));
+    return BufferRegion(region->buffer, ranges);
+  };
+  auto independent_conflict =
+      [&](const LegacyOwnedTask &a, const BufferRegion &ar,
+          const LegacyOwnedTask &b, const BufferRegion &br) {
+        // Independent lexical iterations and AIVs must not obtain a false proof
+        // from contradictory guards over an accidentally shared binder.
+        const ConstrSet ac = a.task->outer_ctx.Substitute(oracle_variables[0]);
+        const ConstrSet bc = b.task->outer_ctx.Substitute(oracle_variables[1]);
+        return physical_conflict_oracle({ac, oracle_region(ar, 0), bc,
+                                         oracle_region(br, 1), nullptr, 0, 0,
+                                         NullOpt, NullOpt});
+      };
+  for (const LegacyOwnedTask &record : tasks) {
+    if (auto flag = DecodeLegacyCrossFlag(record.task->stmt)) {
+      const auto *evaluation = record.task->stmt.as<EvaluateNode>();
+      const auto *call =
+          evaluation ? evaluation->value.as<CallNode>() : nullptr;
+      ICHECK(call && call->op.as<OpNode>() &&
+             record.task->GetReadRegions().empty() &&
+             record.task->GetWriteRegions().empty())
+          << kEpochDiagnostic << "requires native, separate cross-core calls";
+      if (flag->kind == LegacyCrossFlagKind::kSet) {
+        ICHECK_EQ(flag->mode, 2)
+            << kEpochDiagnostic << "requires mode-2 cross-core channels";
+        const std::unordered_set<std::string> pipes =
+            record.owner == kCoreCube
+                ? std::unordered_set<std::string>{"M", "MTE1", "MTE2", "FIX"}
+                : std::unordered_set<std::string>{"V", "MTE2", "MTE3"};
+        ICHECK(pipes.count(flag->pipe))
+            << kEpochDiagnostic << "cross Set pipe disagrees with its owner";
+        auto [found, inserted] = producers.emplace(flag->id, record.owner);
+        ICHECK(inserted || found->second == record.owner)
+            << kEpochDiagnostic << "a channel has conflicting producer owners";
+      }
+      plan.reservations.push_back({record.owner, true, "", flag->id});
+      continue;
+    }
+    CollectLocalReservation(record, &plan);
+    for (bool write : {false, true}) {
+      const auto &regions = write ? record.task->GetWriteRegions()
+                                  : record.task->GetReadRegions();
+      for (const BufferRegion &region : regions) {
+        if (private_pool.defined() &&
+            region->buffer->data.same_as(private_pool.value())) {
+          ICHECK_EQ(record.owner, kCoreCube)
+              << kEpochDiagnostic << "private composite pool escaped Cube";
+          continue;
+        }
+        physical_effects.push_back({&record, region, write});
+        if (!real_gm(region))
+          continue;
+        auto root = roots.find(region->buffer->data);
+        ICHECK(root != roots.end())
+            << kEpochDiagnostic << "GM effect has no unique parameter root";
+        root->second.owners |= record.owner;
+        root->second.written |= write;
+        ICHECK(!write || noalias || fresh.count(region->buffer->data))
+            << kEpochDiagnostic
+            << "GM writes require a fresh-v2 allocation root";
+        footprints[record.task.get()].push_back(dma.Run(record, region, write));
+        effects.push_back({&record, region});
+      }
+    }
+  }
+  for (const auto &a : physical_effects)
+    for (const auto &b : physical_effects) {
+      if (a.record->owner == b.record->owner || (!a.write && !b.write) ||
+          (real_gm(a.region) && real_gm(b.region)))
+        continue;
+      const auto conflict =
+          independent_conflict(*a.record, a.region, *b.record, b.region);
+      ICHECK(conflict.has_value() && !conflict.value())
+          << kEpochDiagnostic << "uncovered cross-owner non-GM effect";
+    }
+  for (const auto &record : tasks) {
+    if (auto flag = DecodeLegacyCrossFlag(record.task->stmt))
+      if (flag->kind == LegacyCrossFlagKind::kWait) {
+        auto producer = producers.find(flag->id);
+        ICHECK(producer != producers.end() && producer->second != record.owner)
+            << kEpochDiagnostic << "cross Wait has no opposite-owner producer";
+      }
+  }
+  // Distinct roots are not assumed disjoint from their spelling. Consume the
+  // same physical oracle and validated allocator authority as local analysis.
+  for (const auto &[a, ar] : effects) {
+    if (!roots.at(ar->buffer->data).written)
+      continue;
+    for (const auto &[b, br] : effects) {
+      if (ar->buffer->data.same_as(br->buffer->data))
+        continue;
+      const auto conflict = independent_conflict(*a, ar, *b, br);
+      ICHECK(conflict.has_value() && !conflict.value())
+          << kEpochDiagnostic << "unproved physical alias between GM roots";
+    }
+  }
+  for (const auto &[root, info] : roots)
+    if (info.written && info.owners == (kCoreCube | kCoreVector))
+      plan.shared_gm_storages.push_back(root);
+  ICHECK(!plan.shared_gm_storages.empty())
+      << kEpochDiagnostic << "requires real cross-owner mutable GM effects";
+  auto program =
+      EpochProgramBuilder(tasks, footprints, roots).Run(function->body);
+  EpochMemory memory(roots);
+  size_t actions = 0, steps = 0;
+  std::optional<EpochDrains> drains;
+  for (int64_t group = 0; group < groups.value(); ++group) {
+    std::array<std::vector<EpochStep>, 3> traces;
+    for (int actor = 0; actor < 3; ++actor)
+      traces[actor] =
+          EpochTrace(footprints, roots, &actions, &steps)
+              .Run(*program, workgroup, validation.Subcore(), group, actor);
+    EpochDrains current_drains = EpochExecution(&memory).Run(traces, group);
+    ICHECK(!drains.has_value() || drains.value() == current_drains)
+        << kEpochDiagnostic << "terminal cleanup differs across workgroups";
+    drains = std::move(current_drains);
+  }
+  ICHECK(memory.HasPublication())
+      << kEpochDiagnostic << "requires a real Cube-to-Vector GM publication";
+  for (const auto &[owner, channel] : drains.value())
+    plan.epilogues.push_back(
+        {owner, Evaluate(Call(DataType::Handle(), tl::ascend_wait_cross_flag(),
+                              {Integer(channel), StringImm("MTE2")}))});
+  // Only the complete proof grants these fences. They force completion on
+  // each original Set pipe and acquire on Scalar, making trace clocks valid
+  // for asynchronous DMA as well as for lexical issue order.
+  for (const auto &record : tasks) {
+    const auto flag = DecodeLegacyCrossFlag(record.task->stmt);
+    if (!flag.has_value())
+      continue;
+    LegacyCrossShadowEffect shadow{
+        record.task,
+        PipeMask(flag->kind == LegacyCrossFlagKind::kSet
+                     ? ParseAscendPipe(flag->pipe)
+                     : ResourcePipe::kScalar),
+        {},
+        {}};
+    for (const auto &[root, info] : roots) {
+      if (!info.written)
+        continue;
+      const Buffer &buffer = info.buffer;
+      Array<Range> ranges;
+      for (const PrimExpr &extent : buffer->shape)
+        ranges.push_back(
+            Range::FromMinExtent(make_zero(extent.dtype()), extent));
+      BufferRegion whole(buffer, ranges);
+      shadow.reads.push_back(whole);
+      shadow.writes.push_back(whole);
+    }
+    plan.shadows.push_back(std::move(shadow));
+  }
   return plan;
 }
 

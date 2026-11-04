@@ -64,6 +64,7 @@ std::string SyncBoundaryPipeName(TaskNode *task, bool at_beginning);
 std::optional<std::string> SyncAlternateAcquirePipeName(TaskNode *task);
 bool IsSyncOptionalControl(IRStructure *node);
 bool IsSyncStaticCubePipelineControl(ControlNode *node);
+bool BlocksFollowingIssue(IRStructure *node);
 
 // ============================================================================
 // Synchronization site/edge model, collection, and lookup
@@ -1522,6 +1523,39 @@ private:
                         const std::vector<size_t> &task_sites, int max_distance,
                         ControlNode *projection_scope) const {
     const SyncInsertionSiteList &sites = site_registry_.Sites();
+    if (policy_.platform == "A2" || policy_.platform == "A3") {
+      for (size_t source : task_sites) {
+        const auto &before = sites[source];
+        if (before.at_beginning || before.path_begin != before.path_end ||
+            before.path_end->GetParent() != projection_scope ||
+            before.path_end->GetStage() != 0 || !is_one(before.GetGuard()) ||
+            !BlocksFollowingIssue(before.path_end))
+          continue;
+        for (size_t destination : task_sites) {
+          const auto &after = sites[destination];
+          if (!after.at_beginning ||
+              after.path_begin->GetParent() != projection_scope ||
+              before.core != after.core ||
+              before.EpochDomainId() != after.EpochDomainId() ||
+              before.path_end->GetIndex() >= after.path_begin->GetIndex())
+            continue;
+          bool unstaged = true;
+          for (IRStructure *node = after.path_end;; node = node->GetParent()) {
+            ICHECK(node != nullptr);
+            unstaged &= node->GetStage() == 0;
+            if (node == after.path_begin)
+              break;
+          }
+          if (!unstaged)
+            continue;
+          // An audited issue-blocking instruction orders later issue,
+          // including a subsequent optional control's body. It does not drain
+          // earlier work: real asynchronous completion edges remain required.
+          SaturateDependencyEdge(closure, DepEdge(source, destination, 0, true),
+                                 max_distance, projection_scope);
+        }
+      }
+    }
     for (size_t before : task_sites) {
       if (!sites[before].at_beginning)
         continue;
@@ -2407,6 +2441,7 @@ public:
   std::optional<ResourcePipe> alternate_acquire;
   bool optional_control{false};
   bool static_cube_pipeline{false};
+  SyncIssueOrdering issue_ordering{SyncIssueOrdering::kOrdinary};
   std::unique_ptr<IRExtraInfo> Clone() const final {
     return std::make_unique<SyncInsertionExtraInfo>(*this);
   }
@@ -2457,6 +2492,12 @@ bool IsSyncOptionalControl(IRStructure *node) {
 bool IsSyncStaticCubePipelineControl(ControlNode *node) {
   return node != nullptr &&
          GetSyncInsertionExtraInfo(node)->static_cube_pipeline;
+}
+
+bool BlocksFollowingIssue(IRStructure *node) {
+  return node != nullptr && node->IsTask() &&
+         GetSyncInsertionExtraInfo(node)->issue_ordering ==
+             SyncIssueOrdering::kBlocksFollowingIssue;
 }
 
 std::unique_ptr<IRExtraInfo> MakeSyncInsertionExtraInfo() {
@@ -2734,6 +2775,22 @@ void SetSyncStaticCubePipelineControl(ControlNode *control) {
          extent->value > 0)
       << "Certified Cube pipeline requires its real static steady loop";
   GetSyncInsertionExtraInfo(control)->static_cube_pipeline = true;
+}
+
+void GrantNativeCrossOrdering(TaskNode *task, NativeCrossInstruction kind) {
+  ICHECK(task != nullptr);
+  const bool is_wait = kind == NativeCrossInstruction::kWait;
+  const auto *evaluation = task->stmt.as<EvaluateNode>();
+  const auto *call = evaluation ? evaluation->value.as<CallNode>() : nullptr;
+  ICHECK(call != nullptr &&
+         (is_wait ? (call->op.same_as(tl::ascend_wait_cross_flag()) ||
+                     call->op.same_as(tl::ascend_auto_wait_cross_flag()))
+                  : (call->op.same_as(tl::ascend_set_cross_flag()) ||
+                     call->op.same_as(tl::ascend_auto_set_cross_flag()))))
+      << "Epoch control order requires its proven native cross instruction";
+  GetSyncInsertionExtraInfo(task)->issue_ordering =
+      is_wait ? SyncIssueOrdering::kBlocksFollowingIssue
+              : SyncIssueOrdering::kOrdinary;
 }
 
 std::optional<SyncPlacement> GetSyncPlacement(IRStructure *node) {

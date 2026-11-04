@@ -41,9 +41,9 @@ struct ImportedLegacySyncIR {
   // identity is private to this import and never appears in emitted TIR.
   Optional<tir::Buffer> composite_hidden_pool;
   std::shared_ptr<LegacyExportState> export_state;
-  // Private analysis certificate, granted only after the mandatory closed
-  // publication planner succeeds. It never becomes a user TIR attribute.
-  bool has_closed_publication_plan{false};
+  // Owner-local oracle permission granted only by a complete publication
+  // proof. It never becomes a user TIR attribute or depends on a strategy name.
+  GMFreshnessScope local_freshness_scope{GMFreshnessScope::kCompilerAdded};
 
   ConflictOracle MakeOracle() const;
   ConflictOracle MakeOracle(GMFreshnessScope scope) const;

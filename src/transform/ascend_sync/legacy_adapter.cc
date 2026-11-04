@@ -58,6 +58,7 @@ struct LegacyExportState {
   Map<Var, PrimExpr> conditional_loop_substitutions;
   size_t root_scope_occurrence{0};
   std::unordered_map<size_t, Stmt> closed_replacements;
+  std::vector<std::pair<CoreMask, Stmt>> epoch_epilogues;
 };
 
 namespace {
@@ -712,13 +713,15 @@ public:
                  LegacyTailCopyPlan *tail_copies,
                  const LegacyPipelineCase *pipeline_case,
                  const LegacyPersistentPipelineImport *persistent,
-                 bool normalized_manual_events, int manual_event_owner)
+                 bool normalized_manual_events, int manual_event_owner,
+                 bool normalized_cross_core)
       : result_(result), target_(target), platform_(platform),
         ordinary_sync_(ordinary_sync), composites_(composites),
         tail_copies_(tail_copies), pipeline_case_(pipeline_case),
         persistent_(persistent),
         normalized_manual_events_(normalized_manual_events),
         manual_event_owner_(manual_event_owner),
+        normalized_cross_core_(normalized_cross_core),
         logic_buffer_shapes_(
             result->original_function
                 ->GetAttr<Map<Var, Array<PrimExpr>>>(kLogicBufferShapes)
@@ -773,11 +776,15 @@ public:
              "ordinary automatic synchronization on one Cube resource";
     }
     // A proven forward local protocol can be replaced only after every real
-    // operation has passed effect import. Cross-core publication has different
-    // semantics and cannot borrow this local event normalization contract.
-    ICHECK(!normalized_manual_events_ || (ordinary_sync_ && !mixed))
+    // operation has passed effect import. Mixed candidates must additionally
+    // prove the complete three-instance epoch protocol below.
+    ICHECK(!normalized_manual_events_ ||
+           (ordinary_sync_ && (!mixed || normalized_cross_core_)))
         << "Manual event normalization requires complete ordinary automatic "
            "synchronization on one execution resource";
+    ICHECK(!normalized_cross_core_ || mixed)
+        << "Existing cross-core publication requires a complete mixed C/V "
+           "protocol";
     if (normalized_manual_events_ && manual_event_owner_ >= 0)
       ICHECK_EQ(selected_resources_,
                 manual_event_owner_ == 0 ? kCoreCube : kCoreVector)
@@ -822,17 +829,36 @@ public:
       ICHECK(node->IsControl())
           << "Mixed C/V requires real owner-pure For trees";
       auto control = std::static_pointer_cast<ControlNode>(node);
-      ICHECK(original.as<ForNode>() && control->control.same_as(original) &&
-             control->task != nullptr && !control->children.empty())
+      const bool real_loop =
+          original.as<ForNode>() && control->control.same_as(original);
+      const bool epoch_branch = normalized_cross_core_ &&
+                                original.as<IfThenElseNode>() &&
+                                control->control.as<ForNode>();
+      ICHECK((real_loop || epoch_branch) && control->task != nullptr &&
+             (normalized_cross_core_ || !control->children.empty()))
           << "Mixed C/V requires real owner-pure For trees; conditional "
              "controls "
              "are unsupported";
       CoreMask owner = kCoreUnassigned;
+      if (control->children.empty()) {
+        const auto lexical = control_owners_.find(control.get());
+        ICHECK(normalized_cross_core_ && lexical != control_owners_.end() &&
+               (lexical->second == kCoreCube || lexical->second == kCoreVector))
+            << "Empty epoch controls require an explicit execution owner";
+        owner = lexical->second;
+      }
       for (const auto &child : control->children) {
         const CoreMask child_owner = add_owned(child);
         ICHECK(owner == kCoreUnassigned || owner == child_owner)
             << "Mixed C/V requires each complete For tree to have one owner";
         owner = child_owner;
+      }
+      if (normalized_cross_core_) {
+        const auto lexical = control_owners_.find(control.get());
+        if (lexical != control_owners_.end() &&
+            lexical->second != kCoreUnassigned)
+          ICHECK_EQ(owner, lexical->second)
+              << "Epoch control payload disagrees with its lexical owner";
       }
       control->task->SetCoreMask(owner);
       controls.push_back(
@@ -842,45 +868,66 @@ public:
     };
     for (const auto &node : result_->roots)
       owned_roots.push_back({node, add_owned(node)});
-    // Prefer a complete proof under the established compiler-added facts.
-    // Merely recording more allocator roles cannot narrow that old profile.
-    auto flat = AnalyzeLegacyFlatEligibility(
-        result_->original_function, target_, platform_, owned,
-        result_->MakeOracle(GMFreshnessScope::kCompilerAdded), controls,
-        composites_.requires_single_cube);
     const bool noalias =
         result_->original_function->GetAttr<Bool>("tir.noalias")
             .value_or(Bool(false));
     const bool fresh_v2 =
         HasTrustedFreshGMV2Contract(result_->original_function);
-    if (composites_.requires_single_cube)
-      ICHECK(noalias || fresh_v2)
-          << "General GEMM invocation synchronization requires complete "
-             "ordinary "
-             "automatic synchronization on one Cube resource or a closed C/V "
-             "fresh-v2 publication certificate";
-    const bool closed = !flat.IsEligible();
-    if (closed)
-      ICHECK(noalias || fresh_v2)
-          << flat.Rejection()
-          << "; closed publication requires explicit noalias or a trusted "
-             "Cython fresh-v2 allocation contract";
-    const auto plan =
-        closed ? PlanLegacyClosedCrossCore(
-                     result_->original_function, target_, platform_, owned,
-                     result_->MakeOracle(GMFreshnessScope::kRuntimeRecipe),
-                     controls,
-                     result_->composite_hidden_pool.defined()
-                         ? Optional<Var>(
-                               result_->composite_hidden_pool.value()->data)
-                         : NullOpt,
-                     flat.Rejection())
-               : flat.TakePlan();
-    // Only successful complete publication admission grants full allocation
-    // facts to the later owner-local runs; a failed proof cannot fall back.
-    result_->has_closed_publication_plan = closed;
+    const Optional<Var> private_pool =
+        result_->composite_hidden_pool.defined()
+            ? Optional<Var>(result_->composite_hidden_pool.value()->data)
+            : NullOpt;
+    const auto plan = [&]() {
+      if (normalized_cross_core_) {
+        ICHECK(noalias || fresh_v2)
+            << "Cross-core epoch publication requires explicit noalias or a "
+               "trusted Cython fresh-v2 allocation contract";
+        auto plan = PlanLegacyEpochCrossCore(
+            result_->original_function, target_, platform_, owned,
+            result_->MakeOracle(GMFreshnessScope::kRuntimeRecipe), controls,
+            private_pool);
+        result_->local_freshness_scope = GMFreshnessScope::kRuntimeRecipe;
+        return plan;
+      }
+      // Preserve the complete old flat proof under compiler-added facts.
+      auto flat = AnalyzeLegacyFlatEligibility(
+          result_->original_function, target_, platform_, owned,
+          result_->MakeOracle(GMFreshnessScope::kCompilerAdded), controls,
+          composites_.requires_single_cube);
+      if (composites_.requires_single_cube)
+        ICHECK(noalias || fresh_v2)
+            << "General GEMM invocation synchronization requires complete "
+               "ordinary automatic synchronization on one Cube resource or a "
+               "closed C/V fresh-v2 publication certificate";
+      const bool closed = !flat.IsEligible();
+      if (closed)
+        ICHECK(noalias || fresh_v2)
+            << flat.Rejection()
+            << "; closed publication requires explicit noalias or a trusted "
+               "Cython fresh-v2 allocation contract";
+      auto plan =
+          closed ? PlanLegacyClosedCrossCore(
+                       result_->original_function, target_, platform_, owned,
+                       result_->MakeOracle(GMFreshnessScope::kRuntimeRecipe),
+                       controls, private_pool, flat.Rejection())
+                 : flat.TakePlan();
+      // No failed proof grants allocation facts to owner-local runs.
+      result_->local_freshness_scope = closed
+                                           ? GMFreshnessScope::kRuntimeRecipe
+                                           : GMFreshnessScope::kCompilerAdded;
+      return plan;
+    }();
+    result_->export_state->epoch_epilogues = plan.epilogues;
     for (const auto &shadow : plan.shadows) {
       shadow.task->SetPipeMask(shadow.pipe_mask);
+      if (normalized_cross_core_) {
+        const auto flag = DecodeLegacyCrossFlag(shadow.task->stmt);
+        ICHECK(flag.has_value());
+        GrantNativeCrossOrdering(shadow.task.get(),
+                                 flag->kind == LegacyCrossFlagKind::kWait
+                                     ? NativeCrossInstruction::kWait
+                                     : NativeCrossInstruction::kSet);
+      }
       for (const auto &region : shadow.reads)
         shadow.task->AddReadRegion(region);
       for (const auto &region : shadow.writes)
@@ -1157,6 +1204,7 @@ private:
           Select(branch->condition, make_const(iteration.dtype(), 1),
                  make_zero(iteration.dtype()));
       auto control = std::make_shared<ControlNode>(MakeSyncExtraInfo());
+      control_owners_[control.get()] = explicit_resource;
       control->control =
           For(iteration, minimum, extent, ForKind::kSerial, Evaluate(0));
       SetSyncOptionalControl(control.get());
@@ -1208,6 +1256,7 @@ private:
             << key;
       }
       auto control = std::make_shared<ControlNode>(MakeSyncExtraInfo());
+      control_owners_[control.get()] = explicit_resource;
       control->control = GetRef<For>(loop);
       if (composites_.static_cube_pipeline &&
           composites_.cube_pipeline_loop.defined() &&
@@ -1281,8 +1330,10 @@ private:
   const LegacyPersistentPipelineImport *persistent_;
   bool normalized_manual_events_;
   int manual_event_owner_;
+  bool normalized_cross_core_;
   Map<Var, Array<PrimExpr>> logic_buffer_shapes_;
   std::unordered_map<TaskNode *, CoreMask> task_owners_;
+  std::unordered_map<ControlNode *, CoreMask> control_owners_;
   CoreMask selected_resources_{kCoreUnassigned};
   size_t occurrence_{0};
   size_t next_conditional_loop_{0};
@@ -1309,6 +1360,9 @@ public:
   PrimFunc Run(Stmt *synchronized_scope) {
     synchronized_scope_ = synchronized_scope;
     Collect(imported_.roots);
+    for (const auto &[owner, statement] :
+         imported_.export_state->epoch_epilogues)
+      suffix_.push_back(InResourceScope(statement, owner));
     PrimFunc result = imported_.original_function;
     result.CopyOnWrite()->body = VisitStmt(result->body);
     return result;
@@ -1407,9 +1461,7 @@ private:
 } // namespace
 
 ConflictOracle ImportedLegacySyncIR::MakeOracle() const {
-  return MakeOracle(has_closed_publication_plan
-                        ? GMFreshnessScope::kRuntimeRecipe
-                        : GMFreshnessScope::kCompilerAdded);
+  return MakeOracle(local_freshness_scope);
 }
 
 ConflictOracle ImportedLegacySyncIR::MakeOracle(GMFreshnessScope scope) const {
@@ -1481,7 +1533,7 @@ ImportLegacySync(const PrimFunc &function, const Target &target,
   LegacyTailCopyPlan tail_copies(imported.original_function, target, platform);
   LegacyImporter(&imported, target, platform, ordinary_sync, composites,
                  &tail_copies, pipeline_case, persistent, manual.normalized,
-                 manual.required_owner)
+                 manual.required_owner, manual.cross_core)
       .Run();
   return imported;
 }
