@@ -305,6 +305,7 @@ def max_scalar_from_multidim_buffer(M, N, block_M, block_N, dtype="float16", sco
     # later by AscendInferBufferScope, so the scalar read must be addressed
     # against the post-inference layout.
     alloc = T.alloc_ub if scope == "ub" else T.alloc_shared
+
     @T.prim_func
     def main(
         A: T.Tensor((M, N), dtype),  # type: ignore
@@ -2383,13 +2384,12 @@ def test_compare(out_dtype, dtype, target, shape):
     run_test_compare(M, N, 128, 256, "LT", dtype, out_dtype, target)
 
 
-def compare_scalar_from_multidim_buffer(
-    M, N, block_M, block_N, mode, dtype="float16", out_dtype="uint8", scope="ub"
-):
+def compare_scalar_from_multidim_buffer(M, N, block_M, block_N, mode, dtype="float16", out_dtype="uint8", scope="ub"):
     # "ub" resolves the scope at parse time; "shared" is only inferred as UB
     # later by AscendInferBufferScope, so the scalar read must be addressed
     # against the post-inference layout.
     alloc = T.alloc_ub if scope == "ub" else T.alloc_shared
+
     @T.prim_func
     def main(
         A: T.Tensor((M, N), dtype),  # type: ignore
@@ -2434,9 +2434,7 @@ def test_compare_scalar_from_multidim_buffer(dtype, target, scope, setup_random_
     torch.testing.assert_close(c, ref_true_index)
 
 
-def compare_scalar_from_gm_input(
-    M, N, block_M, block_N, mode, dtype="float16", out_dtype="uint8"
-):
+def compare_scalar_from_gm_input(M, N, block_M, block_N, mode, dtype="float16", out_dtype="uint8"):
     @T.prim_func
     def main(
         A: T.Tensor((M, N), dtype),  # type: ignore
