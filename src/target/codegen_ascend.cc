@@ -609,6 +609,12 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
     MmaCodegen(op);
   } else if (op->op.same_as(tl::ascend_reinterpretcast())) {
     ReinterpretCastCodegen(op);
+  } else if (op->op.same_as(tl::ascend_clamp_max())) {
+    ClampMaxMinCodegen(op);
+  } else if (op->op.same_as(tl::ascend_clamp_min())) {
+    ClampMaxMinCodegen(op);
+  } else if (op->op.same_as(tl::ascend_clamp())) {
+    ClampCodegen(op);
   } else if (op->op.same_as(builtin::if_then_else())) {
     IfThenElseCodegen(op, os);
   } else {
@@ -1105,6 +1111,42 @@ void CodeGenTileLangAscend::PrintHostFunc(
   std::string content = os.str();
 }
 
+// int4 is nibble-packed (two elements per byte, low nibble = even element):
+// every buffer dimension that serves as a contiguous (packed) run must be
+// even, or GM addressing (SetAddr divides element offsets by 2) and DMA byte
+// lengths (floor division in EleNumToBytes) silently truncate the last
+// element of each odd-width run. Reject odd contiguous dimensions at compile
+// time; dynamic (non-constant) dims cannot be checked statically.
+static void ValidateInt4BufferPacking(const PrimFunc &f) {
+  auto check_last_dim = [](const DataType &dtype, const Array<PrimExpr> &shape,
+                           const std::string &name) {
+    if (dtype != DataType::Int(4) || shape.empty()) {
+      return;
+    }
+    const PrimExpr &last = shape.back();
+    if (const auto *imm = last.as<IntImmNode>()) {
+      ICHECK(imm->value % 2 == 0)
+          << "int4 buffer '" << name << "' has an odd contiguous dimension ("
+          << imm->value
+          << "): int4 is nibble-packed (two elements per byte), "
+             "so an odd row width has no byte-aligned layout -- GM addressing "
+             "and DMA lengths would silently drop the last element of every "
+             "row. Use an even width (gemm additionally requires multiples "
+             "of 64).";
+    }
+  };
+  for (const auto &entry : f->buffer_map) {
+    check_last_dim(entry.second->dtype, entry.second->shape,
+                   entry.second->name);
+  }
+  PostOrderVisit(f->body, [&](const ObjectRef &node) {
+    if (const auto *alloc = node.as<AllocateNode>()) {
+      check_last_dim(alloc->dtype, alloc->extents,
+                     alloc->buffer_var->name_hint);
+    }
+  });
+}
+
 void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
                                         const PrimFunc &f) {
   // If the function has already been forward-declared, this is a
@@ -1117,6 +1159,7 @@ void CodeGenTileLangAscend::AddFunction(const GlobalVar &gvar,
   for (const auto &entry : f->buffer_map) {
     buffer_dtypes_[entry.second->data.get()] = entry.second->dtype;
   }
+  ValidateInt4BufferPacking(f);
 
   auto global_symbol = f->GetAttr<String>(tvm::attr::kGlobalSymbol);
 
@@ -2751,6 +2794,64 @@ void CodeGenTileLangAscend::MulAddDstCodegen(const CallNode *op) {
                << ", " << count << ");\n";
 }
 
+void CodeGenTileLangAscend::ClampMaxMinCodegen(const CallNode *op) {
+  ICHECK_EQ(op->args.size(), 5U);
+  const std::string kind = Downcast<StringImm>(op->args[0])->value;
+  const DataType dst_dtype = GetAccessPtrDtype(op->args[1].as<CallNode>());
+  const DataType src_dtype = GetAccessPtrDtype(op->args[2].as<CallNode>());
+  ICHECK_EQ(dst_dtype, src_dtype)
+      << "Clamp operand dtype mismatch: " << dst_dtype << " vs " << src_dtype;
+  this->PrintIndent();
+  auto var_name_1 = PrintBufferOffset(op->args[1].as<CallNode>());
+  auto var_name_2 = PrintBufferOffset(op->args[2].as<CallNode>());
+  const std::string op_name = kind.find("ClampMax") != std::string::npos
+                                  ? "AscendC::Mins"
+                                  : "AscendC::Maxs";
+  this->stream << op_name << "<" << getType(src_dtype) << ">(" << var_name_1
+               << ", " << var_name_2 << ", " << PrintExpr(op->args[3]) << ", "
+               << PrintExpr(op->args[4]) << ");\n";
+}
+
+void CodeGenTileLangAscend::ClampCodegen(const CallNode *op) {
+  ICHECK_EQ(op->args.size(), 6U);
+  const DataType dst_dtype = GetAccessPtrDtype(op->args[1].as<CallNode>());
+  const DataType src_dtype = GetAccessPtrDtype(op->args[2].as<CallNode>());
+  ICHECK_EQ(dst_dtype, src_dtype)
+      << "Clamp operand dtype mismatch: " << dst_dtype << " vs " << src_dtype;
+  const std::string type = getType(src_dtype);
+  auto var_name_1 = PrintBufferOffset(op->args[1].as<CallNode>());
+  auto var_name_2 = PrintBufferOffset(op->args[2].as<CallNode>());
+
+  const bool min_is_tensor = op->args[3].as<CallNode>() != nullptr;
+  const bool max_is_tensor = op->args[4].as<CallNode>() != nullptr;
+
+  if (min_is_tensor) {
+    auto min_tile = PrintBufferOffset(op->args[3].as<CallNode>());
+    this->PrintIndent();
+    this->stream << "AscendC::Max<" << type << ">(" << var_name_1 << ", "
+                 << var_name_2 << ", " << min_tile << ", "
+                 << PrintExpr(op->args[5]) << ");\n";
+  } else {
+    this->PrintIndent();
+    this->stream << "AscendC::Maxs<" << type << ">(" << var_name_1 << ", "
+                 << var_name_2 << ", " << PrintExpr(op->args[3]) << ", "
+                 << PrintExpr(op->args[5]) << ");\n";
+  }
+
+  if (max_is_tensor) {
+    auto max_tile = PrintBufferOffset(op->args[4].as<CallNode>());
+    this->PrintIndent();
+    this->stream << "AscendC::Min<" << type << ">(" << var_name_1 << ", "
+                 << var_name_1 << ", " << max_tile << ", "
+                 << PrintExpr(op->args[5]) << ");\n";
+  } else {
+    this->PrintIndent();
+    this->stream << "AscendC::Mins<" << type << ">(" << var_name_1 << ", "
+                 << var_name_1 << ", " << PrintExpr(op->args[4]) << ", "
+                 << PrintExpr(op->args[5]) << ");\n";
+  }
+}
+
 void CodeGenTileLangAscend::ReinterpretCastCodegen(const CallNode *op) {
   std::vector<std::string> var_names;
   for (int i = 0; i < 2; i++) {
@@ -3208,6 +3309,36 @@ void CodeGenTileLangAscend::EmitSelectedRawClamp(
   std::string type = getType(dtype);
   std::string dst = PrintBufferOffset(args[1].as<CallNode>());
   std::string src = PrintBufferOffset(args[2].as<CallNode>());
+
+  // Tensor bounds: emit tile-to-tile Max/Min (from PR #1620).
+  // Scalar bounds continue to the mask-managed scalar path below.
+  const bool min_is_tensor = args[3].as<CallNode>() != nullptr;
+  const bool max_is_tensor = args[4].as<CallNode>() != nullptr;
+  if (min_is_tensor || max_is_tensor) {
+    std::string count = (args.size() > 5) ? PrintExpr(args[5]) : "";
+    if (min_is_tensor) {
+      std::string min_tile = PrintBufferOffset(args[3].as<CallNode>());
+      this->PrintIndent();
+      this->stream << "AscendC::Max<" << type << ">(" << dst << ", " << src
+                   << ", " << min_tile << ", " << count << ");\n";
+    } else {
+      this->PrintIndent();
+      this->stream << "AscendC::Maxs<" << type << ">(" << dst << ", " << src
+                   << ", " << PrintExpr(args[3]) << ", " << count << ");\n";
+    }
+    if (max_is_tensor) {
+      std::string max_tile = PrintBufferOffset(args[4].as<CallNode>());
+      this->PrintIndent();
+      this->stream << "AscendC::Min<" << type << ">(" << dst << ", " << dst
+                   << ", " << max_tile << ", " << count << ");\n";
+    } else {
+      this->PrintIndent();
+      this->stream << "AscendC::Mins<" << type << ">(" << dst << ", " << dst
+                   << ", " << PrintExpr(args[4]) << ", " << count << ");\n";
+    }
+    return;
+  }
+
   auto emit = [&](const std::string &api, const std::string &input,
                   const PrimExpr &scalar) {
     std::vector<std::string> args{dst,
