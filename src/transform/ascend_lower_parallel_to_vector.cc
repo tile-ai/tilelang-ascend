@@ -901,6 +901,13 @@ private:
     if (auto load = expr.as<BufferLoadNode>()) {
       Buffer input_buffer = load->buffer;
 
+      // A row-broadcast 1D UB load cannot be read as a direct vector operand
+      // (sub-32B row stride traps the VEC instruction). Bail so VisitStmt_
+      // falls back to a scalar serial loop.
+      if (IsRowVarIndexed1DUBLoad(input_buffer, load->indices)) {
+        return false;
+      }
+
       // Compact->aligned UB->UB copy (different inner/row width) cannot be
       // lowered to copy_ub_to_ub safely: the strided variant needs 32B-aligned
       // per-row UB addresses (sub-32B compact rows trap the VEC instruction),
@@ -939,6 +946,15 @@ private:
 
     if (IsUnaryOp(expr, &unary_op_type, &unary_input_buffer,
                   &unary_input_offset, parallel_vars)) {
+      const BufferLoadNode *unary_input_load = GetUnaryInputLoad(expr);
+      if (unary_input_load != nullptr &&
+          IsRowVarIndexed1DUBLoad(unary_input_load->buffer,
+                                  unary_input_load->indices)) {
+        // A row-broadcast 1D UB input cannot be read as a direct vector
+        // operand (sub-32B row stride traps the VEC instruction). Bail so
+        // VisitStmt_ falls back to a scalar serial loop.
+        return false;
+      }
       auto stmt = GenerateUnaryVectorCall(
           unary_op_type, output_buffer, output_offset,
           unary_input_buffer.value(), unary_input_offset, element_count, is_2d);
@@ -1096,8 +1112,9 @@ private:
       return false;
     }
 
+    bool left_is_row_broadcast = IsRowVarIndexed1DUBLoad(operands[0]);
+
     if (auto load = operands[1].as<BufferLoadNode>()) {
-      bool left_is_row_broadcast = IsRowVarIndexed1DUBLoad(operands[0]);
       if (IsScalarAccess(load->indices, parallel_vars)) {
         if (left_is_row_broadcast) {
           // Both operands are row-constant scalars: no vector operand remains
@@ -1140,6 +1157,13 @@ private:
       }
 
     } else if (IsScalar(operands[1])) {
+      if (left_is_row_broadcast) {
+        // A row-broadcast 1D UB left operand with an immediate scalar right
+        // operand: no vector operand remains for the scalar-variant op, and
+        // the 1D load must not be emitted as a direct VEC operand. Bail so
+        // VisitStmt_ falls back to a scalar serial loop.
+        return false;
+      }
       auto stmt = GenerateScalarVectorCall(
           op_type, output_buffer, output_offset, left_buffer, left_offset,
           operands[1], element_count, is_2d);
@@ -1492,21 +1516,43 @@ private:
   // granularity (sub-32B for fp32) between rows, so it must not be emitted as
   // a direct VEC operand: AscendC vector instructions require 32B-aligned UB
   // addresses.
-  bool IsRowVarIndexed1DUBLoad(const PrimExpr &operand) {
-    const auto *load = operand.as<BufferLoadNode>();
-    if (load == nullptr || load->buffer->shape.size() != 1 ||
-        load->indices.size() != 1) {
+  bool IsRowVarIndexed1DUBLoad(const Buffer &buffer,
+                               const Array<PrimExpr> &indices) {
+    if (buffer->shape.size() != 1 || indices.size() != 1) {
       return false;
     }
-    if (!IsUnifiedBuffer(load->buffer)) {
+    if (!IsUnifiedBuffer(buffer)) {
       return false;
     }
-    const auto *idx = load->indices[0].as<VarNode>();
+    const auto *idx = indices[0].as<VarNode>();
     if (idx == nullptr) {
       // Constant or affine index: not the row-broadcast family.
       return false;
     }
     return vector_dim_var_ == nullptr || idx != vector_dim_var_;
+  }
+
+  bool IsRowVarIndexed1DUBLoad(const PrimExpr &operand) {
+    const auto *load = operand.as<BufferLoadNode>();
+    if (load == nullptr) {
+      return false;
+    }
+    return IsRowVarIndexed1DUBLoad(load->buffer, load->indices);
+  }
+
+  // Extract the direct BufferLoad input of a unary expression matched by
+  // IsUnaryOp (a call argument or the non-zero side of a relu-style Max).
+  const BufferLoadNode *GetUnaryInputLoad(const PrimExpr &expr) {
+    if (auto call = expr.as<CallNode>()) {
+      return call->args[0].as<BufferLoadNode>();
+    }
+    if (auto max_node = expr.as<MaxNode>()) {
+      if (auto load = max_node->a.as<BufferLoadNode>()) {
+        return load;
+      }
+      return max_node->b.as<BufferLoadNode>();
+    }
+    return nullptr;
   }
 
   // Binary ops whose operands can be swapped without changing semantics, so a

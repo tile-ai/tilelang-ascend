@@ -157,6 +157,59 @@ def first_axis_bcast_sub_reduce0(DV: int, DK: int, dtype="float"):
     return main
 
 
+# ---------------------------------------------------------------------------
+# First-axis broadcast 1D operand combined with an immediate scalar. The bare
+# store lowers through the broadcast-materialization path; when the same
+# immediate-mul is nested with a 2D container load there is no vector operand
+# left, so the vectorizer must fall back to a scalar serial loop instead of
+# feeding the 1D load to a VEC instruction as a (misaligned) vector operand.
+# ---------------------------------------------------------------------------
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+def first_axis_bcast_mul_imm(DV: int, DK: int, dtype="float"):
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((DV, DK), dtype),
+        V: T.Tensor((DV,), dtype),
+        DK_OUT: T.Tensor((DK,), dtype),
+    ):
+        with T.Kernel(1, threads=1, is_npu=True):
+            v_ub = T.alloc_ub((DV,), dtype)
+            buf2_ub = T.alloc_ub((DV, DK), dtype)
+            dk_ub = T.alloc_ub((DK,), dtype)
+            T.copy(V[0], v_ub)
+            for j, i in T.Parallel(DV, DK):
+                buf2_ub[j, i] = v_ub[j] * 2.0
+            T.reduce_sum(buf2_ub, dk_ub, dim=0)
+            T.copy(dk_ub, DK_OUT[0])
+
+    return main
+
+
+@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
+def first_axis_bcast_mul_imm_nested(DV: int, DK: int, dtype="float"):
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((DV, DK), dtype),
+        V: T.Tensor((DV,), dtype),
+        DK_OUT: T.Tensor((DK,), dtype),
+    ):
+        with T.Kernel(1, threads=1, is_npu=True):
+            a_ub = T.alloc_ub((DV, DK), dtype)
+            v_ub = T.alloc_ub((DV,), dtype)
+            buf2_ub = T.alloc_ub((DV, DK), dtype)
+            dk_ub = T.alloc_ub((DK,), dtype)
+            T.copy(A[0, 0], a_ub)
+            T.copy(V[0], v_ub)
+            for j, i in T.Parallel(DV, DK):
+                buf2_ub[j, i] = a_ub[j, i] + v_ub[j] * 2.0
+            T.reduce_sum(buf2_ub, dk_ub, dim=0)
+            T.copy(dk_ub, DK_OUT[0])
+
+    return main
+
+
 def _make_inputs(DV, DK, dtype):
     torch_dtype = torch.float16 if dtype == "float16" else torch.float32
     a = torch.randn(DV, DK).to(torch_dtype).npu()
@@ -228,3 +281,32 @@ def test_parallel_first_axis_bcast_sub_reduce0(setup_random_seed, dtype):
     out = func(a, v)
     ref = _ref_sub_reduce0(a, v)
     _assert_close(out, ref)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+def test_parallel_first_axis_bcast_mul_imm(setup_random_seed, dtype):
+    DV, DK = 16, 32
+    func = first_axis_bcast_mul_imm(DV, DK, dtype)
+    a, v = _make_inputs(DV, DK, dtype)
+    torch.npu.synchronize()
+    out = func(a, v)
+    ref = ((v.cpu() * 2.0).unsqueeze(-1) * torch.ones(DV, DK)).sum(0)
+    torch.testing.assert_close(out.cpu().float(), ref, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+def test_parallel_first_axis_bcast_mul_imm_nested(setup_random_seed, dtype):
+    if dtype == "float16":
+        pytest.skip(
+            "fp16 with a first-axis-broadcast operand nested with an "
+            "immediate takes the scalar serial fallback, and bisheng rejects "
+            "scalar half arithmetic in aicore functions ('half precision "
+            "operation is not allowed')"
+        )
+    DV, DK = 16, 32
+    func = first_axis_bcast_mul_imm_nested(DV, DK, dtype)
+    a, v = _make_inputs(DV, DK, dtype)
+    torch.npu.synchronize()
+    out = func(a, v)
+    ref = (a.cpu().float() + (v.cpu() * 2.0).unsqueeze(-1)).sum(0)
+    torch.testing.assert_close(out.cpu().float(), ref, rtol=1e-2, atol=1e-2)
