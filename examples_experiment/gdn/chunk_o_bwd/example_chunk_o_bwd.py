@@ -143,11 +143,12 @@ def chunk_o_bwd(
             ds_gated_T_l1 = T.alloc_L1((block_S, block_S), output_dtype)
             ds_delta_T_l1 = T.alloc_L1((block_S, block_S), output_dtype)
 
-            # --- L0 buffers for T.mma staging ---
-            # GEMM1+GEMM2 share A=dO; GEMM6+GEMM7 share B=k; GEMM8+GEMM9 share B=q.
-            do_l0a = T.alloc_L0A((block_S, block_DV), input_dtype)  # [M,K] shared GEMM1+GEMM2
-            v_l0b = T.alloc_L0B((block_DV, block_S), input_dtype)  # [K,N] GEMM1 (V^T)
-            h_l0b = T.alloc_L0B((block_DV, block_DK), input_dtype)  # [K,N] GEMM2 (dO @ h^T)
+            # --- L0 buffers for T.mma staging (Stage 3) ---
+            # GEMM6+GEMM7 share B=k; GEMM8+GEMM9 share B=q.
+            # (Stage-1 GEMM1/2 formerly staged A=dO here too; review :274
+            # A/B-tested them against gemm_v0 — precision identical, timing
+            # within run-to-run noise — and they were replaced by gemm_v0
+            # calls for readability.)
 
             # Stage-3 L0A (4 operands, [block_S, block_S] bf16 = 8KB each)
             ds_gated_l0a = T.alloc_L0A((block_S, block_S), output_dtype)
@@ -270,13 +271,11 @@ def chunk_o_bwd(
                     T.copy(dv[bb, bh, s0 : s0 + block_S, :], dv_l1)
                     T.copy(Q[bb, bh, s0 : s0 + block_S, d0 : d0 + block_DK], q_l1)
                     T.copy(K[bb, bh, s0 : s0 + block_S, d0 : d0 + block_DK], k_l1)
-                    # GEMM1 (ds = dO @ V^T) via explicit L0 staging + T.mma.
-                    T.copy(do_l1, do_l0a)
-                    T.copy(v_l1, v_l0b, transpose=True)
-                    T.mma(do_l0a, v_l0b, ds_frag, init=True)
-                    # GEMM2 (dq1 = dO @ h^T) reuses do_l0a (shared A=dO with GEMM1).
-                    T.copy(h_l1, h_l0b, transpose=True)
-                    T.mma(do_l0a, h_l0b, dq1_frag, init=True)
+                    # GEMM1 (ds = dO @ V^T) + GEMM2 (dq1 = dO @ h^T), shared
+                    # A=dO. gemm_v0 route (review :274; A/B-verified vs the
+                    # former hand-written L0 staging + T.mma sequence).
+                    T.gemm_v0(do_l1, v_l1, ds_frag, transpose_B=True, init=True, kL0Size=32)
+                    T.gemm_v0(do_l1, h_l1, dq1_frag, transpose_B=True, init=True, kL0Size=32)
                     T.gemm_v0(v_l1, dh_l1, dk1_frag, transpose_B=True, init=True, kL0Size=32)
                     # Always run dw1 + ds_pos GEMMs (even when use_dw/use_g=False)
                     # to keep C/V workspace balanced.
