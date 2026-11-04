@@ -13,9 +13,35 @@ description: TileLang 算子 NPU 性能采集与分析，用于采集 TileLang k
 
 ## 职责边界
 
-- 本 Skill 负责：运行入口识别、正确性门禁、`msprof op` 采集、kernel/case/launch 映射校验、原始数据归档、性能判定、瓶颈诊断、修改代码、正确性复验和优化前后对比。
+- 独立使用时，本 Skill 负责：运行入口识别、正确性门禁、`msprof op` 采集、kernel/case/launch 映射校验、原始数据归档、性能判定、瓶颈诊断、修改代码、正确性复验和优化前后对比。
 - 优先复用算子已有 target、运行入口和参数。
 - `do_bench` 可用于建立稳定延迟基线，但最终硬件流水、缓存、冲突等结论以 `msprof op` 数据为准。报告必须标明数据来源和单位。
+
+### 嵌入 Flash：`execution_mode: collect_only`
+
+当 [Flash 工作流](../tilelang-tuning-flash/SKILL.md) 或其他调用方显式传入
+`execution_mode: collect_only` 时，只执行 Step 1～3，返回采集有效性、原始数据、
+metadata、summary 和必要的诊断线索；不执行 Step 6，不修改 kernel、不创建优化候选，
+也不自行循环。候选实施、晋升、停止与最终完整精度由调用方管理。此字段是 Agent
+调用约定，不是 `perf_summary.py` 的命令行参数；省略时保持原独立使用流程。
+
+调用方需给出当前版本的源码、测试、case 清单 SHA256、case ID/参数、真实入口与工作
+目录、target、设备、kernel/整链映射、warmup/launch、计时口径和匹配这些身份的精度
+证据。已匹配的精度证据可复用：候选相关用例验证由 Flash 执行，最终完整 pytest 由
+Flash 统一安排。缺失或身份不匹配则返回补验需求，不擅自把一次采集扩成完整调优。
+正式采集前仍须确认当前入口能正确编译和实际运行。
+
+`variant_output_dir` 必须显式传入；可另传唯一的 `measurement_id`、`raw_output_dir`
+和 `archive_output_dir`，分别替换 Step 2 的 `CASE_OUTPUT` 与 Step 3 的 `ARCHIVE_DIR`。
+二者必须位于本次 `variant_output_dir` 内且尚不存在；不可使用独立模式的默认落点。
+Flash 使用 `<run_dir>/profiling/<measurement_id>/<case_id>/{raw,summary}`，复测换新 ID。
+`perf_summary.py --output-dir` 指向明确的 archive_output_dir，所有适用身份参数传齐。
+
+返回至少包含：采集状态（有效 / 需补验 / 阻塞）、measurement_id、case ID、源码/测试/
+case SHA256、实际 target/device/kernel 或 kernel 链、计时方式与统计口径、原始目录、
+metadata/summary 路径和错误阶段。脚本 metadata 未含的测试 SHA、整链映射等由调用方
+保存在同一采集目录的 `collection_context.json`，与真实日志互相核对；不得虚填。
+缺失身份、空匹配、重复匹配或 case/launch 映射异常不能作为有效测量返回。
 
 ---
 
@@ -77,7 +103,7 @@ Step 6: 修改代码 → 回到 Step 2 重新采集（数据自动归档为新�
 首次采集的 `<variant>` 为 `baseline`；每次修改代码后的复测选择下一个未使用的
 `iter_NNN`。
 
-从脚本所在目录运行，或显式设置可靠的仓库根目录/PYTHONPATH。不要把临时 wrapper 写入 `examples/`，避免被批量 CI 自动发现。每个 case 先完成现有正确性测试；精度失败、编译失败或 NPU 执行失败时停止，不能输出“有效性能结论”。
+从脚本所在目录运行，或显式设置可靠的仓库根目录/PYTHONPATH。不要把临时 wrapper 写入 `examples/`，避免被批量 CI 自动发现。每个 case 先完成现有正确性测试；`collect_only` 按上述契约复用调用方提供的匹配证据。精度失败、编译失败或 NPU 执行失败时停止，不能输出“有效性能结论”。
 
 profiling 入口应把 JIT/AOT 构建与正式采集分开，正式采集只发射已确认的目标 kernel。若使用现有入口，记录其完整命令和工作目录；若生成 wrapper，只接受该 case 必需参数，并只调用本地目标 kernel。禁止用整个 Python 进程或 host 计时代替设备 kernel 时间。
 
@@ -355,6 +381,8 @@ cycle 占比，不等于硬件峰值利用率。
 | **流水线气泡** | 多单元均 30-50%，无主导 | 调整 pipeline stage、Tile 切分和异步迭代 |
 
 ### Step 6: 修改代码并验证优化效果
+
+仅独立模式执行此步骤；`collect_only` 已在 Step 3 返回，由调用方决定后续动作。
 
 根据 Step 5 的诊断修改目标 TileLang kernel。每轮只改变一个主要变量，并记录修改内容；
 不得通过缩减输入、放宽精度标准、跳过边界 case 或改变计时口径制造性能收益。
