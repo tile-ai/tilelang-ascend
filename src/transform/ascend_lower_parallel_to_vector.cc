@@ -876,6 +876,67 @@ private:
                combined);
   }
 
+  bool MatchTIRUnaryCall(const PrimExpr &expr, Op *op_type, PrimExpr *operand) {
+    const auto *call = expr.as<CallNode>();
+    if (call == nullptr || call->args.size() != 1) {
+      return false;
+    }
+
+    const auto *op = call->op.as<OpNode>();
+    if (op == nullptr) {
+      return false;
+    }
+
+    auto it = kTIRUnaryOpMap.find(op->name);
+    if (it == kTIRUnaryOpMap.end()) {
+      return false;
+    }
+
+    if (op_type != nullptr) {
+      *op_type = it->second;
+    }
+    if (operand != nullptr) {
+      *operand = call->args[0];
+    }
+    return true;
+  }
+
+  bool ContainsCast(const PrimExpr &expr) {
+    class CastChecker : public ExprVisitor {
+    public:
+      bool found{false};
+
+      void VisitExpr_(const CastNode *op) override {
+        found = true;
+        ExprVisitor::VisitExpr_(op);
+      }
+    };
+
+    CastChecker checker;
+    checker(expr);
+    return checker.found;
+  }
+
+  bool MatchSupportedTIRUnaryCall(const PrimExpr &expr, DataType output_dtype,
+                                  Op *op_type, PrimExpr *operand) {
+    Op matched_op;
+    PrimExpr matched_operand;
+    if (!MatchTIRUnaryCall(expr, &matched_op, &matched_operand) ||
+        expr.dtype() != output_dtype ||
+        matched_operand.dtype() != output_dtype ||
+        ContainsCast(matched_operand)) {
+      return false;
+    }
+
+    if (op_type != nullptr) {
+      *op_type = matched_op;
+    }
+    if (operand != nullptr) {
+      *operand = matched_operand;
+    }
+    return true;
+  }
+
   bool
   DecomposeExpression(const PrimExpr &expr, const Buffer &output_buffer,
                       const PrimExpr &output_offset, int64_t element_count,
@@ -946,6 +1007,36 @@ private:
       return true;
     }
 
+    PrimExpr unary_operand;
+    if (MatchSupportedTIRUnaryCall(expr, output_buffer->dtype, &unary_op_type,
+                                   &unary_operand)) {
+      size_t saved_temp_buffer_count = temp_buffers_.size();
+      int saved_temp_buffer_id = temp_buffer_id_;
+      Buffer operand_buffer =
+          CreateTempBufferLike(output_buffer, element_count, inner_vec_len);
+      PrimExpr operand_offset = IntImm(DataType::Int(32), 0);
+      Array<Stmt> operand_statements;
+
+      if (!DecomposeExpression(unary_operand, operand_buffer, operand_offset,
+                               element_count, parallel_vars,
+                               &operand_statements, is_2d, inner_vec_len)) {
+        temp_buffers_.resize(saved_temp_buffer_count);
+        temp_buffer_id_ = saved_temp_buffer_id;
+        return false;
+      }
+
+      for (const Stmt &stmt : operand_statements) {
+        statements->push_back(stmt);
+      }
+      statements->push_back(GenerateUnaryVectorCall(
+          unary_op_type, output_buffer, output_offset, operand_buffer,
+          operand_offset, element_count, is_2d));
+      return true;
+    }
+    if (MatchTIRUnaryCall(expr, nullptr, nullptr)) {
+      return false;
+    }
+
     Op op_type;
     Array<PrimExpr> operands;
 
@@ -962,9 +1053,13 @@ private:
 
     bool left_is_complex =
         IsBinaryOp(operands[0], nullptr, nullptr) ||
+        MatchSupportedTIRUnaryCall(operands[0], output_buffer->dtype, nullptr,
+                                   nullptr) ||
         IsUnaryOp(operands[0], nullptr, nullptr, nullptr, parallel_vars);
     bool right_is_complex =
         IsBinaryOp(operands[1], nullptr, nullptr) ||
+        MatchSupportedTIRUnaryCall(operands[1], output_buffer->dtype, nullptr,
+                                   nullptr) ||
         IsUnaryOp(operands[1], nullptr, nullptr, nullptr, parallel_vars);
 
     if (left_is_simple && right_is_simple) {
@@ -1018,20 +1113,21 @@ private:
                  Optional<Buffer> *input_buffer, PrimExpr *input_offset,
                  const std::unordered_set<const VarNode *> &parallel_vars) {
     if (auto call = expr.as<CallNode>()) {
-      std::string op_name;
-
-      if (auto *op_ptr = call->op.as<OpNode>()) {
-        op_name = op_ptr->name;
-      } else {
+      PrimExpr operand;
+      if (MatchTIRUnaryCall(expr, op_type, &operand)) {
+        if (auto load = operand.as<BufferLoadNode>()) {
+          if (input_buffer)
+            *input_buffer = load->buffer;
+          if (input_offset)
+            *input_offset = CalculateBufferOffset(load->indices, load->buffer,
+                                                  parallel_vars);
+          return true;
+        }
         return false;
       }
 
-      auto it = kTIRUnaryOpMap.find(op_name);
-      if (it != kTIRUnaryOpMap.end()) {
-        if (op_type)
-          *op_type = it->second;
-      } else if (call->op.same_as(builtin::bitwise_not()) ||
-                 call->op.same_as(tl::ascend_bitwise_not())) {
+      if (call->op.same_as(builtin::bitwise_not()) ||
+          call->op.same_as(tl::ascend_bitwise_not())) {
         if (op_type)
           *op_type = tl::ascend_bitwise_not();
       } else {
