@@ -271,19 +271,31 @@ def glm53_kpool_fp8_mqa_logits_kernel(
                 T.tile.mul(s_ub, s_ub, w2d)
                 T.reduce_sum(s_ub, v_ub, dim=-1)
 
-                # Inline validity mask (0 / -inf) -> out-of-range lanes become -inf.
-                T.tile.createvecindex(idx, v0)
-                T.tile.cast(idx_f, idx, "CAST_RINT", half)
-                T.tile.broadcast(idx2d, idx_f, axis=1)
-                T.tile.fill(mask2d, 0.0)
-                T.tile.compare(m2d, idx2d, T.float32(st - t0), "GE")
-                T.tile.select(mask2d, m2d, mask2d, -T.infinity("float32"), "VSEL_TENSOR_SCALAR_MODE")
-                T.tile.compare(m2d, idx2d, T.float32(T.min(en - t0, T.min(tile_pools, max_num_pools - t0))), "LT")
-                T.tile.select(mask2d, m2d, mask2d, -T.infinity("float32"), "VSEL_TENSOR_SCALAR_MODE")
-                T.reduce_sum(mask2d, mask_ub, dim=-1)
-                T.tile.add(v_ub, v_ub, mask_ub)
-                if tr < 0 or tr >= num_page_rows or tile >= max_pages or entry < 0 or entry >= num_blocks:
-                    T.tile.fill(v_ub, -T.infinity("float32"))
+                # Fast path: a fully valid tile keeps the reduced values as-is.
+                # Only partial / invalid tiles pay for the -inf mask.
+                if (
+                    tr < 0
+                    or tr >= num_page_rows
+                    or tile >= max_pages
+                    or entry < 0
+                    or entry >= num_blocks
+                    or t0 < st
+                    or t0 + tile_pools > en
+                    or t0 + tile_pools > max_num_pools
+                ):
+                    # Inline validity mask (0 / -inf) -> out-of-range lanes become -inf.
+                    T.tile.createvecindex(idx, v0)
+                    T.tile.cast(idx_f, idx, "CAST_RINT", half)
+                    T.tile.broadcast(idx2d, idx_f, axis=1)
+                    T.tile.fill(mask2d, 0.0)
+                    T.tile.compare(m2d, idx2d, T.float32(st - t0), "GE")
+                    T.tile.select(mask2d, m2d, mask2d, -T.infinity("float32"), "VSEL_TENSOR_SCALAR_MODE")
+                    T.tile.compare(m2d, idx2d, T.float32(T.min(en - t0, T.min(tile_pools, max_num_pools - t0))), "LT")
+                    T.tile.select(mask2d, m2d, mask2d, -T.infinity("float32"), "VSEL_TENSOR_SCALAR_MODE")
+                    T.reduce_sum(mask2d, mask_ub, dim=-1)
+                    T.tile.add(v_ub, v_ub, mask_ub)
+                    if tr < 0 or tr >= num_page_rows or tile >= max_pages or entry < 0 or entry >= num_blocks:
+                        T.tile.fill(v_ub, -T.infinity("float32"))
                 T.copy(v_ub, logits[row, t0 + v0 : t0 + v0 + half])
 
     return main
