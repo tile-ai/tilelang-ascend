@@ -57,8 +57,11 @@ def test_parse_latest_dump_runs_sdk_tool_and_removes_stale_bins(tmp_path, monkey
     output.mkdir()
     stale = output / "stale.bin"
     stale.write_bytes(b"stale")
+    stale_npy = output / "stale.npy"
+    np.save(stale_npy, np.array([1], dtype=np.float32))
     result = parser.parse_exception_dump(str(dump_root), wait_seconds=0)
     assert not stale.exists()
+    assert not stale_npy.exists()
     assert (output / "selected.txt").read_text() == str(latest)
     assert [(entry["type"], entry["index"], entry["dtype"]) for entry in result] == [
         ("input", 0, "int32"),
@@ -70,6 +73,41 @@ def test_parse_latest_dump_runs_sdk_tool_and_removes_stale_bins(tmp_path, monkey
     # Preserve the original unknown-dtype float32 fallback.
     np.testing.assert_array_equal(result[2]["data"], [23.5])
     assert all(Path(entry["file"]).parent == output for entry in result)
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_parse_numpy_and_mixed_tensor_formats(tmp_path, monkeypatch, mixed):
+    dump_root = tmp_path / "dump"
+    _dump(dump_root)
+    sdk = tmp_path / "sdk"
+    _tool(
+        sdk,
+        f"""
+        from pathlib import Path
+        import sys
+        import numpy as np
+        source = Path(sys.argv[sys.argv.index("-d") + 1])
+        output = Path(sys.argv[sys.argv.index("-out") + 1])
+        np.save(output / (source.name + ".input.0.int32.npy"), np.array([[-7, 11], [23, 37]], dtype=np.int32))
+        values = np.array([-7.5, 11.25], dtype=np.float32)
+        if {mixed!r}:
+            values.tofile(output / (source.name + ".output.1.float32.bin"))
+        else:
+            np.save(output / (source.name + ".output.1.float32.npy"), values)
+    """,
+    )
+    monkeypatch.setenv("ASCEND_HOME_PATH", str(sdk))
+    result = parser.parse_exception_dump(str(dump_root), wait_seconds=0)
+    assert [(entry["type"], entry["index"], entry["dtype"]) for entry in result] == [
+        ("input", 0, "int32"),
+        ("output", 1, "float32"),
+    ]
+    np.testing.assert_array_equal(result[0]["data"], [[-7, 11], [23, 37]])
+    np.testing.assert_array_equal(result[1]["data"], [-7.5, 11.25])
+    assert result[0]["data"].dtype == np.dtype(np.int32)
+    assert result[1]["data"].dtype == np.dtype(np.float32)
+    assert Path(result[0]["file"]).suffix == ".npy"
+    assert Path(result[1]["file"]).suffix == (".bin" if mixed else ".npy")
 
 
 def test_parse_missing_kernel_dump_preserves_error(tmp_path):

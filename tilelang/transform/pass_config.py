@@ -125,6 +125,9 @@ class PassConfigKey(str, Enum):
     TL_ASCEND_TAIL_MASK = "tl.ascend_tail_mask"
     TL_ASCEND_PTO_USE_PIPE_IN_CV_COPY = "tl.ascend_pto_use_pipe_in_cv_copy"
     TL_ASCEND_EXCEPTION_DUMP = "tl.ascend_exception_dump"
+    """Enable/disable AI CORE exception dump callback. Requires a CANN version
+    that provides aclrtExceptionInfoCallbackRegister / aclrtGetArgsFromExceptionInfo.
+    Default: False"""
 
     TL_ENABLE_REDUCER_PLAN_VERBOSE = "tl.enable_reducer_plan_verbose"
     """Log each reducer epoch's chosen physical plan (and narrow-plan
