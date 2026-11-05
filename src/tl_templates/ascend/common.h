@@ -369,6 +369,16 @@ CATLASS_DEVICE auto thread_block_swizzle(uint64_t pid) {
   return coord.m() * cols + coord.n();
 }
 
+// DataCopyExtParams.blockCount (the number of DMA bursts) is a 12-bit
+// hardware field: at most 4095 rows fit in a single DataCopyPad (CANN
+// parameter constraint). A folded >2D region flattens its leading dims into
+// the row count (e.g. a (64, 64, 8) float32 block -- only 128 KiB of UB --
+// folds to 4096 rows), and plain 2D tiles can be taller than that too, so
+// the transfer is split into batches of at most MAX_DMA_ROWS with the
+// src/dst tensors advanced by the per-batch element offset (rows * row
+// pitch) between batches.
+constexpr uint32_t MAX_DMA_ROWS = 4095;
+
 template <typename T, uint32_t dstN, uint32_t dstM = 1>
 CATLASS_DEVICE void
 copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
@@ -398,12 +408,31 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
       WaitFlag<HardEvent::V_MTE2>(0);
     }
   }
-  AscendC::DataCopyExtParams dataCopyParams(
-      maskShapeM, EleNumToBytes<T>(maskShapeN),
-      EleNumToBytes<T>(realSrcN - maskShapeN),
-      EleNumToBytes<T>(dstN - maskShapeN) / 32, 0);
   AscendC::DataCopyPadExtParams<T> padParams(isPad, 0, rightPadding, padValue);
-  AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams, padParams);
+  // Batched DMA (see MAX_DMA_ROWS): the pad above covers the whole tile
+  // once, then each batch copies one row chunk. The UB side advances by
+  // dstN elements per row, the GM side by realSrcN. Like the classic
+  // single-call form this stays one bare DataCopyPad per iteration - no
+  // sibling scalar stores, no alternative copy paths - so the bisheng
+  // cross-pipe sync constraint documented in copy_ub_to_gm below is
+  // respected; the batch loop is device-validated by the 3d-flatten
+  // round-trip suite. Byte math uses EleNumToBytes<T>() (bit-width exact)
+  // so sub-byte dtypes count real bytes.
+  uint32_t remaining = maskShapeM;
+  uint32_t dstOffset = 0;
+  uint64_t srcOffset = 0;
+  while (remaining > 0) {
+    uint32_t rows = remaining > MAX_DMA_ROWS ? MAX_DMA_ROWS : remaining;
+    AscendC::DataCopyExtParams dataCopyParams(
+        rows, EleNumToBytes<T>(maskShapeN),
+        EleNumToBytes<T>(realSrcN - maskShapeN),
+        EleNumToBytes<T>(dstN - maskShapeN) / 32, 0);
+    AscendC::DataCopyPad(dstTensor[dstOffset], srcTensor[srcOffset],
+                         dataCopyParams, padParams);
+    dstOffset += rows * dstN;
+    srcOffset += static_cast<uint64_t>(rows) * realSrcN;
+    remaining -= rows;
+  }
 }
 
 template <typename T, uint32_t srcN, uint32_t srcM = 1>
@@ -434,6 +463,16 @@ copy_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
   // (int4: two elements per byte) count real bytes instead of sizeof(T)
   // (which is 1 for the packed int4b_t); for all non sub-byte dtypes the
   // values are identical to sizeof(T) math.
+  //
+  // Batching (MAX_DMA_ROWS): blockCount is a 12-bit field, so a multi-row
+  // copy taller than 4095 rows must be split into batches. The batch loop
+  // below repeats the SAME bare DataCopyPad - no sibling scalar stores, no
+  // alternative copy paths, only pointer/counter arithmetic between
+  // iterations - and keeps the flat-vs-multi-burst choice as parameter
+  // selection at the single call site (the straight-line rule above); the
+  // whole-copy flat form from #1795 is preserved verbatim (one burst, the
+  // loop exits after a single iteration). The loop shape is device-validated
+  // by the 3d-flatten round-trip suite (2-iteration batches on dav-c220).
   constexpr uint32_t kBlockBytes = 32;
   const uint32_t blockLen = EleNumToBytes<T>(maskShapeN);
   const uint32_t srcPitch = EleNumToBytes<T>(srcN);
@@ -459,20 +498,38 @@ copy_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
     }
   }
   // Flat form (both sides packed): one burst covers the whole slab.
-  // Everything else keeps the classic multi-burst.
-  uint32_t blockCount = maskShapeM;
-  uint32_t burstLen = blockLen;
-  uint32_t srcStride = (srcPitch - blockLen) / kBlockBytes;
-  uint32_t dstStride = dstPitch - blockLen;
-  if (flat) {
-    blockCount = 1;
-    burstLen = static_cast<uint32_t>(total);
-    srcStride = 0;
-    dstStride = 0;
+  // Everything else keeps the classic multi-burst, batched to at most
+  // MAX_DMA_ROWS rows per DataCopyPad.
+  uint32_t remaining = maskShapeM;
+  uint32_t srcOffset = 0;
+  uint64_t dstOffset = 0;
+  while (remaining > 0) {
+    uint32_t rows;
+    uint32_t blockCount;
+    uint32_t burstLen;
+    uint32_t srcStride;
+    uint32_t dstStride;
+    if (flat) {
+      rows = maskShapeM;
+      blockCount = 1;
+      burstLen = static_cast<uint32_t>(total);
+      srcStride = 0;
+      dstStride = 0;
+    } else {
+      rows = remaining > MAX_DMA_ROWS ? MAX_DMA_ROWS : remaining;
+      blockCount = rows;
+      burstLen = blockLen;
+      srcStride = (srcPitch - blockLen) / kBlockBytes;
+      dstStride = dstPitch - blockLen;
+    }
+    AscendC::DataCopyExtParams dataCopyParams(blockCount, burstLen, srcStride,
+                                              dstStride, 0);
+    AscendC::DataCopyPad(dstTensor[dstOffset], srcTensor[srcOffset],
+                         dataCopyParams);
+    srcOffset += rows * srcN;
+    dstOffset += static_cast<uint64_t>(rows) * realdstN;
+    remaining -= rows;
   }
-  AscendC::DataCopyExtParams dataCopyParams(blockCount, burstLen, srcStride,
-                                            dstStride, 0);
-  AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams);
 }
 
 template <typename T, uint32_t srcN, uint32_t srcM = 1>
