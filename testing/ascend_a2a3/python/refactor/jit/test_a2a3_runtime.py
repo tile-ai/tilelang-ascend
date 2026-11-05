@@ -128,7 +128,8 @@ def test_shared_default_abi_still_checks_arity_and_static_shapes():
         wrapper.forward([torch.zeros(3)], stream=0)
     source_wrapper = _wrapper(_params((4,), (4,)), [1])
     source_wrapper.set_static_shape_map({"source": (0, [(0, 4)])})
-    assert source_wrapper.forward([torch.zeros(3)], stream=0).shape == (4,)
+    with pytest.raises(ValueError, match="Static shape mismatch"):
+        source_wrapper.forward([torch.zeros(3)], stream=0)
 
 
 def test_a2a3_still_validates_dtype_device_and_contiguity():
@@ -150,10 +151,10 @@ def test_native_void_call_with_dynamic_workspace(tmp_path):
     path = tmp_path / "void_launcher.so"
     source = """
     #include <stdint.h>
-    extern "C" void call(float *workspace, float *input, float *output, int64_t n, void *stream) {
+    extern "C" void call(float *workspace, float *input, float *output, int64_t offset, int64_t n, void *stream) {
       for (int64_t i = 0; i < n; ++i) {
         workspace[2*i] = input[i] * 2;
-        output[i] = workspace[2*i] + 1;
+        output[i] = workspace[2*i] + (offset - (1LL << 40));
       }
     }
     """
@@ -164,10 +165,30 @@ def test_native_void_call_with_dynamic_workspace(tmp_path):
     assert not hasattr(library, "init")
     assert not hasattr(library, "get_last_error")
     n = tir.Var("N", "int32")
-    wrapper = _wrapper(_params((n * 2,), (n,), (n,)), [2], [0], symbolic={n: (0, 1, 0, 1)}, library=library)
+    params = [*_params((n * 2,), (n,), (n,)), KernelParam(tvm.DataType("int64"), [])]
+    wrapper = _wrapper(params, [2], [0], symbolic={n: (0, 1, 0, 1)}, library=library)
     source = torch.arange(13, dtype=torch.float32)
-    output = wrapper.forward([source], stream=0)
+    output = wrapper.forward([source, 2**40 + 1], stream=0)
     torch.testing.assert_close(output, source * 2 + 1)
+
+
+def test_native_unsigned_scalar_arguments(tmp_path):
+    path = tmp_path / "unsigned_launcher.so"
+    source = """
+    #include <stdint.h>
+    extern "C" void call(int64_t *output, uint8_t a, uint16_t b, uint32_t c, void *stream) {
+      output[0] = a;
+      output[1] = b;
+      output[2] = c;
+    }
+    """
+    subprocess.run(["c++", "-shared", "-fPIC", "-x", "c++", "-", "-o", str(path)], input=source, text=True, capture_output=True, check=True)
+    library = ctypes.CDLL(str(path))
+    configure_void_call(library)
+    params = [*_params((3,), dtype="int64"), *[KernelParam(tvm.DataType(dtype), []) for dtype in ("uint8", "uint16", "uint32")]]
+    wrapper = _wrapper(params, [0], library=library)
+    output = wrapper.forward([255, 65535, 2**32 - 1], stream=0)
+    torch.testing.assert_close(output, torch.tensor([255, 65535, 2**32 - 1], dtype=torch.int64))
 
 
 def test_shared_default_status_return_errors_remain_visible():
@@ -214,58 +235,30 @@ def test_real_derived_workspace_parameter_extractor_and_signature_roundtrip():
     )
 
 
-@pytest.mark.parametrize("integer", [17, 2**40 + 7])
-def test_a2a3_preserves_source_scalar_argument_encoding(integer):
-    calls = []
-    params = [KernelParam(tvm.DataType(dtype), shape) for dtype, shape in [("float32", [4]), ("int64", []), ("float64", []), ("bool", [])]]
-    wrapper = _wrapper(params, [], library=SimpleNamespace(call=lambda *args: calls.append(args)))
-    wrapper.forward([torch.zeros(4), integer, 1.25, True], stream=0)
-    assert calls[0][1] is integer
-    # This deliberately preserves TA's c_float encoding, including its old
-    # double/big-integer limitation. No native numeric result is claimed.
-    assert isinstance(calls[0][2], ctypes.c_float)
-    assert calls[0][2].value == 1.25
-    assert calls[0][3] is True
+@pytest.mark.parametrize("a2a3", [False, True])
+def test_nullable_inputs(a2a3):
+    wrapper = _wrapper(_params((4,)), [], a2a3=a2a3)
+    assert wrapper.forward([None], stream=0) == []
 
 
-def test_a2a3_none_rejection_does_not_change_shared_nullable_inputs():
-    wrapper = _wrapper(_params((4,)), [])
-    with pytest.raises(ValueError, match="Unsupported tensor type"):
-        wrapper.forward([None], stream=0)
-    shared = _wrapper(_params((4,)), [], a2a3=False)
-    assert shared.forward([None], stream=0) == []
-
-
-def test_a2a3_first_input_device_rule_keeps_source_scalar_first_boundary():
+@pytest.mark.parametrize("a2a3", [False, True])
+def test_scalar_first_input_uses_tensor_device(a2a3):
     params = [KernelParam(tvm.DataType("int32"), []), *_params((4,), (4,))]
-    wrapper = _wrapper(params, [2])
-    with pytest.raises(AttributeError, match="device"):
-        wrapper.forward([3, torch.zeros(4)], stream=0)
-    shared = _wrapper(params, [2], a2a3=False)
-    assert shared.forward([3, torch.zeros(4)], stream=0).shape == (4,)
-
-
-def test_source_device_validation_does_not_accept_scalar_first_tensor_kernels():
-    params = [KernelParam(tvm.DataType("int32"), []), *_params((4,))]
-    wrapper = _wrapper(params, [])
+    source = torch.zeros(4)
+    wrapper = _wrapper(params, [2], a2a3=a2a3)
     wrapper.set_buffer_device_map({"input": (1, torch.device("cpu"))})
-    with pytest.raises(ValueError, match="first parameter slot"):
-        wrapper.forward([3, torch.zeros(4)], stream=0)
-    shared = _wrapper(params, [], a2a3=False)
-    shared.set_buffer_device_map({"input": (1, torch.device("cpu"))})
-    assert shared.forward([3, torch.zeros(4)], stream=0) == []
+    output = wrapper.forward([3, source], stream=0)
+    assert output.shape == (4,)
+    assert output.device == source.device
 
 
-def test_a2a3_stream_uses_current_device_and_shared_uses_input_device():
+@pytest.mark.parametrize("a2a3", [False, True])
+def test_stream_uses_input_device(a2a3):
     observed = []
     providers = (lambda: torch.device("cpu", 7), lambda device: (observed.append(device), 17)[1])
     source = torch.zeros(4)
-    wrapper = _wrapper(_params((4,), (4,)), [1], providers=providers)
+    wrapper = _wrapper(_params((4,), (4,)), [1], providers=providers, a2a3=a2a3)
     assert wrapper.forward([source]).device == source.device
-    assert observed == [torch.device("cpu", 7)]
-    observed.clear()
-    shared = _wrapper(_params((4,), (4,)), [1], providers=providers, a2a3=False)
-    assert shared.forward([source]).device == source.device
     assert observed == [source.device]
 
 

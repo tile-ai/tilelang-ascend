@@ -32,35 +32,10 @@ class LibraryGenerator:
     lib_code: str | None = None
     pass_configs: dict[str, Any] | None = None
     compile_flags: list[str] | None = None
-    compile_config = None
-    _a2a3_generator = None
 
-    def __init__(self, target: Target, verbose: bool = False, compile_config=None):
+    def __init__(self, target: Target, verbose: bool = False):
         self.target = target
         self.verbose = verbose
-        self.compile_config = compile_config
-        self._a2a3_generator = None
-
-    def _get_a2a3_generator(self):
-        if not is_ascend_target(self.target):
-            return None
-        from tilelang.ascend.target import is_a2a3_target
-
-        if not is_a2a3_target(self.target):
-            return None
-        if self._a2a3_generator is None:
-            from tilelang.ascend.a2a3.compiler import LibraryGenerator as A2A3LibraryGenerator, resolve_compile_config
-
-            if self.compile_config is None:
-                self.compile_config = resolve_compile_config(self.target, self.pass_configs, self.compile_flags)
-            self._a2a3_generator = A2A3LibraryGenerator(self.compile_config, verbose=self.verbose)
-            if self.lib_code is not None:
-                self._a2a3_generator.update_lib_code(self.lib_code)
-            if self.libpath is not None:
-                self._a2a3_generator.set_lib_path(self.libpath)
-            if self.srcpath is not None:
-                self._a2a3_generator.set_src_path(self.srcpath)
-        return self._a2a3_generator
 
     def assign_pass_configs(self, pass_configs: dict[str, Any] | None = None):
         self.pass_configs = pass_configs
@@ -69,21 +44,12 @@ class LibraryGenerator:
         if compile_flags is None:
             compile_flags = []
         self.compile_flags = compile_flags
-        if self.compile_config is not None:
-            self._get_a2a3_generator().set_compile_flags(compile_flags)
 
     def update_lib_code(self, lib_code: str):
         self.lib_code = lib_code
-        if self._a2a3_generator is not None:
-            self._a2a3_generator.update_lib_code(lib_code)
 
     # Assume currently we only support CUDA compilation
     def load_lib(self, lib_path: str | None = None):
-        a2a3_generator = self._get_a2a3_generator()
-        if a2a3_generator is not None:
-            library = a2a3_generator.load_lib(lib_path)
-            self.libpath = a2a3_generator.libpath
-            return library
         if lib_path is None:
             lib_path = self.libpath
         else:
@@ -91,12 +57,6 @@ class LibraryGenerator:
         return ctypes.CDLL(lib_path)
 
     def compile_lib(self, timeout: float = None):
-        a2a3_generator = self._get_a2a3_generator()
-        if a2a3_generator is not None:
-            a2a3_generator.compile_lib(timeout=timeout)
-            self.srcpath = a2a3_generator.srcpath
-            self.libpath = a2a3_generator.libpath
-            return
         target = self.target
         verbose = self.verbose
         extra_compile_options = [item for flag in (self.compile_flags or []) for item in flag.split()]
@@ -285,10 +245,6 @@ class LibraryGenerator:
 
     def set_lib_path(self, libpath):
         self.libpath = libpath
-        if self._a2a3_generator is not None:
-            self._a2a3_generator.set_lib_path(libpath)
 
     def set_src_path(self, srcpath):
         self.srcpath = srcpath
-        if self._a2a3_generator is not None:
-            self._a2a3_generator.set_src_path(srcpath)

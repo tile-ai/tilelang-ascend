@@ -158,10 +158,15 @@ class CythonKernelAdapter(BaseKernelAdapter):
 
         self.verbose = verbose
         self.wrapper = TLWrapper(self.target)
-        generator_options = {"compile_config": compile_config} if self._a2a3_runtime else {}
-        self.lib_generator = LibraryGenerator(self.target, verbose=verbose, **generator_options)
-        self.lib_generator.assign_pass_configs(pass_configs)
-        if not self._a2a3_runtime or compile_config is None:
+        if self._a2a3_runtime:
+            from tilelang.ascend.a2a3.compiler import LibraryGenerator as A2A3LibraryGenerator, resolve_compile_config
+
+            if compile_config is None:
+                compile_config = resolve_compile_config(self.target, pass_configs, compile_flags)
+            self.lib_generator = A2A3LibraryGenerator(compile_config, verbose=verbose)
+        else:
+            self.lib_generator = LibraryGenerator(self.target, verbose=verbose)
+            self.lib_generator.assign_pass_configs(pass_configs)
             self.lib_generator.assign_compile_flags(compile_flags)
 
         self.wrapper.assign_optimized_module(self.ir_module)
@@ -230,10 +235,15 @@ class CythonKernelAdapter(BaseKernelAdapter):
         adapter.static_contiguous_list = static_buffer_infos[2]
 
         adapter.verbose = verbose
-        generator_options = {"compile_config": compile_config} if adapter._a2a3_runtime else {}
-        adapter.lib_generator = LibraryGenerator(adapter.target, verbose=verbose, **generator_options)
-        adapter.lib_generator.assign_pass_configs(pass_configs)
-        if not adapter._a2a3_runtime or compile_config is None:
+        if adapter._a2a3_runtime:
+            from tilelang.ascend.a2a3.compiler import LibraryGenerator as A2A3LibraryGenerator, resolve_compile_config
+
+            if compile_config is None:
+                compile_config = resolve_compile_config(adapter.target, pass_configs, compile_flags)
+            adapter.lib_generator = A2A3LibraryGenerator(compile_config, verbose=verbose)
+        else:
+            adapter.lib_generator = LibraryGenerator(adapter.target, verbose=verbose)
+            adapter.lib_generator.assign_pass_configs(pass_configs)
             adapter.lib_generator.assign_compile_flags(compile_flags)
         adapter.lib = adapter.lib_generator.load_lib(lib_path=kernel_lib_path)
 
@@ -259,6 +269,9 @@ class CythonKernelAdapter(BaseKernelAdapter):
             raise ValueError("A2A3 compiler snapshot requires the same target dialect keys")
         if len(self.params) != len(self.prim_func.params):
             raise ValueError("A2A3 runtime parameters must describe the final device kernel, including compiler-derived GM workspaces")
+        for param in self.prim_func.params:
+            if param not in self.prim_func.buffer_map and str(param.dtype) in ("float16", "float64"):
+                raise ValueError(f"A2A3 scalar dtype {param.dtype} is unsupported; use float32.")
         self.workspace_idx = normalize_memory_indices(workspace_idx, len(self.params), "workspace_idx")
         if auto_gm_idx is None:
             auto_gm_idx = [int(value) for value in self.prim_func.attrs.get("auto_gm_indices", [])]
@@ -468,8 +481,6 @@ class CythonKernelAdapter(BaseKernelAdapter):
                 static_strides_map[buffer.name] = (i, static_strides)
                 if is_contiguous:
                     static_contiguous_list.append((i, buffer.name))
-        if self._a2a3_runtime:
-            static_contiguous_list = [(i, buffer_map[param].name) for i, param in enumerate(params) if param in buffer_map]
         return static_shape_map, static_strides_map, static_contiguous_list
 
     def _process_buffer_device(self) -> dict[tirx.Var, tuple[int, torch.device]]:
