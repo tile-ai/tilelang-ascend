@@ -4896,18 +4896,19 @@ def run_test_unary_inplace(op_name, N, dtype, target):
     "op_name",
     [
         "exp",
-        "ln",
-        "abs",
-        "sqrt",
-        "rsqrt",
+        pytest.param("ln", marks=pytest.mark.low_priority),
+        pytest.param("abs", marks=pytest.mark.low_priority),
+        pytest.param("sqrt", marks=pytest.mark.low_priority),
+        pytest.param("rsqrt", marks=pytest.mark.low_priority),
     ],
 )
-@pytest.mark.parametrize("dtype", ["float", "float16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_unary_inplace(op_name, dtype, target):
     run_test_unary_inplace(op_name, 256, dtype, target)
 
 
+@pytest.mark.low_priority
 @pytest.mark.parametrize("dtype", ["float", "float16"])
 def test_reciprocal_inplace(dtype):
     run_test_unary_inplace("reciprocal", 256, dtype, "ascendc")
@@ -4953,8 +4954,8 @@ def run_test_pow_inplace(M, N, block_M, block_N, dtype, target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_pow_inplace(dtype, target):
     run_test_pow_inplace(256, 256, 64, 64, dtype, target)
 
@@ -4980,6 +4981,7 @@ def test_pow_unsupported_dtype_raises(dtype, target):
         tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
 
 
+@pytest.mark.low_priority
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
 def test_pow_special_values(target):
     @T.prim_func
