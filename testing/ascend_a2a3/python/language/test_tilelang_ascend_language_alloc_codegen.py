@@ -137,9 +137,9 @@ def dev_ub_explicit_splice(dim, block_N=128, block_size=128, live_max=64):
 def _compile_and_get_source(target):
     prim_func = dev_L1_explicit_splice(dim=64)
     with (
-        patch("tilelang.jit.adapter.libgen.LibraryGenerator.compile_lib") as mock_compile,
+        patch("tilelang.ascend.a2a3.compiler.LibraryGenerator.compile_lib") as mock_compile,
         patch(
-            "tilelang.jit.adapter.libgen.LibraryGenerator.load_lib",
+            "tilelang.ascend.a2a3.compiler.LibraryGenerator.load_lib",
             return_value=SimpleNamespace(call=SimpleNamespace()),
         ),
     ):
@@ -156,9 +156,9 @@ def _compile_and_get_source(target):
 def _compile_ub_and_get_source(target):
     prim_func = dev_ub_explicit_splice(dim=64)
     with (
-        patch("tilelang.jit.adapter.libgen.LibraryGenerator.compile_lib") as mock_compile,
+        patch("tilelang.ascend.a2a3.compiler.LibraryGenerator.compile_lib") as mock_compile,
         patch(
-            "tilelang.jit.adapter.libgen.LibraryGenerator.load_lib",
+            "tilelang.ascend.a2a3.compiler.LibraryGenerator.load_lib",
             return_value=SimpleNamespace(call=SimpleNamespace()),
         ),
     ):
@@ -292,9 +292,9 @@ def _nested_composite_shape():
 
 def _compile_symbolic_and_get_source(prim_func, target):
     with (
-        patch("tilelang.jit.adapter.libgen.LibraryGenerator.compile_lib") as mock_compile,
+        patch("tilelang.ascend.a2a3.compiler.LibraryGenerator.compile_lib") as mock_compile,
         patch(
-            "tilelang.jit.adapter.libgen.LibraryGenerator.load_lib",
+            "tilelang.ascend.a2a3.compiler.LibraryGenerator.load_lib",
             return_value=SimpleNamespace(call=SimpleNamespace()),
         ),
     ):

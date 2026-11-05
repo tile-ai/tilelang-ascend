@@ -12,7 +12,6 @@ from tilelang.engine.lower import extrac_params
 from tilelang.jit.adapter.base import CachedTextSource
 from tilelang.jit.adapter.cython import adapter as adapter_module
 from tilelang.jit.adapter.cython.adapter import CythonKernelAdapter
-from tilelang.jit.adapter.libgen import LibraryGenerator
 from tilelang.jit.adapter.wrapper import TLWrapper
 
 
@@ -92,7 +91,7 @@ def test_restored_adapter_allocates_final_workspace_and_gm_with_frozen_driver(mo
     assert adapter.workspace_idx == [0]
     assert adapter.auto_gm_idx == [3]
     assert len(adapter.params) == len(adapter.prim_func.params) == 4
-    assert adapter.lib_generator.compile_config.cache_identity == snapshot.cache_identity
+    assert adapter.lib_generator.config.cache_identity == snapshot.cache_identity
     assert adapter.libpath == str(path)
     assert adapter.lib.call.restype is None
     source = torch.arange(9, dtype=torch.float32)
@@ -108,11 +107,11 @@ def test_a2a3_wrapper_keeps_complete_host_source_verbatim():
     assert wrapper.wrap(source) == source
 
 
-def test_shared_libgen_load_retains_path_and_does_not_resolve_again(monkeypatch, tmp_path):
+def test_a2a3_libgen_load_retains_path_and_does_not_resolve_again(monkeypatch, tmp_path):
     snapshot = _snapshot(monkeypatch, tmp_path)
     path = _library(tmp_path, 'extern "C" void call() {}')
     monkeypatch.setattr(compiler, "resolve_compile_config", lambda *args, **kwargs: pytest.fail("frozen snapshot must be reused"))
-    generator = LibraryGenerator(tvm.target.Target(_TARGET), compile_config=snapshot)
+    generator = compiler.LibraryGenerator(snapshot)
     assert generator.load_lib(str(path)).call is not None
     assert generator.get_lib_path() == str(path)
     generator.assign_compile_flags(list(snapshot.flags))
@@ -128,6 +127,22 @@ def test_final_parameter_count_is_required_before_library_loading(tmp_path):
             result_idx=2,
             target=tvm.target.Target(_TARGET),
             func_or_mod=final,
+            host_kernel_source=CachedTextSource(text=""),
+            device_kernel_source=CachedTextSource(text=""),
+            kernel_lib_path=str(tmp_path / "missing.so"),
+        )
+
+
+@pytest.mark.parametrize("dtype", ["float16", "float64"])
+def test_a2a3_scalar_float_dtypes_fail_before_library_loading(tmp_path, dtype):
+    scalar = tir.Var("scalar", dtype)
+    func = tir.PrimFunc([scalar], tir.Evaluate(0)).with_attr("global_symbol", "main")
+    with pytest.raises(ValueError, match=f"A2A3 scalar dtype {dtype} is unsupported"):
+        CythonKernelAdapter.from_database(
+            params=extrac_params(func),
+            result_idx=[],
+            target=tvm.target.Target(_TARGET),
+            func_or_mod=func,
             host_kernel_source=CachedTextSource(text=""),
             device_kernel_source=CachedTextSource(text=""),
             kernel_lib_path=str(tmp_path / "missing.so"),
@@ -306,7 +321,7 @@ def test_int4_restored_adapter_preserves_packed_prefix_and_logical_tensor_contra
     with pytest.raises(ValueError, match="expected torch.int4, got torch.int8"):
         adapter(torch.empty((2, 18), dtype=torch.int8), stream=0)
     with pytest.raises(ValueError, match="contiguous"):
-        adapter(source.t(), stream=0)
+        adapter(torch.empty((18, 2), dtype=torch.int4).t(), stream=0)
     # Shared CUDA/A5/default validation retains the original int8 storage dtype.
     adapter._a2a3_runtime = False
     assert adapter._process_buffer_dtype() == {"input": (0, torch.int8), "output": (1, torch.int8)}
