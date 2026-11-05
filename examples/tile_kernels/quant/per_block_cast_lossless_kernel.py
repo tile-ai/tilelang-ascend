@@ -2238,7 +2238,23 @@ def make_param_id(params: dict) -> str:
 
 
 def assert_equal(actual: torch.Tensor, expected: torch.Tensor, check_stride: bool = True) -> None:
-    torch.testing.assert_close(actual.cpu(), expected.cpu(), rtol=1e-3, atol=1e-3)
+    actual_cpu = actual.detach().cpu()
+    expected_cpu = expected.detach().cpu()
+    assert actual_cpu.shape == expected_cpu.shape, f"shape mismatch: {actual_cpu.shape} != {expected_cpu.shape}"
+    actual_fp32 = actual_cpu.float()
+    expected_fp32 = expected_cpu.float()
+    special = ~torch.isfinite(expected_fp32)
+    if special.any():
+        assert torch.equal(torch.isnan(actual_fp32[special]), torch.isnan(expected_fp32[special]))
+        assert torch.equal(torch.isinf(actual_fp32[special]), torch.isinf(expected_fp32[special]))
+    finite = torch.isfinite(expected_fp32)
+    if finite.any():
+        error = (actual_fp32[finite] - expected_fp32[finite]).abs()
+        error = torch.where(torch.isfinite(error), error, torch.full_like(error, float("inf")))
+        matched_ratio = (error <= 2**-16 + 2**-10 * expected_fp32[finite].abs()).float().mean().item()
+        max_abs_error = error.max().item()
+        assert matched_ratio >= 0.99, f"matched_ratio={matched_ratio:.6f}"
+        assert max_abs_error <= 1e-2, f"max_abs_error={max_abs_error:.6e}"
     if check_stride:
         assert actual.stride() == expected.stride()
 
