@@ -1113,6 +1113,7 @@ def binary_op(
             size_0,
         )
     else:
+        assert size_0 <= math.prod(src1.shape), "src1 must have at least dst.size elements"
         return T.call_intrin(
             "handle",
             tir.op.Op.get(f"tl.ascend_{op}"),
@@ -1245,7 +1246,11 @@ def bitwise_and(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: B
     Args:
         dst: The destination buffer.
         src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        src1: The second source operand. Scalar operands are currently unsupported.
+
+    Supported dtypes on A2/A3:
+        - Ascend C: int16, uint16.
+        - PTO: int8, uint8, int16, uint16.
     """
     return binary_op(dst, src0, src1, "bitwise_and")
 
