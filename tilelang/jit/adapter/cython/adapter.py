@@ -481,6 +481,9 @@ class CythonKernelAdapter(BaseKernelAdapter):
                 static_strides_map[buffer.name] = (i, static_strides)
                 if is_contiguous:
                     static_contiguous_list.append((i, buffer.name))
+        if self._a2a3_runtime:
+            # TA buffer shapes describe kernel views, not input tensor shapes.
+            return {}, {}, static_contiguous_list
         return static_shape_map, static_strides_map, static_contiguous_list
 
     def _process_buffer_device(self) -> dict[tirx.Var, tuple[int, torch.device]]:

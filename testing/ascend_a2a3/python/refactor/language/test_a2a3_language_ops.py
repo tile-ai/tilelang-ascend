@@ -179,13 +179,15 @@ def _tile_call(name, b, explicit_tmp=False):
 
 @pytest.mark.parametrize("name", _UNARY + _BINARY + _WORKSPACE + _SPECIAL)
 def test_public_tile_api_builds_registered_call(name):
+    dtype = "int32" if name == "bitwise_rshift" else "float32"
+
     def emit():
-        buffers = {key: T.alloc_fragment(buffer.shape, str(buffer.dtype), scope=buffer.scope()) for key, buffer in _buffers().items()}
+        buffers = {key: T.alloc_fragment(buffer.shape, str(buffer.dtype), scope=buffer.scope()) for key, buffer in _buffers(dtype).items()}
         return _tile_call(name, buffers)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
-        call = _tile_call(name, _buffers())
+        call = _tile_call(name, _buffers(dtype))
 
         @T.prim_func
         def main():

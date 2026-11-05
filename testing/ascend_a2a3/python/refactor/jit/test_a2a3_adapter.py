@@ -318,6 +318,9 @@ def test_int4_restored_adapter_preserves_packed_prefix_and_logical_tensor_contra
     assert output.stride() == source.stride() == (18, 1)
     assert output.nbytes == source.nbytes == 36
     torch.testing.assert_close(output.view(torch.uint8).flatten()[:18], packed, rtol=0, atol=0)
+    flat_output = adapter(source.view(-1), stream=0)
+    assert flat_output.shape == output.shape
+    torch.testing.assert_close(flat_output.view(torch.uint8).flatten()[:18], packed, rtol=0, atol=0)
     with pytest.raises(ValueError, match="expected torch.int4, got torch.int8"):
         adapter(torch.empty((2, 18), dtype=torch.int8), stream=0)
     with pytest.raises(ValueError, match="contiguous"):
