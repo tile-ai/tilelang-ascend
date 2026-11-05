@@ -115,14 +115,15 @@ performance gate.
 
 ## 7. Accuracy
 
-All tests in `test_example_glm53_kpool_fp8_mqa_logits.py` pass (10/10). The
+All tests in `test_example_glm53_kpool_fp8_mqa_logits.py` pass (11/11). The
 comparison is position-sensitive: the exact `-inf` mask is compared first, then
 the finite logits are checked with `rtol=2^-10`, `atol=2^-16` (the smoke case
 reports max diff 1.953e-3, within tolerance). Metadata (`uint8` bytes, `int32`
 indices) is compared exactly. The cases cover full ranges, partial/empty/
 page-unaligned ranges, invalid page entries, non-multiple `max_num_pools`,
-batched pages (including a non-page-aligned batched tail), the empty-input
-no-launch paths and metadata rejection. Test data uses non-negative head
+batched pages (including a non-page-aligned batched tail), an exhaustive
+sweep of every finite E4M3 byte pattern, the empty-input no-launch paths and
+metadata rejection. Test data uses non-negative head
 weights (the gated-indexer regime), where the 32-head sum has no cancellation
 and the fp32 tolerance holds; mixed-sign weights can cancel and are out of the
 documented tolerance regime.

@@ -237,6 +237,54 @@ def test_glm53_kpool_logits_batched_pages_partial_tile() -> None:
     _assert_logits(actual, expected)
 
 
+def test_glm53_kpool_logits_all_e4m3_codes() -> None:
+    """Every finite E4M3 byte pattern must decode to the reference value."""
+    example = _load_example()
+    example.tilelang.disable_cache()
+
+    num_rows, max_num_pools, num_blocks = 2, 128, 4
+    torch.manual_seed(20261105)
+    query = (torch.randn(num_rows, GLM53_INDEX_HEADS, GLM53_HEAD_DIM) * 0.5).to(torch.bfloat16)
+    weights = torch.rand(num_rows, GLM53_INDEX_HEADS) + 0.1
+    # 0x7F / 0xFF are the NaN codes; tile every finite code over the whole cache.
+    finite = torch.tensor([b for b in range(256) if b not in (0x7F, 0xFF)], dtype=torch.uint8)
+    total = num_blocks * GLM53_PAGE_SIZE * GLM53_HEAD_DIM
+    k_cache = finite.repeat(total // finite.numel() + 1)[:total].reshape(num_blocks, GLM53_PAGE_SIZE, GLM53_HEAD_DIM)
+    scale_cache = torch.rand(num_blocks, GLM53_PAGE_SIZE) + 0.5
+    pool_page_table = torch.arange(num_rows * (max_num_pools // GLM53_PAGE_SIZE), dtype=torch.int32)
+    pool_page_table = pool_page_table.reshape(num_rows, max_num_pools // GLM53_PAGE_SIZE) % num_blocks
+    page_table_rows = torch.arange(num_rows, dtype=torch.int32)
+    pool_starts = torch.zeros(num_rows, dtype=torch.int32)
+    pool_ends = torch.full((num_rows,), max_num_pools, dtype=torch.int32)
+
+    expected = example.glm53_kpool_fp8_mqa_logits_reference(
+        query,
+        k_cache,
+        scale_cache,
+        weights,
+        pool_page_table,
+        page_table_rows,
+        pool_starts,
+        pool_ends,
+        max_num_pools=max_num_pools,
+    )
+    actual = example.glm53_kpool_fp8_mqa_logits(
+        query.npu(),
+        k_cache.npu(),
+        scale_cache.npu(),
+        weights.npu(),
+        pool_page_table.npu(),
+        page_table_rows.npu(),
+        pool_starts.npu(),
+        pool_ends.npu(),
+        max_num_pools=max_num_pools,
+    )
+    torch.npu.synchronize()
+    actual_cpu = actual.cpu()
+    _assert_logits(actual_cpu, expected)
+    assert torch.isfinite(actual_cpu).all()
+
+
 def test_glm53_kpool_logits_empty_inputs() -> None:
     """Empty row batch and zero-width output take the no-launch path."""
     example = _load_example()

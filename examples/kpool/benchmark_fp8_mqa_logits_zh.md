@@ -107,11 +107,11 @@ kernel-only 数字为准。
 
 ## 7. 精度
 
-`test_example_glm53_kpool_fp8_mqa_logits.py` 全部用例通过（10/10）。比较是
+`test_example_glm53_kpool_fp8_mqa_logits.py` 全部用例通过（11/11）。比较是
 位置敏感的：先严格比较 `-inf` 掩码，再对有限 logits 用 `rtol=2^-10`、
 `atol=2^-16` 校验（冒烟用例 max diff 1.953e-3，容差内）。metadata（`uint8`
 字节、`int32` 索引）按精确比较。用例覆盖全区间、部分/空/非页对齐区间、无效
-页表项、非 64 倍数 `max_num_pools`、多页合块（含非页对齐的合块尾块）、空输入
+页表项、非 64 倍数 `max_num_pools`、多页合块（含非页对齐的合块尾块）、全部有限 E4M3 字节模式的穷举扫描、空输入
 no-launch 路径与负向参数校验。测试数据使用非负头权重（gated indexer 的实际
 形态）：此时 32 头求和没有相消，fp32 容差成立；混合符号权重大数相消会超出该
 容差口径，属已知边界。
