@@ -71,8 +71,7 @@ E4M3_EXP_BIAS_GAP = 120  # fp32 exponent bias (127) - E4M3 exponent bias (7)
 FP32_EXP_SHIFT = 23
 E4M3_MANT_TO_FP32_SHIFT = 20  # fp32 mantissa bits (23) - E4M3 mantissa bits (3)
 E4M3_SUBNORMAL_SCALE = 2.0**-9  # subnormal code step (2^-9)
-SIGN_TO_FACTOR_STEP = -2  # sign bit s in {0, 1} -> multiplier 1 - 2s
-SIGN_TO_FACTOR_OFFSET = 1
+FP32_SIGN_SHIFT = 31
 
 # One tile = one cache page (64 pools).
 POOL_TILE = GLM53_PAGE_SIZE
@@ -200,7 +199,6 @@ def glm53_kpool_fp8_mqa_logits_kernel(
             dfsub = T.alloc_ub((half, head_dim), "float32")
             dfmag = T.alloc_ub((half, head_dim), "float32")
             dmask = T.alloc_ub((half, head_dim), "uint8")
-            dfsign = T.alloc_ub((half, head_dim), "float32")
             dfval = T.alloc_ub((half, head_dim), "float32")
 
             # Per-row metadata: one scalar GM read each for the whole block.
@@ -240,10 +238,10 @@ def glm53_kpool_fp8_mqa_logits_kernel(
                 T.tile.mul(dfsub, dfsub, E4M3_SUBNORMAL_SCALE)
                 T.tile.compare(dmask, de4, T.int32(0), "EQ")
                 T.tile.select(dfmag, dmask, dfsub, dfnorm, "VSEL_TENSOR_TENSOR_MODE")
-                T.tile.mul(dsign, dsign, SIGN_TO_FACTOR_STEP)
-                T.tile.add(dsign, dsign, SIGN_TO_FACTOR_OFFSET)
-                T.tile.cast(dfsign, dsign, "CAST_RINT", half_elems)
-                T.tile.mul(dfval, dfmag, dfsign)
+                T.tile.bitwise_lshift(dsign, dsign, FP32_SIGN_SHIFT)
+                T.reinterpretcast(dmag, dfmag, "int32_t")
+                T.tile.add(dmag, dmag, dsign)
+                T.reinterpretcast(dfval, dmag, "float")
                 T.tile.cast(key_ub, dfval, "CAST_RINT", half_elems)
                 T.copy(key_ub, workspace_keys[cid, k * tile_pools + v0 : k * tile_pools + v0 + half, 0:head_dim])
 
