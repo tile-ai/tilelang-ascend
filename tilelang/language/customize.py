@@ -1,72 +1,61 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
-"""The language interface for tl programs."""
+"""Some customized operations frequently used in tensor programming, exposed on the TileLang language surface."""
 
 from __future__ import annotations
-
+from tilelang._typing import ShapeType, DType, BufferLikeType
 import tilelang.language as T
-from tilelang.language.tir import op
-from tvm.tir import PrimExpr, Buffer, BufferRegion, Var
-from tvm import tir
-from tilelang.language.ascend import _dtype
-import math
+from tvm import DataType, DataTypeCode, arith
+from tvm.tirx import PrimExpr, Buffer, Broadcast, convert, op
+from tilelang.utils.language import bits_product, prim_expr_equal, retrieve_buffer_and_offset
+from .atomic import atomic_max, atomic_min, atomic_add, atomic_addx2, atomic_addx4, atomic_load, atomic_or, atomic_store  # noqa: F401
 
 
-def atomic_add(dst: Buffer, value: PrimExpr) -> PrimExpr:
-    """Perform an atomic addition operation.
-
-    Args:
-        dst (Buffer): Destination buffer where the atomic addition will be performed
-        value (PrimExpr): Value to be atomically added
-
-    Returns:
-        PrimExpr: Handle to the atomic addition operation
-    """
-    return T.call_extern("handle", "AtomicAdd", T.address_of(dst), value)
-
-
-def atomic_addx2(dst: Buffer, value: PrimExpr) -> PrimExpr:
-    """Perform an atomic addition operation with double-width operands.
+def dp4a(A: BufferLikeType, B: BufferLikeType, C: BufferLikeType) -> PrimExpr:
+    """Perform a four-element signed int8 dot product accumulated into int32.
 
     Args:
-        dst (Buffer): Destination buffer where the atomic addition will be performed
-        value (PrimExpr): Value to be atomically added (double-width)
+        A: First int8 input buffer.
+        B: Second int8 input buffer.
+        C: Int32 accumulator buffer.
 
     Returns:
-        PrimExpr: Handle to the double-width atomic addition operation
+        Handle to the DP4A operation.
+
+    Raises:
+        ValueError: If A or B is not int8, or C is not int32.
     """
-    return T.call_extern("handle", "AtomicAddx2", T.address_of(dst), T.address_of(value))
+    a_dtype = T.dtype(retrieve_buffer_and_offset(A)[0].dtype)
+    b_dtype = T.dtype(retrieve_buffer_and_offset(B)[0].dtype)
+    c_dtype = T.dtype(retrieve_buffer_and_offset(C)[0].dtype)
+    if a_dtype != T.int8:
+        raise ValueError(f"dp4a requires int8 inputs, got A.dtype='{a_dtype}'")
+    if b_dtype != T.int8:
+        raise ValueError(f"dp4a requires int8 inputs, got B.dtype='{b_dtype}'")
+    if c_dtype != T.int32:
+        raise ValueError(f"dp4a requires an int32 accumulator, got C.dtype='{c_dtype}'")
+    return T.call_extern(
+        "handle",
+        "DP4A",
+        T.access_ptr(A, "r"),
+        T.access_ptr(B, "r"),
+        T.access_ptr(C, "rw"),
+    )
 
 
-def atomic_addx4(dst: Buffer, value: PrimExpr) -> PrimExpr:
-    """Perform an atomic addition operation with double-width operands.
-
-    Args:
-        dst (Buffer): Destination buffer where the atomic addition will be performed
-        value (PrimExpr): Value to be atomically added (double-width)
-
-    Returns:
-        PrimExpr: Handle to the double-width atomic addition operation
-    """
-    return T.call_extern("handle", "AtomicAddx4", T.address_of(dst), T.address_of(value))
-
-
-def dp4a(A: Buffer, B: Buffer, C: Buffer) -> PrimExpr:
-    """Perform a 4-element dot product with accumulation (DP4A).
-
-    Args:
-        A (Buffer): First input buffer
-        B (Buffer): Second input buffer
-        C (Buffer): Accumulation buffer
-
-    Returns:
-        PrimExpr: Handle to the DP4A operation
-    """
-    return T.call_extern("handle", "DP4A", T.address_of(A), T.address_of(B), T.address_of(C))
+_NON_FLOAT_TYPE_CODES = (
+    DataTypeCode.INT,
+    DataTypeCode.UINT,
+    DataTypeCode.BOOL,
+    DataTypeCode.HANDLE,
+)
 
 
 def clamp(dst: PrimExpr, min_val: PrimExpr, max_val: PrimExpr) -> PrimExpr:
     """Clamps the input value dst between [min_val, max_val]
+
+    Floating-point ``NaN`` values in the input or either bound propagate to
+    the result. When ``min_val > max_val``, the result is ``max_val`` (unless
+    an operand is ``NaN``), matching ``torch.clamp``. Each operand is evaluated
+    once, and vector operands are clamped independently in each lane.
 
     Args:
         dst: Input value to be clamped
@@ -76,158 +65,105 @@ def clamp(dst: PrimExpr, min_val: PrimExpr, max_val: PrimExpr) -> PrimExpr:
     Returns:
         Value clamped to the specified range
     """
-    dst = T.max(dst, min_val)  # Ensure value is not less than minimum
-    dst = T.min(dst, max_val)  # Ensure value is not greater than maximum
-    return dst
+    dst, min_val, max_val = (convert(value) for value in (dst, min_val, max_val))
+    clamped = T.min(T.max(dst, min_val), max_val)
+    dtype = DataType(clamped.dtype)
+    if dtype.type_code in _NON_FLOAT_TYPE_CODES:
+        return clamped
+    # Match min/max's type promotion, including scalar bounds on vector inputs.
+    lanes = max(DataType(value.dtype).lanes for value in (dst, min_val, max_val))
+    dtype = dtype.with_lanes(lanes)
+    args = []
+    for value in (dst, min_val, max_val):
+        if DataType(value.dtype).lanes == 1 and lanes != 1:
+            value = Broadcast(value, lanes)
+        args.append(T.cast(value, dtype))
+    return T.call_intrin(dtype, op.Op.get("tl.clamp"), *args)
 
 
-def reshape(src: Buffer, shape: list[PrimExpr]) -> Buffer:
+def reshape(src: Buffer, shape: ShapeType) -> Buffer:
     """Reshapes the input buffer to the specified shape.
 
     Args:
         src (Buffer): Input buffer to be reshaped
-        shape (list[PrimExpr]): New shape for the buffer
+        shape (ShapeType): New shape for the buffer
 
     Returns:
         Buffer: A new buffer view with the specified shape
     """
-    return T.Buffer(shape, src.dtype, src.data)
+    bits, src_bits = bits_product(shape, src.dtype), bits_product(src.shape, src.dtype)
+    assert prim_expr_equal(bits, src_bits) or arith.Analyzer().can_prove_equal(bits, src_bits), (
+        f"T.reshape/view shape check failed. {bits_product(shape, src.dtype)}, {bits_product(src.shape, src.dtype)}"
+    )
+    return T.Tensor(shape, src.dtype, src.data)
 
 
-def view(src: Buffer, shape: list[PrimExpr] | None = None, dtype: str | None = None) -> Buffer:
-    """Views the input buffer with optionally modified shape and dtype.
+def view(
+    src: Buffer,
+    shape: ShapeType | None = None,
+    dtype: DType | None = None,
+    strides: ShapeType | None = None,
+) -> Buffer:
+    """Return a Tensor view with an optional new shape, dtype, and explicit strides.
 
-    Args:
-        src (Buffer): Input buffer to be viewed
-        shape (list[PrimExpr] | None, optional): New shape for the buffer. Defaults to None.
-        dtype (str | None = None, optional): New dtype for the buffer. Defaults to None.
+    If ``shape`` is None, the source buffer's shape is used. If ``dtype`` is None,
+    the source buffer's dtype is used. The returned buffer shares its data with
+    ``src`` without copying.
 
-    Returns:
-        Buffer: A new buffer view with the specified shape and dtype
+    Without ``strides``, ``src`` must be densely packed and the result uses a dense
+    layout. A non-contiguous source requires explicit ``strides``. Explicit strides are
+    expressed in units of ``dtype`` elements and allow rank changes.
+
+    The source must have zero ``elem_offset``. The caller must guarantee that explicit
+    strides are valid for the backing storage, including dtype alignment and physical
+    contiguity between any source dimensions merged by a rank-changing view.
     """
     if shape is None:
         shape = src.shape
     if dtype is None:
         dtype = src.dtype
-    return T.Buffer(shape, dtype, src.data)
+
+    analyzer = arith.Analyzer()
+
+    # A view must describe the same logical storage starting at the same address.
+    view_bits = bits_product(shape, dtype)
+    src_bits = bits_product(src.shape, src.dtype)
+    if not (prim_expr_equal(view_bits, src_bits) or bool(analyzer.can_prove_equal(view_bits, src_bits))):
+        raise ValueError(
+            f"T.view shape and dtype must preserve the logical bit count of '{src.name}': {view_bits} bits != {src_bits} bits."
+        )
+    if not (prim_expr_equal(src.elem_offset, 0) or bool(analyzer.can_prove_equal(src.elem_offset, 0))):
+        raise ValueError("T.view does not support a source buffer with non-zero elem_offset.")
+
+    if strides is None:
+        # Only an already-compact source may use the implicit dense layout.
+        if len(src.strides) != 0:
+            if len(src.strides) != len(src.shape):
+                raise ValueError(f"T.view requires explicit strides for non-contiguous buffer '{src.name}'.")
+            expected_stride = 1
+            for extent, stride in zip(reversed(list(src.shape)), reversed(list(src.strides))):
+                extent_is_singleton = prim_expr_equal(extent, 1) or bool(analyzer.can_prove_equal(extent, 1))
+                stride_is_compact = prim_expr_equal(stride, expected_stride) or bool(analyzer.can_prove_equal(stride, expected_stride))
+                if not (extent_is_singleton or stride_is_compact):
+                    raise ValueError(f"T.view requires explicit strides for non-contiguous buffer '{src.name}'.")
+                expected_stride = expected_stride * extent
+        return T.Tensor(shape, dtype, src.data)
+
+    # Explicit strides are expressed in destination elements.
+    if len(strides) != len(shape):
+        raise ValueError(f"T.view expected {len(shape)} strides for shape {tuple(shape)}, but got {len(strides)}.")
+    for dim, stride in enumerate(strides):
+        is_negative = stride < 0 if isinstance(stride, int) else analyzer.can_prove(stride < 0)
+        if is_negative:
+            raise ValueError(f"T.view stride at dim {dim} must be non-negative, but got {stride}.")
+
+    return T.StridedTensor(shape, tuple(strides), dtype, data=src.data)
 
 
-def npu_gemm(A, B, C, init=False, n_actual=None, unit_flag=None, k_actual=None):
-    """NPU GEMM intrinsic. A, B, C can be 2D or higher-order (leading dims must be 1).
+def loop_break() -> PrimExpr:
+    """Break out of the current loop.
 
-    n_actual / unit_flag (both default ``None``): optional trailing args mapping to
-    the C++ ``mma`` template's ``n_actual`` (runtime output-column count, <= N) and
-    ``unitFlag`` (0b10 accumulate / 0b11 flush, driving the hardware mma->fixpipe
-    pipeline). When both are ``None`` the call emits the legacy 6-argument form, so
-    every existing caller is byte-for-byte unchanged (the C++ defaults are
-    ``n_actual = N`` and ``unitFlag = 0``). Setting ``unit_flag=0b11`` here and on a
-    following ``T.copy(L0C->GM, unit_flag=0b11)`` fuses the two, letting the fixpipe
-    of one tile overlap the mma of the next across an L0C ping-pong.
-
-    k_actual (default ``None``): runtime contraction length, passed as the C++ mma's
-    ``K`` argument and overriding the value derived from ``A``'s last dim. This lets
-    the operands stay full buffers while the mma contracts only ``k_actual`` columns.
-    Passing a symbolic slice instead (``a_l0[pp, :, 0:k]``) is not an option, since
-    ``access_ptr`` would need a concrete extent.
+    Returns:
+        tir.Call: A call to the `tl.loop_break` intrinsic.
     """
-
-    def legalize_arguments(arg: Buffer | Var):
-        """Convert let-bound variables to their corresponding buffers.
-
-        Args:
-            arg (tir.Buffer | tir.Var: Input argument to legalize
-
-        Returns:
-            tir.Buffer | tir.Var: The legalized argument
-        """
-        if isinstance(arg, Var) and T.has_let_value(arg):
-            return T.get_let_value(arg).buffer
-        return arg
-
-    A = legalize_arguments(A)
-    B = legalize_arguments(B)
-    C = legalize_arguments(C)
-
-    def retrieve_shape(object: Buffer | BufferRegion) -> list[int]:
-        if isinstance(object, Buffer):
-            return object.shape
-        elif isinstance(object, BufferRegion):
-            region = object.region
-            shape = []
-            for r in region:
-                shape.append(r.extent)
-            return shape
-        else:
-            raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
-
-    A_shape = retrieve_shape(A)
-    B_shape = retrieve_shape(B)
-    C_shape = retrieve_shape(C)
-
-    assert len(C_shape) >= 2, "current only support C as a 2D or higher-order tensor"
-    assert len(A_shape) >= 2, "current only support A as a 2D or higher-order tensor"
-    assert len(B_shape) >= 2, "current only support B as a 2D or higher-order tensor"
-    if len(C_shape) > 2:
-        for i in range(len(C_shape) - 2):
-            assert C_shape[i] == 1, (
-                "current only support C as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
-            )
-    if len(A_shape) > 2:
-        for i in range(len(A_shape) - 2):
-            assert A_shape[i] == 1, (
-                "current only support A as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
-            )
-    if len(B_shape) > 2:
-        for i in range(len(B_shape) - 2):
-            assert B_shape[i] == 1, (
-                "current only support B as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
-            )
-
-    M, N = C_shape[-2], C_shape[-1]
-    K = A_shape[-1]
-    K_B = B_shape[-2]
-    assert K == K_B, f"T.gemm K shape check failed: K_A = {K}, K_B = {K_B}"
-
-    def retrieve_ptr(object: Buffer | BufferRegion, access_type: str = "r") -> PrimExpr:
-        if isinstance(object, Buffer):
-            return object.access_ptr(access_type)
-        elif isinstance(object, BufferRegion):
-            buffer, region = object.buffer, object.region
-            indices = []
-            for r in region:
-                indices.append(r.min)
-            strides = []
-            stride = 1
-            for s in reversed(buffer.shape):
-                strides.insert(0, stride)
-                stride *= s
-            offset = 0
-            for i in range(len(indices)):
-                offset += indices[i] * strides[i]
-            extent = [x.extent for x in object.region]
-            size_extent = math.prod(extent)
-            return buffer.access_ptr(access_mask=access_type, offset=offset, extent=size_extent)
-        else:
-            raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
-
-    Aptr = retrieve_ptr(A, "r")
-    Bptr = retrieve_ptr(B, "r")
-    Cptr = retrieve_ptr(C, "w" if init is True else "rw")
-
-    # k_actual overrides the K derived from A's last dim, so the operands can stay
-    # full buffers while the mma contracts fewer columns. The <M, N> template
-    # params are unaffected.
-    K_runtime = K if k_actual is None else k_actual
-
-    mma_args = [f"mma<{_dtype(A)}, {_dtype(C)}, {M}, {N}>", Aptr, Bptr, Cptr, init, K_runtime]
-    # Trailing args are positional, so n_actual must be materialised (as its no-op
-    # default N) whenever unit_flag is set.
-    if n_actual is not None or unit_flag is not None:
-        mma_args.append(n_actual if n_actual is not None else N)
-        mma_args.append(unit_flag if unit_flag is not None else 0)
-    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_mma"), *mma_args)
-
-
-def loop_break():
-    """Break out of the innermost loop."""
-    return T.call_intrin("handle", op.Op.get("tl.loop_break"))  # noqa: F821
+    return T.call_intrin("handle", op.Op.get("tl.loop_break"))

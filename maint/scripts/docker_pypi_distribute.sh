@@ -1,14 +1,19 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euxo pipefail
 
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
+if docker buildx version >/dev/null 2>&1; then
+  if docker info >/dev/null 2>&1; then
+    docker run --rm --privileged tonistiigi/binfmt --install amd64,arm64 >/dev/null 2>&1 || true
+  fi
 
-# Get the CUDA version from the command line
-IMAGE="tilelang-builder:18.04"
-docker build . -f "$(dirname "${BASH_SOURCE[0]}")/pypi.Dockerfile" --tag ${IMAGE}
+  if ! docker buildx inspect multi >/dev/null 2>&1; then
+    docker buildx create --name multi --driver docker-container --use >/dev/null 2>&1 || true
+  else
+    docker buildx use multi >/dev/null 2>&1 || true
+  fi
+  docker buildx inspect --bootstrap >/dev/null 2>&1 || true
 
-install_pip="python3.8 -m pip install --upgrade pip && python3.8 -m pip install -r requirements-build.txt"
+  export CIBW_ARCHS='x86_64 aarch64'
+fi
 
-tox_command="python3.8 -m tox -e py38-pypi,py39-pypi,py310-pypi,py311-pypi,py312-pypi,audit_2_27"
-
-docker run --rm -v $(pwd):/tilelang ${IMAGE} /bin/bash -c "$install_pip && $tox_command"
+NO_VERSION_LABEL=ON CIBW_BUILD='cp310-*' cibuildwheel . 2>&1 | tee cibuildwheel.log

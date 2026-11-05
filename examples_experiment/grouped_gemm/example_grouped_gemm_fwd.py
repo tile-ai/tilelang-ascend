@@ -1,7 +1,7 @@
 import torch
 import argparse
 import tilelang
-import tilelang.language as T
+import tilelang.ascend.a2a3.language as T
 
 
 def torch_gmm(a, b, block_metadata, trans_b=False):

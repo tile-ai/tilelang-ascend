@@ -2,10 +2,10 @@ import argparse
 import math
 
 import tilelang
-from tilelang import language as T
+from tilelang.ascend.a2a3 import language as T
 import torch
 
-tilelang.cache.clear_cache()
+tilelang.disable_cache()
 
 
 def is_pow_of_2(n):

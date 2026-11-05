@@ -1,46 +1,39 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- */
-
 /*!
  * \file vectorize_loop.cc
  */
 // Loop vectorizer as in Halide pipeline.
+#include "support/check.h"
 #include <tvm/arith/analyzer.h>
-#include <tvm/runtime/registry.h>
-#include <tvm/tir/analysis.h>
-#include <tvm/tir/builtin.h>
-#include <tvm/tir/expr.h>
-#include <tvm/tir/op.h>
-#include <tvm/tir/op_attr_types.h>
-#include <tvm/tir/stmt_functor.h>
-#include <tvm/tir/transform.h>
+#include <tvm/ir/cast.h>
+#include <tvm/runtime/logging.h>
+#include <tvm/tirx/analysis.h>
+#include <tvm/tirx/builtin.h>
+#include <tvm/tirx/expr.h>
+#include <tvm/tirx/op.h>
+#include <tvm/tirx/op_attr_types.h>
+#include <tvm/tirx/stmt.h>
+#include <tvm/tirx/stmt_functor.h>
+#include <tvm/tirx/transform.h>
 
+#include <optional>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
+#include "../op/builtin.h"
+#include "../op/utils.h"
 #include "arith/scalable_expression.h"
+#include "backend/common/target_utils.h"
+#include "loop_vectorize.h"
 #include "tir/analysis/check_contains.h"
+#include "tir/transforms/ir_utils.h"
 
 namespace tvm {
 namespace tl {
 
-using namespace tir;
+using namespace tirx;
+using namespace ffi;
 
 /*!
  * \brief Perform data type legalization on the given BufferLoadNode pointer.
@@ -48,12 +41,6 @@ using namespace tir;
  * \param n A pointer to a writable BufferLoadNode.
  */
 static void LegalizeBufferLoadDType(BufferLoadNode *n) {
-  // Check that all indices except the last one have a scalar dtype
-  for (int i = 0; i < static_cast<int>(n->indices.size()) - 1; i++) {
-    ICHECK(n->indices[i].dtype().is_scalar())
-        << "Only the last index of a buffer access may be a vector type.";
-  }
-
   // If there are no indices, set the dtype to the buffer's dtype
   if (n->indices.empty()) {
     n->dtype = n->buffer->dtype;
@@ -114,6 +101,20 @@ inline PrimExpr BroadcastTo(PrimExpr e, int lanes, bool is_scalable) {
   return Broadcast(e, CreateNewLanes(is_scalable, lanes));
 }
 
+/*!
+ * \brief Get the vectorized atomic add op based on vector size.
+ */
+inline Op GetVectorizedAtomicOp(int vector_size) {
+  switch (vector_size) {
+  case 4:
+    return atomic_addx4_elem_op();
+  case 2:
+    return atomic_addx2_elem_op();
+  default:
+    return atomic_add_elem_op();
+  }
+}
+
 // Rewrite vectorized allocation access
 // This is necessary for making each vector component containing its own
 // workspace. Originates from Halide's loop vectorizer
@@ -126,7 +127,7 @@ inline PrimExpr BroadcastTo(PrimExpr e, int lanes, bool is_scalable) {
 class TLVecAllocAccess : public StmtExprMutator {
 public:
   TLVecAllocAccess(const VarNode *buf, Var var, PrimExpr var_lanes)
-      : buf_(buf), var_(var), var_lanes_(var_lanes) {}
+      : buf_(buf), var_(std::move(var)), var_lanes_(std::move(var_lanes)) {}
 
   PrimExpr VisitExpr_(const BufferLoadNode *op) final {
     auto load = Downcast<BufferLoad>(StmtExprMutator::VisitExpr_(op));
@@ -206,19 +207,31 @@ public:
   using ExprFunctor::VisitExpr;
   using StmtMutator::operator();
 
-  TLVectorizer(Var var, PrimExpr var_lanes) : var_(var), var_lanes_(var_lanes) {
+  // Convenience entry to vectorize a loop body without exposing
+  // the mutator invocation pattern at call sites.
+  static Stmt Vectorize(const Var &var, const PrimExpr &var_lanes, Stmt body) {
+    TLVectorizer vec{var, var_lanes};
+    Stmt original_body = body;
+    auto vec_stmt = vec(std::move(body));
+    // If scalarization is needed, scalarize the entire original body
+    if (vec.need_scalarize_) {
+      return vec.Scalarize(original_body);
+    }
+    return vec_stmt;
+  }
+
+  TLVectorizer(const Var &var, const PrimExpr &var_lanes)
+      : var_(var), var_lanes_(var_lanes) {
     ramp_ = Ramp(IntImm(var->dtype, 0), IntImm(var->dtype, 1), var_lanes);
   }
 
   Stmt VisitStmt(const Stmt &stmt) final {
-    ICHECK(!need_scalarize_);
-    Stmt ret = StmtMutator::VisitStmt(stmt);
+    // If scalarization is already needed, return original stmt unchanged
+    // to let the top-level Vectorize handle it
     if (need_scalarize_) {
-      need_scalarize_ = false;
-      return Scalarize(stmt);
-    } else {
-      return ret;
+      return stmt;
     }
+    return StmtMutator::VisitStmt(stmt);
   }
 
   PrimExpr VisitExpr(const PrimExpr &e) final {
@@ -226,11 +239,13 @@ public:
   }
 
   PrimExpr VisitExpr_(const AddNode *op) final {
-    return AddSubVec(op, [](PrimExpr a, PrimExpr b) { return a + b; });
+    return AddSubVec(
+        op, [](PrimExpr a, PrimExpr b) { return std::move(a) + std::move(b); });
   }
 
   PrimExpr VisitExpr_(const SubNode *op) final {
-    return AddSubVec(op, [](PrimExpr a, PrimExpr b) { return a - b; });
+    return AddSubVec(
+        op, [](PrimExpr a, PrimExpr b) { return std::move(a) - std::move(b); });
   }
 
   PrimExpr VisitExpr_(const MulNode *op) final {
@@ -364,17 +379,34 @@ public:
 
   PrimExpr VisitExpr_(const CastNode *op) final {
     PrimExpr value = this->VisitExpr(op->value);
-    if (value.same_as(op->value)) {
-      return GetRef<PrimExpr>(op);
-    } else {
-      if (value.dtype().is_scalable_vector()) {
-        return Cast(op->dtype.with_scalable_vscale_factor(
-                        value.dtype().vscale_factor()),
-                    value);
+
+    // Vectorize PrimExpr values inside annotations (e.g. "rbits" for
+    // stochastic-rounding casts). Keys and non-PrimExpr values pass through
+    // unchanged.
+    ffi::Map<ffi::String, ffi::Any> new_annotations;
+    bool annotations_changed = false;
+    for (const auto &kv : op->annotations) {
+      if (auto opt = kv.second.as<PrimExpr>()) {
+        PrimExpr new_val = this->VisitExpr(opt.value());
+        new_annotations.Set(kv.first, new_val);
+        if (!new_val.same_as(opt.value()))
+          annotations_changed = true;
       } else {
-        return Cast(op->dtype.with_lanes(value.dtype().lanes()), value);
+        new_annotations.Set(kv.first, kv.second);
       }
     }
+    if (value.same_as(op->value) && !annotations_changed) {
+      return tvm::ffi::GetRef<PrimExpr>(op);
+    }
+    DataType new_dtype = value.dtype().is_scalable_vector()
+                             ? op->dtype.with_scalable_vscale_factor(
+                                   value.dtype().vscale_factor())
+                             : op->dtype.with_lanes(value.dtype().lanes());
+    if (op->annotations.empty()) {
+      return Cast(new_dtype, value);
+    }
+    return Cast(new_dtype, value,
+                annotations_changed ? new_annotations : op->annotations);
   }
 
   PrimExpr VisitExpr_(const FloatImmNode *op) final {
@@ -396,13 +428,14 @@ public:
     if (var.same_as(var_)) {
       return ramp_;
     }
-    auto it = let_binding_.find(var);
-    if (it != let_binding_.end()) {
+    auto it = let_var_map_.find(var);
+    if (it != let_var_map_.end()) {
       return it->second;
     } else {
       return std::move(var);
     }
   }
+
   // IfThenElse expr
   PrimExpr MutateIfThenElseExpr_(const CallNode *op) {
     PrimExpr cond = this->VisitExpr(op->args[0]);
@@ -431,6 +464,85 @@ public:
       }
     }
   }
+
+  // Address of: remove vectorized var from indices to get base address
+  // e.g., T.address_of(buf[base + vec]) -> T.address_of(buf[base])
+  PrimExpr MutateAddressOfCall_(const CallNode *op) {
+    ICHECK(op->op.same_as(builtin::address_of()));
+    ICHECK_EQ(op->args.size(), 1);
+
+    auto buffer_load = op->args[0].as<BufferLoadNode>();
+    if (!buffer_load) {
+      return GetRef<PrimExpr>(op);
+    }
+
+    // Remove the vectorized var from indices by substituting var_ with 0
+    Array<PrimExpr> new_indices;
+    for (const auto &index : buffer_load->indices) {
+      PrimExpr new_index = Substitute(index, {{var_, IntImm(var_->dtype, 0)}});
+      new_indices.push_back(analyzer_.Simplify(new_index));
+    }
+
+    BufferLoad new_load = GetRef<BufferLoad>(buffer_load);
+    if (!new_indices.same_as(buffer_load->indices)) {
+      auto writer = new_load.CopyOnWrite();
+      writer->indices = new_indices;
+    }
+
+    return Call(op->dtype, op->op, {new_load});
+  }
+
+  // tvm_access_ptr: substitute loop var with 0 in offset to get base address
+  // args are (dtype_annotation, data, offset, extent, access_mask)
+  PrimExpr MutateAccessPtrCall_(const CallNode *op) {
+    ICHECK(op->op.same_as(builtin::tvm_access_ptr()));
+    ICHECK_GE(op->args.size(), 5);
+
+    // Only the offset (args[2]) may contain the loop var; substitute it with 0
+    PrimExpr offset = op->args[2];
+    PrimExpr new_offset = Substitute(offset, {{var_, IntImm(var_->dtype, 0)}});
+    new_offset = analyzer_.Simplify(new_offset);
+
+    if (new_offset.same_as(offset)) {
+      return GetRef<PrimExpr>(op);
+    }
+
+    Array<PrimExpr> new_args = op->args;
+    new_args.Set(2, new_offset);
+    return Call(op->dtype, op->op, new_args);
+  }
+
+  // tl.access_ptr: substitute loop var with 0 in BufferLoad indices.
+  // args are (base_load, extent, access_mask)
+  PrimExpr MutateTLAccessPtrCall_(const CallNode *op) {
+    ICHECK(op->op.same_as(tl::access_ptr()));
+    ICHECK_GE(op->args.size(), 3);
+
+    auto buffer_load = op->args[0].as<BufferLoadNode>();
+    if (!buffer_load) {
+      return GetRef<PrimExpr>(op);
+    }
+
+    Array<PrimExpr> new_indices;
+    for (const auto &index : buffer_load->indices) {
+      PrimExpr new_index = Substitute(index, {{var_, IntImm(var_->dtype, 0)}});
+      new_indices.push_back(analyzer_.Simplify(new_index));
+    }
+
+    if (new_indices.same_as(buffer_load->indices)) {
+      return GetRef<PrimExpr>(op);
+    }
+
+    BufferLoad new_load = GetRef<BufferLoad>(buffer_load);
+    auto writer = new_load.CopyOnWrite();
+    writer->indices = new_indices;
+    LegalizeBufferLoadDType(writer);
+
+    Array<PrimExpr> new_args = op->args;
+    new_args.Set(0, new_load);
+    return Call(op->dtype, op->op, new_args);
+  }
+
   // Reinterpret expr
   PrimExpr MutateReinterpretExpr_(const CallNode *op) {
     ICHECK(op->op.same_as(builtin::reinterpret()));
@@ -447,6 +559,177 @@ public:
       }
     }
   }
+  // Atomic add vectorization
+  PrimExpr MutateAtomicAddExpr_(const CallNode *op) {
+    ICHECK(op->op.same_as(atomic_add_elem_op()));
+
+    ICHECK_GE(op->args.size(), 2U)
+        << "atomic_add_elem_op requires at least 2 args (dst and src)";
+
+    // Get the vector size from var_lanes_
+    auto lanes_ptr = as_const_int(var_lanes_);
+    if (!lanes_ptr || *lanes_ptr <= 1) {
+      // Not in vectorized context or vector size is 1
+      return GetRef<PrimExpr>(op);
+    }
+    int vector_size = static_cast<int>(*lanes_ptr);
+    auto dst = VisitExpr(op->args[0]);
+    auto src = VisitExpr(op->args[1]);
+
+    // If src is not Ramp/Broadcasted, it must be a scalar or something.
+    // Broadcast to vector size if needed
+    if (src.same_as(op->args[1])) {
+      src = BroadcastTo(src, vector_size, src.dtype().is_scalable_vector());
+    }
+
+    // The emitter only needs the destination dtype and address space.
+    Target target = Target::Current(false);
+    int max_vec_size;
+    if (auto load = ExtractBufferLoadForAtomic(dst); load.defined()) {
+      const Buffer &buffer = load.value()->buffer;
+      max_vec_size =
+          GetMaxAtomicVectorSize(buffer->dtype, buffer.scope(), target);
+    } else {
+      Call ptr = Downcast<Call>(dst);
+      ICHECK(ptr->op.same_as(builtin::tvm_access_ptr()))
+          << "Unsupported atomic destination: " << dst;
+      ICHECK_EQ(ptr->args.size(), 5U)
+          << "tvm_access_ptr expects (dtype, data, offset, extent, rw_mask)";
+      max_vec_size = GetMaxAtomicVectorSize(
+          ptr->args[0].dtype(), GetPtrStorageScope(Downcast<Var>(ptr->args[1])),
+          target);
+    }
+    if (vector_size > max_vec_size) {
+      // Keep the loop binder when this atomic requires scalar lanes.
+      need_scalarize_ = true;
+      return GetRef<PrimExpr>(op);
+    }
+
+    // Return the vectorized atomic op, carrying the trailing operands
+    // (memory_order) so the wide atomic honors the requested ordering just like
+    // the scalar path does. Copied as-is: the order is a scalar constant and
+    // must not be broadcast to the vector lanes.
+    Array<PrimExpr> new_args{dst, src};
+    for (size_t i = 2; i < op->args.size(); ++i) {
+      new_args.push_back(op->args[i]);
+    }
+    return Call(op->dtype, GetVectorizedAtomicOp(vector_size), new_args);
+  }
+
+  static std::optional<int> GetAccessPtrElementBits(const PrimExpr &expr) {
+    const auto *ptr_call = expr.as<CallNode>();
+    if (ptr_call == nullptr) {
+      return std::nullopt;
+    }
+    if (ptr_call->op.same_as(builtin::tvm_access_ptr())) {
+      ICHECK(!ptr_call->args.empty());
+      DataType dtype = ptr_call->args[0].dtype();
+      return dtype.bits() * dtype.lanes();
+    }
+    if (ptr_call->op.same_as(tl::access_ptr())) {
+      ICHECK_GE(ptr_call->args.size(), 3U);
+      const auto *buffer_load = ptr_call->args[0].as<BufferLoadNode>();
+      ICHECK(buffer_load) << "tl.access_ptr arg0 must be BufferLoad";
+      DataType dtype = buffer_load->buffer->dtype;
+      return dtype.bits() * dtype.lanes();
+    }
+    return std::nullopt;
+  }
+
+  static std::optional<int> GetCPAsyncBitsPerCall(const CallNode *op,
+                                                  const PrimExpr &count) {
+    const auto *count_imm = count.as<IntImmNode>();
+    if (count_imm == nullptr) {
+      return std::nullopt;
+    }
+    int scalar_count = static_cast<int>(count_imm->value);
+    if (scalar_count <= 0) {
+      return std::nullopt;
+    }
+    if (op->op.same_as(builtin::ptx_cp_async())) {
+      return scalar_count * 8;
+    }
+    ICHECK(op->op.same_as(tl::ptx_cp_async()));
+    auto dst_elem_bits = GetAccessPtrElementBits(op->args[0]);
+    auto src_elem_bits = GetAccessPtrElementBits(op->args[1]);
+    if (!dst_elem_bits.has_value() || !src_elem_bits.has_value()) {
+      return std::nullopt;
+    }
+    int dst_total_bits = scalar_count * dst_elem_bits.value();
+    int src_total_bits = scalar_count * src_elem_bits.value();
+    ICHECK_EQ(dst_total_bits, src_total_bits)
+        << "tl.ptx_cp_async requires src/dst transfer widths to match, but got "
+        << dst_total_bits << " vs " << src_total_bits << " bits";
+    return dst_total_bits;
+  }
+
+  // Vectorized cp.async widening.
+  // builtin::ptx_cp_async keeps the transfer width in bytes, while
+  // tl::ptx_cp_async keeps it in logical element counts. The generic
+  // vectorization pass widens either form by the vector lane count and lets
+  // the final codegen validate the derived PTX byte width.
+  PrimExpr MutatePTXCPAsyncExpr_(const CallNode *op) {
+    ICHECK(op->op.same_as(builtin::ptx_cp_async()) ||
+           op->op.same_as(tl::ptx_cp_async()));
+    if (op->args.size() != 3 && op->args.size() != 4) {
+      return GetRef<PrimExpr>(op);
+    }
+
+    PrimExpr dst = VisitExpr(op->args[0]);
+    PrimExpr src = VisitExpr(op->args[1]);
+    PrimExpr count = VisitExpr(op->args[2]);
+    Optional<PrimExpr> predicate = std::nullopt;
+    if (op->args.size() == 4) {
+      auto pred = VisitExpr(op->args[3]);
+      if (pred.dtype().is_scalable_or_fixed_length_vector()) {
+        need_scalarize_ = true;
+        return GetRef<PrimExpr>(op);
+      }
+      predicate = pred;
+    }
+
+    auto lanes_ptr = as_const_int(var_lanes_);
+    if (!lanes_ptr || *lanes_ptr <= 1) {
+      Array<PrimExpr> new_args{dst, src, count};
+      if (predicate.defined()) {
+        new_args.push_back(predicate.value());
+      }
+      if (new_args.same_as(op->args)) {
+        return GetRef<PrimExpr>(op);
+      }
+      return Call(op->dtype, op->op, new_args);
+    }
+
+    auto bits_per_call = GetCPAsyncBitsPerCall(op, count);
+    if (!bits_per_call.has_value()) {
+      need_scalarize_ = true;
+      return GetRef<PrimExpr>(op);
+    }
+
+    int vector_size = static_cast<int>(*lanes_ptr);
+    int total_bits = bits_per_call.value() * vector_size;
+    if (total_bits % 8 != 0) {
+      need_scalarize_ = true;
+      return GetRef<PrimExpr>(op);
+    }
+    int total_bytes = total_bits / 8;
+    if (!IsValidCPAsyncTransferBytes(total_bytes)) {
+      need_scalarize_ = true;
+      return GetRef<PrimExpr>(op);
+    }
+
+    int total_count =
+        static_cast<int>(Downcast<IntImm>(count)->value) * vector_size;
+    Array<PrimExpr> new_args{dst, src, IntImm(count.dtype(), total_count)};
+    if (predicate.defined()) {
+      new_args.push_back(predicate.value());
+    }
+    if (new_args.same_as(op->args)) {
+      return GetRef<PrimExpr>(op);
+    }
+    return Call(op->dtype, op->op, new_args);
+  }
+
   // Call
   PrimExpr VisitExpr_(const CallNode *op) final {
     if (op->op.same_as(builtin::if_then_else())) {
@@ -468,12 +751,23 @@ public:
       return Call(op->dtype.with_lanes(lane), op->op, new_args);
     } else if (op->op.same_as(builtin::reinterpret())) {
       return MutateReinterpretExpr_(op);
+    } else if (op->op.same_as(atomic_add_elem_op())) {
+      // Handle vectorization of atomic_add_elem_op
+      return MutateAtomicAddExpr_(op);
+    } else if (op->op.same_as(builtin::address_of())) {
+      return MutateAddressOfCall_(op);
+    } else if (op->op.same_as(tl::access_ptr())) {
+      return MutateTLAccessPtrCall_(op);
+    } else if (op->op.same_as(builtin::tvm_access_ptr())) {
+      return MutateAccessPtrCall_(op);
+    } else if (op->op.same_as(builtin::ptx_cp_async()) ||
+               op->op.same_as(tl::ptx_cp_async())) {
+      return MutatePTXCPAsyncExpr_(op);
     }
     auto optional_op = op->op.as<Op>();
     bool vectorizable = optional_op &&
                         op_vectorizable_.get(optional_op.value(), false) &&
                         !op->dtype.is_scalable_vector();
-
     if (!vectorizable) {
       // Cannot vectorize this op
       Array<PrimExpr> new_args;
@@ -501,6 +795,7 @@ public:
       }
     }
   }
+
   // BufferLoad
   PrimExpr VisitExpr_(const BufferLoadNode *op) final {
     auto load = GetRef<BufferLoad>(op);
@@ -513,12 +808,12 @@ public:
     if (!indices.same_as(op->indices)) {
       BufferLoadNode *writer = load.CopyOnWrite();
       writer->indices = indices;
-      // writer->LegalizeDType();
       LegalizeBufferLoadDType(writer);
     }
 
     return std::move(load);
   }
+
   // Let
   PrimExpr VisitExpr_(const LetNode *op) final {
     PrimExpr value = this->VisitExpr(op->value);
@@ -526,20 +821,22 @@ public:
     // A single var can be binded in multiple lets
     // but they have to bind to the same value.
     // This is used to allow cases when we reuse a single let
-    // expression to cosntruct a nested expr.
+    // expression to construct a nested expr.
     // (let x = 1 in x + 1) * (let x = 1 in x + 1)
-    auto it = let_binding_.find(op->var);
-    if (it != let_binding_.end()) {
+    auto it = let_var_map_.find(op->var);
+    if (it != let_var_map_.end()) {
       ICHECK(deep_equal_(it->second, value))
           << "Let cannot bind the same var to two different values";
     }
     if (value.dtype().get_lanes_or_vscale_factor() !=
         op->value.dtype().get_lanes_or_vscale_factor()) {
       Var new_var(op->var->name_hint, value.dtype());
-      let_binding_[op->var] = new_var;
+      let_var_map_[op->var] = new_var;
+      // Record mapping from the new var to its bound value
+      let_value_binding_[new_var] = value;
       return Let(new_var, value, this->VisitExpr(op->body));
     } else {
-      let_binding_[op->var] = op->var;
+      let_var_map_[op->var] = op->var;
       PrimExpr body = this->VisitExpr(op->body);
       if (value.same_as(op->value) && body.same_as(op->body)) {
         return GetRef<PrimExpr>(op);
@@ -548,6 +845,7 @@ public:
       }
     }
   }
+
   // BufferStore
   Stmt VisitStmt_(const BufferStoreNode *op) final {
     auto store = GetRef<BufferStore>(op);
@@ -604,6 +902,7 @@ public:
 
     return std::move(store);
   }
+
   // For
   Stmt VisitStmt_(const ForNode *op) final {
     if (op->kind == ForKind::kVectorized) {
@@ -620,9 +919,10 @@ public:
       return GetRef<Stmt>(op);
     } else {
       return For(op->loop_var, op->min, extent, op->kind, body,
-                 op->thread_binding, op->annotations);
+                 op->thread_binding, op->annotations, op->step, op->span);
     }
   }
+
   // IfThenElse
   Stmt VisitStmt_(const IfThenElseNode *op) final {
     ICHECK(!op->condition.dtype().is_scalable_or_fixed_length_vector());
@@ -631,7 +931,7 @@ public:
       return Scalarize(GetRef<Stmt>(op));
     }
     Stmt then_case = this->VisitStmt(op->then_case);
-    Optional<Stmt> else_case = NullOpt;
+    Optional<Stmt> else_case = std::nullopt;
     if (op->else_case) {
       else_case = this->VisitStmt(op->else_case.value());
     }
@@ -642,79 +942,88 @@ public:
       return IfThenElse(condition, then_case, else_case);
     }
   }
+
   // While
   Stmt VisitStmt_(const WhileNode *op) final {
     LOG(FATAL) << "A while loop inside a vectorized loop not supported.";
   }
-  // LetStmt
-  Stmt VisitStmt_(const LetStmtNode *op) final {
-    PrimExpr value = this->VisitExpr(op->value);
-    ICHECK(!let_binding_.count(op->var))
-        << "SSA violation, a single var is binded twice";
-    let_binding_[op->var] = value;
 
+  // LetStmt
+  Stmt VisitStmt_(const BindNode *op) final {
+    PrimExpr value = this->VisitExpr(op->value);
+    ICHECK(!let_var_map_.count(op->var))
+        << "SSA violation, a single var is binded twice";
     if (value.dtype().get_lanes_or_vscale_factor() !=
         op->value.dtype().get_lanes_or_vscale_factor()) {
       Var new_var(op->var->name_hint, value.dtype());
-      let_binding_[op->var] = new_var;
-      return LetStmt(new_var, value, this->VisitStmt(op->body));
+      let_var_map_[op->var] = new_var;
+      let_value_binding_[op->var] = op->value;
+      let_value_binding_[new_var] = value;
+      return Bind(new_var, value);
     } else {
-      let_binding_[op->var] = op->var;
-      Stmt body = this->VisitStmt(op->body);
-      if (value.same_as(op->value) && body.same_as(op->body)) {
+      let_var_map_[op->var] = op->var;
+      let_value_binding_[op->var] = value;
+      if (value.same_as(op->value)) {
         return GetRef<Stmt>(op);
       } else {
-        return LetStmt(op->var, value, body);
+        return Bind(op->var, value);
       }
     }
   }
-  // Allocate
-  Stmt VisitStmt_(const AllocateNode *op) final {
-    // Mutate the condition
-    PrimExpr condition = this->VisitExpr(op->condition);
-    if (condition.dtype().is_scalable_or_fixed_length_vector()) {
-      LOG(WARNING) << "Cannot handle vector extent in alloc of "
-                   << op->buffer_var->name_hint;
-      return Scalarize(GetRef<Stmt>(op));
-    }
 
-    // Mutate the extents
-    Array<PrimExpr> extents;
-    for (const auto &extent : op->extents) {
-      PrimExpr new_ext = this->VisitExpr(extent);
-      if (new_ext.dtype().is_scalable_or_fixed_length_vector()) {
+  // Allocate
+  Stmt VisitStmt_(const AllocBufferNode *op) final {
+    // AllocBuffer only has buffer and annotations in the flat IR model.
+    // Check if buffer shape has vector extents.
+    for (const auto &extent : op->buffer->shape) {
+      if (extent.dtype().is_scalable_or_fixed_length_vector()) {
         LOG(WARNING) << "Cannot handle vector extent in alloc of "
-                     << op->buffer_var->name_hint;
+                     << op->buffer->data->name_hint;
         return Scalarize(GetRef<Stmt>(op));
       }
-      extents.push_back(new_ext);
     }
 
-    // TODO(Lunderberg): Move this pass to be prior to
-    // StorageFlatten/FlattenBuffer.  That will allow this pass to be
-    // implemented as adding a new buffer dimension, which is later
-    // flattened.
-
-    // Extend the least significant dimension by a factor of
-    // var_lanes_.  Typically, this will be a 1-d index into a flat
-    // memory space.
-    extents.Set(extents.size() - 1, extents[extents.size() - 1] * var_lanes_);
-    // Rewrite access to the buffer in the body.
-    Stmt body =
-        TLVecAllocAccess(op->buffer_var.get(), var_, var_lanes_)(op->body);
-    body = this->VisitStmt(body);
-    return Allocate(op->buffer_var, op->dtype, extents, condition, body);
+    return StmtMutator::VisitStmt_(op);
   }
 
-  // scalarize the statment
+  // scalarize the statement
   Stmt Scalarize(Stmt stmt) {
-    Var idx(var_->name_hint + ".s", var_->dtype);
+    Var idx(var_->name_hint + "_s", var_->dtype);
+    // Find all Vars in stmt that are keys in let_value_binding_
+    std::unordered_set<Var, ObjectPtrHash, ObjectPtrEqual> used_let_bound_vars;
+    PostOrderVisit(stmt, [this, &used_let_bound_vars](const ObjectRef &node) {
+      if (const auto *v = node.as<VarNode>()) {
+        Var var = GetRef<Var>(v);
+        if (let_value_binding_.count(var)) {
+          used_let_bound_vars.insert(var);
+        }
+      }
+    });
+
+    // Check which vars already have LetStmt definitions inside stmt
+    std::unordered_set<const VarNode *> defined_in_stmt;
+    PostOrderVisit(stmt, [&defined_in_stmt](const ObjectRef &node) {
+      if (const auto *let = node.as<BindNode>()) {
+        defined_in_stmt.insert(let->var.get());
+      }
+    });
+
     stmt = Substitute(stmt, {{var_, idx}});
+
+    if (!used_let_bound_vars.empty()) {
+      for (const auto &v : used_let_bound_vars) {
+        if (defined_in_stmt.count(v.get()) > 0) {
+          // Skip: the original stmt already contains a LetStmt definition for
+          // this var
+          continue;
+        }
+        // Bind the existing var v to its value around the stmt scope
+        auto new_value = Substitute(let_value_binding_.at(v), {{var_, idx}});
+        stmt = SeqStmt({tirx::Bind(v, new_value), stmt});
+      }
+    }
+
     return For(idx, IntImm(var_->dtype, 0), var_lanes_, ForKind::kSerial, stmt);
-  }
-  // ProducerStore
-  Stmt VisitStmt_(const ProducerStoreNode *op) final {
-    LOG(FATAL) << "ProducerProvide cannot appear in a TIR PrimFunc";
   }
 
 private:
@@ -728,10 +1037,13 @@ private:
   PrimExpr var_lanes_;
   // ramp representing the var.
   PrimExpr ramp_;
-  // flag to mark requirment of scalarization.
+  // flag to mark requirement of scalarization.
   bool need_scalarize_{false};
-  // Let binding
-  std::unordered_map<Var, PrimExpr, ObjectPtrHash, ObjectPtrEqual> let_binding_;
+  // Let var mapping
+  std::unordered_map<Var, PrimExpr, ObjectPtrHash, ObjectPtrEqual> let_var_map_;
+  // Let value binding: map new_var -> value
+  std::unordered_map<Var, PrimExpr, ObjectPtrHash, ObjectPtrEqual>
+      let_value_binding_;
   // vectorizable property
   OpAttrMap<TVectorizable> op_vectorizable_ =
       Op::GetAttrMap<TVectorizable>("TVectorizable");
@@ -739,7 +1051,7 @@ private:
   // mutate array, with given lane requirement
   // when finished, p_lane updates the lane requirement.
   Array<PrimExpr> MutateArray(Array<PrimExpr> arr, int *p_lanes) {
-    if (arr.size() == 0)
+    if (arr.empty())
       return arr;
     int &lanes = *p_lanes;
     bool changed = false;
@@ -811,6 +1123,11 @@ private:
   }
 };
 
+inline bool TargetHasSVE() {
+  auto val = Target::Current()->GetAttr<Bool>("has_sve");
+  return val.defined() && val.value()->value;
+}
+
 class LoopVectorizer : public StmtMutator {
 public:
   Stmt VisitStmt_(const ForNode *op) final {
@@ -820,12 +1137,12 @@ public:
       if (!extent_as_int || extent_as_int->value < 1) {
         bool is_scalable_expr =
             CheckContains::ExprContains(op->extent, arith::IsVScaleCall);
-        ICHECK(is_scalable_expr && arith::TargetHasSVE())
+        ICHECK(is_scalable_expr && TargetHasSVE())
             << "Failed to vectorize loop with extent " << op->extent
             << " for target " << Target::Current();
       }
       ICHECK(is_zero(op->min));
-      return TLVectorizer(op->loop_var, op->extent)(op->body);
+      return TLVectorizer::Vectorize(op->loop_var, op->extent, op->body);
     } else {
       return StmtMutator::VisitStmt_(op);
     }
@@ -838,7 +1155,8 @@ public:
     Stmt stmt = StmtMutator::VisitStmt_(op);
     op = stmt.as<ForNode>();
     if (op->kind == ForKind::kVectorized) {
-      return For(op->loop_var, op->min, op->extent, ForKind::kSerial, op->body);
+      return For(op->loop_var, op->min, op->extent, ForKind::kSerial, op->body,
+                 op->thread_binding, op->annotations, op->step, op->span);
     } else {
       return stmt;
     }
@@ -848,8 +1166,8 @@ public:
 Stmt SkipVectorize(Stmt stmt) { return VectorizeSkipper()(std::move(stmt)); }
 
 tvm::transform::Pass VectorizeLoop(bool enable_vectorize = true) {
-  using namespace tir::transform;
-  auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {
+  using namespace tirx::transform;
+  auto pass_func = [=](PrimFunc f, const IRModule &m, const PassContext &ctx) {
     auto *n = f.CopyOnWrite();
     if (enable_vectorize) {
       n->body = tvm::tl::LoopVectorizer()(std::move(n->body));
@@ -861,7 +1179,12 @@ tvm::transform::Pass VectorizeLoop(bool enable_vectorize = true) {
   return CreatePrimFuncPass(pass_func, 0, "tl.VectorizeLoop", {});
 }
 
-TVM_REGISTER_GLOBAL("tl.transform.VectorizeLoop").set_body_typed(VectorizeLoop);
+TVM_FFI_STATIC_INIT_BLOCK() {
+  namespace refl = reflection;
+  refl::GlobalDef().def(
+      "tl.transform.VectorizeLoop",
+      [](bool enable_vectorize) { return VectorizeLoop(enable_vectorize); });
+}
 
 } // namespace tl
 } // namespace tvm

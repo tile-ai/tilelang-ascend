@@ -8,7 +8,7 @@
 
 import argparse
 import tilelang
-import tilelang.language as T
+import tilelang.ascend.a2a3.language as T
 import torch
 
 PASS_CONFIGS = {

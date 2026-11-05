@@ -1,28 +1,50 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
 """The profiler and convert to torch utils"""
 
-from typing import List, Optional, Union, Callable, Any
+from __future__ import annotations
+from typing import Any, Literal
+from collections.abc import Callable
 from functools import partial
 import torch
-from contextlib import suppress
 from dataclasses import dataclass
-import tvm
 from tilelang.utils.tensor import (
     get_tensor_supply,
     TensorSupplyType,
     torch_assert_close,
-    adapt_torch2tvm,
+    is_float8_dtype,
 )
 from tilelang.engine.param import KernelParam
 from tilelang.jit.adapter import BaseKernelAdapter
 from tilelang.profiler.bench import do_bench
+from tilelang.utils.device import device_synchronize
+from tvm import tirx
+
+
+def _synchronize_tensor_devices(*values: Any) -> None:
+    """Synchronize each accelerator device referenced by nested tensor values."""
+    devices: list[torch.device] = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, torch.Tensor):
+            device = value.device
+            if device.type in ("cuda", "mps", "npu") and device not in devices:
+                devices.append(device)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                collect(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                collect(item)
+
+    for value in values:
+        collect(value)
+    for device in devices:
+        device_synchronize(device)
 
 
 @dataclass
 class Profiler:
     """A profiler class for benchmarking and validating kernel implementations.
-    
+
     Attributes:
         params: List of kernel parameters defining the input/output specifications
         result_idx: Indices indicating which parameters are output tensors
@@ -30,56 +52,80 @@ class Profiler:
         adapter: Optional kernel adapter for interfacing with different backends
     """
 
-    params: List[KernelParam]
-    result_idx: List[int]
-    workspace_idx: List[int]
+    params: list[KernelParam]
+    result_idx: list[int]
     supply_type: TensorSupplyType
-    adapter: Optional[BaseKernelAdapter] = None
+    adapter: BaseKernelAdapter | None = None
 
     def __post_init__(self):
         """Initialize tensor supply after dataclass initialization"""
-        self.result_idx = self._legalize_auto_memory_idx(self.result_idx, "result_idx")
-        self.workspace_idx = self._legalize_auto_memory_idx(self.workspace_idx, "workspace_idx")
+        self.result_idx = self._legalize_result_idx(self.result_idx)
+        self.workspace_idx = []
         self.supply = get_tensor_supply(self.supply_type)
-    
-    def _legalize_auto_memory_idx(self, memory_idx: Union[List[int], int, None] = None, memory_name = "auto_memory_idx") -> List[int]:
+
+    def _legalize_result_idx(self, result_idx: list[int] | None = None) -> list[int]:
         params = self.params
-        if memory_idx is None:
-            memory_idx = []
+        # result_idx is a list of indices of the output tensors
+        if result_idx is None:
+            result_idx = []
+        elif isinstance(result_idx, int):
+            if result_idx > len(params) or result_idx < -len(params):
+                raise ValueError(f"result_idx should be an integer between {-len(params)} and {len(params) - 1}")
+            if result_idx < 0:
+                result_idx = len(params) + result_idx
+            result_idx = [result_idx]
+        elif not isinstance(result_idx, list):
+            raise ValueError("result_idx should be a list of integers")
 
-        elif isinstance(memory_idx, int):
-            if memory_idx >= len(params) or memory_idx < -len(params):
-                raise ValueError(
-                    f"{memory_name} should be an integer between {-len(params)} and {len(params) - 1}") 
-            if memory_idx < 0:
-                memory_idx = len(params) + memory_idx
-            memory_idx = [memory_idx]
+        return result_idx
 
-        elif isinstance(memory_idx, list):
-            for i, idx in enumerate(memory_idx):
-                if idx >= len(params) or idx < -len(params):
-                    raise ValueError(
-                        f"{memory_name} should be an integer between {-len(params)} and {len(params) - 1}")
-                if idx < 0:
-                    memory_idx[i] = len(params) + idx
-
-        else:
-            raise ValueError(f"{memory_name} should be a list of integers")
-
-        return memory_idx
-
-    def with_default_adapter(self, adapter: BaseKernelAdapter) -> "Profiler":
+    def with_default_adapter(self, adapter: BaseKernelAdapter) -> Profiler:
         self.adapter = adapter
         return self
 
-    def _get_inputs(self, with_output=False, with_workspace=False):
+    def with_workspace_idx(self, workspace_idx: list[int] | int | None) -> Profiler:
+        """Exclude target-owned automatic workspaces from benchmark inputs."""
+        from tilelang.ascend.a2a3.runtime import normalize_memory_indices
+
+        self.workspace_idx = normalize_memory_indices(workspace_idx, len(self.params), "workspace_idx")
+        return self
+
+    def _get_inputs(self, with_output=False, dynamic_symbolic_constraints: dict[str, int] | None = None, *, with_workspace=False):
         ins = []
         for i in range(len(self.params)):
             if (with_output or i not in self.result_idx) and (with_workspace or i not in self.workspace_idx):
-                ins.append(self.supply(self.params[i]))
+                param = self.params[i]
+                if dynamic_symbolic_constraints:
+                    param = self._substitute_dynamic_symbols(param, dynamic_symbolic_constraints)
+                ins.append(self.supply(param))
         return ins
 
-    def _get_params(self, with_output=False, with_workspace=False):
+    def _substitute_dynamic_symbols(self, param: KernelParam, constraints: dict[str, int]) -> KernelParam:
+        """Substitute dynamic symbolic variables in param shape with concrete values.
+
+        Args:
+            param: The kernel parameter with potentially dynamic shape
+            constraints: A dict mapping symbolic variable names to concrete int values
+
+        Returns:
+            A new KernelParam with substituted shape
+        """
+        new_shape = []
+        for dim in param.shape:
+            if isinstance(dim, tirx.Var):
+                var_name = dim.name
+                if var_name in constraints:
+                    new_shape.append(constraints[var_name])
+                else:
+                    raise ValueError(
+                        f"Dynamic symbolic variable '{var_name}' not found in constraints. "
+                        f"Available constraints: {list(constraints.keys())}"
+                    )
+            else:
+                new_shape.append(dim)
+        return KernelParam(dtype=param.dtype, shape=new_shape)
+
+    def _get_params(self, with_output=False, *, with_workspace=False):
         params = []
         for i in range(len(self.params)):
             if (with_output or i not in self.result_idx) and (with_workspace or i not in self.workspace_idx):
@@ -89,13 +135,13 @@ class Profiler:
     def assert_allclose(
         self,
         reference_program: Callable,
-        input_tensors: Optional[List[torch.Tensor]] = None,
+        input_tensors: list[torch.Tensor] | None = None,
         atol: float = 1e-2,
         rtol: float = 1e-2,
         max_mismatched_ratio=0.01,
     ):
         """Validates kernel output against a reference implementation.
-        
+
         Args:
             reference_program: Reference implementation to compare against
             input_tensors: Optional pre-generated input tensors
@@ -105,57 +151,55 @@ class Profiler:
         """
         ins = self._get_inputs() if input_tensors is None else input_tensors
         ref_outs = reference_program(*ins)
-        if hasattr(torch, 'npu') and torch.npu.is_available():
-            torch.npu.synchronize()
-        elif torch.cuda.is_available():
-            torch.cuda.synchronize()
+        _synchronize_tensor_devices(ins, ref_outs)
         lib_outs = self.func(*ins)
-        if hasattr(torch, 'npu') and torch.npu.is_available():
-            torch.npu.synchronize()
-        elif torch.cuda.is_available():
-            torch.cuda.synchronize()
+        _synchronize_tensor_devices(ins, lib_outs)
 
         if isinstance(lib_outs, torch.Tensor):
             lib_outs = [lib_outs]
+        elif isinstance(lib_outs, tuple):
+            lib_outs = list(lib_outs)
         elif lib_outs is None:
             lib_outs = []
 
         if isinstance(ref_outs, torch.Tensor):
             ref_outs = [ref_outs]
+        elif isinstance(ref_outs, tuple):
+            ref_outs = list(ref_outs)
         elif ref_outs is None:
             ref_outs = []
 
-        ref_tensors = ins + ref_outs
-        lib_tensors = ins + lib_outs
-
-        assert len(lib_tensors) == len(
-            ref_tensors), "len(lib_tensors) not equals to len(ref_tensors) !"
+        # only compare outputs
+        assert len(lib_outs) == len(ref_outs), "len(lib_outs) not equals to len(ref_outs) !"
         # torch.set_printoptions(edgeitems=torch.inf)
-        for lhs, rhs in zip(lib_tensors, ref_tensors):
+        for lhs, rhs in zip(lib_outs, ref_outs):
             # close_mask = torch.isclose(lhs, rhs, rtol=rtol, atol=atol)
             # total_elements = lhs.numel()
             # num_not_close = (~close_mask).sum().item()
             # percentage_not_close = (num_not_close / total_elements) * 100
             # print(f"{percentage_not_close:.2f}% of the elements are not close.")
             # print(f"Total elements: {total_elements}, Not close elements: {num_not_close}")
-            torch_assert_close(
-                lhs,
-                rhs,
-                rtol=rtol,
-                atol=atol,
-                max_mismatched_ratio=max_mismatched_ratio,
-                base_name="tilelang",
-                ref_name="ref",
-            )
+            if lhs is not None and rhs is not None:
+                # in case of numsplit template, the ref output may be None
+                # which means the value is invalid, so we skip the comparison
+                torch_assert_close(
+                    lhs if not is_float8_dtype(lhs.dtype) else lhs.to(torch.float32),
+                    rhs if not is_float8_dtype(rhs.dtype) else rhs.to(torch.float32),
+                    rtol=rtol,
+                    atol=atol,
+                    max_mismatched_ratio=max_mismatched_ratio,
+                    base_name="tilelang",
+                    ref_name="ref",
+                )
 
     def manual_assert_close(
         self,
         reference_program: Callable,
-        input_tensors: Optional[List[torch.Tensor]] = None,
+        input_tensors: list[torch.Tensor] | None = None,
         manual_check_prog: Callable = None,
     ):
         """Validates kernel output against a reference implementation.
-        
+
         Args:
             reference_program: Reference implementation to compare against
             input_tensors: Optional pre-generated input tensors
@@ -165,15 +209,9 @@ class Profiler:
         """
         ins = self._get_inputs() if input_tensors is None else input_tensors
         ref_outs = reference_program(*ins)
-        if hasattr(torch, 'npu') and torch.npu.is_available():
-            torch.npu.synchronize()
-        elif torch.cuda.is_available():
-            torch.cuda.synchronize()
+        _synchronize_tensor_devices(ins, ref_outs)
         lib_outs = self.func(*ins)
-        if hasattr(torch, 'npu') and torch.npu.is_available():
-            torch.npu.synchronize()
-        elif torch.cuda.is_available():
-            torch.cuda.synchronize()
+        _synchronize_tensor_devices(ins, lib_outs)
 
         if isinstance(lib_outs, torch.Tensor):
             lib_outs = [lib_outs]
@@ -187,7 +225,7 @@ class Profiler:
 
     def assert_consistent(self, repeat=10):
         """Checks for kernel consistency across multiple runs.
-        
+
         Args:
             repeat: Number of times to repeat the consistency check
         """
@@ -204,85 +242,81 @@ class Profiler:
                     rhs,
                 ]
 
-    def run_once(self, func: Optional[Callable] = None):
+    def run_once(self, func: Callable | None = None):
         ins = self._get_inputs()
         if not func:
             func = self.__call__
         return func(*ins)
 
-    def determine_profiler(self, func: Optional[Callable] = None):
-        """Determines which profiler backend to use based on function type.
-        
-        Args:
-            func: Function to be profiled
-            profiler: Explicitly specified profiler type or "auto" for automatic detection
-        
-        Returns:
-            str: The determined profiler type ("torch" or "tvm")
-        """
-        if isinstance(func, tvm.runtime.Module):
-            return "tvm"
-        else:
-            return "torch"
-
     def do_bench(
         self,
-        func: Optional[Callable] = None,
+        func: Callable | None = None,
         warmup: int = 25,
         rep: int = 100,
-        n_warmup: int = 1,
-        n_repeat: int = 1,
-        input_tensors: List[torch.Tensor] = None,
+        n_warmup: int = 0,
+        n_repeat: int = 0,
+        input_tensors: list[torch.Tensor] = None,
+        backend: Literal["event", "cupti", "cudagraph", "wall", "msprof", "msprof_detail"] = "event",
+        quantiles: list[float] | None = None,
+        return_mode: Literal["min", "max", "mean", "median"] = "mean",
+        dynamic_symbolic_constraints: dict[str, int] | None = None,
+        device: int | torch.device | None = None,
+        early_stop_baseline: float | None = None,
     ) -> float:
         """Benchmarks the execution time of a given function.
-        
+
         Args:
             func: Function to benchmark (uses adapter if None)
             warmup: Warmup time in milliseconds
             rep: Number of repetitions for timing
             n_warmup: Number of warmup iterations
             n_repeat: Number of timing iterations
-            profiler: Which profiling backend to use
+            backend: Which profiling backend to use - "event", "cupti", "cudagraph", "wall", "msprof", or "msprof_detail"
             input_tensors: Optional pre-generated input tensors
-            
+            dynamic_symbolic_constraints: Optional dict mapping dynamic symbolic variable
+                names to concrete int values. Use this when benchmarking kernels with
+                dynamic shapes, e.g., {"m": 2048, "n": 1024}
+            device: Optional device to benchmark on. MPS and NPU support "event" and
+                "wall"; CPU requires "wall". Asynchronous wall timing needs
+                an explicit device.
+
         Returns:
             float: Average execution time in milliseconds
         """
-        profiler = self.determine_profiler(func)
-        if profiler == "torch":
+
+        def run_bench():
             if func is None:
                 assert self.adapter is not None, "benchmarking function should be provided"
-                func = self.adapter
-            ins = self._get_inputs() if input_tensors is None else input_tensors
-            bench_func = partial(func, *ins)
+                bench_target = self.adapter
+            else:
+                bench_target = func
+            if input_tensors is not None:
+                ins = input_tensors
+            elif dynamic_symbolic_constraints is not None:
+                ins = self._get_inputs(dynamic_symbolic_constraints=dynamic_symbolic_constraints)
+            else:
+                ins = self._get_inputs()
+            bench_func = partial(bench_target, *ins)
             return do_bench(
                 bench_func,
                 warmup=warmup,
                 rep=rep,
                 _n_warmup=n_warmup,
                 _n_repeat=n_repeat,
+                quantiles=quantiles,
+                backend=backend,
+                return_mode=return_mode,
+                device=device,
+                early_stop_baseline=early_stop_baseline,
             )
-        elif profiler == "tvm":
-            assert func is not None, "func should not be None"
-            assert isinstance(
-                func, tvm.runtime.Module), f"func should be a TVM module, but got {type(func)}"
 
-            ins = (self._get_inputs(with_output=True) if input_tensors is None else input_tensors)
-            target = "cuda"
-
-            with suppress(Exception):
-                target = self.mod.imported_modules[0].type_key
-
-            assert target in ["cuda", "hip"], f"Unknown target: {target}"
-
-            device = tvm.cuda(0) if target == "cuda" else tvm.rocm(0)
-            time_evaluator = self.mod.time_evaluator(
-                self.mod.entry_name, device, number=rep, repeat=n_repeat)
-            tvm_inputs = [adapt_torch2tvm(inp) for inp in ins]
-            # Transform Latency to ms
-            return time_evaluator(*tvm_inputs).mean * 1e3
-        else:
-            raise ValueError(f"Unknown profiler: {profiler}")
+        if device is not None and not isinstance(device, int) and torch.device(device).type == "npu":
+            with torch.npu.device(device):
+                return run_bench()
+        if device is None or (not isinstance(device, int) and torch.device(device).type != "cuda"):
+            return run_bench()
+        with torch.cuda.device(device):
+            return run_bench()
 
     @property
     def func(self):

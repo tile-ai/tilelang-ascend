@@ -1,20 +1,15 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
-
 from dataclasses import dataclass
 from .base import BaseTemplate
 from tvm import te
 from ..arch import TileDevice
 from ..roller import Hint
 from ..roller import PrimFuncNode, OutputNode, Edge
-from typing import List
 from ..utils import get_roller_hints_from_output_nodes, get_tensorized_func_and_tags
 
 
 @dataclass
 class FlashAttentionTemplate(BaseTemplate):
-
-    _output_nodes: List[OutputNode] = None
+    _output_nodes: list[OutputNode] = None
 
     # Operation-related configuration parameters
     batch_size: int = 1
@@ -29,7 +24,7 @@ class FlashAttentionTemplate(BaseTemplate):
     out_dtype: str = "float16"
     accum_dtype: str = "float16"
 
-    def get_hardware_aware_configs(self, arch: TileDevice = None, topk: int = 10) -> List[Hint]:
+    def get_hardware_aware_configs(self, arch: TileDevice = None, topk: int = 10) -> list[Hint]:
         """
         Retrieves optimized hardware-aware configurations.
 
@@ -47,8 +42,8 @@ class FlashAttentionTemplate(BaseTemplate):
         """
         Defines and initializes the matrix multiplication computation.
 
-        This method sets up placeholders for input matrices, computes 
-        the matrix multiplication using TVM's compute API, 
+        This method sets up placeholders for input matrices, computes
+        the matrix multiplication using TVM's compute API,
         and optionally applies bias and type casting.
 
         Raises:
@@ -95,10 +90,7 @@ class FlashAttentionTemplate(BaseTemplate):
                 """
                 A_indices = [b, i, k]
                 B_indices = [b, j, k]
-                return te.sum(
-                    A[tuple(A_indices)].astype(accum_dtype) *
-                    B[tuple(B_indices)].astype(accum_dtype),
-                    axis=k)
+                return te.sum(A[tuple(A_indices)].astype(accum_dtype) * B[tuple(B_indices)].astype(accum_dtype), axis=k)
 
             # Compute matrix multiplication result
             C = te.compute(
@@ -147,15 +139,15 @@ class FlashAttentionTemplate(BaseTemplate):
             dict: Dictionary containing template parameter values.
         """
         return {
-            "batch_size": self.batch_size,
-            "num_heads": self.num_heads,
-            "head_dim": self.head_dim,
-            "seq_length": self.seq_length,
-            "seq_kv_length": self.seq_kv_length,
-            "is_causal": self.is_causal,
+            "M": self.M,
+            "N": self.N,
+            "K": self.K,
+            "trans_A": self.trans_A,
+            "trans_B": self.trans_B,
             "in_dtype": self.in_dtype,
             "out_dtype": self.out_dtype,
             "accum_dtype": self.accum_dtype,
+            "with_bias": self.with_bias,
         }
 
     @property

@@ -1,56 +1,89 @@
-// Copyright (c) Tile-AI Corporation.
-// Licensed under the MIT License.
-
 /*!
  * \file tl/ir.cc
  * \brief Extension for the tvm script frontend.
  *
  */
 
+#include "ir.h"
 #include "./transform/common/attr.h"
+#include "./transform/common/warp_specialize.h"
 #include "op/builtin.h"
+#include "support/check.h"
+#include <tvm/ffi/reflection/creator.h>
+#include <tvm/ffi/reflection/enum_def.h>
+#include <tvm/ir/cast.h>
+#include <tvm/runtime/logging.h>
+#include <tvm/tirx/stmt.h>
+
 #include <tvm/arith/analyzer.h>
 #include <tvm/script/ir_builder/tir/ir.h>
+#include <tvm/tirx/analysis.h>
+
+#include <utility>
 
 namespace tvm {
 namespace tl {
 
-using namespace script::ir_builder::tir;
+using namespace script::ir_builder::tirx;
+using namespace ffi;
 
-static Var CreateEnvThread(String name, String thread_tag, DataType dtype) {
-  using namespace tvm::tir;
-  using namespace tvm::script::ir_builder;
-  IterVar iter_var(Range{nullptr}, Var(name, dtype),
-                   tvm::tir::IterVarType::kThreadIndex, thread_tag);
-  Var var = iter_var->var;
-  if (Optional<PrimFuncFrame> opt_frame =
-          IRBuilder::Current()->FindFrame<PrimFuncFrame>()) {
-    opt_frame.value()->env_threads.Set(var, iter_var);
-  } else {
-    LOG(FATAL) << "EnvThread can only be used inside a PrimFunc";
-  }
-  return var;
-}
-
-static ForFrame MakeIterVarFrame(std::string name, PrimExpr dom) {
-  using namespace tvm::tir;
-  Var var = Var(name, dom->dtype);
-  // Create a frame that represents a loop over the given domain.
+ForFrame MakeThreadBindingFrame(const std::string &name,
+                                const String &thread_tag,
+                                const PrimExpr &extent,
+                                const Map<String, Any> &annotations) {
+  using namespace tvm::tirx;
+  Var var = Var(name, extent->dtype);
   ObjectPtr<ForFrameNode> n = make_object<ForFrameNode>();
   n->vars.push_back(var);
-  n->doms.push_back(Range(0, dom));
-  n->f_make_for_loop = [](Array<Var> vars, Array<Range> doms,
-                          Stmt body) -> Stmt {
+  n->doms.push_back(Range(make_const(extent->dtype, 0), extent));
+  n->f_make_for_loop = [thread_tag, annotations](
+                           const Array<Var> &vars, const Array<Range> &doms,
+                           const Array<Optional<PrimExpr>> &steps,
+                           Stmt body) -> Stmt {
     ICHECK_EQ(vars.size(), 1);
     ICHECK_EQ(doms.size(), 1);
-    return For(vars[0], doms[0]->min, doms[0]->extent, ForKind::kSerial, body);
+    IterVar iter_var(Range{nullptr}, Var(thread_tag, vars[0]->dtype),
+                     IterVarType::kThreadIndex, thread_tag);
+    Optional<PrimExpr> step =
+        !steps.empty() ? steps[0] : Optional<PrimExpr>(std::nullopt);
+    return For(vars[0], doms[0]->min, doms[0]->extent, ForKind::kThreadBinding,
+               body,
+               /*thread_binding=*/iter_var,
+               /*annotations=*/annotations,
+               /*step=*/step);
   };
   return ForFrame(n);
 }
 
-ForFrame ParallelFor(Array<PrimExpr> extents,
-                     Map<String, ObjectRef> annotations) {
-  using namespace tvm::tir;
+ForFrame MakeLaunchThreadFrame() {
+  using namespace tvm::tirx;
+  static const char *kThreadVarNames[3] = {"tx", "ty", "tz"};
+  DataType dtype = DataType::Int(32);
+  ObjectPtr<ForFrameNode> n = make_object<ForFrameNode>();
+  for (int axis = 0; axis < 3; axis++) {
+    n->vars.push_back(Var(kThreadVarNames[axis], dtype));
+    // The extent is decided by the backend at materialization; this dom only
+    // keeps the ForFrame invariants satisfied.
+    n->doms.push_back(Range(make_const(dtype, 0), make_const(dtype, 1)));
+  }
+  n->f_make_for_loop = [](const Array<Var> &vars, const Array<Range> &doms,
+                          const Array<Optional<PrimExpr>> &steps,
+                          Stmt body) -> Stmt {
+    Array<Stmt> seq;
+    for (int axis = 0; axis < static_cast<int>(vars.size()); axis++) {
+      PrimExpr thread_idx = Call(vars[axis]->dtype, launch_thread_idx(),
+                                 {IntImm(DataType::Int(32), axis)});
+      seq.push_back(tvm::tirx::Bind(vars[axis], thread_idx));
+    }
+    seq.push_back(body);
+    return SeqStmt::Flatten(seq);
+  };
+  return ForFrame(n);
+}
+
+ForFrame ParallelFor(const Array<PrimExpr> &extents,
+                     const Map<String, Any> &annotations) {
+  using namespace tvm::tirx;
   ObjectPtr<ForFrameNode> n = make_object<ForFrameNode>();
   n->vars.reserve(extents.size());
   n->doms.reserve(extents.size());
@@ -59,84 +92,73 @@ ForFrame ParallelFor(Array<PrimExpr> extents,
     n->vars.push_back(Var("v", extent.dtype()));
     n->doms.push_back(Range(make_const(dtype, 0), extent));
   }
-  n->f_make_for_loop = [annotations](Array<Var> vars, Array<Range> doms,
-                                     Stmt body) -> Stmt {
+  n->f_make_for_loop =
+      [annotations](const Array<Var> &vars, const Array<Range> &doms,
+                    const Array<Optional<PrimExpr>> &steps, Stmt body) -> Stmt {
     ICHECK_EQ(vars.size(), doms.size());
     int n = vars.size();
     for (int i = n - 1; i >= 0; --i) {
       Range dom = doms[i];
       Var var = vars[i];
-      body =
-          For(var, dom->min, dom->extent, ForKind::kParallel, std::move(body),
-              /*thread_binding=*/NullOpt, /*annotations=*/annotations);
+      Optional<PrimExpr> step =
+          i < steps.size() ? steps[i] : Optional<PrimExpr>(std::nullopt);
+      // Only attach annotations to the outermost parallel loop.
+      // Rationale: In TileLang's design, inner loops cannot govern or annotate
+      // their outer loops, while the outermost loop can manage and transform
+      // the entire nested region. Placing the layout on the outermost loop
+      // lets lowering/validators reason about and rewrite the whole nest.
+      // Layout annotations (like parallel_loop_layout) and other hints are
+      // read from the outermost loop.
+      Map<String, Any> loop_annotations;
+      if (i == 0) {
+        loop_annotations = annotations;
+      }
+      body = For(var, dom->min, dom->extent, ForKind::kParallel, body,
+                 /*thread_binding=*/std::nullopt,
+                 /*annotations=*/loop_annotations,
+                 /*step=*/step);
     }
     return body;
   };
   return ForFrame(n);
 }
-
-ForFrame PipelinedFor(PrimExpr start, PrimExpr stop, int num_stages,
-                      Array<PrimExpr> order, Array<PrimExpr> stages,
-                      Array<Array<PrimExpr>> sync,
-                      Array<Array<PrimExpr>> groups, int cross_interval) {
-  using namespace tvm::tir;
+ForFrame PipelinedFor(PrimExpr start, const PrimExpr &stop, int num_stages,
+                      const Array<PrimExpr> &order,
+                      const Array<PrimExpr> &stages,
+                      const Map<String, Any> &annotations) {
+  using namespace tvm::tirx;
   ObjectPtr<ForFrameNode> n = make_object<ForFrameNode>();
   DataType dtype = stop.dtype();
   n->vars.push_back(Var("v", dtype));
-  n->doms.push_back(Range(start, stop));
-  n->f_make_for_loop = [=](Array<Var> vars, Array<Range> doms,
+  n->doms.push_back(Range(std::move(start), stop));
+  n->f_make_for_loop = [=](const Array<Var> &vars, const Array<Range> &doms,
+                           const Array<Optional<PrimExpr>> &steps,
                            Stmt body) -> Stmt {
     ICHECK_EQ(vars.size(), doms.size());
     int n = vars.size();
     ICHECK(n == 1);
-    Map<String, ObjectRef> anno;
+    Map<String, Any> anno = annotations;
     if (num_stages > 0)
       anno.Set("num_stages", PrimExpr(num_stages));
-    if (order.size() > 0)
+    if (!order.empty())
       anno.Set("tl_pipeline_order", order);
-    if (stages.size() > 0)
+    if (!stages.empty())
       anno.Set("tl_pipeline_stage", stages);
-    if (sync.size() > 0)
-      anno.Set("tl_pipeline_sync", sync);
-    if (groups.size() > 0)
-      anno.Set("tl_pipeline_group", groups);
-    if (cross_interval > 0)
-      anno.Set("tl_cross_interval", PrimExpr(cross_interval));
-    body = For(vars[0], doms[0]->min, doms[0]->extent, ForKind::kSerial,
-               std::move(body),
-               /*thread_binding=*/NullOpt, /*annotations=*/anno);
+    Optional<PrimExpr> step =
+        !steps.empty() ? steps[0] : Optional<PrimExpr>(std::nullopt);
+    body = For(vars[0], doms[0]->min, doms[0]->extent, ForKind::kSerial, body,
+               /*thread_binding=*/std::nullopt, /*annotations=*/anno,
+               /*step=*/step);
     return body;
   };
   return ForFrame(n);
 }
 
 ForFrame PersistentFor(const Array<PrimExpr> &domain, const PrimExpr &wave_size,
-                       const PrimExpr &index, PrimExpr group_size) {
-  using namespace tvm::tir;
+                       const PrimExpr &index, PrimExpr group_size,
+                       int num_stages, const Map<String, Any> &annotations) {
+  using namespace tvm::tirx;
   ICHECK(!domain.empty());
-  arith::Analyzer validation_analyzer;
-  for (const auto &extent : domain) {
-    ICHECK(!validation_analyzer.CanProveLess(extent, 1))
-        << "T.Persistent domain extents must be positive, but got " << extent;
-  }
-  ICHECK(!validation_analyzer.CanProveLess(wave_size, 1))
-      << "T.Persistent wave_size must be positive, but got " << wave_size;
-  ICHECK(!validation_analyzer.CanProveLess(index, 0) &&
-         !validation_analyzer.CanProveGreaterEqual(index - wave_size, 0))
-      << "T.Persistent index must satisfy 0 <= index < wave_size, but got "
-      << "index=" << index << " and wave_size=" << wave_size;
-  ICHECK(!validation_analyzer.CanProveLess(group_size, 1))
-      << "T.Persistent group_size must be positive, but got " << group_size;
-  PrimExpr last_extent = domain[domain.size() - 1];
-  PrimExpr effective_group_size = min(group_size, last_extent);
-  PrimExpr group_remainder =
-      validation_analyzer.Simplify(truncmod(last_extent, effective_group_size));
-  if (const int64_t *remainder = as_const_int(group_remainder)) {
-    ICHECK_EQ(*remainder, 0)
-        << "T.Persistent last domain extent must be divisible by "
-        << "min(group_size, domain[-1]), but got domain[-1]=" << last_extent
-        << " and group_size=" << group_size;
-  }
   ObjectPtr<ForFrameNode> n = make_object<ForFrameNode>();
   n->vars.reserve(domain.size());
   n->doms.reserve(domain.size());
@@ -145,9 +167,22 @@ ForFrame PersistentFor(const Array<PrimExpr> &domain, const PrimExpr &wave_size,
     domain_size *= domain[i];
   }
 
-  auto waves = ceildiv(domain_size, wave_size);
+  PrimExpr last_extent = domain[domain.size() - 1];
+  group_size =
+      max(make_const(group_size.dtype(), 1), min(group_size, last_extent));
+  Array<PrimExpr> grouped_domain;
+  grouped_domain.push_back(ceildiv(last_extent, group_size));
+  for (int i = 0; i < domain.size() - 1; ++i) {
+    grouped_domain.push_back(domain[i]);
+  }
+  grouped_domain.push_back(group_size);
+  PrimExpr padded_domain_size = grouped_domain[0];
+  for (int i = 1; i < grouped_domain.size(); ++i) {
+    padded_domain_size *= grouped_domain[i];
+  }
+
+  auto waves = ceildiv(padded_domain_size, wave_size);
   auto loop_var = Var("w", waves.dtype());
-  group_size = min(group_size, domain[domain.size() - 1]);
   Array<Var> coord_vars;
 
   for (int i = 0; i < domain.size(); ++i) {
@@ -158,228 +193,114 @@ ForFrame PersistentFor(const Array<PrimExpr> &domain, const PrimExpr &wave_size,
     n->doms.push_back(Range(make_const(dtype, 0), domain[i]));
   }
 
-  Array<PrimExpr> grouped_domain;
-  grouped_domain.push_back(truncdiv(domain[domain.size() - 1], group_size));
-  for (int i = 0; i < domain.size() - 1; ++i) {
-    grouped_domain.push_back(domain[i]);
-  }
-  grouped_domain.push_back(group_size);
-
   n->f_make_for_loop = [=](const Array<Var> &vars, const Array<Range> &doms,
-                           const Stmt &body) -> Stmt {
+                           const Array<Optional<PrimExpr>> &steps,
+                           Stmt body) -> Stmt {
     ICHECK_EQ(vars.size(), doms.size());
-    Map<String, ObjectRef> anno;
+    Map<String, Any> anno = annotations;
+    if (num_stages > 0) {
+      anno.Set("num_stages", PrimExpr(num_stages));
+    }
     Array<PrimExpr> idxs(grouped_domain.size(), PrimExpr());
-    PrimExpr global_index = loop_var * wave_size + index;
-    PrimExpr rem = global_index;
+    PrimExpr rem = loop_var * wave_size + index;
 
     for (int i = grouped_domain.size() - 1; i >= 1; --i) {
       idxs.Set(i, truncmod(rem, grouped_domain[i]));
       rem = truncdiv(rem, grouped_domain[i]);
     }
     idxs.Set(0, rem);
-
-    auto out_if = tvm::tir::IfThenElse(
-        domain_size <= global_index,
-        tvm::tir::Evaluate(
-            tvm::tir::Call(DataType::Handle(), tvm::tl::loop_break(), {})),
-        Stmt());
+    PrimExpr last_coord =
+        idxs[0] * group_size + idxs[grouped_domain.size() - 1];
+    PrimExpr in_range = last_coord < domain[domain.size() - 1];
+    Stmt guarded_body = tvm::tirx::IfThenElse(in_range, body, Stmt());
 
     arith::Analyzer analyzer;
-    Stmt new_body = body;
+    Stmt new_body = guarded_body;
     if (analyzer.CanProveGreaterEqual(waves, 2)) {
-      new_body = SeqStmt({out_if, body});
-    } else if (!analyzer.CanProveEqual(domain_size, wave_size)) {
-      // A unit loop can be removed during lowering, so a loop_break guard
-      // would become an invalid top-level C++ break. Predicate the tile body
-      // for partial first waves and symbolic wave counts instead. Under
-      // Persistent's 0 <= index < wave_size contract, no guard is needed when
-      // the domain is provably exactly one full wave.
-      new_body = tvm::tir::IfThenElse(global_index < domain_size, body, Stmt());
+      PrimExpr in_padded_domain =
+          (loop_var * wave_size + index) < padded_domain_size;
+      new_body = tvm::tirx::IfThenElse(in_padded_domain, guarded_body, Stmt());
     }
-    Stmt outer =
-        For(loop_var, 0, waves, ForKind::kSerial, new_body, NullOpt, anno);
+    Optional<PrimExpr> step =
+        !steps.empty() ? steps[0] : Optional<PrimExpr>(std::nullopt);
+    Stmt outer = For(loop_var, 0, waves, ForKind::kSerial, new_body,
+                     /*thread_binding=*/std::nullopt, /*annotations=*/anno,
+                     /*step=*/step);
     for (int i = 0; i < vars.size() - 1; ++i) {
-      outer = tvm::tir::LetStmt(vars[i], idxs[i + 1], outer);
+      outer = SeqStmt({tirx::Bind(vars[i], idxs[i + 1]), outer});
     }
-    outer = tvm::tir::LetStmt(vars[vars.size() - 1],
-                              idxs[0] * group_size + idxs[vars.size()], outer);
+    outer = SeqStmt({tirx::Bind(vars[vars.size() - 1], last_coord), outer});
     return outer;
   };
 
   return ForFrame(n);
 }
-
-/*!
- * \brief A frame that represents a kernel launch.
- *
- * \sa KernelLaunchFrameNode
- */
-class KernelLaunchFrameNode : public TIRFrameNode {
-public:
-  Array<TIRFrame> frames;
-
-  void VisitAttrs(tvm::AttrVisitor *v) {
-    TIRFrameNode::VisitAttrs(v);
-    v->Visit("frames", &frames);
-  }
-
-  static constexpr const char *_type_key = "tl.KernelLaunchFrame";
-  TVM_DECLARE_FINAL_OBJECT_INFO(KernelLaunchFrameNode, TIRFrameNode);
-
-public:
-  TVM_DLL void EnterWithScope() final {
-    for (auto frame = frames.begin(); frame != frames.end(); ++frame)
-      (*frame)->EnterWithScope();
-  }
-  /*!
-   * \brief The method called when exiting RAII scope.
-   * \sa tvm::support::With
-   */
-  TVM_DLL void ExitWithScope() final {
-    for (auto frame = frames.rbegin(); frame != frames.rend(); ++frame)
-      (*frame)->ExitWithScope();
-  }
-};
-
-/*!
- * \brief Managed reference to KernelLaunchFrameNode.
- *
- * \sa KernelLaunchFrameNode
- */
-class KernelLaunchFrame : public TIRFrame {
-public:
-  TVM_DEFINE_MUTABLE_NOTNULLABLE_OBJECT_REF_METHODS(KernelLaunchFrame, TIRFrame,
-                                                    KernelLaunchFrameNode);
-};
-
-KernelLaunchFrame KernelLaunch(Array<PrimExpr> grid_size,
-                               Array<PrimExpr> block_size,
-                               Map<String, ObjectRef> attrs) {
+KernelLaunchFrame KernelLaunch(const Array<PrimExpr> &grid_size,
+                               const Optional<Array<PrimExpr>> &block_size_opt,
+                               const Map<String, Any> &attrs) {
   ObjectPtr<KernelLaunchFrameNode> n = make_object<KernelLaunchFrameNode>();
 
-  // If the kernel is a CPU kernel, we don't need to launch any threads.
-  bool is_cpu_kernel_frame =
-      attrs.defined() && attrs.count(tilelang_is_cpu_kernel_frame);
-  bool is_npu_kernel_frame =
-      attrs.defined() && attrs.count(tilelang_is_npu_kernel_frame);
-  bool is_npu_kernel_frame_dev_mode =
-      attrs.defined() && attrs.count(tilelang_is_npu_kernel_frame_dev_mode);
+  ICHECK(grid_size.size() <= 3);
 
-  if (is_cpu_kernel_frame) {
-    // Launch CPU Kernel
-    ICHECK(grid_size.size() >= 0);
-    ICHECK(block_size.size() == 0) << "CPU kernel cannot have block size";
-    ICHECK(attrs.defined());
-    // create grid loop var
-    for (int i = 0; i < grid_size.size(); i++) {
-      n->frames.push_back(
-          MakeIterVarFrame("block_var_" + std::to_string(i), grid_size[i]));
-    }
-    // Launch CPU Kernel
-  } else if (is_npu_kernel_frame) { // Launch NPU Kernel
-    ICHECK(grid_size.size() == 1) << "NPU kernel only supports 1D grid size";
+  static const char *kBlockVarNames[3] = {"bx", "by", "bz"};
+  static const char *kBlockTags[3] = {"blockIdx.x", "blockIdx.y", "blockIdx.z"};
 
-    // Note: corresponding relationship ->
-    // blockIdx.x => cube idx in ascend
-    // blockIdx.y => vec idx in ascend
-    n->frames.push_back(
-        LaunchThread(CreateEnvThread("cid", "blockIdx.x", grid_size[0].dtype()),
-                     grid_size[0]));
-    n->frames.push_back(LaunchThread(
-        CreateEnvThread("vid", "blockIdx.y", grid_size[0].dtype()), 2));
-  } else if (is_npu_kernel_frame_dev_mode) {
-    // Launch NPU Kernel In Developer Mode
-    ICHECK(grid_size.size() == 1) << "NPU kernel only supports 1D grid size";
-    ICHECK(block_size.size() == 1)
-        << "Vid(Threads) only supports at 1D block size in developer mode";
-    // develop mode without vid
-    n->frames.push_back(
-        LaunchThread(CreateEnvThread("cid", "blockIdx.x", grid_size[0].dtype()),
-                     grid_size[0]));
-    n->frames.push_back(LaunchThread(
-        CreateEnvThread("vid", "threadIdx.x", block_size[0].dtype()),
-        block_size[0]));
+  Map<String, Any> block_annotations =
+      attrs.defined() ? attrs : Map<String, Any>{};
+  for (size_t i = 0; i < grid_size.size(); i++) {
+    ForFrame frame =
+        MakeThreadBindingFrame(kBlockVarNames[i], kBlockTags[i], grid_size[i]);
+    n->grid_vars.push_back(frame->vars[0]);
+    n->grid_extents.push_back(grid_size[i]);
+    n->frames.push_back(frame);
+  }
+  // Thread placeholders are always emitted so the body may reference a thread
+  // index regardless of whether threads= was given; the backend decides what
+  // they mean.
+  ForFrame thread_frame = MakeLaunchThreadFrame();
+  n->thread_vars = thread_frame->vars;
+  n->frames.push_back(thread_frame);
 
-    using namespace tvm::script::ir_builder;
-    Optional<PrimFuncFrame> opt_prim_func_frame =
-        IRBuilder::Current()->FindFrame<PrimFuncFrame>();
-    ICHECK(opt_prim_func_frame.defined())
-        << "KernelLaunch must be inside PrimFunc";
-    PrimFuncFrame prim_func_frame = opt_prim_func_frame.value();
-    const IntImmNode *vid_value_node = block_size[0].as<IntImmNode>();
-    ICHECK(vid_value_node != nullptr)
-        << "block_size[0] must be compile-time constant";
-    int vid_value = vid_value_node->value;
-    if (vid_value == 1) {
-      prim_func_frame->attrs.Set("npu_cv_ratio", StringImm(cv_1_1));
-    } else {
-      prim_func_frame->attrs.Set("npu_cv_ratio", StringImm(cv_1_2));
+  if (block_size_opt.defined()) {
+    Array<PrimExpr> block_size = block_size_opt.value();
+    ICHECK(block_size.size() <= 3);
+    while (block_size.size() < 3) {
+      block_size.push_back(IntImm(DataType::Int(32), 1));
     }
-  } else {
-    // Launch GPU Kernel
-    ICHECK(grid_size.size() <= 3);
-    if (grid_size.size() > 0)
-      n->frames.push_back(LaunchThread(
-          CreateEnvThread("bx", "blockIdx.x", grid_size[0].dtype()),
-          grid_size[0]));
-    if (grid_size.size() > 1)
-      n->frames.push_back(LaunchThread(
-          CreateEnvThread("by", "blockIdx.y", grid_size[1].dtype()),
-          grid_size[1]));
-    if (grid_size.size() > 2)
-      n->frames.push_back(LaunchThread(
-          CreateEnvThread("bz", "blockIdx.z", grid_size[2].dtype()),
-          grid_size[2]));
-    if (block_size.defined()) {
-      ICHECK(block_size.size() <= 3);
-      if (block_size.size() > 0) {
-        n->frames.push_back(LaunchThread(
-            CreateEnvThread("tx", "threadIdx.x", block_size[0].dtype()),
-            block_size[0]));
-      }
-      if (block_size.size() > 1) {
-        n->frames.push_back(LaunchThread(
-            CreateEnvThread("ty", "threadIdx.y", block_size[1].dtype()),
-            block_size[1]));
-      }
-      if (block_size.size() > 2) {
-        n->frames.push_back(LaunchThread(
-            CreateEnvThread("tz", "threadIdx.z", block_size[2].dtype()),
-            block_size[2]));
-      }
-    }
+    n->thread_extents = block_size;
+    block_annotations.Set(attr::kLaunchThreads, block_size);
   }
 
-  if (attrs.defined()) {
-    auto empty_block = ::tvm::script::ir_builder::tir::Block(MainBlockName);
-    empty_block->annotations = attrs;
-    n->frames.push_back(empty_block);
-  } else {
-    n->frames.push_back(::tvm::script::ir_builder::tir::Block(MainBlockName));
-  }
+  auto empty_block = tvm::script::ir_builder::tirx::Block(DeviceMainBlockName);
+  empty_block->reads = Array<tvm::tirx::BufferRegion>();
+  empty_block->writes = Array<tvm::tirx::BufferRegion>();
+  empty_block->annotations = block_annotations;
+  n->frames.push_back(empty_block);
 
   return KernelLaunchFrame(n);
 }
 
-TVM_REGISTER_NODE_TYPE(KernelLaunchFrameNode);
-
-TVM_REGISTER_GLOBAL("tl.Parallel").set_body_typed(ParallelFor);
-TVM_REGISTER_GLOBAL("tl.Pipelined").set_body_typed(PipelinedFor);
-TVM_REGISTER_GLOBAL("tl.Persistent").set_body_typed(PersistentFor);
-TVM_REGISTER_GLOBAL("tl.KernelLaunch").set_body_typed(KernelLaunch);
+TVM_FFI_STATIC_INIT_BLOCK() {
+  namespace refl = reflection;
+  refl::GlobalDef()
+      .def("tl.Parallel", ParallelFor)
+      .def("tl.Pipelined", PipelinedFor)
+      .def("tl.Persistent", PersistentFor)
+      .def("tl.KernelLaunch", KernelLaunch);
+}
 
 class WarpSpecializeFrameNode : public TIRFrameNode {
 public:
   Array<TIRFrame> frames;
 
-  void VisitAttrs(tvm::AttrVisitor *v) {
-    TIRFrameNode::VisitAttrs(v);
-    v->Visit("frames", &frames);
+  static void RegisterReflection() {
+    namespace refl = reflection;
+    refl::ObjectDef<WarpSpecializeFrameNode>().def_ro(
+        "frames", &WarpSpecializeFrameNode::frames);
   }
 
-  static constexpr const char *_type_key = "tl.WarpSpecializeFrame";
-  TVM_DECLARE_FINAL_OBJECT_INFO(WarpSpecializeFrameNode, TIRFrameNode);
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("tl.WarpSpecializeFrame",
+                                    WarpSpecializeFrameNode, TIRFrameNode);
 
 public:
   TVM_DLL void EnterWithScope() final {
@@ -398,17 +319,22 @@ public:
 
 class WarpSpecializeFrame : public TIRFrame {
 public:
-  TVM_DEFINE_MUTABLE_NOTNULLABLE_OBJECT_REF_METHODS(WarpSpecializeFrame,
-                                                    TIRFrame,
-                                                    WarpSpecializeFrameNode);
+  explicit WarpSpecializeFrame(ObjectPtr<WarpSpecializeFrameNode> data)
+      : TIRFrame(UnsafeInit{}) {
+    ICHECK(data != nullptr);
+    data_ = std::move(data);
+  }
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(WarpSpecializeFrame, TIRFrame,
+                                                WarpSpecializeFrameNode);
 };
 
-WarpSpecializeFrame WarpSpecialize(Array<IntImm> warp_group_ids,
-                                   PrimExpr thread_idx,
+WarpSpecializeFrame WarpSpecialize(const Array<IntImm> &warp_group_ids,
+                                   const PrimExpr &thread_idx,
                                    int warp_group_size = 128) {
   ObjectPtr<WarpSpecializeFrameNode> n = make_object<WarpSpecializeFrameNode>();
   PrimExpr condition;
   std::vector<int> warp_groups;
+  warp_groups.reserve(warp_group_ids.size());
   for (int i = 0; i < warp_group_ids.size(); i++) {
     warp_groups.push_back(Downcast<IntImm>(warp_group_ids[i])->value);
   }
@@ -430,7 +356,7 @@ WarpSpecializeFrame WarpSpecialize(Array<IntImm> warp_group_ids,
     PrimExpr range_cond = (thread_idx >= min_bound) && (thread_idx < max_bound);
 
     if (condition.defined()) {
-      condition = tir::Or(condition, range_cond);
+      condition = tirx::Or(condition, range_cond);
     } else {
       condition = range_cond;
     }
@@ -443,98 +369,173 @@ WarpSpecializeFrame WarpSpecialize(Array<IntImm> warp_group_ids,
   return WarpSpecializeFrame(n);
 }
 
-TVM_REGISTER_NODE_TYPE(WarpSpecializeFrameNode);
-TVM_REGISTER_GLOBAL("tl.WarpSpecialize").set_body_typed(WarpSpecialize);
-
-class ResourceSpecializeFrameNode : public TIRFrameNode {
-public:
-  Array<TIRFrame> frames;
-
-  void VisitAttrs(tvm::AttrVisitor *v) {
-    TIRFrameNode::VisitAttrs(v);
-    v->Visit("frames", &frames);
-  }
-
-  static constexpr const char *_type_key = "tl.ResourceSpecializeFrame";
-  TVM_DECLARE_FINAL_OBJECT_INFO(ResourceSpecializeFrameNode, TIRFrameNode);
-
-public:
-  TVM_DLL void EnterWithScope() final {
-    for (auto frame = frames.begin(); frame != frames.end(); ++frame)
-      (*frame)->EnterWithScope();
-  }
-  /*!
-   * \brief The method called when exiting RAII scope.
-   * \sa tvm::support::With
-   */
-  TVM_DLL void ExitWithScope() final {
-    for (auto frame = frames.rbegin(); frame != frames.rend(); ++frame)
-      (*frame)->ExitWithScope();
-  }
-};
-
-class ResourceSpecializeFrame : public TIRFrame {
-public:
-  TVM_DEFINE_MUTABLE_NOTNULLABLE_OBJECT_REF_METHODS(
-      ResourceSpecializeFrame, TIRFrame, ResourceSpecializeFrameNode);
-};
-
-ResourceSpecializeFrame ResourceSpecialize(String resource_name) {
-  ObjectPtr<ResourceSpecializeFrameNode> n =
-      make_object<ResourceSpecializeFrameNode>();
-  AttrFrame attr_frame = Attr(Integer(0), resource_name, Integer(1));
-  n->frames.push_back(attr_frame);
-  return ResourceSpecializeFrame(n);
+TVM_FFI_STATIC_INIT_BLOCK() {
+  namespace refl = reflection;
+  refl::GlobalDef()
+      .def("tl.WarpSpecialize", WarpSpecialize)
+      .def("tl.SideEffect", tirx::SideEffect);
+  KernelLaunchFrameNode::RegisterReflection();
+  WarpSpecializeFrameNode::RegisterReflection();
 }
 
-TVM_REGISTER_NODE_TYPE(ResourceSpecializeFrameNode);
-TVM_REGISTER_GLOBAL("tl.ResourceSpecialize").set_body_typed(ResourceSpecialize);
+// ---------------------------------------------------------------------------
+// Warp-specialization schedule objects (transform/common/warp_specialize.h).
+// These are frontend IR constructs, not transformations: T.WSSchedule and
+// friends are built by the tracer and attached as a block annotation for the
+// MaterializeWSSchedule pass to consume.
+// ---------------------------------------------------------------------------
 
-class ScopeFrameNode : public TIRFrameNode {
-public:
-  Array<TIRFrame> frames;
-
-  void VisitAttrs(tvm::AttrVisitor *v) {
-    TIRFrameNode::VisitAttrs(v);
-    v->Visit("frames", &frames);
-  }
-
-  static constexpr const char *_type_key = "tl.ScopeFrame";
-  TVM_DECLARE_FINAL_OBJECT_INFO(ScopeFrameNode, TIRFrameNode);
-
-public:
-  TVM_DLL void EnterWithScope() final {
-    for (auto frame = frames.begin(); frame != frames.end(); ++frame)
-      (*frame)->EnterWithScope();
-  }
-  /*!
-   * \brief The method called when exiting RAII scope.
-   * \sa tvm::support::With
-   */
-  TVM_DLL void ExitWithScope() final {
-    for (auto frame = frames.rbegin(); frame != frames.rend(); ++frame)
-      (*frame)->ExitWithScope();
-  }
-};
-
-class ScopeFrame : public TIRFrame {
-public:
-  TVM_DEFINE_MUTABLE_NOTNULLABLE_OBJECT_REF_METHODS(ScopeFrame, TIRFrame,
-                                                    ScopeFrameNode);
-};
-
-ScopeFrame Scope(String scope_name) {
-  ObjectPtr<ScopeFrameNode> n = make_object<ScopeFrameNode>();
-  int scope_id = 0;
-  if (scope_name == "V")
-    scope_id = 1;
-  AttrFrame attr_frame = Attr(Integer(0), "resource_scope", Integer(scope_id));
-  n->frames.push_back(attr_frame);
-  return ScopeFrame(n);
+WSRole::WSRole(String name, int64_t warp_lo, int64_t warp_hi,
+               int64_t max_nreg) {
+  auto n = make_object<WSRoleNode>();
+  n->name = std::move(name);
+  n->warp_lo = warp_lo;
+  n->warp_hi = warp_hi;
+  n->max_nreg = max_nreg;
+  data_ = std::move(n);
 }
 
-TVM_REGISTER_NODE_TYPE(ScopeFrameNode);
-TVM_REGISTER_GLOBAL("tl.Scope").set_body_typed(Scope);
+void WSRoleNode::RegisterReflection() {
+  namespace refl = reflection;
+  refl::ObjectDef<WSRoleNode>()
+      .def_ro("name", &WSRoleNode::name)
+      .def_ro("warp_lo", &WSRoleNode::warp_lo)
+      .def_ro("warp_hi", &WSRoleNode::warp_hi)
+      .def_ro("max_nreg", &WSRoleNode::max_nreg);
+}
+
+WSPipeline::WSPipeline(String name, Array<tirx::Buffer> buffers,
+                       int64_t depth) {
+  auto n = make_object<WSPipelineNode>();
+  n->name = std::move(name);
+  n->buffers = std::move(buffers);
+  n->depth = depth;
+  data_ = std::move(n);
+}
+
+void WSPipelineNode::RegisterReflection() {
+  namespace refl = reflection;
+  refl::ObjectDef<WSPipelineNode>()
+      .def_ro("name", &WSPipelineNode::name)
+      .def_ro("buffers", &WSPipelineNode::buffers)
+      .def_ro("depth", &WSPipelineNode::depth);
+}
+
+void WSInstrNode::RegisterReflection() {
+  namespace refl = reflection;
+  refl::ObjectDef<WSInstrNode>();
+}
+
+WSOpRef::WSOpRef(String id) {
+  auto n = make_object<WSOpRefNode>();
+  n->id = std::move(id);
+  data_ = std::move(n);
+}
+
+void WSOpRefNode::RegisterReflection() {
+  namespace refl = reflection;
+  refl::ObjectDef<WSOpRefNode>().def_ro("id", &WSOpRefNode::id);
+}
+
+WSSync::WSSync(WSSyncKind kind, String pipeline, int64_t stage) {
+  auto n = make_object<WSSyncNode>();
+  n->kind = std::move(kind);
+  n->pipeline = std::move(pipeline);
+  n->stage = stage;
+  data_ = std::move(n);
+}
+
+void WSSyncNode::RegisterReflection() {
+  namespace refl = reflection;
+  refl::ObjectDef<WSSyncNode>()
+      .def_ro("kind", &WSSyncNode::kind)
+      .def_ro("pipeline", &WSSyncNode::pipeline)
+      .def_ro("stage", &WSSyncNode::stage);
+}
+
+WSScope::WSScope(String id, Map<String, Array<WSInstr>> bodies) {
+  auto n = make_object<WSScopeNode>();
+  n->id = std::move(id);
+  n->bodies = std::move(bodies);
+  data_ = std::move(n);
+}
+
+void WSScopeNode::RegisterReflection() {
+  namespace refl = reflection;
+  refl::ObjectDef<WSScopeNode>()
+      .def_ro("id", &WSScopeNode::id)
+      .def_ro("bodies", &WSScopeNode::bodies);
+}
+
+WSSchedule::WSSchedule(int64_t num_warps, Array<WSRole> roles,
+                       Array<WSPipeline> pipelines, Array<WSScope> scopes) {
+  auto n = make_object<WSScheduleNode>();
+  n->num_warps = num_warps;
+  n->roles = std::move(roles);
+  n->pipelines = std::move(pipelines);
+  n->scopes = std::move(scopes);
+  data_ = std::move(n);
+}
+
+void WSScheduleNode::RegisterReflection() {
+  namespace refl = reflection;
+  refl::ObjectDef<WSScheduleNode>()
+      .def_ro("num_warps", &WSScheduleNode::num_warps)
+      .def_ro("roles", &WSScheduleNode::roles)
+      .def_ro("pipelines", &WSScheduleNode::pipelines)
+      .def_ro("scopes", &WSScheduleNode::scopes);
+}
+
+// Register the sync-kind enum and its variants. Declaration order fixes the
+// dense ordinals (0..3) consumed by WSSyncKind::CanonicalOrdinal().
+TVM_FFI_STATIC_INIT_BLOCK() {
+  namespace refl = reflection;
+  // EnumObj subclasses have no __ffi_init__; allocate via init(false).
+  refl::ObjectDef<WSSyncKindObj>(
+      refl::init(false)); // NOLINT(bugprone-unused-raii)
+  refl::TypeAttrDef<WSSyncKindObj>().def(
+      refl::type_attr::kConvert,
+      &refl::details::FFIConvertFromAnyViewToObjectRef<WSSyncKind>);
+  refl::EnumDef<WSSyncKindObj>("PRODUCER_ACQUIRE"); // ordinal 0
+  refl::EnumDef<WSSyncKindObj>("PRODUCER_COMMIT");  // ordinal 1
+  refl::EnumDef<WSSyncKindObj>("CONSUMER_WAIT");    // ordinal 2
+  refl::EnumDef<WSSyncKindObj>("CONSUMER_RELEASE"); // ordinal 3
+}
+
+TVM_FFI_STATIC_INIT_BLOCK() {
+  namespace refl = reflection;
+  WSRoleNode::RegisterReflection();
+  WSPipelineNode::RegisterReflection();
+  WSInstrNode::RegisterReflection();
+  WSOpRefNode::RegisterReflection();
+  WSSyncNode::RegisterReflection();
+  WSScopeNode::RegisterReflection();
+  WSScheduleNode::RegisterReflection();
+  refl::GlobalDef()
+      .def("tl.WSRole",
+           [](String name, int64_t warp_lo, int64_t warp_hi, int64_t max_nreg) {
+             return WSRole(std::move(name), warp_lo, warp_hi, max_nreg);
+           })
+      .def("tl.WSPipeline",
+           [](String name, Array<tirx::Buffer> buffers, int64_t depth) {
+             return WSPipeline(std::move(name), std::move(buffers), depth);
+           })
+      .def("tl.WSOpRef", [](String id) { return WSOpRef(std::move(id)); })
+      .def("tl.WSSync",
+           [](WSSyncKind kind, String pipeline, int64_t stage) {
+             return WSSync(std::move(kind), std::move(pipeline), stage);
+           })
+      .def("tl.WSScope",
+           [](String id, Map<String, Array<WSInstr>> bodies) {
+             return WSScope(std::move(id), std::move(bodies));
+           })
+      .def("tl.WSSchedule",
+           [](int64_t num_warps, Array<WSRole> roles,
+              Array<WSPipeline> pipelines, Array<WSScope> scopes) {
+             return WSSchedule(num_warps, std::move(roles),
+                               std::move(pipelines), std::move(scopes));
+           });
+}
 
 } // namespace tl
 } // namespace tvm

@@ -1,10 +1,10 @@
 import argparse
 
 import tilelang
-import tilelang.language as tl
+import tilelang.ascend.a2a3.language as tl
 import torch
 
-tilelang.cache.clear_cache()
+tilelang.disable_cache()
 
 parser = argparse.ArgumentParser(description="Chunk Local Cumsum Scalar on NPU")
 parser.add_argument("--b", type=int, default=2, help="Batch size")
@@ -133,7 +133,7 @@ def ref_chunk_cumsum(g, C, reverse=False, head_first=False):
 
 
 if __name__ == "__main__":
-    tilelang.cache.clear_cache()
+    tilelang.disable_cache()
     torch.manual_seed(0)
 
     print("=== Testing chunk_cumsum (cumsum_gdn) reverse ===")

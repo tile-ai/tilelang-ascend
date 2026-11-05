@@ -1,24 +1,27 @@
-// Copyright (c) Tile-AI Corporation.
-// Licensed under the MIT License.
-
+#include "../../3rdparty/tvm/src/tirx/ir/data_type_rewriter.h"
 #include "../op/builtin.h"
-#include <tvm/runtime/registry.h>
-#include <tvm/tir/builtin.h>
-#include <tvm/tir/data_type_rewriter.h>
-#include <tvm/tir/op.h>
-#include <tvm/tir/transform.h>
+#include "arith/ir_mutator_with_analyzer.h"
+#include "common/int64_promoter.h"
+#include "support/check.h"
+#include "tir/transforms/ir_utils.h"
+#include <tvm/ir/cast.h>
+#include <tvm/tirx/builtin.h>
+#include <tvm/tirx/op.h>
+#include <tvm/tirx/transform.h>
 
 namespace tvm {
 namespace tl {
 
-using namespace tir;
+using namespace tirx;
+using namespace ffi;
+using namespace arith;
 class ConfigIndexBitwidthRewriter : public IndexDataTypeRewriter {
 public:
   using Parent = IndexDataTypeRewriter;
   ConfigIndexBitwidthRewriter(int index_bitwidth)
       : _index_bitwidth_(index_bitwidth) {}
 
-  Stmt operator()(Stmt s) { return VisitStmt(s); }
+  Stmt operator()(const Stmt &s) { return VisitStmt(s); }
 
 protected:
   using Parent::VisitExpr_;
@@ -70,9 +73,66 @@ protected:
   int _index_bitwidth_;
 };
 
+class IndexLegalizer : public IRMutatorWithAnalyzer {
+
+public:
+  static Stmt Rewrite(const Stmt &stmt) {
+    Analyzer ana;
+    auto pass = IndexLegalizer(&ana);
+    return pass.VisitStmt(stmt);
+  }
+
+private:
+  explicit IndexLegalizer(arith::Analyzer *ana) : IRMutatorWithAnalyzer(ana) {}
+
+  Stmt VisitStmt_(const BufferStoreNode *op) final {
+    auto buffer_store =
+        Downcast<BufferStore>(IRMutatorWithAnalyzer::VisitStmt_(op));
+    auto indices = buffer_store->indices;
+    Array<PrimExpr> new_indices;
+    for (auto index : indices) {
+      if (index->dtype.is_int() && index->dtype.bits() < 64) {
+        auto int_bound = analyzer_->const_int_bound(index);
+        if (int_bound->max_value >= (1LL << (index->dtype.bits() - 1)) - 1 ||
+            int_bound->min_value < -(1LL << (index->dtype.bits() - 1))) {
+          Int64Promoter promoter;
+          index = promoter(index);
+          new_indices.push_back(index);
+          continue;
+        }
+      }
+      new_indices.push_back(index);
+    }
+    buffer_store.CopyOnWrite()->indices = new_indices;
+    return std::move(buffer_store);
+  }
+
+  PrimExpr VisitExpr_(const BufferLoadNode *op) final {
+    auto buffer_load =
+        Downcast<BufferLoad>(IRMutatorWithAnalyzer::VisitExpr_(op));
+    auto indices = buffer_load->indices;
+    Array<PrimExpr> new_indices;
+    for (auto index : indices) {
+      if (index->dtype.is_int() && index->dtype.bits() < 64) {
+        auto int_bound = analyzer_->const_int_bound(index);
+        if (int_bound->max_value >= (1LL << (index->dtype.bits() - 1)) - 1 ||
+            int_bound->min_value < -(1LL << (index->dtype.bits() - 1))) {
+          Int64Promoter promoter;
+          index = promoter(index);
+          new_indices.push_back(index);
+          continue;
+        }
+      }
+      new_indices.push_back(index);
+    }
+    buffer_load.CopyOnWrite()->indices = new_indices;
+    return std::move(buffer_load);
+  }
+};
+
 tvm::transform::Pass ConfigIndexBitwidth() {
-  using namespace tir::transform;
-  auto pass_func = [](PrimFunc f, IRModule m, PassContext ctx) {
+  using namespace tirx::transform;
+  auto pass_func = [](PrimFunc f, const IRModule &m, const PassContext &ctx) {
     auto *n = f.CopyOnWrite();
     // Get pass config `tl.config_index_bitwidth`
     tvm::transform::PassContext ctxt = tvm::transform::PassContext::Current();
@@ -80,16 +140,20 @@ tvm::transform::Pass ConfigIndexBitwidth() {
         ctxt->GetConfig(kConfigIndexBitwidth, Optional<Integer>());
     if (opt_config_index_bitwidth.defined()) {
       int config_index_bitwidth = opt_config_index_bitwidth.value()->value;
-      n->body = ConfigIndexBitwidthRewriter(config_index_bitwidth)(
-          std::move(n->body));
+      n->body = ConfigIndexBitwidthRewriter(config_index_bitwidth)(n->body);
     }
+    // Legalize out-of-bound indices to be int64
+    n->body = IndexLegalizer::Rewrite(n->body);
     return f;
   };
   return CreatePrimFuncPass(pass_func, 0, "tl.ConfigIndexBitwidth", {});
 }
 
-TVM_REGISTER_GLOBAL("tl.transform.ConfigIndexBitwidth")
-    .set_body_typed(ConfigIndexBitwidth);
+TVM_FFI_STATIC_INIT_BLOCK() {
+  namespace refl = reflection;
+  refl::GlobalDef().def("tl.transform.ConfigIndexBitwidth",
+                        ConfigIndexBitwidth);
+}
 
 } // namespace tl
 } // namespace tvm

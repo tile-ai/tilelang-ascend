@@ -1,9 +1,9 @@
 import torch
 import argparse
 import tilelang
-import tilelang.language as T
+import tilelang.ascend.a2a3.language as T
 
-tilelang.cache.clear_cache()
+tilelang.disable_cache()
 
 
 def torch_grouped_gemm_bwd(A, B, block_metadata, batch_count, block_M, block_N):

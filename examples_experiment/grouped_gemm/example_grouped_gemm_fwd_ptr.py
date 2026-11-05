@@ -4,7 +4,7 @@ import math
 import torch
 
 import tilelang
-import tilelang.language as T
+import tilelang.ascend.a2a3.language as T
 
 tilelang.disable_cache()
 

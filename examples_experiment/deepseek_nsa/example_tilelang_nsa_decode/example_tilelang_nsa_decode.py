@@ -7,7 +7,7 @@ GM relay. No T.barrier_all, no manual T.Scope, no manual set_flag/wait_flag.
 
 import tilelang
 import torch
-from tilelang import language as T
+from tilelang.ascend.a2a3 import language as T
 
 # Developer mode pass_configs: sync & C/V split fully auto-managed by passes.
 PASS_CONFIGS = {

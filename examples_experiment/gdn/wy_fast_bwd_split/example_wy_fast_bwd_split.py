@@ -37,7 +37,7 @@ pass_configs = {AUTO_CV_COMBINE, AUTO_CV_SYNC, AUTO_SYNC, MEMORY_PLANNING: True}
 import tilelang
 import torch
 import torch.nn.functional as F
-from tilelang import language as T
+import tilelang.ascend.a2a3.language as T
 
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,

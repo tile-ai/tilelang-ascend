@@ -6,7 +6,7 @@
 </div>
 
 :::{warning}
-   This document is still **experimental** and may be incomplete.  
+   This document is still **experimental** and may be incomplete.
    Suggestions and improvements are highly encouraged—please submit a PR!
 :::
 
@@ -23,8 +23,11 @@ A simple Triton kernel for GEMV might look like this:
 ```python
 @triton.jit
 def _gemv_naive(
-    x_ptr, A_ptr, y_ptr,
-    N, K,
+    x_ptr,
+    A_ptr,
+    y_ptr,
+    N,
+    K,
     BLOCK_SIZE_K: tl.constexpr,
 ):
     n = tl.program_id(0)
@@ -54,9 +57,9 @@ def naive_gemv(
 
     @T.prim_func
     def main(
-            A: T.Buffer((K,), dtype),
-            B: T.Buffer((N, K), dtype),
-            C: T.Buffer((N,), dtype),
+        A: T.Buffer((K,), dtype),
+        B: T.Buffer((N, K), dtype),
+        C: T.Buffer((N,), dtype),
     ):
         with T.Kernel(T.ceildiv(N, BLOCK_N)) as bn:
             tn = T.get_thread_binding(0)  # tn = threadIdx.x
@@ -69,8 +72,7 @@ def naive_gemv(
                     A_shared[tk] = A[bk * BLOCK_K + tk]
                     B_shared[tn, tk] = B[bn * BLOCK_N + tn, bk * BLOCK_K + tk]
                 for tk in T.serial(BLOCK_K):
-                    C_reg[0] += A_shared[tk].astype(accum_dtype) * B_shared[tn,
-                                                                            tk].astype(accum_dtype)
+                    C_reg[0] += A_shared[tk].astype(accum_dtype) * B_shared[tn, tk].astype(accum_dtype)
             C[bn * BLOCK_N + tn] = C_reg[0]
 
     return main
@@ -137,9 +139,9 @@ def naive_splitk_gemv(
 
     @T.prim_func
     def main(
-            A: T.Buffer((K,), dtype),
-            B: T.Buffer((N, K), dtype),
-            C: T.Buffer((N,), dtype),
+        A: T.Buffer((K,), dtype),
+        B: T.Buffer((N, K), dtype),
+        C: T.Buffer((N,), dtype),
     ):
         with T.Kernel(T.ceildiv(N, BLOCK_N), threads=(BLOCK_N, BLOCK_K)) as bn:
             tn = T.get_thread_binding(0)
@@ -180,9 +182,9 @@ def splitk_gemv(
 
     @T.prim_func
     def main(
-            A: T.Buffer((K,), dtype),
-            B: T.Buffer((N, K), dtype),
-            C: T.Buffer((N,), dtype),
+        A: T.Buffer((K,), dtype),
+        B: T.Buffer((N, K), dtype),
+        C: T.Buffer((N,), dtype),
     ):
         with T.Kernel(T.ceildiv(N, BLOCK_N), threads=(BLOCK_N, reduce_threads)) as bn:
             tn = T.get_thread_binding(0)
@@ -205,7 +207,6 @@ def splitk_gemv(
 
     return main
 ```
-
 
 ## Vectorized Reads
 
@@ -226,9 +227,9 @@ def splitk_gemv_vectorized(
 
     @T.prim_func
     def main(
-            A: T.Buffer((K,), dtype),
-            B: T.Buffer((N, K), dtype),
-            C: T.Buffer((N,), dtype),
+        A: T.Buffer((K,), dtype),
+        B: T.Buffer((N, K), dtype),
+        C: T.Buffer((N,), dtype),
     ):
         with T.Kernel(T.ceildiv(N, BLOCK_N), threads=(BLOCK_N, reduce_threads)) as bn:
             tn = T.get_thread_binding(0)
@@ -252,8 +253,7 @@ def splitk_gemv_vectorized(
     return main
 ```
 
-With vectorized read, now the kernel finishs in **~0.0084 ms**, which is getting close to cuBLAS performance.
-
+With vectorized read, now the kernel finishes in **~0.0084 ms**, which is getting close to cuBLAS performance.
 
 ## `tvm_thread_allreduce` Instead of `atomicAdd`
 
@@ -274,9 +274,9 @@ def splitk_gemv_vectorized_tvm(
 
     @T.prim_func
     def main(
-            A: T.Buffer((K,), dtype),
-            B: T.Buffer((N, K), dtype),
-            C: T.Buffer((N,), dtype),
+        A: T.Buffer((K,), dtype),
+        B: T.Buffer((N, K), dtype),
+        C: T.Buffer((N,), dtype),
     ):
         with T.Kernel(T.ceildiv(N, BLOCK_N), threads=(BLOCK_N, reduce_threads)) as bn:
             tn = T.get_thread_binding(0)
@@ -294,9 +294,9 @@ def splitk_gemv_vectorized_tvm(
                     C_accum[0] += A_local[k].astype(accum_dtype) * B_local[k].astype(accum_dtype)
             C_reduced = T.alloc_local((1,), accum_dtype)
             with T.attr(
-                    T.comm_reducer(lambda x, y: x + y, [T.Cast(accum_dtype, 0)]),
-                    "reduce_scope",
-                    T.reinterpret(T.uint64(0), dtype="handle"),
+                T.comm_reducer(lambda x, y: x + y, [T.cast(0, accum_dtype)]),
+                "reduce_scope",
+                T.reinterpret(T.uint64(0), dtype="handle"),
             ):
                 T.evaluate(
                     T.tvm_thread_allreduce(
@@ -306,7 +306,8 @@ def splitk_gemv_vectorized_tvm(
                         C_reduced[0],
                         tk,
                         dtype="handle",
-                    ))
+                    )
+                )
 
             C[bn * BLOCK_N + tn] = C_reduced[0]
 
@@ -325,22 +326,23 @@ def get_best_config(N, K):
     def get_configs():
         BLOCK_N = [2, 4, 8, 32, 64, 128]
         reduce_threads = [4, 8, 32]
-        _configs = list(itertools.product(
-            BLOCK_N,
-            reduce_threads,
-        ))
-        configs = [{
-            "BLOCK_N": c[0],
-            "reduce_threads": c[1],
-        } for c in _configs]
+        _configs = list(
+            itertools.product(
+                BLOCK_N,
+                reduce_threads,
+            )
+        )
+        configs = [
+            {
+                "BLOCK_N": c[0],
+                "reduce_threads": c[1],
+            }
+            for c in _configs
+        ]
         return configs
 
     @autotune(
         configs=get_configs(),
-        keys=[
-            "BLOCK_N",
-            "reduce_threads",
-        ],
         warmup=3,
         rep=20,
     )
@@ -363,9 +365,9 @@ def get_best_config(N, K):
 
         @T.prim_func
         def main(
-                A: T.Buffer((K,), dtype),
-                B: T.Buffer((N, K), dtype),
-                C: T.Buffer((N,), dtype),
+            A: T.Buffer((K,), dtype),
+            B: T.Buffer((N, K), dtype),
+            C: T.Buffer((N,), dtype),
         ):
             with T.Kernel(T.ceildiv(N, BLOCK_N), threads=(BLOCK_N, reduce_threads)) as bn:
                 tn = T.get_thread_binding(0)
@@ -383,9 +385,9 @@ def get_best_config(N, K):
                         C_accum[0] += A_local[k].astype(accum_dtype) * B_local[k].astype(accum_dtype)
                 C_reduced = T.alloc_local((1,), accum_dtype)
                 with T.attr(
-                        T.comm_reducer(lambda x, y: x + y, [T.Cast(accum_dtype, 0)]),
-                        "reduce_scope",
-                        T.reinterpret(T.uint64(0), dtype="handle"),
+                    T.comm_reducer(lambda x, y: x + y, [T.cast(0, accum_dtype)]),
+                    "reduce_scope",
+                    T.reinterpret(T.uint64(0), dtype="handle"),
                 ):
                     T.evaluate(
                         T.tvm_thread_allreduce(
@@ -395,7 +397,8 @@ def get_best_config(N, K):
                             C_reduced[0],
                             tk,
                             dtype="handle",
-                        ))
+                        )
+                    )
 
                 C[bn * BLOCK_N + tn] = C_reduced[0]
 
@@ -462,7 +465,6 @@ This corresponds closely to our `TileLang` program, with necessary synchronizati
 | splitk_gemv | 0.02419 ms |
 | splitk_gemv_vectorized | 0.00809 ms |
 | splitk_gemv_vectorized_tvm | 0.00675 ms |
-
 
 Triton Time: 0.0077344514429569244
 In this tutorial, we implemented a simple GEMV kernel and learn that `TileLang` exposes low level control to user such as thread-level programming and CUDA primitives.

@@ -1,25 +1,44 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
 from __future__ import annotations
+from typing import Any, Generic, Literal, ParamSpec, TypeVar
+from collections.abc import Callable
 
-from typing import Any, Callable, Literal
+from tilelang.jit.adapter.utils import is_cutedsl_target, is_metal_target, is_cuda_target, is_hip_target
+from tvm.tirx import PrimFunc
+
+from tilelang import tvm
+from tilelang import env
+from tilelang.backend.module import BackendContext, create_backend_context
 from tvm.target import Target
-import tilelang
-from tilelang import tvm as tvm
-from tvm.tir import PrimFunc
-
+from tilelang.engine.param import CompiledArtifact, KernelParam
 from tilelang.jit.adapter import (
-    TorchDLPackKernelAdapter,
     BaseKernelAdapter,
-    CtypesKernelAdapter,
+    CachedTextSource,
     CythonKernelAdapter,
+    CuTeDSLKernelAdapter,
+    TVMFFIKernelAdapter,
+    MetalKernelAdapter,
 )
-
 from tilelang.profiler import Profiler, TensorSupplyType
-from tilelang.engine.param import KernelParam, CompiledArtifact
+from tilelang.contrib import nvcc as tl_nvcc
+from tilelang.contrib.hip_resource_info import pop_recorded, reset_recorder
+from tilelang.jit.abi import prepare_tvm_ffi_callee_allocated_outputs
+from tilelang.jit.diagnostics import jit_phase
+from tilelang.transform import PassConfigKey
+from tilelang.transform.pass_config import normalize_pass_configs
+from tilelang.instrumentation import compile_pass_instrumentation, create_pass_instruments
+from tilelang.tools.pass_timing import create_pass_timing_tool
+import logging
+import os
+import shutil
+
+logger = logging.getLogger(__name__)
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+TargetLike = str | dict[str, object] | Target
 
 
-class JITKernel:
+class JITKernel(Generic[_P, _T]):
     """
     A wrapper class for compiling and invoking TileLang (TVM TIR) functions as PyTorch-compatible functions.
 
@@ -36,6 +55,7 @@ class JITKernel:
     prim_func: PrimFunc = None
     artifact: CompiledArtifact = None
     adapter: BaseKernelAdapter = None
+    execution_backend_spec = None
     torch_function: Callable = None
 
     # tuner result
@@ -47,66 +67,85 @@ class JITKernel:
         self,
         func: PrimFunc = None,
         out_idx: list[int] | int = None,
-        workspace_idx: list[int] | int = None,
-        execution_backend: Literal["dlpack", "ctypes", "cython"] = "cython",
-        target: str | Target = "auto",
-        target_host: str | Target = None,
-        platform: str = "auto",
+        execution_backend: Literal["tvm_ffi", "cython", "nvrtc", "torch", "cutedsl", "pto"] = "tvm_ffi",
+        target: TargetLike = "auto",
+        target_host: TargetLike | None = None,
         verbose: bool = False,
         pass_configs: dict[str, Any] | None = None,
-        compile_flags: list[str] | str | None = None,
         from_database: bool = False,
+        compile_flags: list[str] | None = None,
+        backend_context: BackendContext | None = None,
+        workspace_idx: list[int] | int | None = None,
+        compile_config=None,
     ):
         """
         Initializes a TorchFunction instance.
 
         Parameters
         ----------
-        func : tvm.tir.PrimFunc, optional
+        func : tvm.tirx.PrimFunc, optional
             The TileLang TIR function to compile and wrap.
         out_idx : Union[List[int], int], optional
             Index(es) of the output tensors to return (default: None).
-        workspace_idx : Union[List[int], int], optional
-            Index(es) of the workspace tensors to auto-allocate (default: None).
-        execution_backend : Literal["dlpack", "ctypes"], optional
-            Execution backend to use for kernel execution (default: "dlpack").
-        target : Union[str, Target], optional
-            Compilation target, either as a string or a TVM Target object (default: "auto").
-        target_host : Union[str, Target], optional
+        execution_backend : Literal["tvm_ffi", "cython", "nvrtc", "torch", "cutedsl", "pto"], optional
+            Execution backend to use for kernel execution.
+        target : str, dict, or tvm.target.Target, optional
+            Compilation target (default: "auto"). Use a dict for target attributes,
+            for example {"kind": "cuda", "arch": "sm_90"}.
+        target_host : str, dict, or tvm.target.Target, optional
             Target host for cross-compilation (default: None).
-        platform : Literal
-            Specifies the target hardware platform generation. Defaults to "A3".
         verbose : bool, optional
             Whether to enable verbose output (default: False).
         pass_configs : dict, optional
             Additional keyword arguments to pass to the Compiler PassContext.
-            Available options:
-                "tir.disable_vectorize": bool, default: False
-                "tl.disable_tma_lower": bool, default: False
-                "tl.disable_dynamic_tail_split": bool, default: False
-                "tl.dynamic_vectorize_size_bits": int, default: 128
+            Refer to `tilelang.PassConfigKey` for supported options.
         from_database : bool, optional
             Whether to create a TorchFunction from a database.
+        backend_context : BackendContext, optional
+            Pre-resolved context supplied by compiler infrastructure. Direct
+            callers may omit it and let this public entry resolve one context.
         """
         self.prim_func = func
-        self.execution_backend = execution_backend
-        self.target = target
-        self.target_host = target_host
-        self.platform = platform
         self.verbose = verbose
 
-        if pass_configs is None:
-            pass_configs = {}
-        self.pass_configs = pass_configs
-        self.compile_flags = compile_flags
+        self.pass_configs = normalize_pass_configs(pass_configs)
 
-        # Validate the execution backend.
-        assert execution_backend in [
-            "dlpack",
-            "ctypes",
-            "cython",
-        ], f"Invalid execution backend. {execution_backend}"
-        if execution_backend == "cython":
+        self.compile_flags = [compile_flags] if isinstance(compile_flags, str) else compile_flags
+
+        if backend_context is None:
+            backend_context = create_backend_context(target, target_host, execution_backend)
+        self.backend_context = backend_context
+        self.backend = backend_context.module
+        self.target = backend_context.target
+        self.target_host = backend_context.target_host
+        self.execution_backend_spec = backend_context.execution_backend
+        self.execution_backend = self.execution_backend_spec.name
+        self._workspace_idx_spec = workspace_idx
+        self.compile_config = None
+        if self.backend.name in {"ascend_a2a3", "pto_a2a3"}:
+            import json
+            from tilelang.ascend.a2a3.compiler import CompileConfig, resolve_compile_config
+            from tilelang.ascend.a2a3.execution_backend import COMPILER_CONFIG_ATTR, WORKSPACE_IDX_ATTR
+            from tilelang.ascend.a2a3.pass_config import normalize_a2a3_pass_configs
+
+            self.pass_configs = normalize_a2a3_pass_configs(self.target, pass_configs)
+            attrs = func.attrs if func is not None and func.attrs else {}
+            if workspace_idx is None and WORKSPACE_IDX_ATTR in attrs:
+                self._workspace_idx_spec = [int(value) for value in attrs[WORKSPACE_IDX_ATTR]]
+            if COMPILER_CONFIG_ATTR in attrs:
+                saved = CompileConfig.from_metadata(json.loads(str(attrs[COMPILER_CONFIG_ATTR])))
+                if compile_config is not None and saved.cache_identity != compile_config.cache_identity:
+                    raise ValueError("A2A3 compiler snapshot conflicts with the derived PrimFunc request")
+                compile_config = saved
+            self.compile_config = compile_config or resolve_compile_config(self.target, self.pass_configs, self.compile_flags)
+            if str(self.target.attrs.get("model", "")) != self.compile_config.platform:
+                raise ValueError("A2A3 compiler snapshot requires the same frozen target.model platform")
+            if self.compile_config.dialect != ("pto" if "pto" in self.target.keys else "ascendc"):
+                raise ValueError("A2A3 compiler snapshot requires the same target dialect keys")
+        elif workspace_idx is not None or compile_config is not None:
+            raise ValueError("workspace_idx and A2A3 compiler snapshots are supported only by the A2A3 backend")
+
+        if self.execution_backend == "cython":
             from tilelang.contrib.cc import get_cplus_compiler
 
             assert get_cplus_compiler() is not None, "Cython backend requires a C++ compiler, please install or use other backends."
@@ -114,29 +153,44 @@ class JITKernel:
         if from_database:
             return
 
-        # Compile the TileLang function and create a kernel adapter for execution.
-        adapter = self._compile_and_create_adapter(func, out_idx, workspace_idx)
+        # Print log on compilation starts
+        # NOTE(Chenggang): printing could let the training/inference framework easier to know
+        # whether the communication timeout is from compilation
+        if env.is_print_on_compilation_enabled():
+            # assert func must have "global_symbol"
+            func_name = func.attrs.get("global_symbol")
+            assert func_name is not None, "func must have global_symbol"
+            logger.info(f"TileLang begins to compile kernel `{func_name}` with `{out_idx=}`")
 
-        # The adapter's function is assigned as the callable function for this instance.
-        self.adapter = adapter
-        self.torch_function = adapter.func
+        # Compile the TileLang function and create a kernel adapter for execution.
+        adapter = self._compile_and_create_adapter(func, out_idx)
+
+        if env.is_print_on_compilation_enabled():
+            func_name = func.attrs.get("global_symbol")
+            assert func_name is not None, "func must have global_symbol"
+            logger.info(f"TileLang completes to compile kernel `{func_name}`")
+
+        self._set_adapter(adapter)
 
     @classmethod
     def from_database(
         cls,
         func: PrimFunc,
-        kernel_global_source: str,
+        host_kernel_source: CachedTextSource,
+        device_kernel_source: CachedTextSource,
         kernel_lib_path: str,
         params: list[KernelParam],
-        target: str | Target,
-        target_host: str | Target,
-        platform: str,
+        target: TargetLike,
+        target_host: TargetLike | None,
         out_idx: list[int] | int,
-        workspace_idx: list[int] | int,
-        auto_gm_idx: list[int] | int,
-        execution_backend: Literal["dlpack", "ctypes", "cython"],
+        execution_backend: Literal["tvm_ffi", "cython", "nvrtc", "torch", "cutedsl", "pto"],
         pass_configs: dict[str, Any] | None = None,
-        compile_flags: list[str] | str | None = None,
+        compile_flags: list[str] | None = None,
+        backend_context: BackendContext | None = None,
+        workspace_idx: list[int] | int | None = None,
+        auto_gm_idx: list[int] | None = None,
+        compile_config=None,
+        runtime_func: PrimFunc | None = None,
     ):
         """
         Alternative constructor to create a TorchFunction directly from a database.
@@ -144,45 +198,55 @@ class JITKernel:
         instance = cls(
             func=func,
             out_idx=out_idx,
-            workspace_idx=workspace_idx,
             execution_backend=execution_backend,
             target=target,
             target_host=target_host,
-            platform=platform,
             pass_configs=pass_configs,
-            compile_flags=compile_flags,
             from_database=True,
+            compile_flags=compile_flags,
+            backend_context=backend_context,
+            **(
+                {"workspace_idx": workspace_idx, "compile_config": compile_config}
+                if workspace_idx is not None or compile_config is not None
+                else {}
+            ),
         )
+        instance._restore_auto_gm_idx = auto_gm_idx
+        instance._restore_runtime_func = runtime_func
 
-        instance.adapter = instance._create_adapter_from_database(
+        if instance.execution_backend == "tvm_ffi" and isinstance(func, PrimFunc):
+            # The cached artifact was compiled with the ABI decision derived
+            # from the same capability flag; re-stamp the loaded PrimFunc so
+            # the adapter reads the identical decision.
+            func, _ = prepare_tvm_ffi_callee_allocated_outputs(
+                func,
+                out_idx,
+                supports_callee_allocated_outputs=instance.execution_backend_spec.supports_callee_allocated_outputs,
+            )
+
+        adapter = instance._create_adapter_from_database(
             func_or_mod=func,
             params=params,
             result_idx=out_idx,
-            workspace_idx=workspace_idx,
-            auto_gm_idx=auto_gm_idx,
-            target=target,
-            platform=platform,
-            kernel_global_source=kernel_global_source,
+            target=instance.target,
+            host_kernel_source=host_kernel_source,
+            device_kernel_source=device_kernel_source,
             kernel_lib_path=kernel_lib_path,
             pass_configs=pass_configs,
             compile_flags=compile_flags,
         )
-        instance.torch_function = instance.adapter.func
+        instance._set_adapter(adapter)
         return instance
 
-    def _generate_extra_args(self, *args):
-        modify_args = ()
-        # process input tensor
-        for item in args:
-            modify_args += (item,)
+    def _set_adapter(self, adapter: BaseKernelAdapter) -> None:
+        """Install a fresh adapter and apply the selected callable wrapper once."""
+        wrapper = self.execution_backend_spec.wrap_callable
+        if wrapper is not None:
+            adapter.func = wrapper(adapter.func, self.prim_func)
+        self.adapter = adapter
+        self.torch_function = adapter.func
 
-        for _k, v in self.adapter.dynamic_symbolic_map.items():
-            modify_args = modify_args + (args[v[0]].shape[v[1]],)
-
-        return modify_args
-
-    def __call__(self, *args: Any, **kwds: Any) -> Any:
-        modify_args = self._generate_extra_args(*args)
+    def __call__(self, *args: _P.args, **kwds: _P.kwargs) -> _T:
         """
         Invokes the compiled function with the given arguments.
 
@@ -198,91 +262,223 @@ class JITKernel:
         Any
             The result of the function execution.
         """
-        return self.torch_function(*modify_args, **kwds)
+        return self.torch_function(*args, **kwds)
 
-    def _compile_and_create_adapter(self, tilelang_func: PrimFunc, out_idx: list[int], workspace_idx: list[int]) -> BaseKernelAdapter:
-        """
-        Compiles the given TileLang PrimFunc using TVM and creates a kernel adapter.
-
-        Parameters
-        ----------
-        tilelang_func : tvm.tir.PrimFunc
-            The TileLang (TVM TIR) function to compile.
-
-        Returns
-        -------
-        BaseKernelAdapter
-            The compiled and ready-to-run kernel adapter.
-        """
-        verbose = self.verbose
-        target = self.target
-        target_host = self.target_host
-
-        execution_backend = self.execution_backend
-        pass_configs = self.pass_configs
-
-        # Compile the function with TVM, optimizing with shared memory lowering.
-        enable_host_codegen = execution_backend == "dlpack"
-        enable_device_compile = execution_backend == "dlpack"
-        with tvm.transform.PassContext(opt_level=3, config=pass_configs):
-            artifact = tilelang.lower(
+    def _compile_and_create_adapter(
+        self,
+        tilelang_func: PrimFunc,
+        out_idx: list[int] | int | None,
+    ) -> BaseKernelAdapter:
+        """Compile one kernel and construct its adapter in one tool session."""
+        if self.execution_backend == "tvm_ffi":
+            # Record out_idx declaratively and, when the execution backend
+            # declares the capability, stamp the callee-allocated ABI decision
+            # that MakePackedAPI and the adapter both honor.  Use a derived
+            # PrimFunc so neither attribute becomes a persistent frontend
+            # attribute on the user's function.
+            tilelang_func, out_idx = prepare_tvm_ffi_callee_allocated_outputs(
                 tilelang_func,
-                target=target,
-                target_host=target_host,
-                platform=self.platform,
+                out_idx,
+                supports_callee_allocated_outputs=self.execution_backend_spec.supports_callee_allocated_outputs,
+            )
+
+        func_name = str(tilelang_func.attrs.get("global_symbol", "<unknown>"))
+        timing_tool = create_pass_timing_tool(self.pass_configs)
+        tools = [timing_tool] if timing_tool is not None else []
+        with compile_pass_instrumentation(name=func_name, tools=tools):
+            target = self.target
+            target_host = self.target_host
+            execution_backend = self.execution_backend
+            pass_configs = dict(self.pass_configs) if self.pass_configs else {}
+
+            compile_flags = self.compile_flags
+            if compile_flags is not None:
+                # Normalize the existing config: it may be absent, a single
+                # string, or an arbitrary sequence.
+                compile_flags_cfg = pass_configs.get(PassConfigKey.TL_DEVICE_COMPILE_FLAGS)
+                if compile_flags_cfg is None:
+                    compile_flags_cfg = []
+                elif isinstance(compile_flags_cfg, str):
+                    compile_flags_cfg = [compile_flags_cfg]
+                else:
+                    compile_flags_cfg = list(compile_flags_cfg)
+                pass_configs[PassConfigKey.TL_DEVICE_COMPILE_FLAGS] = [*compile_flags_cfg, *compile_flags]
+
+            capture_hip_resource_usage = is_hip_target(target)
+            if capture_hip_resource_usage:
+                reset_recorder()
+
+            compile_metadata = {
+                "kernel": func_name,
+                "target": str(target),
+                "target_host": str(target_host) if target_host is not None else None,
+                "backend": execution_backend,
+            }
+            self.artifact = self._compile_artifact(tilelang_func, pass_configs, compile_metadata)
+            adapter = self._create_adapter_from_artifact(
+                tilelang_func,
+                out_idx,
+                self.artifact,
+                pass_configs,
+                compile_metadata,
+            )
+
+            if capture_hip_resource_usage:
+                self._resource_usage = pop_recorded()
+
+            return adapter
+
+    def _compile_artifact(
+        self,
+        tilelang_func: PrimFunc,
+        pass_configs: dict[str, Any],
+        compile_metadata: dict[str, Any],
+    ) -> CompiledArtifact:
+        """Lower one TileLang function into the host/device compilation artifact."""
+        enable_host_codegen = self.execution_backend_spec.enable_host_codegen
+        enable_device_compile = self.execution_backend_spec.enable_device_compile
+
+        base_pass_instruments = []
+        if pass_configs.get(PassConfigKey.TL_ENABLE_DUMP_IR):
+            dump_ir_path = pass_configs.get(PassConfigKey.TL_DUMP_IR_DIR, "./dump_ir")
+            base_pass_instruments.append(tvm.ir.instrument.DumpIR(dump_dir=dump_ir_path))
+
+        pass_instrument_context = f"stage=jit-lower, kernel={compile_metadata['kernel']}, backend={compile_metadata['backend']}"
+        pass_instruments = [
+            *create_pass_instruments(context=pass_instrument_context),
+            *base_pass_instruments,
+        ]
+        with (
+            jit_phase("lower", verbose=self.verbose, **compile_metadata),
+            tvm.transform.PassContext(opt_level=3, config=pass_configs, instruments=pass_instruments),
+            self.target,
+        ):
+            from tilelang.engine.lower import lower_with_context
+
+            artifact = lower_with_context(
+                tilelang_func,
+                self.backend_context,
                 enable_host_codegen=enable_host_codegen,
                 enable_device_compile=enable_device_compile,
             )
 
-        self.artifact = artifact
+        return artifact
 
-        # Check for auto_gm_indices attribute in the compiled PrimFunc and store it if available.
-        self._auto_gm_idx = None
-        target_prim_func = None
-        mod = artifact.device_mod
-        if mod is not None and isinstance(mod, tvm.ir.module.IRModule):
-            for _global_symbol, prim_func in mod.functions_items():
-                if isinstance(prim_func, tvm.tir.PrimFunc):
-                    target_prim_func = prim_func
-                    break
-            if target_prim_func is not None and "auto_gm_indices" in target_prim_func.attrs:
-                self._auto_gm_idx = target_prim_func.attrs["auto_gm_indices"]
-                self._auto_gm_idx = [int(item.value) for item in self._auto_gm_idx]
+    def _create_adapter_from_artifact(
+        self,
+        tilelang_func: PrimFunc,
+        out_idx: list[int] | int | None,
+        artifact: CompiledArtifact,
+        pass_configs: dict[str, Any],
+        compile_metadata: dict[str, Any],
+    ) -> BaseKernelAdapter:
+        """Construct the selected execution adapter from one lowered artifact."""
 
-        # Create an adapter based on the specified execution backend.
-        if execution_backend == "dlpack":
-            # Use TorchDLPackKernelAdapter for interoperability with PyTorch via DLPack.
+        def create_adapter(adapter_cls: Callable[..., BaseKernelAdapter], **kwargs: Any) -> BaseKernelAdapter:
+            with jit_phase("adapter", verbose=self.verbose, **compile_metadata):
+                return adapter_cls(**kwargs)
+
+        execution_backend = self.execution_backend
+        target = self.target
+        compile_flags = self.compile_flags
+
+        if execution_backend == "tvm_ffi":
+            # Use TVMFFIKernelAdapter for interoperability with PyTorch via DLPack.
             # But we need to ensure that the runtime is enabled and the runtime module is not None.
-            assert tvm.runtime.enabled("llvm"), "DLPack backend requires LLVM runtime."
-            assert artifact.rt_mod is not None, "DLPack backend requires a runtime module."
-            adapter = TorchDLPackKernelAdapter(artifact.rt_mod, params=artifact.params, result_idx=out_idx)
-        elif execution_backend == "ctypes":
-            adapter = CtypesKernelAdapter(
+            assert artifact.rt_mod is not None, "tvm_ffi backend requires a runtime module."
+            adapter = create_adapter(
+                TVMFFIKernelAdapter,
                 params=artifact.params,
                 result_idx=out_idx,
                 target=target,
                 func_or_mod=tilelang_func,
                 host_mod=artifact.host_mod,
                 device_mod=artifact.device_mod,
-                kernel_global_source=artifact.kernel_source,
-                verbose=verbose,
+                rt_mod=artifact.rt_mod,
+                device_kernel_source=artifact.kernel_source,
+                verbose=self.verbose,
                 pass_configs=pass_configs,
+                compile_flags=compile_flags,
             )
         elif execution_backend == "cython":
-            adapter = CythonKernelAdapter(
+            a2a3_options = {}
+            if self.backend.name in {"ascend_a2a3", "pto_a2a3"}:
+                a2a3_options = {"workspace_idx": self._workspace_idx_spec, "compile_config": self.compile_config}
+            adapter = create_adapter(
+                CythonKernelAdapter,
                 params=artifact.params,
                 result_idx=out_idx,
-                workspace_idx=workspace_idx,
-                auto_gm_idx=self._auto_gm_idx,
                 target=target,
-                platform=self.platform,
                 func_or_mod=tilelang_func,
                 host_mod=artifact.host_mod,
                 device_mod=artifact.device_mod,
-                kernel_global_source=artifact.kernel_source,
-                verbose=verbose,
+                device_kernel_source=artifact.kernel_source,
+                verbose=self.verbose,
+                pass_configs=self.pass_configs,
+                compile_flags=compile_flags,
+                **a2a3_options,
+            )
+        elif execution_backend == "nvrtc":
+            from tilelang.jit.adapter import NVRTCKernelAdapter
+
+            adapter = create_adapter(
+                NVRTCKernelAdapter,
+                params=artifact.params,
+                result_idx=out_idx,
+                target=target,
+                func_or_mod=tilelang_func,
+                host_mod=artifact.host_mod,
+                device_mod=artifact.device_mod,
+                device_kernel_source=artifact.kernel_source,
+                verbose=self.verbose,
                 pass_configs=pass_configs,
-                compile_flags=self.compile_flags,
+                compile_flags=compile_flags,
+            )
+        elif execution_backend == "torch":
+            assert is_metal_target(target)
+            adapter = create_adapter(
+                MetalKernelAdapter,
+                params=artifact.params,
+                result_idx=out_idx,
+                # target=target,
+                func_or_mod=tilelang_func,
+                # host_mod=artifact.host_mod,
+                device_mod=artifact.device_mod,
+                kernel_global_source=artifact.kernel_source,
+                verbose=self.verbose,
+                # pass_configs=pass_configs,
+                # compile_flags=compile_flags,
+            )
+        elif execution_backend == "cutedsl":
+            assert is_cutedsl_target(target)
+            adapter = create_adapter(
+                CuTeDSLKernelAdapter,
+                params=artifact.params,
+                result_idx=out_idx,
+                target=target,
+                func_or_mod=tilelang_func,
+                host_mod=artifact.host_mod,
+                device_mod=artifact.device_mod,
+                device_kernel_source=artifact.kernel_source,
+                verbose=self.verbose,
+                pass_configs=pass_configs,
+                compile_flags=compile_flags,
+            )
+        elif execution_backend == "pto":
+            from tilelang.jit.adapter.pto import PTOKernelAdapter
+
+            adapter = create_adapter(
+                PTOKernelAdapter,
+                params=artifact.params,
+                result_idx=out_idx,
+                target=target,
+                func_or_mod=tilelang_func,
+                host_mod=artifact.host_mod,
+                device_mod=artifact.device_mod,
+                device_kernel_source=artifact.kernel_source,
+                verbose=self.verbose,
+                pass_configs=pass_configs,
+                compile_flags=compile_flags,
             )
         else:
             # Handle invalid backend.
@@ -294,42 +490,86 @@ class JITKernel:
         self,
         params: list[KernelParam],
         result_idx: list[int] | int,
-        workspace_idx: list[int] | int,
-        auto_gm_idx: list[int] | int,
-        target: str | Target,
-        platform: str,
+        target: TargetLike,
         func_or_mod: PrimFunc | tvm.runtime.Module,
-        kernel_global_source: str,
+        host_kernel_source: CachedTextSource,
+        device_kernel_source: CachedTextSource,
         kernel_lib_path: str,
         pass_configs: dict[str, Any] | None = None,
-        compile_flags: list[str] | str | None = None,
+        compile_flags: list[str] | None = None,
     ) -> BaseKernelAdapter:
         target = self.target
         execution_backend = self.execution_backend
 
         # Create an adapter based on the specified execution backend.
-        if execution_backend == "dlpack":
-            raise ValueError("DLPack backend is not supported for TileLang JIT.")
-        elif execution_backend == "ctypes":
-            adapter = CtypesKernelAdapter.from_database(
+        if execution_backend == "tvm_ffi":
+            adapter = TVMFFIKernelAdapter.from_database(
                 params=params,
                 result_idx=result_idx,
                 target=target,
                 func_or_mod=func_or_mod,
-                kernel_global_source=kernel_global_source,
+                host_kernel_source=host_kernel_source,
+                device_kernel_source=device_kernel_source,
                 kernel_lib_path=kernel_lib_path,
                 pass_configs=pass_configs,
+                compile_flags=compile_flags,
             )
         elif execution_backend == "cython":
+            a2a3_options = {}
+            if self.backend.name in {"ascend_a2a3", "pto_a2a3"}:
+                a2a3_options = {
+                    "workspace_idx": self._workspace_idx_spec,
+                    "auto_gm_idx": getattr(self, "_restore_auto_gm_idx", None),
+                    "compile_config": self.compile_config,
+                    "runtime_func": getattr(self, "_restore_runtime_func", None),
+                }
             adapter = CythonKernelAdapter.from_database(
                 params=params,
                 result_idx=result_idx,
-                workspace_idx=workspace_idx,
-                auto_gm_idx=auto_gm_idx,
                 target=target,
-                platform=platform,
                 func_or_mod=func_or_mod,
-                kernel_global_source=kernel_global_source,
+                host_kernel_source=host_kernel_source,
+                device_kernel_source=device_kernel_source,
+                kernel_lib_path=kernel_lib_path,
+                pass_configs=pass_configs,
+                **a2a3_options,
+            )
+        elif execution_backend == "nvrtc":
+            from tilelang.jit.adapter import NVRTCKernelAdapter
+
+            adapter = NVRTCKernelAdapter.from_database(
+                params=params,
+                result_idx=result_idx,
+                target=target,
+                func_or_mod=func_or_mod,
+                host_kernel_source=host_kernel_source,
+                device_kernel_source=device_kernel_source,
+                kernel_lib_path=kernel_lib_path,
+                pass_configs=pass_configs,
+                compile_flags=compile_flags,
+            )
+        elif execution_backend == "cutedsl":
+            adapter = CuTeDSLKernelAdapter.from_database(
+                params=params,
+                result_idx=result_idx,
+                target=target,
+                func_or_mod=func_or_mod,
+                host_kernel_source=host_kernel_source,
+                device_kernel_source=device_kernel_source,
+                kernel_lib_path=kernel_lib_path,
+                pass_configs=pass_configs,
+                compile_flags=compile_flags,
+            )
+        elif execution_backend == "pto":
+            from tilelang.jit.adapter.pto import PTOKernelAdapter
+
+            adapter = PTOKernelAdapter.from_database(
+                params=params,
+                result_idx=result_idx,
+                target=target,
+                func_or_mod=func_or_mod,
+                host_kernel_source=host_kernel_source,
+                device_kernel_source=device_kernel_source,
                 kernel_lib_path=kernel_lib_path,
                 pass_configs=pass_configs,
                 compile_flags=compile_flags,
@@ -347,7 +587,7 @@ class JITKernel:
 
         Parameters
         ----------
-        tilelang_func : tvm.tir.PrimFunc
+        tilelang_func : tvm.tirx.PrimFunc
             The TileLang (TVM TIR) function to compile.
         **kwargs : dict
             Additional keyword arguments to pass to the constructor.
@@ -373,9 +613,12 @@ class JITKernel:
         Profiler
             A Profiler instance for benchmarking the runtime module.
         """
-        return Profiler(self.params, self.out_idx, self.workspace_idx, tensor_supply_type).with_default_adapter(self.adapter)
+        profiler = Profiler(self.params, self.out_idx, tensor_supply_type).with_default_adapter(self.adapter)
+        if getattr(getattr(self, "backend", None), "name", None) in {"ascend_a2a3", "pto_a2a3"}:
+            profiler.with_workspace_idx(self.workspace_idx)
+        return profiler
 
-    def get_kernel_source(self) -> str:
+    def get_kernel_source(self, kernel_only: bool = True) -> str:
         """
         Returns the source code of the compiled kernel function.
 
@@ -384,18 +627,122 @@ class JITKernel:
         str
             The source code of the compiled kernel function.
         """
-        if self.execution_backend in {"ctypes", "cython"}:
-            return self.adapter.get_kernel_source()
+        if self.execution_backend in {"cython", "nvrtc", "tvm_ffi", "cutedsl", "pto"}:
+            return self.adapter.get_kernel_source(kernel_only=kernel_only)
         return self.artifact.kernel_source
 
     def get_host_source(self) -> str:
         """
         Returns the source code of the host function.
         """
+        if self.execution_backend in {"cython", "nvrtc", "tvm_ffi", "cutedsl", "pto"}:
+            return self.adapter.get_host_source()
+        assert self.artifact.host_mod is not None, "host_mod is not available"
         return str(self.artifact.host_mod)
 
     def run_once(self, func: Callable | None = None) -> None:
         return self.get_profiler().run_once(func)
+
+    def show_source(self, which: Literal["kernel", "host", "both"] = "kernel") -> None:
+        """
+        Print generated source code to stdout.
+
+        Parameters
+        ----------
+        which : Literal["kernel", "host", "both"], optional
+            Select which source to print. Defaults to "kernel".
+
+        Examples
+        --------
+        >>> jit_kernel.show_source()            # print kernel source
+        >>> jit_kernel.show_source("host")      # print host source
+        >>> jit_kernel.show_source("both")      # print both sources
+        """
+        try:
+            if which == "kernel":
+                src = self.get_kernel_source()
+                print(src)
+            elif which == "host":
+                src = self.get_host_source()
+                # Host is generally C/C++
+                print(src)
+            elif which == "both":
+                print("===== Kernel Source =====")
+                ksrc = self.get_kernel_source()
+                print(ksrc)
+                print("===== Host Source =====")
+                hsrc = self.get_host_source()
+                print(hsrc)
+            else:
+                raise ValueError(f"Unknown option for 'which': {which}")
+        except Exception as e:
+            logger.error(f"Failed to show source code: {e}")
+
+    def export_sources(self, kernel_path: str | None = None, host_path: str | None = None) -> None:
+        """
+        Export generated source code to files.
+
+        Parameters
+        ----------
+        kernel_path : Optional[str]
+            Destination file path to write the kernel source. If None, skips writing kernel code.
+        host_path : Optional[str]
+            Destination file path to write the host source. If None, skips writing host code.
+
+        Examples
+        --------
+        >>> jit_kernel.export_sources(kernel_path="/tmp/kernel.cu")
+        >>> jit_kernel.export_sources(host_path="/tmp/host.cc")
+        >>> jit_kernel.export_sources(
+        ...     kernel_path="/tmp/kernel.cu",
+        ...     host_path="/tmp/host.cc",
+        ... )
+        """
+        if kernel_path is None and host_path is None:
+            raise ValueError("At least one of kernel_path or host_path must be provided.")
+        try:
+            if kernel_path is not None:
+                dir_path = os.path.dirname(kernel_path)
+                if dir_path:
+                    os.makedirs(dir_path, exist_ok=True)
+                with open(kernel_path, "w") as f:
+                    f.write(self.get_kernel_source())
+            if host_path is not None:
+                dir_path = os.path.dirname(host_path)
+                if dir_path:
+                    os.makedirs(dir_path, exist_ok=True)
+                with open(host_path, "w") as f:
+                    f.write(self.get_host_source())
+        except Exception as e:
+            logger.error(f"Failed to export sources: {e}")
+
+    # Backward compatibility alias (deprecated)
+    def print_source_code(self, which: Literal["kernel", "host", "both"] = "kernel", file: str | None = None) -> None:
+        """
+        Deprecated: use show_source() or export_sources() instead.
+
+        Parameters
+        ----------
+        which : Literal["kernel", "host", "both"], optional
+            Kept for backward compatibility with printing behavior.
+        file : Optional[str]
+            If provided, behaves like export_sources(kernel_path=file).
+
+        Examples
+        --------
+        >>> # New API (preferred)
+        >>> jit_kernel.show_source("both")
+        >>> jit_kernel.export_sources(kernel_path="/tmp/kernel.cu")
+
+        >>> # Old API (still works but deprecated)
+        >>> jit_kernel.print_source_code(file="/tmp/kernel.cu")
+        """
+        logger.warning("print_source_code is deprecated; use show_source() or export_sources() instead.")
+        if file is not None:
+            # Historical behavior wrote only kernel source when file provided
+            self.export_sources(kernel_path=file)
+        else:
+            self.show_source(which=which)
 
     def update_tuner_result(self, latency: float, config: dict[str, Any], ref_latency: float) -> JITKernel:
         """
@@ -447,11 +794,11 @@ class JITKernel:
 
     @property
     def workspace_idx(self) -> list[int]:
-        return self.adapter.workspace_idx
+        return getattr(self.adapter, "workspace_idx", [])
 
     @property
     def auto_gm_idx(self) -> list[int]:
-        return self.adapter.auto_gm_idx
+        return getattr(self.adapter, "auto_gm_idx", [])
 
     @property
     def params(self) -> list[KernelParam]:
@@ -459,11 +806,52 @@ class JITKernel:
 
     @property
     def kernel_source(self) -> str:
-        return self.artifact.kernel_source if self.artifact else self.adapter.kernel_global_source
+        if self.artifact:
+            return self.artifact.kernel_source
+        source = getattr(self.adapter, "kernel_global_source", None)
+        if source is not None:
+            return source
+        return self.adapter.get_kernel_source(kernel_only=True) or ""
 
     @property
     def host_source(self) -> str:
-        return str(self.artifact.host_mod) if self.artifact else ""
+        if self.artifact:
+            return str(self.artifact.host_mod)
+        get_host_source = getattr(self.adapter, "get_host_source", None)
+        if get_host_source is None:
+            return ""
+        return get_host_source() or ""
+
+    @property
+    def resource_usage(self) -> dict[str, Any]:
+        """HIP only now"""
+        return getattr(self, "_resource_usage", {}) or {}
+
+    def _primary_resource_usage(self):
+        usage = self.resource_usage
+        if not usage:
+            return None
+        gsym = None
+        if self.prim_func is not None and self.prim_func.attrs is not None:
+            gsym = self.prim_func.attrs.get("global_symbol")
+        if gsym is not None and str(gsym) in usage:
+            return usage[str(gsym)]
+        return next(iter(usage.values()))
+
+    @property
+    def n_regs(self) -> int | None:
+        info = self._primary_resource_usage()
+        return info.n_regs if info is not None else None
+
+    @property
+    def n_spills(self) -> int | None:
+        info = self._primary_resource_usage()
+        return info.n_spills if info is not None else None
+
+    @property
+    def n_max_threads(self) -> int | None:
+        info = self._primary_resource_usage()
+        return info.n_max_threads if info is not None else None
 
     def export_library(self, kernel_file: str) -> None:
         """
@@ -481,5 +869,145 @@ class JITKernel:
         # rt_module: use export_library to export
         # rt_params: use cloudpickle to serialize
 
-        # Export the compiled kernel function to a shared library file.
-        self.rt_module.export_library(kernel_file)
+        runtime_module = self.artifact.rt_mod if self.artifact is not None else None
+        cached_library = getattr(self.adapter, "libpath", None) if self.execution_backend == "tvm_ffi" else None
+        if runtime_module is None and cached_library is None:
+            raise AttributeError(
+                'Runtime module is not available. Please compile the kernel with `execution_backend="tvm_ffi"` before exporting.'
+            )
+
+        dir_path = os.path.dirname(kernel_file)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+
+        if runtime_module is not None:
+            runtime_module.export_library(kernel_file)
+        elif not (os.path.exists(kernel_file) and os.path.samefile(cached_library, kernel_file)):
+            shutil.copyfile(cached_library, kernel_file)
+        logger.info(f"Kernel library exported to {os.path.abspath(kernel_file)}")
+
+    def _get_ptx(self, verbose: bool | None = None) -> str:
+        """
+        Compile and return PTX for the current kernel (CUDA only).
+
+        Parameters
+        ----------
+        verbose : Optional[bool]
+            Whether to enable verbose NVRTC logs. Defaults to self.verbose.
+
+        Returns
+        -------
+        str
+            The compiled PTX text.
+        """
+        if not is_cuda_target(self.target):
+            raise ValueError("PTX is only available for CUDA targets.")
+        # Prefer NVCC for PTX generation via contrib helper
+        code = self.get_kernel_source()
+        if verbose is None:
+            verbose = self.verbose
+        # Ensure target is set so nvcc picks correct arch via Target.current()
+        with self.target:
+            return tl_nvcc.get_ptx_from_source(code, compile_flags=self.compile_flags, verbose=verbose)
+
+    def show_ptx(self) -> None:
+        """
+        Print compiled PTX for the kernel (CUDA only).
+
+        Examples
+        --------
+        >>> jit_kernel.show_ptx()
+        """
+        try:
+            ptx = self._get_ptx()
+            print(ptx)
+        except Exception as e:
+            logger.error(f"Failed to show PTX: {e}")
+
+    def export_ptx(self, path: str) -> None:
+        """
+        Export compiled PTX to a file (CUDA only).
+
+        Parameters
+        ----------
+        path : str
+            Destination file path to write PTX.
+
+        Examples
+        --------
+        >>> jit_kernel.export_ptx("/tmp/kernel.ptx")
+        """
+        if not path:
+            raise ValueError("path must be provided to export PTX")
+        try:
+            ptx = self._get_ptx()
+            dir_path = os.path.dirname(path)
+            if dir_path:
+                os.makedirs(dir_path, exist_ok=True)
+            with open(path, "w") as f:
+                f.write(ptx)
+            logger.info(f"PTX saved to {os.path.abspath(path)}")
+        except Exception as e:
+            logger.error(f"Failed to export PTX: {e}")
+
+    def _get_sass(self, verbose: bool | None = None) -> str:
+        """
+        Compile and return SASS for the current kernel (CUDA only).
+
+        Parameters
+        ----------
+        verbose : Optional[bool]
+            Whether to enable verbose tool logs. Defaults to self.verbose.
+
+        Returns
+        -------
+        str
+            The disassembled SASS text.
+        """
+        if not is_cuda_target(self.target):
+            raise ValueError("SASS is only available for CUDA targets.")
+        code = self.get_kernel_source()
+        if verbose is None:
+            verbose = self.verbose
+        with self.target:
+            return tl_nvcc.get_sass_from_source(code, compile_flags=self.compile_flags, verbose=verbose)
+
+    def show_sass(self) -> None:
+        """
+        Print disassembled SASS for the kernel (CUDA only).
+
+        Examples
+        --------
+        >>> jit_kernel.show_sass()
+        """
+        try:
+            sass = self._get_sass()
+            print(sass)
+        except Exception as e:
+            logger.error(f"Failed to show SASS: {e}")
+
+    def export_sass(self, path: str) -> None:
+        """
+        Export disassembled SASS to a file (CUDA only).
+
+        Parameters
+        ----------
+        path : str
+            Destination file path to write SASS.
+
+        Examples
+        --------
+        >>> jit_kernel.export_sass("/tmp/kernel.sass")
+        """
+        if not path:
+            raise ValueError("path must be provided to export SASS")
+        try:
+            sass = self._get_sass()
+            dir_path = os.path.dirname(path)
+            if dir_path:
+                os.makedirs(dir_path, exist_ok=True)
+            with open(path, "w") as f:
+                f.write(sass)
+            logger.info(f"SASS saved to {os.path.abspath(path)}")
+        except Exception as e:
+            logger.error(f"Failed to export SASS: {e}")

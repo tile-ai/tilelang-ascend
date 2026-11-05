@@ -25,7 +25,7 @@ on:
       full_build:                          # 是否全量编译
         description: 'Force full build (no cache)'
         required: false
-        default: false        
+        default: false
         type: boolean
 
   schedule:
@@ -46,9 +46,9 @@ concurrency:
   # PR 场景（含 pull_request 和 /re-test）：统一按 PR 号分组，新运行自动取消旧运行
   # 定时任务按分支分组避免积压；手动场景退化为 github.run_id（每次唯一），互不干扰
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number || (github.event_name == 'schedule' && github.ref_name) || github.run_id }}
-  # 同一组中有新运行时，自动取消旧的正在运行的 workflow 
+  # 同一组中有新运行时，自动取消旧的正在运行的 workflow
   cancel-in-progress: true
-  
+
 jobs:
   check_changes:
     name: Check PR Status and Changes
@@ -128,7 +128,7 @@ jobs:
               comment_id: context.payload.comment.id,
               content: 'rocket'
             });
-            
+
             // Find original workflow run by head_sha
             // Use numeric workflow ID (261026938) to ensure only ci_cd.yml runs are returned
             // Using filename 'ci_cd.yml' in listWorkflowRunsForRepo may return runs from other workflows
@@ -139,7 +139,7 @@ jobs:
               head_sha: '${{ steps.pr_info.outputs.head_sha }}',
               event: 'pull_request'
             });
-            
+
             if (runs.data.workflow_runs.length === 0) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
@@ -149,10 +149,10 @@ jobs:
               });
               return;
             }
-            
+
             const originalRun = runs.data.workflow_runs[0];
             const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${originalRun.id}`;
-            
+
             // Rerun failed jobs
             try {
               await github.rest.actions.reRunWorkflowFailedJobs({
@@ -160,7 +160,7 @@ jobs:
                 repo: context.repo.repo,
                 run_id: originalRun.id
               });
-              
+
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -193,7 +193,7 @@ jobs:
           changed_files=$(git diff --name-only origin/$BASE_REF HEAD)
           echo "Changed files:"
           echo "$changed_files"
-          
+
           run_examples=false
           run_pytest_only=false
           should_skip=true
@@ -207,7 +207,7 @@ jobs:
           declare -A source_to_test=()
           declare -A test_to_test=()
           # Collected separately from pytest_files_array: that one is for
-          # testing/python/ and gets collapsed by rules further down. Every rule
+          # testing/ascend_a2a3/python/ and gets collapsed by rules further down. Every rule
           # that decides on a full run clears these along with the rest, or what
           # was collected before it would be written back afterwards and narrow
           # the full run to the directory of whichever operator came first.
@@ -228,19 +228,19 @@ jobs:
               echo "Agents skill file: $file - will skip"
               continue
             fi
-            
+
             # 排除文档/图片文件
             if [[ "$file" =~ \.md$ ]] || [[ "$file" =~ \.png$ ]]; then
               echo "Doc/image file: $file - will skip"
               continue
             fi
-            
+
             # testing/ 修改 → 收集 pytest 文件/目录
-            if [[ "$file" =~ ^testing/python/ ]]; then
+            if [[ "$file" =~ ^testing/ascend_a2a3/python/ ]]; then
               if [[ "$file" =~ \.py$ ]]; then
                 pytest_files_array+=("$file")
                 # 提取子目录
-                if [[ "$file" =~ ^testing/python/([^/]+)/ ]]; then
+                if [[ "$file" =~ ^testing/ascend_a2a3/python/([^/]+)/ ]]; then
                   pytest_subdir="${BASH_REMATCH[1]}"
                   if [[ ! " ${pytest_dirs_array[*]} " =~ " $pytest_subdir " ]]; then
                     pytest_dirs_array+=("$pytest_subdir")
@@ -253,16 +253,16 @@ jobs:
               should_skip=false
               continue
             fi
-            
+
             # 核心文件修改 → 全量 examples + pytest
             # 排除文档/图片文件
             if [[ "$file" =~ \.md$ ]] || [[ "$file" =~ \.png$ ]]; then
               echo "Doc/image file: $file - will skip"
               continue
             fi
-            
+
             if [[ "$file" =~ ^tilelang/ ]] || [[ "$file" =~ ^src/ ]] || \
-               [[ "$file" =~ CMakeLists\.txt ]] || [[ "$file" =~ requirements ]] || [[ "$file" =~ install_ascend\.sh ]]; then
+               [[ "$file" =~ CMakeLists\.txt ]] || [[ "$file" =~ requirements ]] || [[ "$file" =~ pyproject\.toml ]]; then
               echo "Core file modified: $file - will run full examples + pytest"
               run_examples=true
               run_pytest_only=false
@@ -276,11 +276,11 @@ jobs:
               routed_experiment_dirs=()
               break
             fi
-            
+
             if [[ -n "${source_to_test[$file]:-}" ]]; then
               mapped_test="${source_to_test[$file]}"
               routed_tests["$mapped_test"]=1
-              if [[ "$file" =~ ^examples/([^/]+)/ ]]; then
+              if [[ "$file" =~ ^examples/ascend_a2a3/([^/]+)/ ]]; then
                 routed_example_dirs+=("${BASH_REMATCH[1]}")
               elif [[ "$file" =~ ^examples_experiment/([^/]+)/ ]]; then
                 routed_experiment_dirs+=("${BASH_REMATCH[1]}")
@@ -292,7 +292,7 @@ jobs:
 
             if [[ -n "${test_to_test[$file]:-}" ]]; then
               routed_tests["$file"]=1
-              if [[ "$file" =~ ^examples/([^/]+)/ ]]; then
+              if [[ "$file" =~ ^examples/ascend_a2a3/([^/]+)/ ]]; then
                 routed_example_dirs+=("${BASH_REMATCH[1]}")
               elif [[ "$file" =~ ^examples_experiment/([^/]+)/ ]]; then
                 routed_experiment_dirs+=("${BASH_REMATCH[1]}")
@@ -303,7 +303,7 @@ jobs:
             fi
 
             # examples 文件 → 增量 examples + pytest
-            if [[ "$file" =~ ^examples/([^/]+)/ ]]; then
+            if [[ "$file" =~ ^examples/ascend_a2a3/([^/]+)/ ]]; then
               test_dir="${BASH_REMATCH[1]}"
               # 排除非测试目录
               if [[ "$test_dir" != "dispatch_combine" ]] && [[ "$test_dir" != "shmem" ]]; then
@@ -353,7 +353,7 @@ jobs:
             fi
 
             # examples 根目录文件（如 bench_test.sh）→ 判断是否需要测试
-            if [[ "$file" =~ ^examples/[^/]+$ ]]; then
+            if [[ "$file" =~ ^examples/ascend_a2a3/[^/]+$ ]]; then
               # 排除文档文件
               if [[ "$file" =~ \.md$ ]] || [[ "$file" =~ \.png$ ]] || \
                  [[ "$file" =~ \.gitignore ]] || [[ "$file" =~ LICENSE ]]; then
@@ -374,7 +374,7 @@ jobs:
               routed_experiment_dirs=()
               break
             fi
-            
+
             # 其他文件（非 docs/images）-> 需要测试
             if [[ ! "$file" =~ \.md$ ]] && [[ ! "$file" =~ \.png$ ]] && \
                [[ ! "$file" =~ ^docs/ ]] && [[ ! "$file" =~ ^images/ ]] && \
@@ -395,13 +395,13 @@ jobs:
               break
             fi
           done
-          
+
           # 决定 pytest 测试范围
           pytest_files=""
           if [[ ${#pytest_files_array[@]} -gt 0 ]]; then
             # 如果所有修改在同一个子目录，只跑该子目录
             if [[ ${#pytest_dirs_array[@]} -eq 1 ]]; then
-              pytest_files="testing/python/${pytest_dirs_array[0]}/"
+              pytest_files="testing/ascend_a2a3/python/${pytest_dirs_array[0]}/"
               echo "All testing files in same subdir: ${pytest_dirs_array[0]}"
             elif [[ ${#pytest_files_array[@]} -le 3 ]]; then
               # 少量文件（≤3），只跑具体文件
@@ -413,12 +413,12 @@ jobs:
               echo "Many testing files scattered, will run full pytest"
             fi
           fi
-          
+
           test_dirs="${test_dirs_array[*]}"
           experiment_dirs="${experiment_dirs_array[*]}"
           # Decided after the collapsing above, and overriding it: those two rules
           # (one subdirectory replaces the list, more than three empties it) exist
-          # for testing/python/ and would drop these entries. Nothing else queued
+          # for testing/ascend_a2a3/python/ and would drop these entries. Nothing else queued
           # means the whole change is migrated tests, so run exactly those.
           if [[ ${#routed_tests[@]} -gt 0 ]]; then
             if [[ ${#pytest_files_array[@]} -eq 0 ]] \
@@ -455,7 +455,7 @@ jobs:
           echo "experiment_dirs=${experiment_dirs}" >> $GITHUB_OUTPUT
           echo "pytest_files=${pytest_files}" >> $GITHUB_OUTPUT
           echo "should_skip=${should_skip}" >> $GITHUB_OUTPUT
-          
+
           if [[ "$run_pytest_only" == "true" ]]; then
             if [[ -n "$pytest_files" ]]; then
               echo "Will run incremental pytest for: $pytest_files"
@@ -504,9 +504,9 @@ jobs:
           BASE_REF="${{ github.base_ref }}"
           git fetch origin $BASE_REF
           changed_files=$(git diff --name-only origin/$BASE_REF HEAD)
-          
+
           skip_pytest=true
-          
+
           for file in $changed_files; do
             if [[ "$file" =~ ^\.agents/ ]]; then
               echo "Agents skill file: $file - ignored for pytest skip check"
@@ -516,7 +516,7 @@ jobs:
               echo "Doc/image file: $file - ignored for pytest skip check"
               continue
             fi
-            if [[ ! "$file" =~ ^examples/ ]] && [[ ! "$file" =~ ^examples_experiment/ ]]; then
+            if [[ ! "$file" =~ ^examples/ascend_a2a3/ ]] && [[ ! "$file" =~ ^examples_experiment/ ]]; then
               echo "File outside examples/ and examples_experiment/: $file"
               skip_pytest=false
               break
@@ -527,7 +527,7 @@ jobs:
               break
             fi
           done
-          
+
           echo "skip_pytest=${skip_pytest}" >> $GITHUB_OUTPUT
           if [ "$skip_pytest" = true ]; then
             echo "Will skip pytest: only .py/.md/.png files in examples/ or examples_experiment/ modified"
@@ -542,8 +542,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: build-cache/
-          key: tilelang-build-${{ runner.name }}-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
-      
+          key: tilelang-a2a3-modern-build-v1-${{ runner.name }}-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'pyproject.toml', 'requirements*.txt', 'cmake/**', '.gitmodules', 'version_provider.py', '.github/workflows/ci_cd.yml') }}
+
       # 全量编译，清理所有残留编译产物
       - name: Clean build artifacts for full build
         if: env.FULL_BUILD == 'true'
@@ -566,9 +566,9 @@ jobs:
             echo "🔄 Cache miss. Performing clean build."
             INCREMENTAL_FLAG=""
           fi
-          
+
           SKIP_PYTEST_VALUE="${{ steps.check_skip_pytest.outputs.skip_pytest }}"
-          
+
           # 确定 TEST_DIRS 参数和测试策略
           # schedule/workflow_dispatch 事件：全量测试
           # PR 事件：根据 check_changes outputs
@@ -654,37 +654,42 @@ jobs:
               set -e
 
               # 如果有缓存，复制到 build 目录
-              if [ -d build-cache ] && [ \"\$(ls -A build-cache)\" ]; then
-                echo \"Copy build cache...\"
+              if [ \"\$INCREMENTAL_FLAG\" = \"--enable-incremental\" ] && [ -d build-cache ] && [ \"\$(ls -A build-cache)\" ]; then
                 mkdir -p build
-                cp -ra build-cache/* build/ 
+                cp -ra build-cache/. build/
+              else
+                rm -rf build
               fi
 
               # 0. 将所有子模块重置到主仓库记录的版本，清除上次运行残留的修改（例如 TVM 补丁）
               #    actions/checkout 只清理主仓库，self-hosted runner 上的子模块工作区会跨运行保留
               git submodule update --init --recursive --force
               git submodule foreach --recursive 'git reset -q --hard && git clean -qffdx'
-              # 在干净的子模块上应用 TVM 补丁；补丁无法应用时由 set -e 中止构建
-              bash 3rdparty/patches/apply_tvm_patches.sh
 
               # 1. 增量编译项目
-              bash install_ascend.sh \$INCREMENTAL_FLAG
+              python -m pip install -r requirements-dev.txt
+              python -m pip install -r requirements.txt pytest pytest-xdist pytest-forked pytest-cov coverage pandas matplotlib PyYAML pybind11 decorator absl-py attrs scipy tornado
+              BUILD_JOBS=\$(( \$(nproc) / 2 ))
+              if [ \"\$BUILD_JOBS\" -lt 1 ]; then BUILD_JOBS=1; fi
+              export CMAKE_BUILD_PARALLEL_LEVEL=\"\$BUILD_JOBS\"
+              python -m pip install --no-build-isolation --no-deps -e . -Ccmake.define.USE_ASCEND=ON -Ccmake.define.USE_CUDA=OFF -Ccmake.define.USE_ROCM=OFF -Ccmake.define.USE_METAL=OFF -Ccmake.define.USE_LLVM=OFF
+
               # 保存编译产物
-              if [ -d \"build\" ]; then
-                echo \"Saving build artifacts...\"
-                rm -rf build-cache/*
-                cp -ra build/* build-cache/
-              fi
+              rm -rf build-cache
+              mkdir -p build-cache
+              cp -ra build/. build-cache/
 
               # 2. 加载环境变量
               echo 'Sourcing environment...'
               source set_env.sh
-              echo 'TILELANG_PATH='\$PWD >> \$GITHUB_ENV
+              echo \"TILELANG_PATH=\$PWD\" >> \"\$GITHUB_ENV\"
 
               # 3. 运行测试用例
               cd examples
-              chmod +x bench_test.sh
-              
+              chmod +x ascend_a2a3/bench_test.sh
+              mkdir -p test_results
+              export TA_CI_ARTIFACT_DIR=\$(mktemp -d \"\$PWD/test_results/run.XXXXXXXX\")
+
               # 构建 pytest marker 过滤参数
               PYTEST_MARKER_ARGS=()
               if [ -n \"\$PYTEST_MARKERS\" ]; then
@@ -703,11 +708,11 @@ jobs:
                     PYTEST_TARGETS+=(\"../\$pytest_target\")
                   done
                   set +e
-                  pytest --forked \"\${PYTEST_TARGETS[@]}\" -v -n 4 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee test_output.log
+                  pytest --forked -c ../testing/ascend_a2a3/pytest.ini \"\${PYTEST_TARGETS[@]}\" -v -n 4 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee test_output.log
                 else
                   echo 'Running full pytest (testing/ modified)'
                   set +e
-                  pytest --forked ../testing/python/ -v -n 8 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee test_output.log
+                  pytest --forked -c ../testing/ascend_a2a3/pytest.ini ../testing/ascend_a2a3/python/ -v -n 8 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee test_output.log
                 fi
                 TEST_EXIT_CODE=\${PIPESTATUS[0]}
                 set -e
@@ -716,12 +721,12 @@ jobs:
                 echo 'Running benchmark tests with args: '\$TEST_DIRS_ARG' '\$EXPERIMENT_DIRS_ARG
                 set +e
                 if [ \"\$SKIP_PYTEST\" = true ]; then
-                  ./bench_test.sh --skip-pytest \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG 2>&1 | tee test_output.log
+                  ./ascend_a2a3/bench_test.sh --skip-pytest \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG 2>&1 | tee test_output.log
                 else
                   if [ -n \"\$PYTEST_MARKERS\" ]; then
-                    ./bench_test.sh --pytest-markers \"\$PYTEST_MARKERS\" \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG 2>&1 | tee test_output.log
+                    ./ascend_a2a3/bench_test.sh --pytest-markers \"\$PYTEST_MARKERS\" \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG 2>&1 | tee test_output.log
                   else
-                    ./bench_test.sh \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG 2>&1 | tee test_output.log
+                    ./ascend_a2a3/bench_test.sh \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG 2>&1 | tee test_output.log
                   fi
                 fi
                 TEST_EXIT_CODE=\${PIPESTATUS[0]}
@@ -740,7 +745,7 @@ jobs:
                 done < <(python ../scripts/ci/resolve_operator_tests.py list-tests \$TEST_DIRS_ARG \$EXPERIMENT_DIRS_ARG)
                 if [ \${#OPERATOR_TESTS[@]} -gt 0 ]; then
                   echo 'Running operator tests: '\${OPERATOR_TESTS[*]}
-                  pytest --forked \"\${OPERATOR_TESTS[@]}\" -v -n 8 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee -a test_output.log
+                  pytest --forked -c ../testing/ascend_a2a3/pytest.ini \"\${OPERATOR_TESTS[@]}\" -v -n 8 \"\${PYTEST_MARKER_ARGS[@]}\" 2>&1 | tee -a test_output.log
                   OPERATOR_EXIT_CODE=\${PIPESTATUS[0]}
                   if [ \"\$TEST_EXIT_CODE\" -eq 0 ]; then
                     TEST_EXIT_CODE=\$OPERATOR_EXIT_CODE
@@ -751,7 +756,7 @@ jobs:
 
               echo 'Test exit code: '\$TEST_EXIT_CODE
               echo \"test_exit_code=\$TEST_EXIT_CODE\" >> \$GITHUB_OUTPUT
-              
+
               # 如果测试失败，让脚本退出码非0
               if [ \"\$TEST_EXIT_CODE\" -ne 0 ]; then
                 exit 1
@@ -761,7 +766,7 @@ jobs:
       - name: Delete old cache for overwrite
         if: always() && env.FULL_BUILD == 'true'
         run: |
-          KEY="tilelang-build-${{ runner.name }}-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}"
+          KEY="tilelang-a2a3-modern-build-v1-${{ runner.name }}-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'pyproject.toml', 'requirements*.txt', 'cmake/**', '.gitmodules', 'version_provider.py', '.github/workflows/ci_cd.yml') }}"
           echo "🗑️ Deleting old cache to allow overwrite: $KEY"
           curl -s -L \
             -X DELETE \
@@ -771,7 +776,7 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/actions/caches?key=$KEY&ref=${{ github.ref }}"
           echo "✅ Old cache deleted (if existed)"
         continue-on-error: true
-      
+
       # 全量编 | 增量编但无缓存，需要保存缓存
       - name: Save build cache
         if: always() && (env.FULL_BUILD == 'true' || steps.cache-build.outputs.cache-hit == 'false')
@@ -779,18 +784,18 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: build-cache/
-          key: tilelang-build-${{ runner.name }}-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'requirements.txt', 'install_ascend.sh') }}
-          
+          key: tilelang-a2a3-modern-build-v1-${{ runner.name }}-${{ github.base_ref || github.ref_name }}-${{ hashFiles('CMakeLists.txt', 'pyproject.toml', 'requirements*.txt', 'cmake/**', '.gitmodules', 'version_provider.py', '.github/workflows/ci_cd.yml') }}
+
       - name: Check pass rate
         id: check_results
         run: |
           echo "Checking test results..."
-          
+
           cd examples
           if [ -f test_output.log ]; then
             # 提取失败测试列表
             FAILED_TESTS=$(grep -E "^\[FAILED\]" test_output.log || echo "")
-            
+
             # 检查是否是 pytest only 的输出
             if grep -q "pytest" test_output.log && ! grep -q "Pass rate:" test_output.log; then
               # pytest only 模式
@@ -800,11 +805,11 @@ jobs:
                 TOTAL=$((PASSED + FAILED))
                 echo "pytest results: ${PASSED} passed, ${FAILED} failed"
                 echo "pass_rate=${PASSED}" >> $GITHUB_OUTPUT
-                
+
                 # 构建摘要
                 SUMMARY="Total: ${TOTAL} | Passed: ${PASSED} | Failed: ${FAILED}"
                 echo "test_summary=${SUMMARY}" >> $GITHUB_OUTPUT
-                
+
                 if [ "$FAILED" -eq 0 ]; then
                   echo "✅ All pytest tests passed"
                   echo "test_status=passed" >> $GITHUB_OUTPUT
@@ -847,10 +852,10 @@ jobs:
               # 使用 tail -1 提取最后一次 Pass rate（合并后的结果）
               PASS_RATE_LINE=$(grep -i "Pass rate:" test_output.log | tail -1 || echo "")
               FINAL_SUMMARY=$(grep -i "Final Execution Summary" -A 4 test_output.log || echo "")
-              
-              if [ -n "$PASS_RATE_LINE" ]; then             
+
+              if [ -n "$PASS_RATE_LINE" ]; then
                 PASS_RATE=$(echo "$PASS_RATE_LINE" | grep -o '[0-9]*%' | tr -d '%')
-                
+
                 # 从 Final Execution Summary 提取合并后的统计数据
                 if [ -n "$FINAL_SUMMARY" ]; then
                   TOTAL=$(echo "$FINAL_SUMMARY" | grep -o "Total: [0-9]*" | tail -1 | grep -o "[0-9]*" || echo "0")
@@ -863,14 +868,14 @@ jobs:
                   PASSED=$(echo "$TOTAL_LINE" | grep -o "Passed: [0-9]*" | grep -o "[0-9]*" || echo "0")
                   FAILED=$(echo "$TOTAL_LINE" | grep -o "Failed: [0-9]*" | grep -o "[0-9]*" || echo "0")
                 fi
-                
+
                 echo "Found Pass rate: ${PASS_RATE}%"
                 echo "pass_rate=${PASS_RATE}" >> $GITHUB_OUTPUT
-                
+
                 # 构建摘要
                 SUMMARY="Total: ${TOTAL} | Passed: ${PASSED} | Failed: ${FAILED} (Pass rate: ${PASS_RATE}%)"
                 echo "test_summary=${SUMMARY}" >> $GITHUB_OUTPUT
-                
+
                 if [ "$PASS_RATE" = "100" ]; then
                   echo "✅ All tests passed (Pass rate: 100%)"
                   echo "test_status=passed" >> $GITHUB_OUTPUT
@@ -891,7 +896,7 @@ jobs:
                 echo "test_status=error" >> $GITHUB_OUTPUT
                 exit 1
               fi
-              
+
               if [ -n "$FINAL_SUMMARY" ]; then
                 echo "Final Execution Summary:"
                 echo "$FINAL_SUMMARY"
@@ -904,7 +909,7 @@ jobs:
             echo "test_status=error" >> $GITHUB_OUTPUT
             exit 1
           fi
-      
+
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()
@@ -914,6 +919,10 @@ jobs:
             examples/test_results/
             examples/*.log
             examples/*.json
+            !examples/test_results/**/*.so
+            !examples/test_results/**/*.o
+            !examples/test_results/**/*.a
+            !examples/test_results/**/*.pyc
           retention-days: 30
 
   notify:
@@ -934,8 +943,8 @@ jobs:
       - name: Extract failed tests
         id: extract_failed
         run: |
-          if [ -f test-results/examples/test_output.log ]; then
-            FAILED_TESTS=$(grep -E "^\[FAILED\]" test-results/examples/test_output.log | head -20 || echo "")
+          if [ -f test-results/test_output.log ]; then
+            FAILED_TESTS=$(grep -E "^\[FAILED\]" test-results/test_output.log | head -20 || echo "")
             if [ -n "$FAILED_TESTS" ]; then
               echo "failed_tests<<EOF" >> $GITHUB_OUTPUT
               echo "$FAILED_TESTS" >> $GITHUB_OUTPUT
@@ -956,7 +965,7 @@ jobs:
             const passRate = '${{ needs.test.outputs.pass_rate }}' || '0';
             const testSummary = '${{ needs.test.outputs.test_summary }}' || `Workflow test job ${testResult || 'completed without summary'}`;
             const failedTests = `${{ steps.extract_failed.outputs.failed_tests }}`;
-            const runDate = new Date().toLocaleString('zh-CN', { 
+            const runDate = new Date().toLocaleString('zh-CN', {
               timeZone: 'Asia/Shanghai',
               year: 'numeric',
               month: '2-digit',
@@ -964,41 +973,41 @@ jobs:
               hour: '2-digit',
               minute: '2-digit'
             });
-            
+
             const statusEmoji = testStatus === 'passed' ? '✅' : (testStatus === 'failed' ? '❌' : '⚠️');
             const statusText = testStatus === 'passed' ? 'All tests passed' : (testStatus === 'failed' ? 'Some tests failed' : 'Tests encountered errors');
-            
+
             let body = `## 📊 Daily Test Report - ${runDate}
-            
+
             **Status:** ${statusEmoji} ${statusText}
-            
+
             **Summary:** ${testSummary}
-            
+
             **Workflow Run:** [View Details](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
-            
+
             ---
-            
+
             `;
-            
+
             if (testStatus === 'failed' && failedTests) {
               body += `### ❌ Failed Tests (showing first 20)
-            
+
             ${failedTests}
-            
+
             `;
             }
-            
+
             body += `### 📁 Artifacts
-            
+
             - [test-results](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) (available for 30 days)
-            
+
             ---
-            
+
             *This issue was automatically created by the daily scheduled test.*
             *Assignees: @LLMZhangYC, @ChaoyangJi, @z00520135*`;
-            
+
             const title = `[Daily Test] ${statusEmoji} ${testSummary} - ${runDate}`;
-            
+
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,

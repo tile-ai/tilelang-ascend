@@ -1,16 +1,14 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
+from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass
 from tilelang import tvm
-from tvm.tir.stmt_functor import ir_transform
+from tvm.tirx.stmt_functor import ir_transform
 import logging
-from typing import Optional
+
 # Configuration for different hardware architectures.
 # Each entry contains: (cores per SM, default clock (GHz), FLOPs per cycle, max SM count)
 ARCH_CONFIGS = {"80": (128, 1.41, 2, 108), "86": (128, 1.70, 2, 84), "89": (128, 2.52, 2, 128)}
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -25,6 +23,7 @@ class AnalysisResult:
         tflops: Achieved TFLOPS (trillions of FLOPs per second).
         bandwidth_GBps: Achieved memory bandwidth in GB/s.
     """
+
     total_flops: int
     total_global_bytes: int
     estimated_time: float
@@ -45,7 +44,7 @@ class Analyzer:
             fn: A TVM IRModule or PrimFunc to analyze.
             device: The target device information.
         """
-        if isinstance(fn, tvm.tir.function.PrimFunc):
+        if isinstance(fn, tvm.tirx.function.PrimFunc):
             self.fn = tvm.IRModule({"main": fn})
         else:
             self.fn = fn
@@ -83,7 +82,7 @@ class Analyzer:
         # Account for loop and block dimensions
         loop_product = 1
         for extent in self.loop_stack:
-            loop_product *= extent.value if hasattr(extent, 'value') else extent
+            loop_product *= extent.value if hasattr(extent, "value") else extent
         total_blocks = self.block_counts["blockIdx.x"] * self.block_counts["blockIdx.y"]
         total_bytes = bytes_transferred * loop_product * total_blocks
         self.total_global_bytes += total_bytes
@@ -102,7 +101,7 @@ class Analyzer:
         # Account for loop and block dimensions
         loop_product = 1
         for extent in self.loop_stack:
-            loop_product *= extent.value if hasattr(extent, 'value') else extent
+            loop_product *= extent.value if hasattr(extent, "value") else extent
         total_blocks = self.block_counts["blockIdx.x"] * self.block_counts["blockIdx.y"]
         self.total_flops += flops_per_call * loop_product * total_blocks
 
@@ -116,6 +115,8 @@ class Analyzer:
         def _ftransform(f, mod, ctx):
             # Initialize the set of global buffers
             self.global_buffers = set(f.buffer_map.values())
+            self.block_counts = {"blockIdx.x": 1, "blockIdx.y": 1}
+            self.loop_stack.clear()
 
             def _pre_visit(stmt):
                 """
@@ -123,25 +124,30 @@ class Analyzer:
                 Args:
                     stmt: The current IR node being visited.
                 """
-                if isinstance(stmt, tvm.tir.AttrStmt):
+                if isinstance(stmt, tvm.tirx.AttrStmt):
                     # Handle thread extent attributes
                     if stmt.attr_key == "thread_extent":
                         iter_var = stmt.node
                         thread_tag = iter_var.thread_tag
                         if thread_tag in self.block_counts:
-                            extent = stmt.value.value if hasattr(stmt.value,
-                                                                 'value') else stmt.value
+                            extent = stmt.value.value if hasattr(stmt.value, "value") else stmt.value
                             self.block_counts[thread_tag] = extent
-                elif isinstance(stmt, tvm.tir.For):
-                    # Push loop extent onto the stack
-                    self.loop_stack.append(stmt.extent)
-                elif isinstance(stmt, tvm.tir.Evaluate):
+                elif isinstance(stmt, tvm.tirx.For):
+                    thread_binding = stmt.thread_binding
+                    if thread_binding is not None:
+                        thread_tag = thread_binding.thread_tag
+                        if thread_tag in self.block_counts:
+                            extent = stmt.extent.value if hasattr(stmt.extent, "value") else stmt.extent
+                            self.block_counts[thread_tag] = extent
+                    else:
+                        self.loop_stack.append(stmt.extent)
+                elif isinstance(stmt, tvm.tirx.Evaluate):
                     # Handle Evaluate nodes containing calls
                     value = stmt.value
-                    if isinstance(value, tvm.tir.Call):
-                        if value.op.name == "tl.copy":
+                    if isinstance(value, tvm.tirx.Call):
+                        if value.op.name in ("tl.copy", "tl.tileop.copy"):
                             self._analyze_copy(value)
-                        elif value.op.name == "tl.gemm":
+                        elif value.op.name in ("tl.gemm", "tl.tileop.gemm"):
                             self._analyze_gemm(value)
                 return None
 
@@ -151,7 +157,7 @@ class Analyzer:
                 Args:
                     stmt: The current IR node being visited.
                 """
-                if isinstance(stmt, tvm.tir.For) and self.loop_stack:
+                if isinstance(stmt, tvm.tirx.For) and stmt.thread_binding is None and self.loop_stack:
                     self.loop_stack.pop()
                 return None
 
@@ -160,7 +166,7 @@ class Analyzer:
             return f.with_body(new_body)
 
         # Apply the custom PrimFunc pass
-        tvm.tir.transform.prim_func_pass(_ftransform, opt_level=0)(self.fn)
+        tvm.tirx.transform.prim_func_pass(_ftransform, opt_level=0)(self.fn)
         return self
 
     def calculate(self) -> AnalysisResult:
@@ -170,7 +176,7 @@ class Analyzer:
             AnalysisResult: The calculated performance metrics.
         """
 
-        def get_peak_tflops(device) -> Optional[float]:
+        def get_peak_tflops(device) -> float | None:
             """
             Get the peak TFLOPS for the target device.
             Args:
@@ -180,9 +186,7 @@ class Analyzer:
             """
             arch_key = device.compute_capability[:2]
             if arch_key not in ARCH_CONFIGS:
-                logger.info(
-                    f"Unsupported compute capability: {device.compute_capability}, theoretical peak tflops will be None"
-                )
+                logger.info(f"Unsupported compute capability: {device.compute_capability}, theoretical peak tflops will be None")
                 return None
 
             cores_per_sm, default_clock, flops_per_cycle, compute_max_core = ARCH_CONFIGS[arch_key]
@@ -205,7 +209,8 @@ class Analyzer:
             total_global_bytes=self.total_global_bytes,
             estimated_time=estimated_time,
             expected_tflops=peak_tflops,
-            expected_bandwidth_GBps=bandwidth_GBps)
+            expected_bandwidth_GBps=bandwidth_GBps,
+        )
 
     @classmethod
     def analysis(cls, fn, device):

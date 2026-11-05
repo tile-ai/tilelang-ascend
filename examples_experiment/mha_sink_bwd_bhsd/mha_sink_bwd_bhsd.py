@@ -6,15 +6,15 @@ from contextlib import contextmanager
 import torch
 
 import tilelang
-from tilelang import language as T
+from tilelang.ascend.a2a3 import language as T
 
 # Reuse the verified forward kernel + helpers from mha_sink_fwd_bhsd.
 # This avoids duplicating the 700-line Expert CV-pipeline forward kernel and
 # guarantees numerical consistency between fwd (K1) and bwd (K3) — they share
 # the same lse definition, sm_scale, mask, and sink stabilization logic.
-# NOTE: fwd lives in examples/mha_sink_fwd_bhsd/ (high-perf dir), bwd lives in
-# examples_experiment/mha_sink_bwd_bhsd/ — reach fwd via ../../examples/.
-_FWD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "examples", "mha_sink_fwd_bhsd")
+# NOTE: fwd lives in examples/ascend_a2a3/mha_sink_fwd_bhsd/ (high-perf dir), bwd lives in
+# examples_experiment/mha_sink_bwd_bhsd/ — reach fwd via ../../examples/ascend_a2a3/.
+_FWD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "examples", "ascend_a2a3", "mha_sink_fwd_bhsd")
 if _FWD_DIR not in sys.path:
     sys.path.insert(0, _FWD_DIR)
 from mha_sink_fwd_bhsd import (  # noqa: E402
@@ -706,7 +706,7 @@ def _zeroed_npu_workspace():
 # ===========================================================================
 # Smoke test entry (CI compatibility)
 #
-# Repository CI (examples/bench_test.sh) marks a script PASSED only if its
+# Repository CI (examples/ascend_a2a3/bench_test.sh) marks a script PASSED only if its
 # stdout contains "Test Passed!" or "Kernel Output Match!". This __main__
 # runs the main-repo style single-shape fwd+bwd correctness check (matches
 # GPU source main() line 431-474): single-shape (1x4x128x128) fwd+bwd, 5-item

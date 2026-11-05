@@ -20,8 +20,8 @@ Key design:
 """
 
 import tilelang
-from tilelang import language as T
-from tilelang.intrinsics import make_nz_layout, make_zn_layout
+from tilelang.ascend.a2a3 import language as T
+from tilelang.ascend.a2a3.layout import make_nz_layout, make_zn_layout
 
 # Developer mode pass_configs: sync & C/V split fully auto-managed by passes.
 PASS_CONFIGS = {

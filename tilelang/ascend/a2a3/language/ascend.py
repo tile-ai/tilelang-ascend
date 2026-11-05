@@ -1,0 +1,648 @@
+from __future__ import annotations
+from tilelang.language import common as T
+from tvm.tirx import PrimExpr, Buffer, BufferRegion, Var
+from typing import Union, Literal  # noqa: F401, UP035
+from tvm import DataType, tirx as tir
+from tvm.ir import Span
+from tvm.runtime import DataTypeCode
+
+
+_pipe = Literal["fix", "mte1", "mte2", "mte3", "m", "v", "s"]
+
+
+def infinity(dtype: str, span: Span | None = None) -> PrimExpr:
+    """Preserve TA's native infinity expression in the A2/A3 dialect.
+
+    The shared language uses a TileLang intrinsic instead; the original A2/A3
+    native code generators consume the FloatImm returned by this TVM API.
+    """
+    return tir.op.infinity(dtype, span)
+
+
+def _dtype(buf):
+    type_map = {
+        "float16": "half",
+        "float32": "float",
+        "int32": "int",
+        "uint32": "uint32_t",
+        "bfloat16": "bfloat16_t",
+        "uint16": "uint16_t",
+        "uint8": "uint8_t",
+        "int4": "int4b_t",
+        "int8": "int8_t",
+        "int16": "int16_t",
+        "int64": "int64_t",
+        "uint64": "uint64_t",
+        "e4m3_float8": "float8_e4m3_t",
+        "e5m2_float8": "float8_e5m2_t",
+    }
+    if isinstance(buf, BufferRegion):
+        buf = buf.buffer
+    return type_map[buf.dtype]
+
+
+def _legalize_arguments(arg: Buffer | Var):
+    """Convert let-bound variables to their corresponding buffers.
+
+    Args:
+        arg (Union[tir.Buffer, tir.Var]): Input argument to legalize
+
+    Returns:
+        Union[tir.Buffer, tir.Var]: The legalized argument
+    """
+    if isinstance(arg, Var) and T.has_let_value(arg):
+        return T.get_let_value(arg).buffer
+    return arg
+
+
+def _retrieve_shape(object: Buffer | BufferRegion) -> list[int]:
+    """
+    Retrieves the shape of a Buffer or a BufferRegion.
+
+    If the input is a Buffer, it returns the buffer's shape directly.
+    If the input is a BufferRegion (a slice of a buffer), it calculates and returns
+    the shape based on the extents of the region's ranges.
+
+    Args:
+        object (Union[tir.Buffer, tir.BufferRegion]): The object to query for shape.
+
+    Returns:
+        List[int]: A list of integers (or PrimExprs) representing the shape of the object.
+
+    Raises:
+        ValueError: If the input object type is not supported.
+    """
+    if isinstance(object, Buffer):
+        return object.shape
+    elif isinstance(object, BufferRegion):
+        region = object.region
+        shape = []
+        for r in region:
+            shape.append(r.extent)
+        return shape
+    else:
+        raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
+
+
+def _retrieve_ptr(object: Buffer | BufferRegion, access_type: str = "r") -> PrimExpr:
+    """
+    Retrieves the access pointer (handle) for a Buffer or BufferRegion.
+
+    For a full Buffer, it returns the pointer to the beginning of the memory.
+    For a BufferRegion, it calculates the linear byte offset based on the region's
+    start indices and the underlying buffer's shape (assuming compact row-major layout),
+    and returns the pointer to the start of the sliced region.
+
+    Args:
+        object (Union[tir.Buffer, tir.BufferRegion]): The buffer object or slice.
+        access_type (str, optional): The access mask (e.g., "r" for read, "w" for write).
+            Defaults to "r".
+
+    Returns:
+        tir.PrimExpr: An expression representing the pointer to the data.
+
+    Raises:
+        ValueError: If the input object type is not supported.
+    """
+    if isinstance(object, Buffer):
+        return object.access_ptr(access_type)
+    elif isinstance(object, BufferRegion):
+        buffer, region = object.buffer, object.region
+        indices = []
+        for r in region:
+            indices.append(r.min)
+        strides = []
+        stride = 1
+        for s in reversed(buffer.shape):
+            strides.insert(0, stride)
+            stride *= s
+        offset = 0
+        for i in range(len(indices)):
+            offset += indices[i] * strides[i]
+        return buffer.access_ptr(access_mask=access_type, offset=offset)
+    else:
+        raise ValueError(f"Unsupported argument type: {type(object)} for buffer {object}")
+
+
+def _get_static_int(value: PrimExpr | int) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, tir.IntImm):
+        return int(value)
+    return None
+
+
+def _get_tmp_arena_access_ptr(
+    op_name: str,
+    tmp: Buffer | BufferRegion,
+) -> PrimExpr:
+    """Validate a public explicit-tmp arena and return its read/write access pointer."""
+    if not isinstance(tmp, (Buffer, BufferRegion)):
+        raise TypeError(f"{op_name} tmp must be a one-dimensional UB Buffer or BufferRegion, but got {type(tmp).__name__}")
+
+    buffer = tmp.buffer if isinstance(tmp, BufferRegion) else tmp
+    if len(buffer.shape) != 1:
+        raise ValueError(f"{op_name} tmp must be one-dimensional, but the backing buffer has rank {len(buffer.shape)}")
+    dtype = DataType(buffer.dtype)
+    if dtype.lanes != 1 or dtype.type_code == DataTypeCode.HANDLE:
+        raise ValueError(f"{op_name} tmp must have a fixed-width scalar dtype, but got {buffer.dtype}")
+    if buffer.scope() != "shared.ub":
+        raise ValueError(f"{op_name} tmp must use scope shared.ub, but got {buffer.scope()}")
+
+    dtype_bytes = dtype.itemsize
+
+    buffer_extent = _get_static_int(buffer.shape[0])
+    if buffer_extent is None:
+        raise ValueError(f"{op_name} tmp backing-buffer extent must be static")
+    if buffer_extent < 0:
+        raise ValueError(f"{op_name} tmp backing-buffer extent must be non-negative, but got {buffer_extent}")
+
+    if len(buffer.strides) != 0:
+        if len(buffer.strides) != 1:
+            raise ValueError(f"{op_name} tmp must be a contiguous one-dimensional arena")
+        stride_value = _get_static_int(buffer.strides[0])
+        if stride_value != 1:
+            raise ValueError(f"{op_name} tmp must be contiguous with unit stride, but got {buffer.strides[0]}")
+
+    elem_offset = _get_static_int(buffer.elem_offset)
+    if elem_offset is None:
+        raise ValueError(f"{op_name} tmp starting offset must be static")
+
+    relative_offset = 0
+    extent = buffer_extent
+    if isinstance(tmp, BufferRegion):
+        if len(tmp.region) != 1:
+            raise ValueError(f"{op_name} tmp BufferRegion must be one-dimensional, but got rank {len(tmp.region)}")
+        relative_offset = _get_static_int(tmp.region[0].min)
+        extent = _get_static_int(tmp.region[0].extent)
+        if relative_offset is None:
+            raise ValueError(f"{op_name} tmp BufferRegion offset must be static")
+        if extent is None:
+            raise ValueError(f"{op_name} tmp BufferRegion extent must be static")
+        if relative_offset < 0 or relative_offset + extent > buffer_extent:
+            raise ValueError(
+                f"{op_name} tmp BufferRegion [{relative_offset}, {relative_offset + extent}) exceeds backing extent {buffer_extent}"
+            )
+
+    if extent < 0:
+        raise ValueError(f"{op_name} tmp extent must be non-negative, but got {extent} elements")
+
+    absolute_byte_offset = (elem_offset + relative_offset) * dtype_bytes
+    if absolute_byte_offset < 0:
+        raise ValueError(f"{op_name} tmp starting address must be non-negative, but got byte offset {absolute_byte_offset}")
+    if absolute_byte_offset % 32 != 0:
+        raise ValueError(f"{op_name} tmp starting address must be 32-byte aligned, but got byte offset {absolute_byte_offset}")
+
+    return buffer.access_ptr("rw", offset=relative_offset, extent=extent)
+
+
+def set_cross_flag(pipe: str, flag: int, mode: int = 2):
+    """
+    Sets a cross-core synchronization flag.
+
+    This function emits an intrinsic to set a specific hardware event ID (flag)
+    for a given pipeline stage. It is used in conjunction with `wait_cross_flag`
+    to synchronize logical execution queues that are not standard producer-consumer pairs.
+
+    Args:
+        pipe (str): The pipeline stage issuing the set action (e.g., "MTE3", "V").
+        flag (int): The event ID index to set.
+        mode: hard synchronization modes.
+            - 0: among all AICs or all AIVs
+            - 1: among all AIVs within the same group.
+            - 2: between AICs and AIVs within the same group.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call node.
+    """
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_set_cross_flag"), pipe.upper(), flag, mode)
+
+
+def wait_cross_flag(flag: int, pipe: _pipe | Literal[""] = ""):
+    """
+    Waits for a cross-core synchronization flag.
+
+    This function blocks the current execution stream until the specified hardware
+    event ID (flag) is set by `set_cross_flag`.
+
+    Args:
+        flag (int): The event ID index to wait for.
+        pipe (str, optional): The specific execution pipe to wait on (e.g., "mte1", "fix").
+            Defaults to "".
+            **Note:** This parameter is only supported on the **A5 platform**.
+            For other architectures, this must be left as an empty string.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call node.
+    """
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_wait_cross_flag"), flag, pipe)
+
+
+def set_flag(src: _pipe, dst: _pipe, eventId: int):
+    """
+    Sets a synchronization flag from a source pipeline to a destination pipeline.
+
+    This is part of the standard pipeline synchronization mechanism (Set/Wait).
+    It indicates that the source pipeline has completed its task for a specific event.
+
+    Args:
+        src (_pipe): The source pipeline stage (producer).
+        dst (_pipe): The destination pipeline stage (consumer).
+        eventId (int): The event ID used for synchronization.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call node.
+    """
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_set_flag"), f"{src.upper()}_{dst.upper()}", eventId)
+
+
+def wait_flag(src: _pipe, dst: _pipe, eventId: int):
+    """
+    Waits for a synchronization flag from a source pipeline.
+
+    This instruction blocks the destination pipeline until the source pipeline
+    issues the corresponding `set_flag` command for the given event ID.
+
+    Args:
+        src (_pipe): The source pipeline stage (producer) to wait for.
+        dst (_pipe): The destination pipeline stage (consumer) that is waiting.
+        eventId (int): The event ID used for synchronization.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call node.
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_wait_flag"),
+        f"{src.upper()}_{dst.upper()}",
+        eventId,
+    )
+
+
+def barrier_all():
+    """
+    Inserts a barrier for all pipeline stages.
+
+    This ensures that all instructions in all pipelines (Scalar, Vector, Cube, MTE, etc.)
+    issued before this barrier are completed before any subsequent instructions are executed.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call node.
+    """
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_pipe_barrier"), "PIPE_ALL")
+
+
+def pipe_barrier(pipe: _pipe):
+    """
+    Inserts a barrier for a specific pipeline stage.
+
+    This ensures that all instructions in the specified pipeline issued before
+    this barrier are completed before proceeding.
+
+    Args:
+        pipe (_pipe): The specific pipeline stage to synchronize (e.g., "MTE3", "V").
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call node.
+    """
+    pipe = pipe.upper()
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_pipe_barrier"), pipe if pipe.startswith("PIPE_") else f"PIPE_{pipe}")
+
+
+def sync_all():
+    """
+    Performs a global synchronization across the compute unit (block/core).
+
+    This generally ensures memory consistency and execution synchronization
+    across the entire block/core scope.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call node.
+    """
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_sync_all"))
+
+
+def shmem_put_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+    """Performs a shmem put nbi operation.
+
+    This intrinsic invokes the underlying implementation to copy from the local GM to the newPe GM
+
+    Args:
+        dst: The newPe GM.
+        src: The local GM.
+        nelems: Number of elements.
+        newPe: The rank of dst pe.
+
+    Returns:
+        A TVM intrinsic call that performs the shmem put nbi operation.
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_shmem_put_nbi"),
+        f"shmem_put_nbi<{_dtype(src)}>",
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        nelems,
+        newPe,
+    )
+
+
+def shmem_ub_put_nbi(ub: Buffer, dst: Buffer, nelems: PrimExpr, newPe: PrimExpr, strelem: PrimExpr = 0):
+    """Performs a shmem ub put nbi operation.
+
+    This intrinsic invokes the underlying implementation to copy from the local UB to the newPe GM
+
+    Args:
+        ub: The local UB.
+        dst: The newPe GM.
+        nelems: Number of elements.
+        newPe: The rank of dst pe.
+
+    Returns:
+        A TVM intrinsic call that performs the shmem ub put nbi operation.
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_shmem_ub_put_nbi"),
+        f"shmem_ub_put_nbi<{_dtype(dst)}>",
+        ub.access_ptr("r"),
+        dst.access_ptr("w"),
+        nelems,
+        newPe,
+        strelem,
+    )
+
+
+def shmem_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+    """Performs a shmem get nbi operation.
+
+    This intrinsic invokes the underlying implementation to copy from the newPe GM to the local GM
+
+    Args:
+        dst: The local GM.
+        src: The newPe GM.
+        nelems: Number of elements.
+        newPe: The rank of dst pe.
+
+    Returns:
+        A TVM intrinsic call that performs the shmem get nbi operation.
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_shmem_get_nbi"),
+        f"shmem_get_nbi<{_dtype(src)}>",
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        nelems,
+        newPe,
+    )
+
+
+def shmem_ub_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr):
+    """Performs a shmem ub get nbi operation.
+
+    This intrinsic invokes the underlying implementation to copy from the newPe GM to the local UB
+
+    Args:
+        dst: The local UB.
+        src: The newPe GM.
+        nelems: Number of elements.
+        newPe: The rank of dst pe.
+
+    Returns:
+        A TVM intrinsic call that performs the shmem ub get nbi operation.
+    """
+    return tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_shmem_ub_get_nbi"),
+        f"shmem_ub_get_nbi<{_dtype(src)}>",
+        dst.access_ptr("w"),
+        src.access_ptr("r"),
+        nelems,
+        newPe,
+    )
+
+
+def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False, kL0Size=128, n_actual=None):
+    """
+    Performs a block-level General Matrix Multiplication (GEMM).
+
+    This function computes the matrix product $C = op(A) \\times op(B)$, where $op$ represents
+    an optional transpose operation. When ``init=False``, the result is accumulated:
+    ``C += op(A) × op(B)``. When ``init=True``, C is cleared first, equivalent to
+    ``C = op(A) × op(B)``. It calculates the M, N, and K dimensions based on the
+    shapes of the input buffers and generates the corresponding hardware intrinsic call.
+
+    A and B must be in L1 (``T.alloc_L1``). gemm_v0 internally handles
+    L1→L0A/L0B movement. C must be in L0C (``T.alloc_L0C``).
+
+    Args:
+        A (Union[Buffer, BufferRegion]): The input matrix A allocated in L1. Can be a
+            high-dimensional tensor, but the last two dimensions are treated as the
+            matrix dimensions. Supports float16, bfloat16, float32, int8.
+        B (Union[Buffer, BufferRegion]): The input matrix B allocated in L1. Can be a
+            high-dimensional tensor, but the last two dimensions are treated as the
+            matrix dimensions. dtype must match A.
+        C (Union[Buffer, BufferRegion]): The output matrix C allocated in L0C. Must be
+            a 2D tensor (M, N). float32 for float A/B, int32 for int8 A/B.
+        transpose_A (bool, optional): Whether to transpose matrix A. Defaults to False.
+        transpose_B (bool, optional): Whether to transpose matrix B. Defaults to False.
+        init (bool, optional): Whether to initialize the accumulator matrix C (typically to zero)
+            before computation. Defaults to False.
+        kL0Size (int, optional, advanced): K-axis tile size for L1->L0 data movement.
+            Controls how the K dimension is split when copying from L1 to L0A/L0B.
+            Must be a multiple of 16 and ≤ 4095. Defaults to 128.
+
+            Normally you don't need to change this. Consider tuning it when:
+            - L0C is underutilized (e.g., block_M x block_N x 4 < 128KB)
+            - You want to enable double-buffer but kL0Size=128 makes L0A/L0B too full
+
+            Smaller kL0Size allows larger block_M/block_N (more L0C utilization)
+            at the cost of more L1->L0 copy iterations. For half precision with
+            block_M=128, block_N=256, kL0Size=64 is recommended.
+        n_actual (int, optional): Runtime number of output columns to compute (<= N
+            and a multiple of 16), honoured only on the transpose_B path (variable-N
+            gemm, e.g. QK over the actual window length). None -> compile-time N
+            (byte-identical to before). A compile-time-constant value is validated;
+            a runtime tir expression is the caller's responsibility.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call to `tl.ascend_gemm_v0`.
+    """
+    A = _legalize_arguments(A)
+    B = _legalize_arguments(B)
+    C = _legalize_arguments(C)
+
+    A_shape = _retrieve_shape(A)
+    B_shape = _retrieve_shape(B)
+    C_shape = _retrieve_shape(C)
+
+    assert len(C_shape) >= 2, "current only support C as a 2D or higher-order tensor"
+    assert len(A_shape) >= 2, "current only support A as a 2D or higher-order tensor"
+    assert len(B_shape) >= 2, "current only support B as a 2D or higher-order tensor"
+    if len(C_shape) > 2:
+        for i in range(len(C_shape) - 2):
+            assert C_shape[i] == 1, (
+                "current only support C as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
+            )
+    if len(A_shape) > 2:
+        for i in range(len(A_shape) - 2):
+            assert A_shape[i] == 1, (
+                "current only support A as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
+            )
+    if len(B_shape) > 2:
+        for i in range(len(B_shape) - 2):
+            assert B_shape[i] == 1, (
+                "current only support B as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
+            )
+    if len(C_shape) > 2:
+        for i in range(len(C_shape) - 2):
+            assert C_shape[i] == 1, (
+                "current only support B as a 2D or higher-order tensor with the last two dimensions being the matrix dimensions"
+            )
+
+    M, N = C_shape[-2], C_shape[-1]
+    K = A_shape[-2] if transpose_A else A_shape[-1]
+    K_B = B_shape[-1] if transpose_B else B_shape[-2]
+    assert K == K_B, f"T.gemm K shape check failed: K_A = {K}, K_B = {K_B}"
+
+    assert kL0Size > 0, f"kL0Size={kL0Size} must be a positive integer"
+    assert kL0Size % 16 == 0, f"kL0Size={kL0Size} must be a multiple of 16"
+    assert kL0Size <= 4095, f"kL0Size={kL0Size} exceeds PTO MMAD upper limit 4095"
+
+    Aptr = _retrieve_ptr(A, "r")
+    Bptr = _retrieve_ptr(B, "r")
+    Cptr = _retrieve_ptr(C, "w" if init is True else "rw")
+
+    # assert _dtype(A) == _dtype(B), f"gemm A and B dtype mismatch: {_dtype(A)} vs {_dtype(B)}"
+    # n_actual: runtime output-column count (<= N), honoured on the transpose_B
+    # (QK) path; None -> compile-time N (byte-identical to before).
+    if n_actual is None:
+        n_actual = N  # full N, the existing template contract -- no extra check
+    else:
+        # Validate a compile-time-constant n_actual early (runtime tir
+        # expressions are the caller's responsibility): it must fit the template
+        # N and be a multiple of the 16-column fractal granularity.
+        _na = n_actual.value if isinstance(n_actual, tir.IntImm) else n_actual
+        if isinstance(_na, int):
+            assert 0 < _na <= N, f"gemm_v0 n_actual ({_na}) must be in (0, N={N}]"
+            assert _na % 16 == 0, f"gemm_v0 n_actual ({_na}) must be a multiple of 16 (fractal column granularity)"
+    return T.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_gemm_v0"),
+        f"gemm_v0<{_dtype(A)}, {_dtype(C)}, {M}, {N}, {K}, {str(transpose_A).lower()}, {str(transpose_B).lower()}, {kL0Size}>",
+        Aptr,
+        Bptr,
+        Cptr,
+        init,
+        n_actual,
+    )
+
+
+def printf(format_str: str, *args):
+    """
+    Prints formatted output.
+
+    This function processes the format string and arguments (handling string escaping
+    and Buffer pointer conversion) before generating the hardware intrinsic call.
+    It is commonly used for debugging kernel logic.
+
+    Args:
+        format_str (str): The format string (C-style), e.g., "Value: %f\n".
+        *args: Variable arguments to be formatted. Buffers are automatically converted
+            to their access pointers.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call to `tl.ascend_printf`.
+    """
+    format_str = format_str.replace("%p", "0x%x")
+    escaped_format = format_str.encode("unicode_escape").decode("utf-8")
+
+    args_list = list(args)
+    for i in range(len(args_list)):
+        if isinstance(args_list[i], Buffer):
+            args_list[i] = args_list[i].access_ptr("r")
+        if isinstance(args_list[i], str):
+            args_list[i] = args_list[i].encode("unicode_escape").decode("utf-8")
+    new_args = tuple(args_list)
+
+    all_args = (escaped_format,) + new_args
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_printf"), *all_args)
+
+
+def _src_code(source_code: str, *args):
+    """
+    Inject raw source code directly into the generated C++ kernel.
+
+    This allows expert users to write arbitrary AscendC/C++ code that
+    will be inserted verbatim at the call site in the compiled output.
+
+    Args:
+        source_code (str): Raw C++/AscendC source code to inject.
+        *args: Additional arguments that serve as placeholders.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call to ``tl.ascend_src_code``.
+    """
+    return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_src_code"), source_code, *args)
+
+
+def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple = ()):
+    """
+    Dumps the data of a specific tensor to the host for debugging.
+
+    It allows inspecting intermediate tensor values during hardware execution.
+
+    Args:
+        tensor (Buffer): The target buffer/tensor to dump.
+        desc (int): A user-defined descriptor ID (uint32) to identify this dump operation.
+        dump_size (int): The size of the data to dump (uint32).
+        shape_info (tuple, optional): A tuple describing the shape dimensions of the tensor.
+            Defaults to an empty tuple.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call to `tl.ascend_dump_tensor`.
+
+    Raises:
+        ValueError: If `desc` or `dump_size` are not valid uint32 integers.
+    """
+    if not isinstance(desc, int) or desc < 0 or desc > 0xFFFFFFFF:
+        raise ValueError(f"desc must be uint32, but your desc is {desc}")
+    # if not isinstance(dump_size, int) or dump_size < 0 or dump_size > 0xFFFFFFFF:
+    #     raise ValueError(f"dump_size must be uint32, but your dump_size is {dump_size}")
+
+    tensor_ptr = tensor.access_ptr("r")
+    return T.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_dump_tensor"),
+        tensor_ptr,
+        desc,
+        dump_size,
+        len(shape_info),
+        *shape_info,
+    )
+
+
+def reinterpretcast(dst: Buffer, src: Buffer, casttype: str):
+    # return T.call_extern("handle", f"ReinterpretCast", dst.access_ptr("w"), src.access_ptr("r"),
+    #                      casttype)
+    return T.call_intrin("handle", tir.op.Op.get("tl.ascend_reinterpretcast"), dst.access_ptr("w"), src.access_ptr("r"), casttype)
+
+
+def set_deq_scale(scale: PrimExpr):
+    """
+    Sets the dequantization scale factor register.
+
+    This function configures the hardware environment with a specific scaling factor,
+    typically used in quantized matrix multiplication or convolution operations
+    where results need to be dequantized (e.g., int32 -> fp16).
+
+    Args:
+        scale (PrimExpr): The scaling factor value.
+
+    Returns:
+        tvm.tir.Call: A TIR intrinsic call to `tl.ascend_set_deq_scale`.
+    """
+    return T.call_intrin("handle", tir.op.Op.get("tl.ascend_set_deq_scale"), scale)

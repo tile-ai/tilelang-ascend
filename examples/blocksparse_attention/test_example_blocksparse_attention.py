@@ -1,0 +1,27 @@
+import tilelang.testing
+import block_sparse_attn_triton
+import example_tilelang_block_sparse_attn
+import example_tilelang_sparse_gqa_decode_varlen_indice
+import example_tilelang_sparse_gqa_decode_varlen_mask
+
+
+def test_block_sparse_attn_triton():
+    block_sparse_attn_triton.main()
+
+
+def test_example_tilelang_block_sparse_attn():
+    example_tilelang_block_sparse_attn.main()
+
+
+@tilelang.testing.requires_package("flash_attn")
+def test_example_tilelang_sparse_gqa_decode_varlen_indice():
+    example_tilelang_sparse_gqa_decode_varlen_indice.main(batch=1, max_cache_seqlen=2048)
+
+
+@tilelang.testing.requires_package("flash_attn")
+def test_example_tilelang_sparse_gqa_decode_varlen_mask():
+    example_tilelang_sparse_gqa_decode_varlen_mask.main(batch=1, max_cache_seqlen=2048)
+
+
+if __name__ == "__main__":
+    tilelang.testing.main()

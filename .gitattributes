@@ -1,1 +1,16 @@
+* text eol=lf
+*.bat eol=crlf
+
+*.svg binary
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.gif binary
+
 *.h linguist-language=C++
+
+# Preserve original TA source bytes for these CRLF documents.
+/.agents/skills/tilelang-pass-agents-guide.md -text
+/.agents/skills/tilelang-pass-analyzer/references/pass-designs/ascend_storage_rewrite_design.md -text
+"/docs/ascend_a2a3/TileLang-Ascend Programming Guide.md" -text
+/docs/ascend_a2a3/tutorials/t_parallel.md -text

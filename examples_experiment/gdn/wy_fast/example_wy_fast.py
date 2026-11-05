@@ -21,7 +21,7 @@ Design highlights:
 """
 
 import tilelang
-import tilelang.language as T
+import tilelang.ascend.a2a3.language as T
 import torch
 
 pass_configs = {
@@ -85,24 +85,24 @@ def wy_fast_kernel(
     # chunk sizes take the single-buffered fallback path (fits up to 128).
     use_unrolled = num_dv_tiles == 1 and num_dk_tiles == 1 and BS <= 64 and chunks_per_tile in (4, 8) and num_chunks % chunks_per_tile == 0
 
-    @T.macro(hygienic=False)
+    @T.macro
     def wy_pf(A, KVG, A_sh, KVG_sh, bb, bh, s):
         # GM -> L1 shared slot for chunk s (2 non-blocking DMA issues)
         T.copy(A[bb, bh, s * BS : (s + 1) * BS, :], A_sh)
         T.copy(KVG[bb, bh, s * BS : (s + 1) * BS, :], KVG_sh)
 
-    @T.macro(hygienic=False)
+    @T.macro
     def wy_st(A_sh, KVG_sh, A_l0a, kvg_l0b):
         # L1 -> L0A/L0B staging of the prefetched chunk (overlaps in-flight mma)
         T.copy(A_sh, A_l0a)
         T.copy(KVG_sh, kvg_l0b)
 
-    @T.macro(hygienic=False)
+    @T.macro
     def wy_cp(A_l0a, kvg_l0b, WU_l0c):
         # Merged GEMM for the current chunk from the given L0 slot
         T.mma(A_l0a, kvg_l0b, WU_l0c, init=True)
 
-    @T.macro(hygienic=False)
+    @T.macro
     def wy_wb(WU, WU_l0c, bb, bh, s):
         # L0C -> GM writeback for chunk s
         T.copy(WU_l0c, WU[bb, bh, s * BS : (s + 1) * BS, :])

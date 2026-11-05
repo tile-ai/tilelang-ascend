@@ -1,30 +1,30 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
 """Analysis on TIR blocks, loops and functions."""
-from typing import List, Optional, Set, Union
-from typing_extensions import Literal
 
-from tvm import ir, tir, DataType
-from tvm._ffi import get_global_func
+from __future__ import annotations
+from typing import Literal
+
+from tvm import ir, tirx, DataType
+from tvm.ffi import get_global_func
 from tvm.target.target import Target
-from tvm.tir import Schedule, IterVar
-from tvm.tir.schedule import BlockRV
+from tvm.tirx import IterVar
+from tvm.s_tir import Schedule
+from tvm.s_tir.schedule import LoopRV, SBlockRV
 
 
 class IterInfo:
     """Information about a loop/iter var."""
 
     kind: Literal["S", "R", "O"]
-    var: tir.Var
-    _dom: tir.PrimExpr
-    loop_rv: tir.schedule.LoopRV
+    var: tirx.Var
+    _dom: tirx.PrimExpr
+    loop_rv: LoopRV
 
     def __init__(
         self,
         kind: Literal["S", "R", "O"],
-        var: tir.Var,
-        dom: tir.PrimExpr,
-        loop_rv: tir.schedule.LoopRV,
+        var: tirx.Var,
+        dom: tirx.PrimExpr,
+        loop_rv: LoopRV,
     ):
         """Construct an IterInfo object."""
         self.kind = kind
@@ -33,9 +33,9 @@ class IterInfo:
         self.loop_rv = loop_rv
 
     @property
-    def dom(self) -> Union[int, tir.PrimExpr]:
+    def dom(self) -> int | tirx.PrimExpr:
         """The iteration domain of the loop."""
-        return int(self._dom) if isinstance(self._dom, tir.IntImm) else self._dom
+        return int(self._dom) if isinstance(self._dom, tirx.IntImm) else self._dom
 
     def __str__(self) -> str:
         return f'Iter("{self.kind}", {self.dom})'
@@ -48,15 +48,15 @@ class BlockInfo:
     """Information about a TIR block."""
 
     name: str
-    iters: List[IterInfo]
-    block_rv: tir.schedule.BlockRV
+    iters: list[IterInfo]
+    block_rv: SBlockRV
     _reduction_block: bool
 
     def __init__(
         self,
         name: str,
-        iters: List[IterInfo],
-        block_rv: tir.schedule.BlockRV,
+        iters: list[IterInfo],
+        block_rv: SBlockRV,
         reduction_block: bool = False,
     ):
         """Construct a BlockInfo object."""
@@ -65,7 +65,7 @@ class BlockInfo:
         self.iters = iters
         self._reduction_block = reduction_block
 
-    def dom(self) -> List[Union[int, tir.PrimExpr]]:
+    def dom(self) -> list[int | tirx.PrimExpr]:
         """The iteration domain of the block."""
         return [i.dom for i in self.iters]
 
@@ -77,10 +77,10 @@ class BlockInfo:
         """Whether the block is injective, i.e. all its iteration domains are injective."""
         return all(k == "S" for k in self.dom_kind())
 
-    def is_elementwise(self, sch: tir.Schedule) -> bool:
+    def is_elementwise(self, sch: Schedule) -> bool:
         """Whether the block is elementwise, i.e. trivial mapping between read/write region"""
 
-        def _check_unit_var_range(dom: ir.Range, var: tir.Var) -> bool:
+        def _check_unit_var_range(dom: ir.Range, var: tirx.Var) -> bool:
             return dom.min.same_as(var) and dom.extent == 1
 
         if not self.is_injective():
@@ -117,10 +117,12 @@ class BlockInfo:
         return str(self)
 
 
-_normalize_prim_func = get_global_func("tir.schedule.NormalizePrimFunc")
+_normalize_prim_func = get_global_func("tirx.schedule.NormalizePrimFunc", allow_missing=True) or get_global_func(
+    "s_tir.schedule.NormalizePrimFunc"
+)
 
 
-def normalize_prim_func(sch: tir.Schedule) -> Optional[List[BlockInfo]]:
+def normalize_prim_func(sch: Schedule) -> list[BlockInfo] | None:
     """Normalize the primfunc to normal form"""
     try:
         result = _normalize_prim_func(sch)
@@ -129,13 +131,13 @@ def normalize_prim_func(sch: tir.Schedule) -> Optional[List[BlockInfo]]:
     except Exception:  # pylint: disable=broad-except
         return None
 
-    def _iter_kind(i: tir.IterVar) -> str:
+    def _iter_kind(i: tirx.IterVar) -> str:
         return {
-            tir.IterVar.DataPar: "S",
-            tir.IterVar.CommReduce: "R",
+            tirx.IterVar.DataPar: "S",
+            tirx.IterVar.CommReduce: "R",
         }.get(i.iter_type, "O")
 
-    blocks: List[BlockInfo] = []
+    blocks: list[BlockInfo] = []
     for block, loops, iters, is_reduction in zip(*result):
         blocks.append(
             BlockInfo(
@@ -146,18 +148,20 @@ def normalize_prim_func(sch: tir.Schedule) -> Optional[List[BlockInfo]]:
                         var=iter.var,
                         dom=iter.dom,
                         loop_rv=loop,
-                    ) for loop, iter in zip(loops, iters)
+                    )
+                    for loop, iter in zip(loops, iters)
                 ],
                 block_rv=block,
                 reduction_block=is_reduction,
-            ))
+            )
+        )
     return blocks
 
 
 def find_var_from_func(func, var: str):
     for buffer in func.buffer_map.values():
         for i in buffer.shape:
-            if isinstance(i, tir.Var) and i.name == var:
+            if isinstance(i, tirx.Var) and i.name == var:
                 return i
     return None
 
@@ -165,7 +169,7 @@ def find_var_from_func(func, var: str):
 def check_func_with_dynamic(func):
     for buffer in func.buffer_map.values():
         for i in buffer.shape:
-            if isinstance(i, tir.Var):
+            if isinstance(i, tirx.Var):
                 return True
     return False
 
@@ -190,22 +194,19 @@ def get_max_shared_memory_per_block(target: Target) -> int:
     _assert_gpu_target(target)
     max_shared_memory_per_block = target.attrs.get("max_shared_memory_per_block", None)
     if max_shared_memory_per_block is None:
-        raise ValueError(
-            f"Cannot find `max_shared_memory_per_block` in {target}, please specify it manually")
+        raise ValueError(f"Cannot find `max_shared_memory_per_block` in {target}, please specify it manually")
     return int(max_shared_memory_per_block)
 
 
-def get_root_block(sch: Schedule, func_name: str = "main") -> BlockRV:
+def get_root_block(sch: Schedule, func_name: str = "main") -> SBlockRV:
     try:
         block = sch.mod[func_name].body.block
     except Exception:
-        raise ValueError(f"The function body is expected to be the root block, but got:\n"
-                         f"{sch.mod[func_name].body}") from None
-    return sch.get_block(block.name_hint)
+        raise ValueError(f"The function body is expected to be the root block, but got:\n{sch.mod[func_name].body}") from None
+    return sch.get_sblock(block.name_hint)
 
 
-def collect_block_iter_vars_used_in_access_region(block: tir.Block,
-                                                  region: List[ir.Range]) -> Set[tir.Var]:
+def collect_block_iter_vars_used_in_access_region(block: tirx.SBlock, region: list[ir.Range]) -> set[tirx.Var]:
     """Collect the block iter variables used in the access region of a buffer region."""
     tir_vars = set()
     for expr in region:
@@ -216,19 +217,19 @@ def collect_block_iter_vars_used_in_access_region(block: tir.Block,
     return tir_vars
 
 
-def collect_vars_used_in_prim_expr(expr: tir.PrimExpr) -> Set[tir.Var]:
+def collect_vars_used_in_prim_expr(expr: tirx.PrimExpr) -> set[tirx.Var]:
     """Collect the variables used in the PrimExpr."""
     tir_vars = set()
 
     def _collect_tir_var(expr):
-        if isinstance(expr, tir.Var):
+        if isinstance(expr, tirx.Var):
             tir_vars.add(expr)
 
-    tir.stmt_functor.post_order_visit(expr, _collect_tir_var)
+    tirx.stmt_functor.post_order_visit(expr, _collect_tir_var)
     return tir_vars
 
 
-def detect_dominant_read(block: tir.Block) -> tir.PrimExpr:
+def detect_dominant_read(block: tirx.SBlock) -> tirx.PrimExpr:
     """Detect the dominant read indices in the block."""
     dominant_read = None
     num_read_iters = -1
@@ -243,9 +244,9 @@ def detect_dominant_read(block: tir.Block) -> tir.PrimExpr:
 
 
 def is_broadcast_epilogue(
-    sch: tir.Schedule,
-    block: tir.schedule.BlockRV,
-    epilogue: tir.schedule.BlockRV,
+    sch: Schedule,
+    block: SBlockRV,
+    epilogue: SBlockRV,
 ) -> bool:
     """Check if the epilogue block is a broadcast pattern"""
     write_buffers = {r.buffer for r in sch.get(block).writes}
@@ -253,22 +254,20 @@ def is_broadcast_epilogue(
     for buffer_region in sch.get(epilogue).reads:
         if buffer_region.buffer not in write_buffers:
             continue
-        tir_vars = collect_block_iter_vars_used_in_access_region(
-            sch.get(epilogue), buffer_region.region)
+        tir_vars = collect_block_iter_vars_used_in_access_region(sch.get(epilogue), buffer_region.region)
         if len(tir_vars) < len(epilogue_iters):
             return True
     return False
 
 
-def get_reduction_blocks(sch: tir.Schedule,
-                         blocks: List[tir.schedule.BlockRV]) -> List[tir.schedule.BlockRV]:
+def get_reduction_blocks(sch: Schedule, blocks: list[SBlockRV]) -> list[SBlockRV]:
     # Get the main computation block
-    def is_reduction(block: BlockRV) -> bool:
+    def is_reduction(block: SBlockRV) -> bool:
         block_stmt = sch.get(block)
         iter_types = {iter_var.iter_type for iter_var in block_stmt.iter_vars}
         return iter_types == {IterVar.CommReduce, IterVar.DataPar}
 
-    def is_spatial(block: BlockRV) -> bool:
+    def is_spatial(block: SBlockRV) -> bool:
         block_stmt = sch.get(block)
         iter_types = {iter_var.iter_type for iter_var in block_stmt.iter_vars}
         return iter_types == {IterVar.DataPar}
@@ -285,10 +284,10 @@ def get_reduction_blocks(sch: tir.Schedule,
     return reduction_blocks
 
 
-def get_coalesced_veclen(block_stmt: tir.Block, target_bits: int = 128) -> int:
+def get_coalesced_veclen(block_stmt: tirx.SBlock, target_bits: int = 128) -> int:
     # gpu memory prefer 128 bits coalesced access (e.g. four banks)
     # 128 bits
-    buffers: List[tir.Buffer] = []
+    buffers: list[tirx.Buffer] = []
     for read in block_stmt.reads:
         buffers.append(read.buffer)
     for write in block_stmt.writes:

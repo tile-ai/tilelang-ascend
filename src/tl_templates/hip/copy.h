@@ -1,5 +1,3 @@
-// Copyright (c) Tile-AI Corporation.
-// Licensed under the MIT License.
 #pragma once
 
 #include "common.h"
@@ -13,7 +11,26 @@ using u32 = std::uint32_t;
 
 using index_t = u32;
 
-using ck_tile::int32x4_t;
+using int32x4_t = int32_t __attribute__((ext_vector_type(4)));
+
+// Third dword of the AMD buffer resource descriptor (V#): data format /
+// config bits, which differ per architecture generation.
+#ifndef __HIP_DEVICE_COMPILE__ // host pass
+#define TL_BUFFER_RESOURCE_3RD_DWORD 0xffffffff
+#elif defined(__gfx803__) || defined(__gfx900__) || defined(__gfx906__) ||     \
+    defined(__gfx908__) || defined(__gfx90a__) || defined(__gfx942__) ||       \
+    defined(__gfx950__) || defined(__gfx9_4_generic__)
+#define TL_BUFFER_RESOURCE_3RD_DWORD 0x00020000
+#elif defined(__gfx1030__) || defined(__gfx1031__) || defined(__gfx1032__) ||  \
+    defined(__gfx1034__) || defined(__gfx1035__) || defined(__gfx1036__) ||    \
+    defined(__gfx10_3_generic__)
+#define TL_BUFFER_RESOURCE_3RD_DWORD 0x31014000
+#elif defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) ||  \
+    defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__) ||    \
+    defined(__gfx1152__) || defined(__gfx11_generic__) ||                      \
+    defined(__gfx1200__) || defined(__gfx1201__) || defined(__gfx12_generic__)
+#define TL_BUFFER_RESOURCE_3RD_DWORD 0x31004000
+#endif
 
 struct __attribute__((packed)) buffer_resource {
   const void *ptr;
@@ -21,9 +38,9 @@ struct __attribute__((packed)) buffer_resource {
   uint32_t config;
 };
 
-CK_TILE_DEVICE int32x4_t make_wave_buffer_resource(const void *ptr,
-                                                   uint32_t size = 0xffffffff) {
-  buffer_resource res{ptr, size, CK_TILE_BUFFER_RESOURCE_3RD_DWORD};
+TL_DEVICE int32x4_t make_wave_buffer_resource(const void *ptr,
+                                              uint32_t size = 0xffffffff) {
+  buffer_resource res{ptr, size, TL_BUFFER_RESOURCE_3RD_DWORD};
   int32x4_t r = __builtin_bit_cast(int32x4_t, res);
   r.x = __builtin_amdgcn_readfirstlane(r.x);
   r.y = __builtin_amdgcn_readfirstlane(r.y);
@@ -64,8 +81,8 @@ template <int N = 0> TL_DEVICE void cp_async_wait() {
 }
 
 template <bool pre_nop = false>
-CK_TILE_DEVICE void async_buffer_load_dword_v(void *smem, int32x4_t rsrc,
-                                              index_t voffset) {
+TL_DEVICE void async_buffer_load_dword_v(void *smem, int32x4_t rsrc,
+                                         index_t voffset) {
   auto const lds_ptr_sgpr =
       __builtin_amdgcn_readfirstlane((reinterpret_cast<uintptr_t>(smem)));
   asm volatile("s_mov_b32 m0, %0; \n\t"
@@ -74,37 +91,68 @@ CK_TILE_DEVICE void async_buffer_load_dword_v(void *smem, int32x4_t rsrc,
                : "memory");
 }
 
+// gfx950 (CDNA4 / MI350): 128-bit direct-to-LDS async load.
+// buffer_load_dwordx4 ... lds bypasses VGPRs entirely, giving 4x the
+// bandwidth of the 32-bit path and overlapping with MFMA computation.
+#if defined(__gfx950__)
+TL_DEVICE void async_buffer_load_dwordx4_v(void *smem, int32x4_t rsrc,
+                                           index_t voffset) {
+  auto const lds_ptr_sgpr =
+      __builtin_amdgcn_readfirstlane((reinterpret_cast<uintptr_t>(smem)));
+  asm volatile(
+      "s_mov_b32 m0, %0; \n\t"
+      "buffer_load_dwordx4 %1, %2, 0 offen lds;\n\t" ::"s"(lds_ptr_sgpr),
+      "v"(voffset), "s"(rsrc)
+      : "memory");
+}
+#endif // __gfx950__
+
 template <int N>
-TL_DEVICE void cp_async_gs(void *lds_base_ptr, void *global_base_ptr) {
+TL_DEVICE void cp_async_gs(void *lds_base_ptr, void const *global_base_ptr) {
   if constexpr (N == 16) {
-    *(uint4 *)lds_base_ptr = *(uint4 *)global_base_ptr;
+    // NOTE: the gfx950 buffer_load_dwordx4 ... lds path requires the per-thread
+    // LDS destination address to be exactly base + threadIdx.x * 16 bytes
+    // (i.e. no swizzling).  The pipeline-planning pass generates swizzled LDS
+    // layouts that violate this constraint, so we always use the synchronous
+    // uint4 store here.  The T.async_copy path (called with a known-linear LDS
+    // layout) may still use the fast async path via async_buffer_load_dwordx4_v
+    // directly.
+    *(uint4 *)lds_base_ptr = *(const uint4 *)global_base_ptr;
   } else if constexpr (N == 8) {
-    *(uint2 *)lds_base_ptr = *(uint2 *)global_base_ptr;
+    *(uint2 *)lds_base_ptr = *(const uint2 *)global_base_ptr;
   } else if constexpr (N == 4) {
     async_buffer_load_dword_v(
         lds_base_ptr,
-        make_wave_buffer_resource(((int32_t *)global_base_ptr) - threadIdx.x),
+        make_wave_buffer_resource(((const int32_t *)global_base_ptr) -
+                                  threadIdx.x),
         threadIdx.x * N /*assume 4 bytes*/);
   }
 }
 
 template <int N>
 TL_DEVICE void cp_async_gs_conditional(void *lds_base_ptr,
-                                       void *global_base_ptr, bool cond) {
+                                       void const *global_base_ptr, bool cond) {
   if constexpr (N == 16) {
+    // NOTE: same reasoning as cp_async_gs above — the pipeline-planning pass
+    // generates swizzled LDS layouts that are incompatible with the gfx950
+    // buffer_load_dwordx4 ... lds path (which requires a linear, un-swizzled
+    // destination).  Use the synchronous uint4 path here as well so that
+    // cp_async_wait (which issues s_waitcnt vmcnt) correctly synchronises the
+    // data before the consumer MFMA reads it.
     *(uint4 *)lds_base_ptr =
-        cond ? *(uint4 *)global_base_ptr : make_uint4(0, 0, 0, 0);
+        cond ? *(const uint4 *)global_base_ptr : make_uint4(0, 0, 0, 0);
   } else if constexpr (N == 8) {
     *(uint2 *)lds_base_ptr =
-        cond ? *(uint2 *)global_base_ptr : make_uint2(0, 0);
+        cond ? *(const uint2 *)global_base_ptr : make_uint2(0, 0);
   } else {
     if (cond) {
       async_buffer_load_dword_v(
           lds_base_ptr,
-          make_wave_buffer_resource(((int32_t *)global_base_ptr) - threadIdx.x),
+          make_wave_buffer_resource(((const int32_t *)global_base_ptr) -
+                                    threadIdx.x),
           threadIdx.x * N /*assume 4 bytes*/);
     } else {
-      *(uint4 *)lds_base_ptr = make_uint4(0, 0, 0, 0);
+      *(u32 *)lds_base_ptr = 0;
     }
   }
 }

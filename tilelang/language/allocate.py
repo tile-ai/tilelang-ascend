@@ -1,5 +1,3 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
 """Memory allocation utilities for Tile-AI programs.
 
 This module provides a set of functions for allocating different types of memory buffers
@@ -8,33 +6,53 @@ interfaces for different memory scopes.
 
 Available allocation functions:
     - alloc_shared: Allocates shared memory buffers for inter-thread communication
+    - alloc_local: Allocates local memory buffers for thread-private storage
     - alloc_fragment: Allocates fragment memory buffers for specialized operations
     - alloc_var: Allocates single-element variable buffers
+    - alloc_global: Allocates global memory buffers as workspace
 
 Each function takes shape and dtype parameters and returns a TVM buffer object
 with the appropriate memory scope.
 """
 
 from __future__ import annotations
+from typing import overload, Literal
+from tilelang._typing import DType, ShapeType
+from tilelang import tvm as tvm
+from tvm.script import tirx as T
+from tvm.tirx import PrimExpr
+from tvm.tirx.script.builder.ir import sblock_attr
+from tvm.tirx.buffer import Buffer
+from tvm.tirx.expr import FloatImm, IntImm
 
-import tvm
-from tvm.script import tir as T
-from tvm.tir import PrimExpr
-from tvm.script.parser.tir import block_attr
-from typing import overload
-
-# from .dtypes import dtype as tl_dtype
-from tvm.tir.buffer import Buffer
-from tvm.tir.expr import FloatImm, IntImm
+from . import dtypes as _dtypes
+from .dtypes import dtype as tl_dtype
+from .eager.builder import OutTensor
+from .proxy import Tensor, ptr as _ptr_sentinel
 
 
-def alloc_shared(shape, dtype, scope="shared"):
+def _with_span(buffer: Buffer) -> Buffer:
+    """Stamp the buffer with the current user source location.
+
+    The span lets compiler diagnostics (e.g. layout inference failures) and
+    tools (LSP, visualizers) point back to the `T.alloc_*` line. It is a no-op
+    outside eager parsing or when TILELANG_ENABLE_IR_SPAN is disabled.
+    """
+    from .eager.builder import Builder
+
+    builder = Builder.current()
+    if builder is not None:
+        builder.with_buffer_span(buffer)
+    return buffer
+
+
+def alloc_shared(shape: ShapeType, dtype: DType, scope="shared.dyn") -> Buffer:
     """Allocate a shared memory buffer for inter-thread communication.
 
     Args:
         shape (tuple): The shape of the buffer to allocate
         dtype (str): The data type of the buffer (e.g., 'float32', 'int32')
-        scope (str, optional): The memory scope. Defaults to "shared"
+        scope (str, optional): The memory scope. Defaults to "shared.dyn"
 
     Returns:
         T.Buffer: A TVM buffer object allocated in shared memory
@@ -42,11 +60,25 @@ def alloc_shared(shape, dtype, scope="shared"):
     if dtype == "bool":
         # lei: This is a hack to handle bool type.
         # Because tilelang's merge smem pass cannot merge bool type currently.
-        scope = "shared.ub"
-    return T.alloc_buffer(shape, dtype, scope=scope)
+        scope = "shared"
+    return _with_span(T.sblock_alloc_buffer(shape, dtype, scope=scope))
 
 
-def alloc_fragment(shape, dtype, scope="local.fragment"):
+def alloc_local(shape: ShapeType, dtype: DType, scope="local") -> Buffer:
+    """Allocate a local memory buffer for thread-private storage.
+
+    Args:
+        shape (tuple): The shape of the buffer to allocate
+        dtype (str): The data type of the buffer (e.g., 'float32', 'int32')
+        scope (str, optional): The memory scope. Defaults to "local"
+
+    Returns:
+        T.Buffer: A TVM buffer object allocated in local memory
+    """
+    return _with_span(T.sblock_alloc_buffer(shape, dtype, scope=scope))
+
+
+def alloc_fragment(shape: ShapeType, dtype: DType, scope="local.fragment") -> Buffer:
     """Allocate a fragment memory buffer for specialized operations.
 
     Args:
@@ -57,18 +89,18 @@ def alloc_fragment(shape, dtype, scope="local.fragment"):
     Returns:
         T.Buffer: A TVM buffer object allocated in fragment memory
     """
-    return T.alloc_buffer(shape, dtype, scope=scope)
+    return _with_span(T.sblock_alloc_buffer(shape, dtype, scope=scope))
 
 
 @overload
-def alloc_var(dtype, init: PrimExpr | int | float, scope: str = "local.var") -> Buffer: ...
+def alloc_var(dtype: DType, init: PrimExpr | int | float, scope: str = "local.var") -> Buffer: ...
 
 
 @overload
-def alloc_var(dtype, scope: str = "local.var", *, init: PrimExpr | int | float | None = None) -> Buffer: ...
+def alloc_var(dtype: DType, scope: str = "local.var", *, init: PrimExpr | int | float | None = None) -> Buffer: ...
 
 
-def alloc_var(dtype, *args, scope: str = "local.var", init: PrimExpr | int | float | None = None) -> Buffer:
+def alloc_var(dtype: DType, *args, scope: str = "local.var", init: PrimExpr | int | float | None = None) -> Buffer:
     """Allocate a single-element variable buffer.
 
     Args:
@@ -94,6 +126,7 @@ def alloc_var(dtype, *args, scope: str = "local.var", init: PrimExpr | int | flo
     """
     parsed_scope = scope
     parsed_init = init
+
     if len(args) == 1:
         arg = args[0]
         if isinstance(arg, str) and parsed_init is None and scope == "local.var":
@@ -115,43 +148,273 @@ def alloc_var(dtype, *args, scope: str = "local.var", init: PrimExpr | int | flo
     if not isinstance(parsed_scope, str):
         raise TypeError("Scope must be a string in alloc_var.")
 
-    buffer = T.alloc_buffer([1], dtype, scope=parsed_scope)
+    if dtype is _ptr_sentinel:
+        dtype = _dtypes.int64
+
+    buffer = _with_span(T.sblock_alloc_buffer([1], dtype, scope=parsed_scope))
     if parsed_init is not None:
-        if isinstance(parsed_init, (int, float, IntImm, FloatImm)):
-            init_const = tvm.tir.const(parsed_init, dtype)
-            block_attr({"tl.local_var_init": {buffer.data: init_const}})
-        else:
-            T.buffer_store(buffer, parsed_init, 0)
+        # Always use T.buffer_store for reliable initialisation across all
+        # backends.  The sblock_attr("tl.local_var_init") path feeds into the
+        # flatten_buffer transform which does not reliably emit initialiser
+        # code on some backends (e.g. HIP codegen silently drops the
+        # annotation for integer/float literals, leaving the scalar
+        # uninitialised).  T.buffer_store emits an explicit BufferStore TIR
+        # node that every backend lowers to an assignment statement.
+        if isinstance(parsed_init, (int, float)):
+            parsed_init = tvm.tirx.const(parsed_init, dtype=tl_dtype(dtype))
+        elif isinstance(parsed_init, (IntImm, FloatImm)):
+            parsed_init = tl_dtype(dtype)(parsed_init)
+        T.buffer_store(buffer, parsed_init, 0)
     return buffer
 
 
-"""
-The following are memory scopes in Ascend.
-Here is the correspondence between TIR scopes and Ascend memory scopes:
-- shared -> dynamic (L1/UB, resolved by InferAllocScope)
-- shared.l1 -> L1
-- shared.ub -> UB
-- wmma.matrix_a -> L0A
-- wmma.matrix_b -> L0B
-- wmma.accumulator -> L0C
-"""
+def alloc_global(shape: ShapeType, dtype: DType, scope="global") -> Buffer:
+    """Allocate a global memory buffer as a global workspace.
+
+    NOTE(chaofan): Memory allocated in this way doesn't go through torch allocator. Instead,
+    it's allocated directly by the corresponding backend APIs, like cudaMalloc. We
+    recommend allocating workspace in Torch side and pass it to the kernel via arguments,
+    which is managed under the hood by the framework. This API is mainly for testing
+    purposes and some specific purposes.
+
+    NOTE(chaofan): This API may not be available in all backends (e.g. CuteDSL).
+
+    Args:
+        shape (tuple): The shape of the buffer to allocate
+        dtype (str): The data type of the buffer (e.g., 'float32', 'int32')
+        scope (str, optional): The memory scope. Defaults to "global"
+
+    Returns:
+        T.Buffer: A TVM buffer object allocated in global memory
+    """
+
+    return _with_span(T.sblock_alloc_buffer(shape, dtype, scope=scope))
 
 
-def alloc_L1(shape, dtype):
-    return T.alloc_buffer(shape, dtype, scope="shared.l1")
+def alloc_barrier(arrive_count: int | list[int]) -> Buffer:
+    """Allocate a barrier buffer.
+
+    Args:
+        arrive_count (int | list[int]): The number of threads that need to arrive at each barrier.
+            Every count must be at least 1: an mbarrier arrive count of 0 has no defined meaning,
+            and a negative count would be reinterpreted as a garbage unsigned value at init.
+
+    Returns:
+        T.Buffer: A TVM buffer object allocated as a barrier
+
+    Examples
+    --------
+    >>> mbar = alloc_barrier(128)  # allocate a barrier with arrive count 128
+    >>> mbars = alloc_barrier([128] * n)  # allocate n barriers with the same arrive count 128
+    """
+    counts = [arrive_count] if isinstance(arrive_count, int) else list(arrive_count)
+    if any(count <= 0 for count in counts):
+        raise ValueError(f"alloc_barrier: arrive_count must be at least 1, got {counts}")
+    # Normalize to list
+    if isinstance(arrive_count, int):
+        arrive_count = [arrive_count]
+    else:
+        arrive_count = list(arrive_count)
+    buffer = _with_span(T.sblock_alloc_buffer((len(arrive_count),), _dtypes.uint64, scope="shared.barrier"))
+    # Convert to TIR IntImm expressions for C++ pass to consume as Map<Var, Array<PrimExpr>>
+    # Use buffer.data as key to support multiple barrier buffer allocations
+    arrive_count_exprs = [IntImm("int32", c) for c in arrive_count]
+    sblock_attr({"barrier_init": {buffer.data: arrive_count_exprs}})
+
+    return buffer
 
 
-def alloc_L0A(shape, dtype):
-    return T.alloc_buffer(shape, dtype, scope="wmma.matrix_a")
+def alloc_cluster_barrier(arrive_count: int | list[int]) -> Buffer:
+    """Allocate a cluster barrier buffer.
+
+    Args:
+        arrive_count (int | list[int]): The number of threads that need to arrive at each barrier.
+            Every count must be at least 1, as for `alloc_barrier`.
+
+    Returns:
+        T.Buffer: A TVM buffer object allocated as a cluster barrier
+    """
+    counts = [arrive_count] if isinstance(arrive_count, int) else list(arrive_count)
+    if any(count <= 0 for count in counts):
+        raise ValueError(f"alloc_cluster_barrier: arrive_count must be at least 1, got {counts}")
+    # Normalize to list
+    if isinstance(arrive_count, int):
+        arrive_count = [arrive_count]
+    else:
+        arrive_count = list(arrive_count)
+    buffer = _with_span(T.sblock_alloc_buffer((len(arrive_count),), _dtypes.uint64, scope="shared.cluster_barrier"))
+    # Convert to TIR IntImm expressions for C++ pass to consume as Map<Var, Array<PrimExpr>>
+    # Use buffer.data as key to support multiple barrier buffer allocations
+    arrive_count_exprs = [IntImm("int32", c) for c in arrive_count]
+    sblock_attr({"barrier_init": {buffer.data: arrive_count_exprs}})
+
+    return buffer
 
 
-def alloc_L0B(shape, dtype):
-    return T.alloc_buffer(shape, dtype, scope="wmma.matrix_b")
+def alloc_tmem(shape: ShapeType, dtype: DType) -> Buffer:
+    """
+    Allocate a Tensor Memory (TMEM) buffer for use with 5th generation Tensor Core operations (e.g., TCGEN5.MMA).
+
+    TMEM is a dedicated on-chip memory introduced in Blackwell GPUs, designed to reduce register pressure and enable asynchronous, single-threaded MMA operations. It is organized as a 2D array of 512 columns by 128 rows (lanes), with each cell being 32 bits. Allocation is performed in units of columns, and every lane of a column is allocated together.
+
+    Key properties and requirements:
+        - The number of columns allocated must be a power of 2 and at least 32.
+        - TMEM allocations are dynamic. TileLang deallocates them automatically at
+          the end of the allocation block unless you call ``T.deallocate_tmem`` to
+          take manual control of the lifetime.
+        - Both allocation and deallocation must be performed by the same warp.
+        - The base address of the TMEM allocation is stored in shared memory and used as the offset for TCGEN5.MMA accumulator tensors.
+        - Only TCGEN5.MMA and specific TMEM load/store instructions can access TMEM; all pre-processing must occur before data is loaded into TMEM, and all post-processing after data is retrieved.
+        - The number of columns allocated should not increase between any two allocations in the execution order within the CTA.
+
+    Args:
+        shape (ShapeType): Logical buffer shape.  The last two modes are the
+            matrix modes; any leading modes are batch dimensions that repeat
+            the buffer along TMEM columns.
+        dtype (DType): Element data type.
+
+    Returns:
+        T.Buffer: A TVM buffer object allocated in TMEM scope, suitable for use as an accumulator or operand in TCGEN5.MMA operations.
+
+    Note:
+        - TMEM is only available on supported architectures (e.g., Blackwell and later).
+        - The buffer returned should be used according to TMEM access restrictions.
+          Use ``T.deallocate_tmem`` only when you need an earlier, explicit release.
+    """
+
+    # The last two modes are the matrix modes; leading modes are batch
+    # dimensions (for example a software-pipeline stage) that repeat the
+    # accumulator along TMEM columns.
+    assert len(shape) >= 2, "shape must be a 2D or higher tensor for TMEM allocation"
+    return _with_span(T.sblock_alloc_buffer(shape, dtype, scope="shared.tmem"))
 
 
-def alloc_L0C(shape, dtype):
-    return T.alloc_buffer(shape, dtype, scope="wmma.accumulator")
+ReducerOp = Literal["sum", "max", "min", "bitand", "bitor", "bitxor"]
+_BITWISE_REDUCER_OPS = ("bitand", "bitor", "bitxor")
 
 
-def alloc_ub(shape, dtype):
-    return T.alloc_buffer(shape, dtype, scope="shared.ub")
+def alloc_reducer(shape: ShapeType, dtype: DType, op: ReducerOp = "sum", replication=None) -> Buffer:
+    """
+    Allocate a reducer: a first-class deferred reduction epoch handle.
+
+    The reducer lives in the virtual ``local.reducer`` scope and may only be
+    accessed through the epoch operations::
+
+        acc = T.alloc_reducer(shape, dtype, op="sum")
+        T.reducer_init(acc)          # or T.reducer_init(acc, init_value)
+        for ...:
+            T.reducer_update(acc[indices], contribution)
+        dst = T.alloc_fragment(shape, dtype)
+        T.finalize_reducer(acc, dst)
+
+    Ordinary reads/writes, ``T.clear``/``T.fill``, aliasing, and in-place
+    finalize are rejected at compile time. Physical storage and the
+    cross-thread communication plan are chosen by the compiler; the physical
+    layout can never change how many times a logical contribution is combined.
+
+    Args:
+        shape (tuple): Logical shape of the reduction result.
+        dtype (str): Element data type (e.g., 'float32', 'int32').
+        op (str): Combine op: "sum", "max", "min", "bitand", "bitor" or
+            "bitxor" (the bitwise ops require an integer dtype).
+        replication (str | None): Deprecated legacy (v1) knob. Passing "all"
+            or "none" selects the legacy fragment-based reducer for backward
+            compatibility; it will be removed together with the v1 lowering.
+
+    Returns:
+        T.Buffer: The reducer handle.
+    """
+
+    assert op in ["sum", "max", "min", "bitand", "bitor", "bitxor"]
+    if op in _BITWISE_REDUCER_OPS:
+        dtype_str = str(dtype)
+        assert dtype_str.startswith(("int", "uint")) or dtype_str == "bool", (
+            f"bitwise reducer op '{op}' requires an integer dtype, got {dtype_str}"
+        )
+        assert replication is None, "the legacy v1 reducer only supports sum/max/min"
+
+    if replication is not None:
+        # Legacy v1 reducer path (fragment buffer + reducer_info annotation).
+        import warnings
+
+        warnings.warn(
+            "alloc_reducer(replication=...) selects the deprecated v1 reducer; "
+            "migrate to reducer_init/reducer_update/finalize_reducer(acc, dst).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        assert replication in ["all", "none"]
+        reducer = _with_span(T.sblock_alloc_buffer(shape, dtype, scope="local.fragment"))
+        sblock_attr({"reducer_info": {reducer.data: {"rep": replication, "op": op}}})
+        return reducer
+
+    reducer = _with_span(T.sblock_alloc_buffer(shape, dtype, scope="local.reducer"))
+    sblock_attr({"reducer_info_v2": {reducer.data: {"op": op}}})
+
+    return reducer
+
+
+DescKind = Literal["wgmma", "tcgen05_smem", "tcgen05_instr"]
+
+
+def alloc_descriptor(
+    kind: DescKind = "wgmma",
+    dtype: DType = _dtypes.uint64,
+) -> Buffer:
+    """Allocate a descriptor buffer for WGMMA and TCGEN5.MMA.
+
+    Args:
+        kind: The descriptor kind, one of "wgmma", "tcgen05" ("utcmma" as alias).
+
+    Returns:
+        T.Buffer: A TVM buffer object allocated as a descriptor
+    """
+
+    scope = "local.descriptor." + kind
+    # Buffer naming via `name` is not supported by this TVM builder signature;
+    # keep parameter for forward-compat, but do not pass it.
+    return _with_span(T.sblock_alloc_buffer([1], dtype, scope=scope))
+
+
+def alloc_wgmma_desc(dtype: DType = _dtypes.uint64) -> Buffer:
+    return alloc_descriptor("wgmma", dtype=dtype)
+
+
+def alloc_tcgen05_smem_desc(dtype: DType = _dtypes.uint64) -> Buffer:
+    return alloc_descriptor("tcgen05_smem", dtype=dtype)
+
+
+def alloc_tcgen05_instruction_desc(dtype: DType = _dtypes.uint32) -> Buffer:
+    return alloc_descriptor("tcgen05_instr", dtype=dtype)
+
+
+# Alias: short name consistent with imports
+def alloc_tcgen05_instr_desc(dtype: DType = _dtypes.uint32) -> Buffer:
+    return alloc_tcgen05_instruction_desc(dtype)
+
+
+@overload
+def empty(shape, dtype: DType = _dtypes.float32) -> Tensor: ...
+
+
+def empty(*shape, dtype: DType = _dtypes.float32) -> Tensor:
+    """Declare the output tensor used in eager-style JIT.
+
+    Tensors allocated in this way should be returned as the output of the function.
+
+    Args:
+        shape (tuple): The shape of the tensor to allocate
+        dtype (str): The data type of the tensor (e.g., 'float32', 'int32')
+
+    Returns:
+        Tensor: The declared OutTensor object.
+    """
+
+    if len(shape) == 1 and isinstance(shape[0], (tuple, list)):
+        return OutTensor(shape[0], dtype)
+    elif len(shape) == 2 and isinstance(shape[0], (tuple, list)) and isinstance(shape[1], str):
+        return OutTensor(shape[0], shape[1])
+    elif all([isinstance(x, (int, PrimExpr)) for x in shape]):
+        return OutTensor(shape, dtype)
+    else:
+        raise TypeError(f"Invalid shape {shape}")

@@ -2,6 +2,7 @@
 *.slo
 *.lo
 *.o
+*.so
 *.obj
 *.pyc
 
@@ -18,7 +19,8 @@
 
 debug/
 build/
-dist/
+*dist/
+dist*/
 wheelhouse/
 __pycache__
 nnfusion.tar.gz
@@ -26,10 +28,16 @@ nnfusion.tar.gz
 # makeenv and test intermediate files
 tmp/
 
+.env
+.envrc
+.venv
+env/
 venv/
+ENV/
+env.bak/
+venv.bak/
 .vscode/
 .vs/
-.arts/
 
 # VisualGDB files
 VisualGDB/
@@ -76,17 +84,11 @@ models/frozenmodels/
 # .ruff_cache
 .ruff_cache
 
-# build sdist
-build_sdist/
-
 # exclude debug testing folder
 !testing/python/debug
 
 # ignore lib with develop mode
 tilelang/lib
-
-# tox
-.tox/
 
 # cython
 tilelang/jit/adapter/cython/.cycache
@@ -94,16 +96,37 @@ tilelang/jit/adapter/cython/.cycache
 # cache directory for clangd
 .cache/
 
-examples/torch_tl_ascend/src/torch_tl_ascend/*.so
-examples/torch_tl_ascend/src/torch_tl_ascend/op_source/*.py
-!examples/torch_tl_ascend/src/torch_tl_ascend/op_source/__init__.py
-examples/torch_tl_ascend/demo_libtorch/lib/*.so
+# claude (keep local settings ignored, but track the skills symlinks)
+**/.claude
+!/.claude
+/.claude/*
+!/.claude/skills
 
-docs/notebook/*.so
-docs/notebook/*.cpp
+# CMake
+cmake-build/
+cmake-build-*/
+CMakeFiles/
 
-.agents/reports
+# Git version for sdist
+.git_commit.txt
 
-# gemm_aot AOT build output
-examples/gemm_aot/kernel_lib.so
+# pre-commit cache
+.pre-commit-cache/*
 
+# host checks logs
+maint/host_checks/logs/*
+
+# ncu
+*.ncu-rep
+
+# csv
+*.csv
+
+# perf regression test
+.perf_regression/
+
+# agent skills folder
+.humanize*
+
+# uv Lockfile
+uv.lock

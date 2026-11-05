@@ -13,9 +13,9 @@ from mha_sink_bwd_bhsd import (  # noqa: E402
 )
 from test_mha_sink_fwd_bhsd import ref_program  # noqa: E402
 
-# Make fwd dir importable (test_mha_sink_fwd_bhsd lives in examples/mha_sink_fwd_bhsd/).
-# bwd lives in examples_experiment/mha_sink_bwd_bhsd/, so reach fwd via ../../examples/.
-_FWD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "examples", "mha_sink_fwd_bhsd")
+# Make fwd dir importable (test_mha_sink_fwd_bhsd lives in examples/ascend_a2a3/mha_sink_fwd_bhsd/).
+# bwd lives in examples_experiment/mha_sink_bwd_bhsd/, so reach fwd via ../../examples/ascend_a2a3/.
+_FWD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "examples", "ascend_a2a3", "mha_sink_fwd_bhsd")
 if _FWD_DIR not in sys.path:
     sys.path.insert(0, _FWD_DIR)
 

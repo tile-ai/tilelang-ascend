@@ -5,7 +5,7 @@ import ctypes
 import torch
 
 import tilelang
-from tilelang import language as T
+from tilelang.ascend.a2a3 import language as T
 
 try:  # fast raw-stream query (0.9 us vs 33 us for torch.npu.current_stream)
     import torch_npu  # noqa: F401
@@ -84,7 +84,7 @@ class _CachedLauncher:
             if not t.is_contiguous():
                 raise ValueError("kernel tensors must be contiguous")
             c_args.append(ctypes.c_void_p(t.data_ptr()))
-        for _, (bidx, sidx) in ad.dynamic_symbolic_map.items():
+        for _, (_kind, bidx, sidx, _scale) in ad.dynamic_symbolic_map.items():
             c_args.append(ctypes.c_int64(int(tensors[bidx].shape[sidx])))
         c_args.append(None)  # stream slot (filled per call)
         return c_args
@@ -1152,7 +1152,7 @@ if __name__ == "__main__":
     # shape-correct and finite.
     import torch.nn.functional as F
 
-    tilelang.cache.clear_cache()
+    tilelang.disable_cache()
     torch.manual_seed(42)
     S, H, D, topk = 2048, 16, 128, 64
 

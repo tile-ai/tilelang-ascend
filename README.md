@@ -1,695 +1,259 @@
-<img src=./images/logo-row.svg />
+<img src="./images/logo-row.svg" alt="TileLang logo" />
 
 <div align="center">
 
-# TileLang-Ascend
+# Tile Language
+[![PyPI version](https://badge.fury.io/py/tilelang.svg)](https://badge.fury.io/py/tilelang)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/tile-ai/tilelang)
+[![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?logo=discord&logoColor=white)](https://discord.gg/TUrHyJnKPG)
+[![Puzzles](https://img.shields.io/badge/🧩_Learn-TileLang_Puzzles-blueviolet)](https://github.com/tile-ai/tilelang-puzzles)
+[![LSP](https://img.shields.io/badge/LSP-TileLang_LSP-orange?logo=visualstudiocode&logoColor=white)](https://github.com/tile-ai/tilelang-lsp)
 
-
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/tile-ai/tilelang-ascend)
-
+[Documentation](https://tilelang.com/) ·
+[Installation](https://tilelang.com/get_started/Installation.html) ·
+[Examples](https://github.com/tile-ai/tilelang/tree/main/examples) ·
+[Releases](https://github.com/tile-ai/tilelang/releases) ·
+[Contributing](https://github.com/tile-ai/tilelang/blob/main/CONTRIBUTING.md) ·
+[TileLang (Ascend 950)](./tilelang/ascend/README.md)
 </div>
 
-Tile Language Ascend (**tilelang-ascend**) is a specialized variant of the tile-lang domain-specific language, specifically optimized for Huawei Ascend NPU (Neural Processing Unit) architecture. Built upon the foundation of tile-lang's Pythonic syntax and [TVM](https://tvm.apache.org/) compiler infrastructure, tilelang-ascend enables developers to efficiently create high-performance AI compute kernels tailored for Ascend processors, including operations like GEMM, vector operations, and attention mechanisms. Tilelang-ascend allows developers to focus on productivity without sacrificing the low-level optimizations necessary for state-of-the-art performance on the NPU. The compiler backend supports two technical routes: [Ascend C & PTO](https://github.com/tile-ai/tilelang-ascend/tree/ascendc_pto) and [AscendNPU IR](https://github.com/tile-ai/tilelang-ascend/tree/npuir).
+Tile Language (**tile-lang**) is a concise domain-specific language designed to streamline the development of high-performance GPU/CPU/NPU kernels (e.g., GEMM, Dequant GEMM, FlashAttention, LinearAttention). By employing a Pythonic syntax with an underlying compiler infrastructure on top of [TVM](https://tvm.apache.org/), tile-lang allows developers to focus on productivity without sacrificing the low-level optimizations necessary for state-of-the-art performance.
 
-<p align="center">
-  <img src="./images/tl-ascend-gemm.png" width="100%" alt="image">
-
-</p>
+<img src="./images/MatmulExample.png" alt="TileLang tiled matrix multiplication example" />
 
 ## Latest News
-- 04/24/2026 🚀: Released DeepSeek V4 kernels [DeepSeek-V4](./examples/deepseek_v4/)
-- 03/28/2026 🚀: Released high-performance [Flash Attention](./examples/flash_attention/) & [Sparse Flash Attention](./examples/sparse_flash_attention/) benchmark and optimization guide, see [PR#698](https://github.com/tile-ai/tilelang-ascend/pull/698) and [PR#665](https://github.com/tile-ai/tilelang-ascend/pull/665).
-- 03/16/2026 🚀: Introduced [wheel package installation](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#installation), enabling easy setup via `pip install`!
-- 03/12/2026 ✨: New [ACLGraph](./examples/aclgraph/) integration example for graph-level optimization on Ascend NPU.
-- 03/03/2026 ✨: Supported [shared memory (shmem) with put/get API](https://github.com/tile-ai/tilelang-ascend/pull/194) for inter-core communication.
-- 01/29/2026 📖: Published the [TileLang-Ascend Programming Guide](./docs/TileLang-Ascend%20Programming%20Guide.md) with comprehensive development tutorials.
-- 01/23/2026 🚀: Landed [PTO backend](https://github.com/tile-ai/tilelang-ascend/pull/341) as a new code generation target.
-- 01/21/2026 ✨: New [torch_tl_ascend](./examples/torch_tl_ascend/) PyTorch integration example for seamless NPU + PyTorch workflows, see [PR#292](https://github.com/tile-ai/tilelang-ascend/pull/292).
-- 01/15/2026 ✨: Introduced [T.Pipelined](https://github.com/tile-ai/tilelang-ascend/pull/274) for software pipelining on Ascend NPU.
-- 12/08/2025 ✨: Supported [T.Parallel](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#tparallel) for automatic vectorization, check out [PR#113](https://github.com/tile-ai/tilelang-ascend/pull/113) for details.
-- 11/25/2025 ✨: Enabled [automatic buffer reuse](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#automatic-buffer-reuse) to reduce on-chip memory footprint, see [PR#101](https://github.com/tile-ai/tilelang-ascend/pull/101).
-- 11/17/2025 🛠️: Shipped debug tools `T.printf` and `T.dump_tensor` for [printing and dumping](https://github.com/tile-ai/tilelang-ascend/tree/ascendc_pto/examples/print) device-side buffers.
-- 11/07/2025 ✨: Enabled [automatic intra-kernel synchronization insertion](https://github.com/tile-ai/tilelang-ascend?tab=readme-ov-file#automatic-insertion-of-synchronization-instruction), see [PR#74](https://github.com/tile-ai/tilelang-ascend/pull/74).
-- 10/28/2025 🚀: Optimized tl_templates performance and delivered a high-performance [GEMM kernel](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/gemm/example_gemm_intrinsic.py).
-- 09/29/2025 🎉: tilelang-ascend is now open source! A DSL for high-performance AI workloads on Ascend NPUs.
 
-## Programming Guide
-For more instructions and tips on using TileLang-Ascend, please refer to the [TileLang-Ascend Programming Guide](./docs/TileLang-Ascend%20Programming%20Guide.md).
+- **2026-09-30 — [Ascend 950 backend](./tilelang/ascend/README.md):** TileLang now officially supports Huawei Ascend 950 NPUs with native code generation, automatic scheduling and synchronization, SIMD/SIMT vector programming, etc. Explore the Ascend examples for GEMM, FlashAttention, and more.
+- **2026-08-04 — [TileLang LSP open sourced](https://github.com/tile-ai/tilelang-lsp):** published a Language Server Protocol implementation for TileLang with inlay hints for buffer shapes, dtypes, scopes, and inferred layouts, plus hover details and precise diagnostics.
+- **2026-08-03 — [TileLang v0.1.13](https://github.com/tile-ai/tilelang/releases/tag/v0.1.13):** shipped the multi-backend language dialect, source locations in compiler diagnostics, new CUDA and Metal hardware paths, and a broad set of correctness fixes. This release removes several legacy APIs; read the compatibility notes before upgrading.
+- **2026-07-30 — [SM120 NVF4 block-scaled MMA](https://github.com/tile-ai/tilelang/pull/2364):** added an optimized Blackwell path for `T.mma_gemm_blockscaled` and a corresponding SM120 example.
+- **2026-07-28 — [Metal 4 cooperative-tensor GEMM](https://github.com/tile-ai/tilelang/pull/2252):** added cooperative-tensor `T.gemm` support for Apple M5, while retaining the simdgroup fallback for unsupported shapes and systems.
 
-## Lessons
+<details>
+<summary><strong>Earlier news (2025–2026)</strong></summary>
 
-Welcome to the TileLang-Ascend video course series. You can access all the lessons via the links below:
+### 2026
 
-| Lesson | Topic | Video Link |
-| :---: | :--- | :---: |
-| **01** | Introduction to TileLang-Ascend Development Environment | [📺 Start learning](https://www.bilibili.com/video/BV1EdFVzpEbg/) |
-| **02** | TileLang-Ascend Programming Fundamentals | [📺 Start learning](https://www.bilibili.com/video/BV1uvFLzyEZ3/) |
-| **03** | TileLang-Ascend Developer Programming Model Deep Dive | [📺 Start learning](https://www.bilibili.com/video/BV1DoFzz2EHB/) |
-| **04** | Getting Started with TileLang-Ascend Performance Tuning and Debugging Tools | [📺 Start learning](https://www.bilibili.com/video/BV1QdFzz7E5W/) |
-| **05** | TileLang-Ascend Engineering Practice: Compilation, Integration, and Deployment | [📺 Start learning](https://www.bilibili.com/video/BV1bmFkzHEb6/) |
+- **2026-07-28 — [Source-aware compiler diagnostics](https://github.com/tile-ai/tilelang/pull/2751):** carried Python source locations into TIRX and surfaced them in compiler errors.
+- **2026-07-24 — [Multi-backend language dialect](https://github.com/tile-ai/tilelang/pull/2734):** reorganized the language layer around shared semantics with static CUDA, ROCm, and Metal dialects.
+- **2026-07-23 — [Block-causal attention for dLLM](https://github.com/tile-ai/tilelang/pull/2499):** added fixed-length and variable-length block-causal attention examples for diffusion language models.
+- **2026-07-22 — [IR Lower Trace](https://github.com/tile-ai/tilelang/pull/2725):** introduced a debugging tool for inspecting IR changes across every compiler pass and the final code-generation step.
+- **2026-07-22 — [DeepSeek V3.2 sparse MLA backward](https://github.com/tile-ai/tilelang/pull/2592):** selected the launch width adaptively from the head-block size.
+- **2026-07-21 — [DeepSeek V3.2 top-k optimization](https://github.com/tile-ai/tilelang/pull/2659):** improved the sparse-attention top-k selector's memory access pattern, delivering approximately 1.9× higher performance in the reported benchmark.
+- **2026-07-16 — [Compiler pass timing](https://github.com/tile-ai/tilelang/pull/2622):** added profiling for compiler passes with a configurable reporting threshold.
+- **2026-07-12 — [IKET profiler integration](https://github.com/tile-ai/tilelang/pull/2515):** added CUDA timeline instrumentation and profiling support.
+- **2026-07-08 — [TileLang v0.1.12](https://github.com/tile-ai/tilelang/releases/tag/v0.1.12):** added the LLVM backend, tile scheduler, backend registry, pass visualizer, and expanded Blackwell support.
+- **2026-07-06 — [Pass Visualizer](https://github.com/tile-ai/tilelang/pull/2449):** introduced a structure-tree browser for inspecting compiler transformations.
+- **2026-06-26 — [Cross-host CUDA binary cache](https://github.com/tile-ai/tilelang/pull/2459):** enabled compiled CUDA binaries to be reused across compatible hosts.
+- **2026-06-24 — [Tile scheduler](https://github.com/tile-ai/tilelang/pull/2441):** introduced persistent tile-scheduling primitives for kernel authors.
+- **2026-06-24 — [Backend CodeGen registry](https://github.com/tile-ai/tilelang/pull/2442):** moved device and [host CodeGen](https://github.com/tile-ai/tilelang/pull/2446) dispatch behind a backend registry.
+- **2026-06-18 — [LLVM backend](https://github.com/tile-ai/tilelang/pull/2409):** added CPU lowering and execution through LLVM.
+- **2026-06-18 — [Arbitrary-layout TMA lowering](https://github.com/tile-ai/tilelang/pull/2380):** enabled TMA transfers for swizzled shared-memory layouts.
+- **2026-06-16 — [Pass Diff](https://github.com/tile-ai/tilelang/pull/2375):** added compiler-pass IR comparison for debugging lowering changes.
+- **2026-06-08 — [TileLang v0.1.11](https://github.com/tile-ai/tilelang/releases/tag/v0.1.11):** expanded scan, pipeline, backend, CUDA, ROCm, and Metal functionality.
+- **2026-05-25 — [Scan operators](https://github.com/tile-ai/tilelang/pull/2262):** introduced tile-level scan primitives.
+- **2026-05-25 — [TileLang v0.1.10](https://github.com/tile-ai/tilelang/releases/tag/v0.1.10):** broadened AMD and Blackwell support, added initial Metal GEMM, improved Windows packaging, and expanded autotuning.
+- **2026-05-24 — [CDNA4 MXFP4](https://github.com/tile-ai/tilelang/pull/2132):** added FP4 E2M1 matrix-core support for AMD gfx950.
+- **2026-05-22 — [Metal simdgroup GEMM](https://github.com/tile-ai/tilelang/pull/1869):** added the first Metal `T.gemm` path using `simdgroup_matrix` MMA.
+- **2026-05-20 — [Cluster copies](https://github.com/tile-ai/tilelang/pull/1908):** introduced `T.copy_cluster` for TMA multicast and SM-to-SM cluster transfers.
+- **2026-05-20 — [TMA gather/scatter](https://github.com/tile-ai/tilelang/pull/2129):** added `tile::gather4` and `tile::scatter4` support.
+- **2026-05-20 — [Native SM75 MMA GEMM](https://github.com/tile-ai/tilelang/pull/2198):** added FP16, INT8, and INT4 tensor-core paths for Turing GPUs.
+- **2026-05-20 — [TIRX migration](https://github.com/tile-ai/tilelang/pull/2216):** moved TileLang IR usage to TVM's TIRX representation.
+- **2026-05-11 — [Parallel autotuning](https://github.com/tile-ai/tilelang/pull/2159):** added pipelined compilation, grouped compilation, and multi-GPU benchmarking.
+- **2026-05-07 — [DeepSeek V4 operators](https://github.com/tile-ai/tilelang/pull/2148):** added TileLang examples for DeepSeek V4 workloads.
+- **2026-05-06 — [Windows support](https://github.com/tile-ai/tilelang/pull/2093):** added complete Windows build and runtime support with cross-platform fixes.
+- **2026-04-28 — [MXFP8 grouped GEMM](https://github.com/tile-ai/tilelang/pull/2098):** added block-scaled grouped GEMM examples with transposed-B support on Blackwell.
+- **2026-04-25 — [HISA sparse-attention indexer](https://github.com/tile-ai/tilelang/pull/2069):** added hierarchical sparse-attention indexing examples.
+- **2026-04-24 — [Blackwell MXFP8 block-scaled GEMM](https://github.com/tile-ai/tilelang/pull/1945):** added MXFP8 block-scaled matrix multiplication on SM100.
+- **2026-04-22 — [TileLang v0.1.9](https://github.com/tile-ai/tilelang/releases/tag/v0.1.9):** delivered CuTe DSL GEMM V2, Metal code generation improvements, and build-without-host-toolchain support.
+- **2026-04-22 — [RDNA3/RDNA3.5 WMMA](https://github.com/tile-ai/tilelang/pull/2044):** added WMMA lowering for AMD gfx11 GPUs.
+- **2026-04-20 — [INT4 `T.gemm`](https://github.com/tile-ai/tilelang/pull/2063):** added INT4 matrix multiplication to the CUDA GEMM path.
+- **2026-04-17 — [CUDA source kernels](https://github.com/tile-ai/tilelang/pull/1970):** introduced `T.CUDASourceCodeKernel` for embedding custom CUDA source.
+- **2026-04-15 — [AutoDD frozen regions](https://github.com/tile-ai/tilelang/pull/2045):** added `__freeze__` annotations to preserve selected code during automatic delta debugging.
+- **2026-03-27 — [TMA stores](https://github.com/tile-ai/tilelang/pull/1981):** added store support to `T.tma_copy`.
+- **2026-03-24 — [Two-SM Blackwell kernels](https://github.com/tile-ai/tilelang/pull/1882):** added two-SM TMA, TMEM, and TCGEN5 MMA support.
+- **2026-03-23 — [AMD RDNA4](https://github.com/tile-ai/tilelang/pull/1951):** upgraded the ROCm path and added RDNA4 GPU support.
+- **2026-03-22 — [FlashAttention on SM100](https://github.com/tile-ai/tilelang/pull/1910):** added Blackwell FlashAttention examples.
+- **2026-03-18 — [Producer-consumer warp specialization](https://github.com/tile-ai/tilelang/pull/1909):** added automatic warp-specialized pipelines and the `T.tma_copy` API.
+- **2026-03-12 — [Eager-mode autotuning](https://github.com/tile-ai/tilelang/pull/1906):** enabled the autotuner with eager JIT kernels.
+- **2026-03-10 — [CPU `T.gemm`](https://github.com/tile-ai/tilelang/pull/1904):** added matrix multiplication support for the CPU target.
+- **2026-03-05 — [IR dump configuration](https://github.com/tile-ai/tilelang/pull/1903):** added a TileLang pass configuration for dumping intermediate IR.
+- **2026-02-28 — [CUDA cluster primitives](https://github.com/tile-ai/tilelang/pull/1874):** added cluster launch, query, synchronization, and barrier operations.
+- **2026-02-28 — [TCGEN5 MMA tensor-shared path](https://github.com/tile-ai/tilelang/pull/1866):** added the tensor-memory/shared-memory Blackwell GEMM path.
+- **2026-02-24 — [Host-toolchain-free builds](https://github.com/tile-ai/tilelang/pull/1833):** enabled installation without a host C/C++ toolchain when supported artifacts are available.
+- **2026-02-23 — [CuTe DSL GEMM V2](https://github.com/tile-ai/tilelang/pull/1855):** added SM90 and SM100 GEMM V2 support to the CuTe DSL backend.
+- **2026-02-16 — [TileLang v0.1.8](https://github.com/tile-ai/tilelang/releases/tag/v0.1.8):** shipped dynamic pipeline improvements, logging documentation, richer layout representations, and AMD fixes.
+- **2026-02-14 — [Cross-CUDA release wheels](https://github.com/tile-ai/tilelang/pull/1826):** unified multiple CUDA versions behind a single wheel.
+- **2026-02-14 — [Hierarchical reductions](https://github.com/tile-ai/tilelang/pull/1762):** added hierarchical and warp-level reduction intrinsics.
+- **2026-02-09 — [CUDA runtime stubs](https://github.com/tile-ai/tilelang/pull/1821):** added lazy-loading CUDART and NVRTC stubs for CUDA 11, 12, and 13 compatible wheels.
+- **2026-02-08 — [Layout visualization improvements](https://github.com/tile-ai/tilelang/pull/1811):** improved rendering and inspection of TileLang layouts.
+- **2026-02-02 — [TileLang Puzzles](https://github.com/tile-ai/tilelang-puzzles):** published ten progressively harder exercises for learning TileLang interactively.
 
-## Tested Devices
-Although tilelang-ascend aims to be portable across a range of Ascend devices, it has been specifically tested and validated on the following NPUs: A2 and A3.
+### 2025
 
-## OP Implementation Examples
-**tilelang-ascend** provides the building blocks to implement a wide variety of operators on the NPU.
-Some examples include:
+- **2025-12-18 — [CuTe DSL backend](https://github.com/tile-ai/tilelang/pull/1421):** added compilation through NVIDIA CUTLASS CuTe DSL; follow ongoing work in [issue #1454](https://github.com/tile-ai/tilelang/issues/1454).
+- **2025-12-17 — [Z3 integration](https://github.com/tile-ai/tilelang/pull/1367):** integrated SMT-based symbolic reasoning into the TVM arithmetic analyzer.
+- **2025-10-31 — [Apache TVM FFI migration](https://github.com/tile-ai/tilelang/pull/1108):** moved the runtime interface to `apache-tvm-ffi` to reduce host-side overhead.
+- **2025-10-30 — [TileLang v0.1.6.post2](https://github.com/tile-ai/tilelang/releases/tag/v0.1.6.post2):** published the final TileLang release compatible with Python 3.8.
+- **2025-10-07 — [Apple Metal backend](https://github.com/tile-ai/tilelang/pull/799):** introduced Metal device support for Apple silicon.
+- **2025-09-29 — [Huawei Ascend adapters](https://github.com/tile-ai/tilelang-ascend):** published AscendC and Ascend NPU IR backend work in the external TileLang Ascend project.
+- **2025-07-04 — [2:4 sparse tensor cores](https://github.com/tile-ai/tilelang/pull/526):** introduced `T.gemm_sp` for structured-sparse matrix multiplication.
+- **2025-06-05 — [NVRTC execution backend](https://github.com/tile-ai/tilelang/pull/461):** added an NVRTC path to reduce compilation time for generated CUDA templates.
+- **2025-04-14 — [FlashMLA on AMD MI300X](https://github.com/tile-ai/tilelang/tree/main/examples/deepseek_mla/amd):** published the optimized AMD implementation and accompanying documentation.
+- **2025-03-03 — [MLA decoding on H100](https://github.com/tile-ai/tilelang/tree/main/examples/deepseek_mla):** published the compact TileLang implementation, benchmarks, and optimization walkthrough.
+- **2025-02-15 — [WebGPU code generation](https://github.com/tile-ai/tilelang/pull/86):** added the initial WebGPU backend.
+- **2025-02-12 — [TileLang v0.1.0](https://github.com/tile-ai/tilelang/releases/tag/v0.1.0):** published the first v0.1 public release.
+- **2025-02-10 — [Debugging and layout tools](https://tilelang.com/tutorials/debug_tools_for_tilelang.html):** added `T.print` and fragment-layout visualization workflows.
+- **2025-01-20 — [TileLang open sourced](https://github.com/tile-ai/tilelang):** made the project publicly available.
 
-- [Matrix Multiplication (GEMM)](./examples/gemm/)
-- [Batch GEMM](./examples/batch_gemm/)
-- [Elementwise Operations](./examples/elementwise/)
-- [Flash Attention](./examples/flash_attention/)
-- [Sparse Flash Attention](./examples/sparse_flash_attention/)
-- [Linear Attention & RNN](./examples/linear_attention_and_rnn/)
-- [Softmax](./examples/softmax/)
-- [Normalization](./examples/normalization/)
-- [Activation Functions](./examples/activation/)
-- [Reduce](./examples/reduce/)
-- [Sort](./examples/sort/)
-- [Convolution](./examples/convolution/)
-- [Cross Entropy Loss](./examples/cross_entropy_loss/)
-- [Dispatch & Combine](./examples/dispatch_combine/)
+</details>
 
-Within the `examples` directory, you will also find additional complex kernels—such as [LightningIndexer](./examples/lightning_indexer/), [TopK Selector](./examples/topk_selector/), and [ACLGraph Integration](./examples/aclgraph/). More operators are continuously being added.
+See [all releases](https://github.com/tile-ai/tilelang/releases) for complete changelogs and compatibility notes.
 
+## Platform and Backend Support
+
+TileLang is evolving into a multi-backend compiler (**TileLang-X**) built around a modular backend abstraction. See the [backend architecture](tilelang/backend/README.md) for the design, or ask a coding agent to use the [backend integration skill](.agents/skills/tilelang-backend/SKILL.md) when porting TileLang to a new backend.
+
+The currently supported backends are listed below. `Primary` identifies TileLang's core backend, while `Supported` and `Experimental` backends are implemented in the main repository. `Ecosystem` adapters live in separate repositories, are not included in TileLang release wheels, and may follow independent compatibility schedules. Prebuilt wheels are available for Linux x86-64/AArch64, Windows x86-64, and macOS arm64.
+
+TileLang uses `Target` objects to represent compilation targets. The default `auto` target detects CUDA, HIP, Metal, and Ascend devices; select an explicit target when compiling for another backend or architecture. See the [target guide](https://tilelang.com/get_started/targets.html) for target syntax, architecture options, and backend-specific notes, or the corresponding adapter repository for installation and tested-device details.
+
+| Backend | Target | Platforms and hardware | Support level | Notes |
+| --- | --- | --- | --- | --- |
+| NVIDIA CUDA | `cuda` | Linux x86-64/AArch64, Windows x86-64; code paths from SM70 through SM120 | Primary | Release wheels and CI coverage; TMA, WGMMA, and TMEM features require the corresponding GPU architecture. |
+| AMD ROCm/HIP | `hip` | Linux; CDNA and RDNA GPUs, including gfx942/gfx950 paths | Supported | Included in Linux wheels; a ROCm runtime is required. CI runs on a self-hosted gfx942 (MI300X) runner; gfx950 is not yet covered. |
+| Huawei Ascend 950 | `ascend` | Linux; Ascend 950 NPUs | Supported | Build from source with `USE_ASCEND=ON`; requires CANN and `torch_npu`. See the [Ascend guide](./tilelang/ascend/README.md). |
+| Apple Metal | `metal` | macOS on Apple silicon | Supported | Release wheels and CI coverage; Metal 4 cooperative tensors are available on supported M5 systems. |
+| LLVM CPU | `llvm` | Host CPUs | Experimental | Build from source with `USE_LLVM=ON`; LLVM 15 or newer is required. |
+| NVIDIA CuTe DSL | `cutedsl` | NVIDIA GPUs | Experimental | Requires `nvidia-cutlass-dsl`. |
+| WebGPU | `webgpu` | WebGPU runtimes | Experimental | Code generation and runtime integration are still evolving. |
+| Huawei Ascend A2/A3 | `ascendc` / `pto` / `npuir` | Ascend A2 and A3 | Ecosystem | Developed in [tilelang-ascend](https://github.com/tile-ai/tilelang-ascend) and the MLIR-based [tilelang-mlir-ascend](https://github.com/tile-ai/tilelang-mlir-ascend). |
+| MetaX MACA | `maca` | MetaX C500 and C600 | Ecosystem | Developed in [tilelang-metax](https://github.com/tile-ai/tilelang-metax); requires the MACA software stack. |
+| Moore Threads MUSA | `musa` | S5000, S4000, and M1000 | Ecosystem | Developed in [tilelang-musa](https://github.com/tile-ai/tilelang-musa) and released independently. |
+| HYGON | `hcu` | Linux; BW1000, BW1100, BW150 and K100_AI | Ecosystem | Developed in [tilelang-hygon](https://github.com/tile-ai/tilelang-hygon); requires the DTK software stack. |
+| Sunrise-AI TANG | `tang` | Sunrise S2 and S3 | Ecosystem | Developed in [tilelang-sunrise](https://github.com/tile-ai/tilelang-sunrise). The TANG software stack is required. |
 
 ## Installation
 
-### Environment Preparation
-We assume you already have an ascend environment with CANN (at least [8.3.RC1](https://www.hiascend.com/developer/download/community/result?cann=8.3.RC1&product=1&model=30)) and torch-npu (at least 2.6.0.RC1) installed. Firstly, set cann environment variables.
-
-  ```bash
-  source {your-cann-installed-path}/ascend-toolkit/set_env.sh
-  ```
-
-### TileLang-Ascend Installation
-
-Here we provide two installation methods: installing from wheel package and compiling from source code.
-
-#### Method 1: Install from Wheel Package (Recommended)
-
-Download the pre-built wheel package and install it directly:
+Install the latest stable release from PyPI:
 
 ```bash
-# Set Ascend environment variable
-export ASCEND_HOME_PATH=/usr/local/Ascend/ascend-toolkit/latest
-
-# Install the wheel package
-pip install tilelang-*.whl
+pip install tilelang
 ```
 
-#### Method 2: Build Wheel Package from Source
-
-If you need to build the wheel package from source:
+Verify the installation:
 
 ```bash
-# Clone the repository
-git clone --recursive https://github.com/tile-ai/tilelang-ascend.git
-cd tilelang-ascend
-
-# Set Ascend environment variable
-export ASCEND_HOME_PATH=/usr/local/Ascend/ascend-toolkit/latest
-
-# Build and install wheel package
-./build_wheel_ascend.sh [--enable-llvm]
-
-# Install the built wheel package
-pip install dist/tilelang-*.whl
+python -c "import tilelang; print(tilelang.__version__)"
 ```
 
-#### Method 3: Compile and Install from Source
+Nightly wheels provide recent features and fixes before the next stable release:
 
-a) Download
-
-    git clone --recursive https://github.com/tile-ai/tilelang-ascend.git
-    cd tilelang-ascend
-
-b) Compile and Install
-
-    bash install_ascend.sh
-
-c) Environment Variable Setup
-
-    source set_env.sh
-
-## Run
-
-
-In this section, you will learn how to call NPU TileLang operators.
-
-Here we use the **Matrix Multiplication** operator as an example for introduction.
-
-
-```
-cd examples/gemm
-python example_gemm.py
+```bash
+pip install tilelang --find-links https://tile-ai.github.io/whl/nightly
 ```
 
-Upon success, it will print:
+On AMD GPUs the same Linux wheels work out of the box: install a ROCm build of PyTorch first (e.g. `pip install torch --index-url https://download.pytorch.org/whl/rocm7.0`), then `pip install tilelang`. A host ROCm installation is required at runtime; see the [ROCm notes](https://tilelang.com/get_started/Installation.html#installing-on-amd-gpus-rocm) in the installation guide.
 
-```
-Kernel Output Match!
-```
-
-## Comparison with NVIDIA Backend Implementation
-
-GPUs primarily feature a three-level memory hierarchy that can be analogously mapped to NPU hardware architecture as follows:
-
-**Memory Hierarchy Mapping:**
-- `global memory` ↔ `global memory`
-- `shared memory` ↔ `L1 buffer on cube core and unified buffer on vector core`  
-- `register memory` ↔ `L0A/B/C buffer`
-
-**Memory Management:**
-TileLang-Ascend provides memory allocation primitives similar to the GPU version. For example, `alloc_{L1/ub/...}` functions allow on-chip memory allocation in a manner comparable to GPU programming.
-
-**Multiple Styles for Vector Operations:**
-TileLang-Ascend offers multiple ways to express vector computations on the NPU, from high-level automatic vectorization to fine-grained tile primitives:
-
-```python
-# Style 1: T.Parallel — automatic vectorization
-for (i, j) in T.Parallel(M, N):
-    C_ub[i, j] = A_ub[i, j] + B_ub[i, j]
-
-# Style 2: Tile primitives — explicit tile-level operations
-T.tile.add(C_ub, A_ub, B_ub)
-```
-
-**Automatic Cube/Vector Scope Separation:**
-Cube and vector cores on A2/A3 exchange data through global memory/L2 cache. In **Developer mode**, the compiler automatically separates Cube/Vector scopes and inserts synchronization. In **Expert mode**, you explicitly specify execution scopes using `T.Scope("C")/T.Scope("V")` and manage synchronization via `T.set_cross_flag` / `T.wait_cross_flag`.
-
+Nightly builds may be less stable than official releases. For source builds, editable installs, Docker, ROCm setup, pip-provided CUDA toolchains, or a custom TVM checkout, follow the complete [installation guide](https://tilelang.com/get_started/Installation.html).
 
 ## Quick Start
 
-In this section, you'll learn how to write and execute a straightforward GEMM (matrix multiplication) kernel using tilelang-ascend, The next chapter will introduce how to write a high-performance gemm kernel.
-
-### GEMM Example with Annotations
-
-Below is an example that demonstrates how to quickly implement a gemm on the ascend.
+The following example defines, compiles, runs, and verifies an FP16 GEMM kernel with FP32 accumulation and a fused ReLU epilogue. It uses PyTorch CUDA tensors; PyTorch uses the same `cuda` device name on ROCm systems. TileLang selects the target automatically from the current environment.
 
 ```python
-@tilelang.jit(out_idx=[-1])
-def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"):
+import torch
+import tilelang
+import tilelang.language as T
 
-    # Calculate number of blocks in M and N dimensions
-    m_num = M // block_M
-    n_num = N // block_N
 
-    @T.prim_func
-    def main(
-            A: T.Tensor((M, K), dtype),  # Input matrix A (M×K)
-            B: T.Tensor((K, N), dtype),  # Input matrix B (K×N)
-            C: T.Tensor((M, N), dtype),  # Output matrix C (M×N)
-    ):
+@tilelang.jit
+def matmul_relu(A, B, block_M: int = 128, block_N: int = 128, block_K: int = 32):
+    M, N, K = T.const("M, N, K")
+    A: T.Tensor((M, K), T.float16)
+    B: T.Tensor((K, N), T.float16)
+    C = T.empty((M, N), T.float16)
 
-        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+    with T.Kernel(T.ceildiv(N, block_N), T.ceildiv(M, block_M), threads=128) as (bx, by):
+        A_shared = T.alloc_shared((block_M, block_K), T.float16)
+        B_shared = T.alloc_shared((block_K, block_N), T.float16)
+        C_local = T.alloc_fragment((block_M, block_N), T.float32)
 
-            bx = cid // n_num  # Block row index
-            by = cid % n_num   # Block column index
+        T.clear(C_local)
+        for k in T.Pipelined(T.ceildiv(K, block_K), num_stages=3):
+            T.copy(A[by * block_M, k * block_K], A_shared)
+            T.copy(B[k * block_K, bx * block_N], B_shared)
+            T.gemm(A_shared, B_shared, C_local)
 
-            # Allocate L1 cache buffers for input matrices
-            A_L1 = T.alloc_L1((block_M, K_L1), dtype)      # A block in L1
-            B_L1 = T.alloc_L1((K_L1, block_N), dtype)      # B block in L1
+        for i, j in T.Parallel(block_M, block_N):
+            C_local[i, j] = T.max(C_local[i, j], 0)
 
-            # Allocate L0C buffer for accumulation
-            C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
+        T.copy(C_local, C[by * block_M, bx * block_N])
 
-            # Core computation scope
-            with T.Scope("C"):
-                # Calculate number of K-dimension iterations
-                loop_k = T.ceildiv(K, K_L1)
+    return C
 
-                # Iterate over K dimension blocks
-                for k in T.serial(loop_k):
-                    # Copy A and B blocks from global memory to L1 cache
-                    T.copy(A[bx * block_M, k * K_L1], A_L1)
-                    T.copy(B[k * K_L1, by * block_N], B_L1)
 
-                    # Synchronize all cores before computation
-                    T.barrier_all()
-
-                    # Perform matrix multiplication
-                    T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
-
-                    # Synchronize all cores after computation
-                    T.barrier_all()
-
-                # Copy final result from L0C to global memory
-                T.copy(C_L0, C[bx * block_M, by * block_N])
-
-    return main
+M = N = K = 1024
+a = torch.randn((M, K), device="cuda", dtype=torch.float16)
+b = torch.randn((K, N), device="cuda", dtype=torch.float16)
+c = matmul_relu(a, b)
+torch.testing.assert_close(c, torch.relu(a @ b), rtol=1e-2, atol=1e-2)
+print("GEMM + ReLU passed.")
 ```
 
-### High Performance GEMM Example. (Layout, L2 Cache Swizzling, and Pipelining, etc.)
-
-Below is an example that demonstrates more advanced features: layout annotation, parallelized copy, and swizzle for improved L2 cache locality. This snippet shows how to adapt your kernel to maximize performance on complex hardware.
-
-```python
-@tilelang.jit(out_idx=[-1])
-def matmul(M, N, K, block_M, block_N, block_K, K_L1, S1, S2, dtype="float16", accum_dtype="float"):
-    m_num = M // block_M
-    n_num = N // block_N
-
-    core_num = 20
-
-    @T.macro
-    def init_flag():
-        T.set_flag("mte1", "mte2", 0)
-        T.set_flag("mte1", "mte2", 1)
-        T.set_flag("m", "mte1", 0)
-        T.set_flag("m", "mte1", 1)
-        T.set_flag("fix", "m", 0)
-
-    @T.macro
-    def clear_flag():
-        T.wait_flag("mte1", "mte2", 0)
-        T.wait_flag("mte1", "mte2", 1)
-        T.wait_flag("m", "mte1", 0)
-        T.wait_flag("m", "mte1", 1)
-        T.wait_flag("fix", "m", 0)
-
-    @T.prim_func
-    def main(
-            A: T.Tensor((M, K), dtype),
-            B: T.Tensor((K, N), dtype),
-            C: T.Tensor((M, N), dtype),
-    ):
-        with T.Kernel(core_num, is_npu=True) as (cid, _):
-            A_L1 = T.alloc_L1((S1, block_M, K_L1), dtype)
-            B_L1 = T.alloc_L1((S1, K_L1, block_N), dtype)
-
-            T.annotate_layout({
-                A_L1: make_zn_layout(A_L1),
-                B_L1: make_zn_layout(B_L1),
-            })
-
-            A_L0 = T.alloc_L0A((S2, block_M, block_K), dtype)
-            B_L0 = T.alloc_L0B((S2, block_K, block_N), dtype)
-            C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
-
-            with T.Scope("C"):
-                init_flag()
-
-                for i in T.serial(T.ceildiv(m_num * n_num, core_num)):
-                    T.use_swizzle(
-                        i * core_num + cid, M, N, K, block_M, block_N, off=3, in_loop=True)
-                    bx = cid // n_num
-                    by = cid % n_num
-
-                    loop_k = T.ceildiv(K, K_L1)
-
-                    T.wait_flag("mte1", "mte2", 0)
-                    T.copy(A[bx * block_M, 0], A_L1[0, :, :])
-                    T.copy(B[0, by * block_N], B_L1[0, :, :])
-                    T.set_flag("mte2", "mte1", 0)
-                    T.wait_flag("fix", "m", 0)
-                    for k in T.serial(loop_k):
-                        if k < loop_k - 1:
-                            T.wait_flag("mte1", "mte2", (k + 1) % S1)
-                            T.copy(A[bx * block_M, (k + 1) * K_L1], A_L1[(k + 1) % S1, :, :])
-                            T.copy(B[(k + 1) * K_L1, by * block_N], B_L1[(k + 1) % S1, :, :])
-                            T.set_flag("mte2", "mte1", (k + 1) % S1)
-
-                        loop_kk = T.ceildiv(K_L1, block_K)
-
-                        for kk in T.serial(loop_kk):
-                            if kk == 0:
-                                T.wait_flag("mte2", "mte1", k % S1)
-                            T.wait_flag("m", "mte1", kk % S2)
-                            T.copy(A_L1[k % S1, 0, kk * block_K], A_L0[kk % S2, :, :])
-                            T.copy(B_L1[k % S1, kk * block_K, 0], B_L0[kk % S2, :, :])
-                            if kk == 3:
-                                T.set_flag("mte1", "mte2", k % S1)
-                            T.set_flag("mte1", "m", kk % S2)
-                            T.wait_flag("mte1", "m", kk % S2)
-
-                            if k == 0 and kk == 0:
-                                T.mma(A_L0[kk % S2, :, :], B_L0[kk % S2, :, :], C_L0, init=True)
-                            else:
-                                T.mma(A_L0[kk % S2, :, :], B_L0[kk % S2, :, :], C_L0)
-
-                            T.set_flag("m", "mte1", kk % S2)
-
-                    T.set_flag("m", "fix", 0)
-                    T.wait_flag("m", "fix", 0)
-                    T.copy(C_L0, C[bx * block_M, by * block_N])
-                    T.set_flag("fix", "m", 0)
-
-                clear_flag()
-
-                T.barrier_all()
-
-    return main
-```
-
-### Automatic insertion of synchronization instruction
-
-We have supported automatic insertion of synchronization instructions within the core, which can be enabled by setting the TL_ASCEND_AUTO_SYNC attribute in the JIT's pass_configs parameter. Here is a simple example:
-
-```python
-pass_configs = {
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True
-}
-@tilelang.jit(out_idx=[-1], pass_configs=pass_configs)
-def vec_add(M, N, block_M, block_N, dtype="float"):
-    m_num = M // block_M
-    n_num = N // block_N
-
-    VEC_NUM = 2
-
-    @T.prim_func
-    def main(
-            A: T.Tensor((M, N), dtype),
-            B: T.Tensor((M, N), dtype),
-            C: T.Tensor((M, N), dtype),
-    ):
-        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
-            bx = cid // n_num
-            by = cid % n_num
-
-            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            with T.Scope("V"):
-                T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
-                T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
-
-                T.add(c_ub, a_ub, b_ub)
-
-                T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
-
-    return main
-```
-
-### Automatic Buffer Reuse
-
-We have supported automatic buffer reuse, which can be enabled by setting the TL_ASCEND_MEMORY_PLANNING attribute in the JIT's pass_configs parameter. Here is a example based on example_sparse_flash_attn.py:
-
-```python
-pass_configs = {
-    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True
-}
-@tilelang.jit(out_idx=[3], pass_configs=pass_configs)
-def sparse_attention_fwd(
-    # other code...
-    
-    #Manual configuration of T.annotate_address is no longer needed.
-
-    # T.annotate_address({
-    #             # L1 address
-    #             q_l1: 0,
-    #             q_tail_l1: 65536,
-    #             kv_l1: 73728,
-    #             kv_tail_l1: 139264,
-    #             acc_s_l1: 139264,
-
-    #             # L0C address
-    #             acc_s_l0c: 0,
-    #             acc_o_l0c: 0,
-
-    #             ## ub address
-    #             acc_o: 0,
-    #             sumexp: 65536,
-    #             m_i: 65664,
-    #             indices_ub_: 65792,
-    #             kv_ub: 66048,
-    #             kv_tail_ub: 67072,
-    #             acc_s_ub: 66048,
-    #             m_i_prev: 74240,
-    #             acc_s_ub_: 74368,
-    #             tmp_ub: 74368,
-    #             sumexp_i_ub: 98944,
-    #             acc_s_half: 98944,
-    #             acc_o_ub: 98944,
-    #             acc_o_half: 98944
-    #         })
-    
-    # other code...
-)
-```
-### T.Parallel
-We have supported [T.parallel](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/docs/tutorials/t_parallel.md), which transforms the parallel iteration space into vectorized operations that are lowered into AscendC vector instructions. Here is an example based on [example_sparse_flash_attn.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/sparse_flash_attention/example_sparse_flash_attn.py):
-
-```python
-pass_configs = {
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True
-}
-@tilelang.jit(out_idx=[3], pass_configs=pass_configs)
-def sparse_attention_fwd(
-    ...
-    # T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
-    for (i, j) in T.Parallel(v_block, BI):
-        acc_s_ub[i, j] = acc_s_ub[i, j] + acc_s_ub_[i, j]
-    ...
-
-    # T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
-    for (i, j) in T.Parallel(v_block, BI):
-        acc_s_ub[i, j] = acc_s_ub[i, j] * sm_scale
-    ...
-
-    # T.tile.max(m_i, m_i, m_i_prev)
-    for i in T.Parallel(v_block):
-        m_i[i] = T.max(m_i[i], m_i_prev[i])
-    ...
-
-    # for h_i in range(v_block):
-        # T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])
-    for (h_i, j) in T.Parallel(v_block, D):
-        acc_s_ub[h_i, j] = acc_s_ub[h_i, j] - m_i[h_i]
-)
-```
-
-### Auto-allocated Workspace
-We now support [automatic workspace allocation](./docs/tutorials/automatic_workspace_allocation.md), enabling users to call operators without managing workspace or output tensor allocation—they only need to handle input tensors. Refer to [example_sparse_flash_attn.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/sparse_flash_attention/example_sparse_flash_attn.py) for a concrete example.
-```python
-# Specify workspace positions in parameter list via workspace_idx
-@tilelang.jit(out_idx=[3], workspace_idx=[4,5,6,7,8])
-def sparse_attention_fwd(...):
-    @T.prim_func
-    def main(
-            # --- Input tensors ---
-            Q: T.Tensor(q_shape, dtype),  
-            KV: T.Tensor(kv_shape, dtype),  
-            Indices: T.Tensor(indices_shape, indices_dtype), 
-
-            # --- Auto-allocated output (index 3 in out_idx) --- 
-            Output: T.Tensor(o_shape, dtype),  
-
-            # --- Auto-allocated workspaces (indices 4-8 in workspace_idx) ---
-            # These are temporary buffers managed by the runtime
-            workspace_1: T.Tensor([block_num, BI, D], dtype),
-            workspace_2: T.Tensor([block_num, BI, D_tail], dtype),
-            workspace_3: T.Tensor([block_num, H_per_block, BI], accum_dtype),
-            workspace_4: T.Tensor([block_num, H_per_block, BI], dtype),
-            workspace_5: T.Tensor([block_num, H_per_block, D], accum_dtype),
-    ):
-
-    ...
-
-# Instantiate sparse attention function
-func = sparse_attention_fwd(
-    heads=128,
-    dim=512,
-    tail_dim=64,
-    topk=2048,
-    kv_stride=1,
-)
-
-# Prepare input tensors
-q = torch.randn((B, S, H, DQK), dtype=dtype)
-kv = torch.randn((B, SKV, HKV, DQK), dtype=dtype)
-indices = torch.full((B, S, HKV, topk), SKV, dtype=torch.int32)
-for b in range(B):
-    for t in range(S):
-        for h in range(HKV):
-            i_i = torch.randperm(max(1, ((t + q_start_s_index) // KV_stride)))[:topk]
-            indices[b, t, h, :len(i_i)] = i_i
-
-# Call operator - output and workspaces are automatically allocated!
-output = func(q, kv, indices)
-```
-### T.Pipelined
-[T.Pipelined](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/docs/tutorials/t_pipelined.md) enables automatic pipeline scheduling to achieve intra-core computation and data movement overlap, as well as inter-core pipeline overlap between Cube and Vector units.
-
-**Usage:**
-```python
-for i in T.Pipelined(loop_range, num_stages=N):
-    # loop body
-```
-
-**Usage Constraints:**
-- `T.Pipelined` **does not support nesting**. You cannot place a `T.Pipelined` loop inside another `T.Pipelined` loop.
-- For inter-core pipelining, place both Cube and Vector operations in a single `T.Pipelined` loop.
-- For intra-core pipelining only, use separate `T.Pipelined` loops for Cube and Vector respectively.
-
-```python
-# Correct: inter-core pipeline (Cube + Vector in one loop)
-for i in T.Pipelined(loop, num_stages=2):
-    cube_operations()
-    vector_operations()
-
-# Correct: intra-core pipeline (separate loops)
-for i in T.Pipelined(loop, num_stages=2):
-    cube_operations()
-for i in T.Pipelined(loop, num_stages=2):
-    vector_operations()
-
-# WRONG: nested T.Pipelined is NOT supported
-for i in T.Pipelined(outer, num_stages=2):
-    for j in T.Pipelined(inner, num_stages=2):  # Error!
-        ...
-```
-
-An intra-core example refers to [matmul_add_pipeline.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/pipeline/matmul_add_pipeline.py):
-```python
-for k in T.Pipelined(loop_k, num_stages=2):
-    T.copy(A[bx * block_M, k * block_K], A_L1)
-    T.copy(B[k * block_K, by * block_N], B_L1)
-
-    T.barrier_all()
-    if k == 0:
-        T.gemm_v0(A_L1, B_L1, C_L0, init=True)
-    else:
-        T.gemm_v0(A_L1, B_L1, C_L0)
-
-    T.barrier_all()
-```
-
-An inter-core example refers to [flash_attn_bshd_pipeline.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/pipeline/flash_attn_bshd_pipeline.py):
-```python
-for k in T.Pipelined(T.ceildiv(seq_len, block_N), num_stages=2):
-    T.copy(K[bz, by, k * block_N:(k + 1) * block_N, :], k_l1)
-    T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
-    T.copy(acc_s_l0c, workspace_1[cid, :, :])
-
-    T.tile.fill(acc_s_ub, 0.0)
-    T.copy(m_i, m_i_prev)
-    T.copy(
-        workspace_1[cid, vid * block_M // 2:vid * block_M // 2 + block_M // 2, :],
-        acc_s_ub_)
-    T.tile.add(acc_s_ub, acc_s_ub, acc_s_ub_)
-    T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
-    ...
-```
-
-For performance tuning with `T.Pipelined` (choosing `num_stages`, Double Buffer, etc.), see the [Flash Attention Performance Optimization Guide](./examples/flash_attention/fa_opt/docs/optimization_guide_zh.md).
-
-### Dive Deep into TileLang Beyond GEMM
-
-In addition to GEMM, we provide a variety of examples to showcase the versatility and power of TileLang-Ascend, including:
-
-- [FlashAttention](./examples/flash_attention/): Implementations of FlashAttention with TileLang-Ascend.
-- [LightningIndexer](./examples/lightning_indexer/): Implementations of LightningIndexer with TileLang-Ascend.
-- [SparseFlashAttention](./examples/sparse_flash_attention/): Implementations of SparseFlashAttention with TileLang-Ascend.
-
-### Automatic insert synchronization flags between AIC and AIV, such as CrossCoreSetFlag / CrossCoreWaitFlag.
-
-Two switches need to be turned on:
-```python
-pass_configs = {
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
-}
-```
-
-Here is an example:
-- [FlashAttention](./examples/flash_attention/flash_attn_bhsd_cc_sync.py): Implementations of FlashAttention without inserting synchronization flags manually.
-
-### Vid reduction & Auto CV Ratio
-
-The parameter `threads` needs to be set. (Only 1 or 2 are allowed).When setting thread parameters, the return value will only have cid and no vid：
-```python
-with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
-```
-Therefore, ub application and transfer will no longer need to consider core allocation, and the usage will change as follows:
-```python
-# UB allocation original form
-c_ub = T.alloc_shared((block_M // VEC_NUM, block_N), dtype) 
-# New form after UB reduce elimination
-c_ub = T.alloc_shared((block_M, block_N), dtype)
-# UB moved to its original form
-T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
-# New form after UB transport elimination
-T.copy(c_ub, C[bx * block_M, by * block_N])
-# for loop original form
-for h_i, j in T.Parallel(v_block // VEC_NUM, BI):
-    acc_s_ub[h_i, j] = acc_s_ub[h_i, j] - m_i[h_i]
-# New form after UB transport elimination
-for h_i, j in T.Parallel(v_block, BI):
-    acc_s_ub[h_i, j] = acc_s_ub[h_i, j] - m_i[h_i]
-
-```
-
-Here is some examples:
-- [MatmulAddDeveloper](./examples/developer_mode/matmul_add_developer.py)
-- [SparseFlashAttnDeveloperVidReduce](./examples/developer_mode/sparse_flash_attn_developer_vid_reduce.py)
-
-For a more detailed feature introduction, please see:
-- [vid_reduction_and_auto_cv_ratio.md](./docs/tutorials/vid_reduction_and_auto_cv_ratio.md)
-
-### Workspace reduction
-
-Workspace Reduction is **automatically enabled** in the compilation pipeline. No manual configuration required. It automates workspace allocation for cross-core data transfer (L0C → UB), eliminating the need for users to manually write two-stage GM copy scripts and manage workspace buffers.
-
-```python
-@T.prim_func
-def flash_attn(...):
-    with T.Kernel(..., threads=2, is_npu=True) as (cid):
-        # Cube computation
-        T.gemm_v0(q_l1, k_l1, acc_s_l0c, transpose_B=True, init=True)
-
-        # Single copy statement — Workspace Reduction automatically handles GM transfer
-        T.copy(acc_s_l0c, acc_s_ub)
-
-        # Vector computation
-        T.tile.exp(acc_s_ub, acc_s_ub)
-        T.reduce_max(acc_s_ub, m_i, dim=-1)
-        T.tile.sub(acc_s_ub, acc_s_ub, m_i)
-```
-
-Here are some examples:
-- [FlashAttnDeveloper](./examples/developer_mode/flash_attn_bshd_developer.py)
-
-For a more detailed feature introduction, please see:
-- [workspace_reduction_tutorial.md](./docs/tutorials/workspace_reduction_tutorial.md)
-
-## Contributing
-
-We welcome contributions of new operators and framework improvements! Please follow the guidelines below to ensure your changes integrate smoothly.
-
-### Contributing Operators
-
-When adding a new operator:
-
-1. Create your operator under the `examples/` directory (e.g., `examples/my_op/my_op.py`).
-2. Make sure your script prints `Kernel Output Match!` or `Test Passed!` upon success, so the CI can recognize it.
-3. Verify that `bench_test.sh` can discover and run your script — it auto-discovers `*.py` files up to 2 levels deep under `examples/`.
-4. Run the full test suite locally before submitting:
-   ```bash
-   cd examples
-   bash bench_test.sh
-   ```
-
-### Contributing Framework Changes
-
-When modifying the compiler, passes, or runtime:
-
-1. Ensure **all existing tests pass** by running `bench_test.sh` end-to-end. Framework changes must not break any existing operator.
-2. The CI will also run `pytest` on `testing/python/` — make sure those tests pass as well.
-3. If your change adds a new API or primitive, add corresponding test coverage under `testing/python/` or a new example under `examples/`.
-
-### CI Overview
-
-The current CI workflow is triggered manually via [`bench_test.sh`](./examples/bench_test.sh).
-
-
-> **Rule of thumb**: If you add an operator, make sure `bench_test.sh` picks it up. If you change the framework, make sure `bench_test.sh` still reports 100% pass.
-
-## Upcoming Features
-
-Check our [tilelang-ascend development plan](https://github.com/tile-ai/tilelang-ascend/issues/3) for upcoming features.
-
-
-
-## Acknowledgements
-We gratefully acknowledge the valuable support provided by Huawei's HiSilicon, ICT, Compiler and Programming Language Lab and the Peking University Kunpeng & Ascend Center for Excellence in Science, Education, and Innovation.
+`@tilelang.jit` specializes the kernel for the input shape and compile-time arguments on first use. `T.Pipelined` stages global-to-shared transfers, `T.gemm` maps the tile operation to the target backend, and `T.Parallel` expresses the elementwise ReLU epilogue. Continue with the [language basics](https://tilelang.com/programming_guides/language_basics.html), then explore the [GEMM examples](https://github.com/tile-ai/tilelang/tree/main/examples/gemm) for layouts, autotuning, and architecture-specific optimizations.
+
+## Examples
+
+- **Start here:** [quickstart](https://github.com/tile-ai/tilelang/blob/main/examples/quickstart.py) and [elementwise kernels](https://github.com/tile-ai/tilelang/tree/main/examples/elementwise)
+- **GEMM and quantization:** [GEMM](https://github.com/tile-ai/tilelang/tree/main/examples/gemm), [grouped GEMM](https://github.com/tile-ai/tilelang/tree/main/examples/grouped_gemm), [FP8 GEMM](https://github.com/tile-ai/tilelang/tree/main/examples/gemm_fp8), [dequantization GEMM](https://github.com/tile-ai/tilelang/tree/main/examples/dequantize_gemm), and [block-scaled GEMM](https://github.com/tile-ai/tilelang/tree/main/examples/blockscaled_gemm_sm100)
+- **Attention and sequence models:** [FlashAttention](https://github.com/tile-ai/tilelang/tree/main/examples/flash_attention), [Flash Decoding](https://github.com/tile-ai/tilelang/tree/main/examples/flash_decoding), [block-sparse attention](https://github.com/tile-ai/tilelang/tree/main/examples/blocksparse_attention), [linear attention](https://github.com/tile-ai/tilelang/tree/main/examples/linear_attention), and [GDN](https://github.com/tile-ai/tilelang/tree/main/examples/gdn)
+- **Model workloads:** [DeepSeek MLA](https://github.com/tile-ai/tilelang/tree/main/examples/deepseek_mla), [DeepSeek V3.2](https://github.com/tile-ai/tilelang/tree/main/examples/deepseek_v32), [DeepSeek V4](https://github.com/tile-ai/tilelang/tree/main/examples/deepseek_v4), and [DeepSeek mHC](https://github.com/tile-ai/tilelang/tree/main/examples/deepseek_mhc)
+- **Architecture-specific kernels:** [AMD](https://github.com/tile-ai/tilelang/tree/main/examples/amd), [TCGEN05](https://github.com/tile-ai/tilelang/tree/main/examples/gemm_tcgen05), and [SM120](https://github.com/tile-ai/tilelang/tree/main/examples/gemm_sm120)
+- **Compiler and debugging tools:** [analyzer](https://github.com/tile-ai/tilelang/tree/main/examples/analyze), [layout visualization](https://github.com/tile-ai/tilelang/tree/main/examples/plot_layout), [AutoDD](https://github.com/tile-ai/tilelang/tree/main/examples/autodd), and [IKET](https://github.com/tile-ai/tilelang/tree/main/examples/iket)
+
+Browse the [complete examples directory](https://github.com/tile-ai/tilelang/tree/main/examples) for additional operators, tests, and architecture-specific implementations.
+
+## Benchmark Summary
+
+TileLang achieves exceptional performance across a variety of computational patterns. Comprehensive benchmark scripts and settings are available at [tilelang-benchmark](https://github.com/tile-ai/tilelang-benchmark). Below are selected results showcasing its capabilities:
+
+- MLA Decoding Performance on H100
+
+  <div style="display: flex; gap: 10px; justify-content: center;">
+    <div style="flex: 1;">
+      <img src="./examples/deepseek_mla/figures/bs64_float16.png" alt="mla decode performance bs64 on H100" width="100%" />
+    </div>
+    <div style="flex: 1;">
+      <img src="./examples/deepseek_mla/figures/bs128_float16.png" alt="mla decode performance bs128 on H100" width="100%" />
+    </div>
+  </div>
+
+- Flash Attention Performance on H100
+
+  <div align="center">    <img src="./images/mha_performance_h100.png" alt="operator performance on H100" width=80% />
+  </div>
+
+- Matmul Performance on GPUs (RTX 4090, A100, H100, MI300X)
+
+  <div>
+    <img src="./images/op_benchmark_consistent_gemm_fp16.png" alt="gemm fp16 performance on Gpus" />
+  </div>
+
+- Dequantize Matmul Performance on A100
+
+  <div>
+    <img src="./images/op_benchmark_a100_wq_gemv.png" alt="dequantize gemv performance on A100" />
+  </div>
+
+---
+
+## Join the Discussion
+
+Welcome to join our Discord community for discussions, support, and collaboration!
+
+[![Join our Discord](https://img.shields.io/badge/Discord-Join%20Us-blue?logo=discord&style=for-the-badge)](https://discord.gg/TUrHyJnKPG)
+
+## Acknowledgments
+
+We would like to express our gratitude to the [TVM](https://github.com/apache/tvm) community for their invaluable contributions. The initial version of this project was mainly developed by [LeiWang1999](https://github.com/LeiWang1999), [chengyupku](https://github.com/chengyupku) and [nox-410](https://github.com/nox-410) with supervision from Prof. [Zhi Yang](https://yangzhihome.github.io) at Peking University. Part of this work was carried out during an internship at Microsoft Research, where Dr. Lingxiao Ma, Dr. Yuqing Xia, Dr. Jilong Xue, and Dr. Fan Yang offered valuable advice and support. We deeply appreciate their mentorship and contributions.

@@ -15,23 +15,23 @@
 # specific language governing permissions and limitations
 # under the License.
 """Util to invoke C/C++ compilers in the system."""
+
 import functools
 import os
 import shutil
 import subprocess
+import platform
 
 # pylint: disable=invalid-name
 import sys
-from typing import Dict
 
-from tvm._ffi.base import py_str
+from tvm.base import py_str
 from tvm.contrib import tar as _tar
 from tvm.contrib import utils as _utils
 
 
 def _is_linux_like():
-    return (sys.platform == "darwin" or sys.platform.startswith("linux") or
-            sys.platform.startswith("freebsd"))
+    return sys.platform == "darwin" or sys.platform.startswith("linux") or sys.platform.startswith("freebsd")
 
 
 def _is_windows_like():
@@ -47,12 +47,16 @@ def get_cc():
         The path to the default C/C++ compiler, or None if none was found.
     """
 
-    if not _is_linux_like():
-        return None
-
     env_cxx = os.environ.get("CXX") or os.environ.get("CC")
     if env_cxx:
         return env_cxx
+
+    if _is_windows_like():
+        from tilelang.contrib.msvc import get_windows_compiler
+
+        compiler, _kind = get_windows_compiler()
+        return compiler
+
     cc_names = ["g++", "gcc", "clang++", "clang", "c++", "cc"]
     dirs_in_path = os.get_exec_path()
     for cc in cc_names:
@@ -63,7 +67,7 @@ def get_cc():
     return None
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def get_cplus_compiler():
     """Return the path to the default C/C++ compiler.
 
@@ -73,12 +77,16 @@ def get_cplus_compiler():
         The path to the default C/C++ compiler, or None if none was found.
     """
 
-    if not _is_linux_like():
-        return None
-
     env_cxx = os.environ.get("CXX") or os.environ.get("CC")
     if env_cxx:
         return env_cxx
+
+    if _is_windows_like():
+        from tilelang.contrib.msvc import get_windows_compiler
+
+        compiler, _kind = get_windows_compiler()
+        return compiler
+
     cc_names = ["g++", "clang++", "c++"]
     dirs_in_path = os.get_exec_path()
     for cc in cc_names:
@@ -87,6 +95,10 @@ def get_cplus_compiler():
             if os.path.isfile(cc_path) and os.access(cc_path, os.X_OK):
                 return cc_path
     return None
+
+
+def is_darwin():
+    return platform.system() == "Darwin"
 
 
 def create_shared(output, objects, options=None, cc=None, cwd=None, ccache_env=None):
@@ -203,7 +215,7 @@ def create_executable(output, objects, options=None, cc=None, cwd=None, ccache_e
         raise ValueError("Unsupported platform")
 
 
-def get_global_symbol_section_map(path, *, nm=None) -> Dict[str, str]:
+def get_global_symbol_section_map(path, *, nm=None) -> dict[str, str]:
     """Get global symbols from a library via nm -g
 
     Parameters
@@ -283,11 +295,7 @@ create_shared.output_format = "so" if sys.platform != "win32" else "dll"
 create_shared.get_target_triple = get_target_by_dump_machine(os.environ.get("CXX", get_cc()))
 
 
-def cross_compiler(compile_func,
-                   options=None,
-                   output_format=None,
-                   get_target_triple=None,
-                   add_files=None):
+def cross_compiler(compile_func, options=None, output_format=None, get_target_triple=None, add_files=None):
     """Create a cross compiler function by specializing compile_func with options.
 
     This function can be used to construct compile functions that
@@ -342,7 +350,8 @@ def cross_compiler(compile_func,
         compile_func = create_shared
 
     def _fcompile(outputs, objects, options=None):
-        all_options = base_options
+        # Use a fresh list per invocation so per-call options do not leak across builds.
+        all_options = list(base_options)
         if options is not None:
             all_options += options
         compile_func(outputs, objects + add_files, options=all_options, **kwargs)
@@ -359,13 +368,7 @@ def cross_compiler(compile_func,
     return _fcompile
 
 
-def _linux_compile(output,
-                   objects,
-                   options,
-                   compile_cmd,
-                   cwd=None,
-                   ccache_env=None,
-                   compile_shared=False):
+def _linux_compile(output, objects, options, compile_cmd, cwd=None, ccache_env=None, compile_shared=False):
     cmd = [compile_cmd]
     if compile_cmd != "nvcc":
         if compile_shared or output.endswith(".so") or output.endswith(".dylib"):
@@ -426,15 +429,15 @@ def _windows_compile(output, objects, options, cwd=None, ccache_env=None):
             raise ValueError("ccache not found")
 
     try:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=cwd, env=env)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=cwd, env=env)
         (out, _) = proc.communicate()
     except FileNotFoundError:
-        raise RuntimeError("Can not find the LLVM clang for Windows clang.exe)."
-                           "Make sure it's installed"
-                           " and the installation directory is in the %PATH% environment "
-                           "variable. Prebuilt binaries can be found at: https://llvm.org/") \
-                               from None
+        raise RuntimeError(
+            "Can not find the LLVM clang for Windows clang.exe)."
+            "Make sure it's installed"
+            " and the installation directory is in the %PATH% environment "
+            "variable. Prebuilt binaries can be found at: https://llvm.org/"
+        ) from None
     if proc.returncode != 0:
         msg = "Compilation error:\n"
         msg += " ".join(cmd) + "\n"

@@ -1,78 +1,107 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
 """The cache utils with class and database persistence - Init file"""
 
 from __future__ import annotations
 
-from typing import Literal
-from pathlib import Path
-from tvm.target import Target
-from tvm.tir import PrimFunc
+import logging
+from typing import TYPE_CHECKING, Literal
+from tvm.target import Target as TVMTarget
+from tvm.tirx import PrimFunc
 from tilelang.jit import JITKernel
-from .kernel_cache import KernelCache
-from tilelang.env import TILELANG_CLEAR_CACHE
+from tilelang import env
+from tilelang.jit.adapter.cutedsl.kernel_cache import CuTeDSLKernelCache
+from tilelang.jit.adapter.cython.kernel_cache import CythonKernelCache
+from tilelang.jit.adapter.nvrtc.kernel_cache import NVRTCKernelCache
+from tilelang.jit.adapter.torch.kernel_cache import TorchKernelCache
+from tilelang.jit.adapter.kernel_cache import TVMFFIKernelCache
+from tilelang.ascend.kernel_cache import AscendCythonKernelCache, AscendTVMFFIKernelCache
 
-# Create singleton instance of KernelCache
-_kernel_cache_instance = KernelCache()
+if TYPE_CHECKING:
+    from .kernel_cache import KernelCache
+
+TargetLike = str | dict[str, object] | TVMTarget
+
+# Create a map of singleton instance of KernelCaches
+_dispatch_map: dict[str, KernelCache] = {
+    "tvm_ffi": TVMFFIKernelCache(),
+    "cython": CythonKernelCache(),
+    "nvrtc": NVRTCKernelCache(),
+    "cutedsl": CuTeDSLKernelCache(),
+    "pto": CythonKernelCache(),
+    "torch": TorchKernelCache(),
+}
+
+_ascend_dispatch_map: dict[str, KernelCache] = {
+    "tvm_ffi": AscendTVMFFIKernelCache(),
+    "cython": AscendCythonKernelCache(),
+}
+
+
+def _resolve_cache_dispatch(
+    target: TargetLike | None,
+    target_host: TargetLike | None,
+    execution_backend: Literal["auto", "tvm_ffi", "cython", "nvrtc", "torch", "cutedsl", "pto"] | None,
+    verbose: bool | None,
+):
+    if target is None:
+        target = env.get_default_target()
+    if execution_backend is None:
+        execution_backend = env.get_default_execution_backend()
+    if verbose is None:
+        verbose = env.get_default_verbose()
+
+    from tilelang.backend.module import create_backend_context
+
+    requested_backend = execution_backend
+    context = create_backend_context(target, target_host, requested_backend)
+    resolved_backend = context.execution_backend.name
+    if verbose:
+        allowed_now = context.module.allowed_execution_backends(context.target, include_unavailable=False)
+        if requested_backend in (None, "auto") or requested_backend != resolved_backend:
+            logger = logging.getLogger(__name__)
+            logger.setLevel(logging.INFO)
+            logger.info(
+                "Execution backend resolved -> '%s' (requested='%s', target='%s', allowed: %s)",
+                resolved_backend,
+                requested_backend,
+                context.target.kind.name,
+                ", ".join(sorted(allowed_now)),
+            )
+    # Dispatch on the resolved backend module rather than on the target kind.
+    dispatch_map = _ascend_dispatch_map if context.module.name == "ascend" else _dispatch_map
+    if context.module.name in {"ascend_a2a3", "pto_a2a3"}:
+        from tilelang.ascend.a2a3.kernel_cache import A2A3CythonKernelCache
+
+        dispatch_map = {"cython": A2A3CythonKernelCache()}
+    if resolved_backend not in dispatch_map:
+        raise ValueError(f'Cannot find support for execution backend "{resolved_backend}"')
+    return dispatch_map[resolved_backend], context, verbose
 
 
 def cached(
     func: PrimFunc = None,
     out_idx: list[int] = None,
-    workspace_idx: list[int] = None,
     *args,
-    target: str | Target = "auto",
-    target_host: str | Target = None,
-    platform: str = "auto",
-    execution_backend: Literal["dlpack", "ctypes", "cython"] | None = "cython",
-    verbose: bool | None = False,
+    target: TargetLike | None = None,
+    target_host: TargetLike | None = None,
+    execution_backend: Literal["auto", "tvm_ffi", "cython", "nvrtc", "torch", "cutedsl", "pto"] | None = None,
+    verbose: bool | None = None,
     pass_configs: dict | None = None,
     compile_flags: list[str] | str | None = None,
+    workspace_idx: list[int] | int | None = None,
 ) -> JITKernel:
     """
-    Caches and reuses compiled kerne(ls (using KernelCache class).
+    Caches and reuses compiled kernels (using KernelCache class).
     """
-
-    return _kernel_cache_instance.cached(
+    cache, backend_context, verbose = _resolve_cache_dispatch(target, target_host, execution_backend, verbose)
+    if workspace_idx is not None and backend_context.module.name not in {"ascend_a2a3", "pto_a2a3"}:
+        raise ValueError("workspace_idx is supported only by the A2A3 backend")
+    return cache.cached(
         func,
         out_idx,
-        workspace_idx,
         *args,
-        target=target,
-        target_host=target_host,
-        platform=platform,
-        execution_backend=execution_backend,
+        backend_context=backend_context,
         verbose=verbose,
         pass_configs=pass_configs,
         compile_flags=compile_flags,
+        **({"workspace_idx": workspace_idx} if workspace_idx is not None else {}),
     )
-
-
-def get_cache_dir() -> Path:
-    """
-    Gets the cache directory for the kernel cache.
-    Example:
-        >>> tilelang.cache.get_cache_dir()
-        PosixPath('/Users/username/.tilelang/cache')
-    """
-    return _kernel_cache_instance.get_cache_dir()
-
-
-def set_cache_dir(cache_dir: str):
-    """
-    Sets the cache directory for the kernel cache.
-    Example:
-        >>> tilelang.cache.set_cache_dir("/path/to/cache")
-    """
-    _kernel_cache_instance.set_cache_dir(cache_dir)
-
-
-def clear_cache():
-    """
-    Clears the entire kernel cache (using KernelCache class).
-    """
-    _kernel_cache_instance.clear_cache()
-
-
-if TILELANG_CLEAR_CACHE.lower() in ("1", "true", "yes", "on"):
-    clear_cache()

@@ -1,41 +1,43 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
-
 # Import necessary modules and classes
 from abc import ABC, abstractmethod  # For defining abstract base classes
 from dataclasses import dataclass, field  # For defining data classes
 from ..arch import (  # Import architecture-related utilities and classes
-    TileDevice, is_volta_arch, is_ampere_arch, is_cdna_arch, auto_infer_current_arch)
+    TileDevice,
+    is_volta_arch,
+    is_ampere_arch,
+    is_cdna_arch,
+    is_rdna_arch,
+    auto_infer_current_arch,
+)
 from ..roller.hint import Hint  # Import the Hint class
 from ..roller.node import OutputNode  # Import the OutputNode class
-from typing import List  # For type hinting
-from tvm.tir import PrimFunc  # Import PrimFunc for handling tensor IR functions
+from tvm.tirx import PrimFunc  # Import PrimFunc for handling tensor IR functions
 
 
 @dataclass
 class BaseTemplate(ABC):
     """
-    Base class template for hardware-aware configurations. 
-    This serves as an abstract base class (ABC) that defines the structure 
+    Base class template for hardware-aware configurations.
+    This serves as an abstract base class (ABC) that defines the structure
     for subclasses implementing hardware-specific optimizations.
     """
 
     # The architecture of the device, inferred automatically unless explicitly set
-    _arch: TileDevice = field(default=auto_infer_current_arch(), init=False, repr=False)
+    _arch: TileDevice = field(default_factory=auto_infer_current_arch, init=False, repr=False)
 
     # The function associated with this template, initially None
     _func: PrimFunc = field(default=None, init=False, repr=False)
 
     # The outputs nodes associated with this template, initially None
-    _output_nodes: List[OutputNode] = field(default=None, init=False, repr=False)
+    _output_nodes: list[OutputNode] = field(default=None, init=False, repr=False)
 
     @abstractmethod
-    def get_hardware_aware_configs(self, arch: TileDevice = None, topk: int = 10) -> List[Hint]:
+    def get_hardware_aware_configs(self, arch: TileDevice = None, topk: int = 10) -> list[Hint]:
         """
         Abstract method that must be implemented by subclasses.
-        It should return a list of hardware-aware configurations (hints) 
+        It should return a list of hardware-aware configurations (hints)
         based on the specified architecture.
-        
+
         Args:
             arch (TileDevice, optional): The target architecture. Defaults to None.
             topk (int, optional): Number of top configurations to return. Defaults to 10.
@@ -94,6 +96,15 @@ class BaseTemplate(ABC):
         """
         return is_cdna_arch(self._arch) if self._arch is not None else False
 
+    def is_rdna_arch(self) -> bool:
+        """
+        Checks if the current architecture is an RDNA architecture.
+
+        Returns:
+            bool: True if the architecture is RDNA, False otherwise.
+        """
+        return is_rdna_arch(self._arch) if self._arch is not None else False
+
     def equivalent_function(self) -> PrimFunc:
         """
         Returns the function associated with this template.
@@ -107,7 +118,7 @@ class BaseTemplate(ABC):
         """
         Placeholder method that should be implemented by subclasses.
         This method is responsible for initializing the function.
-        
+
         Raises:
             NotImplementedError: If not implemented in the subclass.
         """
@@ -126,7 +137,7 @@ class BaseTemplate(ABC):
         self._func = func
         return self
 
-    def set_output_nodes(self, output_nodes: List[OutputNode]) -> "BaseTemplate":
+    def set_output_nodes(self, output_nodes: list[OutputNode]) -> "BaseTemplate":
         """
         Sets the output nodes for this template and returns itself.
 
@@ -139,7 +150,7 @@ class BaseTemplate(ABC):
         self._output_nodes = output_nodes
         return self
 
-    def recommend_hints(self, topk: int = 10) -> List[Hint]:
+    def recommend_hints(self, topk: int = 10) -> list[Hint]:
         """
         Provides a list of recommended hardware-aware configurations.
 
@@ -162,7 +173,7 @@ class BaseTemplate(ABC):
         return self._arch
 
     @property
-    def output_nodes(self) -> List[OutputNode]:
+    def output_nodes(self) -> list[OutputNode]:
         """
         Returns the output nodes associated with this template.
 

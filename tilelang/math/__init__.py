@@ -1,7 +1,3 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
-
-
 def next_power_of_2(x: int) -> int:
     return 1 << (x - 1).bit_length()
 

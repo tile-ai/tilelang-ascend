@@ -10,7 +10,7 @@ no GM workspace buffers (eliminates 256KB GM traffic per iteration).
 """
 
 import tilelang
-from tilelang import language as T
+from tilelang.ascend.a2a3 import language as T
 
 # Developer mode pass_configs: sync & C/V split fully auto-managed by passes.
 PASS_CONFIGS = {

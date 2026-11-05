@@ -9,6 +9,8 @@ import sys
 from collections.abc import Iterable, Sequence
 from pathlib import Path, PurePosixPath
 
+from path_layout import LayoutError, canonical_path, example_roots, resolve_path
+
 
 DEFAULT_MANIFEST = Path("ci/operator_test_manifest.yaml")
 VERSION_PATTERN = re.compile(r"^version:\s*(\d+)\s*$")
@@ -102,6 +104,10 @@ def load_mappings(repo_root: Path, manifest_path: Path) -> tuple[list[tuple[str,
     stale: list[tuple[str, str]] = []
 
     for source, test in mappings:
+        _validate_relative_path(source, "source")
+        _validate_relative_path(test, "test")
+        source = resolve_path(repo_root, source)
+        test = resolve_path(repo_root, test)
         source_path = _validate_relative_path(source, "source")
         test_path = _validate_relative_path(test, "test")
 
@@ -136,7 +142,7 @@ def _shell_invoked_tests(repo_root: Path) -> set[str]:
     scripts cd into their own directory first.
     """
     invoked: set[str] = set()
-    for root in EXAMPLE_ROOTS:
+    for root in example_roots(repo_root):
         root_path = repo_root / root
         if not root_path.is_dir():
             continue
@@ -167,7 +173,7 @@ def find_unregistered_tests(repo_root: Path, active: list[tuple[str, str]], pend
     expected = {test for _, test in active} | {test for _, test in pending}
     invoked = _shell_invoked_tests(repo_root)
     unregistered: list[str] = []
-    for root in EXAMPLE_ROOTS:
+    for root in example_roots(repo_root):
         root_path = repo_root / root
         if not root_path.is_dir():
             continue
@@ -195,7 +201,7 @@ def _scope_to_dirs(mappings: list[tuple[str, str]], dirs: list[str] | None, expe
     wanted |= {f"examples_experiment/{name}" for name in (experiment_dirs or [])}
     scoped = []
     for source, test in mappings:
-        parts = PurePosixPath(source).parts
+        parts = PurePosixPath(canonical_path(source)).parts
         if len(parts) > 2 and "/".join(parts[:2]) in wanted:
             scoped.append((source, test))
     return scoped
@@ -228,6 +234,7 @@ def _build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument("--format", choices=("tsv",), default="tsv")
 
     list_tests_parser = subparsers.add_parser("list-tests", help="list migrated Pytest files")
+    list_tests_parser.add_argument("--require-nonempty", action="store_true", help="refuse an empty Pytest target list")
     # Named after the runner's own flags so a caller that scoped a run to some
     # directories can hand this the value it handed the runner, unchanged.
     list_tests_parser.add_argument(
@@ -254,7 +261,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
         mappings, pending, stale = load_mappings(args.repo_root.resolve(), args.manifest)
-    except (ManifestError, OSError) as error:
+    except (ManifestError, LayoutError, OSError) as error:
         print(f"operator test manifest error: {error}", file=sys.stderr)
         return 1
 
@@ -279,6 +286,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_lines(f"{source}\t{test}" for source, test in mappings)
     elif args.command == "list-tests":
         scoped = _scope_to_dirs(mappings, args.dirs, args.experiment_dirs)
+        if args.require_nonempty and not scoped:
+            print("operator test manifest error: no active operator tests; refusing empty Pytest targets", file=sys.stderr)
+            return 1
         _print_lines(test for _, test in scoped)
     elif args.command == "list-sources":
         _print_lines(source for source, _ in mappings)

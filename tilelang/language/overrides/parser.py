@@ -2,49 +2,11 @@
 
 from functools import partial
 
-from typing import Any
+from tvm.script.ir_builder import tirx as T
+from tvm.script.parser._core import dispatch, doc
+from tvm.tirx import BufferLoad, Var
 
-from tvm.script.ir_builder import tir as T
-from tvm.script.ir_builder.base import IRBuilder
-from tvm.script.ir_builder.base import IRBuilderFrame as Frame
-from tvm.script.parser._core import dispatch, doc, Parser
-from tvm.tir import Buffer,BufferLoad, Var, IterVar
-
-
-import tvm
-
-# Original implementation located at
-# 3rdparty/tvm/python/tvm/script/parser/tir/parser.py (bind_assign_value).
-def tilelang_bind_assign_value(self: Parser, node: doc.expr, var_name: str, value: Any) -> Any:
-    if isinstance(value, T.meta_var):
-        return value.value
-    elif isinstance(value, (list, tuple)):
-        for i, v in enumerate(value):
-            tilelang_bind_assign_value(self, node, f"{var_name}_{i}", v)
-        return value
-    elif isinstance(value, Frame):
-        value.add_callback(partial(value.__exit__, None, None, None))
-        res = value.__enter__()
-        IRBuilder.name(var_name, res)
-        return res
-    # bind local.var Buffer to BufferLoad
-    elif isinstance(value, Buffer) and value.scope() == "local.var":
-        IRBuilder.name(var_name, value)
-        return BufferLoad(value, indices=[0])
-    elif isinstance(value, (Buffer, IterVar)) or (
-        isinstance(value, Var) and not self.var_table.exist(value)
-    ):
-        IRBuilder.name(var_name, value)
-        return value
-    else:
-        value = tvm.runtime.convert(value)
-        frame = T.LetStmt(value)
-        var = frame.var
-        IRBuilder.name(var_name, var)
-        frame.add_callback(partial(frame.__exit__, None, None, None))
-        frame.__enter__()
-        return var
-
+from tvm.tirx.script.parser import parser as tvm_tir_parser
 
 
 def _get_node_span(node: doc.AST) -> tuple[int, int, int, int]:
@@ -92,9 +54,8 @@ def tilelang_visit_assign(self, node: doc.Assign) -> None:  # pylint: disable=un
             continue
 
         if isinstance(lhs, doc.Name) and lhs.id in self.var_table.get():
-            span = _get_node_span(lhs)
-            load_ctx = doc.Load(*span)
-            store_ctx = doc.Store(*span)
+            load_ctx = doc.Load()
+            store_ctx = doc.Store()
             lhs.ctx = load_ctx
             lhs_value = self.eval_expr(lhs)
             lhs.ctx = store_ctx
@@ -106,7 +67,8 @@ def tilelang_visit_assign(self, node: doc.Assign) -> None:  # pylint: disable=un
             ):
                 T.buffer_store(lhs_value.buffer, rhs, indices=[0])
                 continue
-        self.eval_assign(target=lhs, source=rhs, bind_value=tilelang_bind_assign_value)
+
+        self.eval_assign(target=lhs, source=rhs, bind_value=tvm_tir_parser.bind_assign_value)
 
 
 # Original implementation located at
@@ -117,7 +79,7 @@ def tilelang_visit_aug_assign(self, node: doc.AugAssign) -> None:  # pylint: dis
     lhs_pos = _get_node_span(node.target)
     rhs_pos = _get_node_span(node.value)
 
-    node.target.ctx = doc.Load(*lhs_pos)
+    node.target.ctx = doc.Load()
     with self.var_table.with_frame():
         lhs_name = "__tvm_tmp_value_aug_assign_lhs"
         rhs_name = "__tvm_tmp_value_aug_assign_rhs"
@@ -126,15 +88,15 @@ def tilelang_visit_aug_assign(self, node: doc.AugAssign) -> None:  # pylint: dis
         self.var_table.add(lhs_name, lhs_expr)
         self.var_table.add(rhs_name, rhs_expr)
         op = doc.BinOp(
-            doc.Name(lhs_name, doc.Load(*lhs_pos), *lhs_pos),
+            doc.Name(lhs_name, doc.Load(), *lhs_pos),
             node.op,
-            doc.Name(rhs_name, doc.Load(*rhs_pos), *rhs_pos),
+            doc.Name(rhs_name, doc.Load(), *rhs_pos),
             *lhs_pos,
         )
         rhs = self.eval_expr(op)
 
     lhs = node.target
-    lhs.ctx = doc.Store(*lhs_pos)
+    lhs.ctx = doc.Store()
     if isinstance(lhs, doc.Subscript):
         if isinstance(lhs.slice, doc.Tuple):
             indices = [self.eval_expr(index) for index in lhs.slice.elts]
@@ -144,9 +106,8 @@ def tilelang_visit_aug_assign(self, node: doc.AugAssign) -> None:  # pylint: dis
         return
 
     if isinstance(lhs, doc.Name) and lhs.id in self.var_table.get():
-        span = _get_node_span(lhs)
-        load_ctx = doc.Load(*span)
-        store_ctx = doc.Store(*span)
+        load_ctx = doc.Load()
+        store_ctx = doc.Store()
         lhs.ctx = load_ctx
         lhs_value = self.eval_expr(lhs)
         lhs.ctx = store_ctx
@@ -159,7 +120,7 @@ def tilelang_visit_aug_assign(self, node: doc.AugAssign) -> None:  # pylint: dis
             T.buffer_store(lhs_value.buffer, rhs, indices=[0])
             return
 
-    self.eval_assign(target=lhs, source=rhs, bind_value=tilelang_bind_assign_value)
+    self.eval_assign(target=lhs, source=rhs, bind_value=tvm_tir_parser.bind_assign_value)
 
 
 # Original implementation located at
@@ -174,9 +135,8 @@ def tilelang_visit_ann_assign(self, node: doc.AnnAssign) -> None:  # pylint: dis
         self.report_error(node.annotation, "Annotation should be Var")
 
     if isinstance(lhs, doc.Name) and lhs.id in self.var_table.get():
-        span = _get_node_span(lhs)
-        load_ctx = doc.Load(*span)
-        store_ctx = doc.Store(*span)
+        load_ctx = doc.Load()
+        store_ctx = doc.Store()
         lhs.ctx = load_ctx
         lhs_value = self.eval_expr(lhs)
         lhs.ctx = store_ctx
@@ -189,7 +149,7 @@ def tilelang_visit_ann_assign(self, node: doc.AnnAssign) -> None:  # pylint: dis
             T.buffer_store(lhs_value.buffer, rhs, indices=[0])
             return
 
-    self.eval_assign(target=lhs, source=ann_var, bind_value=tilelang_bind_assign_value)
-    frame = T.LetStmt(rhs, var=ann_var)
+    self.eval_assign(target=lhs, source=ann_var, bind_value=tvm_tir_parser.bind_assign_value)
+    frame = T.Let(rhs, var=ann_var)
     frame.add_callback(partial(frame.__exit__, None, None, None))
     frame.__enter__()
