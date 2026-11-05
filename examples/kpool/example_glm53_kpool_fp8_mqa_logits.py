@@ -19,9 +19,10 @@ One kernel, replacing the reference's host-side ``torch.full(-inf)`` prefill:
 ``..._kernel`` does gather -> E4M3 decode -> ``T.gemm_v0`` -> scale/ReLU/
 weights -> head reduce, then builds the per-lane validity mask in-kernel
 (``0`` inside the range with a valid page, ``-inf`` otherwise) and adds it
-before the write.  The mask is evaluated on a ``[32 pools, 32 heads]`` tile,
-so every compare/select stays above the 256 B vector-op floor, and the
-out-of-range lanes become exact ``-inf``.
+before the write.  Fully valid tiles skip the mask on a fast path; partial or
+invalid tiles evaluate it on a ``[32 pools, 32 heads]`` tile, so every
+compare/select stays above the 256 B vector-op floor, and the out-of-range
+lanes become exact ``-inf``.
 
 Device-side notes:
 

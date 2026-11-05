@@ -48,7 +48,7 @@ logits[r,p] = sum_h relu( dot(q[r,h,:], decode(k_cache[blk, off, :])) * scale_ca
 |-----------|--------|--------|
 | Main kernel | one block owns `pages_per_block` consecutive 64-pool pages of one row; two AIVs each own a 32-pool half of every page: clamped page-table lookup, bulk 32x128B gather, whole-half E4M3 decode; Cube runs one 64x32x128 GEMM per page; Vector does scale, ReLU, per-head weights, 32-head reduce and the mask; one static-extent write per half-page | batching pages amortizes the per-block query load, page-table metadata and cross-core handshake; the page-sized GEMM satisfies the L0 fractal constraints with an 8KB L0C accumulator |
 | Page batching | `pages_per_block` defaults to enough pages to cover the device's AI Cores once per row, capped at 8 | 8 pages/block measured faster than 1, 2, 4 and 16 pages/block on 910B3; the auto cross-core sync emits one flag pair per page, and the flag counter saturates above 16 pages |
-| Validity mask | built in-kernel on a `[32 pools, 32 heads]` tile (0 inside the range with a valid page, -inf otherwise) and added after the head reduce | removes a separate mask kernel (previously ~25% of device time) and keeps every compare/select above the 256B vector-op floor |
+| Validity mask | built in-kernel on a `[32 pools, 32 heads]` tile (0 inside the range with a valid page, -inf otherwise) and added after the head reduce; fully valid tiles skip it on a fast path | removes a separate mask kernel (previously ~25% of device time) and keeps every compare/select above the 256B vector-op floor |
 | CV exchange | explicit `workspace_keys` / `workspace_scores` GM buffers, one producer/consumer pair each; auto cross-core sync | the `threads=2` vid-reduction path mis-splits this kernel's sub-region copies and small compare/broadcast/index ops (confirmed with probes) |
 | FP8 path | `k_cache` uint8 + in-kernel bit-level E4M3 decode | A2/A3 has no FP8 data path; bytes match the reference cache exactly |
 | Host adapter | metadata-only validation (no `.item()`/device reads); padded output + view | keeps the D2H round-trip out of the hot path |
@@ -60,14 +60,18 @@ page table backing every page (the pattern used by the upstream tests).
 
 | R (rows) | max_num_pools | grid (blocks) | pages/block | kernel-only (us) | ns / pool-row |
 |----------|---------------|---------------|-------------|------------------|---------------|
-| 2 | 128 | 4 | 1 | 9.6 | 37.5 |
-| 8 | 1,024 | 16 | 8 | 32.2 | 3.9 |
-| 4 | 32,768 | 256 | 8 | 330.5 | 2.5 |
-| 32 | 32,768 | 2,048 | 8 | 2,557.5 | 2.4 |
+| 2 | 128 | 4 | 1 | 8.9 | 34.8 |
+| 8 | 1,024 | 16 | 8 | 28.3 | 3.5 |
+| 4 | 32,768 | 256 | 8 | 283.5 | 2.2 |
+| 32 | 32,768 | 2,048 | 8 | 2,166.6 | 2.1 |
+
+The current numbers include the fast-path mask and bit-sign decode (§8); they
+are 14.2% (R=4) and 15.3% (R=32) faster than the pre-optimization values
+(330.5 / 2,557.5 us). The R=2/R=8 rows were re-measured on the same build.
 
 ## 5. Performance Analysis
 
-msprof (`op`, R=4 / 32,768 pools, profiler overhead included: Task Duration
+msprof (`op`, R=4 / 32,768 pools, **pre-optimization baseline**: Task Duration
 338.6 us, Block Dim 256):
 
 | Pipe (AIV, normalized by 40 AIVs) | Utilization |
@@ -77,17 +81,20 @@ msprof (`op`, R=4 / 32,768 pools, profiler overhead included: Task Duration
 | MTE2 | 16.3% |
 | MTE3 | 8.3% |
 
-- The AIV is busy ~94% of the block duration; scalar and vector are both well
-  above 50%, so the kernel is instruction-issue bound, not memory bound.
-  Effective bandwidth is roughly 120 MB / 330 us ~ 365 GB/s, about 30% of the
-  1.2 TB/s HBM peak.
+- The AIV is busy ~94% of the block duration on the baseline; scalar and vector
+  are both well above 50%, so the kernel is instruction-issue bound, not memory
+  bound. At the current 283.5 us, effective bandwidth is roughly
+  120 MB / 283.5 us ~ 423 GB/s, about 35% of the 1.2 TB/s HBM peak.
 - The E4M3 bit-level decode is the largest single cost: replacing it with a
-  trivial cast drops R=4 / 32,768 pools from 330 us to 232 us, i.e. the decode
-  chain is ~30% of the kernel.  The Cube is nearly idle (cube 1.8%, MTE 6.7%,
-  FIX 5.4% of the AIC time) because one 64x32x128 GEMM per page is tiny.
+  trivial cast drops the baseline R=4 / 32,768 pools from 330 us to 232 us,
+  i.e. the decode chain is ~30% of the kernel.  After the fast-path mask and
+  bit-sign decode the kernel is 283.5 us, with the decode chain still the
+  largest single cost.  The Cube is nearly idle (cube 1.8%, MTE 6.7%, FIX 5.4%
+  of the AIC time) because one 64x32x128 GEMM per page is tiny.
 - Batching pages is what removed the per-block overhead: at one page per block
-  the same kernel takes 543 us; at 8 pages per block it takes 330 us.  Larger
-  batches are capped by the cross-core flag counter (16 pages hang, 8 are safe).
+  the same kernel takes 543 us; at 8 pages per block the baseline was 330 us
+  and the current build is 283.5 us.  Larger batches are capped by the
+  cross-core flag counter (16 pages hang, 8 are safe).
 
 ## 6. End-to-end (host adapter included, wall clock)
 
@@ -102,7 +109,9 @@ For the small shapes E2E is host-bound: the kernel itself is 9.6-32 us and one
 call costs ~350-400 us on this stack (validation + JIT dispatch + workspace
 allocation + launch).  The host adapter performs metadata-only validation (no
 device reads), so the wall clock contains no D2H round-trip beyond the launch
-path itself.
+path itself.  This table is the baseline host measurement; it is host-bound and
+not re-benchmarked per kernel change, so the kernel-only rows above are the
+performance gate.
 
 ## 7. Accuracy
 
@@ -117,3 +126,15 @@ no-launch paths and metadata rejection. Test data uses non-negative head
 weights (the gated-indexer regime), where the 32-head sum has no cancellation
 and the fp32 tolerance holds; mixed-sign weights can cancel and are out of the
 documented tolerance regime.
+
+## 8. Optimization notes
+
+- Fully valid tiles take a fast path that skips the `-inf` mask; partial and
+  invalid tiles keep the general path. This removed ~12% of the kernel time at
+  R=4 / 32,768 pools.
+- The E4M3 sign is applied by setting the FP32 sign bit instead of a sign
+  multiply, saving one vector op and 16 KB of UB.
+- Decode double buffering via `T.Pipelined` is currently blocked by a codegen
+  limitation: the pipelined body re-emits the `T.reinterpretcast` locals
+  (`dfnorm` / `dmag` / `dfval`) and fails to compile at `pages_per_block > 1`.
+  Manual double buffering (`AUTO_SYNC=False` + manual flags) remains future work.
