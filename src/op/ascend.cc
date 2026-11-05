@@ -399,12 +399,23 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     dst_len *= shape;
   }
 
+  // UB -> L1 never reaches the backend: AscendWorkspaceReduction rewrites it
+  // into a UB -> GM(workspace) -> L1 staging pair, and consumes this offset as
+  // a position inside the row-major (ND) staging buffer rather than inside the
+  // zN L1 buffer. Applying the L1 buffer's layout here would hand the pass a
+  // zN offset (row k -> k * ELE_PER_C0) and misplace every staged row, so keep
+  // the ND offset for this copy only.
+  bool dst_is_ub_to_l1 =
+      (src.scope() == "shared.ub" && dst.scope() == "shared.l1");
+
   auto src_ptr = src_new_buffer.access_ptr(
       1, src_new_buffer->dtype, 1,
       src_new_buffer.OffsetOf(src_new_indices).back(), src_len);
   auto dst_ptr = dst_new_buffer.access_ptr(
       2, dst_new_buffer->dtype, 1,
-      dst_new_buffer.OffsetOf(dst_new_indices).back(), dst_len);
+      dst_is_ub_to_l1 ? dst.OffsetOf(dst_indices).back()
+                      : dst_new_buffer.OffsetOf(dst_new_indices).back(),
+      dst_len);
 
   PrimExpr tmp_ptr;
   if (tmp.defined()) {
