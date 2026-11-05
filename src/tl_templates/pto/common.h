@@ -1420,6 +1420,24 @@ tand(TileUbDataND<uint8_t, Rows, Cols, RowValid, ColValid> &dst,
   auto &src1_u16 = reinterpret_cast<
       TileUbDataND<uint16_t, Rows, Cols / 2, RowValid, ColValid / 2> &>(src1);
   pto::TAND(dst_u16, src0_u16, src1_u16);
+  // Odd valid tail byte: the paired uint16 view covers only
+  // floor(ColValid / 2) pairs; processing the straddling pair instead
+  // would write one byte past the valid region (e.g. buf[0:255] on a
+  // 256-byte buffer clobbers byte 255), so fix up the last valid byte
+  // of each row with a scalar byte op.
+  if (ColValid % 2 == 1) {
+    // The paired op above runs on PIPE_V while this tail-byte fixup
+    // is a scalar UB read-modify-write on PIPE_S; synchronize both
+    // directions like clear_compare_tail_bits does, so the scalar
+    // reads observe the copied operands and the subsequent MTE3
+    // store observes the fixup.
+    pto::PtoSetWaitFlag<PIPE_V, PIPE_S>();
+    for (int r = 0; r < RowValid; ++r) {
+      const int idx = r * Cols + ColValid - 1;
+      dst.data()[idx] = src0.data()[idx] & src1.data()[idx];
+    }
+    pto::PtoSetWaitFlag<PIPE_S, PIPE_V>();
+  }
 }
 
 template <typename T, int32_t Rows, int32_t Cols, int32_t RowValid,
@@ -1443,6 +1461,24 @@ tor(TileUbDataND<uint8_t, Rows, Cols, RowValid, ColValid> &dst,
   auto &src1_u16 = reinterpret_cast<
       TileUbDataND<uint16_t, Rows, Cols / 2, RowValid, ColValid / 2> &>(src1);
   pto::TOR(dst_u16, src0_u16, src1_u16);
+  // Odd valid tail byte: the paired uint16 view covers only
+  // floor(ColValid / 2) pairs; processing the straddling pair instead
+  // would write one byte past the valid region (e.g. buf[0:255] on a
+  // 256-byte buffer clobbers byte 255), so fix up the last valid byte
+  // of each row with a scalar byte op.
+  if (ColValid % 2 == 1) {
+    // The paired op above runs on PIPE_V while this tail-byte fixup
+    // is a scalar UB read-modify-write on PIPE_S; synchronize both
+    // directions like clear_compare_tail_bits does, so the scalar
+    // reads observe the copied operands and the subsequent MTE3
+    // store observes the fixup.
+    pto::PtoSetWaitFlag<PIPE_V, PIPE_S>();
+    for (int r = 0; r < RowValid; ++r) {
+      const int idx = r * Cols + ColValid - 1;
+      dst.data()[idx] = src0.data()[idx] | src1.data()[idx];
+    }
+    pto::PtoSetWaitFlag<PIPE_S, PIPE_V>();
+  }
 }
 
 template <typename T1, typename T2, int32_t shape1, int32_t shape2,
