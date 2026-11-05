@@ -196,6 +196,10 @@ def set_cross_flag(pipe: str, flag: int, mode: int = 2):
     for a given pipeline stage. It is used in conjunction with `wait_cross_flag`
     to synchronize logical execution queues that are not standard producer-consumer pairs.
 
+    Manual cross-core flags cannot be combined with TL_ASCEND_AUTO_CV_SYNC=True.
+    For automatic synchronization, omit these flags and enable both
+    TL_ASCEND_AUTO_CV_COMBINE and TL_ASCEND_AUTO_CV_SYNC.
+
     Args:
         pipe (str): The pipeline stage issuing the set action (e.g., "MTE3", "V").
         flag (int): The event ID index to set.
@@ -216,6 +220,8 @@ def wait_cross_flag(flag: int, pipe: _pipe | Literal[""] = ""):
 
     This function blocks the current execution stream until the specified hardware
     event ID (flag) is set by `set_cross_flag`.
+
+    Like `set_cross_flag`, this requires TL_ASCEND_AUTO_CV_SYNC to be disabled.
 
     Args:
         flag (int): The event ID index to wait for.
