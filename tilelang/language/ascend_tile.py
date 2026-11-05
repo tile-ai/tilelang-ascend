@@ -2343,24 +2343,28 @@ def bitwise_xor(
             framework allocates the workspace automatically.
 
     Supported dtypes: AscendC: int16, uint16; PTO: int8, uint8, int16, uint16.
+    The front-end rejects only wide integer dtypes (int32/uint32/int64/uint64);
+    other dtypes are left to the backend to reject with a clean error.
 
     Returns:
         A TVM intrinsic call that performs the bitwise XOR operation.
     """
-    # The front-end only rejects dtypes that no applicable backend supports
-    # (the union of the backend domains); each backend still enforces its own
-    # subset during code generation.
-    _supported = ("int8", "uint8", "int16", "uint16")
+    # The bitwise XOR codegen only handles 8/16-bit integers. Wide integers
+    # (int32/uint32 previously crashed OptimizeForTarget; int64/uint64 are
+    # equally unsupported) are rejected here. Floating-point buffers are
+    # intentionally allowed through: the workspace tmp-contract helpers call
+    # this API generically with float32, and the backend rejects those cleanly.
+    _unsupported = ("int32", "uint32", "int64", "uint64")
     # BufferRegion / vectorized accesses may surface a lane-suffixed dtype
     # (e.g. "int16x256"); compare against the scalar element type only.
     dst_dtype = _underlying_buffer(dst).dtype.split("x")[0]
     src0_dtype = _underlying_buffer(src0).dtype.split("x")[0]
     src1_dtype = _underlying_buffer(src1).dtype.split("x")[0]
-    if dst_dtype not in _supported or src0_dtype not in _supported or src1_dtype not in _supported:
+    if dst_dtype in _unsupported or src0_dtype in _unsupported or src1_dtype in _unsupported:
         raise ValueError(
             "tilelang.language.bitwise_xor: unsupported operand dtype "
             f"(dst={dst_dtype}, src0={src0_dtype}, src1={src1_dtype}); "
-            "supported dtypes (AscendC: int16, uint16; PTO: int8, uint8, int16, uint16)."
+            "integer operands must be 8/16-bit (int8/uint8/int16/uint16)."
         )
 
     if isinstance(dst, BufferRegion):
