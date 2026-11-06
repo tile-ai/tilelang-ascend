@@ -165,10 +165,11 @@ copy_gm_to_l1(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
     return;
   }
   auto src_full_layout = tla::MakeLayout<T, LayoutGM>(tailM, realSrcN);
-  auto src_full = tla::MakeTensor(srcTensor, src_full_layout, Arch::PositionGM{});
-  auto src = tla::GetTile(src_full, tla::MakeCoord(tla::Int<0>{}, tla::Int<0>{}),
-                          tla::MakeShape(tailM, tailN));
-
+  auto src_full =
+      tla::MakeTensor(srcTensor, src_full_layout, Arch::PositionGM{});
+  auto src =
+      tla::GetTile(src_full, tla::MakeCoord(tla::Int<0>{}, tla::Int<0>{}),
+                   tla::MakeShape(tailM, tailN));
 
   constexpr auto layoutInL1 = tla::MakeLayout<T, LayoutL1>(dstM, dstN);
   auto dst = tla::MakeTensor(dstTensor, layoutInL1, Arch::PositionL1{});
@@ -213,12 +214,13 @@ CATLASS_DEVICE void copy_l1_to_l0a(LocalTensor<T> dstTensor,
     return;
   }
   using LayoutL1Sel = std::conditional_t<transpose, LayoutL1T, LayoutL1>;
-  constexpr auto src_layout =
-      transpose ? tla::MakeLayout<T, LayoutL1Sel>(srcN, srcM)
-                : tla::MakeLayout<T, LayoutL1Sel>(srcM, srcN);
+  constexpr auto src_layout = transpose
+                                  ? tla::MakeLayout<T, LayoutL1Sel>(srcN, srcM)
+                                  : tla::MakeLayout<T, LayoutL1Sel>(srcM, srcN);
   auto src_full = tla::MakeTensor(srcTensor, src_layout, Arch::PositionL1{});
-  auto src = tla::GetTile(src_full, tla::MakeCoord(tla::Int<0>{}, tla::Int<0>{}),
-                          tla::MakeShape(dstM, dstN));
+  auto src =
+      tla::GetTile(src_full, tla::MakeCoord(tla::Int<0>{}, tla::Int<0>{}),
+                   tla::MakeShape(dstM, dstN));
 
   auto layoutAInL0 = tla::MakeLayout<T, LayoutL0A>(dstM, dstN);
   auto dst = tla::MakeTensor(dstTensor, layoutAInL0, Arch::PositionL0A{});
@@ -272,16 +274,16 @@ CATLASS_DEVICE void copy_l1_to_l0b(LocalTensor<T> dstTensor,
     return;
   }
   using LayoutL1Sel = std::conditional_t<transpose, LayoutL1T, LayoutL1>;
-  constexpr auto src_layout =
-      transpose ? tla::MakeLayout<T, LayoutL1Sel>(srcN, srcM)
-                : tla::MakeLayout<T, LayoutL1Sel>(srcM, srcN);
+  constexpr auto src_layout = transpose
+                                  ? tla::MakeLayout<T, LayoutL1Sel>(srcN, srcM)
+                                  : tla::MakeLayout<T, LayoutL1Sel>(srcM, srcN);
   auto src_full = tla::MakeTensor(srcTensor, src_layout, Arch::PositionL1{});
-  auto src = tla::GetTile(src_full, tla::MakeCoord(tla::Int<0>{}, tla::Int<0>{}),
-                          tla::MakeShape(dstM, dstN));
+  auto src =
+      tla::GetTile(src_full, tla::MakeCoord(tla::Int<0>{}, tla::Int<0>{}),
+                   tla::MakeShape(dstM, dstN));
 
   auto layoutBInL0 = tla::MakeLayout<T, LayoutL0B>(dstM, dstN);
   auto dst = tla::MakeTensor(dstTensor, layoutBInL0, Arch::PositionL0B{});
-
 
   TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
   tileCopier(dst, src);
@@ -333,9 +335,11 @@ copy_l0c_to_gm(GlobalTensor<T2> dstTensor, LocalTensor<T1> srcTensor,
   auto layoutInL0C = tla::MakeLayoutL0C(srcM, srcN);
   auto src = tla::MakeTensor(srcTensor, layoutInL0C, Arch::PositionL0C{});
   auto dst_full_layout = tla::MakeLayout<T2, LayoutGM>(tailM, realDstN);
-  auto dst_full = tla::MakeTensor(dstTensor, dst_full_layout, Arch::PositionGM{});
-  auto dst = tla::GetTile(dst_full, tla::MakeCoord(tla::Int<0>{}, tla::Int<0>{}),
-                          tla::MakeShape(tailM, tailN));
+  auto dst_full =
+      tla::MakeTensor(dstTensor, dst_full_layout, Arch::PositionGM{});
+  auto dst =
+      tla::GetTile(dst_full, tla::MakeCoord(tla::Int<0>{}, tla::Int<0>{}),
+                   tla::MakeShape(tailM, tailN));
 
   CopyL0CToGmTla<ArchTag, decltype(src), decltype(dst),
                  ScaleGranularity::NO_QUANT, enRelu>
