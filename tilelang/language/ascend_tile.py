@@ -81,6 +81,24 @@ def _handle_buffer_region(br: BufferRegion, mask):
     return bf.access_ptr(mask, offset=offset, extent=size_extent), extent
 
 
+def _scalar_load_offset(load: BufferLoad) -> PrimExpr:
+    """Resolve a scalar BufferLoad into its logical element offset.
+
+    A multi-dimensional element access such as ``s_ub[1, 3]`` must address the
+    requested element; forwarding only the first index would silently read
+    ``s_ub.flatten()[1]``.
+
+    Only the dense row-major offset is resolved here. The *physical* layout is
+    not known at frontend time: a ``T.alloc_shared`` buffer is only inferred as
+    UB/L1 by AscendInferBufferScope afterwards, and ``shared.ub`` rows are then
+    padded to a 32-byte boundary by Flatten2DBuffer. The backends' codegen
+    upgrades this dense offset against the final storage scope and the padded
+    shape recorded in ``kLogicBufferShapes`` -- the same address rule the write
+    side (DMA copy) applies -- so both ends agree after layout determination.
+    """
+    return load.buffer.offset_of(load.indices)[0]
+
+
 def _is_const_one(val) -> bool:
     """Check if a value is constant 1 (int or IntImm)."""
     if isinstance(val, (int, float)):
@@ -873,7 +891,6 @@ def select(
 
         src1_type = 0
         buffer_1 = src1.buffer
-        indices_1 = src1.indices
         return _call_intrin_with_optional_tmp(
             "select",
             [
@@ -882,7 +899,7 @@ def select(
                 src0_ptr,
                 src1_type,
                 buffer_1.access_ptr("r"),
-                indices_1[0],
+                _scalar_load_offset(src1),
                 selMode,
                 size_0,
             ],
@@ -1085,14 +1102,13 @@ def binary_op(
     assert size_0 == size_1, "size must be same"
     if isinstance(src1, BufferLoad):
         buffer_1 = src1.buffer
-        indices_1 = src1.indices
         return T.call_intrin(
             "handle",
             tir.op.Op.get(f"tl.ascend_{op}s"),
             dst_ptr,
             src0_ptr,
             buffer_1.access_ptr("r"),
-            indices_1[0],
+            _scalar_load_offset(src1),
             size_0,
         )
 
@@ -2121,14 +2137,13 @@ def compare(
 
     if isinstance(src1, BufferLoad):
         buffer_1 = src1.buffer
-        indices_1 = src1.indices
         return T.call_intrin(
             "handle",
             tir.op.Op.get("tl.ascend_compare_scalar"),
             dst_ptr,
             src0_ptr,
             buffer_1.access_ptr("r"),
-            indices_1[0],
+            _scalar_load_offset(src1),
             mode,
             dst_size,
         )
