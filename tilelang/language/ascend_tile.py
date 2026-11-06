@@ -2408,7 +2408,7 @@ def bitwise_xor(
         tmp: Optional one-dimensional UB scratch buffer. When omitted, the
             framework allocates the workspace automatically.
 
-    Supported dtypes: int16, uint16.
+    Supported dtypes: AscendC: int16, uint16; PTO: int8, uint8, int16, uint16.
 
     Returns:
         A TVM intrinsic call that performs the bitwise XOR operation.
