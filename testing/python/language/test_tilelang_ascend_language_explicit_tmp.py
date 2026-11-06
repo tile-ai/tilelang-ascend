@@ -63,6 +63,8 @@ def _workspace_api_calls(explicit: bool, arena_dtype: str = "uint8"):
     arena = _ub_buffer("arena", (arena_elements,), arena_dtype)
     src = _ub_buffer("src", (64,))
     dst = _ub_buffer("dst", (64,))
+    xor_src = _ub_buffer("xor_src", (64,), "int16")
+    xor_dst = _ub_buffer("xor_dst", (64,), "int16")
     wide_dst = _ub_buffer("wide_dst", (128,))
     reduce_src = _ub_buffer("reduce_src", (8, 64))
     reduce_dst = _ub_buffer("reduce_dst", (8,))
@@ -111,7 +113,7 @@ def _workspace_api_calls(explicit: bool, arena_dtype: str = "uint8"):
         (ascend_tile.sin(dst, src, **tmp_arg), 2),
         (ascend_tile.cos(dst, src, **tmp_arg), 2),
         (ascend_tile.pow(dst, src, src, **tmp_arg), 3),
-        (ascend_tile.bitwise_xor(dst, src, src, **tmp_arg), 3),
+        (ascend_tile.bitwise_xor(xor_dst, xor_src, xor_src, **tmp_arg), 3),
         (ascend_tile.clamp_max(dst, src, 1.0, 64, **tmp_arg), 3),
         (ascend_tile.clamp_min(dst, src, -1.0, 64, **tmp_arg), 3),
         (ascend_tile.clamp(dst, src, -1.0, 1.0, 64, **tmp_arg), 3),
@@ -134,6 +136,8 @@ def _workspace_api_calls(explicit: bool, arena_dtype: str = "uint8"):
         arena,
         src,
         dst,
+        xor_src,
+        xor_dst,
         wide_dst,
         reduce_src,
         reduce_dst,

@@ -2351,11 +2351,27 @@ def bitwise_xor(
         tmp: Optional one-dimensional UB scratch buffer. When omitted, the
             framework allocates the workspace automatically.
 
-    Supported dtypes: int16, uint16.
+    Supported dtypes: int8, uint8, int16, uint16 (all targets); int32, uint32
+    (PTO A5 only, and only when ``tl.ascend_memory_planning`` is disabled —
+    that combination currently crashes OptimizeForTarget). The backend/lowering
+    enforces the target-specific int32/uint32 restriction.
 
     Returns:
         A TVM intrinsic call that performs the bitwise XOR operation.
     """
+    _supported = ("int8", "uint8", "int16", "uint16", "int32", "uint32")
+    # BufferRegion / vectorized accesses may surface a lane-suffixed dtype
+    # (e.g. "int16x256"); compare against the scalar element type only.
+    dst_dtype = _underlying_buffer(dst).dtype.split("x")[0]
+    src0_dtype = _underlying_buffer(src0).dtype.split("x")[0]
+    src1_dtype = _underlying_buffer(src1).dtype.split("x")[0]
+    if dst_dtype not in _supported or src0_dtype not in _supported or src1_dtype not in _supported:
+        raise ValueError(
+            "tilelang.language.bitwise_xor: unsupported operand dtype "
+            f"(dst={dst_dtype}, src0={src0_dtype}, src1={src1_dtype}); "
+            "bitwise_xor requires integer operands (int8/uint8/int16/uint16/int32/uint32)."
+        )
+
     if isinstance(dst, BufferRegion):
         dst_ptr, _ = _handle_buffer_region(dst, "w")
     else:
