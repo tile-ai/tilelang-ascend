@@ -9,6 +9,8 @@
 
 #include "ascend.h"
 
+#include <algorithm>
+#include <atomic>
 #include <sstream>
 #include <tuple>
 #include <vector>
@@ -112,6 +114,355 @@ AscendAtomicAdd::AscendAtomicAdd(Array<PrimExpr> args, BufferMap vmap)
   this->src_range = src_region.GetRanges();
   this->dst_extents = dst_region.GetExtents();
   this->src_extents = src_region.GetExtents();
+}
+
+// A GM<->UB DMA moves data as `rows` bursts of `cols` elements each. Two
+// hardware constraints govern the UB side (verified empirically on 910B /
+// CANN 9.0.0):
+//   * every burst's payload must be at least 8-byte granular: a multi-burst
+//     copy of 2-byte payloads (issue #929's strided one-element-per-row load
+//     into a flat 1D UB buffer) scatters bursts to alignment boundaries past
+//     the buffer and silently corrupts neighbouring UB allocations, while
+//     8-byte payloads work (tail_block's packed-compare mask store relies on
+//     it);
+//   * the per-row pitch gap is described in 32-byte units (the helper passes
+//     the UB-side inter-burst gap as (buf_inner - cols) * elem / 32), so a
+//     gap that is not a 32-byte multiple truncates and packs rows at the
+//     wrong pitch; the same happens whenever the template column count is
+//     not the local tile's physical innermost dim (a column slice into a
+//     wider tile).
+// A copy is therefore NOT representable as a single DMA when any of these
+// holds and more than one burst is involved. Single-burst copies (rows
+// provably <= 1) keep the DMA: the pad path handles any tail width. Copies
+// whose column count is not a compile-time constant also keep the DMA (the
+// runtime width may be aligned; status quo).
+static bool NeedsScalarGMCopyFallback(const PrimExpr &rows,
+                                      const PrimExpr &cols, int elem_bytes,
+                                      const PrimExpr &tmpl_n,
+                                      const PrimExpr &buf_inner) {
+  if (const auto *rows_imm = rows.as<IntImmNode>()) {
+    if (rows_imm->value <= 1) {
+      return false;
+    }
+  }
+  const auto *cols_imm = cols.as<IntImmNode>();
+  if (!cols_imm || cols_imm->value < 1) {
+    return false;
+  }
+  int64_t payload = static_cast<int64_t>(cols_imm->value) * elem_bytes;
+  if (payload % 8 != 0) {
+    return true;
+  }
+  const auto *tmpl_imm = tmpl_n.as<IntImmNode>();
+  const auto *inner_imm = buf_inner.as<IntImmNode>();
+  if (!tmpl_imm || !inner_imm || tmpl_imm->value != inner_imm->value) {
+    return true;
+  }
+  int64_t gap = (inner_imm->value - cols_imm->value) * elem_bytes;
+  return gap % 32 != 0;
+}
+
+// Elementwise fallback for GM->UB loads that a single 2D DMA cannot express
+// (see NeedsScalarGMCopyFallback). Mirrors the DMA semantics:
+//   * when (valid_row != tmpl_m || valid_col != tmpl_n): prefill the local
+//     tile's first tmpl_m * tmpl_n elements (from the region base, linearly in
+//     buffer memory) with padValue -- the scalar equivalent of the helper's
+//     Duplicate prefill;
+//   * then copy the valid_row x valid_col rect element by element between
+//     the region's declared row-major layouts: the GM side indexes its active
+//     row/col dims, the local side is unraveled over its region extents.
+//     This is exactly the layout the DMA cannot express.
+// The loops stay scalar (GetValue/SetValue codegen on both backends): the
+// triggering shapes have < 32 bytes of contiguous run, so there is nothing
+// for a vector instruction to chew on anyway. Scalar GM *loads* are safe;
+// only scalar GM stores are unreliable (see MakeStagedUBToGMCopy).
+static Stmt
+MakeScalarGMCopyLoop(const Buffer &gm_buf, const Array<Range> &gm_range,
+                     const std::vector<int> &gm_active, const Buffer &local_buf,
+                     const Array<Range> &local_range,
+                     const Array<PrimExpr> &local_extents,
+                     const PrimExpr &valid_row, const PrimExpr &valid_col,
+                     const PrimExpr &tmpl_m, const PrimExpr &tmpl_n,
+                     const PrimExpr &pad_value, arith::Analyzer *analyzer) {
+  int gm_row_idx = gm_active[gm_active.size() - 2];
+  int gm_col_idx = gm_active.back();
+  int gm_ndim = static_cast<int>(gm_range.size());
+  int loc_ndim = static_cast<int>(local_range.size());
+
+  // Row-major strides over the LOCAL region extents (element linear position
+  // within the region -> per-dim index).
+  std::vector<PrimExpr> loc_strides(loc_ndim);
+  PrimExpr acc = Integer(1);
+  for (int d = loc_ndim - 1; d >= 0; --d) {
+    loc_strides[d] = acc;
+    acc = analyzer->Simplify(acc * local_extents[d]);
+  }
+
+  static std::atomic<int> counter{0};
+  std::string suffix = std::to_string(counter.fetch_add(1));
+  Var iv("copy_gm_row_" + suffix, DataType::Int(32));
+  Var jv("copy_gm_col_" + suffix, DataType::Int(32));
+
+  auto gm_indices = [&](const PrimExpr &i, const PrimExpr &j) {
+    Array<PrimExpr> idx;
+    for (int d = 0; d < gm_ndim; ++d) {
+      PrimExpr e = gm_range[d]->min;
+      if (d == gm_row_idx) {
+        e = e + i;
+      } else if (d == gm_col_idx) {
+        e = e + j;
+      }
+      idx.push_back(analyzer->Simplify(e));
+    }
+    return idx;
+  };
+  auto local_indices = [&](const PrimExpr &linear) {
+    Array<PrimExpr> idx;
+    for (int d = 0; d < loc_ndim; ++d) {
+      PrimExpr e = local_range[d]->min;
+      if (!is_one(local_extents[d])) {
+        e = e + truncmod(floordiv(linear, loc_strides[d]), local_extents[d]);
+      }
+      idx.push_back(analyzer->Simplify(e));
+    }
+    return idx;
+  };
+
+  Stmt copy_loop;
+  {
+    // Row pitch of the LOCAL region's declared layout: for a multi-dim tile
+    // it is the region's inner extent -- NOT the runtime-clamped valid_col
+    // (a column-tail clamp shrinks only how many elements each row
+    // contributes, not where the tile's rows live). A 1-D flat region has no
+    // row pitch: its rows pack back-to-back, so the advance is valid_col
+    // (exactly the DMA's own stream advance: payload + truncated gap).
+    PrimExpr local_pitch = loc_ndim >= 2
+                               ? analyzer->Simplify(local_extents[loc_ndim - 1])
+                               : valid_col;
+    PrimExpr linear = iv * local_pitch + jv;
+    PrimExpr value = BufferLoad(gm_buf, gm_indices(iv, jv));
+    if (value->dtype != local_buf->dtype) {
+      value = Cast(local_buf->dtype, value);
+    }
+    copy_loop = BufferStore(local_buf, value, local_indices(linear));
+    copy_loop = For(jv, IntImm(DataType::Int(32), 0), valid_col,
+                    ForKind::kSerial, copy_loop);
+    copy_loop = For(iv, IntImm(DataType::Int(32), 0), valid_row,
+                    ForKind::kSerial, copy_loop);
+  }
+
+  // Pad prefill, mirroring the helper's Duplicate: fill the local tile's
+  // first tmpl_m * tmpl_n elements linearly from the region base with
+  // padValue whenever the valid rect does not cover the whole tile.
+  PrimExpr need_pad = analyzer->Simplify(valid_row != tmpl_m);
+  bool pad_always = false, pad_never = false;
+  if (const auto *b = need_pad.as<IntImmNode>()) {
+    if (need_pad.dtype().is_bool()) {
+      pad_always = b->value != 0;
+      pad_never = b->value == 0;
+    }
+  }
+  if (!pad_never) {
+    const auto *col_imm = valid_col.as<IntImmNode>();
+    const auto *tmpl_n_imm = tmpl_n.as<IntImmNode>();
+    if (col_imm && tmpl_n_imm && col_imm->value != tmpl_n_imm->value) {
+      pad_always = true;
+    }
+  }
+
+  if (pad_never) {
+    return copy_loop;
+  }
+
+  // Linear fill from the region base, unraveling over the local buffer's
+  // shape (Duplicate fills the tensor view's memory linearly).
+  std::vector<PrimExpr> buf_strides(local_buf->shape.size());
+  acc = Integer(1);
+  for (int d = static_cast<int>(local_buf->shape.size()) - 1; d >= 0; --d) {
+    buf_strides[d] = acc;
+    acc = analyzer->Simplify(acc * local_buf->shape[d]);
+  }
+  Array<PrimExpr> base_idx;
+  for (int d = 0; d < loc_ndim; ++d) {
+    base_idx.push_back(local_range[d]->min);
+  }
+  PrimExpr base = local_buf.OffsetOf(base_idx).back();
+
+  Var kv("copy_gm_pad_" + suffix, DataType::Int(32));
+  Array<PrimExpr> pad_idx;
+  for (size_t d = 0; d < local_buf->shape.size(); ++d) {
+    PrimExpr e;
+    if (d + 1 == local_buf->shape.size()) {
+      e = truncmod(base + kv, local_buf->shape[d]);
+    } else {
+      e = truncmod(floordiv(base + kv, buf_strides[d]), local_buf->shape[d]);
+    }
+    pad_idx.push_back(analyzer->Simplify(e));
+  }
+  Stmt pad_loop = BufferStore(local_buf, pad_value, pad_idx);
+  pad_loop =
+      For(kv, IntImm(DataType::Int(32), 0), analyzer->Simplify(tmpl_m * tmpl_n),
+          ForKind::kSerial, pad_loop);
+
+  if (pad_always) {
+    return SeqStmt::Flatten(pad_loop, copy_loop);
+  }
+  return SeqStmt::Flatten(IfThenElse(need_pad, pad_loop), copy_loop);
+}
+
+// Store-direction fallback for UB->GM copies a single 2D DMA cannot express
+// (sub-32-byte burst payloads / inexpressible UB-side pitch, issue #929).
+// Scalar GM stores are NOT a viable fallback on this uArch: the S-pipe store
+// path goes through the write-back cache, which drops most partial-line
+// (2-byte) stores before they ever reach GM (the #1304 failure mode; verified
+// empirically -- DataCacheCleanAndInvalid does not recover them). Instead,
+// stage the strided elements into a 32-byte-row-aligned UB scratch tile
+// (one row of `pad_n` elements per copied row, element j at column j) via
+// scalar UB->UB moves, then emit ONE single-burst MTE3 DMA per row: a
+// single burst has no UB-side pitch requirement, and its source (the staging
+// row start) is 32-byte aligned by construction.
+static Stmt MakeStagedUBToGMCopy(
+    const LowerArgs &T, const Buffer &gm_buf, const Array<Range> &gm_range,
+    const std::vector<int> &gm_active, const Buffer &local_buf,
+    const Array<Range> &local_range, const Array<PrimExpr> &local_extents,
+    const PrimExpr &valid_row, const PrimExpr &valid_col,
+    const std::string &dtype_str, arith::Analyzer *analyzer) {
+  int gm_row_idx = gm_active[gm_active.size() - 2];
+  int gm_col_idx = gm_active.back();
+  int loc_ndim = static_cast<int>(local_range.size());
+
+  // GM-side element strides of the row / col dims (row-major buffer layout).
+  PrimExpr row_stride = Integer(1);
+  for (size_t k = gm_row_idx + 1; k < gm_buf->shape.size(); ++k) {
+    row_stride = row_stride * gm_buf->shape[k];
+  }
+  PrimExpr col_stride = Integer(1);
+  for (size_t k = gm_col_idx + 1; k < gm_buf->shape.size(); ++k) {
+    col_stride = col_stride * gm_buf->shape[k];
+  }
+  bool cols_contiguous = is_one(analyzer->Simplify(col_stride));
+
+  // Region upper bounds (the DMA runtime bounds valid_row/valid_col clamp
+  // within them). The staging tile is sized from these.
+  const auto *row_extent_imm =
+      analyzer->Simplify(gm_range[gm_row_idx]->extent).as<IntImmNode>();
+  const auto *col_extent_imm =
+      analyzer->Simplify(gm_range[gm_col_idx]->extent).as<IntImmNode>();
+  ICHECK(row_extent_imm && row_extent_imm->value >= 1)
+      << "copy_ub_to_gm fallback: the strided store's row count must be a "
+         "compile-time constant, but got "
+      << gm_range[gm_row_idx]->extent;
+  ICHECK(col_extent_imm && col_extent_imm->value >= 1)
+      << "copy_ub_to_gm fallback: the strided store's column count must be a "
+         "compile-time constant, but got "
+      << gm_range[gm_col_idx]->extent;
+  int64_t row_extent = row_extent_imm->value;
+  int64_t col_extent = col_extent_imm->value;
+
+  // Elements per staging row: at least the column count, rounded up so every
+  // row start is 32-byte aligned (all supported element sizes divide 32).
+  int elem_bytes = gm_buf->dtype.bytes();
+  int64_t align_elems = 32 / elem_bytes;
+  if (align_elems < 1) {
+    align_elems = 1;
+  }
+  int64_t pad_n = std::max(col_extent, align_elems);
+  pad_n = (pad_n + align_elems - 1) / align_elems * align_elems;
+
+  // Staging scratch: one flat UB workspace, row i at element offset i*pad_n.
+  Buffer stage = T.AddWorkspace(static_cast<int>(row_extent * pad_n),
+                                local_buf->dtype, "shared.ub");
+
+  // Local-side region unravel (row-major over the region extents).
+  std::vector<PrimExpr> loc_strides(loc_ndim);
+  PrimExpr acc = Integer(1);
+  for (int d = loc_ndim - 1; d >= 0; --d) {
+    loc_strides[d] = acc;
+    acc = analyzer->Simplify(acc * local_extents[d]);
+  }
+  auto local_indices = [&](const PrimExpr &linear) {
+    Array<PrimExpr> idx;
+    for (int d = 0; d < loc_ndim; ++d) {
+      PrimExpr e = local_range[d]->min;
+      if (!is_one(local_extents[d])) {
+        e = e + truncmod(floordiv(linear, loc_strides[d]), local_extents[d]);
+      }
+      idx.push_back(analyzer->Simplify(e));
+    }
+    return idx;
+  };
+
+  // GM base flat offset of the region.
+  Array<PrimExpr> gm_base_idx;
+  for (size_t d = 0; d < gm_range.size(); ++d) {
+    gm_base_idx.push_back(gm_range[d]->min);
+  }
+  PrimExpr gm_base = gm_buf.OffsetOf(gm_base_idx).back();
+
+  static std::atomic<int> counter{0};
+  std::string suffix = std::to_string(counter.fetch_add(1));
+  Var iv("copy_stage_row_" + suffix, DataType::Int(32));
+  Var jv("copy_stage_col_" + suffix, DataType::Int(32));
+
+  // 1) Scalar UB->UB staging fill: element (i, j) lands at stage[i*pad_n + j].
+  //    The source read walks the local region's declared layout: a multi-dim
+  //    tile's row pitch is the region's inner extent -- not the runtime-
+  //    clamped valid_col (a column-tail clamp shrinks only how many elements
+  //    each row contributes, not where the tile's rows live) -- while a 1-D
+  //    flat region packs its rows back-to-back at valid_col (the DMA's own
+  //    stream advance).
+  Stmt fill;
+  {
+    PrimExpr local_pitch = loc_ndim >= 2
+                               ? analyzer->Simplify(local_extents[loc_ndim - 1])
+                               : valid_col;
+    PrimExpr linear = iv * local_pitch + jv;
+    fill = BufferStore(stage, BufferLoad(local_buf, local_indices(linear)),
+                       {iv * Integer(static_cast<int>(pad_n)) + jv});
+    fill = For(jv, IntImm(DataType::Int(32), 0), valid_col, ForKind::kSerial,
+               fill);
+    fill = For(iv, IntImm(DataType::Int(32), 0), valid_row, ForKind::kSerial,
+               fill);
+  }
+
+  // 2) Per-row (or per-element when the GM columns are not contiguous)
+  // single-burst MTE3 calls.
+  auto make_dma_call = [&](const PrimExpr &gm_off, const PrimExpr &stage_off,
+                           const PrimExpr &ncol) {
+    Array<PrimExpr> args;
+    args.push_back(StringImm("tl::ascend::copy_ub_to_gm<" + dtype_str + ", " +
+                             std::to_string(pad_n) + ">"));
+    args.push_back(stage.access_ptr(1, stage->dtype, 1, stage_off,
+                                    Integer(static_cast<int>(pad_n))));
+    args.push_back(gm_buf.access_ptr(2, gm_buf->dtype, 1, gm_off, ncol));
+    args.push_back(row_stride); // realDstN: unused by a single burst
+    args.push_back(Integer(1)); // maskShapeM: one row per call
+    args.push_back(ncol);       // maskShapeN
+    return Evaluate(Call(DataType::Handle(), builtin::call_extern(), args));
+  };
+
+  Stmt dma;
+  if (cols_contiguous) {
+    // One burst of valid_col elements per row, straight from the staging row.
+    // gm_base already carries every fixed dim's min (the col min included).
+    PrimExpr gm_off = gm_base + iv * row_stride;
+    dma =
+        make_dma_call(gm_off, iv * Integer(static_cast<int>(pad_n)), valid_col);
+    dma =
+        For(iv, IntImm(DataType::Int(32), 0), valid_row, ForKind::kSerial, dma);
+  } else {
+    // Columns are strided in GM as well: fall back to one element per DMA.
+    PrimExpr gm_off = gm_base + iv * row_stride + jv * col_stride;
+    dma = make_dma_call(
+        gm_off, (iv * valid_col + jv) * Integer(static_cast<int>(pad_n)),
+        Integer(1));
+    dma =
+        For(jv, IntImm(DataType::Int(32), 0), valid_col, ForKind::kSerial, dma);
+    dma =
+        For(iv, IntImm(DataType::Int(32), 0), valid_row, ForKind::kSerial, dma);
+  }
+
+  return SeqStmt::Flatten(fill, dma);
 }
 
 Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
@@ -222,6 +573,10 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   std::stringstream ss;
   ss << "tl::ascend::";
   PrimExpr strideN;
+  // Local-tile template dims of the GM<->UB copy call (dstN/dstM for a load,
+  // srcN/srcM for a store), recorded for the sub-32B fallback check below.
+  PrimExpr local_tmpl_n;
+  PrimExpr local_tmpl_m = Integer(1);
 
   if (src.scope() == "global" && dst.scope() == "shared.l1") {
     ss << "copy_gm_to_l1";
@@ -272,8 +627,10 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       }
       ss << gm2ub_tmpl_n;
       if (dst->shape.size() > 1) {
-        ss << ", " << compute_blocklen(dst, dst_extents);
+        local_tmpl_m = compute_blocklen(dst, dst_extents);
+        ss << ", " << local_tmpl_m;
       }
+      local_tmpl_n = gm2ub_tmpl_n;
       ss << ">";
     } else if (dst.scope() == "global") {
       config.ub2gm = true;
@@ -282,13 +639,20 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
 
       ss << "copy_ub_to_gm<";
       ss << get_dtype(dst) << ", ";
-      // See copy_gm_to_ub above: a runtime inner-extent must use the buffer's
-      // compile-time shape for the template col dim (runtime width is carried
-      // by the maskShapeN function arg); const extents are byte-identical.
-      PrimExpr ub2gm_tmpl_n = src_extents[src->shape.size() - 1];
+      // The template column dim must be a compile-time constant. Prefer the
+      // SOURCE BUFFER's physical inner dim: the helper derives the UB-side
+      // inter-burst stride from it, so a const narrower region (a column
+      // slice into a wider tile) would otherwise pack rows at the region
+      // width instead of the tile's real pitch (issue #929). This also
+      // matches what the PTO backend already does for column slices ("use
+      // buffer's full shape for UB tile ... fixes column-slice DMA stride
+      // mismatch") and what the dynamic-extent path below has always done.
+      // A full-tile copy keeps an identical template.
+      PrimExpr ub2gm_tmpl_n = src->shape[src->shape.size() - 1];
       if (!ub2gm_tmpl_n->IsInstance<IntImmNode>()) {
-        ub2gm_tmpl_n = src->shape[src->shape.size() - 1];
-        // See copy_gm_to_ub: the shape fallback must itself be compile-time.
+        // Dynamic buffer shape: fall back to the region's inner extent (the
+        // previous behaviour) -- it must itself be compile-time.
+        ub2gm_tmpl_n = src_extents[src->shape.size() - 1];
         ICHECK(ub2gm_tmpl_n->IsInstance<IntImmNode>())
             << "copy_ub_to_gm: the inner (column) dimension of the source "
                "buffer shape must be a compile-time constant, but got "
@@ -296,8 +660,10 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       }
       ss << ub2gm_tmpl_n;
       if (src->shape.size() > 1) {
-        ss << ", " << compute_blocklen(src, src_extents);
+        local_tmpl_m = compute_blocklen(src, src_extents);
+        ss << ", " << local_tmpl_m;
       }
+      local_tmpl_n = ub2gm_tmpl_n;
       ss << ">";
     } else if (dst.scope() == "shared.l1") {
       config.virtual_channel = true;
@@ -507,6 +873,64 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   } else {
     validRow_dst = 0;
     validCol_dst = 0;
+  }
+
+  // Issue #929: a GM<->UB copy whose DMA would use multiple bursts with a
+  // sub-32-byte payload (e.g. a strided one-element-per-row load into a flat
+  // 1D UB buffer) or a non 32-byte-expressible UB-side row pitch cannot be
+  // represented by the MTE engine -- bursts scatter to 32-byte boundaries and
+  // run past the buffer, silently corrupting neighbouring UB allocations.
+  // Lower such copies to a correct fallback: an elementwise scalar loop for
+  // loads (see NeedsScalarGMCopyFallback / MakeScalarGMCopyLoop), or a
+  // 32-byte-aligned UB staging tile plus per-row single-burst DMAs for stores
+  // (MakeStagedUBToGMCopy -- scalar GM stores are unreliable on this uArch,
+  // their write-back cache drops partial-line stores). Only the provably-
+  // broken shapes change; every aligned full-tile / single-burst copy keeps
+  // its DMA. The PTO backend keeps its own lowering for these shapes: its
+  // TLOAD model expresses sub-32B runs natively (copy_cv's ub_to_l1
+  // sub-32B-row case passes on PTO), so the gate below is AscendC-only.
+  std::string target_model;
+  if (T.target->attrs.count("model")) {
+    target_model = Downcast<String>(T.target->attrs["model"]);
+  }
+  if ((config.gm2ub || config.ub2gm) && target_model != "pto") {
+    const bool is_load = config.gm2ub;
+    const Buffer &gm_buf = is_load ? src : dst;
+    const Buffer &local_buf = is_load ? dst : src;
+    const PrimExpr &vrow = is_load ? validRow_src : validRow_dst;
+    const PrimExpr &vcol = is_load ? validCol_src : validCol_dst;
+    const std::vector<int> &gm_active = is_load ? src_active : dst_active;
+    const Array<Range> &gm_rg = is_load ? src_range : dst_range;
+    int elem_bytes = gm_buf->dtype.bytes();
+    // A single-active-dim region is a single-burst DMA (row count 1): the pad
+    // path handles any width, so it can never trigger the fallback. The valid
+    // extents are runtime clamps (Select nodes around runtime bases); for the
+    // compile-time shape check use the region's raw extents, which are the
+    // in-bounds values the DMA actually moves.
+    bool needs_fallback = false;
+    if (gm_active.size() >= 2) {
+      int gm_row_idx = gm_active[gm_active.size() - 2];
+      int gm_col_idx = gm_active.back();
+      PrimExpr row_extent = analyzer->Simplify(gm_rg[gm_row_idx]->extent);
+      PrimExpr col_extent = analyzer->Simplify(gm_rg[gm_col_idx]->extent);
+      needs_fallback = NeedsScalarGMCopyFallback(
+          row_extent, col_extent, elem_bytes, local_tmpl_n,
+          local_buf->shape[local_buf->shape.size() - 1]);
+    }
+    if (needs_fallback) {
+      if (is_load) {
+        PrimExpr pad_val = padValue;
+        if (pad_val->dtype != local_buf->dtype) {
+          pad_val = Cast(local_buf->dtype, pad_val);
+        }
+        return MakeScalarGMCopyLoop(
+            gm_buf, gm_rg, gm_active, local_buf, dst_range, dst_extents, vrow,
+            vcol, local_tmpl_m, local_tmpl_n, pad_val, analyzer);
+      }
+      return MakeStagedUBToGMCopy(T, gm_buf, gm_rg, gm_active, local_buf,
+                                  src_range, src_extents, vrow, vcol,
+                                  get_dtype(dst), analyzer);
+    }
   }
 
   Array<PrimExpr> new_args;
@@ -791,17 +1215,16 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
          "destination buffer rank";
 
   std::stringstream ss;
-  // Same compile-time-template-arg fix as the GM<->UB copy above (see
-  // AscendCopy::Lower): the inner (column) dim is a template arg, so a runtime
-  // inner-extent -- e.g. atomic_add(A[rows, 0:n], src_ub[:, 0:n]) with a
-  // dynamic n -- would put a non-const expr in the template and emit invalid
-  // C++. Use the source buffer's compile-time shape for the template; the
-  // runtime column count is carried by validCol_dst below, so the DMA still
-  // adds exactly the runtime number of columns. A const extent stays
-  // byte-identical, so every existing caller is unchanged.
-  PrimExpr atomic_tmpl_n = src_extents[src->shape.size() - 1];
+  // The inner (column) dim is a template arg, so a runtime inner-extent --
+  // e.g. atomic_add(A[rows, 0:n], src_ub[:, 0:n]) with a dynamic n -- would
+  // put a non-const expr in the template and emit invalid C++. Prefer the
+  // SOURCE BUFFER's physical inner dim (the helper derives the UB-side
+  // inter-burst stride from it -- see the copy_ub_to_gm template note above /
+  // issue #929); fall back to the region's inner extent when the buffer shape
+  // is dynamic. The runtime column count is carried by validCol_dst below.
+  PrimExpr atomic_tmpl_n = src->shape[src->shape.size() - 1];
   if (!atomic_tmpl_n->IsInstance<IntImmNode>()) {
-    atomic_tmpl_n = src->shape[src->shape.size() - 1];
+    atomic_tmpl_n = src_extents[src->shape.size() - 1];
     ICHECK(atomic_tmpl_n->IsInstance<IntImmNode>())
         << "tl.ascend_atomic_add: the inner (column) dimension of the source "
            "buffer shape must be a compile-time constant, but got "
@@ -964,6 +1387,53 @@ Stmt AscendAtomicAdd::Lower(const LowerArgs &T,
     }
   } else {
     strideN = compute_strideN(dst, dst_extents);
+  }
+
+  // Issue #929 (atomic variant): the atomic UB->GM DMA inherits the same
+  // 32-byte UB-side burst alignment contract as the plain copy. A multi-burst
+  // atomic-add whose burst payload is not a 32-byte multiple (or whose UB tile
+  // pitch is not 32-byte expressible) silently corrupts memory, and unlike the
+  // copy there is no correct fallback: the scalar atomic API only exists on
+  // 5102/3510-class parts, and single-burst decomposition still needs
+  // 32-byte-aligned UB reads. Fail loudly instead of emitting the broken DMA.
+  // (PTO keeps its own lowering -- see the copy path note above.)
+  std::string atomic_target_model;
+  if (T.target->attrs.count("model")) {
+    atomic_target_model = Downcast<String>(T.target->attrs["model"]);
+  }
+  if (src.scope() == "shared.ub" && atomic_target_model != "pto") {
+    // See the copy path above: use the region's raw extents (the runtime
+    // clamps are Select nodes) for the compile-time shape check.
+    PrimExpr row_extent, col_extent;
+    if (row_ramp_idx >= 0 && col_ramp_idx >= 0) {
+      row_extent = effective_dst_extents[row_ramp_idx];
+      col_extent = effective_dst_extents[col_ramp_idx];
+    } else {
+      std::vector<int> at_dst_active =
+          find_active_dim_indices(effective_dst_extents);
+      if (at_dst_active.size() >= 2) {
+        row_extent =
+            effective_dst_extents[at_dst_active[at_dst_active.size() - 2]];
+        col_extent = effective_dst_extents[at_dst_active.back()];
+      }
+    }
+    if (row_extent.defined() && col_extent.defined() &&
+        NeedsScalarGMCopyFallback(analyzer->Simplify(row_extent),
+                                  analyzer->Simplify(col_extent),
+                                  dst->dtype.bytes(), atomic_tmpl_n,
+                                  src->shape[src->shape.size() - 1])) {
+      LOG(FATAL)
+          << "tl.tile.atomic_add: a strided UB->GM scatter whose contiguous "
+             "run per row is smaller than 32 bytes (or whose UB tile row "
+             "pitch is not a 32-byte multiple) cannot be expressed as an MTE "
+             "DMA and has no correct scalar fallback on this target; it "
+             "previously corrupted memory silently. Got a "
+          << col_extent << "-column add per row with " << row_extent
+          << " rows from a UB tile of inner dim "
+          << src->shape[src->shape.size() - 1]
+          << ". Restructure the access (e.g. stage through a UB tile whose "
+             "rows are 32-byte multiples) or add per-row.";
+    }
   }
 
   Array<PrimExpr> new_args;

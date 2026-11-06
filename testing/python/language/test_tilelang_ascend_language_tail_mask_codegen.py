@@ -717,12 +717,20 @@ def test_tail_broadcast_emits_backend_path(target, dtype, axis):
     func = _tail_broadcast_axis0(5, 69, 4, 64, dtype) if axis == 0 else _tail_broadcast_axis1(5, 69, 4, 64, dtype)
     src = _source(func, target=target)
     if target == "ascendc":
-        assert "tl::ascend::tail_broadcast" in src, src
         if axis == 1:
-            src_offset = re.search(r"src_ub = .*?, (\d+)\);", src)
-            dst_offset = re.search(r"dst_ub = .*?, (\d+)\);", src)
-            assert src_offset and dst_offset, src
-            assert int(dst_offset.group(1)) - int(src_offset.group(1)) >= 4 * 32, src
+            # The axis-1 load is a [block_M, 1] region (one element per row),
+            # which a single MTE DMA cannot express on the UB side (sub-32B
+            # bursts, issue #929): AscendC lowers it to the elementwise scalar
+            # fallback (pad prefill + copy_gm_row loop). The broadcast then
+            # runs over the full tile -- the gap rows hold the pad value and
+            # the tail-clamped store clips them -- so no tail_broadcast is
+            # needed (or emitted) on this path.
+            assert "copy_gm_row_" in src, src
+            assert "tl::ascend::Broadcast" in src, src
+            assert "tl::ascend::tail_broadcast" not in src, src
+            assert "copy_ub_to_gm" in src, src
+        else:
+            assert "tl::ascend::tail_broadcast" in src, src
     else:
         expected_op = "TCOLEXPAND(" if axis == 0 else "TROWEXPAND("
         assert expected_op in src, src
@@ -757,7 +765,14 @@ def test_same_shape_broadcast_preserves_tail_state(target):
 def test_mixed_broadcast_compare_select_emits_all_tail_paths(target, dtype):
     src = _source(_tail_mixed_broadcast_compare_select(5, 69, 4, 64, dtype), target=target)
     if target == "ascendc":
-        assert src.count("tl::ascend::tail_broadcast") == 2, src
+        # The Row load is a [block_M, 1] region (sub-32B bursts, issue #929):
+        # it lowers to the elementwise scalar fallback and its broadcast runs
+        # over the full tile (pad value in the gap, clipped by the tail store)
+        # -- a plain Broadcast. The Col load ([1, block_N]) stays a single DMA
+        # and keeps its tail_broadcast, so exactly one remains.
+        assert "copy_gm_row_" in src, src
+        assert "tl::ascend::Broadcast<" in src, src
+        assert src.count("tl::ascend::tail_broadcast") == 1, src
         assert "tl::ascend::tail_binary" in src, src
         assert "tl::ascend::tail_unary" in src, src
         assert "tl::ascend::tail_compare" in src, src

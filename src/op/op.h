@@ -22,7 +22,8 @@ namespace tl {
 
 using namespace tir;
 
-using AddWorkspaceCallback = std::function<PrimExpr(int, DataType)>;
+using AddWorkspaceCallback =
+    std::function<Buffer(int, DataType, const std::string &)>;
 using LayoutMap = Map<Buffer, Layout>;
 using BufferMap = Map<Var, Buffer>;
 using OpBuilderFunc = TypedPackedFunc<void *(Array<PrimExpr>, BufferMap)>;
