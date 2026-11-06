@@ -193,14 +193,30 @@ def device_codegen_without_compile(device_mod: tvm.IRModule, target: Target) -> 
 
 
 def _validate_bitwise_xor_dtypes(mod: tvm.IRModule, model: str, platform: str) -> None:
-    """Reject 32-bit integer XOR operands before OptimizeForTarget.
+    """Reject int32/uint32 XOR operands on targets/configs where they fail.
 
-    int32/uint32 XOR crashes the tilelang lowering (memory planning in
-    OptimizeForTarget) regardless of target/arch, so they are rejected here —
-    before the crash — rather than letting the backend codegen or compile fail.
-    This also covers calls that bypass the public ``bitwise_xor`` front-end.
+    int32/uint32 are usable only on PTO A5 (the ``a5/TXor.hpp`` static assert
+    accepts them). AscendC and PTO A2/A3 reject them in the backend; PTO A5
+    accepts them at the instruction level but crashes OptimizeForTarget when
+    ``tl.ascend_memory_planning`` is enabled. Enforce this here — before
+    OptimizeForTarget — so unsupported combinations fail with a clear diagonal
+    instead of crashing or relying on the backend compile failure. This also
+    covers calls that bypass the public ``bitwise_xor`` front-end.
     """
+    memory_planning = bool(tilelang.transform.get_pass_context().config.get("tl.ascend_memory_planning", False))
+    # int32/uint32 are only permitted on PTO A5 with memory planning disabled.
+    allow_int32 = model == "pto" and platform == "A5" and not memory_planning
+
     xor_op = tir.op.Op.get("tl.ascend_bitwise_xor")
+    access_ptr_op = tir.op.Op.get("tir.tvm_access_ptr")
+
+    def element_dtype(expr):
+        if not isinstance(expr, tir.Call) or expr.op != access_ptr_op:
+            return None
+        if not expr.args or not isinstance(expr.args[0], tir.Call):
+            return None
+        return str(expr.args[0].dtype).split("x")[0]
+
     offenders = []
 
     def visit(node):
@@ -211,13 +227,15 @@ def _validate_bitwise_xor_dtypes(mod: tvm.IRModule, model: str, platform: str) -
         tir.stmt_functor.post_order_visit(func.body, visit)
 
     for call in offenders:
-        dtype = str(call.args[0].args[0].dtype).split("x")[0]
-        if dtype in ("int32", "uint32"):
-            raise ValueError(
-                "tilelang.language.bitwise_xor: unsupported operand dtype "
-                f"(int32/uint32) on target {model}/{platform}; "
-                "int32/uint32 crash OptimizeForTarget and are not yet supported."
-            )
+        for i in range(3):  # dst, src0, src1
+            dtype = element_dtype(call.args[i])
+            if dtype in ("int32", "uint32") and not allow_int32:
+                raise ValueError(
+                    "tilelang.language.bitwise_xor: unsupported operand dtype "
+                    f"(int32/uint32) on target {model}/{platform}; "
+                    "int32/uint32 are only supported on PTO A5 with "
+                    "tl.ascend_memory_planning disabled."
+                )
 
 
 def lower(
