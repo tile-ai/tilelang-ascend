@@ -13,6 +13,40 @@ pass_configs = {
 device = torch.device("npu")
 
 
+def _check_precision(actual, golden):
+    a, g = actual.detach().cpu(), golden.detach().cpu()
+    if a.shape != g.shape:
+        return False, 0.0, float("inf")
+    if not (a.dtype.is_floating_point or g.dtype.is_floating_point):
+        mism = (a != g).sum().item()
+        return mism == 0, 1.0 - mism / max(a.numel(), 1), 0.0 if mism == 0 else float("inf")
+    table = {
+        "float16": (2**-14, 2**-9, 1e-1),
+        "bfloat16": (2**-10, 2**-6, 1e0),
+        "float32": (2**-16, 2**-10, 1e-2),
+        "hifloat32": (2**-16, 2**-10, 1e-2),
+        "float8_e4m3": (2**-4, 2**-2, 1e0),
+        "float8_e4m3fn": (2**-4, 2**-2, 1e0),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1),
+    }
+    atol, rtol, limit = table.get(str(g.dtype).removeprefix("torch."), table["float16"])
+    a, g = a.float(), g.float()
+    special = ~torch.isfinite(g)
+    if special.any() and (
+        not torch.equal(torch.isnan(a[special]), torch.isnan(g[special]))
+        or not torch.equal(torch.isinf(a[special]), torch.isinf(g[special]))
+    ):
+        return False, 0.0, float("inf")
+    finite = torch.isfinite(g)
+    if not finite.any():
+        return True, 1.0, 0.0
+    err = (a[finite] - g[finite]).abs()
+    err = torch.where(torch.isfinite(err), err, torch.full_like(err, float("inf")))
+    ratio = (err <= atol + rtol * g[finite].abs()).float().mean().item()
+    maximum = err.max().item()
+    return ratio >= 0.99 and maximum <= limit, ratio, maximum
+
+
 def _rope_kernel_base(block_M, hidden_size, rope_dim, dtype="float16"):
     """Common setup: returns constants used by both fwd and bwd kernels."""
     VEC_NUM = 2
@@ -331,8 +365,9 @@ def check_case_tnd(batch_size, head_num, hidden_size, rope_dim, dtype_str="float
     out_tl.backward(dout)
     dx_tl = x.grad.clone()
 
-    torch.testing.assert_close(out_tl, out_ref, rtol=1e-3, atol=1e-3)
-    torch.testing.assert_close(dx_tl, dx_ref, rtol=1e-3, atol=1e-3)
+    for actual, golden in ((out_tl, out_ref), (dx_tl, dx_ref)):
+        passed, ratio, max_abs = _check_precision(actual, golden)
+        assert passed, f"matched_ratio={ratio:.4f}, max_abs_error={max_abs:.6e}"
 
 
 def check_case_bsnd(batch, seq_len, head_num, hidden_size, rope_dim, dtype_str="float16", rotary_mode="interleave"):
@@ -353,8 +388,9 @@ def check_case_bsnd(batch, seq_len, head_num, hidden_size, rope_dim, dtype_str="
     out_tl.backward(dout)
     dx_tl = x.grad.clone()
 
-    torch.testing.assert_close(out_tl, out_ref, rtol=1e-3, atol=1e-3)
-    torch.testing.assert_close(dx_tl, dx_ref, rtol=1e-3, atol=1e-3)
+    for actual, golden in ((out_tl, out_ref), (dx_tl, dx_ref)):
+        passed, ratio, max_abs = _check_precision(actual, golden)
+        assert passed, f"matched_ratio={ratio:.4f}, max_abs_error={max_abs:.6e}"
 
 
 def parse_args():

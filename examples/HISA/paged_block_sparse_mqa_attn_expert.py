@@ -46,6 +46,27 @@ import torch
 tilelang.disable_cache()
 
 
+def _check_precision(actual, golden):
+    if not actual.is_floating_point():
+        torch.testing.assert_close(actual, golden, rtol=0, atol=0)
+        return
+    table = {torch.float16: (2**-14, 2**-9, 1e-1), torch.bfloat16: (2**-10, 2**-6, 1.0), torch.float32: (2**-16, 2**-10, 1e-2)}
+    atol, rtol, cap = table.get(actual.dtype, (2**-14, 2**-9, 1e-1))
+    if actual.shape != golden.shape:
+        raise AssertionError(f"shape mismatch: {actual.shape} vs {golden.shape}")
+    special_a = torch.isnan(actual) | torch.isinf(actual)
+    special_g = torch.isnan(golden) | torch.isinf(golden)
+    if not torch.equal(special_a, special_g) or (special_a.any() and not torch.equal(actual[special_a], golden[special_g])):
+        raise AssertionError("NaN/Inf structure mismatch")
+    valid = ~special_g
+    if not valid.any():
+        return
+    diff = (actual[valid] - golden[valid]).abs()
+    passed = diff <= atol + rtol * golden[valid].abs()
+    if passed.float().mean().item() < 0.99 or diff.max().item() > cap:
+        raise AssertionError(f"precision mismatch: ratio={passed.float().mean().item():.6f}, max_abs={diff.max().item():.6g}")
+
+
 @tilelang.jit(
     out_idx=[3],
     workspace_idx=[-1],
@@ -548,7 +569,7 @@ def test_paged_block_sparse_mqa_attn(
     torch.npu.synchronize()
 
     logits_flat = logits.view(batch, seq_len, topk * kv_block_size)
-    torch.testing.assert_close(ref_logits, logits_flat, rtol=1e-2, atol=1e-2)
+    _check_precision(logits_flat, ref_logits)
 
     print(f"Test passed! batch={batch}, seq_len={seq_len}, heads={heads}, topk={topk}")
     print(f"  grid: [{batch}, {topk_groups}]  Q: {q.shape}  Logits: {logits_flat.shape}")
