@@ -258,6 +258,8 @@ GetOperationConfig() {
       {"tl.ascend_axpy", {{{0, "write"}, {1, "read"}}, "PIPE_V"}},
       {"tl.ascend_bitwise_lshift",
        {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
+      {"tl.ascend_bitwise_lshifts",
+       {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_bitwise_rshift",
        {{{0, "write"}, {1, "read"}, {2, "read"}}, "PIPE_V"}},
       {"tl.ascend_sort32",

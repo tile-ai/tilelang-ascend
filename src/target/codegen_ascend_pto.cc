@@ -1060,8 +1060,10 @@ void CodeGenTileLangAscendPto::VisitExpr_(const CallNode *op,
     CompareCodegen(op, "TCMP");
   } else if (op->op.same_as(tl::ascend_compare_scalar())) {
     CompareScalarCodegen(op, "TCMPS");
-  } else if (op->op.same_as(tl::ascend_bitwise_lshift())) {
+  } else if (op->op.same_as(tl::ascend_bitwise_lshifts())) {
     TshCodegen(op, "TSHLS");
+  } else if (op->op.same_as(tl::ascend_bitwise_lshift())) {
+    BinaryVecOpCodegen(op, "TSHL");
   } else if (op->op.same_as(tl::ascend_bitwise_rshift())) {
     TshCodegen(op, "TSHRS");
   } else if (op->op.same_as(tl::ascend_arith_progression())) {
