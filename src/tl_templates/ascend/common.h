@@ -5,7 +5,6 @@
 
 #include "catlass/detail/tag_to_layout.hpp"
 #include "catlass/gemm/block/block_swizzle.hpp"
-// v2.x: 按 arch 显式 include (旧聚合头 tile_copy.hpp 已失效)
 #include "catlass/gemm/tile/atlasa2/copy_gm_to_l1.hpp"
 #include "catlass/gemm/tile/atlasa2/copy_gm_to_ub.hpp"
 #include "catlass/gemm/tile/atlasa2/copy_l0c_to_gm.hpp"

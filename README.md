@@ -132,19 +132,6 @@ c) Environment Variable Setup
 
     source set_env.sh
 
-### Updating an Existing Clone
-
-A plain `git pull` does NOT update submodule working trees. After pulling:
-
-  git submodule sync --recursive
-  git submodule update --init --recursive
-
-To make `git pull` update submodules automatically from now on (one-time per machine, recommended):
-
-  git config --global submodule.recurse true
-
-`bash install_ascend.sh` runs the sync/update steps during installation, and `source set_env.sh` prints a reminder if the catlass submodule is stale.
-
 ## Run
 
 
