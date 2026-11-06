@@ -3,6 +3,8 @@
 # Copyright (c) Tile-AI Organization.
 # Licensed under the MIT License.
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
 # Add command line option parsing
 USE_LLVM=false
 USE_SHMEM=false
@@ -247,8 +249,11 @@ cd ..
 # compile and install shmem package
 if $USE_SHMEM; then
     echo "Starting installation shmem..."
-    cd 3rdparty/shmem
-    bash scripts/build.sh -python_extension -mf
+    cd "$SCRIPT_DIR/3rdparty/shmem"
+    if ! bash scripts/build.sh -python_extension -mf; then
+        echo "Error: shmem build failed."
+        exit 1
+    fi
     pip show shmem >/dev/null 2>&1
     if [[ $? -eq 0 ]]; then
         echo "begin uninstall old shmem whl package"
@@ -270,13 +275,12 @@ if $USE_SHMEM; then
     else
         echo "shmem-xxx.whl install success."
     fi
-    source ../../../install/set_env.sh
-    if [ $? -ne 0 ]; then
+    if ! source "$SCRIPT_DIR/3rdparty/shmem/install/set_env.sh"; then
         echo "Error: set shmem env failed."
         exit 1
     fi
     # back to path tilelang-ascend/
-    cd ../../../../..
+    cd "$SCRIPT_DIR"
     echo "Install shmem all success."
 fi
 
