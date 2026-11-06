@@ -1593,9 +1593,9 @@ def test_bitwise_xor_non_aligned_size(target):
     assert_close_npu(c, ref_c, "int16", rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("dtype", ["int64", "uint64", "float16", "float32", "float64"])
+@pytest.mark.parametrize("dtype", ["int32", "uint32", "int64", "uint64", "float16", "float32", "float64"])
 def test_bitwise_xor_unsupported_dtype_raises(dtype):
-    """Non-integer and 64-bit operands are rejected before code generation."""
+    """Unsupported operands are rejected before OptimizeForTarget."""
     src0 = tir.decl_buffer((64, 128), dtype)
     src1 = tir.decl_buffer((64, 128), dtype)
     dst = tir.decl_buffer((64, 128), dtype)
@@ -1603,30 +1603,21 @@ def test_bitwise_xor_unsupported_dtype_raises(dtype):
         T.tile.bitwise_xor(dst, src0, src1)
 
 
-@pytest.mark.parametrize("dtype", ["int32", "uint32"])
-def test_bitwise_xor_int32_uint32_allowed(dtype):
-    """int32/uint32 are legal on PTO A5, so the front-end must not reject them."""
-    src0 = tir.decl_buffer((64, 128), dtype)
-    src1 = tir.decl_buffer((64, 128), dtype)
-    dst = tir.decl_buffer((64, 128), dtype)
-    T.tile.bitwise_xor(dst, src0, src1)
-
-
 def test_bitwise_xor_operand_dtype_raises():
     """Each of dst/src0/src1 is validated independently."""
     src16 = tir.decl_buffer((64, 128), "int16")
-    src64 = tir.decl_buffer((64, 128), "int64")
+    src32 = tir.decl_buffer((64, 128), "int32")
     with pytest.raises(ValueError, match="bitwise_xor: unsupported operand dtype"):
-        T.tile.bitwise_xor(src64, src16, src16)
+        T.tile.bitwise_xor(src32, src16, src16)
     with pytest.raises(ValueError, match="bitwise_xor: unsupported operand dtype"):
-        T.tile.bitwise_xor(src16, src64, src16)
+        T.tile.bitwise_xor(src16, src32, src16)
     with pytest.raises(ValueError, match="bitwise_xor: unsupported operand dtype"):
-        T.tile.bitwise_xor(src16, src16, src64)
+        T.tile.bitwise_xor(src16, src16, src32)
 
 
 def test_bitwise_xor_unsupported_dtype_buffer_region_raises():
     """BufferRegion operands route through the same dtype validation."""
-    buf = tir.decl_buffer((64, 128), "int64")
+    buf = tir.decl_buffer((64, 128), "int32")
     with pytest.raises(ValueError, match="bitwise_xor: unsupported operand dtype"):
         T.tile.bitwise_xor(buf[0:64, 0:128], buf[0:64, 0:128], buf[0:64, 0:128])
 

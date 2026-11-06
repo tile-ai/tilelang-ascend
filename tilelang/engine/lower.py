@@ -192,6 +192,34 @@ def device_codegen_without_compile(device_mod: tvm.IRModule, target: Target) -> 
     return device_mod
 
 
+def _validate_bitwise_xor_dtypes(mod: tvm.IRModule, model: str, platform: str) -> None:
+    """Reject 32-bit integer XOR operands before OptimizeForTarget.
+
+    int32/uint32 XOR crashes the tilelang lowering (memory planning in
+    OptimizeForTarget) regardless of target/arch, so they are rejected here —
+    before the crash — rather than letting the backend codegen or compile fail.
+    This also covers calls that bypass the public ``bitwise_xor`` front-end.
+    """
+    xor_op = tir.op.Op.get("tl.ascend_bitwise_xor")
+    offenders = []
+
+    def visit(node):
+        if isinstance(node, tir.Call) and node.op == xor_op:
+            offenders.append(node)
+
+    for _, func in mod.functions_items():
+        tir.stmt_functor.post_order_visit(func.body, visit)
+
+    for call in offenders:
+        dtype = str(call.args[0].args[0].dtype).split("x")[0]
+        if dtype in ("int32", "uint32"):
+            raise ValueError(
+                "tilelang.language.bitwise_xor: unsupported operand dtype "
+                f"(int32/uint32) on target {model}/{platform}; "
+                "int32/uint32 crash OptimizeForTarget and are not yet supported."
+            )
+
+
 def lower(
     func_or_mod: tir.PrimFunc | tvm.IRModule,
     target: str | Target = "auto",
@@ -224,6 +252,10 @@ def lower(
         mod[gvar] = f.with_attr("npu_platform", platform)
 
     target = tvm.target.Target({"kind": "llvm", "model": target})
+
+    # Target-aware dtype validation must run before OptimizeForTarget, where
+    # unsupported combinations could otherwise reach the backend compile path.
+    _validate_bitwise_xor_dtypes(mod, target.model, platform)
 
     # Phase 1: Lower and legalize the IR
     mod = LowerAndLegalize(mod, target)
