@@ -1555,6 +1555,18 @@ copy_pipe_to_l1(Pipe &pipe,
       pipe, l1_tile);
 }
 
+// A5 direct path: wait until the pushed tile is resident in L1 (consumer
+// MTE1 view) and bind the local L1 address. A2/A3 GM-relay path keeps
+// copy_pipe_to_l1, which loads GM -> L1 on the consumer MTE2 pipe.
+template <pto::TileSplitAxis SplitAxis, typename Pipe, typename T, int Rows,
+          int Cols, int RowValid = Rows, int ColValid = Cols>
+AICORE PTO_INLINE void
+copy_pipe_to_l1_bind(Pipe &pipe,
+                     TileMatL1<T, Rows, Cols, RowValid, ColValid> &l1_tile) {
+  pto::TPOP<Pipe, TileMatL1<T, Rows, Cols, RowValid, ColValid>, SplitAxis>(
+      pipe, l1_tile);
+}
+
 // ND→Nz conversion via TMOV
 template <typename T, int SrcRows, int SrcCols, int DstRows, int DstCols,
           int SrcRowValid = SrcRows, int SrcColValid = SrcCols,
