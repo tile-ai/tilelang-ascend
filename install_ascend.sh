@@ -247,8 +247,13 @@ cd ..
 # compile and install shmem package
 if $USE_SHMEM; then
     echo "Starting installation shmem..."
+    SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
     cd 3rdparty/shmem
     bash scripts/build.sh -python_extension -mf
+    if [ $? -ne 0 ]; then
+        echo "Error: shmem build failed."
+        exit 1
+    fi
     pip show shmem >/dev/null 2>&1
     if [[ $? -eq 0 ]]; then
         echo "begin uninstall old shmem whl package"
@@ -270,7 +275,7 @@ if $USE_SHMEM; then
     else
         echo "shmem-xxx.whl install success."
     fi
-    source ../../../install/set_env.sh
+    source "$SCRIPT_DIR/3rdparty/shmem/install/set_env.sh"
     if [ $? -ne 0 ]; then
         echo "Error: set shmem env failed."
         exit 1
