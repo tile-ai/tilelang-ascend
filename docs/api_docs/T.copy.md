@@ -104,7 +104,7 @@ L1 → L0A/L0B 以分形矩阵为最小搬运单元，各 dtype 对应的分形�
 6. `pad_value` 仅对 GM → UB 路径生效
 7. UB → UB 跨类型 cast 不支持的组合：bfloat16 ↔ float16/int8/int16、float32 → int8、int8 → float32/bfloat16/int16/int32、int16 → bfloat16/int8/int32、int32 → bfloat16/int8。仅 ascendc 支持：float16/float32 → int8/int16/int32。仅 pto 支持：bfloat16 → int32
 8. 不支持跨级搬运：GM → L0A/L0B/L0C 须通过 GM → L1 → L0 两步完成（硬件约束）
-9. GM ↔ UB 的列维度须为编译期常量（硬件约束）
+9. GM ↔ UB 的模板列维度须为编译期常量；实际复制宽度可为运行时值。ascendc 的 UB → GM 路径按源 buffer 的物理行距生成模板参数，切片不会压紧底层存储。例如 `(256, 8)` 的 UB buffer 复制 `[:, :4]` 时，行距仍为 8。显式 strides 和 layout 重映射须能证明列连续、行距为正编译期常量，否则编译时报错；硬件 DMA 的对齐和搬运长度约束仍适用。
 10. 操作数地址需 32 字节对齐（硬件约束）
 11. L1 → L0A/L0B 的 M、N 须 ≥ 16，K 须满足分形尺寸要求（硬件约束）
 12. GM → L1 多段 copy 时，仅首段自动清零整个 L1 tile，后续段不清零（硬件约束）

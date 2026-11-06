@@ -89,6 +89,51 @@ def copy_rows(M: int = 8, W: int = 126, pitch: int = 126, dtype: str = "float32"
     return main
 
 
+def copy_source_slice(M, N, src_pitch, dst_pitch, col, dtype, atomic):
+    """A slice changes the valid width, but must preserve its UB row pitch."""
+
+    @T.prim_func
+    def main(B: T.Tensor((M, dst_pitch), dtype)):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((M + 2, src_pitch), dtype)
+            T.tile.arith_progression(a_ub, 0.0, 1.0, (M + 2) * src_pitch)
+            if atomic:
+                T.tile.atomic_add(B[0:M, 0:N], a_ub[1 : M + 1, col : col + N])
+            else:
+                T.copy(a_ub[1 : M + 1, col : col + N], B[0:M, 0:N])
+
+    return main
+
+
+@pytest.mark.parametrize("atomic", [False, True])
+@pytest.mark.parametrize(
+    "N,src_pitch,dst_pitch,col,dtype",
+    [
+        (4, 8, 4, 0, "float32"),  # Formerly misclassified as a flat packed copy.
+        (4, 16, 7, 8, "float32"),  # Nonzero source offset and GM tail sentinel.
+        (4, 16, 4, 0, "float16"),
+    ],
+)
+def test_copy_ub_source_slice(N, src_pitch, dst_pitch, col, dtype, atomic):
+    M = 8
+    func = tilelang.compile(
+        copy_source_slice(M, N, src_pitch, dst_pitch, col, dtype, atomic),
+        target="ascendc",
+        pass_configs={tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True},
+    )
+    td = getattr(torch, dtype)
+    output = torch.full((M, dst_pitch), -3, dtype=td).npu()
+    func(output)
+    torch.npu.synchronize()
+    values = torch.arange((M + 2) * src_pitch, dtype=td).reshape(M + 2, src_pitch)
+    expected = torch.full((M, dst_pitch), -3, dtype=td)
+    # Both vector cores execute the body, so atomic adds each element twice.
+    expected[:, :N] = values[1 : M + 1, col : col + N] * (2 if atomic else 1)
+    if atomic:
+        expected[:, :N] -= 3
+    assert torch.equal(output.cpu(), expected)
+
+
 @tilelang.jit(
     out_idx=[0],
     target="ascendc",
