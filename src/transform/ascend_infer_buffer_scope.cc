@@ -12,6 +12,8 @@
 #include <tvm/tir/transform.h>
 
 #include "../layout/layout.h"
+#include "common/ascend_constraint.h"
+#include "common/ascend_storage_alias.h"
 
 #include <iostream>
 #include <regex>
@@ -25,7 +27,7 @@ namespace tir {
 
 class ScopeCorrector : public StmtExprMutator {
 public:
-  explicit ScopeCorrector() {}
+  explicit ScopeCorrector(bool constraint = false) : constraint_(constraint) {}
 
   PrimFunc Correct(PrimFunc func) {
     collector_ = std::make_unique<BufferUseCollector>();
@@ -40,8 +42,13 @@ public:
     PrimFuncNode *fptr = func.CopyOnWrite();
     fptr->body = new_body;
 
-    // PrintDebugInfo();
-
+    // Preserve canonical provenance across the real storage Var scope change.
+    if (constraint_) {
+      Map<Var, Var> replacements;
+      for (const auto &entry : var_replacements_)
+        replacements.Set(GetRef<Var>(entry.first), entry.second);
+      func = tl::RemapAscendStorageMetadata(func, replacements);
+    }
     return func;
   }
 
@@ -640,6 +647,8 @@ private:
   std::unordered_map<const VarNode *, Var> var_replacements_;
   std::unique_ptr<BufferUseCollector> collector_;
   std::unordered_map<const VarNode *, Buffer> buffer_replacements_;
+  std::unordered_map<const BufferNode *, Buffer> constraint_view_replacements_;
+  bool constraint_{false};
 
   static std::string GetPtrStorageScope(Var buffer_var) {
     if (auto *ptr_type = buffer_var->type_annotation.as<PointerTypeNode>()) {
@@ -677,7 +686,22 @@ private:
     if (scope_it == handle_scope_corrections_.end())
       return false;
 
-    // If we already created a replacement Buffer for this Var, reuse it.
+    // Distinct dtype/offset views share a Var, but not their Buffer metadata.
+    if (constraint_) {
+      auto view = constraint_view_replacements_.find(old_buffer.get());
+      if (view != constraint_view_replacements_.end()) {
+        *new_buffer = view->second;
+        return true;
+      }
+      Var data = CreateVarWithCorrectScope(old_buffer->data, scope_it->second);
+      *new_buffer = Buffer(data, old_buffer->dtype, old_buffer->shape,
+                           old_buffer->strides, old_buffer->elem_offset,
+                           old_buffer->name, old_buffer->data_alignment,
+                           old_buffer->offset_factor, old_buffer->buffer_type);
+      constraint_view_replacements_[old_buffer.get()] = *new_buffer;
+      return true;
+    }
+    // Preserve the existing legacy replacement behavior.
     auto repl_it = buffer_replacements_.find(key);
     if (repl_it != buffer_replacements_.end()) {
       *new_buffer = repl_it->second;
@@ -733,6 +757,8 @@ private:
 
         new_alloc_buffers.push_back(new_buffer);
         buffer_replacements_[handle] = new_buffer;
+        if (constraint_)
+          constraint_view_replacements_[buffer.get()] = new_buffer;
       } else {
         new_alloc_buffers.push_back(buffer);
       }
@@ -743,9 +769,63 @@ private:
         InjectDefaultLayoutMap(new_alloc_buffers, op->annotations);
 
     auto new_body = VisitStmt(op->body);
+    if (constraint_) {
+      if (auto hints = new_annotations.Get("address_map")) {
+        Map<Var, PrimExpr> mapped;
+        for (const auto &entry : Downcast<Map<Var, PrimExpr>>(hints.value())) {
+          auto replacement = var_replacements_.find(entry.first.get());
+          mapped.Set(replacement == var_replacements_.end()
+                         ? entry.first
+                         : replacement->second,
+                     entry.second);
+        }
+        new_annotations.Set("address_map", mapped);
+      }
+      if (auto layouts = new_annotations.Get(tl::attr::kLayoutMap)) {
+        Map<ObjectRef, ObjectRef> mapped;
+        for (const auto &entry :
+             Downcast<Map<ObjectRef, ObjectRef>>(layouts.value())) {
+          if (const auto *variable = entry.first.as<VarNode>()) {
+            auto replacement = var_replacements_.find(variable);
+            mapped.Set(replacement == var_replacements_.end()
+                           ? entry.first
+                           : ObjectRef(replacement->second),
+                       entry.second);
+          } else {
+            Buffer buffer;
+            Buffer original = Downcast<Buffer>(entry.first);
+            if (!TryGetRewrittenBuffer(original, &buffer))
+              buffer = original;
+            mapped.Set(buffer, entry.second);
+          }
+        }
+        new_annotations.Set(tl::attr::kLayoutMap, mapped);
+      }
+    }
+    Array<BufferRegion> reads = op->reads, writes = op->writes;
+    Array<MatchBufferRegion> matches = op->match_buffers;
+    Optional<Stmt> init = op->init;
+    if (constraint_) {
+      auto region = [&](BufferRegion original) {
+        Buffer buffer;
+        if (!TryGetRewrittenBuffer(original->buffer, &buffer))
+          return original;
+        return BufferRegion(buffer, original->region);
+      };
+      reads = reads.Map(region);
+      writes = writes.Map(region);
+      matches = matches.Map([&](MatchBufferRegion match) {
+        Buffer buffer;
+        if (!TryGetRewrittenBuffer(match->buffer, &buffer))
+          buffer = match->buffer;
+        return MatchBufferRegion(buffer, region(match->source));
+      });
+      if (init.defined())
+        init = VisitStmt(init.value());
+    }
     auto new_block =
-        Block(op->iter_vars, op->reads, op->writes, op->name_hint, new_body,
-              op->init, new_alloc_buffers, op->match_buffers, new_annotations);
+        Block(op->iter_vars, reads, writes, op->name_hint, new_body, init,
+              new_alloc_buffers, matches, new_annotations);
 
     return new_block;
   }
@@ -896,7 +976,10 @@ private:
 
 transform::Pass InferAllocScope() {
   auto pass_func = [](PrimFunc f, IRModule m, transform::PassContext ctx) {
-    ScopeCorrector corrector;
+    bool constraint =
+        ctx->GetConfig<String>(tl::kAscendPipelinePlanner, String("legacy"))
+            .value() == "constraint";
+    ScopeCorrector corrector(constraint);
     return corrector.Correct(std::move(f));
   };
   return transform::CreatePrimFuncPass(pass_func, 0, "tl.InferAllocScope", {});

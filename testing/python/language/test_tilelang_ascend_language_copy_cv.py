@@ -417,7 +417,10 @@ def _ub_to_l1_case(
     expert=False,
     dtype_cast=False,
     manual_workspace=False,
+    repeat=1,
 ):
+    from ascend_repeat import repeat_launch
+
     program = kernel_func(M=M, N=N, K=K, dtype=dtype, accum_dtype=accum_dtype)
     kernel = _compile(program, target=target, expert=expert)
 
@@ -428,18 +431,19 @@ def _ub_to_l1_case(
     a = _torch_rand_tensor((M, K), dtype=a_dtype, device="npu")
     b = _torch_rand_tensor((K, N), dtype=torch_dtype, device="npu")
     c = torch.empty((M, N), dtype=torch_dtype, device="npu")
-    torch.npu.synchronize()
-
-    if not manual_workspace:
-        kernel(a, b, c)
-    else:
+    arguments = (a, b, c)
+    if manual_workspace:
         workspace_1 = torch.empty((M * K * 2,), dtype=torch_dtype, device="npu")
-        kernel(a, b, c, workspace_1)
-    torch.npu.synchronize()
+        arguments += (workspace_1,)
 
     ref_c = (a @ b).to(torch_dtype)
-
-    torch.testing.assert_close(c, ref_c, rtol=1e-3, atol=1e-3)
+    repeat_launch(
+        kernel,
+        arguments,
+        (c,),
+        lambda: torch.testing.assert_close(c, ref_c, rtol=1e-3, atol=1e-3),
+        repeat,
+    )
 
 
 def _l0c_to_ub_case(

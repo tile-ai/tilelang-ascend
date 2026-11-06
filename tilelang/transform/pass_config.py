@@ -41,8 +41,29 @@ class PassConfigKey(str, Enum):
     TL_ASCEND_AUTO_SYNC_VS = "tl.ascend_auto_sync_vs"
     """Enable/disable TileLang AscendSyncInsertVS pass. Default value setted dynamically according target"""
 
+    TL_ASCEND_SYNC_STRATEGY = "tl.ascend_sync_strategy"
+    """Select legacy (default) or the opt-in A3 synchronization generator.
+
+    With the constraint planner, ``a3`` owns audited Vector dependencies.
+    With the legacy planner, it owns fixed explicit C/V workspace handoffs;
+    established local and VS protection follows its existing configuration.
+    The auto planner owns its complete audited kernel, including local fences
+    and the fixed-slot GM ready/release protocol.
+    """
+
     TL_ASCEND_MEMORY_PLANNING = "tl.ascend_memory_planning"
     """Enable/disable TileLang AscendMemoryPlanning pass. Default: False"""
+
+    TL_ASCEND_PIPELINE_PLANNER = "tl.ascend_pipeline_planner"
+    """Select legacy (default), constraint bridge or the finite A3 auto backend.
+
+    Auto owns task order, UB/L1 versions and synchronization for its audited
+    whole-kernel subset. It requires the a3 sync strategy and uses abstract
+    issue steps instead of the constraint planner's calibrated latency model.
+    """
+
+    TL_ASCEND_PIPELINE_COST_MODEL = "tl.ascend_pipeline_cost_model"
+    """Full calibrated A3 effective-cost map for constraint modulo planning."""
 
     TL_ASCEND_AUTO_CV_COMBINE = "tl.ascend_auto_cv_combine"
     """Enable/disable TileLang CombineCV pass. Default: True.
