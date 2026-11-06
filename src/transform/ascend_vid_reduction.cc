@@ -19,6 +19,7 @@
 #include "../op/builtin.h"
 #include "./common/ascend_vid_reduction.h"
 #include "./common/collector.h"
+#include "./common/operation_config.h"
 
 #include <sstream>
 #include <string>
@@ -541,10 +542,39 @@ private:
     return false;
   }
 
+  // The workspace slot of the ops listed in GetWorkspaceOpConfigs() (see
+  // allocate_tmp_buffer.cc) is scratch storage, not a data operand: it is
+  // always a plain UB allocation and therefore always vid-reduced, even when
+  // the op's data buffers are skip-set (indirect GM addressing, shape kept
+  // whole). It must not drive count halving - the count follows the data
+  // buffers only.
+  int64_t WorkspaceSlotIndex(const CallNode *op) const {
+    const auto *op_node = op->op.as<OpNode>();
+    if (op_node == nullptr) {
+      return -1;
+    }
+    const auto &configs = GetWorkspaceOpConfigs();
+    auto it = configs.find(op_node);
+    if (it == configs.end()) {
+      return -1;
+    }
+    // Mirrors HasWorkspaceOperand in allocate_tmp_buffer.cc: clamp's slot 3
+    // holds a tensor bound (not a workspace) when no tmp was inserted.
+    if (op->op.same_as(tl::ascend_clamp()) && op->args.size() != 7U) {
+      return -1;
+    }
+    return it->second.tmp_arg_index;
+  }
+
   // Check if any buffer in the call args is in origin_to_new_buffer_
   // AND has offset == 0 (for tvm_access_ptr)
   bool HasModifiedBuffer(const CallNode *op) const {
-    for (const PrimExpr &arg : op->args) {
+    const int64_t workspace_idx = WorkspaceSlotIndex(op);
+    for (size_t i = 0; i < op->args.size(); ++i) {
+      if (static_cast<int64_t>(i) == workspace_idx) {
+        continue;
+      }
+      const PrimExpr &arg = op->args[i];
       Buffer buf = ExtractBufferFromArg(arg);
       if (buf.defined()) {
         auto it = origin_to_new_buffer_.find(buf);
@@ -581,7 +611,11 @@ private:
         "tl.ascend_sin", "tl.ascend_cos", "tl.ascend_fill",
         // cast/mul_add_dst/silu: last arg is the element count, all buffer
         // extents must match (see tilelang/language/ascend_tile.py)
-        "tl.ascend_cast", "tl.ascend_mul_add_dst", "tl.ascend_silu"};
+        "tl.ascend_cast", "tl.ascend_mul_add_dst", "tl.ascend_silu",
+        // sigmoid/round/clamp: last arg is the element count, buffer extents
+        // must match (see tilelang/language/ascend_tile.py)
+        "tl.ascend_sigmoid", "tl.ascend_round", "tl.ascend_clamp",
+        "tl.ascend_clamp_max", "tl.ascend_clamp_min"};
     return tile_ops.find(op_name) != tile_ops.end();
   }
 

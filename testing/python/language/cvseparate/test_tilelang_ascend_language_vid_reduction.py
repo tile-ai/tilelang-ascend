@@ -28,7 +28,18 @@ Scenarios covered (mirroring patterns from
 7. **BufferRegion** — ``T.copy(ws[cid, 0:v_block, :], acc_s_ub_)`` GM slice
    → UB (``ModifyBufferRegions``).
 8. **Baseline threads=1** — Pass is a no-op.
+9. **sigmoid / clamp / round tile ops** — unary high-level API count
+   halved; the AscendC ``calCount`` must match the halved per-sub-core
+   buffer.  An oversized count overruns into adjacent scratch space and
+   stays numerically invisible, so the regression is asserted on the
+   generated source.
+10. **skip-set buffer + round tile op** — the count follows the data
+    buffers: with skip-set (indirect GM addressing) buffers kept whole,
+    the count must stay whole too (the always-halved workspace slot must
+    not drive count halving).
 """
+
+import re
 
 import pytest
 import tilelang
@@ -553,6 +564,180 @@ def test_no_vid_reduction_threads1_elementwise(setup_random_seed, target):
     torch.npu.synchronize()
     ref = a * 2.0 + 1.0
     torch.testing.assert_close(out, ref, rtol=1e-2, atol=1e-2)
+
+
+# ============================================================
+# 9) sigmoid / clamp / round tile ops
+#
+# Mirrors: T.tile.sigmoid(b_ub, a_ub) / T.tile.clamp_max(b_ub, a_ub,
+#          2.0, block_M * block_N) / T.tile.clamp / clamp_min /
+#          T.tile.round(c_ub, b_ub, block_M * block_N)
+# Pass: unary high-level API count (last arg) halved together with the
+# per-sub-core buffer (ModifyTileOpSize + IsTileOp in
+# ascend_vid_reduction.cc).
+# The AscendC calCount must satisfy ``calCount <= srcTensor.GetSize()``;
+# an oversized count overruns into adjacent scratch space and stays
+# numerically invisible, so the contract is asserted on the generated
+# kernel source, plus a numeric run to guard against over-halving.
+# ============================================================
+
+
+def tile_sigmoid_kernel(M, N, block_M, block_N, dtype="float32"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(A: T.Tensor((M, N), dtype), B: T.Tensor((M, N), dtype)):
+        with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_shared((block_M, block_N), dtype)
+            b_ub = T.alloc_shared((block_M, block_N), dtype)
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+            T.tile.sigmoid(b_ub, a_ub)
+            T.copy(b_ub, B[bx * block_M, by * block_N])
+
+    return main
+
+
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_vid_reduction_tile_sigmoid(setup_random_seed, target):
+    M, N, block_M, block_N = 256, 128, 64, 128
+    func = tilelang.compile(tile_sigmoid_kernel(M, N, block_M, block_N), out_idx=[1], pass_configs=pass_configs, target=target)
+    if target == "ascendc":
+        src = func.get_kernel_source()
+        half = block_M * block_N // 2
+        # Per-sub-core buffer is half of the block.
+        assert f"GetWithOffset<float>({half}," in src
+        # Sigmoid calCount (last arg) must match the halved buffer.
+        m = re.search(r"AscendC::Sigmoid\([^;]*\);", src)
+        assert m is not None, "Sigmoid call not found in generated source"
+        assert m.group(0).endswith(f", {half});"), m.group(0)
+    a = torch.randn(M, N, dtype=torch.float32).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    torch.npu.synchronize()
+    torch.testing.assert_close(b, torch.sigmoid(a), rtol=1e-4, atol=1e-4)
+
+
+def tile_clamp_round_kernel(M, N, block_M, block_N, dtype="float16"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(A: T.Tensor((M, N), dtype), B: T.Tensor((M, N), dtype)):
+        with T.Kernel(m_num * n_num, threads=2, is_npu=True) as (cid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_shared((block_M, block_N), dtype)
+            b_ub = T.alloc_shared((block_M, block_N), dtype)
+            c_ub = T.alloc_shared((block_M, block_N), dtype)
+            d_ub = T.alloc_shared((block_M, block_N), dtype)
+            e_ub = T.alloc_shared((block_M, block_N), dtype)
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+            # clamp_max / clamp / clamp_min / round: count is the full-block
+            # element count; the pass must halve it together with the
+            # per-sub-core buffers.
+            T.tile.clamp_max(b_ub, a_ub, 2.0, block_M * block_N)
+            T.tile.clamp(c_ub, b_ub, -1.5, 1.5, block_M * block_N)
+            T.tile.clamp_min(d_ub, c_ub, -1.0, block_M * block_N)
+            T.tile.round(e_ub, d_ub, block_M * block_N)
+            T.copy(e_ub, B[bx * block_M, by * block_N])
+
+    return main
+
+
+# PTO is not parametrized here: the PTO round lowering is broken
+# independently of VidReduction (fails numerically even with threads=1),
+# which is outside the scope of this pass's tests.
+@pytest.mark.parametrize("target", ["ascendc"])
+def test_vid_reduction_tile_clamp_round(setup_random_seed, target):
+    M, N, block_M, block_N = 256, 128, 64, 128
+    func = tilelang.compile(tile_clamp_round_kernel(M, N, block_M, block_N), out_idx=[1], pass_configs=pass_configs, target=target)
+    if target == "ascendc":
+        src = func.get_kernel_source()
+        half = block_M * block_N // 2
+        assert f"GetWithOffset<half>({half}," in src
+        # clamp_max / clamp / clamp_min (f16, no tmp): the shared mask count
+        # must match the halved buffer.
+        m = re.search(r"AscendC::SetVectorMask<uint8_t>\(\(uint64_t\)0, (\d+)\);", src)
+        assert m is not None, "SetVectorMask not found in generated source"
+        assert m.group(1) == str(half), m.group(0)
+        # round (f16, tmp-injected): calCount (last arg) must match the
+        # halved buffer.
+        m = re.search(r"AscendC::Round\([^;]*\);", src)
+        assert m is not None, "Round call not found in generated source"
+        assert m.group(0).endswith(f", {half});"), m.group(0)
+    a = (torch.randn(M, N, dtype=torch.float32) * 3).half().npu()
+    torch.npu.synchronize()
+    b = func(a)
+    torch.npu.synchronize()
+    ref = torch.round(torch.clamp_min(torch.clamp(torch.clamp_max(a, 2.0), -1.5, 1.5), -1.0))
+    torch.testing.assert_close(b, ref, rtol=0, atol=0)
+
+
+# ============================================================
+# 10) skip-set buffer + round tile op
+#
+# Mirrors: T.copy(KV[b_i, idx_ub[bi_i], g_i, :D], kv_ub)  (GM index
+#          contains a UB BufferLoad -> kv_ub in buffers_skip_vid_reduction,
+#          shape kept whole) followed by T.tile.round(kv_ub, kv_ub, D).
+# Pass: the count must follow the data buffers. The workspace slot is
+# always vid-reduced scratch storage and must not drive count halving
+# (WorkspaceSlotIndex skip in HasModifiedBuffer); with skip-set data
+# buffers the count stays whole, otherwise only half of each row is
+# rounded.  Asserted on the generated source, plus a numeric run.
+# ============================================================
+
+
+def skip_set_round_kernel(B, SKV, G, D, BI, dtype="float16"):
+    block_num = B * 4
+
+    @T.prim_func
+    def main(
+        KV: T.Tensor((B, SKV, G, D), dtype),
+        IDX: T.Tensor((B, 4, G, BI), "int32"),
+        ws: T.Tensor((block_num, BI, D), dtype),
+    ):
+        with T.Kernel(block_num, threads=2, is_npu=True) as (cid):
+            b_i = cid // 4
+            s_i = cid % 4
+            g_i = 0
+            idx_ub = T.alloc_shared((BI,), "int32")
+            kv_ub = T.alloc_shared((D,), dtype)
+            T.copy(IDX[b_i, s_i, g_i, 0:BI], idx_ub)
+            for bi_i in range(BI):
+                T.copy(KV[b_i, idx_ub[bi_i], g_i, :D], kv_ub)
+                T.tile.round(kv_ub, kv_ub, D)
+                T.copy(kv_ub, ws[cid, bi_i, :])
+
+    return main
+
+
+@pytest.mark.parametrize("target", ["ascendc"])
+def test_vid_reduction_skip_set_round(setup_random_seed, target):
+    B, SKV, G, D, BI = 2, 8, 1, 128, 4
+    func = tilelang.compile(skip_set_round_kernel(B, SKV, G, D, BI), out_idx=[2], pass_configs=pass_configs, target=target)
+    src = func.get_kernel_source()
+    # kv_ub stays whole (skip set) ...
+    assert "GetWithOffset<half>(128," in src
+    # ... and so must the round calCount (last arg).
+    m = re.search(r"AscendC::Round\([^;]*\);", src)
+    assert m is not None, "Round call not found in generated source"
+    assert m.group(0).endswith(", 128);"), m.group(0)
+    KV = (torch.randn(B, SKV, G, D, dtype=torch.float32) * 3).half().npu()
+    IDX = torch.randint(0, SKV, (B, 4, G, BI), dtype=torch.int32).npu()
+    torch.npu.synchronize()
+    out = func(KV, IDX)
+    torch.npu.synchronize()
+    kvf = KV.float().cpu()
+    idxf = IDX.cpu()
+    block_num = B * 4
+    ref = torch.empty(block_num, BI, D)
+    for c in range(block_num):
+        for j in range(BI):
+            ref[c, j] = torch.round(kvf[c // 4, idxf[c // 4, c % 4, 0, j], 0, :])
+    torch.testing.assert_close(out.float().cpu(), ref, rtol=0, atol=0)
 
 
 if __name__ == "__main__":
