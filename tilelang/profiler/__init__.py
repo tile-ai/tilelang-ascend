@@ -2,7 +2,9 @@
 # Licensed under the MIT License.
 """The profiler and convert to torch utils"""
 
-from typing import List, Optional, Union, Callable, Any
+from __future__ import annotations
+
+from typing import Callable, Any
 from functools import partial
 import torch
 from contextlib import suppress
@@ -22,7 +24,7 @@ from tilelang.profiler.bench import do_bench
 @dataclass
 class Profiler:
     """A profiler class for benchmarking and validating kernel implementations.
-    
+
     Attributes:
         params: List of kernel parameters defining the input/output specifications
         result_idx: Indices indicating which parameters are output tensors
@@ -30,27 +32,26 @@ class Profiler:
         adapter: Optional kernel adapter for interfacing with different backends
     """
 
-    params: List[KernelParam]
-    result_idx: List[int]
-    workspace_idx: List[int]
+    params: list[KernelParam]
+    result_idx: list[int]
+    workspace_idx: list[int]
     supply_type: TensorSupplyType
-    adapter: Optional[BaseKernelAdapter] = None
+    adapter: BaseKernelAdapter | None = None
 
     def __post_init__(self):
         """Initialize tensor supply after dataclass initialization"""
         self.result_idx = self._legalize_auto_memory_idx(self.result_idx, "result_idx")
         self.workspace_idx = self._legalize_auto_memory_idx(self.workspace_idx, "workspace_idx")
         self.supply = get_tensor_supply(self.supply_type)
-    
-    def _legalize_auto_memory_idx(self, memory_idx: Union[List[int], int, None] = None, memory_name = "auto_memory_idx") -> List[int]:
+
+    def _legalize_auto_memory_idx(self, memory_idx: list[int] | int | None = None, memory_name="auto_memory_idx") -> list[int]:
         params = self.params
         if memory_idx is None:
             memory_idx = []
 
         elif isinstance(memory_idx, int):
             if memory_idx >= len(params) or memory_idx < -len(params):
-                raise ValueError(
-                    f"{memory_name} should be an integer between {-len(params)} and {len(params) - 1}") 
+                raise ValueError(f"{memory_name} should be an integer between {-len(params)} and {len(params) - 1}")
             if memory_idx < 0:
                 memory_idx = len(params) + memory_idx
             memory_idx = [memory_idx]
@@ -58,8 +59,7 @@ class Profiler:
         elif isinstance(memory_idx, list):
             for i, idx in enumerate(memory_idx):
                 if idx >= len(params) or idx < -len(params):
-                    raise ValueError(
-                        f"{memory_name} should be an integer between {-len(params)} and {len(params) - 1}")
+                    raise ValueError(f"{memory_name} should be an integer between {-len(params)} and {len(params) - 1}")
                 if idx < 0:
                     memory_idx[i] = len(params) + idx
 
@@ -68,7 +68,7 @@ class Profiler:
 
         return memory_idx
 
-    def with_default_adapter(self, adapter: BaseKernelAdapter) -> "Profiler":
+    def with_default_adapter(self, adapter: BaseKernelAdapter) -> Profiler:
         self.adapter = adapter
         return self
 
@@ -89,13 +89,13 @@ class Profiler:
     def assert_allclose(
         self,
         reference_program: Callable,
-        input_tensors: Optional[List[torch.Tensor]] = None,
+        input_tensors: list[torch.Tensor] | None = None,
         atol: float = 1e-2,
         rtol: float = 1e-2,
         max_mismatched_ratio=0.01,
     ):
         """Validates kernel output against a reference implementation.
-        
+
         Args:
             reference_program: Reference implementation to compare against
             input_tensors: Optional pre-generated input tensors
@@ -105,12 +105,12 @@ class Profiler:
         """
         ins = self._get_inputs() if input_tensors is None else input_tensors
         ref_outs = reference_program(*ins)
-        if hasattr(torch, 'npu') and torch.npu.is_available():
+        if hasattr(torch, "npu") and torch.npu.is_available():
             torch.npu.synchronize()
         elif torch.cuda.is_available():
             torch.cuda.synchronize()
         lib_outs = self.func(*ins)
-        if hasattr(torch, 'npu') and torch.npu.is_available():
+        if hasattr(torch, "npu") and torch.npu.is_available():
             torch.npu.synchronize()
         elif torch.cuda.is_available():
             torch.cuda.synchronize()
@@ -128,8 +128,7 @@ class Profiler:
         ref_tensors = ins + ref_outs
         lib_tensors = ins + lib_outs
 
-        assert len(lib_tensors) == len(
-            ref_tensors), "len(lib_tensors) not equals to len(ref_tensors) !"
+        assert len(lib_tensors) == len(ref_tensors), "len(lib_tensors) not equals to len(ref_tensors) !"
         # torch.set_printoptions(edgeitems=torch.inf)
         for lhs, rhs in zip(lib_tensors, ref_tensors):
             # close_mask = torch.isclose(lhs, rhs, rtol=rtol, atol=atol)
@@ -151,11 +150,11 @@ class Profiler:
     def manual_assert_close(
         self,
         reference_program: Callable,
-        input_tensors: Optional[List[torch.Tensor]] = None,
+        input_tensors: list[torch.Tensor] | None = None,
         manual_check_prog: Callable = None,
     ):
         """Validates kernel output against a reference implementation.
-        
+
         Args:
             reference_program: Reference implementation to compare against
             input_tensors: Optional pre-generated input tensors
@@ -165,12 +164,12 @@ class Profiler:
         """
         ins = self._get_inputs() if input_tensors is None else input_tensors
         ref_outs = reference_program(*ins)
-        if hasattr(torch, 'npu') and torch.npu.is_available():
+        if hasattr(torch, "npu") and torch.npu.is_available():
             torch.npu.synchronize()
         elif torch.cuda.is_available():
             torch.cuda.synchronize()
         lib_outs = self.func(*ins)
-        if hasattr(torch, 'npu') and torch.npu.is_available():
+        if hasattr(torch, "npu") and torch.npu.is_available():
             torch.npu.synchronize()
         elif torch.cuda.is_available():
             torch.cuda.synchronize()
@@ -186,37 +185,48 @@ class Profiler:
         manual_check_prog(lib_outs, ref_outs)
 
     def assert_consistent(self, repeat=10):
-        """Checks for kernel consistency across multiple runs.
-        
+        """Check returned-output repeatability on the same inputs.
+
+        Snapshot the first result so adapters may reuse output buffers. Later
+        calls must return the same number and shapes of tensors, with values
+        matching ``torch.allclose`` at its default tolerances. This is a
+        repeatability check, not a proof that a kernel is free of races.
+
         Args:
-            repeat: Number of times to repeat the consistency check
+            repeat: Number of calls to compare with the initial result.
         """
-        # Used to check no race condition inside the kernel
         ins = self._get_inputs()
         ref_outs = self.func(*ins)
+        if isinstance(ref_outs, torch.Tensor):
+            ref_outs = [ref_outs]
+        ref_outs = [out.detach().clone() for out in ref_outs]
 
         for _ in range(repeat):
             lib_outs = self.func(*ins)
+            if isinstance(lib_outs, torch.Tensor):
+                lib_outs = [lib_outs]
+            assert len(lib_outs) == len(ref_outs), f"Number of output tensors changed: {len(lib_outs)} != {len(ref_outs)}"
             for lhs, rhs in zip(lib_outs, ref_outs):
+                assert lhs.shape == rhs.shape, f"Output tensor shape changed: {lhs.shape} != {rhs.shape}"
                 assert torch.allclose(lhs, rhs), [
                     "result is not consistent",
                     lhs,
                     rhs,
                 ]
 
-    def run_once(self, func: Optional[Callable] = None):
+    def run_once(self, func: Callable | None = None):
         ins = self._get_inputs()
         if not func:
             func = self.__call__
         return func(*ins)
 
-    def determine_profiler(self, func: Optional[Callable] = None):
+    def determine_profiler(self, func: Callable | None = None):
         """Determines which profiler backend to use based on function type.
-        
+
         Args:
             func: Function to be profiled
             profiler: Explicitly specified profiler type or "auto" for automatic detection
-        
+
         Returns:
             str: The determined profiler type ("torch" or "tvm")
         """
@@ -227,15 +237,15 @@ class Profiler:
 
     def do_bench(
         self,
-        func: Optional[Callable] = None,
+        func: Callable | None = None,
         warmup: int = 25,
         rep: int = 100,
         n_warmup: int = 1,
         n_repeat: int = 1,
-        input_tensors: List[torch.Tensor] = None,
+        input_tensors: list[torch.Tensor] = None,
     ) -> float:
         """Benchmarks the execution time of a given function.
-        
+
         Args:
             func: Function to benchmark (uses adapter if None)
             warmup: Warmup time in milliseconds
@@ -244,7 +254,7 @@ class Profiler:
             n_repeat: Number of timing iterations
             profiler: Which profiling backend to use
             input_tensors: Optional pre-generated input tensors
-            
+
         Returns:
             float: Average execution time in milliseconds
         """
@@ -264,10 +274,9 @@ class Profiler:
             )
         elif profiler == "tvm":
             assert func is not None, "func should not be None"
-            assert isinstance(
-                func, tvm.runtime.Module), f"func should be a TVM module, but got {type(func)}"
+            assert isinstance(func, tvm.runtime.Module), f"func should be a TVM module, but got {type(func)}"
 
-            ins = (self._get_inputs(with_output=True) if input_tensors is None else input_tensors)
+            ins = self._get_inputs(with_output=True) if input_tensors is None else input_tensors
             target = "cuda"
 
             with suppress(Exception):
@@ -276,8 +285,7 @@ class Profiler:
             assert target in ["cuda", "hip"], f"Unknown target: {target}"
 
             device = tvm.cuda(0) if target == "cuda" else tvm.rocm(0)
-            time_evaluator = self.mod.time_evaluator(
-                self.mod.entry_name, device, number=rep, repeat=n_repeat)
+            time_evaluator = self.mod.time_evaluator(self.mod.entry_name, device, number=rep, repeat=n_repeat)
             tvm_inputs = [adapt_torch2tvm(inp) for inp in ins]
             # Transform Latency to ms
             return time_evaluator(*tvm_inputs).mean * 1e3
