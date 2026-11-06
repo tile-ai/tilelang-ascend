@@ -2342,12 +2342,17 @@ def bitwise_xor(
         tmp: Optional one-dimensional UB scratch buffer. When omitted, the
             framework allocates the workspace automatically.
 
-    Supported dtypes: AscendC: int16, uint16; PTO: int8, uint8, int16, uint16.
+    Supported dtypes: AscendC: int16, uint16; PTO A2/A3: int8, uint8, int16,
+        uint16; PTO A5: int8, uint8, int16, uint16, int32, uint32.
 
     Returns:
         A TVM intrinsic call that performs the bitwise XOR operation.
     """
-    _supported = ("int8", "uint8", "int16", "uint16")
+    # The front-end only rejects dtypes that no backend/arch supports (floats
+    # and 64-bit integers); int32/uint32 are kept so the PTO A5 path (which
+    # supports them) is not rejected here. The arch-specific restriction is
+    # enforced by the backend lowering/codegen for A2/A3 and AscendC.
+    _supported = ("int8", "uint8", "int16", "uint16", "int32", "uint32")
     # BufferRegion / vectorized accesses may surface a lane-suffixed dtype
     # (e.g. "int16x256"); compare against the scalar element type only.
     dst_dtype = _underlying_buffer(dst).dtype.split("x")[0]
@@ -2357,7 +2362,7 @@ def bitwise_xor(
         raise ValueError(
             "tilelang.language.bitwise_xor: unsupported operand dtype "
             f"(dst={dst_dtype}, src0={src0_dtype}, src1={src1_dtype}); "
-            "supported dtypes (AscendC: int16, uint16; PTO: int8, uint8, int16, uint16)."
+            "bitwise_xor requires integer operands (int8/uint8/int16/uint16/int32/uint32)."
         )
 
     if isinstance(dst, BufferRegion):
