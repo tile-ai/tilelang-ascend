@@ -1680,9 +1680,16 @@ def test_bitwise_xor_int32_pto_a5_memory_planning_rejected():
 
 
 def test_bitwise_xor_int32_pto_a5_accepted():
-    """int32 is accepted on PTO A5 when memory planning is disabled."""
+    """int32 is accepted on PTO A5 (verify at the lowering/codegen stage only).
+
+    Uses ``tilelang.lower`` instead of ``tilelang.compile`` so the A5 kernel is
+    validated down to codegen without building the JIT adapter or dlopen-ing the
+    cross-compiled A5 shared library on the host NPU.
+    """
     func = bitwise_xor(1024, 1024, 128, 256, dtype="int32")
-    tilelang.compile(func, out_idx=[-1], target="pto", platform="A5")
+    artifact = tilelang.lower(func, target="pto", platform="A5")
+    assert artifact.kernel_source
+    assert "TXOR" in artifact.kernel_source or "TXor" in artifact.kernel_source
 
 
 def block_reduce_max(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockNum, dtype="float16"):
