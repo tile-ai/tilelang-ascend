@@ -1,0 +1,550 @@
+"""GLM-5.3 paged FP8 pooled-history logits (fp8_mqa_logits) for Ascend NPU.
+
+For every query row the kernel walks the row's valid pool range
+``[pool_start, pool_end)``, gathers the pooled keys from a caller-owned paged
+cache through ``pool_page_table``, dequantizes the E4M3 bytes with the same
+bit-level scheme the compressor writes, scores the 32 indexer heads
+(``keys @ query^T``), applies the cached per-pool scale, ReLU-gates the head
+scores, weights them and reduces them to one FP32 logit per pool.  Pools
+outside the range or backed by an invalid page emit ``-inf``.
+
+Cache contract (Ascend port): the reference consumes FP8 tensors.  Ascend A2/A3
+has no FP8 data path, so this port keeps the very same E4M3 byte patterns in a
+``uint8`` ``k_cache`` (written by ``example_glm53_kpool_compress.py``) plus the
+FP32 ``scale_cache``, and decodes them in-kernel.  ``query`` is BF16: the E4M3
+query values load losslessly into BF16, and the caller folds the per-head query
+scale into ``weights`` exactly like the reference.
+
+One kernel, replacing the reference's host-side ``torch.full(-inf)`` prefill:
+``..._kernel`` does gather -> E4M3 decode -> ``T.gemm_v0`` -> scale/ReLU/
+weights -> head reduce, then builds the per-lane validity mask in-kernel
+(``0`` inside the range with a valid page, ``-inf`` otherwise) and adds it
+before the write.  Fully valid tiles skip the mask on a fast path; partial or
+invalid tiles evaluate it on a ``[32 pools, 32 heads]`` tile, so every
+compare/select stays above the 256 B vector-op floor, and the out-of-range
+lanes become exact ``-inf``.
+
+Device-side notes:
+
+  - One block owns ``pages_per_block`` consecutive 64-pool cache pages of one
+    row (default: enough pages to cover the device's AI Cores once per row,
+    capped at 8).  Each of the two AIVs owns a 32-pool half of every page: one
+    clamped page-table lookup plus one bulk half-page copy, a whole-half E4M3
+    decode, one whole-page GEMM, then its own half of the score post-processing
+    and one static-extent write.  Batching pages keeps the per-block query
+    load, page-table metadata and cross-core handshake out of the per-page
+    critical path.
+  - The Cube/Vector exchange runs through explicit ``workspace_keys`` /
+    ``workspace_scores`` GM buffers (one producer/consumer pair each), which
+    the auto cross-core sync can pair 1:1.  This follows
+    ``examples/developer_mode/sparse_flash_attn_developer.py``; the
+    ``threads=2`` vid-reduction path mis-splits this kernel's sub-region
+    copies and small compare/broadcast/index ops (confirmed with probes).
+    Workspace buffer names must contain ``workspace`` (the sync pass detects
+    them by name).
+  - The kernel writes whole static-extent tiles into the
+    ``blocks_per_row * pages_per_block * 64`` padded output; the host adapter
+    returns the ``[:, :max_num_pools]`` view (1D UB slices are not usable as
+    copy operands on this target).
+
+Mode: Developer pass_configs (auto CV combine/sync + auto sync + memory
+planning) with ``alloc_L1``/``alloc_L0C``/``alloc_ub`` and explicit
+``workspace_idx``, following
+``examples/developer_mode/sparse_flash_attn_developer.py``.
+"""
+
+import torch
+
+import tilelang
+import tilelang.language as T
+
+GLM53_HEAD_DIM = 128
+GLM53_INDEX_HEADS = 32
+GLM53_PAGE_SIZE = 64
+E4M3_MAX = 448.0
+
+# E4M3 lane layout: sign(1) | exp(4) | mantissa(3). Decoding rebuilds the FP32
+# bit pattern from those fields, so every shift/bias below is named.
+E4M3_SIGN_SHIFT = 7
+E4M3_EXP_SHIFT = 3
+E4M3_EXP_BITS = 4
+E4M3_EXP_BIAS_GAP = 120  # fp32 exponent bias (127) - E4M3 exponent bias (7)
+FP32_EXP_SHIFT = 23
+E4M3_MANT_TO_FP32_SHIFT = 20  # fp32 mantissa bits (23) - E4M3 mantissa bits (3)
+E4M3_SUBNORMAL_SCALE = 2.0**-9  # subnormal code step (2^-9)
+FP32_SIGN_SHIFT = 31
+
+# One tile = one cache page (64 pools).
+POOL_TILE = GLM53_PAGE_SIZE
+# Upper bound on pages batched into one block: the auto cross-core sync emits one
+# set/wait pair per page, and the cross-core flag counter saturates above 16.
+MAX_PAGES_PER_BLOCK = 16
+
+PASS_CONFIGS = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+}
+
+
+@tilelang.jit(out_idx=[8], workspace_idx=[9, 10], pass_configs=PASS_CONFIGS)
+def glm53_kpool_fp8_mqa_logits_kernel(
+    num_rows: int,
+    max_num_pools: int,
+    num_blocks: int,
+    num_page_rows: int,
+    max_pages: int,
+    pages_per_block: int,
+    page_size: int = GLM53_PAGE_SIZE,
+    num_heads: int = GLM53_INDEX_HEADS,
+    head_dim: int = GLM53_HEAD_DIM,
+):
+    """Build the paged pooled-history logits kernel (batched pages + workspace).
+
+    Inputs:
+      query           [num_rows, num_heads, head_dim] bf16
+      k_cache         [num_blocks, page_size, head_dim] u8   (E4M3 bytes)
+      scale_cache     [num_blocks, page_size] f32
+      weights         [num_rows, num_heads] f32
+      pool_page_table [num_page_rows, max_pages] i32
+      page_table_rows [num_rows] i32
+      pool_starts     [num_rows] i32
+      pool_ends       [num_rows] i32
+    Output:
+      logits          [num_rows, blocks_per_row * pages_per_block * POOL_TILE] f32
+    Workspaces (allocated by the adapter):
+      workspace_keys   [grid, pages_per_block * tile_pools, head_dim] bf16
+      workspace_scores [grid, pages_per_block * tile_pools, num_heads] f32
+
+    One block owns ``pages_per_block`` consecutive 64-pool pages of one row: the
+    two AIVs decode 32-pool halves page by page into ``workspace_keys``, the Cube
+    runs one GEMM per page into ``workspace_scores``, and each AIV
+    post-processes its own 32-pool half of every page.  Batching pages keeps the
+    per-block scalar page-table reads, query load and cross-core handshake out
+    of the per-page critical path.  The auto cross-core sync pairs the decode
+    loop, the GEMM loop and the post loop one-to-one (one flag pair per page);
+    that per-page handshake is why ``pages_per_block`` is capped: the
+    cross-core flag counter saturates above ``MAX_PAGES_PER_BLOCK``.
+    """
+    if page_size != GLM53_PAGE_SIZE:
+        raise ValueError(f"GLM-5.3 k-pool requires page_size={GLM53_PAGE_SIZE}, got {page_size}")
+    if num_heads != GLM53_INDEX_HEADS:
+        raise ValueError(f"GLM-5.3 indexer requires num_heads={GLM53_INDEX_HEADS}, got {num_heads}")
+    if head_dim != GLM53_HEAD_DIM:
+        raise ValueError(f"GLM-5.3 indexer requires head_dim={GLM53_HEAD_DIM}, got {head_dim}")
+    if pages_per_block < 1 or pages_per_block > MAX_PAGES_PER_BLOCK:
+        raise ValueError(f"pages_per_block must be in [1, {MAX_PAGES_PER_BLOCK}], got {pages_per_block}")
+
+    tile_pools = POOL_TILE
+    half = tile_pools // 2
+    num_tiles = (max_num_pools + tile_pools - 1) // tile_pools
+    blocks_per_row = (num_tiles + pages_per_block - 1) // pages_per_block
+    padded_pools = blocks_per_row * pages_per_block * tile_pools
+    half_elems = half * head_dim
+    grid = num_rows * blocks_per_row
+    pages = pages_per_block * tile_pools
+
+    @T.prim_func
+    def main(
+        query: T.Tensor((num_rows, num_heads, head_dim), "bfloat16"),
+        k_cache: T.Tensor((num_blocks, page_size, head_dim), "uint8"),
+        scale_cache: T.Tensor((num_blocks, page_size), "float32"),
+        weights: T.Tensor((num_rows, num_heads), "float32"),
+        pool_page_table: T.Tensor((num_page_rows, max_pages), "int32"),
+        page_table_rows: T.Tensor((num_rows,), "int32"),
+        pool_starts: T.Tensor((num_rows,), "int32"),
+        pool_ends: T.Tensor((num_rows,), "int32"),
+        logits: T.Tensor((num_rows, padded_pools), "float32"),
+        workspace_keys: T.Tensor((grid, pages, head_dim), "bfloat16"),
+        workspace_scores: T.Tensor((grid, pages, num_heads), "float32"),
+    ):
+        with T.Kernel(grid, is_npu=True) as (cid, vid):
+            row = cid // blocks_per_row
+            tile0 = (cid % blocks_per_row) * pages_per_block
+            v0 = vid * half
+
+            # ---- Cube side ----
+            q_l1 = T.alloc_L1((num_heads, head_dim), "bfloat16")
+            key_l1 = T.alloc_L1((tile_pools, head_dim), "bfloat16")
+            scores_l0c = T.alloc_L0C((tile_pools, num_heads), "float32")
+
+            # ---- Vector side (this AIV's 32-pool half of every page) ----
+            key_u8 = T.alloc_ub((half, head_dim), "uint8")
+            key_ub = T.alloc_ub((half, head_dim), "bfloat16")
+            sc_ub = T.alloc_ub((half,), "float32")
+            w_ub = T.alloc_ub((num_heads,), "float32")
+            s_ub = T.alloc_ub((half, num_heads), "float32")
+            sc2d = T.alloc_ub((half, num_heads), "float32")
+            w2d = T.alloc_ub((half, num_heads), "float32")
+            v_ub = T.alloc_ub((half,), "float32")
+
+            # Inline validity mask (this AIV's 32-pool half): the 2D [half, heads]
+            # form keeps every compare/select well above the 256 B vector-op floor.
+            idx = T.alloc_ub((half,), "int32")
+            idx_f = T.alloc_ub((half,), "float32")
+            idx2d = T.alloc_ub((half, num_heads), "float32")
+            m2d = T.alloc_ub((half, num_heads), "uint8")
+            mask2d = T.alloc_ub((half, num_heads), "float32")
+            mask_ub = T.alloc_ub((half,), "float32")
+
+            # E4M3 decode temporaries (this half).
+            df16 = T.alloc_ub((half, head_dim), "float16")
+            dbits = T.alloc_ub((half, head_dim), "int32")
+            dsign = T.alloc_ub((half, head_dim), "int32")
+            dtmp = T.alloc_ub((half, head_dim), "int32")
+            de4 = T.alloc_ub((half, head_dim), "int32")
+            dm3 = T.alloc_ub((half, head_dim), "int32")
+            dmag = T.alloc_ub((half, head_dim), "int32")
+            dfnorm = T.alloc_ub((half, head_dim), "float32")
+            dfsub = T.alloc_ub((half, head_dim), "float32")
+            dfmag = T.alloc_ub((half, head_dim), "float32")
+            dmask = T.alloc_ub((half, head_dim), "uint8")
+            dfval = T.alloc_ub((half, head_dim), "float32")
+
+            # Per-row metadata: one scalar GM read each for the whole block.
+            tr = T.alloc_var("int32")
+            tr = page_table_rows[row]
+            tr_c = T.max(T.min(tr, num_page_rows - 1), 0)
+            st = T.alloc_var("int32")
+            st = pool_starts[row]
+            en = T.alloc_var("int32")
+            en = pool_ends[row]
+
+            # 1. Decode each page of this block into workspace_keys.
+            for k in T.serial(pages_per_block):
+                tile = tile0 + k
+                t0 = tile * tile_pools
+                page_c = T.max(T.min(tile, max_pages - 1), 0)
+                entry = pool_page_table[tr_c, page_c]
+                blk = T.max(T.min(entry, num_blocks - 1), 0)
+                T.copy(k_cache[blk, v0 : v0 + half, 0:head_dim], key_u8)
+                T.copy(scale_cache[blk, v0 : v0 + half], sc_ub)
+
+                # E4M3 bytes -> BF16 (same bit-level chain as the compressor).
+                T.tile.cast(df16, key_u8, "CAST_NONE", half_elems)
+                T.tile.cast(dbits, df16, "CAST_RINT", half_elems)
+                T.tile.bitwise_rshift(dsign, dbits, E4M3_SIGN_SHIFT)
+                T.tile.bitwise_rshift(dtmp, dbits, E4M3_EXP_SHIFT)
+                T.tile.bitwise_lshift(de4, dsign, E4M3_EXP_BITS)
+                T.tile.sub(de4, dtmp, de4)
+                T.tile.bitwise_lshift(dtmp, dtmp, E4M3_EXP_SHIFT)
+                T.tile.sub(dm3, dbits, dtmp)
+                T.tile.add(dmag, de4, E4M3_EXP_BIAS_GAP)
+                T.tile.bitwise_lshift(dmag, dmag, FP32_EXP_SHIFT)
+                T.tile.bitwise_lshift(dtmp, dm3, E4M3_MANT_TO_FP32_SHIFT)
+                T.tile.add(dmag, dmag, dtmp)
+                T.reinterpretcast(dfnorm, dmag, "float")
+                T.tile.cast(dfsub, dm3, "CAST_RINT", half_elems)
+                T.tile.mul(dfsub, dfsub, E4M3_SUBNORMAL_SCALE)
+                T.tile.compare(dmask, de4, T.int32(0), "EQ")
+                T.tile.select(dfmag, dmask, dfsub, dfnorm, "VSEL_TENSOR_TENSOR_MODE")
+                T.tile.bitwise_lshift(dsign, dsign, FP32_SIGN_SHIFT)
+                T.reinterpretcast(dmag, dfmag, "int32_t")
+                T.tile.add(dmag, dmag, dsign)
+                T.reinterpretcast(dfval, dmag, "float")
+                T.tile.cast(key_ub, dfval, "CAST_RINT", half_elems)
+                T.copy(key_ub, workspace_keys[cid, k * tile_pools + v0 : k * tile_pools + v0 + half, 0:head_dim])
+
+            # 2. Cube: scores = keys @ query^T, one GEMM per page.
+            T.copy(query[row, 0:num_heads, 0:head_dim], q_l1)
+            for k in T.serial(pages_per_block):
+                T.copy(workspace_keys[cid, k * tile_pools : (k + 1) * tile_pools, 0:head_dim], key_l1)
+                T.gemm_v0(key_l1, q_l1, scores_l0c, transpose_B=True, init=True)
+                T.copy(scores_l0c, workspace_scores[cid, k * tile_pools : (k + 1) * tile_pools, 0:num_heads])
+
+            # 3. Vector: scale, ReLU gate, per-head weights, mask, write per page.
+            T.copy(weights[row, 0:num_heads], w_ub)
+            for k in T.serial(pages_per_block):
+                tile = tile0 + k
+                t0 = tile * tile_pools
+                page_c = T.max(T.min(tile, max_pages - 1), 0)
+                entry = pool_page_table[tr_c, page_c]
+                blk = T.max(T.min(entry, num_blocks - 1), 0)
+                T.copy(scale_cache[blk, v0 : v0 + half], sc_ub)
+                T.copy(workspace_scores[cid, k * tile_pools + v0 : k * tile_pools + v0 + half, 0:num_heads], s_ub)
+                T.tile.broadcast(sc2d, sc_ub, axis=1)  # per-row constant (pool scale)
+                T.tile.mul(s_ub, s_ub, sc2d)
+                T.tile.relu(s_ub, s_ub)
+                T.tile.broadcast(w2d, w_ub, axis=0)  # per-column constant (head weight)
+                T.tile.mul(s_ub, s_ub, w2d)
+                T.reduce_sum(s_ub, v_ub, dim=-1)
+
+                # Fast path: a fully valid tile keeps the reduced values as-is.
+                # Only partial / invalid tiles pay for the -inf mask.
+                if (
+                    tr < 0
+                    or tr >= num_page_rows
+                    or tile >= max_pages
+                    or entry < 0
+                    or entry >= num_blocks
+                    or t0 < st
+                    or t0 + tile_pools > en
+                    or t0 + tile_pools > max_num_pools
+                ):
+                    # Inline validity mask (0 / -inf) -> out-of-range lanes become -inf.
+                    T.tile.createvecindex(idx, v0)
+                    T.tile.cast(idx_f, idx, "CAST_RINT", half)
+                    T.tile.broadcast(idx2d, idx_f, axis=1)
+                    T.tile.fill(mask2d, 0.0)
+                    T.tile.compare(m2d, idx2d, T.float32(st - t0), "GE")
+                    T.tile.select(mask2d, m2d, mask2d, -T.infinity("float32"), "VSEL_TENSOR_SCALAR_MODE")
+                    T.tile.compare(m2d, idx2d, T.float32(T.min(en - t0, T.min(tile_pools, max_num_pools - t0))), "LT")
+                    T.tile.select(mask2d, m2d, mask2d, -T.infinity("float32"), "VSEL_TENSOR_SCALAR_MODE")
+                    T.reduce_sum(mask2d, mask_ub, dim=-1)
+                    T.tile.add(v_ub, v_ub, mask_ub)
+                    if tr < 0 or tr >= num_page_rows or tile >= max_pages or entry < 0 or entry >= num_blocks:
+                        T.tile.fill(v_ub, -T.infinity("float32"))
+                T.copy(v_ub, logits[row, t0 + v0 : t0 + v0 + half])
+
+    return main
+
+
+def _validate_inputs(
+    query: torch.Tensor,
+    k_cache: torch.Tensor,
+    scale_cache: torch.Tensor,
+    weights: torch.Tensor,
+    pool_page_table: torch.Tensor,
+    page_table_rows: torch.Tensor,
+    pool_starts: torch.Tensor,
+    pool_ends: torch.Tensor,
+    max_num_pools: int,
+    num_heads: int,
+    head_dim: int,
+) -> None:
+    """Metadata-only validation (shapes/dtypes/device/contiguity)."""
+    if num_heads != GLM53_INDEX_HEADS:
+        raise ValueError(f"GLM-5.3 indexer requires num_heads={GLM53_INDEX_HEADS}, got {num_heads}")
+    if head_dim != GLM53_HEAD_DIM:
+        raise ValueError(f"GLM-5.3 indexer requires head_dim={GLM53_HEAD_DIM}, got {head_dim}")
+    if max_num_pools < 0:
+        raise ValueError(f"max_num_pools must be nonnegative, got {max_num_pools}")
+    if query.ndim != 3:
+        raise ValueError(f"query must have rank 3, got shape {tuple(query.shape)}")
+    if tuple(query.shape[1:]) != (num_heads, head_dim):
+        raise ValueError(f"query must have shape [num_rows, {num_heads}, {head_dim}], got {tuple(query.shape)}")
+    if k_cache.ndim != 3 or k_cache.shape[2] != head_dim:
+        raise ValueError(f"k_cache must have shape [num_blocks, page_size, {head_dim}], got {tuple(k_cache.shape)}")
+    if k_cache.shape[1] != GLM53_PAGE_SIZE:
+        raise ValueError(f"k_cache must use page_size={GLM53_PAGE_SIZE}, got {k_cache.shape[1]}")
+    if tuple(scale_cache.shape) != tuple(k_cache.shape[:2]):
+        raise ValueError(
+            "scale_cache must match the first two k_cache dimensions; "
+            f"got k_cache={tuple(k_cache.shape)}, scale_cache={tuple(scale_cache.shape)}"
+        )
+    num_rows = query.shape[0]
+    if tuple(weights.shape) != (num_rows, num_heads):
+        raise ValueError(f"weights must have shape {(num_rows, num_heads)}, got {tuple(weights.shape)}")
+    if pool_page_table.ndim != 2 or pool_page_table.shape[0] <= 0 or pool_page_table.shape[1] <= 0:
+        raise ValueError(f"pool_page_table must be a nonempty rank-2 tensor, got {tuple(pool_page_table.shape)}")
+    for name, tensor in (
+        ("page_table_rows", page_table_rows),
+        ("pool_starts", pool_starts),
+        ("pool_ends", pool_ends),
+    ):
+        if tuple(tensor.shape) != (num_rows,):
+            raise ValueError(f"{name} must have shape {(num_rows,)}, got {tuple(tensor.shape)}")
+        if tensor.dtype != torch.int32:
+            raise TypeError(f"{name} must be torch.int32, got {tensor.dtype}")
+
+    if query.dtype != torch.bfloat16:
+        raise TypeError(f"query must be torch.bfloat16 (E4M3 values load losslessly), got {query.dtype}")
+    if k_cache.dtype != torch.uint8:
+        raise TypeError(f"k_cache must be torch.uint8 (E4M3 bytes), got {k_cache.dtype}")
+    if scale_cache.dtype != torch.float32:
+        raise TypeError(f"scale_cache must be torch.float32, got {scale_cache.dtype}")
+    if weights.dtype != torch.float32:
+        raise TypeError(f"weights must be torch.float32, got {weights.dtype}")
+    if pool_page_table.dtype != torch.int32:
+        raise TypeError(f"pool_page_table must be torch.int32, got {pool_page_table.dtype}")
+
+    tensors = (query, k_cache, scale_cache, weights, pool_page_table, page_table_rows, pool_starts, pool_ends)
+    if any(t.device.type != "npu" for t in tensors):
+        raise ValueError("all tensors must be on an Ascend NPU device")
+    if any(t.device != query.device for t in tensors):
+        raise ValueError("all tensors must be on the same device")
+    if any(not t.is_contiguous() for t in tensors):
+        raise ValueError("all tensors must be contiguous")
+
+
+_CUBE_CORE_NUM: int | None = None
+
+
+def _cube_core_num() -> int:
+    """Physical AI Core count of the current device (fallback: 910B3 = 20)."""
+    global _CUBE_CORE_NUM
+    if _CUBE_CORE_NUM is None:
+        try:
+            import torch_npu
+
+            _CUBE_CORE_NUM = int(torch_npu.npu.get_device_properties(0).cube_core_num)
+        except Exception:
+            _CUBE_CORE_NUM = 20
+    return _CUBE_CORE_NUM
+
+
+def _default_pages_per_block(num_rows: int, num_tiles: int) -> int:
+    """Batch enough pages per block that the grid covers every AI Core."""
+    blocks_per_row = max(1, _cube_core_num() // max(num_rows, 1))
+    pages = max(1, (num_tiles + blocks_per_row - 1) // blocks_per_row)
+    # 8 pages/block measured faster than 16 on 910B3 (flag and L2 pressure).
+    return min(pages, 8)
+
+
+def glm53_kpool_fp8_mqa_logits(
+    query: torch.Tensor,
+    k_cache: torch.Tensor,
+    scale_cache: torch.Tensor,
+    weights: torch.Tensor,
+    pool_page_table: torch.Tensor,
+    page_table_rows: torch.Tensor,
+    pool_starts: torch.Tensor,
+    pool_ends: torch.Tensor,
+    *,
+    max_num_pools: int,
+    num_heads: int = GLM53_INDEX_HEADS,
+    head_dim: int = GLM53_HEAD_DIM,
+    pages_per_block: int | None = None,
+) -> torch.Tensor:
+    """Compute FP32 pool logits from caller-owned paged FP8 caches.
+
+    Returns a ``[num_rows, max_num_pools]`` FP32 tensor where pools outside
+    ``[pool_starts[r], pool_ends[r])`` or backed by an invalid page are ``-inf``.
+    ``max_num_pools`` is required (the reference derives it with a device
+    reduction; this port keeps the host path free of device reads).  The
+    returned tensor is a view of the padded kernel output, so it is contiguous
+    exactly when ``max_num_pools`` is a multiple of the 64-pool tile.
+    ``pages_per_block`` batches consecutive 64-pool pages into one kernel block
+    (default: enough pages to cover the device's AI Cores once per row).
+    """
+    _validate_inputs(
+        query,
+        k_cache,
+        scale_cache,
+        weights,
+        pool_page_table,
+        page_table_rows,
+        pool_starts,
+        pool_ends,
+        max_num_pools,
+        num_heads,
+        head_dim,
+    )
+    if query.shape[0] == 0 or max_num_pools == 0:
+        return torch.empty((query.shape[0], max_num_pools), dtype=torch.float32, device=query.device)
+
+    num_rows = query.shape[0]
+    num_tiles = (max_num_pools + POOL_TILE - 1) // POOL_TILE
+    if pages_per_block is None:
+        pages_per_block = _default_pages_per_block(num_rows, num_tiles)
+    if pages_per_block < 1 or pages_per_block > MAX_PAGES_PER_BLOCK:
+        raise ValueError(f"pages_per_block must be in [1, {MAX_PAGES_PER_BLOCK}], got {pages_per_block}")
+
+    kernel = glm53_kpool_fp8_mqa_logits_kernel(
+        num_rows,
+        max_num_pools,
+        k_cache.shape[0],
+        pool_page_table.shape[0],
+        pool_page_table.shape[1],
+        pages_per_block,
+    )
+    out = kernel(
+        query,
+        k_cache,
+        scale_cache,
+        weights,
+        pool_page_table,
+        page_table_rows,
+        pool_starts,
+        pool_ends,
+    )
+    return out[:, :max_num_pools]
+
+
+def glm53_kpool_fp8_mqa_logits_reference(
+    query: torch.Tensor,
+    k_cache: torch.Tensor,
+    scale_cache: torch.Tensor,
+    weights: torch.Tensor,
+    pool_page_table: torch.Tensor,
+    page_table_rows: torch.Tensor,
+    pool_starts: torch.Tensor,
+    pool_ends: torch.Tensor,
+    *,
+    max_num_pools: int,
+) -> torch.Tensor:
+    """PyTorch reference (CPU): E4M3 bytes decode exactly, -inf outside the range."""
+    output = torch.full(
+        (query.shape[0], max_num_pools),
+        -torch.inf,
+        dtype=torch.float32,
+        device=query.device,
+    )
+    page_size = k_cache.shape[1]
+    for row in range(query.shape[0]):
+        start = int(pool_starts[row])
+        end = int(pool_ends[row])
+        if start == end:
+            continue
+        logical = torch.arange(start, end, dtype=torch.long, device=query.device)
+        blocks = pool_page_table[int(page_table_rows[row]), logical // page_size].long()
+        offsets = logical % page_size
+        # Index the uint8 view first (CPU advanced indexing has no FP8 kernel).
+        keys = k_cache[blocks, offsets].view(torch.float8_e4m3fn).float()
+        scales = scale_cache[blocks, offsets].float()
+        per_head = torch.einsum("nd,hd->nh", keys, query[row].float())
+        output[row, start:end] = (per_head.mul(scales[:, None]).clamp_min(0.0) * weights[row][None, :]).sum(dim=1)
+    return output
+
+
+def test() -> None:
+    """Single small smoke case: 2 rows, 2-tile rows, full ranges."""
+    torch.manual_seed(20261020)
+    num_rows, max_num_pools = 2, 128
+    num_blocks = 4
+    query = (torch.randn(num_rows, GLM53_INDEX_HEADS, GLM53_HEAD_DIM) * 0.5).to(torch.bfloat16)
+    weights = torch.rand(num_rows, GLM53_INDEX_HEADS) + 0.1
+    # Cache bytes: E4M3-encoded random values in [0, 448), non-negative scales.
+    raw = torch.rand(num_blocks, GLM53_PAGE_SIZE, GLM53_HEAD_DIM) * E4M3_MAX
+    k_cache = raw.to(torch.float8_e4m3fn).view(torch.uint8)
+    scale_cache = torch.rand(num_blocks, GLM53_PAGE_SIZE) + 0.5
+    page_table_rows = torch.tensor([0, 1], dtype=torch.int32)
+    pool_page_table = torch.tensor([[0, 1, 2, 3], [3, 2, 1, 0]], dtype=torch.int32)
+    pool_starts = torch.zeros(num_rows, dtype=torch.int32)
+    pool_ends = torch.full((num_rows,), max_num_pools, dtype=torch.int32)
+
+    expected = glm53_kpool_fp8_mqa_logits_reference(
+        query,
+        k_cache,
+        scale_cache,
+        weights,
+        pool_page_table,
+        page_table_rows,
+        pool_starts,
+        pool_ends,
+        max_num_pools=max_num_pools,
+    )
+
+    actual = glm53_kpool_fp8_mqa_logits(
+        query.npu(),
+        k_cache.npu(),
+        scale_cache.npu(),
+        weights.npu(),
+        pool_page_table.npu(),
+        page_table_rows.npu(),
+        pool_starts.npu(),
+        pool_ends.npu(),
+        max_num_pools=max_num_pools,
+    )
+    torch.npu.synchronize()
+
+    actual_cpu = actual.cpu()
+    assert torch.equal(torch.isinf(actual_cpu) & (actual_cpu < 0), torch.isinf(expected) & (expected < 0))
+    torch.testing.assert_close(actual_cpu, expected, rtol=2**-10, atol=2**-16)
+    print(f"fp8_mqa_logits: logits{tuple(actual.shape)} match reference (max diff {(actual_cpu - expected).abs().max().item():.3e})")
+    print("Kernel Output Match!")
+
+
+if __name__ == "__main__":
+    test()
