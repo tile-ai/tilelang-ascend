@@ -823,3 +823,25 @@ def sparse_mla_topk_reducesum(
 
     token_indices = prepare_token_indices(offsets)  # auxiliary tensor (CPU -> one H2D copy)
     return func(q, kv, topk_indices, lse, offsets, token_indices)
+
+
+if __name__ == "__main__":
+    # Smoke entry (the CI legacy runner executes this file with `python`):
+    # canonical shape, output-shape/finite checks, "Test Passed!" on success.
+    # Numerical accuracy is covered by test_sparse_mla_topk_reducesum.py.
+    import torch
+    import torch_npu  # noqa: F401  (registers .npu() on torch)
+
+    S, H, D, TAIL_D, TOPK = 2048, 16, 512, 64, 128
+    q = torch.randn((S, H, D + TAIL_D)).npu().bfloat16()
+    kv = torch.randn((S, 1, D + TAIL_D)).npu().bfloat16()
+    offsets = torch.tensor([0, 1023, S], dtype=torch.int32).npu()
+    topk_indices = torch.arange(TOPK, dtype=torch.int32).npu().unsqueeze(0).repeat(S, 1).contiguous()
+    lse = torch.randn((S, H), dtype=torch.float32).npu()
+
+    rs = sparse_mla_topk_reducesum(q, kv, topk_indices, lse, offsets, dim_v=D)
+    torch.npu.synchronize()
+    assert rs.shape == (S, 1, H, TOPK) and rs.dtype is torch.float32
+    assert torch.isfinite(rs.float()).all().item(), "ReduceSum contains NaN/Inf"
+    print(f"[SMOKE_PASS] sparse_mla_topk_reducesum S={S} H={H} D={D} tail={TAIL_D} topk={TOPK} bf16")
+    print("Test Passed!")
