@@ -25,7 +25,7 @@
 - [ ] 未影响现有算子用例、公共接口和已有后端行为。
 - [ ] `examples/` 下的算子有性能要求和代表性 shape；历史遗留且暂未达标的实现已迁移到 `examples_experiment/`，或有维护者批准的豁免。
 - [ ] 有 AscendC 参考实现时，TileLang 性能达到 AscendC 的 50% 以上；如有 GPU 基线，候选耗时不超过其 2 倍。
-- [ ] 无 AscendC 参考实现时，已检查 [性能反模式清单](../.agents/skills/tilelang-perf-optimization/references/performance-antipatterns.md)，并记录保留项及原因。
+- [ ] 无 AscendC 参考实现时，已检查 [性能反模式清单](../.agents/skills/tilelang-performance-best-practices/references/performance-antipatterns.md)，并记录保留项及原因。
 - [ ] 优先使用 Developer 原语；使用 Expert/Mixed、手写 intrinsic 或特殊实现时，已说明原因和验证结果。
 - [ ] PR 已附精度/性能测试报告，以及典型 shape 的 simulator 结果截图；报告包含环境、shape、baseline、候选结果、单位和复现命令。
 - [ ] 新增单算子的全量测试用例耗时不超过 2 分钟；若超过，已通过 pytest marker 仅保留核心用例在 PR 阶段执行，其余用例纳入每日/定时全量，并记录耗时和标签。
