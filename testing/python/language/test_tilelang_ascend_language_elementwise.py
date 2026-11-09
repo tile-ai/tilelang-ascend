@@ -1989,6 +1989,8 @@ def test_bitwise_xor_uint8_slice_sentinel(dtype, shape):
     ref = torch.bitwise_xor(a.cpu(), b.cpu())
     ref[::rows, :] = 0x5A  # every block-local row 0 stays the sentinel
     assert_close_npu(c.cpu(), ref, dtype, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("dtype", ["int64", "uint64", "float16", "float32", "float64"])
 def test_bitwise_xor_unsupported_dtype_raises(dtype):
     """Non-integer and 64-bit operands are rejected by the front-end."""
@@ -2042,24 +2044,31 @@ def _direct_xor_intrin(dst_dtype, src0_dtype, src1_dtype):
     return tilelang.tvm.IRModule({"main": tir.PrimFunc([], tir.BlockRealize([], True, block))})
 
 
-def test_bitwise_xor_direct_intrinsic_lowering_rejects_int32():
+@pytest.mark.parametrize("dtype", ["int32", "uint32"])
+def test_bitwise_xor_direct_intrinsic_lowering_rejects(dtype):
     """The lowering check catches int32/uint32 even when bypassing the front-end."""
     with pytest.raises(ValueError, match="only supported on PTO A5"):
-        tilelang.lower(_direct_xor_intrin("int32", "int32", "int32"), target="pto", platform="A3")
+        tilelang.lower(_direct_xor_intrin(dtype, dtype, dtype), target="pto", platform="A3")
 
 
-def test_bitwise_xor_direct_intrinsic_lowering_rejects_src0():
+@pytest.mark.parametrize("bad_operand", ["src0", "src1"])
+def test_bitwise_xor_direct_intrinsic_lowering_rejects_src(bad_operand):
     """The lowering check validates src0/src1, not just dst."""
+    dtypes = ["int16", "int16", "int16"]
+    dtypes[1 if bad_operand == "src0" else 2] = "int32"
     with pytest.raises(ValueError, match="only supported on PTO A5"):
-        tilelang.lower(_direct_xor_intrin("int16", "int32", "int16"), target="pto", platform="A3")
+        tilelang.lower(_direct_xor_intrin(*dtypes), target="pto", platform="A3")
 
 
-@pytest.mark.parametrize("platform", ["A2", "A3"])
-def test_bitwise_xor_int32_pto_rejected(platform):
-    """int32/uint32 are unsupported on PTO A2/A3 and rejected before codegen."""
+@pytest.mark.parametrize(
+    ("target", "platform"),
+    [("pto", "A2"), ("pto", "A3"), ("ascendc", "A3")],
+)
+def test_bitwise_xor_int32_rejected_before_codegen(target, platform):
+    """int32 is unsupported on AscendC and PTO A2/A3 (rejected before codegen)."""
     func = bitwise_xor(1024, 1024, 128, 256, dtype="int32")
     with pytest.raises(ValueError, match="only supported on PTO A5"):
-        tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target="pto", platform=platform)
+        tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target, platform=platform)
 
 
 def test_bitwise_xor_int32_pto_a5_memory_planning_rejected():
@@ -2076,16 +2085,18 @@ def test_bitwise_xor_int32_pto_a5_memory_planning_rejected():
 
 
 def test_bitwise_xor_int32_pto_a5_accepted():
-    """int32 is accepted on PTO A5 (verify at the lowering/codegen stage only).
+    """int32 is accepted on PTO A5 at the lowering/codegen stage only.
 
-    Uses ``tilelang.lower`` instead of ``tilelang.compile`` so the A5 kernel is
-    validated down to codegen without building the JIT adapter or dlopen-ing the
+    Uses ``tilelang.lower`` (not ``tilelang.compile``) and an explicit local
+    PassContext with memory planning disabled, so the A5 kernel is validated
+    down to codegen without building the JIT adapter or dlopen-ing the
     cross-compiled A5 shared library on the host NPU.
     """
     func = bitwise_xor(1024, 1024, 128, 256, dtype="int32")
-    artifact = tilelang.lower(func, target="pto", platform="A5")
-    assert artifact.kernel_source
-    assert "TXOR" in artifact.kernel_source or "TXor" in artifact.kernel_source
+    with tilelang.tvm.transform.PassContext(config={tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: False}):
+        artifact = tilelang.lower(func, target="pto", platform="A5")
+        assert artifact.kernel_source
+        assert "TXOR" in artifact.kernel_source or "TXor" in artifact.kernel_source
 
 
 def block_reduce_max(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockNum, dtype="float16"):

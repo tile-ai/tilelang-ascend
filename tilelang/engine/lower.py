@@ -199,7 +199,7 @@ def _validate_bitwise_xor_dtypes(mod: tvm.IRModule, model: str, platform: str) -
     accepts them). AscendC and PTO A2/A3 reject them in the backend; PTO A5
     accepts them at the instruction level but crashes OptimizeForTarget when
     ``tl.ascend_memory_planning`` is enabled. Enforce this here — before
-    OptimizeForTarget — so unsupported combinations fail with a clear diagonal
+    OptimizeForTarget — so unsupported combinations fail with a clear diagnostic
     instead of crashing or relying on the backend compile failure. This also
     covers calls that bypass the public ``bitwise_xor`` front-end.
     """
