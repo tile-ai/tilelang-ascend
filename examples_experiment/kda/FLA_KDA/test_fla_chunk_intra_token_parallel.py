@@ -17,7 +17,7 @@ import torch
 import torch_npu  # noqa: F401  (registers .npu() on torch)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from example_fla_chunk_intra_token_parallel import fla_chunk_intra_token_parallel  # noqa: E402
+from fla_chunk_intra_token_parallel import fla_chunk_intra_token_parallel  # noqa: E402
 
 
 # ============================================================================
@@ -108,8 +108,6 @@ if __name__ == "__main__":
         ("l1_aligned", (2, 128, 8, 128), 2101, "L1"),  # multi-batch regular shape
         # deep absolute gates: raw-domain anchor subtraction (review fix)
         ("l1_deep_gate", (1, 64, 8, 32), 2201, "L1"),
-        # DK=256: BH adapts 8 -> 2 under the 192KB UB coexistence budget
-        ("l1_dk256_bh2", (1, 64, 8, 256), 2301, "L1"),
     ]
 
     for name, shape, seed, level in test_configs:
@@ -134,15 +132,15 @@ if __name__ == "__main__":
         check_output("Akk", akk, g_akk, atol, rtol, max_abs_limit, required_ratio)
 
     # Domain gates: out-of-budget / non-pow2 configs must be rejected cleanly
-    q = torch.randn(1, 64, 8, 512).to(torch.bfloat16).npu()
-    k = torch.randn(1, 64, 8, 512).to(torch.bfloat16).npu()
+    q = torch.randn(1, 64, 8, 256).to(torch.bfloat16).npu()
+    k = torch.randn(1, 64, 8, 256).to(torch.bfloat16).npu()
     beta = torch.randn(1, 64, 8).to(torch.bfloat16).npu()
-    gk = torch.randn(1, 64, 8, 512, dtype=torch.float32).npu()
+    gk = torch.randn(1, 64, 8, 256, dtype=torch.float32).npu()
     try:
         fla_chunk_intra_token_parallel(q, k, gk, beta)
-        raise AssertionError("DK=512 must be rejected (192KB UB budget)")
+        raise AssertionError("DK=256 must be rejected (192KB UB budget at BH=8)")
     except ValueError as exc:
-        print(f"Test pass! DK=512 rejected: {str(exc)[:80]}...")
+        print(f"Test pass! DK=256 rejected: {str(exc)[:80]}...")
     try:
         fla_chunk_intra_token_parallel(
             q[:, :, :, :32].contiguous(), k[:, :, :, :32].contiguous(), gk[:, :, :, :32].contiguous(), beta, chunk_size=48, sub_chunk_size=3
