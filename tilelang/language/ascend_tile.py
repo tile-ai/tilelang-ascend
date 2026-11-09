@@ -1227,7 +1227,7 @@ def min(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | 
     return binary_op(dst, src0, src1, "min")
 
 
-def bitwise_and(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
+def bitwise_and(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion):
     """Performs element-wise bitwise AND: dst = src0 & src1.
 
     Args:
