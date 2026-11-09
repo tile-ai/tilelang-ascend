@@ -1,120 +1,36 @@
-"""Indexer topk ReduceSum — DSA lightning indexer forward (topk + reducesum,
-varlen causal) for Ascend 910B3.
+"""Indexer topk ReduceSum — DSA lightning indexer forward (varlen causal)
+for Ascend 910B3.
 
-Semantics (per varlen segment, per query token s1; sm_scale = dim ** -0.5):
+Per varlen segment, per query token s1 (sm_scale = dim ** -0.5):
 
-    logits[s1, h, s2] = einsum(q[s1, h, :], k[s2, :])
-    score[s1, s2]     = (sum_h relu(logits) * w[s1, h])_{fp32} * sm_scale
-    score[s1, s2]     = -inf  if s2 > s1                     # causal mask
-    topk_vals, topk_idx = topk(score[s1, :], topk)           # descending
-    topk_score        = softmax(topk_vals)_{fp32}
+    score[s1, s2] = (sum_h relu(einsum(q[s1,h,:], k[s2,:])) * w[s1,h]) * sm_scale
+    score[s1, s2] = -inf if s2 > s1                      # causal
+    topk_vals, topk_idx = topk(score[s1, :], topk)       # descending
+Outputs: TopkIndices [S, topk] int32 (-1 tail), ReduceSum (= softmax(topk_vals)) fp32.
 
-Outputs TopkIndices [S, topk] int32 (-1 at the -inf tail positions) and
-ReduceSum (= topk_score) [S, topk] float32.
+Implementation — dual path, exact host dispatch on max_seg_len:
+  fast (max_seg_len <= 4096): persistent T.Kernel over QG-token groups;
+    Cube: Q/K loads + transposed GEMM -> L0C fp32 -> GM bf16 transit (relu
+    on the write); AIV: relay -> head reduce -> causal mask -> topk ->
+    softmax -> index fixup.
+  generic (any length): same GEMM flow; score built CH columns at a time,
+    per-segment topk merged by descending merge_sort into the full topk.
+Developer mode, MIX_AIC_1_2 (1 Cube + 2 Vector) per block: Cube owns the
+GEMM and transit write, each AIV a token half of every group. Cross-core
+handshakes ride the auto CV-sync pass — the "workspace" name prefix of the
+transit/ack buffers is load-bearing for its pairing.
 
-Architecture: dual path, exact (non-heuristic) host dispatch on max_seg_len.
-  fast    max_seg_len <= 4096: persistent T.Kernel(grid) over QG-token
-          groups; transposed GEMM [BN, D] x [D, QG*H] -> L0C fp32 [BN,
-          QG*H] -> GM bf16 transit (relu rides the transit write) -> AIV
-          relay -> weighted head reduce -> causal mask -> score_row
-          [QG2, CAP] -> per-token hardware topk -> softmax -> index fixup.
-  generic any segment length: same GEMM data flow; the score row is
-          produced CH columns at a time, each CH segment runs a hardware
-          topk whose local indices are corrected to the global column
-          frame and merged into a per-token (val, idx) pool by a stable
-          descending merge_sort — the pool after the last segment is the
-          full-row topk.
+Platform constraints in brief: GM->UB copies are single-dtype (relu stays
+on the L0C->GM write); per-head products round to bf16 before the fp32
+head reduce (reference round point); topk runs on 1D scratch; gather
+buffers sized to the 256B GatherMask quantum; flat IndexQ/Weights +
+zero-copy launcher views (non-contiguous inputs rejected); host-computed
+gemm_v0 kL0Size (L0A budget); pto branches handle their codegen constraints.
 
-Programming model: Developer mode — T.alloc_shared / T.alloc_fragment with
-the automatic synchronization passes (TL_ASCEND_AUTO_CV_COMBINE,
-TL_ASCEND_AUTO_CV_SYNC, TL_ASCEND_AUTO_SYNC, TL_ASCEND_MEMORY_PLANNING).
-Launch form T.Kernel(grid, is_npu=True) as (cid, vid): MIX_AIC_1_2 (1 Cube
-+ 2 Vector cores per block). The Cube side owns the Q/K loads, the GEMM and
-the full transit write; each AIV-vid owns the contiguous token half
-[vid*QG2, (vid+1)*QG2) of every group with private UB buffers, and every
-AIV sub-block participates in every transit as the 1_2 cross-core
-handshake requires.
-
-Cross-core synchronization (auto CV sync + back-pressure):
-  - The Cube side computes each K-block GEMM and writes the fp32->bf16
-    (relu) transit tile to GM (``workspace_logits`` — the CV-sync pass
-    pairs cross-core GM writes/reads by the literal buffer-name substring
-    "workspace", so the name is load-bearing); each AIV relays its
-    disjoint half of the tile to UB and consumes it.
-  - A V->C ack transit (``workspace_ack``, one heartbeat slot per AIV)
-    throttles the Cube side: the fast path runs produce-then-wait over a
-    2-slot ping-pong (slot j % 2 is rewritten only after its ack has been
-    waited one iteration earlier, so at most one transit is in flight
-    beyond the Vector side; the trailing +1 pipeline iteration drains the
-    task's last ack); the generic path (not perf-gated) uses a serialized
-    single-slot wait-before-produce form. Flag credit is exactly balanced
-    per task on both paths.
-
-Implementation notes (each item is a platform constraint):
-  1. relu rides the L0C->GM transit leg (enable_relu on the fp32->bf16
-     write): GM->UB copies are single-dtype, so a "GM bf16 -> UB fp32 +
-     relu" leg is not expressible. Numerically identical — relu commutes
-     with the bf16 rounding (relu(x) >= 0 and bf16 preserves sign/zero).
-  2. The per-head product is rounded to bf16 before the fp32 head reduce
-     (prod = bf16(fp32(relu_logits) * fp32(w)); score = sum_h(prod) *
-     sm_scale), replicating the reference's bf16 product round point. The
-     scale multiplies the [H, BN] rounded products (>= 256B, satisfying
-     the vector-op minimum-size rule); the fast path instead applies a
-     positive scale once per token on the [CAP] score row after the fp32
-     reduce (the reference's exact "fp32 sum then scale" order — a
-     positive scale preserves the descending topk order and the -inf tail
-     signs).
-  3. Causal masking granularity is per path: the fast path masks
-     post-reduce [QG2, BN] tiles on straddle blocks only (blocks fully
-     below the group's first-token diagonal skip the compare — every row
-     is fully valid there); the generic path masks pre-reduce [H, BN]
-     tiles; the pto fast branch masks the final [CAP] score row.
-  4. T.tile.topk takes a Buffer (not a BufferRegion row), so topk runs on
-     a 1D scratch; the softmax / idx-fixup chain uses TOPK_A =
-     max(topk, 64) wide buffers with -inf / -1.0 pad fills (compare needs
-     >= 64 fp32 elements; pads are never written out).
-  5. tl::ascend::GatherMask quantises its source to 256B units (64 fp32),
-     so all gather src/dst buffers are sized to the quantum (P2 =
-     max(2*topk, 64), PS = max(topk, 32)) and pre-filled with -inf.
-  6. IndexQ / Weights are declared flat ([S*H, D] / [S*H]) and the cached
-     launcher applies zero-copy host-side views (T.copy structural
-     equality forbids the [S, H, D] row-segment form). Inputs must be
-     contiguous: non-contiguous tensors are rejected before the view —
-     an implicit reshape copy dies with the marshal frame, so its storage
-     could be reused before the (cached) launch reads it.
-  7. gemm_v0 is instantiated with a host-computed kL0Size (_pick_kl0_size):
-     the default 128 overflows L0A for M = QG*heads = 512 — the A slot
-     M * kL0Size * 2B must fit 64KB for a single (N, K) step or 32KB once
-     the ping-pong alternates. The K-order fp32 accumulation is unchanged.
-  8. pto target branches (the kernel body is shared between backends;
-     the branches cover pto codegen constraints):
-     (a) bulk Q/K/weights GM->L1 loads only — the pto codegen provides a
-         runtime tail clamp + zero pad; out-of-segment rows are causally
-         masked (cols >= ln) or belong to unconsumed tokens;
-     (b) the consume chain uses half-token [BN, HALFC] wide-row tiles with
-         a transposed staging buffer and an in-place add folding tree for
-         the head reduce (the pto vector template needs >= 256B inner
-         rows, pto tile views cannot address column slices of a
-         [BN, QG2H] buffer, and the dim=-1 row-sum reduce is not
-         available on the pto path);
-     (c) the fast path adds a tail [CAP]-row causal mask after the scale
-         (its block-level mask is skipped on this branch);
-     (d) scalar T.max/T.min on vid-derived expressions use if_then_else
-         ternaries — the CCE max()/min() overload set {(long,long),
-         (int,int)} is ambiguous for the (int64, int) pair under -xcce;
-         identical integer semantics.
-     The pto fast path additionally routes CAP > 2048 to the generic path
-     (the pto auto-topk temporary overflows the 192KB UB budget there).
-
-Supported domain (host-validated): q/w/k bfloat16; heads % 8 == 0 and
-<= 64; dim % 16 == 0; topk a power of two in [16, 1024] and <= every
-segment length; the fast path additionally requires max_seg_len <= 4096;
-the generic path covers any segment length (topk <= 1024, CH =
-max(1024, topk)). Configurations whose exact UB model exceeds the 196352B
-budget or whose Cube-side L1 staging (Q_l1 + K_l1 + ack) exceeds the
-524032B L1 pool are rejected with ValueError (see _fast_gate_ok /
-_generic_gate_ok); the host first demotes the group tier to fit (fast:
-QG 8 -> 4; generic: 8 -> 4 -> 2).
+Supported domain: q/w/k bf16; heads % 8 == 0 and <= 64; dim % 16 == 0;
+topk a power of two in [16, 1024] and <= every segment length. UB/L1
+overflow raises ValueError after the host demotes the group tier (QG 8->4,
+generic also 2).
 """
 
 import ctypes
