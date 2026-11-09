@@ -14,8 +14,6 @@ with the minimal Ascend adaptations:
 - get_abs_err / get_err_ratio are inlined from the upstream examples/utils.py
 """
 
-import sys
-
 import torch
 import torch.nn.functional as F
 
@@ -69,22 +67,17 @@ def ref_mla_topk_softmax(Q: torch.Tensor, K: torch.Tensor, TopkIndices: torch.Te
     return lse, topk_score
 
 
-def run_golden_kernel(
-    B=1,
-    S=2048,
-    H=16,
-    D=512,
-    tail_D=64,
-    topk=128,
-):
+def test_sparse_mla_topk_reducesum_golden() -> None:
+    """Golden tolerance gate for sparse_mla_topk_reducesum (pytest entry)."""
+    S, H, D, TAIL_D, TOPK = 2048, 16, 512, 64, 128
     torch.manual_seed(42)
 
-    q = torch.randn((S, H, D + tail_D)).npu().bfloat16()
-    kv = torch.randn((S, D + tail_D)).npu().bfloat16()
+    q = torch.randn((S, H, D + TAIL_D)).npu().bfloat16()
+    kv = torch.randn((S, D + TAIL_D)).npu().bfloat16()
     offsets = torch.tensor([0, 1023, S], dtype=torch.int32).npu()
 
     # Equivalent to the upstream einops repeat: repeat(arange(topk), "k -> s k", s=S)
-    topk_indices = torch.arange(topk, dtype=torch.int32).npu().unsqueeze(0).repeat(S, 1).contiguous()
+    topk_indices = torch.arange(TOPK, dtype=torch.int32).npu().unsqueeze(0).repeat(S, 1).contiguous()
 
     lse, ref_attn_score = ref_mla_topk_softmax(q, kv, topk_indices, offsets)
 
@@ -104,23 +97,12 @@ def run_golden_kernel(
     err_ratio = get_err_ratio(attn_score, ref_attn_score)
     print(f"attn_score err: {abs_err:.6f} ratio: {err_ratio:.6f}")
 
-    if err_ratio > ERR_RATIO_MAX or abs_err > ABS_ERR_MAX:
-        print(f"FAIL: attn_score exceeds tolerance (err_ratio <= {ERR_RATIO_MAX:g}, abs_err <= {ABS_ERR_MAX:g})")
-        return False
+    assert err_ratio <= ERR_RATIO_MAX and abs_err <= ABS_ERR_MAX, (
+        f"attn_score exceeds tolerance (err_ratio <= {ERR_RATIO_MAX:g}, abs_err <= {ABS_ERR_MAX:g})"
+    )
     print(f"PASS: attn_score within tolerance (err_ratio <= {ERR_RATIO_MAX:g}, abs_err <= {ABS_ERR_MAX:g})")
-    return True
-
-
-def test_sparse_mla_topk_reducesum_accuracy() -> None:
-    """Pytest entry: gate on the golden tolerance check.
-
-    run_golden_kernel returns a bool (kept for script mode); pytest ignores
-    return values, so the gate must be an assert.
-    """
-    assert run_golden_kernel(), "attn_score exceeds tolerance (see printed err/ratio)"
 
 
 if __name__ == "__main__":
-    success = run_golden_kernel()
-    print("Test Passed!" if success else "Test Failed!")
-    sys.exit(0 if success else 1)
+    test_sparse_mla_topk_reducesum_golden()
+    print("Test Passed!")
