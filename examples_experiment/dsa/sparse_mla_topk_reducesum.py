@@ -836,7 +836,9 @@ if __name__ == "__main__":
     q = torch.randn((S, H, D + TAIL_D)).npu().bfloat16()
     kv = torch.randn((S, 1, D + TAIL_D)).npu().bfloat16()
     offsets = torch.tensor([0, 1023, S], dtype=torch.int32).npu()
-    topk_indices = torch.arange(TOPK, dtype=torch.int32).npu().unsqueeze(0).repeat(S, 1).contiguous()
+    topk_indices = (
+        torch.arange(TOPK, dtype=torch.int32).npu().unsqueeze(0).repeat(S, 1).unsqueeze(-2).contiguous()
+    )  # [S, 1, TOPK] (kv_group=1)
     lse = torch.randn((S, H), dtype=torch.float32).npu()
 
     rs = sparse_mla_topk_reducesum(q, kv, topk_indices, lse, offsets, dim_v=D)
