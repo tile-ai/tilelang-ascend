@@ -843,7 +843,11 @@ if __name__ == "__main__":
 
     rs = sparse_mla_topk_reducesum(q, kv, topk_indices, lse, offsets, dim_v=D)
     torch.npu.synchronize()
-    assert rs.shape == (S, 1, H, TOPK) and rs.dtype is torch.float32
+    # Output is [total_S, kv_group, REPLICATE_H, topk] with the head-replication
+    # shard factor REPLICATE_H = head_kv // 64 when head_kv > 64, else 1.
+    head_kv = H // 1
+    replicate_h = head_kv // 64 if head_kv > 64 else 1
+    assert rs.shape == (S, 1, replicate_h, TOPK) and rs.dtype is torch.float32
     assert torch.isfinite(rs.float()).all().item(), "ReduceSum contains NaN/Inf"
     print(f"[SMOKE_PASS] sparse_mla_topk_reducesum S={S} H={H} D={D} tail={TAIL_D} topk={TOPK} bf16")
     print("Test Passed!")
