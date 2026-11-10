@@ -12,7 +12,7 @@
 def bitwise_or(
     dst: Buffer | BufferRegion,
     src0: Buffer | BufferRegion,
-    src1: Buffer | BufferRegion | BufferLoad | PrimExpr,
+    src1: Buffer | BufferRegion,
 )
 ```
 

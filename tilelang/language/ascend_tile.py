@@ -1255,7 +1255,7 @@ def bitwise_and(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: B
     return binary_op(dst, src0, src1, "bitwise_and")
 
 
-def bitwise_or(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
+def bitwise_or(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion):
     """Performs element-wise bitwise OR: dst = src0 | src1.
 
     Args:
@@ -1263,7 +1263,9 @@ def bitwise_or(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Bu
         src0: The first source buffer.
         src1: The second source operand. Scalar operands are currently unsupported.
 
-    Supported dtypes on A2/A3: int8, uint8, int16, uint16.
+    Supported dtypes on A2/A3:
+        - Ascend C: uint8, int16, uint16.
+        - PTO: int8, uint8, int16, uint16.
     """
     return binary_op(dst, src0, src1, "bitwise_or")
 
