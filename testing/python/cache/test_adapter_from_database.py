@@ -13,12 +13,10 @@ stubs the external dependencies: the actual dynamic-library load
 (``LibraryGenerator.load_lib``) and NPU device access (``torch.npu``). It does
 not compile a kernel, run on a device, or trigger a trap.
 
-``CtypesKernelAdapter.from_database`` carries the same libpath bug and fix, but
-its ``from_database`` is currently not exercisable in isolation: it references
-an undefined ``_legalize_result_idx`` and constructs ``LibraryGenerator``
-without the required ``platform`` argument (pre-existing bit-rot since
-PR #1496, unrelated to the libpath fix). It is covered by the same source fix
-but not by this test until that bit-rot is addressed separately.
+The same ``set_lib_path`` fix is applied to ``CtypesKernelAdapter.from_database``
+as well, but that adapter is not exercised here: its ``from_database`` path is
+not runnable in isolation without unrelated changes, which are out of scope for
+this regression.
 """
 
 from unittest import mock
