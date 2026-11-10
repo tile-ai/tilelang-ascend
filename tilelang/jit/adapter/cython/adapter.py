@@ -329,6 +329,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
         adapter.verbose = verbose
         adapter.lib_generator = LibraryGenerator(target, platform, compile_flags)
         adapter.lib = adapter.lib_generator.load_lib(lib_path=kernel_lib_path)
+        adapter.lib_generator.set_lib_path(kernel_lib_path)
 
         # adapter.lib.get_last_error.restype = ctypes.c_char_p
         # result = adapter.lib.init()
