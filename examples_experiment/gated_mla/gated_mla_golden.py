@@ -193,7 +193,7 @@ def stage_reference(inputs, meta):
     return dict(q_latent=ql, scores=scores, probs=p, latent_out=z, ungated=ungated)
 
 
-def check_case(inputs, meta, *, case_name="decode", output_dir=None, repeat=1):
+def check_case(inputs, meta, *, case_name="decode", output_dir=None, repeat=1, target=None):
     import torch_npu  # noqa: F401 -- registers torch.npu
     from example_gated_mla_decode import gated_mla_core
 
@@ -201,12 +201,14 @@ def check_case(inputs, meta, *, case_name="decode", output_dir=None, repeat=1):
     ref_expanded = expanded_reference(**inputs, **meta)
     ref_absorbed = absorbed_reference(**inputs, **meta)
     torch.testing.assert_close(ref_expanded, ref_absorbed, rtol=2e-12, atol=2e-12)
+    call_options = {} if target is None else {"target": target}
     first = None
     for _ in range(repeat):
         actual, intermediate, kernels = gated_mla_core(
             **device_inputs,
             **meta,
             return_intermediates=True,
+            **call_options,
         )
         torch.npu.synchronize()
         cpu_result = actual.cpu()
@@ -242,6 +244,8 @@ def check_case(inputs, meta, *, case_name="decode", output_dir=None, repeat=1):
         torch.testing.assert_close(tensor.cpu(), inputs[name], rtol=0, atol=0)
     record = dict(
         case=case_name,
+        requested_target=target if target is not None else "default",
+        kernel_targets={name: kernel.target for name, kernel in kernels.items()},
         metadata=meta,
         output_shape=list(cpu_result.shape),
         output_dtype=str(cpu_result.dtype),

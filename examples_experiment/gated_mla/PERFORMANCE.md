@@ -1,128 +1,151 @@
-# Gated MLA decode measurements
+# Gated MLA decode: validation and performance
 
-Measured on 2026-10-30 with Ascend 910B3 (20 Cube/40 Vector), CANN 9.2.0,
-driver 25.5.0, Python 3.12.9, PyTorch 2.7.1 and torch_npu 2.7.1.post4.
-The TileLang runtime was built from `463c234ce3087205c092e931207ca87b4cd5494c`.
-The interface is the fixed FP16 domain documented in README.md; the default scale is
-`1/sqrt(192)` and the output is after value restoration and gate, before output projection.
+## Scope and environment
 
-## Protocol
+Measured on 2026-11-10: Ascend 910B3, CANN 9.2.0, Python 3.12.9,
+PyTorch 2.7.1+cpu with torch_npu 2.7.1.post4, and TileLang runtime
+`cc9e2681c17c7a8479e2ec9b3b91124fca819c69`. The public API defaults to PTO;
+AscendC is explicitly selectable. Shapes and finite-input limits are in [README.md](README.md).
+This is an experimental fixed-domain decode example, not full-model integration.
 
-- Reuse inputs and weights; no L2 flush. All reported latency values are microseconds.
-- Eager: 10 warmup calls followed by 20 samples. An NPU Event interval encloses the complete
-  public call and can include device idle gaps caused by host dispatch. Synchronized wall
-  time includes recording the end event and waiting for completion.
-- Graph: capture 50 actual calls, warm up with 5 replays, then measure 20 replays and divide
-  each sample by 50. Report the median. Python metadata validation and allocation dispatch
-  occur during capture. Graph and eager describe different invocation scenarios.
-- Independent stage graphs use CPU-reference FP32 intermediate inputs. The full chain uses
-  intermediate outputs from the five real kernels; isolated stage times are not additive.
-- JIT and correctness checks run before the timed samples. Before and after measurements
-  use the same protocol but were separate runs, not randomized interleaved trials.
+[Test counts, source hashes and hardware samples](tools/benchmark/results/validation_910b3.json),
+[full-chain samples](tools/benchmark/results/full_chain_910b3.json), and
+[attention-core samples](tools/benchmark/results/attention_core_910b3.json) accompany this report.
 
-## Complete chain
+## Correctness and test lanes
 
-| Visible keys | Implementation | Before graph | After graph | After eager Event | After synchronized wall |
-|---:|---|---:|---:|---:|---:|
-| 64 | TileLang five stages | 36.20 | 35.34 | 2564.72 | 2646.85 |
-| 64 | PyTorch-NPU FP32 composition | 26.87 | 26.42 | 1006.65 | 1088.83 |
-| 64 | CANN FIA v2 composition | 29.88 | 29.03 | 942.35 | 1021.17 |
-| 17 | TileLang five stages | 77.50 | 35.84 | 2588.82 | 2668.66 |
-| 17 | PyTorch-NPU FP32 composition | 25.25 | 24.49 | 1016.09 | 1091.63 |
-| 17 | CANN FIA v2 composition | 28.05 | 27.10 | 909.02 | 986.28 |
+| Lane | Result | Elapsed time |
+|---|---|---:|
+| Core, new empty JIT cache | 27 passed, 0 skipped | 122.90 s |
+| Extended, same cache | 4 passed, 0 skipped | 28.52 s |
 
-The visible17 TileLang graph interval decreases by approximately 53.8% (2.16x faster).
-The visible64 graph result is essentially unchanged. Host load also affects the reference
-eager results between runs; do not attribute the eager differences solely to the mask fix.
-The ordinary TileLang call still has substantial adapter/host dispatch overhead.
+Default-PTO tests retain full-chain, partial-prefix, 1/17/63/64 readout, device
+negative-infinity mask, gate, empty-query, contract rejection and input-read-only
+regressions. Explicit AscendC partial-prefix and empty-query tests remain in the
+core lane. Only the four non-core combinations use `low_priority`; no `ci_skip` is used.
+The core is slightly over two minutes: the template's documented core/extended
+split is used, without hiding key regressions or claiming a sub-two-minute result.
 
-The PyTorch-NPU composition uses FP32 operands/intermediates, then converts the result to
-FP16. The FIA composition performs FP32 query absorption, rounds that result to FP16,
-calls the A2 MLA path in `npu_fused_infer_attention_score_v2`, then performs FP32 value
-restoration and sigmoid gate before final FP16 conversion. FIA latent output is FP16.
-The compositions include the per-call projections, casts, arithmetic and output work.
+Both full-chain compositions pass 5 seeds x visible lengths 1/17/64 against FP64
+references. The new core benchmark checks 30 query-policy/seed/prefix combinations
+for both candidate and FIA. FP16 acceptance is `rtol=1e-2`, `atol=2e-3`, and maximum
+amplitude-normalized error <= `5e-3`; the FP32 core output additionally uses
+`rtol=1e-3`, `atol=5e-5`. These are tested synthetic-domain budgets, not arbitrary-input
+error guarantees. Hosted CI is a separate validation of the submitted commit.
 
-FIA uses an identity block table with block size16, prepared once outside timing. Cache
-views are created inside each call without copying the contiguous cache. A valid query's
-visible prefix is passed as the actual KV length. Both reference compositions passed
-5 seeds x visible lengths1/17/64 against the expanded FP64 reference using the frozen
-FP16 budget. These checks cover the documented synthetic inputs and default scale.
+## Baseline boundaries and protocol
 
-## Latent readout diagnosis
+CANN `torch_npu.npu_fused_infer_attention_score_v2` is the official attention core.
+The **full-chain FIA composition** adds query absorption, value restoration and
+sigmoid gate to match the seven-input Gated MLA interface. It is not a standalone,
+same-interface official fused Gated MLA operator.
 
-| Visible17 latent readout | Before | After |
-|---|---:|---:|
-| Independent stage graph median | 47.55 | 6.61 |
-| msprof Task Duration | 47.30 | 6.04 |
-| Slowest AIV scalar time | 42.511 | 1.624 |
-| Slowest AIV vector time | 0.958 | 0.996 |
+The **independent attention-core** comparison excludes those projections and gate
+on both sides. It uses precomputed absorbed-query values, shared caches, the same
+scale `1/sqrt(192)` and the same visible prefix. `matched_fp16_query` matches input
+values, not precision: the candidate stores them in FP32 and returns FP32; FIA
+receives and returns FP16. `native_fp32_query` records the extra FIA query rounding.
+The FP64 core reference is independent; it does not reuse candidate outputs.
 
-The original generated code used a 64x64 scalar mask loop. The new generated code uses
-one `Duplicate<float>` over 3008 elements starting at FP32 element1088 for visible17.
-The remaining row-scalar probability broadcast is unchanged. A fresh `msprof op` capture
-uses one matching `main_kernel`, BlockDim4/MixBlockDim8, warmup10, and reports frequency1800.
-Cube instructions/FLOPs remain0. The profiler values are a single diagnostic sample;
-the graph results above are repeated measurements with a separate protocol.
+All times below are microseconds. Eager diagnostics use 10 warmups and 20 Event
+samples; the Event interval includes device idle gaps caused by host dispatch.
+Graph diagnostics capture 50 calls, warm up 5 replays, measure 20 replays and divide
+by 50. Inputs/weights are reused without L2 flushing; compilation and accuracy checks
+precede timing. Input conversion, H2D copies, block-table setup and cache views are
+outside core timing; FIA's output zero-copy view remains inside its call. Each method's
+normal allocations and dispatch remain included.
+
+`msprof op` hardware Task Duration and simulator durations are separate evidence.
+Individual stage samples are not summed or represented as a complete-chain latency.
+Before/after runs are separate measurements, not interleaved statistical trials.
+
+## Final default-PTO results
+
+| Visible keys | PTO full-chain graph | FIA composition graph | PTO full-chain eager | FIA composition eager |
+|---:|---:|---:|---:|---:|
+| 64 | 34.29 | 28.65 | 986.40 | 1007.98 |
+| 17 | 35.02 | 27.25 | 1010.76 | 993.72 |
+
+The graph throughput ratios `T_FIA / T_candidate` are 83.5% and 77.8% for these
+representative fixed-domain prefixes. This comparison is limited to the stated
+precision and timing paths; no GPU measurement or wider shape claim is made.
+
+| Visible keys | PTO attention-core graph | FIA attention-core graph | PTO core eager | FIA core eager |
+|---:|---:|---:|---:|---:|
+| 64 | 18.10 | 15.29 | 629.24 | 338.18 |
+| 17 | 18.65 | 13.84 | 618.96 | 339.37 |
+
+This table uses matched FP16-representable query values. It is the attention core,
+not the complete Gated MLA interface. Both query policies and every raw timing sample
+are retained in the linked JSON report.
+
+Independent `msprof op` runs used the same matched query values and observed three
+PTO launches versus one physical FIA kernel. These are individual Task Duration
+samples, not sums or substitutes for the repeated graph measurements:
+
+| Visible keys | PTO score / softmax / readout | FIA kernel |
+|---:|---:|---:|
+| 64 | 7.04 / 4.88 / 7.38 | 20.44 |
+| 17 | 7.56 / 4.86 / 6.96 | 17.84 |
+
+[Hardware core names and samples](tools/benchmark/results/attention_core_hardware_910b3.json)
+record the actual launches; the FIA profiler command used no custom-kernel filter.
+
+## Score optimization and runtime attribution
+
+The score kernel replaces eight `[32,64]` load/cast/reduce/accumulate iterations
+with one `[32,512]` tile per AIV. Explicit UB buffers occupy 113280 bytes; compilation,
+real-NPU accuracy and simulator checks passed. FP32 summation order changes and is
+revalidated. The prefix readout retains its contiguous tail `T.tile.fill`.
+
+The following development comparison uses **AscendC on the same cc9e268 runtime**.
+It is not presented as the default-PTO result above.
+
+| Visible keys | Score hardware Task Duration before | After | Full-chain graph before | After |
+|---:|---:|---:|---:|---:|
+| 64 | 11.54 | 6.76 | 36.46 | 30.90 |
+| 17 | 12.02 | 7.34 | 36.57 | 30.95 |
+
+The score-stage hardware reductions are 41.4% and 38.9%. The optimization candidate
+passed all original 29 tests before integrating the public backend API.
+Separately, upgrading runtime 463c234 to cc9e268 includes upstream
+[#1948](https://github.com/tile-ai/tilelang-ascend/pull/1948)'s lazy Analyzer construction:
+the unchanged five-stage AscendC chain's eager medians changed from 2884.95/2970.85
+to 1240.74/1314.45. That improvement belongs to the runtime upgrade, not this operator PR.
+
+## Simulator evidence
+
+The final default-PTO five-stage chain completed on the Ascend910B3 simulator with
+`GMLA_PROFILE_ENTRY_PASS`, `GMLA_MEASUREMENT_PASS`, and all five profiling tasks successful.
+The tool warned that source-line call stacks were unavailable because the kernels
+were not built with debug-line information; this did not prevent execution or timing.
+
+![Simulator report screenshot](tools/benchmark/results/simulator_910b3.png)
+
+This screenshot shows a report rendered from the actual saved simulator log,
+not the MindStudio GUI. [Per-core simulator values and log hash](tools/benchmark/results/simulator_910b3.json)
+are retained; simulation durations must not be substituted for real-device performance.
 
 ## Reproduce
 
+From a built checkout with CANN, PTO and torch_npu dependencies:
+
 ```bash
-python examples_experiment/gated_mla/tools/benchmark/measure_decode.py \
-  --warmup 10 --repeats 20 --graph-batch 50 --output /tmp/gated_mla_timing
-
-env -u ASCEND_RT_VISIBLE_DEVICES msprof op \
-  --warm-up=10 --launch-count=1 --kernel-name=main_kernel \
-  --aic-metrics=PipeUtilization,Memory,ArithmeticUtilization \
-  --output=/tmp/gated_mla_profile \
-  python examples_experiment/gated_mla/tools/benchmark/measure_decode.py \
-  --mode profile --stage latent_readout --visible 17 --output /tmp/gated_mla_profile_entry
+python -m pytest examples_experiment/gated_mla/test_gated_mla_decode.py -q -m 'not (low_priority or ci_skip)'
+python -m pytest examples_experiment/gated_mla/test_gated_mla_decode.py -q -m low_priority
+python examples_experiment/gated_mla/tools/benchmark/measure_decode.py --warmup 10 --repeats 20 --graph-batch 50 --output /tmp/gmla_full_new
+python examples_experiment/gated_mla/tools/benchmark/measure_attention_core.py --output /tmp/gmla_core_new
+msprof op --kernel-name=main_kernel --launch-count=5 --output=/tmp/gmla_hw_new python examples_experiment/gated_mla/tools/benchmark/measure_decode.py --mode profile --stage chain --visible 64 --output /tmp/gmla_hw_entry_new
+msprof op simulator --kernel-name=main_kernel --launch-count=5 --soc-version=Ascend910B3 --timeout=300 --output=/tmp/gmla_sim_new python examples_experiment/gated_mla/tools/benchmark/measure_decode.py --mode profile --stage chain --visible 64 --output /tmp/gmla_sim_entry_new
 ```
 
-Both output roots must be new for each experiment. The entry saves environment, source
-hashes and generated code; timing mode also saves raw samples and reference errors.
-The profile entry launches the selected stage once; `--launch-count` does not repeat it.
+The core benchmark also supports `--mode profile --method tilelang_attention` or
+`cann_fia_attention`, `--query-policy matched_fp16_query`, and `--visible 17`.
+For FIA hardware profiling omit the custom `main_kernel` filter; inspect actual physical
+launches rather than assuming one API call means one device kernel. Use new output
+directories each time. An independent worktree may point pytest `pythonpath` at its
+same-revision built runtime; candidate/tests must still load from that worktree.
 
-## Review status
-
-This report does not claim that every case/invocation mode meets the upstream performance
-threshold. Graph FIA/TileLang time ratios are approximately82.1% (visible64) and75.6%
-(visible17); eager ratios remain below50%. Baseline precision differs as described above.
-Representative production shapes, PTO validation, simulator materials and maintainer
-acceptance of this limited experimental scope remain open. Real-device profiling is not
-presented as simulator evidence. The PR should remain Draft until the applicable review
-requirements are resolved or explicitly accepted by maintainers.
-
-
-## Correctness and CI scope
-
-The original development workspace passed all 100 cases (82 CPU and 18 NPU), including
-five isolated prefix-mask regressions. The self-contained example passes 29 tests in
-two lanes: 25 PR-core cases in 116.77s using a new empty TileLang JIT cache,
-then 4 extended cases in 64.81s with that cache. Both lanes have zero
-skipped tests. The core result has little margin below two minutes on this host; hosted
-CI timing is not yet established.
-
-Core coverage retains readout prefixes1/17/63/64 with nonzero tail weights, full-chain
-causal/length checks, gate saturation, inactive queries, input immutability, and explicit
-device-side negative-infinity checks. The four `low_priority` cases add default-scale
-single-key and near-full complete chains, an extra seven-key readout, and the extreme-scale
-complete-chain stress case. A finite-mask counterexample remains in the CPU core tests.
-
-The experimental worktree uses the built runtime from the same base commit. Its local
-pytest command selected that runtime with `-o pythonpath=<built-tilelang-checkout>`;
-the worktree's own TileLang dependencies were not rebuilt. This affects runtime lookup,
-not test selection or the operator imports. The candidate is imported from the new
-example directory. The normal repository-root commands assume that checkout is built.
-
-The final packaged benchmark was rerun after entry-point fixes. All ten generated kernel
-sources (five stages x two prefixes) are byte-identical to the mask-optimized implementation
-used for the hardware profile. The single-sample profile and repeated graph measurements
-therefore describe the same device code, under their separately stated protocols.
-
-The before prototype used the same five stages with this tail clearing before the row
-probability multiplication; the current implementation replaces only this mask operation:
-
-```python
-for i, j in T.Parallel(64, 64):
-    cf[i, j] = T.if_then_else(i < visible_keys, cf[i, j], 0.0)
-```
+Remaining scope: no long cache, multi-head/batch, prefill, quantization, backward,
+GPU parity, or production model integration. The experimental-directory placement
+and merge decision remain subject to maintainer review.

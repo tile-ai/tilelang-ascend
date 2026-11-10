@@ -357,6 +357,7 @@ def axpy(M, N, block_M, block_N, dtype="float"):
     @T.prim_func
     def main(
         A: T.Tensor((M, N), dtype),  # type: ignore
+        InitialDst: T.Tensor((M, N), dtype),  # type: ignore
         B: T.Tensor((M, N), dtype),  # type: ignore
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
@@ -365,7 +366,7 @@ def axpy(M, N, block_M, block_N, dtype="float"):
 
             a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
             b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            T.tile.fill(b_ub, 0)
+            T.copy(InitialDst[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
 
             T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
 
@@ -380,18 +381,20 @@ def run_test_axpy(M, N, block_M, block_N, dtype, target):
     func = axpy(M, N, block_M, block_N, dtype)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = torch.randn(M, N, dtype=torch.float32 if dtype == "float" else torch.float16).npu()
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+    initial_dst = torch.randn(M, N, dtype=torch_dtype).npu()
 
     torch.npu.synchronize()
 
-    b = func(a)
+    b = func(a, initial_dst)
 
-    ref_b = a * 2.0
+    ref_b = a * 2.0 + initial_dst
     torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_axpy(dtype, target, shape):
     M, N = shape
@@ -1023,13 +1026,7 @@ def run_test_bitwise_rshift(M, N, block_M, block_N, scalarvalue, dtype, target):
 
     b = func(a)
 
-    a_cpu = a.cpu()
-    if dtype == "uint16":
-        ref_b = (a_cpu.to(torch.int32) >> scalarvalue).to(torch.uint16).npu()
-    elif dtype == "uint32":
-        ref_b = (a_cpu.to(torch.int64) >> scalarvalue).to(torch.uint32).npu()
-    else:
-        ref_b = (a_cpu >> scalarvalue).npu()
+    ref_b = _rshift_ref(a.cpu(), scalarvalue, dtype).npu()
 
     assert_close_npu(b, ref_b, dtype, rtol=1e-2, atol=1e-2)
 
@@ -1115,15 +1112,201 @@ def run_test_bitwise_rshift_slice(M, N, block_M, block_N, scalarvalue, dtype, ta
 
 @pytest.mark.parametrize(
     "dtype",
-    ["int16", "int32", pytest.param("uint16", marks=pytest.mark.low_priority), pytest.param("uint32", marks=pytest.mark.low_priority)],
+    [
+        pytest.param("int16", marks=pytest.mark.low_priority),
+        pytest.param("int32", marks=pytest.mark.low_priority),
+        pytest.param("uint16", marks=pytest.mark.low_priority),
+        pytest.param("uint32", marks=pytest.mark.low_priority),
+    ],
 )
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_rshift_slice(dtype, target, shape):
     M, N = shape
     max_shift = 16 if dtype in ["int16", "uint16"] else 32
     scalarvalue = random.randint(1, max_shift)
     run_test_bitwise_rshift_slice(M, N, 128, 256, scalarvalue=scalarvalue, dtype=dtype, target=target)
+
+
+# ---------------------------------------------------------------------------
+# Factcheck tests for T.tile.bitwise_rshift
+# ---------------------------------------------------------------------------
+
+_TORCH_INT_DTYPE_RSHIFT = {
+    "int16": torch.int16,
+    "uint16": torch.uint16,
+    "int32": torch.int32,
+    "uint32": torch.uint32,
+}
+
+
+def _rshift_ref(a_cpu, scalarvalue, dtype):
+    """Compute reference right shift on CPU, handling dtype overflow correctly."""
+    if dtype == "uint16":
+        return torch.bitwise_right_shift(a_cpu.to(torch.int32), scalarvalue).to(torch.uint16)
+    elif dtype == "uint32":
+        return torch.bitwise_right_shift(a_cpu.to(torch.int64), scalarvalue).to(torch.uint32)
+    return torch.bitwise_right_shift(a_cpu, scalarvalue)
+
+
+def run_test_bitwise_rshift_signed_semantics(dtype, target, scalarvalue):
+    """Verify arithmetic right shift for signed types (sign bit preserved).
+
+    Tests with negative values to confirm sign extension behavior.
+    """
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    func = tilelang.compile(
+        bitwise_rshift(M, N, block_M, block_N, scalarvalue, dtype),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
+    )
+    td = _TORCH_INT_DTYPE_RSHIFT[dtype]
+    a = torch.randint(low=-100, high=100, size=(M, N), dtype=td).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    ref_b = _rshift_ref(a.cpu(), scalarvalue, dtype).npu()
+    assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("scalarvalue", [1])
+@pytest.mark.parametrize(
+    "dtype", [pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("int32", marks=pytest.mark.low_priority)]
+)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_bitwise_rshift_signed_semantics(dtype, target, scalarvalue):
+    run_test_bitwise_rshift_signed_semantics(dtype, target, scalarvalue)
+
+
+def run_test_bitwise_rshift_unsigned_high_bits(dtype, target, scalarvalue):
+    """Verify logical right shift for unsigned types with high bits set.
+
+    Tests with values >= 2^(bit_width-1) to confirm zero-fill behavior.
+    If the hardware incorrectly did arithmetic shift, high-bit values
+    would be sign-extended (filled with 1s) instead of zero-extended.
+    """
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    func = tilelang.compile(
+        bitwise_rshift(M, N, block_M, block_N, scalarvalue, dtype),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
+    )
+    if dtype == "uint16":
+        a = torch.randint(0, 65536, (M, N), dtype=torch.int32).to(torch.uint16).npu()
+    elif dtype == "uint32":
+        a = torch.randint(0, 2**32, (M, N), dtype=torch.int64).to(torch.uint32).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    ref_b = _rshift_ref(a.cpu(), scalarvalue, dtype).npu()
+    assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("scalarvalue", [1])
+@pytest.mark.parametrize(
+    "dtype", [pytest.param("uint16", marks=pytest.mark.low_priority), pytest.param("uint32", marks=pytest.mark.low_priority)]
+)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_bitwise_rshift_unsigned_high_bits(dtype, target, scalarvalue):
+    run_test_bitwise_rshift_unsigned_high_bits(dtype, target, scalarvalue)
+
+
+def run_test_bitwise_rshift_1d(dtype, target, scalarvalue):
+    """Test 1D buffer shape support."""
+    N = 1024
+    block_N = 1024
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((N,), dtype),  # type: ignore
+        B: T.Tensor((N,), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((block_N,), dtype)
+            b_ub = T.alloc_ub((block_N,), dtype)
+            T.copy(A[0:], a_ub)
+            T.tile.bitwise_rshift(b_ub, a_ub, scalarvalue)
+            T.copy(b_ub, B[0:])
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    td = _TORCH_INT_DTYPE_RSHIFT[dtype]
+    a = torch.randint(1, 100, size=(N,), dtype=td).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    ref_b = _rshift_ref(a.cpu(), scalarvalue, dtype).npu()
+    assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("scalarvalue", [1])
+@pytest.mark.parametrize("dtype", [pytest.param("int16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_bitwise_rshift_1d(dtype, target, scalarvalue):
+    run_test_bitwise_rshift_1d(dtype, target, scalarvalue)
+
+
+def run_test_bitwise_rshift_boundary(dtype, target, scalarvalue):
+    """Test boundary shift values: 0, max-bit-width, and over-width."""
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    func = tilelang.compile(
+        bitwise_rshift(M, N, block_M, block_N, scalarvalue, dtype),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
+    )
+    td = _TORCH_INT_DTYPE_RSHIFT[dtype]
+    if "int" in dtype and "uint" not in dtype:
+        a = torch.randint(low=-100, high=100, size=(M, N), dtype=td).npu()
+    else:
+        a = torch.randint(1, 100, size=(M, N), dtype=td).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    ref_b = _rshift_ref(a.cpu(), scalarvalue, dtype).npu()
+    assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("scalarvalue", [16])
+@pytest.mark.parametrize(
+    "dtype", [pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("uint16", marks=pytest.mark.low_priority)]
+)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_bitwise_rshift_boundary_int16(dtype, target, scalarvalue):
+    run_test_bitwise_rshift_boundary(dtype, target, scalarvalue)
+
+
+@pytest.mark.parametrize("scalarvalue", [32])
+@pytest.mark.parametrize(
+    "dtype", [pytest.param("int32", marks=pytest.mark.low_priority), pytest.param("uint32", marks=pytest.mark.low_priority)]
+)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_bitwise_rshift_boundary_int32(dtype, target, scalarvalue):
+    run_test_bitwise_rshift_boundary(dtype, target, scalarvalue)
+
+
+def run_test_bitwise_rshift_non_aligned(dtype, target, scalarvalue):
+    M, N = 1024, 100
+    block_M, block_N = 128, 100
+    func = tilelang.compile(
+        bitwise_rshift(M, N, block_M, block_N, scalarvalue, dtype),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
+    )
+    td = _TORCH_INT_DTYPE_RSHIFT[dtype]
+    a = torch.randint(1, 100, size=(M, N), dtype=td).npu()
+    torch.npu.synchronize()
+    b = func(a)
+    ref_b = _rshift_ref(a.cpu(), scalarvalue, dtype).npu()
+    assert_close_npu(b, ref_b, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("scalarvalue", [1])
+@pytest.mark.parametrize("dtype", ["int16"])
+@pytest.mark.parametrize("target", [pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_bitwise_rshift_non_aligned(dtype, target, scalarvalue):
+    run_test_bitwise_rshift_non_aligned(dtype, target, scalarvalue)
 
 
 def bitwise_xor(M, N, block_M, block_N, dtype="int16"):
@@ -1174,11 +1357,11 @@ def run_test_bitwise_xor(M, N, block_M, block_N, dtype, target):
         ref_c = torch.bitwise_xor(a_cpu.to(torch.int32), b_cpu.to(torch.int32)).to(torch.uint16).npu()
     else:
         ref_c = torch.bitwise_xor(a_cpu, b_cpu).npu()
-    assert_close_npu(c, ref_c, dtype, rtol=1e-2, atol=1e-2)
+    assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("dtype", ["int16", "uint16"])
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_xor(dtype, target, shape):
     M, N = shape
@@ -1236,12 +1419,176 @@ def run_test_bitwise_xor_slice(M, N, block_M, block_N, dtype, target):
     assert_close_npu(c, ref_c, dtype, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("dtype", ["int16", pytest.param("uint16", marks=pytest.mark.low_priority)])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize(
+    "dtype", [pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("uint16", marks=pytest.mark.low_priority)]
+)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 @pytest.mark.parametrize("shape", [(1024, 1024)])
 def test_bitwise_xor_slice(dtype, target, shape):
     M, N = shape
     run_test_bitwise_xor_slice(M, N, 128, 256, dtype, target)
+
+
+# ---- Factcheck: extended bitwise_xor tests ----
+
+_TORCH_INT_DTYPE_XOR = {
+    "int8": torch.int8,
+    "uint8": torch.uint8,
+    "int16": torch.int16,
+    "uint16": torch.uint16,
+    "int32": torch.int32,
+    "uint32": torch.uint32,
+}
+
+
+def _run_bitwise_xor_ext(dtype, target, block_M=128, block_N=256, use_tmp=False):
+    M, N = 1024, 1024
+    VEC_NUM = 2
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
+            if use_tmp:
+                tmp_ub = T.alloc_ub((block_M // VEC_NUM * block_N * 2,), "uint8")
+                T.tile.bitwise_xor(c_ub, a_ub, b_ub, tmp=tmp_ub)
+            else:
+                T.tile.bitwise_xor(c_ub, a_ub, b_ub)
+            T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    td = _TORCH_INT_DTYPE_XOR[dtype]
+    a = torch.randint(0, 100, (M, N), dtype=td).npu()
+    b = torch.randint(0, 100, (M, N), dtype=td).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    a_cpu = a.cpu()
+    b_cpu = b.cpu()
+    ref_c = torch.bitwise_xor(a_cpu.to(torch.int32), b_cpu.to(torch.int32)).to(td).npu()
+    assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("dtype", ["int8"])
+@pytest.mark.parametrize("target", [pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_bitwise_xor_int8_pto(dtype, target):
+    _run_bitwise_xor_ext(dtype, target)
+
+
+@pytest.mark.parametrize(
+    "dtype", [pytest.param("int16", marks=pytest.mark.low_priority), pytest.param("uint16", marks=pytest.mark.low_priority)]
+)
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_bitwise_xor_explicit_tmp(dtype, target):
+    _run_bitwise_xor_ext(dtype, target, use_tmp=True)
+
+
+@pytest.mark.low_priority
+def test_bitwise_xor_1d():
+    N = 256
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((N,), "int16"),  # type: ignore
+        B: T.Tensor((N,), "int16"),  # type: ignore
+        C: T.Tensor((N,), "int16"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((N,), "int16")
+            b_ub = T.alloc_ub((N,), "int16")
+            c_ub = T.alloc_ub((N,), "int16")
+            T.copy(A, a_ub)
+            T.copy(B, b_ub)
+            T.tile.bitwise_xor(c_ub, a_ub, b_ub)
+            T.copy(c_ub, C)
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target="ascendc")
+    a = torch.randint(0, 100, (N,), dtype=torch.int16).npu()
+    b = torch.randint(0, 100, (N,), dtype=torch.int16).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    ref_c = torch.bitwise_xor(a.cpu(), b.cpu()).npu()
+    assert_close_npu(c, ref_c, "int16", rtol=0, atol=0)
+
+
+@pytest.mark.low_priority
+def test_bitwise_xor_buffer_region_2d():
+    M, N = 1024, 1024
+    block_M, block_N = 128, 256
+    VEC_NUM = 2
+    m_num = M // block_M
+    n_num = N // block_N
+    dtype = "int16"
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+        C: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+            a_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            b_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            c_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
+            T.copy(A[bx * block_M + vid * block_M // VEC_NUM, by * block_N], a_ub)
+            T.copy(B[bx * block_M + vid * block_M // VEC_NUM, by * block_N], b_ub)
+            T.tile.bitwise_xor(
+                c_ub[0 : block_M // VEC_NUM, 0:block_N],
+                a_ub[0 : block_M // VEC_NUM, 0:block_N],
+                b_ub[0 : block_M // VEC_NUM, 0:block_N],
+            )
+            T.copy(c_ub, C[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target="ascendc")
+    a = torch.randint(0, 100, (M, N), dtype=torch.int16).npu()
+    b = torch.randint(0, 100, (M, N), dtype=torch.int16).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    ref_c = torch.bitwise_xor(a.cpu(), b.cpu()).npu()
+    assert_close_npu(c, ref_c, dtype, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "target", [pytest.param("ascendc", marks=pytest.mark.low_priority), pytest.param("pto", marks=pytest.mark.low_priority)]
+)
+def test_bitwise_xor_non_aligned_size(target):
+    N = 200
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((N,), "int16"),  # type: ignore
+        B: T.Tensor((N,), "int16"),  # type: ignore
+        C: T.Tensor((N,), "int16"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            a_ub = T.alloc_ub((N,), "int16")
+            b_ub = T.alloc_ub((N,), "int16")
+            c_ub = T.alloc_ub((N,), "int16")
+            T.copy(A, a_ub)
+            T.copy(B, b_ub)
+            T.tile.bitwise_xor(c_ub, a_ub, b_ub)
+            T.copy(c_ub, C)
+
+    func = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    a = torch.randint(0, 100, (N,), dtype=torch.int16).npu()
+    b = torch.randint(0, 100, (N,), dtype=torch.int16).npu()
+    torch.npu.synchronize()
+    c = func(a, b)
+    ref_c = torch.bitwise_xor(a.cpu(), b.cpu()).npu()
+    assert_close_npu(c, ref_c, "int16", rtol=0, atol=0)
 
 
 def block_reduce_max(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockNum, dtype="float16"):
@@ -1607,113 +1954,228 @@ def test_cast_scale(dtype, target, shape):
     run_test_cast_scale(M, N, 16, 16, "CAST_RINT", 4096, 1.0, target)
 
 
-def clamp(M, N, block_M, block_N, max_val, min_val, dtype="float16"):
-    m_num = M // block_M
-    n_num = N // block_N
-    num_blocks = m_num * n_num
+_TILE_CLAMP_INPUT_PATTERN = [-20, -3, -2, -1, 0, 1, 2, 3, 4, 20]
+_TILE_CLAMP_TORCH_DTYPES = {
+    "float": torch.float32,
+    "float16": torch.float16,
+    "int16": torch.int16,
+    "int32": torch.int32,
+}
 
-    VEC_NUM = 2
 
+def _tile_clamp_numel(shape):
+    result = 1
+    for extent in shape:
+        result *= extent
+    return result
+
+
+def _tile_clamp_input(shape, dtype):
+    numel = _tile_clamp_numel(shape)
+    repeat = (numel + len(_TILE_CLAMP_INPUT_PATTERN) - 1) // len(_TILE_CLAMP_INPUT_PATTERN)
+    return torch.tensor(_TILE_CLAMP_INPUT_PATTERN, dtype=_TILE_CLAMP_TORCH_DTYPES[dtype]).repeat(repeat)[:numel].reshape(shape)
+
+
+def tile_clamp_kernel(shape, dtype, count, inplace=False):
     @T.prim_func
     def main(
-        input: T.Tensor((M, N), dtype),  # type: ignore
-        output: T.Tensor((M, N), dtype),  # type: ignore
+        A: T.Tensor(shape, dtype),  # type: ignore
+        B: T.Tensor(shape, dtype),  # type: ignore
     ):
-        with T.Kernel(num_blocks, is_npu=True) as (cid, vid):
-            bx = cid // n_num
-            by = cid % n_num
-
-            block_size = block_M * block_N // VEC_NUM
-            in_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            out_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-
-            T.copy(input[bx * block_M + vid * block_M // VEC_NUM, by * block_N], in_ub)
-
-            T.tile.clamp(out_ub, in_ub, min_val, max_val, block_size)
-
-            T.copy(out_ub, output[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            src_ub = T.alloc_ub(shape, dtype)
+            dst_ub = src_ub if inplace else T.alloc_ub(shape, dtype)
+            if vid == 0:
+                T.copy(A, src_ub)
+                if not inplace:
+                    T.tile.fill(dst_ub, -99)
+                T.tile.clamp(dst_ub, src_ub, -2, 3, count)
+                T.copy(dst_ub, B)
 
     return main
 
 
-def run_test_clamp(M, N, max_val, min_val, thresh, dtype, target, block_M=64, block_N=64):
-    if min_val > max_val:
-        max_val, min_val = min_val, max_val
+def run_test_tile_clamp(shape, dtype, target, count=None, inplace=False):
+    numel = _tile_clamp_numel(shape)
+    if count is None:
+        count = numel
+    kernel = tilelang.compile(
+        tile_clamp_kernel(shape, dtype, count, inplace),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
+    )
 
-    func = clamp(M, N, block_M, block_N, max_val, min_val, dtype)
-    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
-
-    a = (torch.rand(M, N) - 0.5) * 2 * thresh
-    a = a.half().npu() if dtype == "float16" else a.float().npu()
-
-    b = func(a)
-    ref_b = torch.clamp(a, min_val, max_val)
-
-    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
-
-
-@pytest.mark.parametrize("dtype", ["float", "float16"])
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
-def test_clamp(dtype, target):
-    M, N = 1024, 1024
-    thresh = 10000
-    max_val = random.uniform(-thresh, thresh)
-    min_val = random.uniform(-thresh, thresh)
-    run_test_clamp(M, N, max_val, min_val, thresh, dtype, target, block_M=64, block_N=64)
+    input_host = _tile_clamp_input(shape, dtype)
+    expected_host = torch.full_like(input_host, -99)
+    expected_host.reshape(-1)[:count] = torch.clamp(input_host.reshape(-1)[:count], -2, 3)
+    output = kernel(input_host.npu())
+    torch.npu.synchronize()
+    torch.testing.assert_close(output, expected_host.npu(), rtol=0, atol=0)
 
 
-def clamp_slice(M, N, block_M, block_N, max_val, min_val, dtype="float16"):
-    m_num = M // block_M
-    n_num = N // block_N
-    num_blocks = m_num * n_num
+@pytest.mark.parametrize(
+    ("dtype", "target"),
+    [
+        ("float", "ascendc"),
+        pytest.param("float16", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("int16", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("int32", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("float", "pto", marks=pytest.mark.low_priority),
+        pytest.param("int16", "pto", marks=pytest.mark.low_priority),
+    ],
+)
+def test_tile_clamp_full_tile(dtype, target):
+    run_test_tile_clamp((4, 16), dtype, target)
 
-    VEC_NUM = 2
 
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        "float",
+        pytest.param("float16", marks=pytest.mark.low_priority),
+        pytest.param("int16", marks=pytest.mark.low_priority),
+        pytest.param("int32", marks=pytest.mark.low_priority),
+    ],
+)
+@pytest.mark.parametrize(
+    "count",
+    [17, pytest.param(32, marks=pytest.mark.low_priority)],
+)
+def test_tile_clamp_ascendc_partial_count(dtype, count):
+    run_test_tile_clamp((64,), dtype, "ascendc", count=count)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "target"),
+    [
+        ("float", "ascendc"),
+        pytest.param("float16", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("float16", "pto", marks=pytest.mark.low_priority),
+        pytest.param("int32", "pto", marks=pytest.mark.low_priority),
+    ],
+)
+def test_tile_clamp_inplace(dtype, target):
+    run_test_tile_clamp((64,), dtype, target, inplace=True)
+
+
+def tile_clamp_region_kernel(dtype):
     @T.prim_func
     def main(
-        input: T.Tensor((M, N), dtype),  # type: ignore
-        output: T.Tensor((M, N), dtype),  # type: ignore
+        A: T.Tensor((2, 64), dtype),  # type: ignore
+        B: T.Tensor((2, 64), dtype),  # type: ignore
     ):
-        with T.Kernel(num_blocks, is_npu=True) as (cid, vid):
-            bx = cid // n_num
-            by = cid % n_num
-
-            block_size = block_M * block_N // VEC_NUM
-            in_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            out_ub = T.alloc_ub((block_M // VEC_NUM, block_N), dtype)
-            T.copy(input[bx * block_M + vid * block_M // VEC_NUM, by * block_N], in_ub)
-            for i in range(block_M // VEC_NUM):
-                T.tile.clamp(out_ub[i, :], in_ub[i, :], min_val, max_val, block_size)
-
-            T.copy(out_ub, output[bx * block_M + vid * block_M // VEC_NUM, by * block_N])
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            src_ub = T.alloc_ub((2, 64), dtype)
+            dst_ub = T.alloc_ub((2, 64), dtype)
+            if vid == 0:
+                T.copy(A, src_ub)
+                T.tile.fill(dst_ub, -99)
+                T.tile.clamp(dst_ub[1, :], src_ub[0, :], -2, 3, 64)
+                T.copy(dst_ub, B)
 
     return main
 
 
-def run_test_clamp_slice(M, N, max_val, min_val, thresh, dtype, target, block_M=64, block_N=64):
-    if min_val > max_val:
-        max_val, min_val = min_val, max_val
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_tile_clamp_buffer_region(target):
+    kernel = tilelang.compile(
+        tile_clamp_region_kernel("float16"),
+        out_idx=[-1],
+        pass_configs=pass_configs,
+        target=target,
+    )
+    input_host = _tile_clamp_input((2, 64), "float16")
+    expected_host = torch.full_like(input_host, -99)
+    expected_host[1, :] = torch.clamp(input_host[0, :], -2, 3)
+    output = kernel(input_host.npu())
+    torch.npu.synchronize()
+    torch.testing.assert_close(output, expected_host.npu(), rtol=0, atol=0)
 
-    func = clamp_slice(M, N, block_M, block_N, max_val, min_val, dtype)
-    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
-    a = (torch.rand(M, N) - 0.5) * 2 * thresh
-    a = a.half().npu() if dtype == "float16" else a.float().npu()
+def test_tile_clamp_count_omitted():
+    target = "ascendc"
 
-    b = func(a)
-    ref_b = torch.clamp(a, min_val, max_val)
+    @T.prim_func
+    def main(
+        A: T.Tensor((4, 16), "float16"),  # type: ignore
+        B: T.Tensor((4, 16), "float16"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            src_ub = T.alloc_ub((4, 16), "float16")
+            dst_ub = T.alloc_ub((4, 16), "float16")
+            if vid == 0:
+                T.copy(A, src_ub)
+                T.tile.clamp(dst_ub, src_ub, -2, 3)
+                T.copy(dst_ub, B)
 
-    torch.testing.assert_close(b, ref_b, rtol=1e-2, atol=1e-2)
+    kernel = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    input_host = _tile_clamp_input((4, 16), "float16")
+    expected_host = torch.clamp(input_host, -2, 3)
+    output = kernel(input_host.npu())
+    torch.npu.synchronize()
+    torch.testing.assert_close(output, expected_host.npu(), rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("dtype", ["float", "float16"])
-@pytest.mark.parametrize("target", ["ascendc"])
-def test_clamp_slice(dtype, target):
-    M, N = 1024, 1024
-    thresh = 10000
-    max_val = random.uniform(-thresh, thresh)
-    min_val = random.uniform(-thresh, thresh)
-    run_test_clamp_slice(M, N, max_val, min_val, thresh, dtype, target, block_M=64, block_N=64)
+@pytest.mark.parametrize(
+    ("dtype", "target"),
+    [
+        ("float", "ascendc"),
+        pytest.param("float16", "ascendc", marks=pytest.mark.low_priority),
+        pytest.param("float", "pto", marks=pytest.mark.low_priority),
+        pytest.param("float16", "pto", marks=pytest.mark.low_priority),
+    ],
+)
+def test_tile_clamp_tensor_bounds(dtype, target):
+    @T.prim_func
+    def main(
+        A: T.Tensor((4, 16), dtype),  # type: ignore
+        B: T.Tensor((4, 16), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            src_ub = T.alloc_ub((4, 16), dtype)
+            dst_ub = T.alloc_ub((4, 16), dtype)
+            min_ub = T.alloc_ub((4, 16), dtype)
+            max_ub = T.alloc_ub((4, 16), dtype)
+            if vid == 0:
+                T.copy(A, src_ub)
+                T.tile.fill(min_ub, -2)
+                T.tile.fill(max_ub, 3)
+                T.tile.fill(dst_ub, -99)
+                T.tile.clamp(dst_ub, src_ub, min_ub, max_ub, 64)
+                T.copy(dst_ub, B)
+
+    kernel = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    input_host = _tile_clamp_input((4, 16), dtype)
+    expected_host = torch.clamp(input_host, -2, 3)
+    output = kernel(input_host.npu())
+    torch.npu.synchronize()
+    torch.testing.assert_close(output, expected_host.npu(), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
+def test_tile_clamp_mixed_scalar_tensor(target):
+    @T.prim_func
+    def main(
+        A: T.Tensor((64,), "float16"),  # type: ignore
+        B: T.Tensor((64,), "float16"),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (_, vid):
+            src_ub = T.alloc_ub((64,), "float16")
+            dst_ub = T.alloc_ub((64,), "float16")
+            max_ub = T.alloc_ub((64,), "float16")
+            if vid == 0:
+                T.copy(A, src_ub)
+                T.tile.fill(max_ub, 3)
+                T.tile.clamp(dst_ub, src_ub, -2, max_ub, 64)
+                T.copy(dst_ub, B)
+
+    kernel = tilelang.compile(main, out_idx=[-1], pass_configs=pass_configs, target=target)
+    input_host = _tile_clamp_input((64,), "float16")
+    expected_host = torch.clamp(input_host, -2, 3)
+    output = kernel(input_host.npu())
+    torch.npu.synchronize()
+    torch.testing.assert_close(output, expected_host.npu(), rtol=0, atol=0)
 
 
 def compare(M, N, block_M, block_N, mode, dtype="float", out_dtype="uint8"):

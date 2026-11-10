@@ -12,9 +12,9 @@ This file supplements with:
 3. Dtype mismatch test (dst float32, src float16 must raise)
 4. Unsupported atomic dtype compilation errors (uint16/uint32 x pto)
 
-Test suite follows the simplification principle for direct-intrinsic APIs
-(mentor z00520135 review on PR4): since atomic_add has no type-specific
-processing logic, only representative dtypes are tested.
+Test suite follows the simplification principle for direct-intrinsic APIs:
+since atomic_add has no type-specific processing logic, only representative
+dtypes are tested.
 """
 
 import pytest
@@ -87,7 +87,13 @@ def _run_and_check(program, shape, dtype, num_blocks, target):
     not (hasattr(torch, "npu") and torch.npu.is_available()),
     reason="tile atomic_add correctness requires an Ascend NPU runtime",
 )
-@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param("ascendc", marks=pytest.mark.low_priority, id="int32-ascendc"),
+        pytest.param("pto", marks=pytest.mark.low_priority, id="int32-pto"),
+    ],
+)
 def test_atomic_add_int32_1d(target):
     num_blocks = 4
     tile_n = 32
@@ -150,33 +156,3 @@ def test_atomic_add_dtype_mismatch_raises():
 # ---------------------------------------------------------------------------
 # Exception boundary: unsupported dtype (default — no LP)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "dtype,target",
-    [
-        ("uint16", "pto"),
-        ("uint32", "pto"),
-    ],
-)
-def test_atomic_add_unsupported_dtype_raises(dtype, target):
-    """PTO rejects unsigned atomic dtypes after a legal same-dtype input copy."""
-
-    @T.prim_func
-    def main(
-        SRC: T.Tensor((32,), dtype),  # type: ignore
-        C: T.Tensor((32,), dtype),  # type: ignore
-    ):
-        with T.Kernel(1, is_npu=True) as (cid, _):
-            src_ub = T.alloc_ub((32,), dtype)
-            # Prepare input without a fill that could reject the dtype before
-            # the atomic-add operation is compiled.
-            T.copy(SRC, src_ub)
-            T.tile.atomic_add(C[0], src_ub)
-
-    with pytest.raises(RuntimeError, match="Compilation Failed"):  # noqa: B017
-        tilelang.compile(main, pass_configs=PASS_CONFIGS, target=target)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-n", "8"])

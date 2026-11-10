@@ -92,7 +92,9 @@ cdef class CythonKernelWrapper:
         cdef int ins_idx = 0
         cdef list tensor_list = []
 
-        analyzer = Analyzer()
+        # Constructed lazily in the symbolic-shape branch below; static-shape
+        # kernels must not pay the per-call TVM Analyzer construction cost.
+        analyzer = None
         sym_val_by_name = {}
         for key, (ref_tensor_idx, ref_shape_idx) in self.dynamic_symbolic_map.items():
             val = int(inputs[ref_tensor_idx].shape[ref_shape_idx])
@@ -117,6 +119,8 @@ cdef class CythonKernelWrapper:
                                 raise KeyError(f"Unfounded symbolic var: {str(v)}")
                             vmap[v] = tir.IntImm(v.dtype, sym_val_by_name[str(v)])
                         ss = stmt_functor.substitute(s, vmap)
+                        if analyzer is None:
+                            analyzer = Analyzer()
                         ss = analyzer.simplify(ss)
                         if isinstance(ss, tir.IntImm):
                             res = int(ss.value)

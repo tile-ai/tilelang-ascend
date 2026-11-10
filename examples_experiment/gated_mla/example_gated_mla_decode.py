@@ -1,13 +1,15 @@
-"""First Gated MLA decode baseline: five fully manual Vector Expert stages.
+"""Fixed-domain Gated MLA decode with five manual Vector Expert stages.
 
 Calculation structure follows kda/kda_recurrent.py GEMV/reduction patterns.
-All four automation passes are disabled. This is a correctness baseline, not
-a claim of optimized decode performance. No NPU arithmetic runs in the wrapper.
+All four automation passes are disabled. Content scores use a full-width latent
+tile. No NPU arithmetic runs in the wrapper.
+PTO is the default; each factory caches compiled kernels separately by target.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from functools import lru_cache
 
 import torch
 import tilelang
@@ -23,8 +25,18 @@ EXPERT_PASSES = {
 }
 
 
-@tilelang.jit(target="ascendc", out_idx=[-1], pass_configs=EXPERT_PASSES)
-def q_absorb_kernel():
+def _validate_target(target: str) -> None:
+    if target not in ("pto", "ascendc"):
+        raise ValueError("target must be 'pto' or 'ascendc'")
+
+
+def _compile_kernel(program, *, out_idx, target):
+    _validate_target(target)
+    return tilelang.compile(program, out_idx=out_idx, target=target, pass_configs=EXPERT_PASSES)
+
+
+@lru_cache(maxsize=128)
+def q_absorb_kernel(*, target: str = "pto"):
 
     @T.prim_func
     def main(
@@ -56,11 +68,11 @@ def q_absorb_kernel():
                 T.copy(out, QL[r0])
                 T.barrier_all()
 
-    return main
+    return _compile_kernel(main, out_idx=[-1], target=target)
 
 
-@tilelang.jit(target="ascendc", out_idx=[-1], pass_configs=EXPERT_PASSES)
-def score_kernel(visible_keys: int, scale: float):
+@lru_cache(maxsize=128)
+def score_kernel(visible_keys: int, scale: float, *, target: str = "pto"):
 
     @T.prim_func
     def main(
@@ -72,39 +84,52 @@ def score_kernel(visible_keys: int, scale: float):
     ):
         with T.Kernel(1, is_npu=True) as (_, vid):
             t0 = vid * 32
-            qf = T.alloc_ub((64,), "float32")
-            ch = T.alloc_ub((32, 64), "float16")
-            cf = T.alloc_ub((32, 64), "float32")
+            qf = T.alloc_ub((512,), "float32")
+            ch = T.alloc_ub((32, 512), "float16")
+            cf = T.alloc_ub((32, 512), "float32")
             part = T.alloc_ub((32,), "float32")
             acc = T.alloc_ub((32,), "float32")
             qh = T.alloc_ub((64,), "float16")
-            T.annotate_address({qf: 0, ch: 256, cf: 4352, part: 12544, acc: 12672, qh: 12800})
+            qaf = T.alloc_ub((64,), "float32")
+            eh = T.alloc_ub((32, 64), "float16")
+            ef = T.alloc_ub((32, 64), "float32")
+            # Explicit buffers end at byte 113280. Check generated temporaries
+            # against the A2/A3 UB capacity before accepting this candidate.
+            T.annotate_address(
+                {
+                    qf: 0,
+                    ch: 2048,
+                    cf: 34816,
+                    part: 100352,
+                    acc: 100480,
+                    qh: 100608,
+                    qaf: 100736,
+                    eh: 100992,
+                    ef: 105088,
+                }
+            )
             with T.Scope("V"):
-                T.tile.fill(acc, 0.0)
+                T.copy(QL, qf)
+                T.copy(C[0, t0, 0], ch)
                 T.barrier_all()
-                for k in T.serial(8):
-                    T.copy(QL[k * 64], qf)
-                    T.copy(C[0, t0, k * 64], ch)
-                    T.barrier_all()
-                    T.copy(ch, cf)
-                    T.barrier_all()
-                    for i, j in T.Parallel(32, 64):
-                        cf[i, j] = cf[i, j] * qf[j]
-                    T.barrier_all()
-                    T.reduce_sum(cf, part, dim=1)
-                    T.barrier_all()
-                    T.tile.add(acc, acc, part)
-                    T.barrier_all()
-                T.copy(QA[0, 0, 0, 0], qh)
-                T.copy(E[0, t0, 0], ch)
-                T.barrier_all()
-                T.copy(qh, qf)
                 T.copy(ch, cf)
                 T.barrier_all()
-                for i, j in T.Parallel(32, 64):
+                for i, j in T.Parallel(32, 512):
                     cf[i, j] = cf[i, j] * qf[j]
                 T.barrier_all()
-                T.reduce_sum(cf, part, dim=1)
+                # One 512-wide reduction changes the FP32 summation order.
+                T.reduce_sum(cf, acc, dim=1)
+                T.barrier_all()
+                T.copy(QA[0, 0, 0, 0], qh)
+                T.copy(E[0, t0, 0], eh)
+                T.barrier_all()
+                T.copy(qh, qaf)
+                T.copy(eh, ef)
+                T.barrier_all()
+                for i, j in T.Parallel(32, 64):
+                    ef[i, j] = ef[i, j] * qaf[j]
+                T.barrier_all()
+                T.reduce_sum(ef, part, dim=1)
                 T.barrier_all()
                 T.tile.add(acc, acc, part)
                 T.barrier_all()
@@ -114,11 +139,11 @@ def score_kernel(visible_keys: int, scale: float):
                 T.copy(acc, S[t0])
                 T.barrier_all()
 
-    return main
+    return _compile_kernel(main, out_idx=[-1], target=target)
 
 
-@tilelang.jit(target="ascendc", out_idx=[-1], pass_configs=EXPERT_PASSES)
-def softmax_kernel():
+@lru_cache(maxsize=128)
+def softmax_kernel(*, target: str = "pto"):
 
     @T.prim_func
     def main(S: T.Tensor((64,), "float32"), P: T.Tensor((64,), "float32")):
@@ -147,11 +172,11 @@ def softmax_kernel():
                     T.copy(x, P)
                     T.barrier_all()
 
-    return main
+    return _compile_kernel(main, out_idx=[-1], target=target)
 
 
-@tilelang.jit(target="ascendc", out_idx=[-1], pass_configs=EXPERT_PASSES)
-def latent_readout_kernel(visible_keys: int):
+@lru_cache(maxsize=128)
+def latent_readout_kernel(visible_keys: int, *, target: str = "pto"):
 
     @T.prim_func
     def main(
@@ -185,11 +210,11 @@ def latent_readout_kernel(visible_keys: int):
                 T.copy(out, Z[r0])
                 T.barrier_all()
 
-    return main
+    return _compile_kernel(main, out_idx=[-1], target=target)
 
 
-@tilelang.jit(target="ascendc", out_idx=[-2, -1], pass_configs=EXPERT_PASSES)
-def value_gate_kernel():
+@lru_cache(maxsize=128)
+def value_gate_kernel(*, target: str = "pto"):
 
     @T.prim_func
     def main(
@@ -242,11 +267,11 @@ def value_gate_kernel():
                 T.copy(yh, Y[0, 0, 0, v0])
                 T.barrier_all()
 
-    return main
+    return _compile_kernel(main, out_idx=[-2, -1], target=target)
 
 
-@tilelang.jit(target="ascendc", out_idx=[-1], pass_configs=EXPERT_PASSES)
-def zero_output_kernel():
+@lru_cache(maxsize=128)
+def zero_output_kernel(*, target: str = "pto"):
 
     @T.prim_func
     def main(
@@ -262,7 +287,7 @@ def zero_output_kernel():
                 T.copy(out, Y[0, 0, 0, vid * 64])
                 T.barrier_all()
 
-    return main
+    return _compile_kernel(main, out_idx=[-1], target=target)
 
 
 def gated_mla_core(
@@ -279,12 +304,15 @@ def gated_mla_core(
     query_start: Sequence[int],
     scale: float | None = None,
     return_intermediates: bool = False,
+    target: str = "pto",
 ):
     """Execute the declared L0 domain; reject all other shapes explicitly.
 
     Intermediate tensors are retained only as diagnostics when requested. JIT
     output allocation uses torch.empty internally; all arithmetic is in kernels.
+    PTO is the default backend; AscendC is an explicit alternative.
     """
+    _validate_target(target)
     spec = validate_inputs(
         q_content,
         q_aux,
@@ -304,18 +332,18 @@ def gated_mla_core(
     if shape != (1, 1, 64, 1, 128, 64, 512, 128):
         raise NotImplementedError("L0 decode supports only B=H=Tq=1, Tk=64, D=128, E=64, R=512, V=128")
     if spec.q_lens[0] == 0:
-        fn = zero_output_kernel()
+        fn = zero_output_kernel(target=target)
         result = fn(q_content)
         if return_intermediates:
             return result, {}, {"zero_output": fn}
         return result
     visible = min(spec.kv_lens[0], spec.query_start[0] + 1)
     kernels = {
-        "q_absorb": q_absorb_kernel(),
-        "scores": score_kernel(visible, spec.scale),
-        "softmax": softmax_kernel(),
-        "latent_readout": latent_readout_kernel(visible),
-        "value_gate": value_gate_kernel(),
+        "q_absorb": q_absorb_kernel(target=target),
+        "scores": score_kernel(visible, spec.scale, target=target),
+        "softmax": softmax_kernel(target=target),
+        "latent_readout": latent_readout_kernel(visible, target=target),
+        "value_gate": value_gate_kernel(target=target),
     }
     q_latent = kernels["q_absorb"](q_content, w_k)
     scores = kernels["scores"](q_latent, q_aux, latent_kv, key_aux)

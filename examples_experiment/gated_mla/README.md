@@ -47,15 +47,16 @@ workspace files are required.
 
 ## Programming model and backend
 
-This is an Expert example with explicit UB addresses, Vector scopes and barriers;
-the four automatic synchronization/memory/CV passes remain disabled. The five stages
-make intermediate ownership and precision inspectable. AscendC is selected explicitly.
-PTO is not validated or claimed. Cube execution is not used by these kernels.
+The public entry and kernel factories default to `target="pto"`. Pass
+`target="ascendc"` to select AscendC explicitly; other target values are rejected.
+Both backends use the same five Expert stages, explicit UB addresses and barriers,
+with all four automation passes disabled. Compiled kernels are cached by target and
+specialization parameters using the public `tilelang.compile` API.
 
-The latent readout clears the contiguous invalid rows with `T.tile.fill`. Each FP32 row
-is 256 bytes, so every supported prefix gives a 32-byte-aligned offset and a whole-vector
-fill length. A full prefix skips the empty fill. This avoids an elementwise scalar mask
-without changing the existing multiplication, reduction or synchronization.
+Scores load one `[32,512]` latent tile per AIV instead of eight `[32,64]` tiles.
+This changes FP32 summation order; stage and complete-chain precision are tested.
+The readout clears invalid contiguous rows with `T.tile.fill`. Each FP32 row is
+256 bytes, so every supported prefix starts at a 32-byte-aligned offset.
 
 ## Run and test
 
@@ -67,9 +68,13 @@ python examples_experiment/gated_mla/example_gated_mla_decode.py
 python -m pytest examples_experiment/gated_mla/test_gated_mla_decode.py -q
 python -m pytest examples_experiment/gated_mla/test_gated_mla_decode.py -q -k test_cpu
 python examples_experiment/gated_mla/tools/benchmark/measure_decode.py --output /tmp/gated_mla_benchmark
+python examples_experiment/gated_mla/tools/benchmark/measure_attention_core.py --output /tmp/gated_mla_core
 ```
 
 The complete test entry requires an NPU and fails if dependencies or a device are absent.
+Default PTO regressions and explicit AscendC partial-prefix/empty-query cases remain in
+the core lane. On 910B3, the cold-cache core lane passed in 122.90 s; the four
+`low_priority` cases passed separately in 28.52 s. No tests were skipped.
 The selected `test_cpu` cases require only PyTorch. There is no opt-in environment variable
 that silently skips the device tests. The CI manifest registers the example and its test.
 
@@ -97,7 +102,7 @@ python -m pytest examples_experiment/gated_mla/test_gated_mla_decode.py -q -m 'n
 python -m pytest examples_experiment/gated_mla/test_gated_mla_decode.py -q -m 'not ci_skip'
 ```
 
-The PR lane contains25 cases and the complete lane29. Extended cases use the repository's
+The PR lane contains 27 cases and the complete lane 31. Extended cases use the repository's
 `low_priority` marker. Key prefix-mask regressions and device negative-infinity checks
 remain in the PR lane. Tests use the uniquely named `gated_mla_golden` helper module to
 avoid colliding with other examples' top-level `utils` modules during combined collection.

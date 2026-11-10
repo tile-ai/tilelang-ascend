@@ -25,13 +25,14 @@ def destination():
 
 @pytest.mark.parametrize("seed", [0, 1, 17])
 def test_decode_full_chain(npu_device, seed):
-    check_case(
+    _, record = check_case(
         make_decode_inputs(seed),
         dict(q_lens=(1,), kv_lens=(64,), query_start=(63,)),
         case_name=f"seed_{seed}",
         output_dir=destination(),
         repeat=3,
     )
+    assert set(record["kernel_targets"].values()) == {"pto"}
 
 
 @pytest.mark.parametrize(
@@ -133,12 +134,36 @@ def test_decode_extreme_scale_single_key(npu_device):
     assert torch.count_nonzero(intermediates["probs"].cpu()[1:]) == 0
 
 
+@pytest.mark.parametrize(
+    "target,active,position",
+    [("ascendc", 1, 16), ("ascendc", 0, 0)],
+)
+def test_decode_explicit_backend(npu_device, target, active, position):
+    """Keep explicit AscendC partial-prefix and empty-query cases in the core lane."""
+    inputs = make_decode_inputs(11)
+    meta = dict(q_lens=(active,), kv_lens=(64 if active else 0,), query_start=(position,))
+    if active:
+        inputs["latent_kv"][:, position + 1 :] = 32
+        inputs["key_aux"][:, position + 1 :] = -32
+    _, record = check_case(
+        inputs,
+        meta,
+        case_name=f"backend_{target}_{active}_{position}",
+        output_dir=destination(),
+        repeat=2,
+        target=target,
+    )
+    assert set(record["kernel_targets"].values()) == {target}
+
+
 def test_decode_contract_rejects_before_kernel(npu_device):
     import torch_npu  # noqa: F401
     from example_gated_mla_decode import gated_mla_core
 
     inputs = {name: t.npu() for name, t in make_decode_inputs().items()}
     meta = dict(q_lens=(1,), kv_lens=(64,), query_start=(63,))
+    with pytest.raises(ValueError, match="target must be"):
+        gated_mla_core(**inputs, **meta, target="cuda")
     with pytest.raises(ValueError, match="exceeds"):
         gated_mla_core(**inputs, **{**meta, "query_start": (64,)})
     bad_dtype = {name: t.float() for name, t in inputs.items()}

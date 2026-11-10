@@ -1,0 +1,42 @@
+{
+  "core_hw_tilelang_attention_64": {
+    "op_names": [
+      "main_kernel_mix_aic",
+      "main_kernel_mix_aic",
+      "main_kernel_mix_aic"
+    ],
+    "task_duration_us": [
+      7.04,
+      4.88,
+      7.38
+    ]
+  },
+  "core_hw_cann_fia_attention_64": {
+    "op_names": [
+      "FusedInferAttentionScore_8cd36e66e4ceb2d60ef96db29a147347_105000000000200000_mix_aic"
+    ],
+    "task_duration_us": [
+      20.440001
+    ]
+  },
+  "core_hw_cann_fia_attention_17": {
+    "op_names": [
+      "FusedInferAttentionScore_8cd36e66e4ceb2d60ef96db29a147347_105000000000200000_mix_aic"
+    ],
+    "task_duration_us": [
+      17.84
+    ]
+  },
+  "core_hw_tilelang_attention_17": {
+    "op_names": [
+      "main_kernel_mix_aic",
+      "main_kernel_mix_aic",
+      "main_kernel_mix_aic"
+    ],
+    "task_duration_us": [
+      7.56,
+      4.86,
+      6.96
+    ]
+  }
+}

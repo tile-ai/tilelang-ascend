@@ -323,7 +323,7 @@ def atomic_add(
         dst: GM destination tensor (Buffer/BufferRegion/BufferLoad). Scope must be
             ``global``. Supports float16, float32, int16, int32, bfloat16.
         src: Local source tensor (Buffer/BufferRegion/BufferLoad). Scope must be
-            local (UB/L0C/L1). dtype must match dst.
+            local (UB/L0C). dtype must match dst on all paths.
 
     Returns:
         tvm.tir.Call: A TIR intrinsic call to ``tl.ascend_atomic_add``.
@@ -1495,15 +1495,24 @@ def leaky_relu(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_v
 
 
 def axpy(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_value: PrimExpr):  # noqa: F821
-    """Performs element-wise AXPY operation: dst = scalar_value * src0 + dst.
+    """Performs element-wise AXPY and updates the destination in place.
 
-    Note: This operation updates the destination buffer in-place by adding
-    the scaled source buffer.
+    For each element, computes:
+    ``dst[i] = scalar_value * src0[i] + dst[i]``.
 
     Args:
-        dst: The destination buffer (acts as both operand Y and output).
-        src0: The source buffer X.
-        scalar_value: The scalar alpha.
+        dst: The destination buffer or buffer region. It acts as both the
+            accumulator input and output.
+        src0: The source buffer or buffer region.
+        scalar_value: The scalar multiplier, converted to the destination
+            data type during code generation.
+
+    Note:
+        - Supports float16 and float32 on Ascend A2/A3.
+        - The destination and source must have the same data type.
+        - The destination and source must contain the same number of elements.
+        - Operands must reside in Unified Buffer and satisfy its alignment
+          requirements.
     """
     return scalar_op(dst, src0, scalar_value, "axpy")
 
@@ -1603,9 +1612,14 @@ def bitwise_lshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scal
 def bitwise_rshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalarValue: PrimExpr):  # noqa: F821
     """Performs element-wise bitwise right shift: dst = src0 >> scalarValue.
 
+    The shift is **arithmetic** for signed types (sign bit preserved) and
+    **logical** for unsigned types (high bits filled with 0).
+
+    Supported dtypes on A2/A3: int16, uint16, int32, uint32.
+
     Args:
-        dst: The destination buffer.
-        src0: The source buffer.
+        dst: The destination buffer (UB).
+        src0: The source buffer (UB), must have the same size and dtype as dst.
         scalarValue: The number of bits to shift (scalar).
     """
     if isinstance(dst, BufferRegion):
@@ -2311,9 +2325,11 @@ def bitwise_xor(
     Args:
         dst: The destination buffer where the result will be stored.
         src0: The first source operand buffer.
-        src1: The second source operand buffer.
-        tmp: Optional complete UB scratch storage. Its scalar dtype is
-            reinterpreted by lowering and has no semantic meaning.
+        src1: The second source operand buffer. Scalar operands are unsupported.
+        tmp: Optional one-dimensional UB scratch buffer. When omitted, the
+            framework allocates the workspace automatically.
+
+    Supported dtypes: int16, uint16.
 
     Returns:
         A TVM intrinsic call that performs the bitwise XOR operation.
@@ -2430,30 +2446,64 @@ def clamp_min(
     )
 
 
+def _clamp_bound_arg(val):
+    """Convert a clamp bound to the appropriate TIR argument.
+
+    If *val* is a Buffer or BufferRegion, return its read access pointer so
+    the codegen can detect a tensor bound (CallNode) vs a scalar bound
+    (PrimExpr).  Otherwise return *val* unchanged.
+    """
+    if isinstance(val, BufferRegion):
+        ptr, _ = _handle_buffer_region(val, "r")
+        return ptr
+    if isinstance(val, Buffer):
+        return val.access_ptr("r")
+    return val
+
+
 def clamp(
     out: Buffer | BufferRegion,
     buffer: Buffer | BufferRegion,
-    min_scalar: PrimExpr,
-    max_scalar: PrimExpr,
-    count: PrimExpr,
+    min_val: PrimExpr | Buffer | BufferRegion,
+    max_val: PrimExpr | Buffer | BufferRegion,
+    count: PrimExpr | None = None,
     *,
     tmp: Buffer | BufferRegion | None = None,
 ):  # noqa: F821
-    """
-    Clip tensor elements to [min_scalar, max_scalar] range, replace out-of-bounds values with boundary values
+    """Clamp UB elements to the inclusive ``[min_val, max_val]`` range.
+
+    ``out`` and ``buffer`` may be one- or two-dimensional UB buffers or
+    contiguous buffer regions and may be the same object for an in-place
+    operation. They must have matching shapes and dtypes. AscendC and PTO
+    support float16, float32, int16, and int32. AscendC applies the operation
+    to the first ``count`` elements; PTO currently requires ``count`` to equal
+    the selected tile extent.
+
+    ``min_val`` and ``max_val`` may be scalar expressions or UB buffers /
+    buffer regions of the same dtype and element count as ``buffer``.
 
     Args:
-        out: The destination buffer where the result will be stored.
-        buffer: The first source operand buffer.
-        min_scalar: The min scalar value
-        max_scalar: The max scalar value
-        count: The size of tensor out
+        out: Destination UB buffer or contiguous buffer region.
+        buffer: Source UB buffer or contiguous buffer region.
+        min_val: Inclusive lower bound. May be a scalar expression convertible
+            to ``buffer.dtype``, or a UB buffer / buffer region.
+        max_val: Inclusive upper bound. May be a scalar expression convertible
+            to ``buffer.dtype``, or a UB buffer / buffer region.
+            This must be greater than or equal to ``min_val``.
+        count: Number of leading elements to clamp. When omitted, the total
+            element count of ``buffer`` is used. This must not exceed the
+            number of accessible source or destination elements.
         tmp: Optional complete UB scratch storage. Its scalar dtype is
             reinterpreted by lowering and has no semantic meaning.
 
     Returns:
-        A TVM intrinsic call that performs the clamp operation.
+        tvm.tir.Call: Intrinsic call for the selected Ascend backend.
     """
+    if count is None:
+        if isinstance(buffer, BufferRegion):
+            count = math.prod(r.extent for r in buffer.region)
+        else:
+            count = math.prod(buffer.shape)
     if isinstance(out, BufferRegion):
         out_ptr, _ = _handle_buffer_region(out, "w")
     else:
@@ -2464,14 +2514,17 @@ def clamp(
     else:
         buffer_ptr = buffer.access_ptr("r")
 
+    min_arg = _clamp_bound_arg(min_val)
+    max_arg = _clamp_bound_arg(max_val)
+
     return _call_intrin_with_optional_tmp(
         "clamp",
         [
             f"Clamp<{_dtype(buffer)}>",
             out_ptr,
             buffer_ptr,
-            min_scalar,
-            max_scalar,
+            min_arg,
+            max_arg,
             count,
         ],
         3,
