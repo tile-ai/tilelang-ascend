@@ -13,11 +13,11 @@ Levels are built from the 20 cann-bench nms cases (deterministic inputs
 keyed by case id), redistributed by case nature (dispatchable via --level;
 all levels also run under pytest where a failure raises AssertionError):
 
-  L0        gate: baseline / unaligned tail N / all-zero boxes (M=N)
+  L0        gate: baseline / unaligned tail N / tiny boxes + low confidence
   L1        functional: thr sweep, value-range sweep, prime and mid-size N
   L2        negative: invalid inputs must be rejected by the wrapper
-  Boundary  special values: +/-65504 extremes, +/-inf mix, NaN mix, all-zero
-            boxes, plus an empty-input (N=0) check
+  Boundary  official case 11 (fp16 dynamic-range bound), plus synthetic
+            +/-inf, NaN, all-zero special values and an empty-input (N=0) check
 
 Judgement: keep-index list exact equality (length + order + values) against
 the torch golden — NMS outputs indices, not values, so tolerance metrics do
@@ -101,6 +101,8 @@ def get_input(boxes, scores, iou_threshold=0.5, **kwargs):
 
 # ========== Input Generation (matches the eval framework's DataGenerator) ==========
 SEED_BASE = 1000  # torch.manual_seed(SEED_BASE + case_id)
+# Official case 15 samples scores from [0, 1e-06], not [0, 1].
+SCORES_VR = {15: (0.0, 1e-06)}
 
 
 def _gen_tensor(shape, value_range, seed):
@@ -166,7 +168,15 @@ def _run_case(name, N, thr, boxes_vr, scores_vr, seed, level="l0"):
 
 def _run_cb(case_id, N, thr, vr, level):
     """Run one cann-bench case with its original id-keyed seed."""
-    return _run_case(f"cb{case_id}", N, thr, vr, (0.0, 1.0), SEED_BASE + case_id, level=level)
+    return _run_case(
+        f"cb{case_id}",
+        N,
+        thr,
+        vr,
+        SCORES_VR.get(case_id, (0.0, 1.0)),
+        SEED_BASE + case_id,
+        level=level,
+    )
 
 
 # ========== cann-bench case tables (20 cases, redistributed by nature) ==========
@@ -174,7 +184,7 @@ def _run_cb(case_id, N, thr, vr, level):
 L0_CASES = [
     (1, 1024, 0.5, (-1, 1)),  # baseline
     (7, 1023, 0.5, (-0.1, 0.1)),  # unaligned tail N
-    (15, 4096, 0.5, (0.0, 0.0)),  # all-zero boxes -> IoU 0 -> all kept (M=N)
+    (15, 4096, 0.5, (0.0, 0.001)),  # tiny boxes + low confidence (official case 15)
 ]
 
 L1_CASES = [
@@ -187,6 +197,8 @@ L1_CASES = [
     (9, 1537, 0.7, (-5, 10)),
     (10, 3001, 0.4, (-50, 100)),
     (12, 4001, 0.6, (-88, 88)),
+    (13, 3001, 0.5, (-1000000, 1000000)),  # large finite range
+    (14, 4096, 0.5, (0.0, 0.01)),  # tiny valid boxes (avoid zero-area IoU 0/0)
     (16, 511, 0.2, (-0.5, 0.5)),
     (17, 2047, 0.8, (-1, 3)),
     (18, 4095, 0.35, (-1000, 1000)),
@@ -195,10 +207,44 @@ L1_CASES = [
 ]
 
 BOUNDARY_CASES = [
-    (11, 2049, 0.5, (-65504, 65504)),  # fp16 dynamic-range bounds
-    (13, 3001, 0.5, (float("-inf"), float("inf"))),  # boundary slices +/-inf
-    (14, 4096, 0.5, (float("nan"), float("nan"))),  # ~50% NaN mix
+    (11, 2049, 0.5, (-65504, 65504)),  # fp16 dynamic-range bounds (official case 11)
 ]
+
+# Synthetic special-value cases: extra Boundary coverage, NOT replacements for
+# official cases 13/14/15 (those live in L0/L1 with their original value ranges).
+SPECIAL_CASES = [
+    ("special_inf", 3001, 0.5, (float("-inf"), float("inf")), (0.0, 1.0)),
+    ("special_nan", 4096, 0.5, (float("nan"), float("nan")), (0.0, 1.0)),
+    ("special_zero", 4096, 0.5, (0.0, 0.0), (0.0, 1.0)),
+]
+
+# Coverage manifest (dimension -> number of L1/L2/Boundary cases covering it).
+COVERAGE_CATEGORY = "Vector"
+COVERAGE_MANIFEST = {
+    "D-DTYPE-fp32": 20,
+    "D-SHAPE-ALIGNED": 10,
+    "D-SHAPE-TAIL-1": 3,
+    "D-SHAPE-TAIL-MID": 7,
+    "D-SHAPE-PRIME": 5,
+    "D-SHAPE-EDGE": 3,
+    "D-VALRANGE-S": 7,
+    "D-VALRANGE-M": 5,
+    "D-VALRANGE-L": 5,
+    "D-VALRANGE-TINY": 1,
+    "D-VALRANGE-ASYM": 5,
+    "D-PARAM-iou_threshold": 20,
+    "D-SPECIAL-INF": 1,
+    "D-SPECIAL-NAN": 1,
+    "D-SPECIAL-ZERO": 1,
+    "D-SPECIAL-DBOUND": 1,
+    "D-EXC-DTYPE": 2,
+    "D-EXC-SHAPE": 2,
+    "D-EXC-PARAM": 2,
+}
+COVERAGE_NA = {
+    "D-DTYPE-fp16": "NMS schema is float32-only",
+    "D-DTYPE-bf16": "NMS schema is float32-only",
+}
 
 
 # ========== L0 (gate) ==========
@@ -239,6 +285,11 @@ def test_nms_l2():
 # ========== Boundary (special values) ==========
 def test_nms_boundary():
     failures = [cid for cid, N, thr, vr in BOUNDARY_CASES if not _run_cb(cid, N, thr, vr, "boundary")]
+    failures += [
+        name
+        for name, N, thr, boxes_vr, scores_vr in SPECIAL_CASES
+        if not _run_case(name, N, thr, boxes_vr, scores_vr, SEED_BASE + 100, "boundary")
+    ]
 
     out = nms(torch.rand(0, 4).npu(), torch.rand(0).npu(), 0.5)
     if out.numel() != 0:
