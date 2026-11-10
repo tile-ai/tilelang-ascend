@@ -60,9 +60,8 @@ Covers:
 
 Strategy:
   - VS-only mode (sibling AscendSyncInsert OFF, VS ON) for isolation.
-  - CombineCV is enabled by default (TL_ASCEND_AUTO_CV_COMBINE: True) as it is
-    required for correct pipeline tracking.  A dedicated test verifies the
-    CV-combine-OFF path.
+  - CombineCV assigns Cube/Vector scopes by default. A dedicated test
+    explicitly disables it and supplies a Vector scope.
   - Differential testing: compile same kernel with VS ON vs OFF, assert delta.
   - Inspect generated source via kernel.get_kernel_source() + regex assertions.
   - Parametrized over ascendc and pto backends.
@@ -84,21 +83,18 @@ PASS_VS_ONLY = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC_VS: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
 }
 
 PASS_NO_SYNC = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC_VS: False,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
 }
 
 PASS_FULL = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC_VS: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
 }
 
 PASS_VS_NO_CV = {
@@ -112,7 +108,6 @@ PASS_VS_NO_PLAN = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC_VS: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: False,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
 }
 
 
@@ -1613,7 +1608,6 @@ def test_pto_auto_enabled_by_default():
     pass_configs = {
         tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
         tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-        tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     }
     src, _ = _compile_and_get_source(main, pass_configs, target="pto", out_idx=[1])
     _assert_has_sync(src, "pto", "barrier_v")
@@ -1680,10 +1674,10 @@ def test_preexisting_barrier_recognition(target):
 
 @pytest.mark.ci_skip
 def test_vs_with_cv_combine_off():
-    """VS ON + CV combine OFF -> V->V barrier still inserted (no resource_scope).
+    """VS ON + CV combine OFF -> V->V barrier works in an explicit V scope.
 
-    Without CV combine, there are no resource_scope AttrStmt boundaries.
-    VS should still insert V->V barriers based on name matching.
+    Without CV combine, the source must assign hardware work explicitly.
+    VS should still insert V->V barriers inside that resource scope.
 
     Note: PTO backend has a known compilation issue with CV combine OFF
     (unrelated to VS pass), so this test only runs on ascendc.
@@ -1697,10 +1691,11 @@ def test_vs_with_cv_combine_off():
         with T.Kernel(1, is_npu=True) as (cid, vid):
             a_ub = T.alloc_ub((64, 128), "float32")
             b_ub = T.alloc_ub((64, 128), "float32")
-            T.copy(A[:, :], a_ub)
-            T.tile.exp(b_ub, a_ub)
-            T.tile.exp(b_ub, b_ub)
-            T.copy(b_ub, B[:, :])
+            with T.Scope("V"):
+                T.copy(A[:, :], a_ub)
+                T.tile.exp(b_ub, a_ub)
+                T.tile.exp(b_ub, b_ub)
+                T.copy(b_ub, B[:, :])
 
     src, _ = _compile_and_get_source(main, PASS_VS_NO_CV, target="ascendc", out_idx=[1])
     _assert_has_sync(src, "ascendc", "barrier_v")
@@ -1735,7 +1730,14 @@ def test_vs_with_memory_planning_off(target):
 
 @pytest.mark.ci_skip
 def test_a5_ascendc_pipe_v_v_barrier():
-    """Platform A5 + ascendc + V->V -> no PipeBarrier<PIPE_V>."""
+    """A5 VS uses V_V events; managed-mask passes leave its semantic IR unchanged.
+
+    AscendC A5 codegen is unsupported, so inspect the real pass output before
+    source generation rather than JIT-compiling it with dav-2201 flags.
+    """
+    from tilelang.engine.phase import LowerAndLegalize, OptimizeForTarget
+    from tvm import IRModule, ir, tir
+    from tvm.target import Target
 
     @T.prim_func
     def main(
@@ -1750,8 +1752,47 @@ def test_a5_ascendc_pipe_v_v_barrier():
             T.tile.exp(b_ub, b_ub)
             T.copy(b_ub, B[:, :])
 
-    src, _ = _compile_and_get_source(main, PASS_VS_ONLY, target="ascendc", platform="A5", out_idx=[1])
-    _assert_has_sync(src, "ascendc", "v_v")
+    target = Target({"kind": "llvm", "model": "ascendc"})
+    mod = IRModule({"main": main.with_attr("npu_platform", "A5")})
+    with tilelang.transform.PassContext(config=PASS_VS_ONLY):
+        mod = OptimizeForTarget(LowerAndLegalize(mod, target), target, "A5")
+        selected = tilelang.transform.AscendVectorInstructionSelection(target, "A5")(mod)
+        legalized = tilelang.transform.AscendVectorMaskLegalize(target, "A5")(selected)
+    ir.assert_structural_equal(mod, selected)
+    ir.assert_structural_equal(mod, legalized)
+
+    calls = []
+    scopes = []
+
+    def collect(node):
+        if isinstance(node, tir.Call) and isinstance(node.op, ir.Op):
+            calls.append(node)
+        if isinstance(node, tir.AttrStmt) and node.attr_key == "resource_scope":
+            scopes.append(node)
+
+    tir.stmt_functor.post_order_visit(legalized["main"].body, collect)
+    relevant = [call for call in calls if call.op.name in {"tl.ascend_exp", "tl.ascend_auto_set_flag", "tl.ascend_auto_wait_flag"}]
+    assert [call.op.name for call in relevant] == ["tl.ascend_exp", "tl.ascend_auto_set_flag", "tl.ascend_auto_wait_flag", "tl.ascend_exp"]
+    set_flag, wait_flag = relevant[1:3]
+    assert str(set_flag.args[0].value) == str(wait_flag.args[0].value) == "V_V"
+    ir.assert_structural_equal(set_flag.args[1], wait_flag.args[1])
+    for call in calls:
+        assert not call.op.name.startswith("tl.ascend_set_mask_")
+        if call.op.name in {"tl.ascend_auto_barrier", "tl.ascend_pipe_barrier"} and call.args:
+            assert str(call.args[0].value) not in {"V", "PIPE_V"}
+
+    vector_calls = []
+    for scope in scopes:
+        inside = []
+        tir.stmt_functor.post_order_visit(
+            scope.body, lambda node, inside=inside: inside.append(node) if isinstance(node, tir.Call) else None
+        )
+        if int(scope.value) == 1:
+            vector_calls.extend(inside)
+        else:
+            assert int(scope.value) == 0
+            assert not any(call.same_as(node) for call in relevant for node in inside)
+    assert all(any(call.same_as(node) for node in vector_calls) for call in relevant)
 
 
 @pytest.mark.ci_skip
@@ -1803,7 +1844,6 @@ def test_ascendc_default_vs_off():
     pass_configs = {
         tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
         tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
-        tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     }
     src, _ = _compile_and_get_source(main, pass_configs, target="ascendc", out_idx=[1])
     _assert_no_auto_sync(src, "ascendc")

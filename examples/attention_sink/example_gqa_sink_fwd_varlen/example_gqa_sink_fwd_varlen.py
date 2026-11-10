@@ -4,7 +4,7 @@ GQA + Attention Sink Forward (Variable-length) for Ascend NPU — Expert Mode.
 Layout: 4D padded [B, H, S, D] (varlen inputs are padded on host side).
 Supports: GQA (grouped-query), causal mask, attention sink, fp16.
 
-Based on fa_opt multi-buffer pipeline port (flash_attn_bhsd_expert_h16_d128.py):
+Based on the fa_opt multi-buffer pipeline in `expert_v1/kernel.py`:
   - Fixed Core + workspace [core_num, num_stages, ...] (L2 cache residency)
   - Multi-buffer pipeline with 6-flag batched cross-core sync
   - T.mma + L0A/L0B/L0C double-buffer + ZN/NZ layout
