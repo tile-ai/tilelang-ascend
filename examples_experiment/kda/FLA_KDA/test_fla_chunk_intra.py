@@ -18,7 +18,7 @@ import tilelang
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from example_fla_chunk_intra import (  # noqa: E402
+from fla_chunk_intra import (  # noqa: E402
     fla_chunk_intra_bwd_intra,
     fla_chunk_intra_fwd_inter_solve_fused,
 )
