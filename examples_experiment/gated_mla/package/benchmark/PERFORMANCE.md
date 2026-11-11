@@ -1,5 +1,9 @@
 # Gated MLA performance evidence
 
+Latest balanced-order evidence: [2026-11-12 report](PERFORMANCE_BALANCED_20261112.md).
+The tables below retain the earlier measurement protocol and are not pooled with
+the newer trials.
+
 The measured candidate is the packaged seven-input forward, before W_O. Input
 projections/norm, gate-logit generation, cache append and communication are
 outside this scope. Measurements are not whole-model serving results.

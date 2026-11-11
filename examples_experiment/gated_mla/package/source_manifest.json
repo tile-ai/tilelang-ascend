@@ -524,6 +524,58 @@
     {
       "path": "validation/run_core_ci.py",
       "sha256": "2b489c2df76bc9fead97f6a1d7e546d27f53141fef96e3ea19b45618689c4df7"
+    },
+    {
+      "path": "benchmark/host_decode_diagnostic.py",
+      "sha256": "63a1c20f0d1c1574ca15916da1f7b8d59d0046ac9b03fb00359bc7289fb448d8"
+    },
+    {
+      "path": "benchmark/paired_benchmark.py",
+      "sha256": "85a845e1d03508d54bed1236e7c556c6aded7f5a9c6c0e817011d98cc70370bf"
+    },
+    {
+      "path": "benchmark/paired_timing.py",
+      "sha256": "c4110ba3929268035124a554082f55a4b2d4cbad3ef088111d38dca748d4e9fb"
+    },
+    {
+      "path": "benchmark/run_paired_suite.py",
+      "sha256": "3bf31f90bd873025699c04419195e72850c4f7c8414126f318d3f4fabeee65e5"
+    },
+    {
+      "path": "ci_entries/run_host_decode_diagnostic.py",
+      "sha256": "b795544394a353707cd6b49b2ff76c44312eb67da8e4f25bc2a315de2e4d01b3"
+    },
+    {
+      "path": "ci_entries/run_paired_benchmark.py",
+      "sha256": "41c808218abefc379eb50077965f1f449ec1ce6d4a65d4c7dd1b4a8ca36adaac"
+    },
+    {
+      "path": "ci_entries/run_paired_timing.py",
+      "sha256": "03a1b38ccb18689b6808eb1beaea7ac1695f6e1dbc1d808978d87484dd8ec143"
+    },
+    {
+      "path": "ci_entries/run_perf_summary.py",
+      "sha256": "8d1c2aec7947df164a14380568c83f83a45acad907879aa155cadd90457fe75c"
+    },
+    {
+      "path": "tests/_perf_tools.py",
+      "sha256": "ef491db53927fa314b730b0748caa7a5e37d2d0f1814a123977cb26096769a2a"
+    },
+    {
+      "path": "tests/test_host_decode_diagnostic.py",
+      "sha256": "3b8a0182f29abfb7dd4201d8985603e7c9988c6a5a19afb07e33509b8c00cb9b"
+    },
+    {
+      "path": "tests/test_paired_benchmark.py",
+      "sha256": "49589c56f44479a585de2535205adfacbe6cc770baec1c5e9bad8e1d57744d7f"
+    },
+    {
+      "path": "tests/test_paired_timing.py",
+      "sha256": "71dc3492dd794baf4bd1d25ffdcf3aeaabf70c4cf33bb36c8799369d666058d9"
+    },
+    {
+      "path": "tests/test_perf_summary.py",
+      "sha256": "60236a192028118aa7535f56a346fc7ba58d6bf846a4c45fa38c6a878d80aef0"
     }
   ],
   "runtime_baseline": {

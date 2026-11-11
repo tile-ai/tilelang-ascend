@@ -145,7 +145,7 @@ and qualified baseline. Results from different runs or boundaries must not be
 combined into a new ratio. An approximate70% reference rate is the current project
 target, not a claimed property of every shape; unqualified comparators are not scored.
 See [validation results](VALIDATION.md) and [remaining acceptance](REGRESSION_GAPS.md)
-for implemented regressions, recorded device evidence and the separate cold gate.
+for implemented regressions, recorded device evidence and the additional local cold-time target.
 
 ## Reproduction
 
@@ -167,8 +167,11 @@ python "$PKG/validation/run_core_ci.py" --repo-root "$PWD" \
 
 The wrapper resolves the active manifest's ten files and uses `--forked -n8`.
 Its full boundary includes collection, compilation, loading, tests and audit.
-A serial/cached pytest-only duration is not evidence for the120s gate; see
-[VALIDATION](VALIDATION.md) for the pending final verdict.
+The wrapper additionally enforces a strict local 120s cold-time target; it is not
+a hosted pytest timeout. The repository template permits a core/daily split when
+full tests exceed two minutes. This package retains 145 core and 22 low_priority
+cases, measured at 187.6994s and 172.8109s respectively, without changing tests or
+markers. See [VALIDATION](VALIDATION.md) for correctness and timing boundaries.
 
 The wheel installs `gmla` and its kernel design note; source tests, audit tools
 and root manifests remain source-checkout artifacts. Source pytest adds this
@@ -190,8 +193,9 @@ smoke and the outstanding cold/hosted CI boundary are detailed in [VALIDATION](V
 The files in `gmla/kernels` are real executable TileLang kernels. The experimental
 location describes the integration/acceptance status, not a Torch simulation.
 Only the documented forward layouts, shapes and environments have evidence;
-suite registrations and range regressions are present, while final cold/hosted CI
-and broader deployment acceptance remain separate gates. Moving this package to `examples/` should follow
+suite registrations and range regressions are present; the additional local
+cold-time target, hosted CI and broader deployment acceptance remain separate.
+Moving this package to `examples/` should follow
 the repository's performance, test and review gates, not merely the existence of
 working kernels. The retained single-domain L0 example outside this package is a
 separate regression entry.

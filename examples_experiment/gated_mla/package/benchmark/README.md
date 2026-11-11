@@ -85,3 +85,14 @@ reference) and `--validated-report <report.json>` under `msprof op`. Keep the
 application output in a separate `entry/` subdirectory of the profiler output.
 Inspect the entry status, kernel records and generated sources: a profiler exit
 code of zero alone does not prove the application ran successfully.
+
+## Balanced order and host diagnostics
+
+[Paired testing](PAIRED_TESTING.md) adds serial independent-process trials, all six
+method orders, separate Event/wall/graph statistics and per-boundary qualification.
+[The 2026-11-12 report](PERFORMANCE_BALANCED_20261112.md) records the twelve
+case/dtype/backend combinations; historical results above retain their original
+protocol. The production numerical implementation is unchanged.
+
+The independent `host_decode_diagnostic.py` keeps uninstrumented timing separate
+from cProfile attribution; see [its boundary and commands](HOST_DIAGNOSTIC.md).

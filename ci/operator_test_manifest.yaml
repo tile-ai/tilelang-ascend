@@ -285,3 +285,9 @@ mappings:
   examples_experiment/gated_mla/package/ci_entries/run_contracts.py: examples_experiment/gated_mla/package/tests/test_contracts.py
   examples_experiment/gated_mla/package/ci_entries/run_preflight.py: examples_experiment/gated_mla/package/tests/test_preflight.py
   examples_experiment/gated_mla/package/ci_entries/run_value_range.py: examples_experiment/gated_mla/package/tests/test_value_range_npu.py
+
+  # Gated MLA performance harness CPU suites; helpers retain directory fallback.
+  examples_experiment/gated_mla/package/ci_entries/run_paired_timing.py: examples_experiment/gated_mla/package/tests/test_paired_timing.py
+  examples_experiment/gated_mla/package/ci_entries/run_paired_benchmark.py: examples_experiment/gated_mla/package/tests/test_paired_benchmark.py
+  examples_experiment/gated_mla/package/ci_entries/run_host_decode_diagnostic.py: examples_experiment/gated_mla/package/tests/test_host_decode_diagnostic.py
+  examples_experiment/gated_mla/package/ci_entries/run_perf_summary.py: examples_experiment/gated_mla/package/tests/test_perf_summary.py
