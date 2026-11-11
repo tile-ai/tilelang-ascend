@@ -279,6 +279,10 @@ def update_submodules():
         return
 
     try:
+        # Refresh submodule remote URLs from .gitmodules first: clones made before
+        # a submodule repository migration still point at the stale remote and
+        # would fail to fetch the recorded pointer.
+        subprocess.check_call(["git", "submodule", "sync", "--recursive"])
         subprocess.check_call(["git", "submodule", "update", "--init", "--recursive"])
     except subprocess.CalledProcessError as error:
         raise RuntimeError("Failed to update submodules") from error
