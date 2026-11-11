@@ -22,8 +22,8 @@ What changed against the earlier chunkwise port (interface only, math intact)
       put on axis 1 with an explicit slice (see the note in the V scope).
     * GVA: Q/Kt carry H heads, everything else HV.  A value head hv reads key
       head hq = hv // GRP.
-    * beta arrives as [B, SEQ, HV, 8] fp32 (32B-aligned, data in column 0)
-      instead of [B, H, L] in the input dtype.
+    * beta arrives as [B, SEQ, HV] in the key dtype.  The host adds a unit
+      axis as a view; 32B alignment, padding and widening to fp32 happen in UB.
     * A arrives as [B, SEQ, HV, C] in the input dtype, straight from the
       solve_tril kernel -- the [C, C] tile per (chunk, head) is now strided too.
     * dtype is threaded through from the caller (fp16 / bf16), never hardcoded.
@@ -793,7 +793,7 @@ def wy_fast(k, v, beta, G, A, C, BK=None, BV=None, cu_seqlens=None, fixed_core=F
 
         k    [B, SEQ, H,  K]  dtype    key, not GVA-expanded
         v    [B, SEQ, HV, V]  dtype
-        beta [B, SEQ, HV]     any float, read as fp32
+        beta [B, SEQ, HV]     same dtype/device as k, contiguous; widened in UB
         G    [B, SEQ, HV, K]  fp32     stage-1 output (chunk-local cumsum)
         A    [B, SEQ, HV, C]  dtype    stage-3 output
         ->   W [B, SEQ, HV, K], U [B, SEQ, HV, V], both in dtype
@@ -820,6 +820,10 @@ def wy_fast(k, v, beta, G, A, C, BK=None, BV=None, cu_seqlens=None, fixed_core=F
     assert C % (VEC_NUM * 16) == 0, f"C must be a multiple of {VEC_NUM * 16}, got {C}"
     assert G.shape == (B, SEQ, HV, K) and G.dtype == torch.float, "G must be fp32 [B, SEQ, HV, K]"
     assert A.shape == (B, SEQ, HV, C) and A.dtype == k.dtype, "A must be dtype [B, SEQ, HV, C]"
+    assert beta.shape == (B, SEQ, HV), f"beta must be {(B, SEQ, HV)}, got {tuple(beta.shape)}"
+    assert beta.dtype == k.dtype, f"beta must have k dtype {k.dtype}, got {beta.dtype}"
+    assert beta.device == k.device, f"beta is on {beta.device}, k is on {k.device}"
+    assert beta.is_contiguous(), "beta must be contiguous"
 
     BK = K if BK is None else BK
     BV = V if BV is None else BV

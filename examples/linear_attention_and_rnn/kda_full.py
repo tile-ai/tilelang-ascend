@@ -131,6 +131,9 @@ def kda_chunk_fwd(
     # held only because no caller tested it.  Check once, at the entry, and hand
     # stage 1 the tensor untouched.
     assert g.dtype == torch.float32, f"g is the fp32 log-domain gate in the frozen contract, got {g.dtype}"
+    assert beta.shape == (B, SEQ, HV), f"beta must be {(B, SEQ, HV)}, got {tuple(beta.shape)}"
+    assert beta.dtype == k.dtype, f"beta must have k dtype {k.dtype}, got {beta.dtype}"
+    assert beta.device == k.device, f"beta is on {beta.device}, k is on {k.device}"
     if scale is None:
         scale = K**-0.5
 
@@ -228,6 +231,109 @@ def kda_chunk_fwd(
 
 
 # -------------------------------------------------------------------- tests
+def test_host_input_contracts():
+    """Reject invalid state/beta before any stage; preserve beta's storage."""
+    from unittest.mock import patch
+
+    import kda.kda_wy_fast as wy_module
+
+    def unexpected_stage(*args, **kwargs):
+        raise RuntimeError("host validation reached a kernel stage")
+
+    def reject(call, message, *args, **kwargs):
+        try:
+            call(*args, **kwargs)
+        except AssertionError as error:
+            assert message in str(error), str(error)
+        else:
+            raise AssertionError(f"invalid input was accepted: {message}")
+
+    def capture_builder(beta, outputs, seen):
+        before = beta.clone()
+
+        def builder(*args, **kwargs):
+            assert kwargs["dtype"] == ("float16" if beta.dtype == torch.float16 else "bfloat16")
+
+            def launch(*args):
+                passed = args[2]
+                assert passed.shape == (*beta.shape, 1)
+                assert passed.dtype == beta.dtype and passed.data_ptr() == beta.data_ptr()
+                assert torch.equal(passed.squeeze(-1), before)
+                seen.append(True)
+                return outputs
+
+            return launch
+
+        return builder
+
+    B, H, HV, K, V = 1, 1, 2, 16, 32
+    for seq in (0, 1):
+        q = torch.zeros((B, seq, H, K), dtype=torch.float16, device="cpu")
+        k = torch.zeros_like(q)
+        v = torch.zeros((B, seq, HV, V), dtype=q.dtype, device="cpu")
+        g = torch.zeros((B, seq, HV, K), dtype=torch.float32, device="cpu")
+        beta = torch.zeros((B, seq, HV), dtype=q.dtype, device="cpu")
+        state = torch.zeros((B, HV, K, V), dtype=torch.float32, device="cpu")
+        wrong_states = (
+            (state[:, :1], "initial_state must be"),
+            (state.half(), "initial_state must be float32"),
+            (torch.empty(state.shape, device="meta", dtype=torch.float32), "initial_state is on"),
+            (torch.zeros((B, HV, V, K), dtype=torch.float32, device="cpu").transpose(-1, -2), "initial_state must be contiguous"),
+        )
+        with patch.dict(globals(), {"chunk_cumsum": unexpected_stage}):
+            for bad, message in wrong_states:
+                reject(kda_chunk_fwd, message, q, k, v, g, beta, initial_state=bad)
+            for bad, message in (
+                (beta.unsqueeze(-1), "beta must be"),
+                (beta.float(), "beta must have k dtype"),
+                (torch.empty(beta.shape, device="meta", dtype=beta.dtype), "beta is on"),
+            ):
+                reject(kda_chunk_fwd, message, q, k, v, g, bad)
+
+    # Empty batches still validate their per-sequence state before relaying it.
+    cu = torch.tensor([0, 0, 0], dtype=torch.int64, device="cpu")
+    q, k, v, g, beta = q[:, :0], k[:, :0], v[:, :0], g[:, :0], beta[:, :0]
+    reject(kda_chunk_fwd, "initial_state must be", q, k, v, g, beta, initial_state=state, cu_seqlens=cu)
+    state = torch.arange(2 * HV * K * V, dtype=torch.float32, device="cpu").reshape(2, HV, K, V)
+    output, final = kda_chunk_fwd(q, k, v, g, beta, initial_state=state, cu_seqlens=cu, output_final_state=True)
+    assert output.shape == (B, 0, HV, V)
+    assert torch.equal(final, state) and final.data_ptr() != state.data_ptr()
+
+    for dtype in (torch.float16, torch.bfloat16):
+        seq = 64
+        k = torch.zeros((B, seq, H, K), dtype=dtype, device="cpu")
+        v = torch.zeros((B, seq, HV, V), dtype=dtype, device="cpu")
+        g = torch.zeros((B, seq, HV, K), dtype=torch.float32, device="cpu")
+        a = torch.zeros((B, seq, HV, 64), dtype=dtype, device="cpu")
+        beta = torch.arange(B * seq * HV, dtype=dtype, device="cpu").reshape(B, seq, HV) / 128
+        before = beta.clone()
+        seen = []
+        outputs = (torch.empty_like(g, dtype=dtype), torch.empty_like(v))
+
+        builder = capture_builder(beta, outputs, seen)
+        with patch.object(wy_module, "wy_fast_ker", builder), patch.object(wy_module, "wy_fast_ker_fixed_core", builder):
+            for fixed in (False, True):
+                with patch.dict(os.environ, {"KDA_WY_FIXEDCORE": "1" if fixed else "0"}):
+                    assert wy_module.wy_fast(k, v, beta, g, a, 64) is outputs
+            assert len(seen) == 2 and torch.equal(beta, before)
+
+        noncontiguous = torch.zeros((B, HV, seq), dtype=dtype, device="cpu").transpose(1, 2)
+        for bad, message in (
+            (beta.unsqueeze(-1), "beta must be"),
+            (beta.float(), "beta must have k dtype"),
+            (torch.empty(beta.shape, device="meta", dtype=dtype), "beta is on"),
+            (noncontiguous, "beta must be contiguous"),
+        ):
+            with (
+                patch.object(wy_module, "wy_fast_ker", unexpected_stage),
+                patch.object(wy_module, "wy_fast_ker_fixed_core", unexpected_stage),
+            ):
+                reject(wy_module.wy_fast, message, k, v, bad, g, a, 64)
+                # PyTorch treats zero-element views as contiguous, irrespective of strides.
+                if message != "beta must be contiguous":
+                    reject(wy_module.wy_fast, message, k[:, :0], v[:, :0], bad[:, :0], g[:, :0], a[:, :0], 64)
+
+
 def _mk(B, SEQ, H, HV, K, V, gate, dtype, with_state=False):
     """Inputs on CPU (goldens must not run on the NPU -- see note in main)."""
     return _L0.make_inputs(B, SEQ, H, HV, K, V, device="cpu", dtype=dtype, gate=gate, seed=0, with_state=with_state)
@@ -579,7 +685,8 @@ def main():
     # The roll-up is printed last so that the one line the example runner shows
     # for a failing script (`tail -n 1`, examples/bench_test.sh) names the check
     # that failed, rather than whatever the last one happened to print.
-    results = []
+    test_host_input_contracts()
+    results = [("host_input_contracts", True)]
     for name, fn in (
         ("vs_both_goldens", test_vs_both_goldens),
         ("state_relay", test_state_relay),
