@@ -197,6 +197,33 @@ BOUNDARY_CASES = [
     (19, [4, 128, 255, 257], "float16", 32, 1e-3, (-65504, 65504)),  # fp16 range bound
 ]
 
+# Coverage manifest (dimension -> number of L1/L2/Boundary cases covering it).
+# Counts are derived from the case tables above; one case may cover several
+# dimensions, so the counts are not expected to sum to the number of cases.
+COVERAGE_CATEGORY = "Vector"
+COVERAGE_MANIFEST = {
+    "D-DTYPE-fp16": 6,
+    "D-DTYPE-fp32": 6,
+    "D-DTYPE-bf16": 5,
+    "D-SHAPE-2D": 1,
+    "D-SHAPE-3D": 1,
+    "D-SHAPE-4D": 14,
+    "D-SHAPE-5D": 1,
+    "D-SHAPE-IRREGULAR": 14,
+    "D-SHAPE-PRIME": 14,
+    "D-SHAPE-EDGE": 3,
+    "D-PARAM-num_groups": 20,
+    "D-PARAM-eps": 20,
+    "D-SPECIAL-INF": 1,
+    "D-SPECIAL-NAN": 1,
+    "D-SPECIAL-ZERO": 1,
+    "D-SPECIAL-DBOUND": 1,
+    "D-EXC-DTYPE": 1,
+    "D-EXC-SHAPE": 1,
+    "D-EXC-INPUT": 1,
+}
+COVERAGE_NA = {}
+
 
 # ========== L0 (gate) ==========
 def test_group_norm_l0():

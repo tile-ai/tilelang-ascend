@@ -601,9 +601,31 @@ def _get_kernel_2d(N, G, cpg, cpg_padded, eps, dtype_str):
 
 def group_norm(x, gamma, beta, num_groups, epsilon=1e-5):
     """GroupNorm host function."""
-    original_shape = x.shape
+    if not isinstance(x, torch.Tensor) or not isinstance(gamma, torch.Tensor) or not isinstance(beta, torch.Tensor):
+        raise TypeError("group_norm: x/gamma/beta must be torch tensors")
+    if x.dim() < 2:
+        raise ValueError(f"group_norm: x must be at least 2D [N,C,...], got shape {tuple(x.shape)}")
+    if not isinstance(num_groups, int) or isinstance(num_groups, bool) or num_groups <= 0:
+        raise ValueError(f"group_norm: num_groups must be a positive int, got {num_groups!r}")
+    if not isinstance(epsilon, (int, float)) or isinstance(epsilon, bool) or epsilon <= 0:
+        raise ValueError(f"group_norm: epsilon must be a positive number, got {epsilon!r}")
+
     N = x.shape[0]
     C = x.shape[1]
+    if C % num_groups != 0:
+        raise ValueError(f"group_norm: C={C} must be divisible by num_groups={num_groups}")
+    if gamma.dim() != 1 or gamma.shape[0] != C:
+        raise ValueError(f"group_norm: gamma must be 1D [C] with C={C}, got shape {tuple(gamma.shape)}")
+    if beta.dim() != 1 or beta.shape[0] != C:
+        raise ValueError(f"group_norm: beta must be 1D [C] with C={C}, got shape {tuple(beta.shape)}")
+    if x.dtype not in (torch.float16, torch.float32, torch.bfloat16):
+        raise TypeError(f"group_norm: unsupported dtype {x.dtype} (supported: float16/float32/bfloat16)")
+    if gamma.dtype != x.dtype or beta.dtype != x.dtype:
+        raise TypeError(f"group_norm: x/gamma/beta dtypes must be identical, got x={x.dtype}, gamma={gamma.dtype}, beta={beta.dtype}")
+    if not x.is_contiguous() or not gamma.is_contiguous() or not beta.is_contiguous():
+        raise ValueError("group_norm: x/gamma/beta must be contiguous tensors")
+
+    original_shape = x.shape
     S = 1
     for i in range(2, x.ndim):
         S *= x.shape[i]
