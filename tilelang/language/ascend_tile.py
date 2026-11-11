@@ -1365,7 +1365,7 @@ def sigmoid(
 ):
     """Performs element-wise Sigmoid activation: dst[i] = 1 / (1 + exp(-src[i])).
 
-Args:
+    Args:
         dst: The destination buffer; it may alias src (in-place).
         src: The source, a buffer or a contiguous region of it.
         tmp: Optional explicit UB scratch storage, used by the AscendC backend

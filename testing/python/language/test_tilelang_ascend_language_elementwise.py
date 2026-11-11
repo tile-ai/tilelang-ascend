@@ -510,6 +510,7 @@ def leaky_relu_inplace(N, alpha, dtype="float"):
             T.tile.leaky_relu(a_ub, a_ub, alpha)
             T.copy(a_ub, B)
 
+
 def vec_silu_inplace(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
@@ -613,6 +614,7 @@ def test_sigmoid_src_after_call(dtype, target):
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_silu_src_after_call(dtype, target):
     run_test_src_after_call(activation_out_of_place("silu", 256, dtype), lambda a: a * torch.sigmoid(a), 256, dtype, target)
+
 
 def run_test_silu_inplace(M, N, block_M, block_N, dtype, target):
     func = vec_silu_inplace(M, N, block_M, block_N, dtype)
