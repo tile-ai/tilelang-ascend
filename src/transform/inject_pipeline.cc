@@ -32,6 +32,8 @@
 #include "tir/schedule/utils.h"
 #include "tir/transforms/ir_utils.h"
 
+#include <tvm/tir/expr.h>
+
 namespace tvm {
 namespace tl {
 using namespace tir;
@@ -173,7 +175,13 @@ private:
         const PrimExpr &old_index = call->args[i + 1];
         PrimExpr offset;
         if (new_buffer->strides.empty()) {
-          offset = product(buffer->shape);
+          // RewriteAllocBuffer may have padded the per-version shape of an L1
+          // buffer to its zN fractal extent; the version stride must follow
+          // the PADDED (remapped) shape, not the original logical one,
+          // otherwise adjacent versions overlap (issue #1341 pipeline
+          // variant). Drop the version axis and multiply the rest.
+          offset = product(Array<PrimExpr>(new_buffer->shape.begin() + 1,
+                                           new_buffer->shape.end()));
         } else {
           offset = new_buffer->strides[0];
         }
@@ -353,17 +361,17 @@ public:
     Block block = MakeBlock(stmt, buffer_data_to_buffer_);
     block.CopyOnWrite()->alloc_buffers = std::move(alloc_buffers);
 
-    //todo:
-    // // === 新增：将版本信息添加到block属性中 ===
-    // auto block_ptr = block.CopyOnWrite();
-    // // 获取现有annotations或创建新的
-    // auto annotations =
-    //     block_ptr->annotations.defined()
-    //         ? Downcast<Map<String, ObjectRef>>(block_ptr->annotations)
-    //         : Map<String, ObjectRef>();
-    // // 添加版本信息
-    // annotations.Set("pipeline_buffer_versions", buffer_versions);
-    // block_ptr->annotations = annotations;
+    // todo:
+    //  // === 新增：将版本信息添加到block属性中 ===
+    //  auto block_ptr = block.CopyOnWrite();
+    //  // 获取现有annotations或创建新的
+    //  auto annotations =
+    //      block_ptr->annotations.defined()
+    //          ? Downcast<Map<String, ObjectRef>>(block_ptr->annotations)
+    //          : Map<String, ObjectRef>();
+    //  // 添加版本信息
+    //  annotations.Set("pipeline_buffer_versions", buffer_versions);
+    //  block_ptr->annotations = annotations;
 
     // return BlockRealize({}, Bool(true), block);
     return {BlockRealize({}, Bool(true), block), buffer_versions};
@@ -509,6 +517,40 @@ private:
    */
   Buffer RewriteAllocBuffer(const Buffer &buffer, int num_versions) {
     ObjectPtr<BufferNode> new_buffer = make_object<BufferNode>(*(buffer.get()));
+
+    // L1 buffers are physically zN-fractal, so one version of the buffer
+    // occupies ceil(N/C0) * roundUp16(M) * C0 elements -- possibly MORE than
+    // the logical M*N (e.g. zN(128, 200) spans 26624 vs 25600). Pad the
+    // per-version shape up to that extent before prepending the version axis,
+    // so the implicit version stride (product of the trailing dims) and the
+    // flattened Allocate size both use the physical extent. Without this,
+    // adjacent versions overlap: the previous version's fractal tail spills
+    // into the next version's base and a K-tail Mmad reads it (issue #1341,
+    // pipeline + T.Parallel variant). Only applies to constant-shape 2D
+    // shared.l1 buffers; everything else keeps the original shape.
+    const auto *ptr_type = buffer->data->type_annotation.as<PointerTypeNode>();
+    if (ptr_type != nullptr && ptr_type->storage_scope == "shared.l1" &&
+        buffer->shape.size() == 2 && buffer->dtype.bits() > 0 &&
+        buffer->dtype.lanes() == 1) {
+      const auto *rows = buffer->shape[0].as<IntImmNode>();
+      const auto *cols = buffer->shape[1].as<IntImmNode>();
+      if (rows != nullptr && cols != nullptr) {
+        const int64_t ele_per_c0 = 32 * 8 / buffer->dtype.bits();
+        auto round_up = [](int64_t v, int64_t m) {
+          return (v + m - 1) / m * m;
+        };
+        const int64_t padded_rows = round_up(rows->value, 16);
+        const int64_t padded_cols = round_up(cols->value, ele_per_c0);
+        const int64_t zn_extent = padded_rows * padded_cols;
+        const int64_t logical = static_cast<int64_t>(rows->value) * cols->value;
+        if (zn_extent > logical) {
+          new_buffer->shape =
+              Array<PrimExpr>{Integer(static_cast<int64_t>(padded_rows)),
+                              Integer(static_cast<int64_t>(padded_cols))};
+        }
+      }
+    }
+
     new_buffer->shape.insert(new_buffer->shape.begin(), PrimExpr(num_versions));
     if (new_buffer->strides.size()) {
       ICHECK(new_buffer->strides.size() + 1 == new_buffer->shape.size());
@@ -841,14 +883,14 @@ public:
     Stmt result = injector(func->body);
 
     if (!injector.collected_buffer_versions_.empty()) {
-      PrimFuncNode* fptr = func.CopyOnWrite();
+      PrimFuncNode *fptr = func.CopyOnWrite();
       auto fn_attr = fptr->attrs.CopyOnWrite();
       fn_attr->dict.Set("buffer_versions", injector.collected_buffer_versions_);
     }
 
     return result;
   }
-  
+
 private:
   explicit PipelineInjector(Optional<String> global_symbol)
       : global_symbol_(global_symbol) {}
@@ -1004,8 +1046,8 @@ private:
     ValidatePipelineBody(pipeline_info, original_order);
 
     // Step 4: Rewrite the pipeline body.
-    auto [pipeline_stmt, buffer_versions] = 
-    // Stmt pipeline =
+    auto [pipeline_stmt, buffer_versions] =
+        // Stmt pipeline =
         PipelineRewriter(buffer_data_to_buffer_, pipeline_allocs,
                          GetRef<For>(op), pipeline_info, predicate_condition)
             .BuildPipeline();

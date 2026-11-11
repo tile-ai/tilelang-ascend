@@ -33,24 +33,17 @@ def add_kernel(
 
 ### 动态 shape 符号
 
-- **T.dyn[...]**：通过 buffer 的 shape 属性获取动态维度
-  ```python
-  K = T.dyn['K']
-  @T.prim_func
-  def foo(A: T.Tensor((K,), 'float32')):
-      N = A.shape[0]
-      for i in T.serial(N):
-          ...
-  ```
+- 使用 `T.symbolic(name, dtype)` 创建动态维度；`T.dyn` 和 `T.dynamic` 不在当前
+  `tilelang.language` 公开接口中。
 
-- **T.dynamic(name, dtype)**：创建可直接使用的 tir.Var
-  ```python
-  K = T.dynamic('K', 'int32')
-  @T.prim_func
-  def bar(A: T.Tensor((K,), 'float32')):
-      for i in T.serial(K):
-          ...
-  ```
+```python
+K = T.symbolic("K", "int32")
+
+@T.prim_func
+def foo(A: T.Tensor((K,), "float32")):
+    for i in T.serial(A.shape[0]):
+        ...
+```
 
 
 ### T.Kernel
@@ -58,21 +51,24 @@ def add_kernel(
 定义 kernel 运行上下文，创建 tile block 与逻辑核的绑定。
 
 ```python
-with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
-    bx = cid // n_num
-    by = cid % n_num
+# Expert: explicit Cube/Vector scopes
+with T.Kernel(block_num, is_npu=True) as (cid, vid):
+    ...
+
+# Developer / Hybrid: compiler-managed launch
+with T.Kernel(block_num, threads=2, is_npu=True) as cid:
     ...
 ```
 
-- **cid**：计算任务 ID，范围 [0, block_num)
-- **vid**：Vector 单元索引（0 或 1），C、V 核配比为 1:2
+Ascend 只接受一个 block 维度，Developer `threads` 只能是 `1` 或 `2`。多维任务折叠到
+`block_num` 后用 `cid` 解码；不要把 GPU 的多维 grid 写法移植到 NPU。
 
 ### @jit 装饰器
 
 触发即时编译，将 kernel 编译为 NPU 可执行代码。
 
 ```python
-@jit(out_idx=[-1], pass_configs=pass_configs)
+@jit(out_idx=[-1], pass_configs=pass_configs, compile_flags=["-O3"])
 def tile_add(M, N, block_M, block_N, dtype='float'):
     @T.prim_func
     def main(...):
@@ -84,6 +80,11 @@ def tile_add(M, N, block_M, block_N, dtype='float'):
 - `out_idx`：指定输出参数索引，如 `[-1]` 表示最后一个参数为输出
 - `workspace_idx`：工作空间参数索引（详见下方 workspace 机制）
 - `pass_configs`：编译配置选项
+- `compile_flags`：当前 kernel 的额外 Bisheng 参数；不替代 `pass_configs`
+
+`compile_flags` 会进入 kernel cache key，且显式参数追加在 framework defaults 之后。
+优先使用它而不是修改 `TL_CCE_*` / `TL_PTO_DEBUG` 进程环境。完整契约和示例见
+[`docs/tutorials/jit_compilation.md`](../../../../../docs/tutorials/jit_compilation.md)。
 
 **常用 pass_configs**：
 ```python
@@ -99,7 +100,8 @@ pass_configs = {
 
 **作用**：workspace buffer 用于 Cube 核（L1）和 Vector 核（UB）之间的数据中转。
 
-由于 Ascend 硬件限制，UB 和 L1 不能直接互通，必须通过 Global Memory 中转：
+当前 TileLang Developer lowering 通过 Global Memory 中转 UB 与 L1 数据；这是框架所选
+路径，不是对所有底层硬件接口的通用可达性声明：
 
 ```
 L0C → workspace(GM) → UB   # Cube 输出到 Vector 处理

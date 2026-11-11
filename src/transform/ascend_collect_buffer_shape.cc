@@ -166,15 +166,60 @@ tvm::transform::Pass CreateFlatten2DPass() {
         total_elements = analyzer.Simplify(total_elements * ext);
       }
 
-      // The outer dimension is calculated to preserve the total number of
+      // L1 buffers are physically zN-fractal (copy_gm_to_l1 writes zN, the
+      // mma consumes whole C0 fractals), so the backing allocation must cover
+      // the fractal-padded extent ceil(N/C0) * roundUp16(M) * C0 even when
+      // the TIR buffer kept its logical [M, N] shape. That happens when an
+      // earlier pass (AscendLowerParallelToVector rebuilding Blocks without
+      // annotations) drops the default zN layout_map and LayoutInference
+      // falls back to a non-fractal layout: the tile-op offsets stay linear
+      // (which the vid-reduce workspace transform relies on), but sizing by
+      // the logical shape alone under-allocates and lets neighbouring L1
+      // allocations overlap the tail (issue #1341). Pad the total here, at a
+      // point where the tile ops are already lowered and only the memory
+      // planner consumes these shapes. For buffers already carrying the
+      // fractal extent (the normal zN-remapped 1D flow) this is a no-op.
+      if (scope == "shared.l1") {
+        auto init_it = initial_shapes.find(buffer_var);
+        if (init_it != initial_shapes.end() && (*init_it).second.size() >= 2) {
+          const Array<PrimExpr> &init_shape = (*init_it).second;
+          const IntImmNode *rows =
+              init_shape[init_shape.size() - 2].as<IntImmNode>();
+          const IntImmNode *cols =
+              init_shape[init_shape.size() - 1].as<IntImmNode>();
+          int bits = collector.GetBufferBits().at(buffer_var)->value;
+          const int64_t ele_per_c0 = bits > 0 ? 32 * 8 / bits : 0;
+          if (rows != nullptr && cols != nullptr && ele_per_c0 > 0) {
+            auto round_up16 = [](int64_t v) { return (v + 15) / 16 * 16; };
+            auto ceil_div = [](int64_t a, int64_t b) {
+              return (a + b - 1) / b;
+            };
+            const int64_t zn_extent = ceil_div(cols->value, ele_per_c0) *
+                                      round_up16(rows->value) * ele_per_c0;
+            if (const IntImmNode *total_imm = total_elements.as<IntImmNode>()) {
+              if (total_imm->value < zn_extent) {
+                total_elements = Integer(static_cast<int64_t>(zn_extent));
+              }
+            }
+          }
+        }
+      }
+
+      // The outer dimension is calculated to cover the total number of
       // elements. This formula correctly handles all cases:
       // - 1D [m] -> [1, m]
       // - 2D [n, m] -> [n, m]
       // - ND [d1, d2, ..., m] -> [d1*d2*..., m]
+      // For fractal-layout (zN/nZ) L1 buffers the collected extent is the
+      // layout-padded element count, which need not be divisible by the
+      // logical inner dim (e.g. zN(64, 200) spans 13312 = 66.56 * 200).
+      // Ceil-div keeps the [outer, inner] rectangle covering the whole
+      // allocation; a trunc-div here under-sizes the buffer and lets the
+      // next L1 allocation overlap its tail (issue #1341).
       PrimExpr inner_dim = GetInnerDim(buffer_var, shape, initial_shapes);
 
-      PrimExpr outer_dim =
-          analyzer.Simplify(truncdiv(total_elements, inner_dim));
+      PrimExpr outer_dim = analyzer.Simplify(
+          indexdiv(total_elements + inner_dim - 1, inner_dim));
 
       // handle DN/ND
       bool is_inner_dim_one = analyzer.CanProve(inner_dim == 1);

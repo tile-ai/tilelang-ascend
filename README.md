@@ -363,8 +363,6 @@ def vec_add(M, N, block_M, block_N, dtype="float"):
             B: T.Tensor((M, N), dtype),
             C: T.Tensor((M, N), dtype),
     ):
-        # Enable by setting the enable_auto_sync attribute
-        T.func_attr({"enable_auto_sync": True})
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
             bx = cid // n_num
             by = cid % n_num
@@ -574,7 +572,7 @@ for k in T.Pipelined(T.ceildiv(seq_len, block_N), num_stages=2):
     ...
 ```
 
-For performance tuning with `T.Pipelined` (choosing `num_stages`, Double Buffer, etc.), see the [Flash Attention Performance Optimization Guide](./examples/flash_attention/fa_opt/flash_attention_performance_optimization_zh.md).
+For performance tuning with `T.Pipelined` (choosing `num_stages`, Double Buffer, etc.), see the [Flash Attention Performance Optimization Guide](./examples/flash_attention/fa_opt/docs/optimization_guide_zh.md).
 
 ### Dive Deep into TileLang Beyond GEMM
 
