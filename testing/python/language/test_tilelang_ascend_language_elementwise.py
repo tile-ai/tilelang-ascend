@@ -510,6 +510,8 @@ def leaky_relu_inplace(N, alpha, dtype="float"):
             T.tile.leaky_relu(a_ub, a_ub, alpha)
             T.copy(a_ub, B)
 
+    return main
+
 
 def vec_silu_inplace(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
