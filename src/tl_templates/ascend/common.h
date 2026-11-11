@@ -2254,4 +2254,28 @@ CATLASS_DEVICE void transpose(LocalTensor<T> const &dst,
   }
 }
 
+// Software per-element left shift for the tensor shift-amount form of
+// T.tile.bitwise_lshift on the AscendC backend (A2/A3 has no native tensor
+// ShiftLeft). Each operand is a UB tile addressed with its physical row
+// stride; the scalar shift amount is reinterpreted through uint64_t so a
+// signed src0 receives a fixed-width logical left shift (avoiding C++ signed
+// left-shift UB and the value-preserving integer promotions of narrower
+// operands).
+template <typename T>
+CATLASS_DEVICE void
+tile_bitwise_lshift_tensor(LocalTensor<T> dst, LocalTensor<T> src0,
+                           LocalTensor<T> shift, uint32_t rows, uint32_t cols,
+                           uint32_t dst_stride, uint32_t src0_stride,
+                           uint32_t shift_stride) {
+  for (uint32_t r = 0; r < rows; ++r) {
+    for (uint32_t c = 0; c < cols; ++c) {
+      uint64_t src_bits =
+          static_cast<uint64_t>(src0.GetValue(r * src0_stride + c));
+      uint64_t shift_bits =
+          static_cast<uint64_t>(shift.GetValue(r * shift_stride + c));
+      dst.SetValue(r * dst_stride + c, static_cast<T>(src_bits << shift_bits));
+    }
+  }
+}
+
 } // namespace tl::ascend
