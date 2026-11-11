@@ -157,9 +157,16 @@ def make_bwd_inputs(B, S, H, DK, chunk, seed):
 
 def check_output(name, out, ref, atol, rtol, max_abs_limit, required_ratio):
     """Inlined mixed-tolerance dual gate (element-wise |a-g| <= atol+rtol*|g|,
-    overall matched_ratio >= required and max_abs <= limit)."""
+    overall matched_ratio >= required and max_abs <= limit). Non-finite golden
+    positions are structurally compared (NaN/Inf pattern must match) and
+    excluded from the numeric tolerance."""
     y_cpu = out.detach().cpu().float()
     ref_cpu = ref.detach().cpu().float()
+    special = ~torch.isfinite(ref_cpu)  # inf/nan structural comparison
+    if special.any():
+        assert torch.equal(torch.isnan(y_cpu[special]), torch.isnan(ref_cpu[special])) and torch.equal(
+            torch.isinf(y_cpu[special]), torch.isinf(ref_cpu[special])
+        ), f"{name} inf/nan structural mismatch"
     m = torch.isfinite(ref_cpu)
     abs_err = (y_cpu[m] - ref_cpu[m]).abs()
     ratio = (abs_err <= (atol + rtol * ref_cpu[m].abs())).float().mean().item()

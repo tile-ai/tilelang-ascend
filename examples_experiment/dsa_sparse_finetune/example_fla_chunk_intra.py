@@ -1426,3 +1426,49 @@ __all__ = [
     "fla_chunk_intra_bwd_k_gemm",
     "PASS_CONFIGS",
 ]
+
+
+if __name__ == "__main__":
+    # Smoke test: minimal shapes for both directions (fwd bf16 + bwd fp32);
+    # checks output shapes and finiteness. Input construction follows the
+    # upstream test harnesses (fwd gk = logsigmoid -> chunk-local cumsum,
+    # Akk_diag = ones; bwd raw randn, g NOT cumsum'd).
+    import torch.nn.functional as F
+
+    tilelang.cache.clear_cache()
+    torch.manual_seed(42)
+    B, S, H, DK, CS, SCS = 1, 64, 2, 128, 64, 16
+
+    # ---- fwd smoke (bf16 in, fp32 gate) ----
+    q = torch.randn(B, S, H, DK).bfloat16()
+    k = torch.randn(B, S, H, DK).bfloat16()
+    beta = torch.randn(B, S, H).bfloat16()
+    gk = F.logsigmoid(torch.randn(B, S, H, DK, dtype=torch.float32))
+    gk = gk.view(B, S // CS, CS, H, DK).cumsum(2).view(B, S, H, DK)
+    akk_diag = torch.ones(B, S, H, SCS, dtype=torch.float32)
+    aqk, akk = fla_chunk_intra_fwd_inter_solve_fused(q.npu(), k.npu(), gk.npu(), beta.npu(), akk_diag.npu())
+    assert aqk.shape == (B, S, H, CS) and akk.shape == (B, S, H, CS)
+    assert torch.isfinite(aqk.float()).all().item(), "Aqk contains NaN/Inf"
+    assert torch.isfinite(akk.float()).all().item(), "Akk contains NaN/Inf"
+
+    # ---- bwd smoke (all fp32) ----
+    ins = [
+        torch.randn(B, S, H, DK, dtype=torch.float32),  # q
+        torch.randn(B, S, H, DK, dtype=torch.float32),  # k
+        torch.randn(B, S, H, DK, dtype=torch.float32),  # g (NOT cumsum'd)
+        torch.randn(B, S, H, dtype=torch.float32),  # beta
+        torch.randn(B, S, H, CS, dtype=torch.float32),  # dAqk
+        torch.randn(B, S, H, CS, dtype=torch.float32),  # dAkk
+        torch.randn(B, S, H, DK, dtype=torch.float32),  # dq
+        torch.randn(B, S, H, DK, dtype=torch.float32),  # dk
+        torch.randn(B, S, H, dtype=torch.float32),  # db
+        torch.randn(B, S, H, DK, dtype=torch.float32),  # dg
+    ]
+    dq2, dk2, db2, dg2 = fla_chunk_intra_bwd_intra(*[t.npu() for t in ins])
+    assert dq2.shape == (B, S, H, DK) and dk2.shape == (B, S, H, DK)
+    assert db2.shape == (1, B, S, H) and dg2.shape == (B, S, H, DK)
+    for name, out in (("dq2", dq2), ("dk2", dk2), ("db2", db2), ("dg2", dg2)):
+        assert torch.isfinite(out.float()).all().item(), f"{name} contains NaN/Inf"
+
+    print(f"[SMOKE_PASS] fla_chunk_intra fwd+bwd B={B} S={S} H={H} DK={DK} chunk={CS} sub_chunk={SCS}")
+    print("Test Passed!")
