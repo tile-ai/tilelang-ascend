@@ -1,0 +1,24 @@
+{
+  "source_repository": "vllm-project/vllm-ascend",
+  "source_commit": "e4d533d33211f0696bcdf65eda47245d52e428c5",
+  "source_path": "vllm_ascend/ops/triton/flash_attention_output.py",
+  "expected_git_blob": "d50d8d43529fbf659559bcb8ba7c9e05c54b8ab4",
+  "downloaded_source_git_blob": "d50d8d43529fbf659559bcb8ba7c9e05c54b8ab4",
+  "source_sha256": "301fbf68a97558fdfa2dae91958c6c2e44c0f2a10c33d0b7337bf6b5b51b3e52",
+  "isolated_sha256": "1dd3dc27a7b9435e9c3809e0f6c8ca782ed1e2f2059428ef826f86c625e38d16",
+  "unchanged_function_ast_sha256": {
+    "_flash_attention_gate_kernel": "83e678d7fdd3bc4d5451153655d9ba3232d795d1dc38a48b3231984728a42fb3",
+    "_flash_attention_gate_block_size": "865f6c7fe40b8259318204b1afc6679dde3f52bc40d80f3889972a2c5a93d6eb",
+    "flash_attention_gate": "bd86c326dd51fb23f3973c41ec644259cb7a5087487b1ef60c74dabec48c0ea2",
+    "init_device_properties_triton": "3749ce8bff7d39cd19bdc1d267677f9929ec73d8cd91d514ca7b4369149f8dbe",
+    "get_vectorcore_num": "f6fa5854a8111f5d18fc345f9710705439da7e5b9e7cdc61f1f4e06fdd50df5e"
+  },
+  "launcher_difference": "Direct real Triton JIT launch replaces only vLLM AscendTritonJitKernel/kernel_launcher warmup dispatch; same grid, strides, block and multibuffer=False. Not full vLLM host performance.",
+  "precision": "Original FP32 sigmoid then cast to gate dtype, multiply LP projected and store in place unchanged",
+  "execution": "Source/AST verification manifest; see PERFORMANCE.md for the separately recorded NPU results.",
+  "transport_normalization": "trim1",
+  "local_snapshots": [
+    "original/flash_attention_output.py.txt",
+    "original/triton_utils.py.txt"
+  ]
+}

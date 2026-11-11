@@ -1,0 +1,14 @@
+The source-derived comparison targets vllm-project/vllm-ascend commit
+e4d533d33211f0696bcdf65eda47245d52e428c5.
+
+source_unquantized_gemm.py preserves the unquantized_gemm function from
+vllm_ascend/ops/linear.py, copyright 2025 Huawei Technologies Co., Ltd.
+
+source_gate/isolated_gate.py derives from
+vllm_ascend/ops/triton/flash_attention_output.py and triton_utils.py,
+copyright contributors to the vLLM project. The corresponding original files
+and their notices are retained in source_gate/original/.
+
+These upstream-derived files are provided under the Apache License, Version2.0;
+see LICENSE.apache-2.0. The direct launcher is an adaptation and does not execute
+vLLM's warmup dispatcher. The surrounding comparison harness is project code.

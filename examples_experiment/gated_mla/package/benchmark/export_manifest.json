@@ -1,0 +1,77 @@
+{
+  "scope": "benchmark packaging; original measurement code snapshot before final lint/portable metadata",
+  "files": {
+    "source_decode_benchmark.py": {
+      "sha256_before_format": "a77705b5bbd32df24e513dbb1c488aa1b5ac634bf54cfeb61d42d6cef6714788",
+      "origin_file": "source_decode_benchmark.py"
+    },
+    "source_prefill_benchmark.py": {
+      "sha256_before_format": "1e26665c493afefa0a973930cb0f322e8fe08d6c157addcdf7b52c4302456174",
+      "origin_file": "source_prefill_benchmark.py"
+    },
+    "adapter_decode.py": {
+      "sha256_before_format": "21020142a44a4826f6e62b650d77ef65171364108e8208bcbedb6c6a898dcdf9",
+      "origin_file": "adapter_decode.py"
+    },
+    "adapter_prefill.py": {
+      "sha256_before_format": "c3a3e7cfd5c72d70b586293270f189acd282f13c51900f1c9118156c42b11af4",
+      "origin_file": "adapter_prefill.py"
+    },
+    "source_unquantized_gemm.py": {
+      "sha256_before_format": "5def8724df7eee1ed3e7ad797771c0dd4067270e4a92f16fc711393bf6940d0a",
+      "origin_file": "source_unquantized_gemm.py"
+    },
+    "protocol/decode_fixture.py": {
+      "sha256_before_format": "60c761c238de710993da1673d6e3f60f23c47e03a37b71bde16d27b899ec252e",
+      "origin_file": "decode_fixture.py"
+    },
+    "protocol/decode_protocol.py": {
+      "sha256_before_format": "857c33c582f04784153df85220a3b6c6904a0b66c154d62dea9e8be2dacaeafe",
+      "origin_file": "decode_protocol.py"
+    },
+    "protocol/prefill_fixture.py": {
+      "sha256_before_format": "190e640ab8f67201149162f63d90a00e5bc951e9f6004893c73738e279d7596a",
+      "origin_file": "prefill_fixture.py"
+    },
+    "protocol/prefill_protocol.py": {
+      "sha256_before_format": "276d07869e55309510bfb775bcaa41796c111914667aa6c9b262f6b3645ead90",
+      "origin_file": "prefill_protocol.py"
+    },
+    "protocol/timing_protocol.py": {
+      "sha256_before_format": "ffce9bf80775d80396353e2a84ec136eb4e722661b9642cef5f14f37b4d7927e",
+      "origin_file": "timing_protocol.py"
+    },
+    "protocol/protocol_manifest.json": {
+      "sha256_before_format": "8b395dfdb510dfdce6bc4f61e23c09a63fae21c90193a35c3abb718d5105df5e",
+      "origin_file": "protocol_manifest.json"
+    },
+    "source_gate/__init__.py": {
+      "sha256_before_format": "60be253eedf5c5bfbdb6d412c478bd2142f524fc54007532293a1f1fcb814e02",
+      "origin_file": "__init__.py"
+    },
+    "source_gate/isolated_gate.py": {
+      "sha256_before_format": "91dec0b6023de24cd7fec8220cff41064768853d8d682836f9483cdcfc18625e",
+      "origin_file": "isolated_gate.py"
+    },
+    "source_gate/gate_probe.py": {
+      "sha256_before_format": "5c0ce590073c06ffc7cfcecbf850819b140617d2046cec2a62f35c366cec918e",
+      "origin_file": "gate_probe.py"
+    },
+    "source_gate/source_manifest.json": {
+      "sha256_before_format": "5ca535f96241f56b1a8f3c926216412d6024eb2695b1cb206af5f33de9b1aa00",
+      "origin_file": "source_manifest.json"
+    },
+    "source_gate/original/flash_attention_output.py": {
+      "sha256_before_format": "301fbf68a97558fdfa2dae91958c6c2e44c0f2a10c33d0b7337bf6b5b51b3e52",
+      "origin_file": "flash_attention_output.py"
+    },
+    "source_gate/original/triton_utils.py": {
+      "sha256_before_format": "b0619888bba454335e4ec09f72ee632e4d5764eca7d387f3889862c55492842d",
+      "origin_file": "triton_utils.py"
+    },
+    "verify_installed.py": {
+      "sha256_before_format": "51116010c6ecc0e026f9c7eea47d1f855ebeefa58c219ed82f71c6674da50d06",
+      "origin_file": "verify_installed.py"
+    }
+  }
+}

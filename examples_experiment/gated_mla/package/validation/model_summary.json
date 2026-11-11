@@ -1,0 +1,97 @@
+{
+  "scope": "one frozen official class with random weights; B2/H96/hidden7168/qrank1536/cap65; no checkpoint",
+  "production": "r1.7,25 installed production file hashes verified",
+  "dtype_backend_jobs": [
+    {
+      "case": "pto_float16",
+      "exit_code": 0,
+      "status": "passed",
+      "candidate_FP64_all_three_phases_passed": true,
+      "actual_official_external_inputs_equal_all_phases": true,
+      "failed_original_gates": [],
+      "wall_seconds": 84.84087757003726
+    },
+    {
+      "case": "pto_bfloat16",
+      "exit_code": 1,
+      "status": "diagnostic_only_failed",
+      "candidate_FP64_all_three_phases_passed": true,
+      "actual_official_external_inputs_equal_all_phases": true,
+      "failed_original_gates": [
+        {
+          "phase": "prefill",
+          "failed_comparisons": [
+            "before_wo_vs_actual_official_layer",
+            "after_wo_vs_actual_official_layer"
+          ],
+          "same_external_inputs": true
+        },
+        {
+          "phase": "continuation",
+          "failed_comparisons": [
+            "before_wo_vs_actual_official_layer",
+            "after_wo_vs_actual_official_layer"
+          ],
+          "same_external_inputs": true
+        },
+        {
+          "phase": "decode",
+          "failed_comparisons": [
+            "after_wo_vs_actual_official_layer"
+          ],
+          "same_external_inputs": true
+        }
+      ],
+      "wall_seconds": 77.81246510503115
+    },
+    {
+      "case": "ascendc_float16",
+      "exit_code": 0,
+      "status": "passed",
+      "candidate_FP64_all_three_phases_passed": true,
+      "actual_official_external_inputs_equal_all_phases": true,
+      "failed_original_gates": [],
+      "wall_seconds": 189.28572825202718
+    },
+    {
+      "case": "ascendc_bfloat16",
+      "exit_code": 1,
+      "status": "diagnostic_only_failed",
+      "candidate_FP64_all_three_phases_passed": true,
+      "actual_official_external_inputs_equal_all_phases": true,
+      "failed_original_gates": [
+        {
+          "phase": "prefill",
+          "failed_comparisons": [
+            "before_wo_vs_actual_official_layer",
+            "after_wo_vs_actual_official_layer"
+          ],
+          "same_external_inputs": true
+        },
+        {
+          "phase": "continuation",
+          "failed_comparisons": [
+            "before_wo_vs_actual_official_layer",
+            "after_wo_vs_actual_official_layer"
+          ],
+          "same_external_inputs": true
+        },
+        {
+          "phase": "decode",
+          "failed_comparisons": [
+            "after_wo_vs_actual_official_layer"
+          ],
+          "same_external_inputs": true
+        }
+      ],
+      "wall_seconds": 177.725224593014
+    }
+  ],
+  "candidate_FP64_phases_passed": 12,
+  "HF_BF16_status": "diagnostic_only_failed; original exit1 retained",
+  "runner_sha256": "1b649c1cdbf15dea0c7d22a5f5e3f0a3986298d21accea3034bf20c773b88ac9",
+  "official_source_sha256": "9e3564c70ac21854ce5a090cc946c5dc76b70d1050ef50840449181a20fff44a",
+  "archive_sha256": "ee5243fc6a8aa5bd14998e5b94714cc62c0a0a8b0b4ca930bbf201d3d119211e",
+  "costs_are_cold_inclusive_diagnostics": true,
+  "cold_CI_gate_result": "not established by these model jobs"
+}

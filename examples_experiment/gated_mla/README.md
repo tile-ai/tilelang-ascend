@@ -1,4 +1,8 @@
-# Experimental Gated MLA decode
+# Gated MLA examples
+
+The [multi-batch/head Cube forward package](package/README.md) adds FP16/BF16 prefill, continuation and decode with a default PTO interface. Its [performance report](package/benchmark/PERFORMANCE.md) separates qualified references, graph execution and ordinary-call overhead.
+
+The remaining sections document the preserved fixed-domain FP16 decode example and its regression baseline.
 
 This example implements a dense, causal Gated MLA attention core with five manually
 scheduled Vector kernels on Ascend. It includes query absorption, latent and auxiliary

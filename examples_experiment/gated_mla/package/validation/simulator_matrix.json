@@ -1,0 +1,325 @@
+{
+  "release": "r1.7",
+  "status": "passed",
+  "cases": [
+    {
+      "case": "decode_pto_float16",
+      "shape": {
+        "B": 1,
+        "H": 96,
+        "Tq": 1,
+        "physical_Tk": 128,
+        "dtype": "float16",
+        "target": "pto"
+      },
+      "public_route": {
+        "block_m": 32,
+        "block_n": 64,
+        "max_blocks": 20,
+        "selector": "gmla._contracts.public_prefill_block_n",
+        "bundle": "runtime.kernel_bundle"
+      },
+      "direct_precision": {
+        "max_abs": 0.00017563287274591222,
+        "max_normalized": 0.0003405444712784987,
+        "reference_abs_max": 0.5157413717114171
+      },
+      "simulator_precision": {
+        "max_abs": 0.00017563287274591222,
+        "max_normalized": 0.0003405444712784987,
+        "reference_abs_max": 0.5157413717114171
+      },
+      "filtered_launches": 4,
+      "kernel_hashes": {
+        "q_absorb": "b76a7010e0ac34a5970c785aa48e8f9c1d41595f9db0318f1bd5b173503817d9",
+        "attention": "88f4e4f7841d6d780ef9d14a65ddf882436a7eb90e804ab945786f34ca91c41d",
+        "merge": "3ffff495546afbf554a384b72a0c5375e26313d3ca09982e8e282c238fb1c658",
+        "value_gate": "d24f2427cbb2239ccac6b514258010899efc70435e4016c85f294fe871d69fda"
+      },
+      "source_line_mapping": "unavailable",
+      "prepare_npu_initialization": {
+        "before": false,
+        "after": false
+      }
+    },
+    {
+      "case": "decode_pto_bfloat16",
+      "shape": {
+        "B": 1,
+        "H": 96,
+        "Tq": 1,
+        "physical_Tk": 128,
+        "dtype": "bfloat16",
+        "target": "pto"
+      },
+      "public_route": {
+        "block_m": 32,
+        "block_n": 64,
+        "max_blocks": 20,
+        "selector": "gmla._contracts.public_prefill_block_n",
+        "bundle": "runtime.kernel_bundle"
+      },
+      "direct_precision": {
+        "max_abs": 0.001651001073387226,
+        "max_normalized": 0.0032042987374971245,
+        "reference_abs_max": 0.5152456773355726
+      },
+      "simulator_precision": {
+        "max_abs": 0.001651001073387226,
+        "max_normalized": 0.0032042987374971245,
+        "reference_abs_max": 0.5152456773355726
+      },
+      "filtered_launches": 4,
+      "kernel_hashes": {
+        "q_absorb_residual": "e78fe77cc381e4645bff4a712544de423df8b55a5d113908635f576eadd2821f",
+        "attention": "7b38047ae7afea429f672dffc507e1846cb0150e43402321c9623bd418062bdd",
+        "merge": "3ffff495546afbf554a384b72a0c5375e26313d3ca09982e8e282c238fb1c658",
+        "value_gate": "366865c9112ee38d575b1e6337e70edcdf78be4639350686901f1f3e5770bc5a"
+      },
+      "source_line_mapping": "unavailable",
+      "prepare_npu_initialization": {
+        "before": false,
+        "after": false
+      }
+    },
+    {
+      "case": "prefill_pto_float16",
+      "shape": {
+        "B": 1,
+        "H": 96,
+        "Tq": 128,
+        "physical_Tk": 128,
+        "dtype": "float16",
+        "target": "pto"
+      },
+      "public_route": {
+        "block_m": 32,
+        "block_n": 128,
+        "max_blocks": 20,
+        "selector": "gmla._contracts.public_prefill_block_n",
+        "bundle": "selected_prefill128_bundle"
+      },
+      "direct_precision": {
+        "max_abs": 0.0009538501048607095,
+        "max_normalized": 0.0002710665464193204,
+        "reference_abs_max": 3.5188779931005287
+      },
+      "simulator_precision": {
+        "max_abs": 0.0009538501048607095,
+        "max_normalized": 0.0002710665464193204,
+        "reference_abs_max": 3.5188779931005287
+      },
+      "filtered_launches": 3,
+      "kernel_hashes": {
+        "q_absorb": "4e163154fdc04a99b1f3c19bb1127b1b5768c339561436562dc31d3535570c8d",
+        "attention": "afa04151e4630a2fefc097c6117e1defc61e5012b9187ad251be51c75c598149",
+        "value_gate": "7b7aef1362248766b1116db4c40e379628be56298871601d187b6eb7ea1237f8"
+      },
+      "source_line_mapping": "unavailable",
+      "prepare_npu_initialization": {
+        "before": false,
+        "after": false
+      }
+    },
+    {
+      "case": "prefill_pto_bfloat16",
+      "shape": {
+        "B": 1,
+        "H": 96,
+        "Tq": 128,
+        "physical_Tk": 128,
+        "dtype": "bfloat16",
+        "target": "pto"
+      },
+      "public_route": {
+        "block_m": 32,
+        "block_n": 128,
+        "max_blocks": 20,
+        "selector": "gmla._contracts.public_prefill_block_n",
+        "bundle": "selected_prefill128_bundle"
+      },
+      "direct_precision": {
+        "max_abs": 0.007658895032677471,
+        "max_normalized": 0.0021763435811453335,
+        "reference_abs_max": 3.5191571308087584
+      },
+      "simulator_precision": {
+        "max_abs": 0.007658895032677471,
+        "max_normalized": 0.0021763435811453335,
+        "reference_abs_max": 3.5191571308087584
+      },
+      "filtered_launches": 3,
+      "kernel_hashes": {
+        "q_absorb_residual": "8fa39383ee7e82031a73979e930891928d819da2e5df7dce91bf1d2b155d8bb9",
+        "attention": "29ec93654c9c5d1b413546b77068e6fef8b466055d74429c6efb995770318da6",
+        "value_gate": "e053f734c6cb2833f65b866d1886bc9215ff7a2fe9f6043c88aa9b3c3cff8876"
+      },
+      "source_line_mapping": "unavailable",
+      "prepare_npu_initialization": {
+        "before": false,
+        "after": false
+      }
+    },
+    {
+      "case": "decode_ascendc_float16",
+      "shape": {
+        "B": 1,
+        "H": 96,
+        "Tq": 1,
+        "physical_Tk": 128,
+        "dtype": "float16",
+        "target": "ascendc"
+      },
+      "public_route": {
+        "block_m": 32,
+        "block_n": 64,
+        "max_blocks": 20,
+        "selector": "gmla._contracts.public_prefill_block_n",
+        "bundle": "runtime.kernel_bundle"
+      },
+      "direct_precision": {
+        "max_abs": 0.00017563287274591222,
+        "max_normalized": 0.0003405444712784987,
+        "reference_abs_max": 0.5157413717114171
+      },
+      "simulator_precision": {
+        "max_abs": 0.00017563287274591222,
+        "max_normalized": 0.0003405444712784987,
+        "reference_abs_max": 0.5157413717114171
+      },
+      "filtered_launches": 4,
+      "kernel_hashes": {
+        "q_absorb": "e0d63b47c043759fe9ee7fdbd88ad0835b310b00f9db1b85198235ad2af53568",
+        "attention": "d72fcc732369a4dd8c0f0adb9794c5525d25c67abbfd1d09e4c929f52046f485",
+        "merge": "71cd7923923169ad1256782c526cbfe7ae00c54b3313806b9ba7911c64e39f49",
+        "value_gate": "8a76357efe6cc84fbba5db4a2ff99857f44ee96aeed736975eec51e1fa72d86b"
+      },
+      "source_line_mapping": "unavailable",
+      "prepare_npu_initialization": {
+        "before": false,
+        "after": false
+      }
+    },
+    {
+      "case": "decode_ascendc_bfloat16",
+      "shape": {
+        "B": 1,
+        "H": 96,
+        "Tq": 1,
+        "physical_Tk": 128,
+        "dtype": "bfloat16",
+        "target": "ascendc"
+      },
+      "public_route": {
+        "block_m": 32,
+        "block_n": 64,
+        "max_blocks": 20,
+        "selector": "gmla._contracts.public_prefill_block_n",
+        "bundle": "runtime.kernel_bundle"
+      },
+      "direct_precision": {
+        "max_abs": 0.001651001073387226,
+        "max_normalized": 0.0032042987374971245,
+        "reference_abs_max": 0.5152456773355726
+      },
+      "simulator_precision": {
+        "max_abs": 0.001651001073387226,
+        "max_normalized": 0.0032042987374971245,
+        "reference_abs_max": 0.5152456773355726
+      },
+      "filtered_launches": 4,
+      "kernel_hashes": {
+        "q_absorb_residual": "60fe218b401f037c509d9c595cc9367de6d18523d8adb27c7b81849b04583e16",
+        "attention": "8ffe4c048c15be87f63ec39730ba66b947115c3316577b7689727a098f2eecfe",
+        "merge": "71cd7923923169ad1256782c526cbfe7ae00c54b3313806b9ba7911c64e39f49",
+        "value_gate": "b87967c7d3e3b397d248694ef6f484f8d2ec63e7a5fbdd0256b367c61f3743c5"
+      },
+      "source_line_mapping": "unavailable",
+      "prepare_npu_initialization": {
+        "before": false,
+        "after": false
+      }
+    },
+    {
+      "case": "prefill_ascendc_float16",
+      "shape": {
+        "B": 1,
+        "H": 96,
+        "Tq": 128,
+        "physical_Tk": 128,
+        "dtype": "float16",
+        "target": "ascendc"
+      },
+      "public_route": {
+        "block_m": 32,
+        "block_n": 128,
+        "max_blocks": 20,
+        "selector": "gmla._contracts.public_prefill_block_n",
+        "bundle": "selected_prefill128_bundle"
+      },
+      "direct_precision": {
+        "max_abs": 0.0009538501048607095,
+        "max_normalized": 0.0002710665464193204,
+        "reference_abs_max": 3.5188779931005287
+      },
+      "simulator_precision": {
+        "max_abs": 0.0009538501048607095,
+        "max_normalized": 0.0002710665464193204,
+        "reference_abs_max": 3.5188779931005287
+      },
+      "filtered_launches": 3,
+      "kernel_hashes": {
+        "q_absorb": "59e26b2d653cbcddea975e65088d14d3517fdc4c1fc933944a2b060dfa9d37e7",
+        "attention": "82cdd6dc40e09a37c8f75526edf6444b9a87a2f5d1df40bad5d96ce0bc064283",
+        "value_gate": "e3c31460a1da8ae582117ad1c1bf63516bf5853c4161956736c6c955419e5e35"
+      },
+      "source_line_mapping": "unavailable",
+      "prepare_npu_initialization": {
+        "before": false,
+        "after": false
+      }
+    },
+    {
+      "case": "prefill_ascendc_bfloat16",
+      "shape": {
+        "B": 1,
+        "H": 96,
+        "Tq": 128,
+        "physical_Tk": 128,
+        "dtype": "bfloat16",
+        "target": "ascendc"
+      },
+      "public_route": {
+        "block_m": 32,
+        "block_n": 128,
+        "max_blocks": 20,
+        "selector": "gmla._contracts.public_prefill_block_n",
+        "bundle": "selected_prefill128_bundle"
+      },
+      "direct_precision": {
+        "max_abs": 0.007658895032677471,
+        "max_normalized": 0.0021763435811453335,
+        "reference_abs_max": 3.5191571308087584
+      },
+      "simulator_precision": {
+        "max_abs": 0.007658895032677471,
+        "max_normalized": 0.0021763435811453335,
+        "reference_abs_max": 3.5191571308087584
+      },
+      "filtered_launches": 3,
+      "kernel_hashes": {
+        "q_absorb_residual": "9ff4fdf06101c57204f9ef66fb4a92d28cbde59921f6ee53621287d95c9c9ec4",
+        "attention": "46251e135445c399be7022c5df0e89aefa4b797ea0e19803afa9a968caa14c7f",
+        "value_gate": "95fb4c1f18a7fa2c1964274f27a0ae234e2cd63dea3f69cbe8a6d2ff4853a4c2"
+      },
+      "source_line_mapping": "unavailable",
+      "prepare_npu_initialization": {
+        "before": false,
+        "after": false
+      }
+    }
+  ],
+  "source_scope": "25 final production files; installed public runtime; profile/source/kernel/native/cache consistency checked",
+  "simulator_timeout_units": "actual SDK argument600 minutes, outer process cap900 seconds; commands not rewritten",
+  "model_scope": "separate later stage, not included here"
+}

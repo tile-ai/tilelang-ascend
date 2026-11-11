@@ -1,0 +1,636 @@
+{
+  "schema_version": 1,
+  "status": "public_PR_export_of_selected_r1_7",
+  "provenance_scope": "Destination hashes and ASTs verify this source checkout. Historical development IDs/hashes are identifiers only, not runtime dependencies or independently downloadable proof. Verification does not establish NPU correctness/performance.",
+  "export_source": {
+    "release": "r1.7",
+    "archive_sha256": "f86bd03a7ec453401e54f45243b18168dee6bbf2baf3260ad53fb5143164ad64",
+    "manifest_sha256": "c40361ca7278e1b69c36ccadb4b5f28b91cb33a52050f7698035a1ce3e246c89",
+    "production_gmla_python": "byte-identical to frozen r1.7"
+  },
+  "selection": {
+    "query": "Q2_r2_20",
+    "value": "CubeValue_R3_scaled_Hi_original_scale_Lo_20",
+    "decode": "C3_splitkv_S6_max20",
+    "prefill": "C4_native_vector_mask_max20",
+    "vector": "grid20",
+    "packed_vector": "original_verified",
+    "default_target": "pto",
+    "metadata": "CPU_authority_int32_B8"
+  },
+  "selected_sources": [
+    {
+      "origin_id": "development:query_cube_family_r2/cube_query.py",
+      "origin_sha256": "5cc89c2c1e4e3c2f1f783d09421bcf5cd0bb758e4f23de9e24b3f2e464ad04da",
+      "destination": "gmla/kernels/query.py",
+      "destination_sha256": "5cc89c2c1e4e3c2f1f783d09421bcf5cd0bb758e4f23de9e24b3f2e464ad04da",
+      "definition_ast_sha256": {
+        "plan": "ec9add7bd900fb83400c062843ba1a2c6d7eef29ee84a85ff5a95f6c61f33a27",
+        "_compile": "79459fc91423f01c9f2b37eb243cbf9c14b9fbfa449974e15416978d363d4903",
+        "build_query_cube": "fea32c72692d7012af668a11293395144c7bbcfa903e40293dc0d8a6cd6c7c12",
+        "eligible_shape": "e886b89f97858bcad3a9f42d4d3ff4ae3db27fbebea70c32c3124c89fbc7ca20",
+        "_eligible": "5ea98483af32b1c8d923e42a1792a27939afd79476c334aadad2726979b224e5",
+        "make_provider": "8b335738d04222952d720ab8ffb149da1e80f958f45ad0f061433c38dcecdd0c"
+      },
+      "allowed_changes": "relative imports or extraction only; all retained function/class ASTs identical"
+    },
+    {
+      "origin_id": "development:cube_value_family_r3/cube_value.py",
+      "origin_sha256": "d220d81526265cccb56854538a12edf1e7f775c58148f9edbe3580244e31735b",
+      "destination": "gmla/kernels/value.py",
+      "destination_sha256": "d220d81526265cccb56854538a12edf1e7f775c58148f9edbe3580244e31735b",
+      "definition_ast_sha256": {
+        "plan": "4fa93d048af3df7d700b02b5b7cf2a4782ac247061f5a4c5abe9873d1702fc2f",
+        "_compile": "37cf7951732d5a4cda336fe7709b6e8a61b29e524a1d53d795af201fd2557cc3",
+        "build_value_cube": "8a4de4cec5d37fd88747b075b41981b0c3b4ba0cda454bd4518c16fbfce1b8bf",
+        "eligible_shape": "5609210c94ecb4b0d9b8c43ea0b3c982aa7676ac97cf1b13ef1b1aad05d7ac9c",
+        "_eligible": "dd675909c12b580c963b326bd93420adc6f62bb57f312897905e93ffec22ef27",
+        "make_provider": "558d1f8bbe91ce777a8c2d214393528aa5a00f9d6c7efd06cc2187b8f2e4ce31"
+      },
+      "allowed_changes": "Intentional Value R3 numerical promotion: scaled Hi, original-scale Lo, independently initialized FP32 GEMMs, reconstruct A+B/s, gate before rescale. Source definitions match validated R3, not R2."
+    },
+    {
+      "origin_id": "development:projections_grid20/gmla_projections.py",
+      "origin_sha256": "40f055f59a94e7fadf63a792c53030e5d12996f411126489f47e54778645c21d",
+      "destination": "gmla/kernels/vector.py",
+      "destination_sha256": "c253ab0ae83cbda980aa2e5022aca5f210c14fe26e76896d9451ce6d6622683b",
+      "definition_ast_sha256": {
+        "projection_plan": "204fa343b8e2815a0aed2797e1dd27173affc89a2c9e72ffc6f15a26fe0dda86",
+        "_target": "8989f3042cdbb84663eb4fe3767cc1a3eb3796c9a7e9f4ec561bc9e5d03f5a8a",
+        "_tensor": "fd461699a015ca6271028ab2b868056d6105c1e11496d6fdeec03f4645e856f5",
+        "q_absorb_kernel": "84d57335fcba46a8cdb0d22fada966a7efaffe3afd48f0c8484ce789b2496837",
+        "value_gate_kernel": "761f22779951592bf75d63500f3afa418d7b9f453f16c84124efd49609330936",
+        "q_absorb": "e0f3d6c2ce4cbbbedd765d0a91691c0f22e3f4a9c9bcb5d9e3de251eff40b845",
+        "value_gate": "89dda452f6dab5ea34c9e894795f28c16a8d3190858bf359eaf583deb9910241"
+      },
+      "allowed_changes": "Intentional r1.4 pure-host float32 scale and full dense-span validation; imports/prechecks may differ. All inner prim_func ASTs and defaults unchanged."
+    },
+    {
+      "origin_id": "development:query_residual_grid20/gmla_query_residual_projections.py",
+      "origin_sha256": "0e1afce453aa9478c569d24a512969c7cfb7a8dfcac66758c87db7f8d35d28c0",
+      "destination": "gmla/kernels/query_residual.py",
+      "destination_sha256": "16e54c7a06ecbead776d92272ffbf7337460f9bf454d4d1693d9317b7819919d",
+      "definition_ast_sha256": {
+        "projection_plan": "204fa343b8e2815a0aed2797e1dd27173affc89a2c9e72ffc6f15a26fe0dda86",
+        "_target": "8989f3042cdbb84663eb4fe3767cc1a3eb3796c9a7e9f4ec561bc9e5d03f5a8a",
+        "_tensor": "fd461699a015ca6271028ab2b868056d6105c1e11496d6fdeec03f4645e856f5",
+        "q_absorb_residual_kernel": "6d0bba9eae497a4349ed45f99c5ef97ef09ec20f70eab3e95294337f2f82209b",
+        "q_absorb_packed_residual_kernel": "f18a6f80782265860d1d602439d6082417ebd4919e27b6f043804f6dc474c969",
+        "q_absorb_residual": "3085f2547a019e1425f181e214bd9be8d7e6083d894a566e021c429d5849fc7e",
+        "q_absorb_packed_residual": "06b73542892b2433fed3a38095248e506c305d6bb79c5bcc63c842a43ffd16cf"
+      },
+      "allowed_changes": "Intentional r1.4 pure-host float32 scale and full dense-span validation; imports/prechecks may differ. All inner prim_func ASTs and defaults unchanged."
+    },
+    {
+      "origin_id": "development:packed_projections/gmla_packed_projections.py",
+      "origin_sha256": "6eb4d5c4ce84265e027cef336cd3fbfa165ab653a13feae83a7dea8cf5fbdc8d",
+      "destination": "gmla/kernels/packed.py",
+      "destination_sha256": "3232bd5eac4f9d0719327b78661ce1978d052a3bc748188a63a23158b69f5f1f",
+      "definition_ast_sha256": {
+        "projection_plan": "e6e10c7ca6540f53b2206319e6eae1cf8741faeca402deead469d777b57c2ef4",
+        "_target": "8989f3042cdbb84663eb4fe3767cc1a3eb3796c9a7e9f4ec561bc9e5d03f5a8a",
+        "_tensor": "fd461699a015ca6271028ab2b868056d6105c1e11496d6fdeec03f4645e856f5",
+        "q_absorb_packed_kernel": "098b0052b5ff22a2a4740993c6f85b524532719eecbb5bcb4ef11a824de9dacb",
+        "value_gate_packed_kernel": "141c37ee7c3a297341dfe752b04ceabd14d52f68bd501098773273ab923ed649",
+        "q_absorb_packed": "07ead62c95cc58d3042643c6ba92284e85f42b175c25e5468ff567aa1b8a87bf",
+        "value_gate_packed": "cbb36a9745fe7e4bb0909dfd5cbd0a5c5873511f214527ae416d461fd5435083"
+      },
+      "allowed_changes": "Intentional r1.4 pure-host float32 scale and full dense-span validation; imports/prechecks may differ. All inner prim_func ASTs and defaults unchanged."
+    },
+    {
+      "origin_id": "development:performance_plan/cube_c3_splitkv_s6/cube_attention.py",
+      "origin_sha256": "1e23e0804be12090fe7dae34e415fec0a6540e2d6187061ae01f5ee9d07e67bc",
+      "destination": "gmla/kernels/decode.py",
+      "destination_sha256": "ddff5cd25f3136f1b880db6ed82b88350b2d5f6c5d4c904d68324435199d8532",
+      "definition_ast_sha256": {
+        "probability_precision_mode": "d1852caaef3257f202abd8ffdd017553a7b21836dfb35bc216dff54c098737a2",
+        "buffer_plan": "e9f87f017ee1bab55f6a38bc064fe7c16472ab2d5fdc3d315a6c2aa99616ed9c",
+        "build_cube_attention": "f6e6a836fcddc347d20b8285c0cb42df3b1b22b965f4a12c0bcbbe32a0bbc5a8",
+        "build_tail_pair": "abf07c95a394616db3641e4f7be1fd790b03a67fdce59b907b24a4a5760601bb",
+        "build_tail_triple": "7dcd3a389ead629e638c6bd958a40bdac84e47dc80d7aec7f5e3c7e105eec1cd",
+        "cube_decode": "69b412e53b653ddc5af1c9f9a0a37105cc17418ffb3e05a9f03bad837f32952e",
+        "build_split_merge": "daa97c821b6295884c6dd09cb2c0c7d948322160656da692fbaa572e464559f7"
+      },
+      "allowed_changes": "Intentional r1.4 pure-host float32 scale and full dense-span validation; imports/prechecks may differ. All inner prim_func ASTs and defaults unchanged. Subsequent r1.5 repository Ruff formatting changes bytes only; full module AST preserved."
+    },
+    {
+      "origin_id": "development:performance_plan/cube_c4_vector_mask/cube_attention.py",
+      "origin_sha256": "8ab1927c783b6f54c3048a3a14f2fb29868923ac1941567a4fbeb74d628a71b2",
+      "destination": "gmla/kernels/prefill.py",
+      "destination_sha256": "7c13f47328dfefb3bb680d643bdeb3f5da8c1a77cf33fe4bebc1b61623f4660f",
+      "definition_ast_sha256": {
+        "_validated_scale": "4e4b5e1271bbef93b6312ccdcf28a9fc3c18e00be065aa8886be0ea51f54dedf",
+        "probability_precision_mode": "d1852caaef3257f202abd8ffdd017553a7b21836dfb35bc216dff54c098737a2",
+        "buffer_plan": "20f9890fc9e2aabec6049a047d8c395d5d9107ed9492ac383ee5702c85eede2e",
+        "build_cube_attention": "3359be41334369347702ad3ca3256bc1ffa7c23c8ddc600d15b7ba8fd5ae049d",
+        "build_tail_pair": "abf07c95a394616db3641e4f7be1fd790b03a67fdce59b907b24a4a5760601bb",
+        "build_tail_triple": "7dcd3a389ead629e638c6bd958a40bdac84e47dc80d7aec7f5e3c7e105eec1cd",
+        "cube_prefill": "f69c7e99506ce35f28c137a3417945df3619553749897e50587c371abe1d0858"
+      },
+      "allowed_changes": "Intentional r1.4 pure-host float32 scale and full dense-span validation; imports/prechecks may differ. All inner prim_func ASTs and defaults unchanged. Subsequent r1.5 repository Ruff formatting changes bytes only; full module AST preserved."
+    },
+    {
+      "origin_id": "development:empty_cache/empty_cache_zero.py",
+      "origin_sha256": "bf64e10c070d853346277063060857a6d66d31112aeaad3ba384c01c5de7e63f",
+      "destination": "gmla/kernels/zero.py",
+      "destination_sha256": "59fcb67dc4626af4cce2d875fda26e68df888c4c8de327c954e20396683353ee",
+      "definition_ast_sha256": {
+        "zero_plan": "d6f96b546d9e3bf59a5284c248a8ebc6332eabb635f7cc01501e57cff1ae4779",
+        "validate_scale": "0dfe85096a8c28922c9ff53af9b2da5ee5cca0c5fc9dba545a98d722b0d8488d",
+        "pack_inactive_metadata": "08c51cc26051747e19d2a8a1b18525d09759f6492bbce93215a356b8353a6608",
+        "build_empty_cache_zero": "4dd83de455d6a3cb9b9ff3a9ec2122799968c186023327f15eefe565142be34e",
+        "empty_cache_forward": "99aafff839ecbdbbd1c039fc6f386e2a62add2892eba2f40799c0e0b13e95381"
+      },
+      "allowed_changes": "Intentional r1.4 pure-host float32 scale and full dense-span validation; imports/prechecks may differ. All inner prim_func ASTs and defaults unchanged."
+    },
+    {
+      "origin_id": "development:cache_adapter/cache_kernels.py",
+      "origin_sha256": "db71de039bd9dde4c4464d41855f0af1b92ffbdd327196f8d3d3b315e6f06c9c",
+      "destination": "gmla/kernels/cache.py",
+      "destination_sha256": "ddbbdab31b9d1896bc228c807ecf6b1e7fa9189f3cadff6af0cc468006ff5806",
+      "definition_ast_sha256": {
+        "_plan": "91d5f0057a7abfbe79faeb88d4c808ebebc0006a61fd0921b3fc1168a214ee91",
+        "_options": "b93f47f33898e9cc07fdb6a63ee98c07f9d3fab7640578998f81136ccfcd6145",
+        "initialize_cache_kernel": "f30c3454a537d23369696166632bc3e87c12dab0655be8a0dd2b5560ba0ebe1c",
+        "append_cache_kernel": "acaf7b3846b04e874298ef23eea211a6fdafc15a0f94fb511587d0ca40bf1399"
+      },
+      "allowed_changes": "relative imports or extraction only; all retained function/class ASTs identical"
+    },
+    {
+      "origin_id": "development:layout_guard/layout_guard.py",
+      "origin_sha256": "b4ae256ca243e74098a3d208ce3facdaf4e1a3774426f40f21d18fa554c3db63",
+      "destination": "gmla/layout.py",
+      "destination_sha256": "04b852cd0e0d2dca8bfd86f34953fe61f569b35df9b602d5ad8f1356357b5b1f",
+      "definition_ast_sha256": {
+        "LayoutContractError": "9796a81a2a4252fed7def73c83f16f61bd427c9077288e6dbdd7e7fa352445a7",
+        "InternalFormatError": "f3c37807a7519ed06a9e9a885645da9e947285b5898d8ccc2263050668cbd4ee",
+        "base_formats": "7a88e9abb78e62ed776532fc64cbee3d89e6a959fef86ca0d0cd7a1254660ac4",
+        "raw_pointer_formats": "3e294038aede01d60191fe351072abb820ce6d1543d1e3d5ee6991e5183d188f",
+        "require_dense_base": "836f65621f2142cad6f79619be0938f211dabfcc6027abc3eb7d68639b64d142",
+        "guarded_view": "d40cc35f0000340e5fbe2487164317a3cc80b9a883af9f99013188b364ddcded"
+      },
+      "allowed_changes": "relative imports or extraction only; all retained function/class ASTs identical"
+    },
+    {
+      "origin_id": "development:guarded_unified/gmla_guarded_forward.py",
+      "origin_sha256": "280d339ef183308aeea5cb473abe9f6bdcf277e9282b73a31d54f20e945bd174",
+      "destination": "gmla/_runtime.py",
+      "destination_sha256": "6b95a2ac8c94a9e0ff005976e1316353353df53b1cb141639a1bade9c9085498",
+      "definition_ast_sha256": {
+        "validate_scale": "0dfe85096a8c28922c9ff53af9b2da5ee5cca0c5fc9dba545a98d722b0d8488d",
+        "validate_forward_inputs": "cd0caa22b9c75aec07964cda47a74f4e9fc609f0d8d461f35362b6072b01e1fb",
+        "_view": "39717360a1686c9e5873b24399438b108021772e3a3655ff8bc9a6731d019582",
+        "KernelBundle": "8abed3ac89b1740f568a123aea8eab41abb26eafc91177c6f926c6b8fde332c2"
+      },
+      "allowed_changes": "Intentional host preflight hook: resolve actual profile tile before span validation; explicit bundle calls keep their configured tile. Numerical kernels unchanged."
+    },
+    {
+      "origin_id": "development:cache_adapter/cache_owner.py",
+      "origin_sha256": "eea303ee6010c0a2987335aed94f5701aaa70d458a36328bb1d45797bf1d9c7e",
+      "destination": "gmla/_cache_owner.py",
+      "destination_sha256": "7c637d04f202d8ba720e33df45fbb99685bb15cae7ed93d5dbc63e8866dd76b3",
+      "definition_ast_sha256": {
+        "CacheRead": "a7bfa4440c3d20f7971b5bd7beed2dcf5b5e5cfb40a5d111e1b15043a5fc6b1f",
+        "CacheOwner": "f25ef5fa25080bf472f75a9f17d8f242c4c784f83515b640d1e0a843afc64f48"
+      },
+      "allowed_changes": "Intentional r1.3 host-only fix: direct append/read require inference before owner/device access; shared tensor validator invokes physical ND/NCHW guard; allocated caches validated before initialization launch. CacheOwner AST intentionally changed; CacheRead and all kernel ASTs unchanged."
+    },
+    {
+      "origin_id": "development:cache_adapter/cache_state.py",
+      "origin_sha256": "ea8ebf39f1f87fd893ff8862a677c8cc0272d3e561a8ee39a262978e7e86bb39",
+      "destination": "gmla/_cache_state.py",
+      "destination_sha256": "e4487b80a4b55efda7a9e092d251a7723b18527b36806c90d7afaadc7c0aedc0",
+      "definition_ast_sha256": {
+        "append_transition": "6f3e6ff15267001195bda8454d8f7d472b0b86e0bc5c43cfec3afd33535befbb",
+        "read_transition": "94c7d78056c63b73011a4f207e3a35db76efd0b23f683e212495f336930699f8",
+        "reject_storage_aliases": "ffd661c81963c3a9f408e589b4df4922e38547a71ec776e513a94b036e69e1c6"
+      },
+      "allowed_changes": "relative imports or extraction only; all retained function/class ASTs identical"
+    },
+    {
+      "origin_id": "development:model_adapter/model_adapter.py",
+      "origin_sha256": "4488d2bd7358c0565642f113c63f0b5910b267a43f91f8081eb419784569f79b",
+      "destination": "gmla/_packed.py",
+      "destination_sha256": "6346d88a4588dc29f7c2cbca94b0fb0966b40e60f6145f693db2b8ca7c01ab9f",
+      "definition_ast_sha256": {
+        "require_inference": "b6121ab392e334dbe14ccbaaaf5711dd5d0556c285aed43800290056e6afd675",
+        "checked_scale": "846e78feab1c1aa3c172cca7f8b5122dff4ebc719078a0453831b06dec499435",
+        "attention_route": "ab29c23eaf2d6fdcdd0c365c3c8595b08a83ebdea13ec6c03eb7ca01ecd542b6",
+        "append_metadata": "5e488795cc11032a15b4aa39009510a8cb5b32b4e3508d0e7a8f9477460de668",
+        "CacheCommittedForwardError": "c6dd994befffc55bb893138b9315d74a13f11aa46a64a59cda9d8721d29b735e",
+        "Components": "54cdb66828521cfbe7fbf1b361376b5bef67edfc68c801aed6216170f32184a0",
+        "PackedModelAdapter": "deea9c7b00f195544fee980468fbc823aed60f33c623fa069af34cf08ceadb8a"
+      },
+      "allowed_changes": "Intentional r1.4 pure-host float32 scale and full dense-span validation; imports/prechecks may differ. All inner prim_func ASTs and defaults unchanged. Subsequent r1.5 repository Ruff formatting changes bytes only; full module AST preserved."
+    },
+    {
+      "origin_id": "development:model_adapter/model_adapter.py",
+      "origin_sha256": "4488d2bd7358c0565642f113c63f0b5910b267a43f91f8081eb419784569f79b",
+      "destination": "gmla/integration/kimi.py",
+      "destination_sha256": "5a6e97a93575a34fdf3f402afc728c9efff5db7a1b1eab4fdb4700dfaf807125",
+      "definition_ast_sha256": {
+        "FrozenKimiLayerAdapter": "40d4f11cbee0e6b638a4dcc08ca9efe86759033c6eb9d12831ad488c9a11b357"
+      },
+      "allowed_changes": "one unchanged class extracted with relative imports Subsequent r1.5 repository Ruff formatting changes bytes only; full module AST preserved."
+    },
+    {
+      "origin_id": "development:model_adapter/official_layer_fixture.py",
+      "origin_sha256": "a45301bffcc4c6d971f8e20be463aa0900b51a3b95fba459e92e2a3ebd15a422",
+      "destination": "gmla/integration/official_layer_fixture.py",
+      "destination_sha256": "0efd1e9a76ebcaa9ef63c0ec8e146801181170366e4e8849d8eeb799bd291f17",
+      "definition_ast_sha256": {
+        "FrozenDefinitions": "f0cc96a243231c819a138b66a4e971b717778ecb1b23d704026ca18787232461",
+        "load_frozen_layer": "5c921003d55e292214d0a35595cc3833143cef2db3d82e1559d9bd1b66f624f6",
+        "small_config": "11949fec6c44c71e38d2b45c2002a03b721b0aa58d2cb873f6065b57e07a1f7f",
+        "validate_frozen_layer": "8a75060c359797f3ee100fa094da9f88f52fcf1253fab406c1cfc0df0b00d36f",
+        "prepare_external_projections": "30154d95bb6f72e1d3a124a48ba147cc3dc22f1b6239acb09a642bedb1dafd0b",
+        "causal_mask": "0c07cd627ecdb014647da7e4a8476315e86d12416895551a8c101dad7980d338",
+        "MinimalExpandedKVCache": "c8e99fb2e8424a091c1e7fdde64e62b0e23efc0375c9165fedb28a4b262b9e0b",
+        "actual_dense_layer_forward": "d570fa479be630b23211c0bfe524d4d3d0daef6850e6cea0fd91c75d14a052fd",
+        "staged_dense_reference": "15849644ad1fdfbce6936590826ed379d2d7783f233012f04086f2905f1e8cd6"
+      },
+      "allowed_changes": "relative imports or extraction only; all retained function/class ASTs identical"
+    },
+    {
+      "origin_id": "development:deployment_adapter/packed_protocol.py",
+      "origin_sha256": "eab6e6208f426c4affb71ae257c56e6abe31237ad73db13afdfb0eb291062d6f",
+      "destination": "gmla/metadata.py",
+      "destination_sha256": "b1c90a5595dd6b4f0953692d851b0e2c91fb9c8c4d1e3358c1880b1c192d5513",
+      "definition_ast_sha256": {
+        "build_runtime_metadata": "0adcbd5a8cd294649ab5e76d7e1fe43a54be782dd96e507198ec102b7a766edc",
+        "validate_runtime_metadata_cpu": "cc76b8e78a490982b65db51e6fc66010e2ef731637e5605e4929121a8a64dc61",
+        "validate_device_metadata_layout": "7f14ac7054acc0fcdc24314645f9a41f5cb2e242f059561270390dbc9ce4012b"
+      },
+      "allowed_changes": "only listed definitions extracted unchanged; other frontend helpers may be new"
+    },
+    {
+      "origin_id": "development:20261110_development/published/examples_experiment/gated_mla/gated_mla_golden.py",
+      "origin_sha256": "52ac5723dd32186b9efbf0fe2fb1445c975e5c9ffdca0923d9428dc354b22f2f",
+      "destination": "gmla/reference.py",
+      "destination_sha256": "8ba15661de28726e12bfd4f22207dff9e962c1886f16f13889e7067fb0fed08d",
+      "definition_ast_sha256": {
+        "ShapeSpec": "0b7afcc6ead8e3306bdd36c993916ef5cbc13f8128e57c1f8ec7b07c16f7db57",
+        "_host_lengths": "815458a67f8c10b901030f720c21c9b227680274342a2e9446bc5bb14939c0f1",
+        "validate_inputs": "3848570eef091810024b3f24ca356a172c3def403f192b07046235cd36b01cae",
+        "error_metrics": "ff5337dfafb2161b20331bfb0f268e62616a90832d2c6ed68ec4800da9600f9d",
+        "assert_fp16_close": "f9b7087bdcc15e92f53dfe4d1dd9618b781be2fcff4b598156f8b1c860097042",
+        "expanded_reference": "dfe46b547fadb03cd8950377e086ef23d4ab48288c8a8321de198d88ee1c609b",
+        "absorbed_reference": "0d80da9d6a845b2eec14f1d9bd0ce3ff5eede06a7b3375fcf12e31030ab90abb"
+      },
+      "allowed_changes": "only listed definitions extracted unchanged; other frontend helpers may be new Subsequent r1.5 repository Ruff formatting changes bytes only; full module AST preserved."
+    },
+    {
+      "origin_id": "development:integration_c3/check_runtime_decode.py",
+      "origin_sha256": "383507f984b86ded215ff3d0624fb6bf828b200995e20f701ca049b131f1d98e",
+      "destination": "tests/fixture_decode.py",
+      "destination_sha256": "b6c1e860c71c99b2dc2a8ad3a45a6f87bd486ccac1aa946e396f4b1a0c591daf",
+      "definition_ast_sha256": {
+        "make_inputs": "2f8b8b85754daa5ffc4b75302842fbfce6a8800fe2d0fa0813b10a3b7f83ed99"
+      },
+      "allowed_changes": "only listed definitions extracted unchanged; other frontend helpers may be new"
+    },
+    {
+      "origin_id": "development:unified_forward/check_unified_forward.py",
+      "origin_sha256": "3059612e68b33f2111f1b6b22263468f9c158f9dc9baff2eae1de17db93b5a00",
+      "destination": "tests/fixtures.py",
+      "destination_sha256": "c7d16097a4a36e71624d3506ebaca772f423499a1c6a6d6bfc2d9753d1a5b501",
+      "definition_ast_sha256": {
+        "make_inputs": "cc6d0269b121f63b10fed395345eef908873567dbc0716966248520e1a56af2a",
+        "references": "2e37e15b511c4ce95777aafb5e66e849b15da9a002fcfd499c09fd45252aaaaa",
+        "token_inputs": "bb143110d7c95e670b38611cfae6d5bebf7cecfc0e58274ea52d641c6c6f17f3",
+        "token_metadata": "b4900f72308c84d031842499c3ea1dd425350710f38d9c6df10d85cd41a63634",
+        "verify_read_only": "67bf17e49cc5ec78e478b740debbb8ff5b219ccb34d2a86d7cdaf2bc94fbb61f"
+      },
+      "allowed_changes": "only listed definitions extracted unchanged; other frontend helpers may be new"
+    }
+  ],
+  "new_package_files": [
+    {
+      "path": "gmla/__init__.py",
+      "sha256": "81f2a93908eabbfe0655d8167cc47147281a1baaf047c9743b193a89a93399b9"
+    },
+    {
+      "path": "gmla/_selection.py",
+      "sha256": "282e9a91b3f8ef0c708b6f0688aa0a0e88fd7d7a354cf25a99a80fae7f3e5dc0"
+    },
+    {
+      "path": "gmla/adapter.py",
+      "sha256": "6fe55a35297047dfd6a767c68aaf073d12a27dfee71d70e33795122a6195c92d"
+    },
+    {
+      "path": "gmla/integration/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "gmla/kernels/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "gmla/runtime.py",
+      "sha256": "3647f1666a3b37bb6ac94e3a0960c192410e7d4a8f8a2c8fb04086982cf371f9"
+    },
+    {
+      "path": "tests/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "tests/conftest.py",
+      "sha256": "4c76997f9a130683e68dbc8f871aef5dc04b1a9cb731778666ddbf3feb29e528"
+    },
+    {
+      "path": "tests/helpers.py",
+      "sha256": "50fe6541f3e2ae6c34ec7c03d533f68cb2114b696e76171a06538f3a88119c12"
+    },
+    {
+      "path": "tests/test_empty_layout_npu.py",
+      "sha256": "ade9832903e679cae5b8cbe2553ec7c8b5fa3faeec3aca6d4155d8b05ac97ecc"
+    },
+    {
+      "path": "tests/test_metadata.py",
+      "sha256": "0d0f1626c79b664efed0114fdfd637c0f4be0ca85c12741540ee4094fc33a5f4"
+    },
+    {
+      "path": "tests/test_packed_npu.py",
+      "sha256": "20ba285fd4754969da123b3310e227a51e045c101757e6353e97e3dfe9835876"
+    },
+    {
+      "path": "tests/test_reference.py",
+      "sha256": "4cc4d96854ef21f8ec3b9f430b42a4beacf0600ceccf1f86348c8ee5b3a68e6c"
+    },
+    {
+      "path": "tests/test_runtime_npu.py",
+      "sha256": "b9d9cfe4e890903be93c6f5f54912aa5a5fee2b363b94c4a2c012993d7c389f3"
+    },
+    {
+      "path": "tests/test_sources.py",
+      "sha256": "0afc9fc229493c8a625dfa71010adef9543d20fc41e2feb848a8bcae3c7f8136"
+    },
+    {
+      "path": "tools/audit_package.py",
+      "sha256": "1cee395ec03b50304dcdf960ac058add90bef3db43ea4c04d59cfa9c1393f51f"
+    },
+    {
+      "path": "gmla/_contracts.py",
+      "sha256": "55f3026fce0be32e08749ff51aff624ee9a0171b7d952fef32dfe54af4e393f0"
+    },
+    {
+      "path": "tests/test_contracts.py",
+      "sha256": "9e9c7b0e6f94c97244e8247ad07945a27886abd4febc79f12827c5fdcbb593b3"
+    },
+    {
+      "path": "tests/test_preflight.py",
+      "sha256": "fba4bde919f3c839e44f4ee0d520b3e88aa9b97ff3aca719e2eccc42b16d1ad8"
+    },
+    {
+      "path": "tools/refresh_records.py",
+      "sha256": "18c761d50f95ccf6674407037a4fef0935cba95cebb197700956b3c550530959"
+    },
+    {
+      "path": "_gmla_ci/__init__.py",
+      "sha256": "b1bb539060adfd488e7dfc12a7211670e4543a60d4c4a98ed4e46f420d0bfa81"
+    },
+    {
+      "path": "_gmla_ci/cpu_compile_pool.py",
+      "sha256": "de2528a2db50aa5cf5aab8068b773af9bc9d3effb0c5c826d633c4c3e740bb13"
+    },
+    {
+      "path": "_gmla_ci/registry_plugin.py",
+      "sha256": "491f447bc2ecaaf85155c58b443f47a5a33da2a8a5e67b9b75940af73a127133"
+    },
+    {
+      "path": "_gmla_ci/scoped_ci.py",
+      "sha256": "e54cf19fc826482c7a2bb3603372ce99d775057446c92b124f0b0ab02413d45e"
+    },
+    {
+      "path": "ci_entries/_run.py",
+      "sha256": "08e847d188042adefa95fbc414ed87d13fc30589174794a31adbb3bbbef4b5ae"
+    },
+    {
+      "path": "ci_entries/run_contracts.py",
+      "sha256": "890fa280532d341d8826b5fd32a807254acbecfb344895b2a26fffd425329ac8"
+    },
+    {
+      "path": "ci_entries/run_layout.py",
+      "sha256": "7100292f3d5a3a0b5859ffec116e5fcd5f30ed2954a6a39467ebeb387f2394ea"
+    },
+    {
+      "path": "ci_entries/run_metadata.py",
+      "sha256": "2379e7090390e210de407ea57969adcf0ae26c01eba48f7ead91555e7cc9c1a7"
+    },
+    {
+      "path": "ci_entries/run_packed.py",
+      "sha256": "1cc06716f5f8126bd99dbcf7a506f0d2cc87e4cc9157bc887ef9d04c244080e3"
+    },
+    {
+      "path": "ci_entries/run_preflight.py",
+      "sha256": "eb0c13508ea17ab5df13bcf9af9b2267d5ded0dc7b41a3168e3e46e26ceb6cbe"
+    },
+    {
+      "path": "ci_entries/run_reference.py",
+      "sha256": "30158e9a46bfaa0d3ad4b9bbec841bbacde56bdc93d4f97d67f036320a2d7577"
+    },
+    {
+      "path": "ci_entries/run_runtime.py",
+      "sha256": "ee38edecce2c9d3a0c3fb9c291272cd834e550cc70b28663a96cd888bf460ca5"
+    },
+    {
+      "path": "ci_entries/run_sources.py",
+      "sha256": "5a90fd37b164097b107f7aa46223da71d1f4df72e5e66c65559b94f5a4d6aa6d"
+    },
+    {
+      "path": "ci_entries/run_value_range.py",
+      "sha256": "987fb4fc8fcd9062bd9e27f2028ebb36ee36ca5377060ce3f60110fad91b8875"
+    },
+    {
+      "path": "benchmark/adapter_decode.py",
+      "sha256": "21020142a44a4826f6e62b650d77ef65171364108e8208bcbedb6c6a898dcdf9"
+    },
+    {
+      "path": "benchmark/adapter_prefill.py",
+      "sha256": "c3a3e7cfd5c72d70b586293270f189acd282f13c51900f1c9118156c42b11af4"
+    },
+    {
+      "path": "benchmark/protocol/decode_fixture.py",
+      "sha256": "60c761c238de710993da1673d6e3f60f23c47e03a37b71bde16d27b899ec252e"
+    },
+    {
+      "path": "benchmark/protocol/decode_protocol.py",
+      "sha256": "857c33c582f04784153df85220a3b6c6904a0b66c154d62dea9e8be2dacaeafe"
+    },
+    {
+      "path": "benchmark/protocol/prefill_fixture.py",
+      "sha256": "190e640ab8f67201149162f63d90a00e5bc951e9f6004893c73738e279d7596a"
+    },
+    {
+      "path": "benchmark/protocol/prefill_protocol.py",
+      "sha256": "276d07869e55309510bfb775bcaa41796c111914667aa6c9b262f6b3645ead90"
+    },
+    {
+      "path": "benchmark/protocol/timing_protocol.py",
+      "sha256": "ffce9bf80775d80396353e2a84ec136eb4e722661b9642cef5f14f37b4d7927e"
+    },
+    {
+      "path": "benchmark/source_decode_benchmark.py",
+      "sha256": "a77705b5bbd32df24e513dbb1c488aa1b5ac634bf54cfeb61d42d6cef6714788"
+    },
+    {
+      "path": "benchmark/source_gate/__init__.py",
+      "sha256": "60be253eedf5c5bfbdb6d412c478bd2142f524fc54007532293a1f1fcb814e02"
+    },
+    {
+      "path": "benchmark/source_gate/gate_probe.py",
+      "sha256": "c57fb63f2b9b24bd2c96aa844b5a7285bd7373074623c1ca171a2a80eae597a3"
+    },
+    {
+      "path": "benchmark/source_gate/isolated_gate.py",
+      "sha256": "1dd3dc27a7b9435e9c3809e0f6c8ca782ed1e2f2059428ef826f86c625e38d16"
+    },
+    {
+      "path": "benchmark/source_prefill_benchmark.py",
+      "sha256": "1e26665c493afefa0a973930cb0f322e8fe08d6c157addcdf7b52c4302456174"
+    },
+    {
+      "path": "benchmark/source_unquantized_gemm.py",
+      "sha256": "5def8724df7eee1ed3e7ad797771c0dd4067270e4a92f16fc711393bf6940d0a"
+    },
+    {
+      "path": "benchmark/verify_installed.py",
+      "sha256": "c6c89d2c88c7a60b7b3bcb4400435b2648408b3f745a085b92bb2fa92f4d911e"
+    },
+    {
+      "path": "tests/test_value_range_npu.py",
+      "sha256": "fc3da336bceab60dc6196fc44694e59abfc74d43018a94beac2d46492e9f6764"
+    },
+    {
+      "path": "validation/audit_simulator.py",
+      "sha256": "cd8a1417587974876b10b723c92615a2c2c93ca7bfb1b7dfa45c7ab272b376dd"
+    },
+    {
+      "path": "validation/bounded_process.py",
+      "sha256": "21f47eb1031fbf4d7c7da1f83af8a9b74041dd132434372fa1f3f8b20a109358"
+    },
+    {
+      "path": "validation/release_entry.py",
+      "sha256": "c3da5a41a87a4e7ca127904ac493e8be30befbbdc20d3fc58d4cea9e62a1ca63"
+    },
+    {
+      "path": "validation/reproduce.py",
+      "sha256": "c19c5d5e545f6d061e80775ae276dd820aab7f50f1b455f80004f9ddec37b12c"
+    },
+    {
+      "path": "validation/model_smoke.py",
+      "sha256": "1b649c1cdbf15dea0c7d22a5f5e3f0a3986298d21accea3034bf20c773b88ac9"
+    },
+    {
+      "path": "validation/run_core_ci.py",
+      "sha256": "2b489c2df76bc9fead97f6a1d7e546d27f53141fef96e3ea19b45618689c4df7"
+    }
+  ],
+  "runtime_baseline": {
+    "tilelang_commit": "cc9e2681c17c7a8479e2ec9b3b91124fca819c69",
+    "CANN": "9.2.0",
+    "Python_verified": "3.12.9",
+    "Torch": "2.7.1",
+    "Torch_NPU": "2.7.1.post4",
+    "hardware": "Ascend910B3"
+  },
+  "public_attention_profile": {
+    "condition": {
+      "B": 1,
+      "H": 96,
+      "physical_Tq": 128,
+      "physical_Tk": 128,
+      "scale": "exact existing runtime default"
+    },
+    "block_n": 128,
+    "otherwise_block_n": 64,
+    "metadata_values_in_selector_or_JIT_key": false,
+    "base_and_explicit_bundle_unchanged": true,
+    "packed_model_unchanged": true
+  },
+  "value_precision_policy": {
+    "implementation": "R3",
+    "origin_sha256": "d220d81526265cccb56854538a12edf1e7f775c58148f9edbe3580244e31735b",
+    "scale": {
+      "float16": 4,
+      "bfloat16": 2
+    },
+    "representation": "scaled Hi and original-scale Lo",
+    "gemms": "two independently initialized FP32 accumulations; combine A+B/s; gate then rescale",
+    "accuracy_budget": {
+      "rtol": 0.01,
+      "atol": 0.002,
+      "normalized_max": 0.005
+    }
+  },
+  "repository_format_config": {
+    "path": "pyproject.toml at repository root",
+    "sha256": "b826a9c935e598fd56b3bcb5f81929a37b09d2d38e9f4cf2641bacf1e076ea79"
+  },
+  "evidence_boundary": {
+    "historical_diagnostics": "retained outside public package",
+    "unqualified_comparators": "no performance ratio assigned",
+    "CI_registration": "draft until repository manifest is updated",
+    "regression_gap_notes": "REGRESSION_GAPS.md"
+  },
+  "reviewed_nonproduction_updates": [
+    [
+      {
+        "path": "tools/audit_package.py",
+        "previous_sha256": "ee65dd0a3292678ad763d7323f2503612607b52da6bd36b0d807f3ade2e0bef2",
+        "sha256": "1cee395ec03b50304dcdf960ac058add90bef3db43ea4c04d59cfa9c1393f51f"
+      },
+      {
+        "path": "tools/refresh_records.py",
+        "previous_sha256": null,
+        "sha256": "18c761d50f95ccf6674407037a4fef0935cba95cebb197700956b3c550530959"
+      }
+    ],
+    [
+      {
+        "path": "tests/conftest.py",
+        "previous_sha256": "4bbef11f5f5f37d6efa4f61f0efbdb9b438cecb3cddd4a76fae9410d00596f99",
+        "sha256": "4c76997f9a130683e68dbc8f871aef5dc04b1a9cb731778666ddbf3feb29e528"
+      },
+      {
+        "path": "tests/test_runtime_npu.py",
+        "previous_sha256": "e51f3e8355e957922359673c45a8a35aa7bc8c1d0af188ea85d9792b8539b811",
+        "sha256": "b9d9cfe4e890903be93c6f5f54912aa5a5fee2b363b94c4a2c012993d7c389f3"
+      },
+      {
+        "path": "tests/test_value_range_npu.py",
+        "previous_sha256": null,
+        "sha256": "fc3da336bceab60dc6196fc44694e59abfc74d43018a94beac2d46492e9f6764"
+      }
+    ],
+    [
+      {
+        "path": "validation/audit_simulator.py",
+        "previous_sha256": "d2086c185e9088284f86c0f679bb1eb559b5cfbb56b10850333896ad44ee59ee",
+        "sha256": "cd8a1417587974876b10b723c92615a2c2c93ca7bfb1b7dfa45c7ab272b376dd"
+      },
+      {
+        "path": "validation/bounded_process.py",
+        "previous_sha256": "0fc498b9677d1cc6c448f93386ef5cb1f12cc109f2a47dc086c83294025e385a",
+        "sha256": "21f47eb1031fbf4d7c7da1f83af8a9b74041dd132434372fa1f3f8b20a109358"
+      },
+      {
+        "path": "validation/release_entry.py",
+        "previous_sha256": "e8202f2c74cb37258b6214c421acbb8448dee138085c4e7be28248dc5a0d8e7f",
+        "sha256": "c3da5a41a87a4e7ca127904ac493e8be30befbbdc20d3fc58d4cea9e62a1ca63"
+      },
+      {
+        "path": "validation/reproduce.py",
+        "previous_sha256": "16f1767e663ef90dd8da2a56b89a886635061d690ee3acee55db9c0f187de7b8",
+        "sha256": "c19c5d5e545f6d061e80775ae276dd820aab7f50f1b455f80004f9ddec37b12c"
+      }
+    ],
+    [
+      {
+        "path": "_gmla_ci/registry_plugin.py",
+        "previous_sha256": "83624ece167cf93f47a449d84d81631cceea6141436530337a33058a576ca398",
+        "sha256": "491f447bc2ecaaf85155c58b443f47a5a33da2a8a5e67b9b75940af73a127133"
+      }
+    ]
+  ]
+}

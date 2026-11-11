@@ -1,5 +1,7 @@
 # Gated MLA decode: validation and performance
 
+For the multi-head Cube implementation, see [the package performance report](package/benchmark/PERFORMANCE.md). The results below describe the preserved fixed-domain example.
+
 ## Scope and environment
 
 Measured on 2026-11-10: Ascend 910B3, CANN 9.2.0, Python 3.12.9,
