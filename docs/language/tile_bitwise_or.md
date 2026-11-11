@@ -71,10 +71,10 @@ T.tile.bitwise_or(dst, src0, src1)
 **示例 2：张量切片按位或**
 
 ```python
-src0 = T.alloc_ub((128, 256), "int16")
-src1 = T.alloc_ub((128, 256), "int16")
-dst = T.alloc_ub((128, 256), "int16")
-T.tile.bitwise_or(dst[0:128, 0:256], src0[0:128, 0:256], src1[0:128, 0:256])
+src0 = T.alloc_ub((64, 256), "int16")
+src1 = T.alloc_ub((64, 256), "int16")
+dst = T.alloc_ub((64, 256), "int16")
+T.tile.bitwise_or(dst[0:64, 0:256], src0[0:64, 0:256], src1[0:64, 0:256])
 ```
 
 **示例 3：int8 按位或**

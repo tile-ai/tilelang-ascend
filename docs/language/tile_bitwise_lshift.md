@@ -2,7 +2,7 @@
 
 ## 1. 功能说明
 
-将源张量中的每个元素左移指定的标量位数：`dst[i] = src0[i] << scalarValue`
+将源张量中的每个元素左移指定的位数（标量或逐元素张量）：`dst[i] = src0[i] << scalarValue[i]`（张量形式）或 `dst[i] = src0[i] << scalarValue`（标量形式）
 
 > **移位语义说明**：对有符号与无符号整数类型，本接口均执行逻辑左移，即高位丢弃、低位补 0。
 
@@ -14,7 +14,7 @@
 def bitwise_lshift(
     dst: Buffer | BufferRegion,
     src0: Buffer | BufferRegion,
-    scalarValue: PrimExpr,
+    scalarValue: Buffer | BufferRegion | PrimExpr,
 )
 ```
 
@@ -24,10 +24,10 @@ def bitwise_lshift(
 |--------|----------|------|------|----------|
 | dst | 输出 | 存放左移运算结果 | 张量（tensor） | 必填 |
 | src0 | 输入 | 源操作数 | 张量（tensor） | 必填 |
-| scalarValue | 输入 | 位移位数 | 标量（scalar） | 必填 |
+| scalarValue | 输入 | 位移位数（标量或逐元素张量） | 张量（tensor）/ 标量（scalar） | 必填 |
 
 > **类型说明**：
-> - **tensor**：通过 `T.alloc_ub`、`T.alloc_shared` 等分配的缓冲区（Buffer），或其切片（BufferRegion）
+> - **tensor**：通过 `T.alloc_ub`、`T.alloc_shared` 等分配的缓冲区（Buffer），或其**物理连续**的切片（BufferRegion）。二维切片需占满整行（如 `buf[r0:r1, :]`）或仅涉及单行（如 `buf[0:1, a:b]`）；跨多行的列切片（如 `buf[:, a:b]`）不受支持，将产生错误结果
 > - **scalar**：Python 标量或 PrimExpr
 
 ### 2.3 参数规格
@@ -48,7 +48,7 @@ def bitwise_lshift(
 2. dst 与 src0 的元素个数必须相同
 3. src0 的 dtype 必须与 dst 一致
 4. 仅支持 int16、uint16、int32 和 uint32
-5. scalarValue 仅支持标量，暂不支持张量位移量
+5. scalarValue 支持标量移位和逐元素张量移位；张量形式须与 src0 的 dtype 和 shape 一致
 6. scalarValue 的 dtype 无需与 dst 一致
 7. 操作数地址需 32 字节对齐（硬件约束）
 8. 行宽对齐（当前 Ascend C 后端实现的支持范围，非硬件限制）：对完整的二维

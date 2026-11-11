@@ -1113,7 +1113,13 @@ def binary_op(
             size_0,
         )
     else:
-        assert size_0 <= math.prod(src1.shape), "src1 must have at least dst.size elements"
+        # Guard against dynamic (symbolic) shapes: only validate when both
+        # dst's element count and src1's capacity are statically known.
+        # Comparing a TIR expression against an int produces a symbolic
+        # expression that Python's assert cannot evaluate.
+        src1_shape_static = all(isinstance(d, (int, IntImm)) for d in src1.shape)
+        if isinstance(size_0, (int, IntImm)) and src1_shape_static:
+            assert size_0 <= math.prod(src1.shape), "src1 must have at least dst.size elements"
         return T.call_intrin(
             "handle",
             tir.op.Op.get(f"tl.ascend_{op}"),

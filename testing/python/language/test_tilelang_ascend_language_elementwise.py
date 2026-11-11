@@ -5174,6 +5174,23 @@ def test_binary_op_region_validation():
         T.tile.add(dst[:, 8:40], src0[:, 8:40], src1[:, 8:40])
 
 
+def test_binary_op_dynamic_src1_shape_skips_static_assert():
+    """Dynamic (symbolic) src1 shapes must not trip the static size assert.
+
+    The full-buffer src1 capacity check compares Python values; when the
+    shape contains a symbolic variable (tir.Var), the comparison would
+    produce a TIR expression that Python's assert cannot evaluate,
+    raising ValueError instead. Dynamic shapes must skip the check and
+    pass through (regression test for the assert guard).
+    """
+    dst = tir.decl_buffer((64,), "float16", scope="shared.ub")
+    src0 = tir.decl_buffer((64,), "float16", scope="shared.ub")
+    n = tir.Var("n", "int32")
+    src1_dynamic = tir.decl_buffer((n,), "float16", scope="shared.ub")
+    # Must not raise ValueError from the assert on a symbolic comparison
+    T.tile.add(dst, src0, src1_dynamic)
+
+
 def vec_maxs(M, N, block_M, block_N, scalar, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
