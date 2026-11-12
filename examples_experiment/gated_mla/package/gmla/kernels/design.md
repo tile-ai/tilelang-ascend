@@ -26,6 +26,24 @@ B1/H96/physical Tq=Tk128/default-scale profile selects N128; explicit base bundl
 and packed/model calls retain their configured N64. Metadata values are never
 dispatch or compilation keys.
 
+The reviewed prefill revision retains the original interfaces and precision
+policy. Head-aligned tiles build a whole-tile packed causal mask; other heads
+keep the original row-mask path. For one physical KV tile, C/E stay resident in
+L1 for the same batch within one invocation. Query-only prefetch reuses dead
+Q/QA/Lo storage during Vector softmax, before the existing completion barrier.
+Tags are explicitly reset inside Cube scope on every launch and graph replay;
+no input data is cached across invocations. Multi-KV execution retains the
+original reloads and online recurrence. Entirely active, head-aligned one-block
+tiles omit only identities from the initial online state; normalization still
+uses the original FP32 probability sum before BF16 Hi/Lo quantization.
+
+QK uses a128-element L0 K chunk; auxiliary Q remains64. PV uses64 on PTO's
+single-buffer template and32 on AscendC's two-slot template, respecting each
+backend's real L0B budget. Whole-tile Select owns complete FP32-sized scratch,
+and packed-mask rows reserve their32-byte physical stride. Generated addresses,
+payload/metadata updates and broad numerical regressions require hardware
+verification; source-level capacity estimates alone are insufficient.
+
 Cube/Vector communication uses per-block GM workspaces with paired flags and
 acknowledgements before reuse. Value holds one head's Wv in L1 across token tiles.
 Query/Value tail tiles reload the last real M rows and store only the remainder;

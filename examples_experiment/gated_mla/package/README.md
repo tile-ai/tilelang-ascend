@@ -1,8 +1,9 @@
 # Experimental Gated MLA forward package
 
-Dense causal inference with shared compressed C/E cache. This export selects the
-r1.7 implementation; all production Python files are byte-identical to that
-frozen candidate. It does not select the later identity-view experiment.
+Dense causal inference with shared compressed C/E cache. This export starts from
+the selected r1.7 implementation and includes the reviewed 2026-11-12 prefill-only
+revision. Of the 25 production Python files, only `gmla/kernels/prefill.py` changes
+from parent `de16598`; the separate identity-view experiment remains unselected.
 
 The selected implementation is Q2 r2, CubeValue R3, S6 split-KV decode and C4
 native vector-mask prefill. Default target is PTO; `target="ascendc"` is explicit.
@@ -208,8 +209,12 @@ implementation without referring to private prototype folders.
 - [Complete-chain performance and reference qualification](benchmark/PERFORMANCE.md).
 - [Benchmark commands and source attribution](benchmark/README.md).
 - [Validation summary, extended cases and model boundaries](VALIDATION.md).
-- [Eight-case direct/simulator evidence and reproduction](validation/README.md).
+- [Historical eight-case direct/simulator evidence and reproduction](validation/README.md).
 - [Frozen one-layer model reproduction](validation/MODEL_SMOKE.md).
 - [Source integrity and maintenance](MAINTENANCE.md).
 
 Repository CI selects the preserved L0 suite and nine package suites. The local test conftest prepares a shared CPU compile pool only for selected Gated MLA device tests, then scopes cache/compiler checks to those tests. Kernel-cache preparation is included in the cold-test wall time. Ordinary collection and CPU-only selection do not compile kernels; unrelated operator execution restores its original context.
+
+## Reviewed prefill revision
+
+The prefill revision preserves public interfaces, original FP64 budgets and BF16 query/probability residuals. It adds head-aligned whole-tile masks, invocation-local KV residency and query prefetch, exact one-KV-block state identities and backend-safe L0 grains. Generic heads and multi-KV cases retain the guarded recurrence. See [performance/qualification](benchmark/PREFILL_OPTIMIZATION_20261112.md) and [reproduction](benchmark/PREFILL_OPTIMIZATION_TESTING.md); scope-specific speedups are not whole-model throughput claims.

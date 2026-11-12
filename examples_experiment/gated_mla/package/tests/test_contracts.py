@@ -48,6 +48,30 @@ def validators():
     ]
 
 
+def test_prefill_mask_buffers_fit_each_declared_tile_and_dtype():
+    mode = extracted("gmla/kernels/prefill.py", "probability_precision_mode")
+    plan = extracted("gmla/kernels/prefill.py", "buffer_plan", {"probability_precision_mode": mode})
+    for block_m in (16, 32):
+        for block_n in (64, 128):
+            for dtype in ("float16", "bfloat16"):
+                for residual in (False, True):
+                    result = plan(block_m, block_n, dtype=dtype, has_ql_residual=residual)
+                    half_m = block_m // 2
+                    ub = result["UB"]["buffers"]
+                    # Packed uint8 mask rows are physically32-byte aligned,
+                    # even when a logical row needs only8 or16 bytes.
+                    assert ub["block_mask"]["bytes"] >= half_m * 32
+                    assert ub["block_select_scratch"]["bytes"] >= half_m * block_n * 4
+                    for scope, limit in (("UB", 192 * 1024), ("L1", 512 * 1024), ("L0C", 128 * 1024)):
+                        regions = sorted(result[scope]["buffers"].values(), key=lambda row: row["offset"])
+                        assert all(row["offset"] % 32 == 0 for row in regions)
+                        assert all(left["end"] <= right["offset"] for left, right in zip(regions, regions[1:]))
+                        # Reserve the observed worst automatic reduction arena;
+                        # generated-source/hardware checks remain separate.
+                        scratch = 4096 if scope == "UB" else 0
+                        assert result[scope]["total_bytes"] + scratch <= limit
+
+
 @pytest.mark.parametrize("value", [1e300, 1e-300, 2.0**-150])
 def test_scale_rejects_nonrepresentable_float32_in_all_routes(value):
     for validate in validators():

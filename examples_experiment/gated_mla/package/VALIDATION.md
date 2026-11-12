@@ -1,8 +1,22 @@
 # Validation record
 
-This record separates numerical correctness, simulator execution, model diagnostics
-and the additional local cold-time target. Production is the selected r1.7 implementation;
-r1.8 is excluded. The 25 installed production Python files match frozen r1.7.
+The current source includes the reviewed 2026-11-12 prefill-only revision from
+parent `de16598`; 24 other production Python files remain unchanged. Current
+normal-install and full-suite results are in the [prefill report](benchmark/PREFILL_OPTIMIZATION_20261112.md)
+and [validation summary](benchmark/PREFILL_VALIDATION_20261112.json): eight installed
+combinations, 233 core tests and 22 extended tests passed. The core cold process
+took 217.21s and missed the unchanged extra local 120s target. Updated-source
+representative simulator runs passed all four prefill dtype/backend combinations;
+see the [current simulator matrix](benchmark/PREFILL_SIMULATOR_20261112.md). Native
+source-line mapping remains unavailable. The older matrix below retains its
+historical source/runtime boundary.
+
+## Historical r1.7 record
+
+The remaining sections record the previously selected r1.7 implementation, before
+the reviewed prefill revision. All 25 production Python files matched that frozen
+candidate at the time. The separate later identity-view experiment was excluded.
+These results preserve their original source/runtime boundaries.
 
 ## Recorded environment
 

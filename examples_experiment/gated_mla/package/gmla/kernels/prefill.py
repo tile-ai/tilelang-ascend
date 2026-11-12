@@ -75,7 +75,14 @@ def buffer_plan(block_m=32, block_n=64, *, batch=1, heads=96, query_capacity=1, 
         sizes["L1"]["q_lo_l1"] = block_m * 512 * 2
     if dtype == "bfloat16":
         sizes["UB"]["prob_round_ub"] = hm * block_n * 4
-    sizes["UB"].update(column_indices=block_n * 4, prefix_mask=32, select_scratch=block_n * 4)
+    sizes["UB"].update(
+        column_indices=block_n * 4,
+        prefix_mask=32,
+        select_scratch=block_n * 4,
+        mask_columns=hm * block_n * 4,
+        block_mask=hm * 32,
+        block_select_scratch=hm * block_n * 4,
+    )
     result = {}
     for scope, buffers in sizes.items():
         end = 0
@@ -160,6 +167,8 @@ def build_cube_attention(
     cache_tail_extent = block_n if cache_remainder else cache_capacity
     half_m = block_m // 2
     iterations = (cache_capacity + block_n - 1) // block_n
+    single_block_uniform = iterations == 1 and heads % block_m == 0
+    pv_l0_k = 64 if target == "pto" else 32
 
     def allocate_query_residual(q_hi_buffer):
         # Returning the existing Buffer allocates nothing for the static None path.
@@ -190,6 +199,12 @@ def build_cube_attention(
             c_live_rows = T.alloc_var("int32", init=0)
             c_last_row = T.alloc_var("int32", init=0)
             c_max_visible = T.alloc_var("int32", init=0)
+            c_cached_bid = T.alloc_var("int32")
+            c_prefetched_task = T.alloc_var("int32")
+            c_next_task = T.alloc_var("int32")
+            c_next_bid = T.alloc_var("int32")
+            c_next_row = T.alloc_var("int32")
+            c_next_live_rows = T.alloc_var("int32")
             v_live_rows = T.alloc_var("int32", init=0)
             v_last_row = T.alloc_var("int32", init=0)
             v_max_visible = T.alloc_var("int32", init=0)
@@ -217,6 +232,9 @@ def build_cube_attention(
             column_indices = T.alloc_ub((block_n,), "float32")
             prefix_mask = T.alloc_ub((32,), "uint8")
             select_scratch = T.alloc_ub((block_n * 4,), "uint8")
+            mask_columns = T.alloc_ub((half_m, block_n), "float32")
+            block_mask = T.alloc_ub((half_m, block_n // 8), "uint8")
+            block_select_scratch = T.alloc_ub((half_m * block_n * 4,), "uint8")
             T.annotate_address(
                 {
                     q_l1: l1["q_l1"],
@@ -237,6 +255,9 @@ def build_cube_attention(
                     column_indices: ub["column_indices"],
                     prefix_mask: ub["prefix_mask"],
                     select_scratch: ub["select_scratch"],
+                    mask_columns: ub["mask_columns"],
+                    block_mask: ub["block_mask"],
+                    block_select_scratch: ub["block_select_scratch"],
                 }
             )
 
@@ -245,6 +266,9 @@ def build_cube_attention(
 
             # Same-group, single-buffer four-flag protocol from manual FA.
             with T.Scope("C"):
+                # Reset within the Cube scope on every kernel launch/replay.
+                c_cached_bid = -1
+                c_prefetched_task = -1
                 for c_wave in T.serial(waves):
                     c_task = c_wave * blocks + cid
                     if c_task < total_tasks:
@@ -258,36 +282,84 @@ def build_cube_attention(
                             c_max_visible = Metadata[c_bid, 2] + c_last_row // heads + 1
                             if c_max_visible > Metadata[c_bid, 1]:
                                 c_max_visible = Metadata[c_bid, 1]
-                            if head_remainder != 0 and c_row_start + block_m > rows:
-                                T.copy(QTail[c_bid, :, :], q_l1)
-                                T.copy(QATail[c_bid, :, :], qa_l1)
-                                if has_ql_residual:
-                                    T.copy(QLoTail[c_bid, :, :], q_lo_l1)
+                            if iterations == 1:
+                                if c_prefetched_task != c_task:
+                                    if head_remainder != 0 and c_row_start + block_m > rows:
+                                        T.copy(QTail[c_bid, :, :], q_l1)
+                                        T.copy(QATail[c_bid, :, :], qa_l1)
+                                        if has_ql_residual:
+                                            T.copy(QLoTail[c_bid, :, :], q_lo_l1)
+                                    else:
+                                        T.copy(QL[c_bid, c_row_start : c_row_start + block_m, :], q_l1)
+                                        T.copy(QA[c_bid, c_row_start : c_row_start + block_m, :], qa_l1)
+                                        if has_ql_residual:
+                                            T.copy(QLo[c_bid, c_row_start : c_row_start + block_m, :], q_lo_l1)
+                                c_prefetched_task = -1
                             else:
-                                T.copy(QL[c_bid, c_row_start : c_row_start + block_m, :], q_l1)
-                                T.copy(QA[c_bid, c_row_start : c_row_start + block_m, :], qa_l1)
-                                if has_ql_residual:
-                                    T.copy(QLo[c_bid, c_row_start : c_row_start + block_m, :], q_lo_l1)
+                                if head_remainder != 0 and c_row_start + block_m > rows:
+                                    T.copy(QTail[c_bid, :, :], q_l1)
+                                    T.copy(QATail[c_bid, :, :], qa_l1)
+                                    if has_ql_residual:
+                                        T.copy(QLoTail[c_bid, :, :], q_lo_l1)
+                                else:
+                                    T.copy(QL[c_bid, c_row_start : c_row_start + block_m, :], q_l1)
+                                    T.copy(QA[c_bid, c_row_start : c_row_start + block_m, :], qa_l1)
+                                    if has_ql_residual:
+                                        T.copy(QLo[c_bid, c_row_start : c_row_start + block_m, :], q_lo_l1)
                             T.barrier_all()
                             for k in T.serial(iterations):
                                 if k * block_n < c_max_visible:
-                                    if cache_remainder != 0 and k == iterations - 1:
-                                        T.copy(CTail[c_bid, :, :], c_l1)
-                                        T.copy(ETail[c_bid, :, :], e_l1)
+                                    if iterations == 1:
+                                        if c_cached_bid != c_bid:
+                                            if cache_remainder != 0 and k == iterations - 1:
+                                                T.copy(CTail[c_bid, :, :], c_l1)
+                                                T.copy(ETail[c_bid, :, :], e_l1)
+                                            else:
+                                                T.copy(C[c_bid, k * block_n : (k + 1) * block_n, :], c_l1)
+                                                T.copy(E[c_bid, k * block_n : (k + 1) * block_n, :], e_l1)
+                                        T.barrier_all()
+                                        c_cached_bid = c_bid
                                     else:
-                                        T.copy(C[c_bid, k * block_n : (k + 1) * block_n, :], c_l1)
-                                        T.copy(E[c_bid, k * block_n : (k + 1) * block_n, :], e_l1)
-                                    T.barrier_all()
-                                    T.gemm_v0(q_l1, c_l1, score_l0c, transpose_B=True, init=True, kL0Size=64)
+                                        if cache_remainder != 0 and k == iterations - 1:
+                                            T.copy(CTail[c_bid, :, :], c_l1)
+                                            T.copy(ETail[c_bid, :, :], e_l1)
+                                        else:
+                                            T.copy(C[c_bid, k * block_n : (k + 1) * block_n, :], c_l1)
+                                            T.copy(E[c_bid, k * block_n : (k + 1) * block_n, :], e_l1)
+                                        T.barrier_all()
+                                    T.gemm_v0(q_l1, c_l1, score_l0c, transpose_B=True, init=True, kL0Size=128)
                                     T.barrier_all()
                                     if has_ql_residual:
-                                        T.gemm_v0(q_lo_l1, c_l1, score_l0c, transpose_B=True, init=False, kL0Size=64)
+                                        T.gemm_v0(q_lo_l1, c_l1, score_l0c, transpose_B=True, init=False, kL0Size=128)
                                         T.barrier_all()
                                     T.gemm_v0(qa_l1, e_l1, score_l0c, transpose_B=True, init=False, kL0Size=64)
                                     T.barrier_all()
                                     T.copy(score_l0c, score_workspace[cid, :, :])
                                     T.barrier_all()
                                     T.set_cross_flag("FIX", 0)
+
+                                    if iterations == 1:
+                                        # Current Q/QA/Lo are dead; PV only consumes P and C.
+                                        c_next_task = c_task + blocks
+                                        if c_next_task < total_tasks:
+                                            c_next_bid = c_next_task // row_tiles
+                                            c_next_row = (c_next_task % row_tiles) * block_m
+                                            if c_next_bid == c_bid:
+                                                c_next_live_rows = c_live_rows
+                                            else:
+                                                c_next_live_rows = Metadata[c_next_bid, 0] * heads
+                                            if c_next_row < c_next_live_rows:
+                                                if head_remainder != 0 and c_next_row + block_m > rows:
+                                                    T.copy(QTail[c_next_bid, :, :], q_l1)
+                                                    T.copy(QATail[c_next_bid, :, :], qa_l1)
+                                                    if has_ql_residual:
+                                                        T.copy(QLoTail[c_next_bid, :, :], q_lo_l1)
+                                                else:
+                                                    T.copy(QL[c_next_bid, c_next_row : c_next_row + block_m, :], q_l1)
+                                                    T.copy(QA[c_next_bid, c_next_row : c_next_row + block_m, :], qa_l1)
+                                                    if has_ql_residual:
+                                                        T.copy(QLo[c_next_bid, c_next_row : c_next_row + block_m, :], q_lo_l1)
+                                                c_prefetched_task = c_next_task
 
                                     T.wait_cross_flag(1)
                                     T.barrier_all()
@@ -297,12 +369,12 @@ def build_cube_attention(
                                         T.copy(probability_workspace[cid, :, :], p_l1)
                                     T.barrier_all()
                                     # C stays resident from QK through PV; no second GM load.
-                                    T.gemm_v0(p_l1, c_l1, partial_l0c, init=True, kL0Size=16)
+                                    T.gemm_v0(p_l1, c_l1, partial_l0c, init=True, kL0Size=pv_l0_k)
                                     T.barrier_all()
                                     if use_p_residual:
                                         T.copy(probability_workspace[cid, :, block_n : 2 * block_n], p_l1)
                                         T.barrier_all()
-                                        T.gemm_v0(p_l1, c_l1, partial_l0c, init=False, kL0Size=16)
+                                        T.gemm_v0(p_l1, c_l1, partial_l0c, init=False, kL0Size=pv_l0_k)
                                         T.barrier_all()
                                     T.copy(partial_l0c, partial_workspace[cid, :, :])
                                     T.barrier_all()
@@ -313,6 +385,9 @@ def build_cube_attention(
             with T.Scope("V"):
                 T.tile.createvecindex(column_indices, 0.0)
                 T.barrier_all()
+                if heads % block_m == 0:
+                    T.tile.broadcast(mask_columns, column_indices, axis=0)
+                    T.barrier_all()
                 for v_wave in T.serial(waves):
                     v_task = v_wave * blocks + cid
                     if v_task < total_tasks:
@@ -327,9 +402,10 @@ def build_cube_attention(
                             if valid_rows > half_m:
                                 valid_rows = half_m
                         T.tile.fill(z, 0.0)
-                        for i in T.Parallel(half_m):
-                            normalizer[i] = T.if_then_else(v_row_start + row0 + i < v_live_rows, 0.0, 1.0)
-                            maximum[i] = T.if_then_else(v_row_start + row0 + i < v_live_rows, -T.infinity("float32"), 0.0)
+                        if not single_block_uniform:
+                            for i in T.Parallel(half_m):
+                                normalizer[i] = T.if_then_else(v_row_start + row0 + i < v_live_rows, 0.0, 1.0)
+                                maximum[i] = T.if_then_else(v_row_start + row0 + i < v_live_rows, -T.infinity("float32"), 0.0)
                         T.barrier_all()
                         if v_row_start < v_live_rows:
                             v_last_row = v_row_start + block_m - 1
@@ -340,46 +416,70 @@ def build_cube_attention(
                                 v_max_visible = v_kvlen
                             for _k in T.serial(iterations):
                                 if _k * block_n < v_max_visible:
-                                    T.copy(maximum, previous)
-                                    T.barrier_all()
+                                    if not single_block_uniform:
+                                        T.copy(maximum, previous)
+                                        T.barrier_all()
                                     T.wait_cross_flag(0)
                                     T.copy(score_workspace[cid, row0 : row0 + half_m, :], scores)
                                     T.barrier_all()
                                     T.tile.mul(scores, scores, scale)
                                     T.barrier_all()
-                                    for mask_row in T.serial(half_m):
-                                        if v_row_start + row0 + mask_row < v_live_rows:
-                                            mask_limit = v_start + (v_row_start + row0 + mask_row) // heads + 1
-                                            if mask_limit > v_kvlen:
-                                                mask_limit = v_kvlen
-                                            mask_remaining = mask_limit - _k * block_n
-                                            if mask_remaining <= 0:
-                                                T.tile.fill(scores[mask_row, :], -T.infinity("float32"))
-                                                T.barrier_all()
-                                            elif mask_remaining < block_n:
-                                                T.tile.compare(prefix_mask, column_indices, T.cast(mask_remaining, "float32"), "LT")
-                                                T.barrier_all()
-                                                T.tile.select(
-                                                    scores[mask_row, :],
-                                                    prefix_mask,
-                                                    scores[mask_row, :],
-                                                    -T.infinity("float32"),
-                                                    "VSEL_TENSOR_SCALAR_MODE",
-                                                    tmp=select_scratch,
-                                                )
-                                                T.barrier_all()
-                                        else:
-                                            T.tile.fill(scores[mask_row, :], 0.0)
+                                    if heads % block_m == 0:
+                                        # A head-aligned tile belongs to exactly one query.
+                                        mask_limit = v_start + v_row_start // heads + 1
+                                        if mask_limit > v_kvlen:
+                                            mask_limit = v_kvlen
+                                        mask_remaining = mask_limit - _k * block_n
+                                        if mask_remaining <= 0:
+                                            T.tile.fill(scores, -T.infinity("float32"))
                                             T.barrier_all()
+                                        elif mask_remaining < block_n:
+                                            T.tile.compare(block_mask, mask_columns, T.cast(mask_remaining, "float32"), "LT")
+                                            T.barrier_all()
+                                            T.tile.select(
+                                                scores,
+                                                block_mask,
+                                                scores,
+                                                -T.infinity("float32"),
+                                                "VSEL_TENSOR_SCALAR_MODE",
+                                                tmp=block_select_scratch,
+                                            )
+                                            T.barrier_all()
+                                    else:
+                                        for mask_row in T.serial(half_m):
+                                            if v_row_start + row0 + mask_row < v_live_rows:
+                                                mask_limit = v_start + (v_row_start + row0 + mask_row) // heads + 1
+                                                if mask_limit > v_kvlen:
+                                                    mask_limit = v_kvlen
+                                                mask_remaining = mask_limit - _k * block_n
+                                                if mask_remaining <= 0:
+                                                    T.tile.fill(scores[mask_row, :], -T.infinity("float32"))
+                                                    T.barrier_all()
+                                                elif mask_remaining < block_n:
+                                                    T.tile.compare(prefix_mask, column_indices, T.cast(mask_remaining, "float32"), "LT")
+                                                    T.barrier_all()
+                                                    T.tile.select(
+                                                        scores[mask_row, :],
+                                                        prefix_mask,
+                                                        scores[mask_row, :],
+                                                        -T.infinity("float32"),
+                                                        "VSEL_TENSOR_SCALAR_MODE",
+                                                        tmp=select_scratch,
+                                                    )
+                                                    T.barrier_all()
+                                            else:
+                                                T.tile.fill(scores[mask_row, :], 0.0)
+                                                T.barrier_all()
                                     T.barrier_all()
                                     T.reduce_max(scores, maximum, dim=-1)
                                     T.barrier_all()
-                                    T.tile.max(maximum, maximum, previous)
-                                    T.barrier_all()
-                                    T.tile.sub(previous, previous, maximum)
-                                    T.barrier_all()
-                                    T.tile.exp(previous, previous)
-                                    T.barrier_all()
+                                    if not single_block_uniform:
+                                        T.tile.max(maximum, maximum, previous)
+                                        T.barrier_all()
+                                        T.tile.sub(previous, previous, maximum)
+                                        T.barrier_all()
+                                        T.tile.exp(previous, previous)
+                                        T.barrier_all()
                                     for row in T.serial(half_m):
                                         T.tile.sub(scores[row, :], scores[row, :], maximum[row])
                                         T.barrier_all()
@@ -392,15 +492,20 @@ def build_cube_attention(
                                                 T.tile.fill(scores[mask_row, :], 0.0)
                                                 T.barrier_all()
                                     T.barrier_all()
-                                    T.reduce_sum(scores, block_sum, dim=-1)
-                                    T.barrier_all()
-                                    T.tile.mul(normalizer, normalizer, previous)
-                                    T.barrier_all()
-                                    T.tile.add(normalizer, normalizer, block_sum)
-                                    T.barrier_all()
-                                    for row in T.serial(half_m):
-                                        T.tile.mul(z[row, :], z[row, :], previous[row])
+                                    if single_block_uniform:
+                                        # First and only block: l0=0 and z0=0, so no online rescale is needed.
+                                        T.reduce_sum(scores, normalizer, dim=-1)
                                         T.barrier_all()
+                                    else:
+                                        T.reduce_sum(scores, block_sum, dim=-1)
+                                        T.barrier_all()
+                                        T.tile.mul(normalizer, normalizer, previous)
+                                        T.barrier_all()
+                                        T.tile.add(normalizer, normalizer, block_sum)
+                                        T.barrier_all()
+                                        for row in T.serial(half_m):
+                                            T.tile.mul(z[row, :], z[row, :], previous[row])
+                                            T.barrier_all()
 
                                     # Explicitly quantized P uses dtype; l retains FP32 p sum.
                                     T.copy(scores, p_half)

@@ -103,3 +103,5 @@ results above keep their original meaning. BF16 shared-LP core results do not
 represent the production HiLo path; each scope retains its own qualification.
 
 [The aligned report](PERFORMANCE_ALIGNED_20261112.md) records 72 independent-process trials, preserving the public/prevalidated and common-LP-core boundaries separately. Failed references have no qualified ratio.
+
+[Prefill optimization](PREFILL_OPTIMIZATION_20261112.md) compares the reviewed numerical revision with parent `de16598` in matched core/full-chain scopes. [Reproduction and regression commands](PREFILL_OPTIMIZATION_TESTING.md) preserve the normal parent installation as the control. Earlier alignment reports remain historical data.

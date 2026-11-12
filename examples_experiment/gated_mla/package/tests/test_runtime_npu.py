@@ -7,14 +7,119 @@ from . import fixtures
 from .helpers import cpu_inputs, execute_case, metadata, refs, runtime_for, verify_result
 
 
+def _assert_input_bytes(device, expected, device_meta, cpu_meta):
+    for name, value in {**device, "metadata": device_meta}.items():
+        original = cpu_meta if name == "metadata" else expected[name]
+        assert value.dtype == original.dtype and tuple(value.shape) == tuple(original.shape), name
+        assert torch.equal(value.detach().cpu().contiguous().view(torch.uint8), original.contiguous().view(torch.uint8)), name
+
+
+def _payload_inputs(inputs, rows):
+    """New CPU mappings only: cpu_inputs() returns shared LRU-cached tensors."""
+    joint = dict(inputs)
+    joint["latent_kv"] = inputs["latent_kv"].clone().add_(0.125)
+    joint["key_aux"] = inputs["key_aux"].clone().sub_(0.25)
+    # A uniform E displacement cancels in softmax. Perturb one visible key.
+    auxiliary = dict(inputs)
+    auxiliary["key_aux"] = inputs["key_aux"].clone()
+    auxiliary["key_aux"][:, 0, 0].add_(0.75)
+    query = dict(inputs)
+    query["q_content"] = inputs["q_content"].clone()
+    active = [(b, row[0] - 1) for b, row in enumerate(rows) if row[0] and min(row[1], row[2] + row[0]) > 1]
+    assert active, "Q probe needs an active query with at least two visible keys"
+    batch, token = active[-1]
+    query["q_content"][batch, token, 0, 0].add_(0.75)
+    return (
+        ("joint_cache_aux", joint, ("latent_kv", "key_aux")),
+        ("auxiliary_only", auxiliary, ("key_aux",)),
+        ("query_only", query, ("q_content",)),
+    )
+
+
+def _check_live_prefill_payloads(inputs, rows, target, runtime, device, device_meta, initial_result, *, graph):
+    cpu_meta = metadata(rows, inputs)
+    original_refs = refs(inputs, cpu_meta)
+    original_latent = initial_result[1]["latent_out"].detach().cpu().clone()
+    pointers = {name: value.data_ptr() for name, value in {**device, "metadata": device_meta}.items()}
+
+    def invoke():
+        return runtime.forward(**device, metadata=device_meta, return_intermediates=True)
+
+    def check(result, expected, expected_inputs, *, changed, expected_rows=None, expected_meta=None):
+        output, intermediate, audit = result
+        torch.npu.synchronize()
+        verify_result(output, intermediate, audit, expected, inputs["q_content"].dtype, target)
+        latent = intermediate["latent_out"].detach().cpu()
+        live_rows = rows if expected_rows is None else expected_rows
+        live_meta = cpu_meta if expected_meta is None else expected_meta
+        for batch, row in enumerate(live_rows):
+            assert torch.count_nonzero(output[batch, row[0] :].cpu()) == 0
+            assert torch.count_nonzero(latent[batch, row[0] :]) == 0
+        if changed:
+            assert not torch.equal(latent, original_latent), "live payload update was ignored"
+        assert pointers == {name: value.data_ptr() for name, value in {**device, "metadata": device_meta}.items()}
+        _assert_input_bytes(device, expected_inputs, device_meta, live_meta)
+
+    with torch.no_grad():
+        handle, captured = None, None
+        if graph:
+            handle = torch.npu.NPUGraph()
+            with torch.npu.graph(handle):
+                captured = invoke()
+            handle.replay()
+            check(captured, original_refs, inputs, changed=False)
+        for label, updated, names in _payload_inputs(inputs, rows):
+            # Both ordinary and replay checks use this independently calculated
+            # FP64 result, with the exact LP bytes copied from CPU to the NPU.
+            expected = refs(updated, cpu_meta)
+            assert torch.count_nonzero(expected["latent_out"] - original_refs["latent_out"]) > 0, label
+            try:
+                for name in names:
+                    device[name].copy_(updated[name])
+                check(invoke(), expected, updated, changed=True)
+                if handle is not None:
+                    handle.replay()
+                    check(captured, expected, updated, changed=True)
+            finally:
+                for name in names:
+                    device[name].copy_(inputs[name])
+                torch.npu.synchronize()
+            check(invoke(), original_refs, inputs, changed=False)
+            if handle is not None:
+                handle.replay()
+                check(captured, original_refs, inputs, changed=False)
+        if handle is not None:
+            # Metadata values remain device inputs, never factory parameters.
+            # Reuse the existing graph and the same Bx8 storage on both profiles.
+            capacities = (inputs["q_content"].shape[1], inputs["latent_kv"].shape[1])
+            changed_rows = {(128, 128): [[64, 128, 32]], (17, 17): [[8, 17, 4]]}[capacities]
+            changed_meta = metadata(changed_rows, inputs)
+            changed_refs = refs(inputs, changed_meta)
+            assert torch.count_nonzero(changed_refs["latent_out"] - original_refs["latent_out"]) > 0
+            try:
+                device_meta.copy_(changed_meta)
+                check(invoke(), changed_refs, inputs, changed=True, expected_rows=changed_rows, expected_meta=changed_meta)
+                handle.replay()
+                check(captured, changed_refs, inputs, changed=True, expected_rows=changed_rows, expected_meta=changed_meta)
+            finally:
+                device_meta.copy_(cpu_meta)
+                torch.npu.synchronize()
+            check(invoke(), original_refs, inputs, changed=False)
+            handle.replay()
+            check(captured, original_refs, inputs, changed=False)
+
+
 @pytest.mark.npu
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("target", [None, "ascendc"], ids=["default_pto", "ascendc"])
 def test_h96_t17_tail_reset_full_chain(npu, dtype, target):
     inputs = cpu_inputs(1, 96, 17, 17, dtype)
-    *_, audit = execute_case(inputs, [[17, 17, 0]], target)
+    rows = [[17, 17, 0]]
+    runtime, device, device_meta, output, intermediate, audit = execute_case(inputs, rows, target)
     assert audit["selected_attention"] == "c4_prefill"
     assert "cache_tail" in audit["kernels"]
+    if target == "ascendc":
+        _check_live_prefill_payloads(inputs, rows, target, runtime, device, device_meta, (output, intermediate, audit), graph=True)
 
 
 @pytest.mark.npu
@@ -126,7 +231,8 @@ def test_decode_custom_scale_routes_prefill(npu, target):
 def test_prefill128_public_profile_core(npu, dtype):
     """The exact new public profile is Tq=Tk128, distinct from old Tk129 cases."""
     inputs = cpu_inputs(1, 96, 128, 128, dtype)
-    runtime, _, _, _, _, audit = execute_case(inputs, [[128, 128, 0]], None)
+    rows = [[128, 128, 0]]
+    runtime, device, device_meta, output, intermediate, audit = execute_case(inputs, rows, None)
     assert runtime.target == "pto" and audit["selected_attention"] == "c4_prefill"
     # The base diagnostic bundle remains immutable N64; only public.forward
     # chooses the separately cached N128 profile for this geometry/default scale.
@@ -147,3 +253,25 @@ def test_prefill128_public_profile_core(npu, dtype):
     actual = audit["kernels"]["attention"]
     assert actual is expected and str(actual.target) == "pto"
     assert actual.get_kernel_source() == expected.get_kernel_source()
+    _check_live_prefill_payloads(inputs, rows, None, runtime, device, device_meta, (output, intermediate, audit), graph=True)
+
+
+@pytest.mark.npu
+@pytest.mark.parametrize("dtype,target", [(torch.float16, None), (torch.bfloat16, "ascendc")])
+def test_prefill_one_block_cache_batch_switch(npu, dtype, target):
+    inputs = cpu_inputs(3, 96, 3, 63, dtype)
+    rows = [[3, 63, 60], [0, 0, 0], [2, 33, 31]]
+    runtime, device, device_meta, output, intermediate, audit = execute_case(inputs, rows, target)
+    assert audit["selected_attention"] == "c4_prefill"
+    assert runtime.kernel_bundle.block_n == 64
+    _check_live_prefill_payloads(inputs, rows, target, runtime, device, device_meta, (output, intermediate, audit), graph=False)
+
+
+@pytest.mark.npu
+def test_prefill_multikv_uniform_heads_fallback(npu):
+    inputs = cpu_inputs(1, 96, 17, 129, torch.float16)
+    rows = [[17, 129, 112]]
+    runtime, device, device_meta, output, intermediate, audit = execute_case(inputs, rows, None)
+    assert audit["selected_attention"] == "c4_prefill" and "cache_tail" in audit["kernels"]
+    assert runtime.kernel_bundle.block_n == 64
+    _check_live_prefill_payloads(inputs, rows, None, runtime, device, device_meta, (output, intermediate, audit), graph=False)

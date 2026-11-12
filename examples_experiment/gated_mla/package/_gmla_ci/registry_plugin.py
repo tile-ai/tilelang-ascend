@@ -109,6 +109,10 @@ def cases_for_item(item):
         )
     elif name == "test_prefill128_public_profile_core":
         case("public_N128_exact_profile", 1, 96, 128, 128, all_stages, fixed_target="pto")
+    elif name == "test_prefill_one_block_cache_batch_switch":
+        case("public_N64_one_block_batch_tags", 3, 96, 3, 63, all_stages)
+    elif name == "test_prefill_multikv_uniform_heads_fallback":
+        case("public_N64_uniform_heads_multiKV", 1, 96, 17, 129, all_stages, fixed_dtype="float16", fixed_target="pto")
     elif name == "test_original_bf16_visible17_failure_and_metadata_reuse":
         case("full_and_visible17_same_factories", 1, 96, 1, 4096, all_stages, fixed_dtype="bfloat16")
     elif name == "test_empty_splits_inactive_batch_and_tails":

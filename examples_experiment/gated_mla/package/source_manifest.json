@@ -1,18 +1,18 @@
 {
   "schema_version": 1,
-  "status": "public_PR_export_of_selected_r1_7",
+  "status": "public_PR_export_with_reviewed_prefill_revision_20261112",
   "provenance_scope": "Destination hashes and ASTs verify this source checkout. Historical development IDs/hashes are identifiers only, not runtime dependencies or independently downloadable proof. Verification does not establish NPU correctness/performance.",
   "export_source": {
     "release": "r1.7",
     "archive_sha256": "f86bd03a7ec453401e54f45243b18168dee6bbf2baf3260ad53fb5143164ad64",
     "manifest_sha256": "c40361ca7278e1b69c36ccadb4b5f28b91cb33a52050f7698035a1ce3e246c89",
-    "production_gmla_python": "byte-identical to frozen r1.7"
+    "production_gmla_python": "Historical r1.7 export baseline; current checkout includes the explicit reviewed prefill-only revision below. The other 24 production Python files remain unchanged from parent de16598."
   },
   "selection": {
     "query": "Q2_r2_20",
     "value": "CubeValue_R3_scaled_Hi_original_scale_Lo_20",
     "decode": "C3_splitkv_S6_max20",
-    "prefill": "C4_native_vector_mask_max20",
+    "prefill": "C4_prefill_r1.8",
     "vector": "grid20",
     "packed_vector": "original_verified",
     "default_target": "pto",
@@ -117,17 +117,36 @@
       "origin_id": "development:performance_plan/cube_c4_vector_mask/cube_attention.py",
       "origin_sha256": "8ab1927c783b6f54c3048a3a14f2fb29868923ac1941567a4fbeb74d628a71b2",
       "destination": "gmla/kernels/prefill.py",
-      "destination_sha256": "7c13f47328dfefb3bb680d643bdeb3f5da8c1a77cf33fe4bebc1b61623f4660f",
+      "destination_sha256": "a0e1c997ea1204ea12f508311fe4d584f2274585198503c322259c5de0abc2c0",
       "definition_ast_sha256": {
         "_validated_scale": "4e4b5e1271bbef93b6312ccdcf28a9fc3c18e00be065aa8886be0ea51f54dedf",
         "probability_precision_mode": "d1852caaef3257f202abd8ffdd017553a7b21836dfb35bc216dff54c098737a2",
-        "buffer_plan": "20f9890fc9e2aabec6049a047d8c395d5d9107ed9492ac383ee5702c85eede2e",
-        "build_cube_attention": "3359be41334369347702ad3ca3256bc1ffa7c23c8ddc600d15b7ba8fd5ae049d",
+        "buffer_plan": "ab6852065530369abe3a9362ce21edf1606f89e0d38de2f8b0c246dce65188f5",
+        "build_cube_attention": "6f42614d1543d77f464781ca146963f5e0e4321e3f22a0ae345b1e1fd4ca0aeb",
         "build_tail_pair": "abf07c95a394616db3641e4f7be1fd790b03a67fdce59b907b24a4a5760601bb",
         "build_tail_triple": "7dcd3a389ead629e638c6bd958a40bdac84e47dc80d7aec7f5e3c7e105eec1cd",
         "cube_prefill": "f69c7e99506ce35f28c137a3417945df3619553749897e50587c371abe1d0858"
       },
-      "allowed_changes": "Intentional r1.4 pure-host float32 scale and full dense-span validation; imports/prechecks may differ. All inner prim_func ASTs and defaults unchanged. Subsequent r1.5 repository Ruff formatting changes bytes only; full module AST preserved."
+      "allowed_changes": "Intentional r1.8 reviewed prefill optimization: buffer_plan and build_cube_attention changed with recorded parent/new AST hashes. Other definitions/defaults and tail/public APIs unchanged. See reviewed_numerical_revisions and performance evidence; BF16 query/P residuals are preserved.",
+      "reviewed_numerical_revisions": [
+        {
+          "parent_commit": "de16598e67bce8168775fce23f9b207dd6259401",
+          "previous_destination_sha256": "7c13f47328dfefb3bb680d643bdeb3f5da8c1a77cf33fe4bebc1b61623f4660f",
+          "destination_sha256": "a0e1c997ea1204ea12f508311fe4d584f2274585198503c322259c5de0abc2c0",
+          "changed_definitions": {
+            "buffer_plan": {
+              "previous_ast_sha256": "20f9890fc9e2aabec6049a047d8c395d5d9107ed9492ac383ee5702c85eede2e",
+              "ast_sha256": "ab6852065530369abe3a9362ce21edf1606f89e0d38de2f8b0c246dce65188f5"
+            },
+            "build_cube_attention": {
+              "previous_ast_sha256": "3359be41334369347702ad3ca3256bc1ffa7c23c8ddc600d15b7ba8fd5ae049d",
+              "ast_sha256": "6f42614d1543d77f464781ca146963f5e0e4321e3f22a0ae345b1e1fd4ca0aeb"
+            }
+          },
+          "reason": "Reviewed prefill-only mask, per-launch KV/query reuse, one-block identity elimination and backend-safe L0 tiling; APIs/defaults, BF16 compensation and precision budgets retained.",
+          "evidence": "benchmark/PREFILL_OPTIMIZATION_20261112.md"
+        }
+      ]
     },
     {
       "origin_id": "development:empty_cache/empty_cache_zero.py",
@@ -359,7 +378,7 @@
     },
     {
       "path": "tests/test_runtime_npu.py",
-      "sha256": "b9d9cfe4e890903be93c6f5f54912aa5a5fee2b363b94c4a2c012993d7c389f3"
+      "sha256": "ff59bdad635f017dd255299649d650c7f7d85e379cf2669e3415e12510bda364"
     },
     {
       "path": "tests/test_sources.py",
@@ -375,7 +394,7 @@
     },
     {
       "path": "tests/test_contracts.py",
-      "sha256": "9e9c7b0e6f94c97244e8247ad07945a27886abd4febc79f12827c5fdcbb593b3"
+      "sha256": "0f84cbcc070b8cea8c28a55bac402dc5d673a9f3ee795009d528dd5ff332152d"
     },
     {
       "path": "tests/test_preflight.py",
@@ -395,7 +414,7 @@
     },
     {
       "path": "_gmla_ci/registry_plugin.py",
-      "sha256": "491f447bc2ecaaf85155c58b443f47a5a33da2a8a5e67b9b75940af73a127133"
+      "sha256": "260116e491259fc13e0e893c08285ef335b0f9dd20635b63b94323f4792feeb3"
     },
     {
       "path": "_gmla_ci/scoped_ci.py",
@@ -640,6 +659,118 @@
     {
       "path": "benchmark/hardware_alignment_20261112/full/OpBasicInfo_3.csv",
       "sha256": "ad675127fd94200d9116f4d9ab4da9bb611da13a5c50aec25bb51b301623e17c"
+    },
+    {
+      "path": "benchmark/prefill_optimization_benchmark.py",
+      "sha256": "056a27646254e61b9d3125e51cef84aa93251aa50b94122de894a6d363541c0f"
+    },
+    {
+      "path": "benchmark/prefill_optimization_regression.py",
+      "sha256": "d599b2fed0dc697d896497d3db37a89f180a34767da5fdfd044e3155aa3ac22a"
+    },
+    {
+      "path": "benchmark/PREFILL_OPTIMIZATION_TESTING.md",
+      "sha256": "7682827e93576fbc66378588cec939b81b602ce32a7612b076cac72304ab44e6"
+    },
+    {
+      "path": "benchmark/PREFILL_OPTIMIZATION_20261112.md",
+      "sha256": "51535484b58761e04eeaa118e3defd6b647ad76e84eeb5e95de78a25d50e2a26"
+    },
+    {
+      "path": "benchmark/PREFILL_OPTIMIZATION_20261112.public.json",
+      "sha256": "e6a66df2ebd2aa0b97ed8ec80be3ef37c0a4e346cc8e8d075b0d25cb7e565132"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/A1/OpBasicInfo_0.csv",
+      "sha256": "1afa3869c1b744d7f554e2697344d31f67fef594dc0d9956744a6810b2cb8e43"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/A2/OpBasicInfo_0.csv",
+      "sha256": "e41360a98d5d082c3d0f7e22cc2893166220556c923d32fec1798623b92014fe"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/A3v2/OpBasicInfo_0.csv",
+      "sha256": "079f01541bf0c025ececabcd3aa609687467c1abffac8c45d1db735e530c2db0"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/A4/OpBasicInfo_0.csv",
+      "sha256": "08b85cfa1e81c883e97275a6e5be585bf99afa95f3e91253647f97247845e1b7"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/A5/OpBasicInfo_0.csv",
+      "sha256": "2ef6d5cb2b8f75e03f2d264c28305fab05812c350bbb3dfa9c6f269a2d34b5a1"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/A6/OpBasicInfo_0.csv",
+      "sha256": "f584b4127a69ddbe92fa10448ea7903b56f84156f4f77684b5014ca3ccef7f54"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/A7/OpBasicInfo_0.csv",
+      "sha256": "65f4a0908dec7c2191d7addcb162414fb95593fa64424723304b984044fe0944"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/A8/OpBasicInfo_0.csv",
+      "sha256": "059e3068c59c4f501a7c1438c1712b58e945085f44f8f561c215786a204b2616"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/baseline/ArithmeticUtilization.csv",
+      "sha256": "b11473e4574c7d1d8b93d89e0a678b384486e14b9cb0e4f2eddf11c600bc63c4"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/baseline/Memory.csv",
+      "sha256": "7a97b003f8c77a6e4bd05cdf5ef5bd326b3646dfdb166c8251ecc20f0c331355"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/baseline/MemoryL0.csv",
+      "sha256": "7308c25ae35e5e462b8df74cf768863aacec2340a4b4408a22924624e66dd182"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/baseline/OpBasicInfo_0.csv",
+      "sha256": "8100c6884b1ce9d83ba8024a70f1a26834b67cba97b621e19384ebb661ac9e5c"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/baseline/PipeUtilization.csv",
+      "sha256": "e1d1268bc42d369fbb7d7a3f3210085c54255feccabde2dcbb5dae19cc743d00"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/baseline/ResourceConflictRatio.csv",
+      "sha256": "4cd6a7dc017d6f6317fda4b2042927d076e45f7b8c433418556712e509432877"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/selected/ArithmeticUtilization.csv",
+      "sha256": "13b147c563b8351d31f374beb82e3d8aaa07ad3f9e098a38c656ccd0f7dbb807"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/selected/Memory.csv",
+      "sha256": "e7ffaf4bbf4172c3cf9509b453cd99c999969381ba2b7fafebb6af74d337433d"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/selected/MemoryL0.csv",
+      "sha256": "4625f8e7a34da3f410d3145f8bf9e56dafbf42b51a0001a04b0b28b49da41cb5"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/selected/PipeUtilization.csv",
+      "sha256": "f978258b5ab740e5d93701c050fb1e251d1561d177506c58a385baafd0b2a88d"
+    },
+    {
+      "path": "benchmark/hardware_prefill_20261112/selected/ResourceConflictRatio.csv",
+      "sha256": "d528c0aaae927c1720a6b77abdf15dfac3c4a48f5a42eaafcad5b5bb5203fb6d"
+    },
+    {
+      "path": "benchmark/PREFILL_VALIDATION_20261112.json",
+      "sha256": "42d057768a4c42ccfc76b807a08273bb2ad3436dfdb9c2f11584b769ed759ff9"
+    },
+    {
+      "path": "benchmark/PREFILL_SIMULATOR_20261112.json",
+      "sha256": "3419adbb2abd2e808cc4b8b4035e046cc6a496cc7c28403ce697b8a0611e040e"
+    },
+    {
+      "path": "benchmark/PREFILL_SIMULATOR_20261112.md",
+      "sha256": "963c488d8a73f25ae4a4823a9e82f66770c6529ac9ccc774281bbf34fd8ec70e"
+    },
+    {
+      "path": "benchmark/PREFILL_SIMULATOR_20261112.png",
+      "sha256": "cabbd8ee0d1528c0468730f052b903f6702d075403c4115bf9d9864c29875916"
     }
   ],
   "runtime_baseline": {
@@ -806,6 +937,74 @@
         "previous_sha256": "44643ee1d2602db4e6db0a4e3b4848929a690bd889b418fd4b31cd667dee852a",
         "sha256": "003b10eebcca8765b51c832031e6f9b419f3d7ae6c0e88a1b725531e0f9116db"
       }
+    ],
+    [
+      {
+        "path": "tests/test_runtime_npu.py",
+        "previous_sha256": "b9d9cfe4e890903be93c6f5f54912aa5a5fee2b363b94c4a2c012993d7c389f3",
+        "sha256": "ff59bdad635f017dd255299649d650c7f7d85e379cf2669e3415e12510bda364"
+      },
+      {
+        "path": "tests/test_contracts.py",
+        "previous_sha256": "9e9c7b0e6f94c97244e8247ad07945a27886abd4febc79f12827c5fdcbb593b3",
+        "sha256": "0f84cbcc070b8cea8c28a55bac402dc5d673a9f3ee795009d528dd5ff332152d"
+      },
+      {
+        "path": "_gmla_ci/registry_plugin.py",
+        "previous_sha256": "491f447bc2ecaaf85155c58b443f47a5a33da2a8a5e67b9b75940af73a127133",
+        "sha256": "260116e491259fc13e0e893c08285ef335b0f9dd20635b63b94323f4792feeb3"
+      }
+    ],
+    [
+      {
+        "path": "benchmark/PREFILL_VALIDATION_20261112.json",
+        "previous_sha256": null,
+        "sha256": "c96a38aeaa7620e3161fe6e32077522b12b1675122387f86625cbaf51bde0077"
+      }
+    ],
+    [
+      {
+        "path": "benchmark/PREFILL_OPTIMIZATION_20261112.md",
+        "previous_sha256": "dc37801d9c872ba4608c67d46b09102609b7a5ede678a98ad588a5cb78012c0b",
+        "sha256": "8806236ca4057d66c3b3498a9a4d943a96e9d9fb74ca5d43bc1bcf141dbda7c7"
+      }
+    ],
+    [
+      {
+        "path": "benchmark/PREFILL_SIMULATOR_20261112.json",
+        "previous_sha256": null,
+        "sha256": "3419adbb2abd2e808cc4b8b4035e046cc6a496cc7c28403ce697b8a0611e040e"
+      },
+      {
+        "path": "benchmark/PREFILL_SIMULATOR_20261112.md",
+        "previous_sha256": null,
+        "sha256": "963c488d8a73f25ae4a4823a9e82f66770c6529ac9ccc774281bbf34fd8ec70e"
+      },
+      {
+        "path": "benchmark/PREFILL_SIMULATOR_20261112.png",
+        "previous_sha256": null,
+        "sha256": "cabbd8ee0d1528c0468730f052b903f6702d075403c4115bf9d9864c29875916"
+      }
+    ],
+    [
+      {
+        "path": "benchmark/PREFILL_OPTIMIZATION_20261112.md",
+        "previous_sha256": "8806236ca4057d66c3b3498a9a4d943a96e9d9fb74ca5d43bc1bcf141dbda7c7",
+        "sha256": "51535484b58761e04eeaa118e3defd6b647ad76e84eeb5e95de78a25d50e2a26"
+      },
+      {
+        "path": "benchmark/PREFILL_VALIDATION_20261112.json",
+        "previous_sha256": "c96a38aeaa7620e3161fe6e32077522b12b1675122387f86625cbaf51bde0077",
+        "sha256": "42d057768a4c42ccfc76b807a08273bb2ad3436dfdb9c2f11584b769ed759ff9"
+      }
     ]
-  ]
+  ],
+  "production_revision": {
+    "parent_commit": "de16598e67bce8168775fce23f9b207dd6259401",
+    "changed_production_python": [
+      "gmla/kernels/prefill.py"
+    ],
+    "unchanged_production_python_count": 24,
+    "note": "Only explicitly reviewed selected-source records authorize numerical revisions; nonproduction refresh cannot bless production drift."
+  }
 }

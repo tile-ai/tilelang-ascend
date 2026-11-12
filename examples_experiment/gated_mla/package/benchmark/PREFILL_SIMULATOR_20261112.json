@@ -1,0 +1,277 @@
+{
+  "schema": "gmla-reviewed-prefill-simulator-20261112-v1",
+  "status": "pass",
+  "completed_cases": 4,
+  "required_cases": 4,
+  "production_source_sha256": {
+    "gmla/__init__.py": "81f2a93908eabbfe0655d8167cc47147281a1baaf047c9743b193a89a93399b9",
+    "gmla/_cache_owner.py": "7c637d04f202d8ba720e33df45fbb99685bb15cae7ed93d5dbc63e8866dd76b3",
+    "gmla/_cache_state.py": "e4487b80a4b55efda7a9e092d251a7723b18527b36806c90d7afaadc7c0aedc0",
+    "gmla/_contracts.py": "55f3026fce0be32e08749ff51aff624ee9a0171b7d952fef32dfe54af4e393f0",
+    "gmla/_packed.py": "6346d88a4588dc29f7c2cbca94b0fb0966b40e60f6145f693db2b8ca7c01ab9f",
+    "gmla/_runtime.py": "6b95a2ac8c94a9e0ff005976e1316353353df53b1cb141639a1bade9c9085498",
+    "gmla/_selection.py": "282e9a91b3f8ef0c708b6f0688aa0a0e88fd7d7a354cf25a99a80fae7f3e5dc0",
+    "gmla/adapter.py": "6fe55a35297047dfd6a767c68aaf073d12a27dfee71d70e33795122a6195c92d",
+    "gmla/integration/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gmla/integration/kimi.py": "5a6e97a93575a34fdf3f402afc728c9efff5db7a1b1eab4fdb4700dfaf807125",
+    "gmla/integration/official_layer_fixture.py": "0efd1e9a76ebcaa9ef63c0ec8e146801181170366e4e8849d8eeb799bd291f17",
+    "gmla/kernels/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "gmla/kernels/cache.py": "ddbbdab31b9d1896bc228c807ecf6b1e7fa9189f3cadff6af0cc468006ff5806",
+    "gmla/kernels/decode.py": "ddff5cd25f3136f1b880db6ed82b88350b2d5f6c5d4c904d68324435199d8532",
+    "gmla/kernels/packed.py": "3232bd5eac4f9d0719327b78661ce1978d052a3bc748188a63a23158b69f5f1f",
+    "gmla/kernels/prefill.py": "a0e1c997ea1204ea12f508311fe4d584f2274585198503c322259c5de0abc2c0",
+    "gmla/kernels/query.py": "5cc89c2c1e4e3c2f1f783d09421bcf5cd0bb758e4f23de9e24b3f2e464ad04da",
+    "gmla/kernels/query_residual.py": "16e54c7a06ecbead776d92272ffbf7337460f9bf454d4d1693d9317b7819919d",
+    "gmla/kernels/value.py": "d220d81526265cccb56854538a12edf1e7f775c58148f9edbe3580244e31735b",
+    "gmla/kernels/vector.py": "c253ab0ae83cbda980aa2e5022aca5f210c14fe26e76896d9451ce6d6622683b",
+    "gmla/kernels/zero.py": "59fcb67dc4626af4cce2d875fda26e68df888c4c8de327c954e20396683353ee",
+    "gmla/layout.py": "04b852cd0e0d2dca8bfd86f34953fe61f569b35df9b602d5ad8f1356357b5b1f",
+    "gmla/metadata.py": "b1c90a5595dd6b4f0953692d851b0e2c91fb9c8c4d1e3358c1880b1c192d5513",
+    "gmla/reference.py": "8ba15661de28726e12bfd4f22207dff9e962c1886f16f13889e7067fb0fed08d",
+    "gmla/runtime.py": "3647f1666a3b37bb6ac94e3a0960c192410e7d4a8f8a2c8fb04086982cf371f9"
+  },
+  "native_sha256": {
+    "cython_binaries": {
+      "cython_wrapper.so": "e807e2ee36adc439aafa6edd09e3707988b5ff205cc5c36277f42bfe9545748a"
+    },
+    "loaded_libraries": {
+      "libtilelang_module.so": "e20c8fcc5b942c6f48556b409c77b3a594de5b958206694e23ca4c56670aa8b5",
+      "libtvm.so": "ad5aa636d98430812db01d19d2da2d48ebd69afb0fb80f849f60303e4815b830",
+      "cython_wrapper.so": "e807e2ee36adc439aafa6edd09e3707988b5ff205cc5c36277f42bfe9545748a",
+      "libpython3.12.so.1.0": "c61b7e7ffaf998cef8060ff478f3696a04b4160bc95e5c9d2806cec0435c51aa"
+    }
+  },
+  "evidence_boundary": "Actual msprof op simulator output, precision/readonly checks and three filtered physical launches per case. Not hardware latency, source-line mapping, whole-process tracing, whole-model acceptance, or native-library hash evidence from formal performance trials.",
+  "historical_tool_label": "Unmodified reproduction/entry tools still emit r1.7 labels. Exact source fingerprints above, including reviewed prefill a0e, identify this revision.",
+  "native_comparison_scope": "prepare/direct/simulator and completed cases only; formal trial JSON records source/environment/CPP, not per-library native hashes.",
+  "records": [
+    {
+      "case": "prefill_pto_float16",
+      "status": "pass",
+      "geometry": {
+        "B": 1,
+        "H": 96,
+        "Tq": 128,
+        "physical_Tk": 128,
+        "dtype": "float16",
+        "target": "pto"
+      },
+      "precision": "pass",
+      "metrics": {
+        "max_abs": 0.0009538501048607095,
+        "max_normalized": 0.0002710665464193204,
+        "reference_abs_max": 3.5188779931005287
+      },
+      "read_only": "pass",
+      "compiled_object_identity": "pass",
+      "physical_launches": 3,
+      "launch_order": [
+        {
+          "ordinal": 0,
+          "stage": "q_absorb",
+          "reported_name": "main_kernel_mix_aic"
+        },
+        {
+          "ordinal": 1,
+          "stage": "attention",
+          "reported_name": "main_kernel_mix_aic"
+        },
+        {
+          "ordinal": 2,
+          "stage": "value_gate",
+          "reported_name": "main_kernel_mix_aic"
+        }
+      ],
+      "source_line_mapping": "unavailable",
+      "kernel_source_sha256": {
+        "q_absorb": "4e163154fdc04a99b1f3c19bb1127b1b5768c339561436562dc31d3535570c8d",
+        "attention": "60dfe7590920fb844b0ca6824a01b7b8c56bdbe22c7299d9b99fd2b16377e304",
+        "value_gate": "7b7aef1362248766b1116db4c40e379628be56298871601d187b6eb7ea1237f8"
+      },
+      "CPP_matches_same_dtype_backend_formal_trial0": true,
+      "prepare_direct_simulator_source_native_CPP_consistent": true,
+      "formal_trial0_json_sha256": "360125a723c3a6039f93e64e929ea0c271fc8a49e72e8efe90728ca017a98b54",
+      "audit_file_sha256": "1eb52e9ce696658e7c7c4b04fd0100a0395b63e46e616bcbd60ff44c64532809",
+      "entry_file_sha256": "dc9ca5ac0f72572a198148b0590835f727c856f06eb3461d62b9c8125a23843b",
+      "simulator_log_sha256": "1a7c736874123910fa2a6c7b6a11bdd23ca1675c7b7e5f719d767d084e1421fa",
+      "log_excerpt": [
+        "[2026-11-12 06:34:18] [257629] [ProfDataCollect.cpp:499] [INFO] Start profiling on kernel: main_kernel_mix_aic",
+        "[2026-11-12 06:35:41] [257629] [ProfDataCollect.cpp:499] [INFO] Start profiling on kernel: main_kernel_mix_aic",
+        "[2026-11-12 06:38:22] [257629] [ProfDataCollect.cpp:499] [INFO] Start profiling on kernel: main_kernel_mix_aic",
+        "[INFO]  Profiling running finished. All task success.",
+        "[INFO]  Profiling data parse finished."
+      ]
+    },
+    {
+      "case": "prefill_pto_bfloat16",
+      "status": "pass",
+      "geometry": {
+        "B": 1,
+        "H": 96,
+        "Tq": 128,
+        "physical_Tk": 128,
+        "dtype": "bfloat16",
+        "target": "pto"
+      },
+      "precision": "pass",
+      "metrics": {
+        "max_abs": 0.007658895032677471,
+        "max_normalized": 0.0021763435811453335,
+        "reference_abs_max": 3.5191571308087584
+      },
+      "read_only": "pass",
+      "compiled_object_identity": "pass",
+      "physical_launches": 3,
+      "launch_order": [
+        {
+          "ordinal": 0,
+          "stage": "q_absorb_residual",
+          "reported_name": "main_kernel_mix_aic"
+        },
+        {
+          "ordinal": 1,
+          "stage": "attention",
+          "reported_name": "main_kernel_mix_aic"
+        },
+        {
+          "ordinal": 2,
+          "stage": "value_gate",
+          "reported_name": "main_kernel_mix_aic"
+        }
+      ],
+      "source_line_mapping": "unavailable",
+      "kernel_source_sha256": {
+        "q_absorb_residual": "8fa39383ee7e82031a73979e930891928d819da2e5df7dce91bf1d2b155d8bb9",
+        "attention": "90f545612f6535f90cd1cec585c789a65972e239ab8732a12068fcdb9c15459d",
+        "value_gate": "e053f734c6cb2833f65b866d1886bc9215ff7a2fe9f6043c88aa9b3c3cff8876"
+      },
+      "CPP_matches_same_dtype_backend_formal_trial0": true,
+      "prepare_direct_simulator_source_native_CPP_consistent": true,
+      "formal_trial0_json_sha256": "66fae691cd24328032aa8544519fd1abd926673382c2649a0755a697838b1ee2",
+      "audit_file_sha256": "f25676d02f7ebb6bd67ae0559067d76d40b233a5472611c781cab0c45891aa97",
+      "entry_file_sha256": "06d54bcba021cf30643d037d1ce22b02f757e78692062e7adcce552d3aae690e",
+      "simulator_log_sha256": "6e23b7609aa73b943b151189669daf9c96707e610148f784aa31184992af2e9a",
+      "log_excerpt": [
+        "[2026-11-12 06:44:27] [265549] [ProfDataCollect.cpp:499] [INFO] Start profiling on kernel: main_kernel_mix_aic",
+        "[2026-11-12 06:46:23] [265549] [ProfDataCollect.cpp:499] [INFO] Start profiling on kernel: main_kernel_mix_aic",
+        "[2026-11-12 06:49:25] [265549] [ProfDataCollect.cpp:499] [INFO] Start profiling on kernel: main_kernel_mix_aic",
+        "[INFO]  Profiling running finished. All task success.",
+        "[INFO]  Profiling data parse finished."
+      ]
+    },
+    {
+      "case": "prefill_ascendc_float16",
+      "status": "pass",
+      "geometry": {
+        "B": 1,
+        "H": 96,
+        "Tq": 128,
+        "physical_Tk": 128,
+        "dtype": "float16",
+        "target": "ascendc"
+      },
+      "precision": "pass",
+      "metrics": {
+        "max_abs": 0.0009538501048607095,
+        "max_normalized": 0.0002710665464193204,
+        "reference_abs_max": 3.5188779931005287
+      },
+      "read_only": "pass",
+      "compiled_object_identity": "pass",
+      "physical_launches": 3,
+      "launch_order": [
+        {
+          "ordinal": 0,
+          "stage": "q_absorb",
+          "reported_name": "main_kernel"
+        },
+        {
+          "ordinal": 1,
+          "stage": "attention",
+          "reported_name": "main_kernel"
+        },
+        {
+          "ordinal": 2,
+          "stage": "value_gate",
+          "reported_name": "main_kernel"
+        }
+      ],
+      "source_line_mapping": "unavailable",
+      "kernel_source_sha256": {
+        "q_absorb": "59e26b2d653cbcddea975e65088d14d3517fdc4c1fc933944a2b060dfa9d37e7",
+        "attention": "0c8b77bc2de5914f0ff9ee4401e8b4d7729344941acbd4b475245fe5813bc26e",
+        "value_gate": "e3c31460a1da8ae582117ad1c1bf63516bf5853c4161956736c6c955419e5e35"
+      },
+      "CPP_matches_same_dtype_backend_formal_trial0": true,
+      "prepare_direct_simulator_source_native_CPP_consistent": true,
+      "formal_trial0_json_sha256": "99e56609a84a799da381e6b78a47bfe3f40d2bf77e2e44f47ceac339f1ee5fea",
+      "audit_file_sha256": "54f24bde529535aa26e0be7809809821ea83e7079e2efbb13d1212cfafb6d758",
+      "entry_file_sha256": "2458c8d8adad788380fe2ee3b4ab28460bedab188bdc9f35903545936950be92",
+      "simulator_log_sha256": "166a62c63b08637997d6530861e983df5d98bea32766c7ba4fd65578161dc14e",
+      "log_excerpt": [
+        "[2026-11-12 06:56:12] [275386] [ProfDataCollect.cpp:499] [INFO] Start profiling on kernel: main_kernel",
+        "[2026-11-12 06:57:31] [275386] [ProfDataCollect.cpp:499] [INFO] Start profiling on kernel: main_kernel",
+        "[2026-11-12 07:00:33] [275386] [ProfDataCollect.cpp:499] [INFO] Start profiling on kernel: main_kernel",
+        "[INFO]  Profiling running finished. All task success.",
+        "[INFO]  Profiling data parse finished."
+      ]
+    },
+    {
+      "case": "prefill_ascendc_bfloat16",
+      "status": "pass",
+      "geometry": {
+        "B": 1,
+        "H": 96,
+        "Tq": 128,
+        "physical_Tk": 128,
+        "dtype": "bfloat16",
+        "target": "ascendc"
+      },
+      "precision": "pass",
+      "metrics": {
+        "max_abs": 0.007658895032677471,
+        "max_normalized": 0.0021763435811453335,
+        "reference_abs_max": 3.5191571308087584
+      },
+      "read_only": "pass",
+      "compiled_object_identity": "pass",
+      "physical_launches": 3,
+      "launch_order": [
+        {
+          "ordinal": 0,
+          "stage": "q_absorb_residual",
+          "reported_name": "main_kernel"
+        },
+        {
+          "ordinal": 1,
+          "stage": "attention",
+          "reported_name": "main_kernel"
+        },
+        {
+          "ordinal": 2,
+          "stage": "value_gate",
+          "reported_name": "main_kernel"
+        }
+      ],
+      "source_line_mapping": "unavailable",
+      "kernel_source_sha256": {
+        "q_absorb_residual": "9ff4fdf06101c57204f9ef66fb4a92d28cbde59921f6ee53621287d95c9c9ec4",
+        "attention": "191be5847fbe3810918643f5bec83cc62c1be81014f4f8f93d0f021d991d3742",
+        "value_gate": "95fb4c1f18a7fa2c1964274f27a0ae234e2cd63dea3f69cbe8a6d2ff4853a4c2"
+      },
+      "CPP_matches_same_dtype_backend_formal_trial0": true,
+      "prepare_direct_simulator_source_native_CPP_consistent": true,
+      "formal_trial0_json_sha256": "6133231db87905afc7f45bb801cffeb57de20e325d6c60f448859b7c327fa97b",
+      "audit_file_sha256": "841281e6dec5228e24cf6db011fc6cc720408da16d1b706abb954d1b98c22ed6",
+      "entry_file_sha256": "11dc2ad8782b7afc63ac06baaeb2900596bdfa021d7366351e3ed66668bcc4f1",
+      "simulator_log_sha256": "6dbf2f85a2296726f52bfd8b0e85d218eb99051589e71041bd53361f4bd738c0",
+      "log_excerpt": [
+        "[2026-11-12 07:07:13] [284422] [ProfDataCollect.cpp:499] [INFO] Start profiling on kernel: main_kernel",
+        "[2026-11-12 07:09:16] [284422] [ProfDataCollect.cpp:499] [INFO] Start profiling on kernel: main_kernel",
+        "[2026-11-12 07:12:09] [284422] [ProfDataCollect.cpp:499] [INFO] Start profiling on kernel: main_kernel",
+        "[INFO]  Profiling running finished. All task success.",
+        "[INFO]  Profiling data parse finished."
+      ]
+    }
+  ]
+}
