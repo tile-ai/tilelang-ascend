@@ -41,15 +41,16 @@ def summarize(samples):
 
 def balanced_orders(names, rounds, order_seed):
     names = tuple(names)
-    if len(names) != 3 or len(set(names)) != 3:
-        raise ValueError("this protocol requires exactly three distinct method names")
-    if type(rounds) is not int or rounds < 6 or rounds % 6:
-        raise ValueError("rounds must be a positive multiple of six")
+    if len(names) not in (2, 3) or len(set(names)) != len(names):
+        raise ValueError("this protocol requires two or three distinct method names")
+    cycle_size = math.factorial(len(names))
+    if type(rounds) is not int or rounds < cycle_size or rounds % cycle_size:
+        raise ValueError(f"rounds must be a positive multiple of {cycle_size}")
     if type(order_seed) is not int:
         raise ValueError("order_seed must be an explicit integer")
     rng = random.Random(order_seed)
     result = []
-    for _ in range(rounds // 6):
+    for _ in range(rounds // cycle_size):
         cycle = list(itertools.permutations(names))
         rng.shuffle(cycle)
         result.extend(cycle)
@@ -103,7 +104,7 @@ def run_measurements(
     names = tuple(methods)
     orders = balanced_orders(names, rounds, order_seed)
     if "candidate" not in methods or any(not callable(fn) for fn in methods.values()):
-        raise ValueError("three callables including candidate are required")
+        raise ValueError("two or three callables including candidate are required")
     if set(qualified) != set(names) or any(type(value) is not bool for value in qualified.values()):
         raise ValueError("qualified must contain one bool for every method")
     qualified = dict(qualified)  # Initial diagnostic status cannot be promoted by a callback.
@@ -117,7 +118,7 @@ def run_measurements(
     samples = {name: {metric: [] for metric in metrics} for name in names}
     report = {
         "schema_version": 1,
-        "protocol": "balanced_three_method_rounds_v1",
+        "protocol": "balanced_three_method_rounds_v1" if len(names) == 3 else "balanced_two_method_rounds_v1",
         "status": "running",
         "unit": "microseconds",
         "percentile": "nearest_rank_ceil_p_times_n; sample stdev ddof=1, single sample=0",

@@ -177,6 +177,37 @@ assert "torch_npu" not in sys.modules
         with self.assertRaises(ValueError):
             summarize([float("nan")])
 
+    def test_two_method_orders_and_measurement_preserve_qualification(self):
+        names = ("candidate", "source_decode")
+        orders = balanced_orders(names, 6, 17)
+        for offset in (0, 2, 4):
+            self.assertEqual(set(orders[offset : offset + 2]), {names, names[::-1]})
+        backend = FakeBackend()
+        methods = {name: fn for name, fn in backend.methods().items() if name in names}
+        result = run_measurements(
+            methods,
+            qualified=dict.fromkeys(names, True),
+            check=lambda name, output, boundary: output["method"] == name,
+            backend=backend,
+            clock=backend.clock,
+            warmup=1,
+            rounds=6,
+            repeats=2,
+            graph_batch=4,
+            graph_repeats=2,
+        )
+        self.assertEqual(result["protocol"], "balanced_two_method_rounds_v1")
+        self.assertEqual(set(result["methods"]), set(names))
+        pair = result["paired_ratios"]["eager_event_us"]["source_decode"]
+        self.assertTrue(pair["qualified"])
+        self.assertEqual(pair["ratio_of_medians"], 3)
+        self.assertEqual(result["methods"]["candidate"]["metrics"]["graph_per_call_us"]["count"], 12)
+        self.assertEqual(len(backend.graphs), 2)
+        with self.assertRaises(ValueError):
+            balanced_orders(names, 3, 0)
+        with self.assertRaises(ValueError):
+            balanced_orders(("candidate",), 6, 0)
+
     def test_sample_counts_timing_boundaries_capture_once_and_ratios(self):
         backend = FakeBackend()
         checks = []

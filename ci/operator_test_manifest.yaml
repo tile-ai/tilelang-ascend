@@ -291,3 +291,5 @@ mappings:
   examples_experiment/gated_mla/package/ci_entries/run_paired_benchmark.py: examples_experiment/gated_mla/package/tests/test_paired_benchmark.py
   examples_experiment/gated_mla/package/ci_entries/run_host_decode_diagnostic.py: examples_experiment/gated_mla/package/tests/test_host_decode_diagnostic.py
   examples_experiment/gated_mla/package/ci_entries/run_perf_summary.py: examples_experiment/gated_mla/package/tests/test_perf_summary.py
+  examples_experiment/gated_mla/package/ci_entries/run_aligned_execution.py: examples_experiment/gated_mla/package/tests/test_aligned_execution.py
+  examples_experiment/gated_mla/package/ci_entries/run_aligned_benchmark.py: examples_experiment/gated_mla/package/tests/test_aligned_benchmark.py

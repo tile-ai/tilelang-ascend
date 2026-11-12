@@ -535,7 +535,7 @@
     },
     {
       "path": "benchmark/paired_timing.py",
-      "sha256": "c4110ba3929268035124a554082f55a4b2d4cbad3ef088111d38dca748d4e9fb"
+      "sha256": "13f6b117b6df7d63063111b551cd0d70fc7c95211eff6212acab7c0a39ad4e1d"
     },
     {
       "path": "benchmark/run_paired_suite.py",
@@ -559,7 +559,7 @@
     },
     {
       "path": "tests/_perf_tools.py",
-      "sha256": "ef491db53927fa314b730b0748caa7a5e37d2d0f1814a123977cb26096769a2a"
+      "sha256": "6e776a362a71eb80d9d56e72c7fef19b2eb07c97cbc9058acd86f2dfaa9e831f"
     },
     {
       "path": "tests/test_host_decode_diagnostic.py",
@@ -571,11 +571,43 @@
     },
     {
       "path": "tests/test_paired_timing.py",
-      "sha256": "71dc3492dd794baf4bd1d25ffdcf3aeaabf70c4cf33bb36c8799369d666058d9"
+      "sha256": "2643c7cb7b1b5715bc7268c9575a40f5ee3e704647623ef148744eb02d65462b"
     },
     {
       "path": "tests/test_perf_summary.py",
       "sha256": "60236a192028118aa7535f56a346fc7ba58d6bf846a4c45fa38c6a878d80aef0"
+    },
+    {
+      "path": "benchmark/aligned_execution.py",
+      "sha256": "feb1efc0755226a967c8abf647adff4feb6cd004a698db3f6cee528f2e351f57"
+    },
+    {
+      "path": "benchmark/aligned_benchmark.py",
+      "sha256": "73f6deef0030968b611903f827106e3ca1edfb6d1f5f5e2e5bf9d843d4ce7e09"
+    },
+    {
+      "path": "benchmark/run_aligned_suite.py",
+      "sha256": "8291d124cecdbc7f7f28a68991b34c42ad17f93152f8f039dce1bf7b64afabd9"
+    },
+    {
+      "path": "benchmark/ALIGNMENT.md",
+      "sha256": "456240684894b4244af89f1729bf174c309c73b7523a807d2e250c56916a64cf"
+    },
+    {
+      "path": "ci_entries/run_aligned_execution.py",
+      "sha256": "c3183bf4cf38ed2f4bb2a08fa7bbdeb157fb8cc6dc5b7bbacb6cc6a444c24dd9"
+    },
+    {
+      "path": "ci_entries/run_aligned_benchmark.py",
+      "sha256": "0fb25135c6079a5e062fecc74fcb6f0b67ce1aee3b99f79b457291e51f9144cd"
+    },
+    {
+      "path": "tests/test_aligned_benchmark.py",
+      "sha256": "003b10eebcca8765b51c832031e6f9b419f3d7ae6c0e88a1b725531e0f9116db"
+    },
+    {
+      "path": "tests/test_aligned_execution.py",
+      "sha256": "087295a098a1b6b4060718d84d4a12191512806cd041819574ebd424272f4a91"
     }
   ],
   "runtime_baseline": {
@@ -682,6 +714,65 @@
         "path": "_gmla_ci/registry_plugin.py",
         "previous_sha256": "83624ece167cf93f47a449d84d81631cceea6141436530337a33058a576ca398",
         "sha256": "491f447bc2ecaaf85155c58b443f47a5a33da2a8a5e67b9b75940af73a127133"
+      }
+    ],
+    [
+      {
+        "path": "benchmark/paired_timing.py",
+        "previous_sha256": "c4110ba3929268035124a554082f55a4b2d4cbad3ef088111d38dca748d4e9fb",
+        "sha256": "13f6b117b6df7d63063111b551cd0d70fc7c95211eff6212acab7c0a39ad4e1d"
+      },
+      {
+        "path": "tests/_perf_tools.py",
+        "previous_sha256": "ef491db53927fa314b730b0748caa7a5e37d2d0f1814a123977cb26096769a2a",
+        "sha256": "6e776a362a71eb80d9d56e72c7fef19b2eb07c97cbc9058acd86f2dfaa9e831f"
+      },
+      {
+        "path": "tests/test_paired_timing.py",
+        "previous_sha256": "71dc3492dd794baf4bd1d25ffdcf3aeaabf70c4cf33bb36c8799369d666058d9",
+        "sha256": "2643c7cb7b1b5715bc7268c9575a40f5ee3e704647623ef148744eb02d65462b"
+      },
+      {
+        "path": "tests/test_aligned_benchmark.py",
+        "previous_sha256": null,
+        "sha256": "44643ee1d2602db4e6db0a4e3b4848929a690bd889b418fd4b31cd667dee852a"
+      },
+      {
+        "path": "tests/test_aligned_execution.py",
+        "previous_sha256": null,
+        "sha256": "087295a098a1b6b4060718d84d4a12191512806cd041819574ebd424272f4a91"
+      }
+    ],
+    [
+      {
+        "path": "benchmark/aligned_benchmark.py",
+        "previous_sha256": "41dc68f55b1b5b6624ef3f9057b1d4009254c9839c3b8965bcf31a07656aa899",
+        "sha256": "73f6deef0030968b611903f827106e3ca1edfb6d1f5f5e2e5bf9d843d4ce7e09"
+      },
+      {
+        "path": "benchmark/run_aligned_suite.py",
+        "previous_sha256": "464c5d68707e9157e25be3068ba5a157e35f447ceef9efe39d2b7f49b168ece6",
+        "sha256": "8291d124cecdbc7f7f28a68991b34c42ad17f93152f8f039dce1bf7b64afabd9"
+      },
+      {
+        "path": "benchmark/ALIGNMENT.md",
+        "previous_sha256": "1370a02a88858f32060decce4af82455715b84371fbe19d61cd0d94a4bc29ce7",
+        "sha256": "456240684894b4244af89f1729bf174c309c73b7523a807d2e250c56916a64cf"
+      },
+      {
+        "path": "ci_entries/run_aligned_execution.py",
+        "previous_sha256": "40581937a88ea09c8f66770d1bd804723c545542e44cda0821663c54974912ac",
+        "sha256": "c3183bf4cf38ed2f4bb2a08fa7bbdeb157fb8cc6dc5b7bbacb6cc6a444c24dd9"
+      },
+      {
+        "path": "ci_entries/run_aligned_benchmark.py",
+        "previous_sha256": "c9eb59ad1e9deb9f9cbfca04fa8990e59acdd2da8036c537937bfe9f2a69d66c",
+        "sha256": "0fb25135c6079a5e062fecc74fcb6f0b67ce1aee3b99f79b457291e51f9144cd"
+      },
+      {
+        "path": "tests/test_aligned_benchmark.py",
+        "previous_sha256": "44643ee1d2602db4e6db0a4e3b4848929a690bd889b418fd4b31cd667dee852a",
+        "sha256": "003b10eebcca8765b51c832031e6f9b419f3d7ae6c0e88a1b725531e0f9116db"
       }
     ]
   ]

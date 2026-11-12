@@ -6,7 +6,17 @@ from pathlib import Path
 import sys
 
 
-TOOLS = frozenset(("paired_timing", "paired_benchmark", "host_decode_diagnostic", "run_paired_suite"))
+TOOLS = frozenset(
+    (
+        "paired_timing",
+        "paired_benchmark",
+        "host_decode_diagnostic",
+        "run_paired_suite",
+        "aligned_execution",
+        "aligned_benchmark",
+        "run_aligned_suite",
+    )
+)
 
 
 def load_perf_tool(name):

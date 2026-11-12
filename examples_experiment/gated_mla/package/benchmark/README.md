@@ -96,3 +96,8 @@ protocol. The production numerical implementation is unchanged.
 
 The independent `host_decode_diagnostic.py` keeps uninstrumented timing separate
 from cProfile attribution; see [its boundary and commands](HOST_DIAGNOSTIC.md).
+
+[Aligned execution experiments](ALIGNMENT.md) separately compare prevalidated
+full-chain execution and a common-LP latent-attention core. The public-forward
+results above keep their original meaning. BF16 shared-LP core results do not
+represent the production HiLo path; each scope retains its own qualification.
