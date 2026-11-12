@@ -75,6 +75,23 @@ std::string getType(const DataType &dtype) {
   return "";
 }
 
+/*! \brief Map a T.reinterpretcast C++ type spelling to getType()'s spelling. */
+std::string CanonicalCppType(const std::string &type) {
+  if (type == "int32_t" || type == "int32") {
+    return "int";
+  }
+  if (type == "float32") {
+    return "float";
+  }
+  if (type == "uint32") {
+    return "uint32_t";
+  }
+  if (type == "float16") {
+    return "half";
+  }
+  return type;
+}
+
 DataType GetAccessPtrDtype(const CallNode *access_ptr) {
   if (!access_ptr) {
     LOG(FATAL) << "access_ptr is nullptr";
@@ -2918,13 +2935,35 @@ void CodeGenTileLangAscend::ReinterpretCastCodegen(const CallNode *op) {
     auto var_name = PrintBufferOffset(op->args[i].as<CallNode>(), false);
     var_names.push_back(var_name);
   }
+  const std::string cast_type = Downcast<StringImm>(op->args[2])->value;
+
+  // Software pipelining clones the stage that holds a reinterpretcast into
+  // prologue/steady/epilogue, and sibling clones share the enclosing C++
+  // scope. The destination buffer is already declared by its Allocate, so
+  // rebind the view instead of redeclaring the same LocalTensor.
+  bool rebind_existing = false;
+  if (const auto *dst_access = op->args[0].as<CallNode>()) {
+    if (const auto *dst_var = dst_access->args[1].as<VarNode>()) {
+      auto it = buffer_dtypes_.find(dst_var);
+      if (it != buffer_dtypes_.end() &&
+          it->second == GetAccessPtrDtype(dst_access) &&
+          getType(it->second) == CanonicalCppType(cast_type)) {
+        rebind_existing = true;
+      }
+    }
+  }
+
   this->PrintIndent();
-  this->stream << "AscendC::LocalTensor"
-               << "<" << Downcast<StringImm>(op->args[2])->value << "> "
-               << var_names[0] << " = " << var_names[1] << "."
+  if (rebind_existing) {
+    this->stream << var_names[0] << " = " << var_names[1] << ".ReinterpretCast<"
+                 << cast_type << ">();\n";
+    return;
+  }
+  this->stream << "AscendC::LocalTensor<" << cast_type << "> " << var_names[0]
+               << " = " << var_names[1] << "."
                << "ReinterpretCast"
-               << "<" << Downcast<StringImm>(op->args[2])->value << ">"
-               << "();\n";
+               << "<" << cast_type << ">()"
+               << ";\n";
 }
 
 void CodeGenTileLangAscend::CreateSubExperimentCodegen(
