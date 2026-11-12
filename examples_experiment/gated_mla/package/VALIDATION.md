@@ -160,7 +160,7 @@ No Moonshot model source, checkpoint or vendor runtime is distributed here.
 
 The balanced benchmark added62 CPU regression tests. The integrated source
 collects229 unique cases:207 core and the original22 extended. Package CPU
-selection passed155 tests with43 device cases deselected; these deselections
+selection passed155 tests with 43 device cases deselected; these deselections
 are not new NPU executions. Numerical production sources, the historical
 protocol and the original numerical tests are unchanged.
 
@@ -169,3 +169,25 @@ three repetitions), with108 candidate initial seed checks and432 post-round
 checks passing. Host attribution and a four-Task hardware profile are separate
 records, not added to Event/graph measurements. See the
 [measured report](benchmark/PERFORMANCE_BALANCED_20261112.md).
+
+## 2026-11-12 benchmark boundary alignment
+
+The 25 production Python sources and retained numerical definitions are unchanged.
+The new tools passed 84 CPU tests; the package CPU selection passed 177 tests,
+with 43 NPU cases deselected on CPU (8.10s). The 16 registered test files collect
+251 unique cases: 229 core and 22 unchanged low_priority extensions.
+
+The aligned hardware experiment completed 72 fresh-process trials (36 per scope),
+with seeds 0/1/17 per trial, unchanged FP64 budgets, post-boundary/read-only checks,
+and 27,000 independently verified timing samples. Full-chain seeds also require
+public/prevalidated byte equality and successful live-payload update probes.
+Two msprof applications passed numerical validation and produced 6 checked Task
+CSVs. Eighteen FP16 core trials use the same generated attention/merge code as
+production full-chain trials. Source qualification and BF16 component boundaries
+remain explicit; no failed reference gets a performance ratio.
+
+This is representative benchmark validation, not a new full 229-core/22-extension
+cold NPU run. The prior 145 numerical-core and 22-extension execution records remain
+historical evidence for unchanged production code. Hosted CI and review status
+must be checked separately. See [the aligned report](benchmark/PERFORMANCE_ALIGNED_20261112.md)
+and [scope/reproduction](benchmark/ALIGNMENT.md).

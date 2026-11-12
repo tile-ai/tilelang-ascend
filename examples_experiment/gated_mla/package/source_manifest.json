@@ -608,6 +608,38 @@
     {
       "path": "tests/test_aligned_execution.py",
       "sha256": "087295a098a1b6b4060718d84d4a12191512806cd041819574ebd424272f4a91"
+    },
+    {
+      "path": "benchmark/PERFORMANCE_ALIGNED_20261112.md",
+      "sha256": "067473a84fc4048a8a041080c356d8b155974c9bd1b9f1d38493663cc6b74df6"
+    },
+    {
+      "path": "benchmark/PERFORMANCE_ALIGNED_20261112.public.json",
+      "sha256": "e5ed2384b3d3404397bd4ef5219ac90bfb870e9634336dcb6644282063cff39d"
+    },
+    {
+      "path": "benchmark/hardware_alignment_20261112/core/OpBasicInfo_0.csv",
+      "sha256": "2bdfeffa43a59f35aac2f3ae748fa5b198ca41bcf5613bdaa61e349f4bb6733b"
+    },
+    {
+      "path": "benchmark/hardware_alignment_20261112/core/OpBasicInfo_1.csv",
+      "sha256": "142bed30078ff15b0817330a58e4cd365c76ce34157b8ed3c57d194c4a6dc247"
+    },
+    {
+      "path": "benchmark/hardware_alignment_20261112/full/OpBasicInfo_0.csv",
+      "sha256": "1992e0c8e03f4ff395f2a54ceb6819d26df2a95323ac0c48506949dfb2f07eb4"
+    },
+    {
+      "path": "benchmark/hardware_alignment_20261112/full/OpBasicInfo_1.csv",
+      "sha256": "ed087d5b482fa96c524687abf3ff3df68dde69a4a98a53dd1bfc6f33604df00b"
+    },
+    {
+      "path": "benchmark/hardware_alignment_20261112/full/OpBasicInfo_2.csv",
+      "sha256": "92237f7e23846fc714fa3cc9e68d4cd3dd78a5b67a19aade903535e6c52acf66"
+    },
+    {
+      "path": "benchmark/hardware_alignment_20261112/full/OpBasicInfo_3.csv",
+      "sha256": "ad675127fd94200d9116f4d9ab4da9bb611da13a5c50aec25bb51b301623e17c"
     }
   ],
   "runtime_baseline": {

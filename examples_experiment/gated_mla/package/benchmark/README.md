@@ -101,3 +101,5 @@ from cProfile attribution; see [its boundary and commands](HOST_DIAGNOSTIC.md).
 full-chain execution and a common-LP latent-attention core. The public-forward
 results above keep their original meaning. BF16 shared-LP core results do not
 represent the production HiLo path; each scope retains its own qualification.
+
+[The aligned report](PERFORMANCE_ALIGNED_20261112.md) records 72 independent-process trials, preserving the public/prevalidated and common-LP-core boundaries separately. Failed references have no qualified ratio.
