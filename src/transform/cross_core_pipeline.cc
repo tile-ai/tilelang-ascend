@@ -1121,7 +1121,12 @@ private:
     VarReplacer replacer(original_loop_var_, transformed_var);
     Stmt new_body = replacer(body);
 
-    return LetStmt(transformed_var, binding_expr, new_body);
+    // The last wave can be partial. Keep the inner extent at num_stages so
+    // buffer version indices stay in range, and skip the padded iterations
+    // with a predicate instead.
+    Stmt guarded_body =
+        IfThenElse(transformed_var < original_loop_->extent, new_body);
+    return LetStmt(transformed_var, binding_expr, guarded_body);
   }
 
   Stmt CreateStageLoopWithBinding(const Stmt &body) {
@@ -1630,14 +1635,10 @@ private:
   Stmt ModifyOuterLoop(const ForNode *pipeline, const Stmt &inner_loops,
                        int num_stages, const Var &outer_loop_var) {
     PrimExpr original_extent = pipeline->extent;
-    PrimExpr new_extent;
-    if (auto int_imm = original_extent.as<IntImmNode>()) {
-      int loop = int_imm->value;
-      new_extent = make_const(original_extent.dtype(), loop / num_stages);
-    } else {
-      new_extent =
-          original_extent * make_const(original_extent.dtype(), num_stages);
-    }
+    // Floor division dropped up to num_stages-1 iterations. Pad the last
+    // wave instead; AddLetStmtBinding predicates out the padding.
+    PrimExpr new_extent = ceildiv(
+        original_extent, make_const(original_extent.dtype(), num_stages));
 
     Map<String, ObjectRef> annotations;
     annotations.Set("tl_original_extent", original_extent);
