@@ -36,12 +36,8 @@ def alloc_var(
 
 #### 2.3.1 DataType 支持
 
-| 平台 | dtype |
-|------|:-----:|
-| Ascend A2 / A3 | int32, bool, float32, float16, bfloat16, int8, int16, int64, uint32, uint64 |
-
-> 仅 ascendc 支持：uint8, uint16
-> pto 后端所有 dtype 均精度验证失败。
+- 分配不限制 dtype（int32、bool、float32、float16、bfloat16、int8、int16、int64、uint8、uint16、uint32、uint64、int4 等均可分配）
+- 实际计算可用性取决于下游算子：若使用场景涉及的算子不支持该 dtype，会在编译期报错；各算子支持的 dtype 详见对应文档（如 `T.copy.md`、`T.gemm_v0.md`）
 
 #### 2.3.2 Shape 支持
 
