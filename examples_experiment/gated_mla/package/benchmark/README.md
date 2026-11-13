@@ -1,5 +1,24 @@
 # Gated MLA comparison tools
 
+## Current source-pinned A9/A10 report
+
+Start with [current performance](PREFILL_A9_CURRENT_20261113.md),
+[raw sanitized samples](PREFILL_A9_CURRENT_20261113.public.json),
+[CI/model status](PREFILL_A9_VALIDATION_20261113.json) and
+[BF16 original-gate diagnostic](MODEL_BF16_DIAGNOSTIC_20261113.md).
+The24 processes compare current a9a96f9e against normal installation of exact parent a1723d4/a0e1c997.
+Driver/helper/protocol fingerprints and10800 raw samples are checked; the public codec round-trips all retained fields.
+
+Decode publicly without NPU or dependencies:
+
+~~~bash
+python decode_public_benchmark.py PREFILL_A9_CURRENT_20261113.public.json --output /new/expanded.json
+~~~
+
+This does not undo documented privacy redactions. Event/wall/Graph distributions and external qualification remain separate.
+Earlier core77.58%/83.11% used prototype173; the original November13 full-chain previous used7c13 rather than a172.
+The old reports below retain history; they are not the current production performance table.
+
 These tools compare the normally installed seven-input package with two explicit
 NPU compositions. They do not time an entire model or replace a missing candidate
 with a Torch/FIA fallback.
@@ -104,4 +123,7 @@ represent the production HiLo path; each scope retains its own qualification.
 
 [The aligned report](PERFORMANCE_ALIGNED_20261112.md) records 72 independent-process trials, preserving the public/prevalidated and common-LP-core boundaries separately. Failed references have no qualified ratio.
 
-[Prefill optimization](PREFILL_OPTIMIZATION_20261112.md) compares the reviewed numerical revision with parent `de16598` in matched core/full-chain scopes. [Reproduction and regression commands](PREFILL_OPTIMIZATION_TESTING.md) preserve the normal parent installation as the control. Earlier alignment reports remain historical data.
+[Prefill optimization](PREFILL_OPTIMIZATION_20261112.md) compares the reviewed numerical revision with parent `de16598` in matched core/full-chain scopes. [Reproduction and regression commands](PREFILL_OPTIMIZATION_TESTING.md) preserve the normal parent installation as the control. Earlier alignment reports remain historical data. [Cross-wave Cube/Vector pipeline](PREFILL_CV_PIPELINE_20261112.md) covers the following revision, which overlaps the two cores instead of alternating between them; it reports three independent trials per cell and states the domain the pipelined entry is compiled for.
+
+
+Current closeout: final core243 after3 additional CPU symbol regressions passed separately from the earlier44 extensions. Core248.367132s exceeds the unchanged local120s target. Normal-install8 and current hardware6 passed; see current report and validation JSON. New PTO/FP16 simulator timed out at900s after prepare/direct; no new-source simulator pass is claimed. BF16 original model cross-official gates remain failed; hosted CI/review require the new published SHA.

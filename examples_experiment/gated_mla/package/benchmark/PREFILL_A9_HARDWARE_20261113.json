@@ -1,0 +1,238 @@
+{
+  "status": "six_actual_source_CPP_precision_verified_hardware_profiles",
+  "scope": "FP16 PTO B1 H96 Tq=Tk128 attention kernel; not full-chain or FIA ratio",
+  "original_summary_sha256": "a7ca17a6b8e0cf6a9cfd0c945b983a1c6ebb4b1143122656ff7501c9a4eb6241",
+  "rows": [
+    {
+      "arm": "parent",
+      "trial": 1,
+      "task_us": 140.639999,
+      "frequency": 1800,
+      "blocks": [
+        20,
+        40
+      ],
+      "precision_and_formal_CPP": true,
+      "pipe_medians": {
+        "aic_cube_time(us)": 14.661667,
+        "aic_mte1_time(us)": 29.071112,
+        "aic_mte2_time(us)": 17.862778,
+        "aic_scalar_wait_id1_time(us)": 38.623056500000004,
+        "aic_scalar_wait_id3_time(us)": 19.551666500000003,
+        "aiv_vec_time(us)": 20.543888,
+        "aiv_scalar_wait_id0_time(us)": 23.567223,
+        "aiv_scalar_wait_id2_time(us)": 44.6416685
+      },
+      "raw_csv": {
+        "PipeUtilization.csv": {
+          "path": "hardware_a9_current_20261113/parent_t1/PipeUtilization.csv",
+          "sha256": "02635d81a0a06220b45fd8406dce9b00756686a28ba4c71030bc686a388ebd20"
+        },
+        "OpBasicInfo.csv": {
+          "path": "hardware_a9_current_20261113/parent_t1/OpBasicInfo.csv",
+          "sha256": "fe73203cc2abdb36886a48a4015ddf862d7495295e96ae9905a96b1291197671"
+        }
+      }
+    },
+    {
+      "arm": "parent",
+      "trial": 2,
+      "task_us": 141.979996,
+      "frequency": 1800,
+      "blocks": [
+        20,
+        40
+      ],
+      "precision_and_formal_CPP": true,
+      "pipe_medians": {
+        "aic_cube_time(us)": 14.661667,
+        "aic_mte1_time(us)": 29.071112,
+        "aic_mte2_time(us)": 17.248611500000003,
+        "aic_scalar_wait_id1_time(us)": 37.1900005,
+        "aic_scalar_wait_id3_time(us)": 20.5786115,
+        "aiv_vec_time(us)": 20.543888,
+        "aiv_scalar_wait_id0_time(us)": 21.2019445,
+        "aiv_scalar_wait_id2_time(us)": 42.994999
+      },
+      "raw_csv": {
+        "PipeUtilization.csv": {
+          "path": "hardware_a9_current_20261113/parent_t2/PipeUtilization.csv",
+          "sha256": "2e2c81de3670bfcf206cdeb1e61d64c31f236779493913ad6c140bc16f8af3c6"
+        },
+        "OpBasicInfo.csv": {
+          "path": "hardware_a9_current_20261113/parent_t2/OpBasicInfo.csv",
+          "sha256": "6abd2a9ded9cbc8ba08a8e811c0262551bdd130e6737a03bf336e2e631f1aca9"
+        }
+      }
+    },
+    {
+      "arm": "parent",
+      "trial": 3,
+      "task_us": 140.179993,
+      "frequency": 1800,
+      "blocks": [
+        20,
+        40
+      ],
+      "precision_and_formal_CPP": true,
+      "pipe_medians": {
+        "aic_cube_time(us)": 14.661667,
+        "aic_mte1_time(us)": 29.071112,
+        "aic_mte2_time(us)": 17.019723,
+        "aic_scalar_wait_id1_time(us)": 37.0541665,
+        "aic_scalar_wait_id3_time(us)": 19.212222500000003,
+        "aiv_vec_time(us)": 20.543888,
+        "aiv_scalar_wait_id0_time(us)": 23.201111,
+        "aiv_scalar_wait_id2_time(us)": 43.814722
+      },
+      "raw_csv": {
+        "PipeUtilization.csv": {
+          "path": "hardware_a9_current_20261113/parent_t3/PipeUtilization.csv",
+          "sha256": "1bf83f2a1f22402061eadfc0f0338b65006cb5c3f0604cafa43a6341e80d84e1"
+        },
+        "OpBasicInfo.csv": {
+          "path": "hardware_a9_current_20261113/parent_t3/OpBasicInfo.csv",
+          "sha256": "2d6d6912768e2bc0940f2a9136fdd365839fc0f69f7e8039356b8e8cf6564775"
+        }
+      }
+    },
+    {
+      "arm": "candidate",
+      "trial": 1,
+      "task_us": 99.699997,
+      "frequency": 1800,
+      "blocks": [
+        20,
+        40
+      ],
+      "precision_and_formal_CPP": true,
+      "pipe_medians": {
+        "aic_cube_time(us)": 14.661667,
+        "aic_mte1_time(us)": 29.071112,
+        "aic_mte2_time(us)": 16.5038895,
+        "aic_scalar_wait_id1_time(us)": 0.287778,
+        "aic_scalar_wait_id3_time(us)": 0.9322220000000001,
+        "aiv_vec_time(us)": 16.021667,
+        "aiv_scalar_wait_id0_time(us)": 17.789445,
+        "aiv_scalar_wait_id2_time(us)": 6.111110500000001
+      },
+      "raw_csv": {
+        "PipeUtilization.csv": {
+          "path": "hardware_a9_current_20261113/candidate_t1/PipeUtilization.csv",
+          "sha256": "0ad70941a00e6a23b8953e5d87280408dd17d89b2302d6c063916361bd756cde"
+        },
+        "OpBasicInfo.csv": {
+          "path": "hardware_a9_current_20261113/candidate_t1/OpBasicInfo.csv",
+          "sha256": "61398daf47abbca039ba0f507f25f178ede57d037335d4a9e2bdfb06cfa63dfe"
+        }
+      }
+    },
+    {
+      "arm": "candidate",
+      "trial": 2,
+      "task_us": 98.760002,
+      "frequency": 1800,
+      "blocks": [
+        20,
+        40
+      ],
+      "precision_and_formal_CPP": true,
+      "pipe_medians": {
+        "aic_cube_time(us)": 14.661667,
+        "aic_mte1_time(us)": 29.071112,
+        "aic_mte2_time(us)": 16.133612,
+        "aic_scalar_wait_id1_time(us)": 0.34055599999999997,
+        "aic_scalar_wait_id3_time(us)": 0.8541665,
+        "aiv_vec_time(us)": 16.021667,
+        "aiv_scalar_wait_id0_time(us)": 20.028056,
+        "aiv_scalar_wait_id2_time(us)": 6.892778
+      },
+      "raw_csv": {
+        "PipeUtilization.csv": {
+          "path": "hardware_a9_current_20261113/candidate_t2/PipeUtilization.csv",
+          "sha256": "91e5a429c6a75fe5db7ba8933b9c3eea91d53f2f2d7eda02676a143b0311d87b"
+        },
+        "OpBasicInfo.csv": {
+          "path": "hardware_a9_current_20261113/candidate_t2/OpBasicInfo.csv",
+          "sha256": "a1d389dc974e7247fe60b890db9cc317b5985191e1d3c5d7a162677df1514323"
+        }
+      }
+    },
+    {
+      "arm": "candidate",
+      "trial": 3,
+      "task_us": 98.980003,
+      "frequency": 1800,
+      "blocks": [
+        20,
+        40
+      ],
+      "precision_and_formal_CPP": true,
+      "pipe_medians": {
+        "aic_cube_time(us)": 14.661667,
+        "aic_mte1_time(us)": 29.071112,
+        "aic_mte2_time(us)": 16.700556,
+        "aic_scalar_wait_id1_time(us)": 0.321111,
+        "aic_scalar_wait_id3_time(us)": 0.9305555,
+        "aiv_vec_time(us)": 16.021667,
+        "aiv_scalar_wait_id0_time(us)": 17.7255555,
+        "aiv_scalar_wait_id2_time(us)": 6.1369445
+      },
+      "raw_csv": {
+        "PipeUtilization.csv": {
+          "path": "hardware_a9_current_20261113/candidate_t3/PipeUtilization.csv",
+          "sha256": "4f9da16fb1250bf8fad4e02220daa3c3227671d889f3cb4dd32c3ecf3c6caff3"
+        },
+        "OpBasicInfo.csv": {
+          "path": "hardware_a9_current_20261113/candidate_t3/OpBasicInfo.csv",
+          "sha256": "3650c3dd2ecf7ad51f998f5d21c5ac72fca4849196b19d6baa4b2cacf82776ea"
+        }
+      }
+    }
+  ],
+  "aggregation": "median over numeric per-core rows, then median of3 collection medians; fields overlap and are not additive",
+  "task": {
+    "parent": {
+      "median": 140.639999,
+      "half_range": 0.9000015000000019
+    },
+    "candidate": {
+      "median": 98.980003,
+      "half_range": 0.46999749999999807
+    }
+  },
+  "pipe_fields": {
+    "aic_cube_time(us)": {
+      "parent": 14.661667,
+      "candidate": 14.661667
+    },
+    "aic_mte1_time(us)": {
+      "parent": 29.071112,
+      "candidate": 29.071112
+    },
+    "aic_mte2_time(us)": {
+      "parent": 17.248611500000003,
+      "candidate": 16.5038895
+    },
+    "aic_scalar_wait_id1_time(us)": {
+      "parent": 37.1900005,
+      "candidate": 0.321111
+    },
+    "aic_scalar_wait_id3_time(us)": {
+      "parent": 19.551666500000003,
+      "candidate": 0.9305555
+    },
+    "aiv_vec_time(us)": {
+      "parent": 20.543888,
+      "candidate": 16.021667
+    },
+    "aiv_scalar_wait_id0_time(us)": {
+      "parent": 23.201111,
+      "candidate": 17.789445
+    },
+    "aiv_scalar_wait_id2_time(us)": {
+      "parent": 43.814722,
+      "candidate": 6.1369445
+    }
+  }
+}

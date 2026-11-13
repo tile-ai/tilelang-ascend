@@ -103,7 +103,7 @@ def main():
                             "msprof",
                             "op",
                             "simulator",
-                            "--kernel-name=main_kernel",
+                            "--kernel-name=main*kernel*",  # Literal argv; no shell glob expansion.
                             "--launch-count=" + str(manifest["expected_physical_launches"]),
                             "--soc-version=" + args.soc_version,
                             "--timeout=15",

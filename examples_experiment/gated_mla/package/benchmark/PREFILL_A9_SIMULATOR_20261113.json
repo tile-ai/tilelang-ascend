@@ -1,0 +1,15 @@
+{
+  "status": "failed",
+  "current": "prefill_pto_float16_simulator",
+  "completed_step_count": 2,
+  "completed_steps": [
+    "prefill_pto_float16_prepare",
+    "prefill_pto_float16_direct"
+  ],
+  "simulator_timeout_seconds": 900,
+  "audit_executed": false,
+  "new_A9_simulator_pass_claimed": false,
+  "cause": "not_determined",
+  "original_reproduction_sha256": "4f7c2a4a97b53b12f309137dd710300f2ede1e63eb90b58d5d50cd9fc4d1167a",
+  "scope": "current production PTO/FP16 one representative prefill; other3 combinations remain old-source history"
+}

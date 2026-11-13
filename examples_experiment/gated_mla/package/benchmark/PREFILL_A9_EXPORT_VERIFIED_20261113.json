@@ -1,0 +1,30 @@
+{
+  "status": "source_CPP_qualification_samples_tables_sanitization_codec_roundtrip_passed",
+  "NPU_started": false,
+  "trials": 24,
+  "raw_samples": 10800,
+  "sample_pool_count": 216,
+  "record_pool_count": 158,
+  "redaction_count": 67,
+  "ci_summary_provided": true,
+  "BF16_model_original_gate_pass_claimed": false,
+  "audit_json_sha256": "3f71a54b50b9ad8463432a80342470e66a5bd53c7eaff0dc32b02006053fe933",
+  "public_json_sha256": "da664fd0fb488a7e35297763f660273e4889cc29fca151ab449090675e621c8d",
+  "report_sha256": "ad504845e1fbcd0334c5c83540865c249394b0d6e54f9950197fc20c93c7d267",
+  "public_json_bytes": 1464436,
+  "decoder_sha256": "81c46adc7601cbc7c02ff807208be5ddc988718faa2c40c41f72597a520b5049",
+  "exporter_sha256": "8d51bdd303a7c3d5a2661ec72af67d3b7054b9ca90b3a217e8d040ef4b05b6f7",
+  "roundtrip_sanitized_equal_before_and_after_file_write": true,
+  "recomputed_all_tables_equal_independent_audit": true,
+  "generated_report_sha256": "8c4f625f1223625d51309a4cef40daa7efa3f1c15189992b942bc9c9b2b0e259",
+  "report_editorial_update": {
+    "timing_tables_unchanged": true,
+    "added": [
+      "normal8",
+      "source-pinned hardware6",
+      "finalcore243/extension44 lineage",
+      "simulator900s timeout"
+    ],
+    "hardware_summary_sha256": "a7ca17a6b8e0cf6a9cfd0c945b983a1c6ebb4b1143122656ff7501c9a4eb6241"
+  }
+}

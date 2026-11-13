@@ -1,0 +1,92 @@
+[
+  {
+    "target": "pto",
+    "shape": "H96_Tq128_Tk128",
+    "baseline_us": 140.872818,
+    "baseline_half": 0.8600197500000064,
+    "candidate_us": 99.35198600000001,
+    "candidate_half": 0.9900190000000038,
+    "speedup": 1.4179164772810882,
+    "domain": "pipelined"
+  },
+  {
+    "target": "pto",
+    "shape": "H64_Tq128_Tk128",
+    "baseline_us": 96.7319335,
+    "baseline_half": 0.20000449999999148,
+    "candidate_us": 69.701397,
+    "candidate_half": 0.1900042499999941,
+    "speedup": 1.3878048025350194,
+    "domain": "pipelined"
+  },
+  {
+    "target": "pto",
+    "shape": "H32_Tq128_Tk128",
+    "baseline_us": 56.0411225,
+    "baseline_half": 0.4300077499999979,
+    "candidate_us": 41.2808265,
+    "candidate_half": 0.5250102500000011,
+    "speedup": 1.3575581511188977,
+    "domain": "pipelined"
+  },
+  {
+    "target": "pto",
+    "shape": "H96_Tq64_Tk128",
+    "baseline_us": 76.121521,
+    "baseline_half": 0.5150107500000018,
+    "candidate_us": 55.291105,
+    "candidate_half": 0.2500059999999955,
+    "speedup": 1.3767408157243375,
+    "domain": "pipelined"
+  },
+  {
+    "target": "pto",
+    "shape": "H96_Tq256_Tk128",
+    "baseline_us": 263.3552705,
+    "baseline_half": 0.47501375000001644,
+    "candidate_us": 182.683655,
+    "candidate_half": 0.8250162500000044,
+    "speedup": 1.4415918627202857,
+    "domain": "pipelined"
+  },
+  {
+    "target": "pto",
+    "shape": "H96_Tq128_Tk64",
+    "baseline_us": 73.11146550000001,
+    "baseline_half": 0.6450125,
+    "candidate_us": 51.871038,
+    "candidate_half": 0.2200037499999965,
+    "speedup": 1.4094852989061066,
+    "domain": "pipelined"
+  },
+  {
+    "target": "pto",
+    "shape": "OUT_B2_batch2",
+    "baseline_us": 267.2153475,
+    "baseline_half": 0.6050185000000283,
+    "candidate_us": 265.155304,
+    "candidate_half": 1.7350312499999916,
+    "speedup": 1.0077691958973598,
+    "domain": "fallback"
+  },
+  {
+    "target": "pto",
+    "shape": "OUT_Tk256_iters2",
+    "baseline_us": 180.853615,
+    "baseline_half": 1.320026249999998,
+    "candidate_us": 180.44361099999998,
+    "candidate_half": 0.32000349999998434,
+    "speedup": 1.0022722001501068,
+    "domain": "fallback"
+  },
+  {
+    "target": "pto",
+    "shape": "OUT_H48_unaligned",
+    "baseline_us": 91.451828,
+    "baseline_half": 0.6150132500000041,
+    "candidate_us": 93.0918615,
+    "candidate_half": 0.3850060000000042,
+    "speedup": 0.9823826328792449,
+    "domain": "fallback"
+  }
+]

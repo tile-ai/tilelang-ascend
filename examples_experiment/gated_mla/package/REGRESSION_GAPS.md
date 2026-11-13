@@ -1,51 +1,35 @@
-# Coverage and remaining acceptance
+# Current evidence and remaining boundaries
 
-The current source includes a reviewed prefill-only revision from parent
-`de16598`; the other 24 production Python files remain unchanged. Numerical
-correctness, performance, simulator execution and the local cold-time target
-remain separate acceptance results. The [current report](benchmark/PREFILL_OPTIMIZATION_20261112.md)
-and [validation summary](benchmark/PREFILL_VALIDATION_20261112.json) record source
-and test fingerprints. [Historical validation](VALIDATION.md) retains earlier
-r1.7 direct/simulator and frozen-model evidence under its original boundaries.
+Current prefill a9a96f9e is reviewed from exact parent a1723d4/a0e1c997; other24 production Python files are unchanged.
+Numerics, performance, simulator, install identity, cold-time target and hosted CI remain distinct results.
 
-## Current regression evidence
+## Current evidence
 
-- 104 independent old/new numerical cases passed: 13 shape/tile templates, two
-  seeds, two dtypes and two backends. Four Graph binding groups also passed
-  same-storage C/E and E-only input updates. Production BF16 query/P residuals
-  and the original FP64 budgets remain intact.
-- Eight normal-install combinations passed in core/full-chain scopes, both
-  dtypes and both backends. Generated CPP matched the selected independent
-  variant and the formal performance trials.
-- The full registered directory collected 255 cases across the original16 test
-  files: 233 core and22 `low_priority` extended cases. Both real-NPU selections
-  passed without skips. This includes CPU benchmark tests and preserved L0;
-  the 233 count is not233 independent NPU numerical cases.
-- The change strengthens six existing representative instances and adds three
-  core NPU nodes plus one CPU capacity test. It preserves generic-head,
-  physical-tail, multi-KV, continuation, inactive and public-profile coverage,
-  plus metadata/Q/KV updates and repeat/Graph checks. No manifest change or new
-  `ci_skip` hides a required regression.
-- Core and extended runs used fresh CPU compile/audit directories, eight
-  workers,99/73 unique factories and141/90 requests. Worker/parent ABI and
-  loaded sources matched, published caches stayed unchanged, and no unexpected
-  native compilation occurred. CPU-only package selection passed178 tests;
-  46 device tests were explicitly deselected there.
+- [Source-pinned benchmark](benchmark/PREFILL_A9_CURRENT_20261113.md):24 independent processes,10800 samples,
+  actual source/CPP/precision checks and lossless expansion of the sanitized public data.
+- Whole-directory forked parallel execution includes original L0:243 core+44 disjoint extensions passed,
+  with compile/load/cache audits. Package-only serial213/253 and CPU178 are overlapping selections, not extra NPU coverage.
+- New mask29 cases(core7/low_priority22) retain causal/length/inactive/batch-isolation and pipeline-domain checks.
+  Markers and registry are aligned; the real unplanned-compilation defect is fixed rather than attributed to process mode.
+- Source/AST records explicitly retain A8 history and add reviewed A9 parent/new hashes, batch-one correctness guard and workspace plan.
 
-## Remaining boundaries
+## Open boundaries
 
-The core full cold process took217.205s (pytest209.88s), exceeding the unchanged
-extra local120s target: wrapper exit1, pytest exit0, artifact checks passed.
-The extended process took158.517s. Hosted CI, other operators and reviewer
-approval remain separate checks. The representative updated-source simulator
-matrix passed four prefill combinations with three physical launches each; see
-the [matrix and actual log render](benchmark/PREFILL_SIMULATOR_20261112.md). Native
-source-line mapping remains unavailable; this is not hardware timing or a claim
-that all shapes were simulated.
+1. Core248.367132s exceeds the unchanged extra local120s target(wrapper1,pytest0,artifacts pass).
+   Extensions201.838996s; hosted CI has separate invocation and is not claimed green for an unpublished SHA.
+2. FP16 Graph core75.07%/82.86%, full-chain87.92%/100.54%(PTO/AscendC) cover one working point.
+   Ordinary Event/wall and other shapes retain their own results; Graph ratios are not model throughput.
+3. BF16 external references fail the same accuracy qualification, so no external ratio is reported.
+4. [Real-dimension BF16 model smoke](benchmark/MODEL_BF16_DIAGNOSTIC_20261113.md) still fails original cross-official gates.
+   In its tested B2 fallback fixture parent/candidate saved bits/CPP match and FP64 gates pass; no new regression found there,
+   but this is not original-gate acceptance, a checkpoint test or validation of the new B1 pipeline inside a model.
+5. Current normal-install8 passed with final production sources/CPP;current hardware6 profiles passed source/CPP/precision checks.
+   The wheel had frozen metadata/docs, not the later documentation revision. Earlier A8 simulator evidence remains historical.
+   Current PTO/FP16 simulator reached prepare/direct then timed out at900s without audit;no new-source pass is claimed. Native source-line mapping and GUI screenshots remain unavailable.
+6. General deployment, all legal shapes, multi-card/asynchronous scheduling, complete-model service and training/backward are not established.
 
-FP16 shared-LP prefill core Graph performance remains below70% of qualified FIA
-(49.64% PTO and54.87% AscendC). Full-chain FP16 Graph ratios to the historical
-FP32-projection/FIA/gate composition are79.12%/92.44%, while ordinary Event/wall
-full-chain calls show no meaningful improvement. BF16 unqualified references
-receive no ratio. Scope-specific Graph gains do not establish all performance
-requirements, whole-model throughput, general deployment or all legal shapes.
+Current source/CI/model status is [machine-readable](benchmark/PREFILL_A9_VALIDATION_20261113.json).
+The [older CV report](benchmark/PREFILL_CV_PIPELINE_20261112.md) now labels prototype173 and7c-control results as historical.
+
+
+Current closeout: final core243 after3 additional CPU symbol regressions passed separately from the earlier44 extensions. Core248.367132s exceeds the unchanged local120s target. Normal-install8 and current hardware6 passed; see current report and validation JSON. New PTO/FP16 simulator timed out at900s after prepare/direct; no new-source simulator pass is claimed. BF16 original model cross-official gates remain failed; hosted CI/review require the new published SHA.

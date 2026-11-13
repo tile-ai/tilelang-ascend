@@ -129,6 +129,32 @@ def cases_for_item(item):
         cases[-1]["scale"] = (1 / math.sqrt(192)) * 0.75
     elif name == "test_direct_owner_rejects_actual_nz_before_commit_in_child":
         case("owner_initialization_only", 1, 1, 17, 65, ["cache_init"], fixed_dtype="float16", fixed_target="pto")
+    elif name == "test_causal_window_matches_the_analytic_value":
+        # block_n follows the public selector, so the shape chooses the mask path.
+        batch, q_len, kv_len = params["shape"]
+        case("analytic_causal_window", batch, 96, q_len, kv_len, ["attention"])
+    elif name in (
+        "test_query_start_shifts_the_window",
+        "test_kv_length_clamps_the_window",
+        "test_inactive_batch_writes_exact_zeros",
+    ):
+        # Metadata-only variations of the public 128 profile: no new factory.
+        case("mask_window_metadata", 1, 96, 128, 128, ["attention"])
+    elif name in (
+        "test_batches_do_not_influence_each_other",
+        "test_an_inactive_neighbour_does_not_disturb_an_active_batch",
+    ):
+        # Tq is 64 so the paired arm and its control select the same block_n;
+        # at Tq 128 they would differ and bit-identity would fail for a
+        # legitimate reason rather than because a tile crossed a batch.
+        case("paired_batches", 2, 96, 64, 128, ["attention"])
+        case("paired_single_control", 1, 96, 64, 128, ["attention"])
+    elif name == "test_the_pipelined_entry_is_compiled_only_inside_its_documented_domain":
+        # Asserts the compiled entry point, so the dtype and target are fixed in
+        # the test body. Each shape is one another selected case already builds.
+        case("domain_pipelined", 1, 96, 128, 128, ["attention"], fixed_dtype="float16", fixed_target="pto")
+        case("domain_multi_batch", 2, 96, 64, 128, ["attention"], fixed_dtype="float16", fixed_target="pto")
+        case("domain_multi_kv_block", 1, 96, 17, 129, ["attention"], fixed_dtype="float16", fixed_target="pto")
     else:
         raise pytest.UsageError(f"Unregistered selected NPU test; do not silently omit compilation: {item.nodeid}")
     return cases

@@ -48,14 +48,16 @@ def validators():
     ]
 
 
-def test_prefill_mask_buffers_fit_each_declared_tile_and_dtype():
+def test_prefill_mask_buffers_fit_each_declared_tile_dtype_and_pipeline_depth():
     mode = extracted("gmla/kernels/prefill.py", "probability_precision_mode")
     plan = extracted("gmla/kernels/prefill.py", "buffer_plan", {"probability_precision_mode": mode})
     for block_m in (16, 32):
         for block_n in (64, 128):
             for dtype in ("float16", "bfloat16"):
-                for residual in (False, True):
-                    result = plan(block_m, block_n, dtype=dtype, has_ql_residual=residual)
+                # pipeline_stages 2 is the cross-wave plan; its slot dimension has to
+                # fit the same budget and stay disjoint and 32-byte aligned.
+                for residual, stages in ((False, 1), (False, 2), (True, 1), (True, 2)):
+                    result = plan(block_m, block_n, dtype=dtype, has_ql_residual=residual, pipeline_stages=stages)
                     half_m = block_m // 2
                     ub = result["UB"]["buffers"]
                     # Packed uint8 mask rows are physically32-byte aligned,

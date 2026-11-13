@@ -60,3 +60,47 @@ Production files are self-contained in this package. Development origin IDs in
 source_manifest are historical hash labels, not files that need to be installed.
 The optional frozen-model loader consumes caller-supplied external source;
 no Moonshot model implementation or vendor runtime source is bundled here.
+
+Head-aligned shapes whose cache fits a single KV block compile a second entry,
+`main_pipelined`. The baseline entry runs one wave at a time behind a
+single-buffer four-flag handshake, so the Cube and Vector cores alternate: a
+same-shape profile measured the Cube unit active 10.3% of the kernel and the
+Vector unit 14.4%, with the Cube blocked 57.6us of 129.7us and the Vector
+67.0us of 130.6us. Each wait tracked the other core's busy time, i.e. the two
+never overlapped.
+
+`main_pipelined` skews the Cube loop by one wave. The QK of wave w is issued
+before the PV of wave w-1, so the Cube runs a GEMM while the Vector is still in
+the softmax that separates them. Score, probability and partial workspaces gain
+a two-slot dimension, and the four flags become six semaphores paired as
+ready/consumed per workspace, with the consumer pre-releasing one slot before
+the loop. Both scopes drain their primed semaphores after the loop so that no
+cross flag outlives the launch.
+
+Two further properties hold on this path. The accumulate of wave w-1 runs after
+the softmax of wave w, so the per-wave normaliser needs two buffers; these are
+plain 1-D buffers, because a 2-D buffer indexed as slot[s, row] does not lower
+correctly as a `tile.div` scalar operand. The PV stage reads no metadata of its
+own, since its addressing uses the slot alone, so a one-step carry of the QK
+stage active flag replaces a full metadata recompute per wave.
+
+Arithmetic and its ordering are unchanged: the two entries agree bit-for-bit
+across both backends, both dtypes, the pipelined and fallback domains, and
+every validated query length. Shapes outside the domain compile `main`, whose
+generated code is byte-identical to the previous revision.
+
+The domain is narrow and is a property of the guard, not a tuning choice.
+`iterations == 1` requires the cache to fit one KV block, so Tk is at most
+block_n (128), and `heads % block_m == 0` requires the head count to be a
+multiple of the row tile. Within that domain rows = Tq * heads is always a
+multiple of block_m, so the head-tail path cannot be reached there.
+
+A third condition is batch == 1, and it is a correctness bound rather than a
+capacity one. C and E stay resident in L1 under a batch tag, and the skewed loop
+issues the QK of wave w before the PV of wave w-1; when those two waves belong
+to different batches the QK reloads C/E into the buffers the pending PV still
+reads. With one batch the tag never changes, so the conflict cannot arise.
+Lifting it needs a second C/E slot, which is 144 KiB more L1 and therefore an
+L1 budget that has to be confirmed on hardware rather than assumed.
+`tests/test_prefill_mask_exact_npu.py::test_batches_do_not_influence_each_other`
+pins this boundary and fails if multi-batch pipelining is enabled without it.

@@ -117,17 +117,17 @@
       "origin_id": "development:performance_plan/cube_c4_vector_mask/cube_attention.py",
       "origin_sha256": "8ab1927c783b6f54c3048a3a14f2fb29868923ac1941567a4fbeb74d628a71b2",
       "destination": "gmla/kernels/prefill.py",
-      "destination_sha256": "a0e1c997ea1204ea12f508311fe4d584f2274585198503c322259c5de0abc2c0",
+      "destination_sha256": "a9a96f9e6fd5e4598be4b028aebfea00f5d0f20b832c465a2a46d4177c1ec6db",
       "definition_ast_sha256": {
         "_validated_scale": "4e4b5e1271bbef93b6312ccdcf28a9fc3c18e00be065aa8886be0ea51f54dedf",
         "probability_precision_mode": "d1852caaef3257f202abd8ffdd017553a7b21836dfb35bc216dff54c098737a2",
-        "buffer_plan": "ab6852065530369abe3a9362ce21edf1606f89e0d38de2f8b0c246dce65188f5",
-        "build_cube_attention": "6f42614d1543d77f464781ca146963f5e0e4321e3f22a0ae345b1e1fd4ca0aeb",
+        "buffer_plan": "4938b1179ac489add578ec7b8ba610035aeb5da6b70902a49502ce3e2211f8e2",
+        "build_cube_attention": "22b7a86ab94b027095f753f6112cac035f5bce384376e5ea74bba01e4b1cda3d",
         "build_tail_pair": "abf07c95a394616db3641e4f7be1fd790b03a67fdce59b907b24a4a5760601bb",
         "build_tail_triple": "7dcd3a389ead629e638c6bd958a40bdac84e47dc80d7aec7f5e3c7e105eec1cd",
         "cube_prefill": "f69c7e99506ce35f28c137a3417945df3619553749897e50587c371abe1d0858"
       },
-      "allowed_changes": "Intentional r1.8 reviewed prefill optimization: buffer_plan and build_cube_attention changed with recorded parent/new AST hashes. Other definitions/defaults and tail/public APIs unchanged. See reviewed_numerical_revisions and performance evidence; BF16 query/P residuals are preserved.",
+      "allowed_changes": "Reviewed r1.8 A2-A8 revision and subsequent A9+A10 cross-wave prefill scheduling. Only buffer_plan and build_cube_attention implementation ASTs changed from exact a172 parent. Each revision records parent/new source and AST digests; prior a0e1c997 history is retained. Public entrypoints, generic fallback and original BF16 compensation/precision policy remain. Nonproduction refresh refuses any additional production drift.",
       "reviewed_numerical_revisions": [
         {
           "parent_commit": "de16598e67bce8168775fce23f9b207dd6259401",
@@ -145,6 +145,38 @@
           },
           "reason": "Reviewed prefill-only mask, per-launch KV/query reuse, one-block identity elimination and backend-safe L0 tiling; APIs/defaults, BF16 compensation and precision budgets retained.",
           "evidence": "benchmark/PREFILL_OPTIMIZATION_20261112.md"
+        },
+        {
+          "parent_commit": "a1723d4b96f0547ca2b0e25d8b6bc6fc1ec4baae",
+          "previous_destination_sha256": "a0e1c997ea1204ea12f508311fe4d584f2274585198503c322259c5de0abc2c0",
+          "destination_sha256": "a9a96f9e6fd5e4598be4b028aebfea00f5d0f20b832c465a2a46d4177c1ec6db",
+          "changed_definitions": {
+            "buffer_plan": {
+              "previous_ast_sha256": "ab6852065530369abe3a9362ce21edf1606f89e0d38de2f8b0c246dce65188f5",
+              "ast_sha256": "4938b1179ac489add578ec7b8ba610035aeb5da6b70902a49502ce3e2211f8e2"
+            },
+            "build_cube_attention": {
+              "previous_ast_sha256": "6f42614d1543d77f464781ca146963f5e0e4321e3f22a0ae345b1e1fd4ca0aeb",
+              "ast_sha256": "22b7a86ab94b027095f753f6112cac035f5bce384376e5ea74bba01e4b1cda3d"
+            }
+          },
+          "reason": "A9 cross-wave Cube/Vector schedule with two GM workspace slots and ready/consumed semaphore protocol; A10 carries the QK active predicate into PV. Only buffer_plan and build_cube_attention top-level ASTs differ from exact a172 parent; no other production Python source changes.",
+          "reviewed_constraints": {
+            "pipeline_domain": "iterations == 1 and heads % block_m == 0 and batch == 1",
+            "batch_one_is_correctness_guard": "Next-wave QK must not replace C/E while previous-wave PV still consumes them. No multi-batch pipeline without another C/E slot and explicit resource/hardware verification.",
+            "workspace_example_B1_H96_T128_fp16_N128": {
+              "parent_GM_bytes": 1802240,
+              "candidate_GM_bytes": 3604480,
+              "parent_UB_bytes": 96032,
+              "candidate_UB_bytes": 96160,
+              "L1_and_L0C_change_bytes": 0
+            },
+            "semaphore_lifetime": "Prime and drain ready/consumed semaphores inside each invocation; no cross-launch semaphore state.",
+            "numerics": "Original FP64 budgets and BF16 query/P/value residual compensation are retained."
+          },
+          "evidence": "benchmark/PREFILL_A9_CURRENT_20261113.md",
+          "evidence_boundary": "Current production source-pinned benchmark and directory-parallel CI results are tracked separately. Earlier core77.58/83.11 data used prototype17387529; earlier fullchain previous was7c13f473. Existing BF16 model cross-official gate failures remain independently tracked.",
+          "review_status": "Root explicitly reviewed source, AST, scope, batch-one correctness guard and workspace design. This provenance record does not certify unexecuted NPU or hosted-CI gates."
         }
       ]
     },
@@ -382,7 +414,7 @@
     },
     {
       "path": "tests/test_sources.py",
-      "sha256": "0afc9fc229493c8a625dfa71010adef9543d20fc41e2feb848a8bcae3c7f8136"
+      "sha256": "46cd5b6fe404271ffc9d78fd3eb20c9253e7c89962d36370ad251a673f918821"
     },
     {
       "path": "tools/audit_package.py",
@@ -394,7 +426,7 @@
     },
     {
       "path": "tests/test_contracts.py",
-      "sha256": "0f84cbcc070b8cea8c28a55bac402dc5d673a9f3ee795009d528dd5ff332152d"
+      "sha256": "5220a0a3ba5df0542fe60d329ea4830a27b5a1b7e904ed3c7615623d5a2f52bd"
     },
     {
       "path": "tests/test_preflight.py",
@@ -414,7 +446,7 @@
     },
     {
       "path": "_gmla_ci/registry_plugin.py",
-      "sha256": "260116e491259fc13e0e893c08285ef335b0f9dd20635b63b94323f4792feeb3"
+      "sha256": "abd8f9313794cb564e6a9458df1ac348873e1467c023c6d22fcda5b8ec3d7a19"
     },
     {
       "path": "_gmla_ci/scoped_ci.py",
@@ -522,7 +554,7 @@
     },
     {
       "path": "validation/audit_simulator.py",
-      "sha256": "cd8a1417587974876b10b723c92615a2c2c93ca7bfb1b7dfa45c7ab272b376dd"
+      "sha256": "95acbef80b6606224129b5b577a5850ddfcbdfdcc0b23fef00b7a6679765741b"
     },
     {
       "path": "validation/bounded_process.py",
@@ -530,11 +562,11 @@
     },
     {
       "path": "validation/release_entry.py",
-      "sha256": "c3da5a41a87a4e7ca127904ac493e8be30befbbdc20d3fc58d4cea9e62a1ca63"
+      "sha256": "9cdbaae144dc98d169261e4b9dd6670252d35e15962f6d65f44806e2cf79f942"
     },
     {
       "path": "validation/reproduce.py",
-      "sha256": "c19c5d5e545f6d061e80775ae276dd820aab7f50f1b455f80004f9ddec37b12c"
+      "sha256": "85b9692b86ad74dc22a3c58902a1345775f84532dcaf6dee2529ea05ebbaf3a4"
     },
     {
       "path": "validation/model_smoke.py",
@@ -771,6 +803,106 @@
     {
       "path": "benchmark/PREFILL_SIMULATOR_20261112.png",
       "sha256": "cabbd8ee0d1528c0468730f052b903f6702d075403c4115bf9d9864c29875916"
+    },
+    {
+      "path": "tests/test_prefill_mask_exact_npu.py",
+      "sha256": "a4dde0f057dd0ed72d50208faafa9694c0deb60355b0730ca03b0155a86223c1"
+    },
+    {
+      "path": "ci_entries/run_mask_exact.py",
+      "sha256": "352e5ccc8cdf7a2d234ed5234f57c2d5139744693caf8883b58627adf3b69cfe"
+    },
+    {
+      "path": "benchmark/PREFILL_CV_PIPELINE_20261112.md",
+      "sha256": "9abbafe4f1fe3af8094294bef2bc6c21c8ceb3f15690d17bf11fa04c602daffa"
+    },
+    {
+      "path": "benchmark/PREFILL_CV_PIPELINE_20261112.shapes.json",
+      "sha256": "86c515fd48817a80f6fa122a30907ca59d0afbea7a805d7ea52af70d609fd916"
+    },
+    {
+      "path": "benchmark/decode_public_benchmark.py",
+      "sha256": "81c46adc7601cbc7c02ff807208be5ddc988718faa2c40c41f72597a520b5049"
+    },
+    {
+      "path": "benchmark/MODEL_BF16_DIAGNOSTIC_20261113.md",
+      "sha256": "9c3535e16f949d2b3d33fdceb5408116894444c1ba0b96a67c04f222b4667e3b"
+    },
+    {
+      "path": "benchmark/PREFILL_A9_CURRENT_20261113.md",
+      "sha256": "ad504845e1fbcd0334c5c83540865c249394b0d6e54f9950197fc20c93c7d267"
+    },
+    {
+      "path": "benchmark/PREFILL_A9_CURRENT_20261113.public.json",
+      "sha256": "da664fd0fb488a7e35297763f660273e4889cc29fca151ab449090675e621c8d"
+    },
+    {
+      "path": "benchmark/PREFILL_A9_EXPORT_VERIFIED_20261113.json",
+      "sha256": "d0fb88471e0f19fdfc57d1108ad07e186a041ac141e0fbd2d8d02c4508ad26fd"
+    },
+    {
+      "path": "benchmark/PREFILL_A9_VALIDATION_20261113.json",
+      "sha256": "3a6ebb9710b7f19f9855a53cb690fe39512d17c87d0562b5db13869878276637"
+    },
+    {
+      "path": "benchmark/PREFILL_A9_HARDWARE_20261113.json",
+      "sha256": "643613431f5f3db3a3550dbe2c68ca56e8d0a608e4b3acf1ea9f5b0a5cb3c62f"
+    },
+    {
+      "path": "benchmark/PREFILL_A9_SIMULATOR_20261113.json",
+      "sha256": "abde41c602c09795482574dae8b69d29dea261ff74d8bc10033982a49d1b0755"
+    },
+    {
+      "path": "benchmark/README.md",
+      "sha256": "bbbea2d263e7b8307b515ac6e290ff442d51fbb5d28c186582b87feb28bcf4df"
+    },
+    {
+      "path": "benchmark/hardware_a9_current_20261113/candidate_t1/OpBasicInfo.csv",
+      "sha256": "61398daf47abbca039ba0f507f25f178ede57d037335d4a9e2bdfb06cfa63dfe"
+    },
+    {
+      "path": "benchmark/hardware_a9_current_20261113/candidate_t1/PipeUtilization.csv",
+      "sha256": "0ad70941a00e6a23b8953e5d87280408dd17d89b2302d6c063916361bd756cde"
+    },
+    {
+      "path": "benchmark/hardware_a9_current_20261113/candidate_t2/OpBasicInfo.csv",
+      "sha256": "a1d389dc974e7247fe60b890db9cc317b5985191e1d3c5d7a162677df1514323"
+    },
+    {
+      "path": "benchmark/hardware_a9_current_20261113/candidate_t2/PipeUtilization.csv",
+      "sha256": "91e5a429c6a75fe5db7ba8933b9c3eea91d53f2f2d7eda02676a143b0311d87b"
+    },
+    {
+      "path": "benchmark/hardware_a9_current_20261113/candidate_t3/OpBasicInfo.csv",
+      "sha256": "3650c3dd2ecf7ad51f998f5d21c5ac72fca4849196b19d6baa4b2cacf82776ea"
+    },
+    {
+      "path": "benchmark/hardware_a9_current_20261113/candidate_t3/PipeUtilization.csv",
+      "sha256": "4f9da16fb1250bf8fad4e02220daa3c3227671d889f3cb4dd32c3ecf3c6caff3"
+    },
+    {
+      "path": "benchmark/hardware_a9_current_20261113/parent_t1/OpBasicInfo.csv",
+      "sha256": "fe73203cc2abdb36886a48a4015ddf862d7495295e96ae9905a96b1291197671"
+    },
+    {
+      "path": "benchmark/hardware_a9_current_20261113/parent_t1/PipeUtilization.csv",
+      "sha256": "02635d81a0a06220b45fd8406dce9b00756686a28ba4c71030bc686a388ebd20"
+    },
+    {
+      "path": "benchmark/hardware_a9_current_20261113/parent_t2/OpBasicInfo.csv",
+      "sha256": "6abd2a9ded9cbc8ba08a8e811c0262551bdd130e6737a03bf336e2e631f1aca9"
+    },
+    {
+      "path": "benchmark/hardware_a9_current_20261113/parent_t2/PipeUtilization.csv",
+      "sha256": "2e2c81de3670bfcf206cdeb1e61d64c31f236779493913ad6c140bc16f8af3c6"
+    },
+    {
+      "path": "benchmark/hardware_a9_current_20261113/parent_t3/OpBasicInfo.csv",
+      "sha256": "2d6d6912768e2bc0940f2a9136fdd365839fc0f69f7e8039356b8e8cf6564775"
+    },
+    {
+      "path": "benchmark/hardware_a9_current_20261113/parent_t3/PipeUtilization.csv",
+      "sha256": "1bf83f2a1f22402061eadfc0f0338b65006cb5c3f0604cafa43a6341e80d84e1"
     }
   ],
   "runtime_baseline": {
@@ -996,6 +1128,77 @@
         "path": "benchmark/PREFILL_VALIDATION_20261112.json",
         "previous_sha256": "c96a38aeaa7620e3161fe6e32077522b12b1675122387f86625cbaf51bde0077",
         "sha256": "42d057768a4c42ccfc76b807a08273bb2ad3436dfdb9c2f11584b769ed759ff9"
+      }
+    ],
+    [
+      {
+        "path": "tests/test_contracts.py",
+        "previous_sha256": "0f84cbcc070b8cea8c28a55bac402dc5d673a9f3ee795009d528dd5ff332152d",
+        "sha256": "5220a0a3ba5df0542fe60d329ea4830a27b5a1b7e904ed3c7615623d5a2f52bd"
+      },
+      {
+        "path": "_gmla_ci/registry_plugin.py",
+        "previous_sha256": "260116e491259fc13e0e893c08285ef335b0f9dd20635b63b94323f4792feeb3",
+        "sha256": "abd8f9313794cb564e6a9458df1ac348873e1467c023c6d22fcda5b8ec3d7a19"
+      },
+      {
+        "path": "tests/test_prefill_mask_exact_npu.py",
+        "previous_sha256": "911eab4f4cc4bf4b3038ae13021565b1cb52dd7da49d1411f46b26a0715d9945",
+        "sha256": "a4dde0f057dd0ed72d50208faafa9694c0deb60355b0730ca03b0155a86223c1"
+      },
+      {
+        "path": "benchmark/PREFILL_CV_PIPELINE_20261112.md",
+        "previous_sha256": "94be8d5006a57e6f8bb1f747d8cc735648d52a163910cf53c0f4d51d02b4e9c5",
+        "sha256": "fec8658122fc3211ffd4788aed6ec1a51a412ef583b6541b9da3aa407ce38024"
+      }
+    ],
+    [
+      {
+        "path": "tests/test_sources.py",
+        "previous_sha256": "0afc9fc229493c8a625dfa71010adef9543d20fc41e2feb848a8bcae3c7f8136",
+        "sha256": "46cd5b6fe404271ffc9d78fd3eb20c9253e7c89962d36370ad251a673f918821"
+      },
+      {
+        "path": "validation/audit_simulator.py",
+        "previous_sha256": "cd8a1417587974876b10b723c92615a2c2c93ca7bfb1b7dfa45c7ab272b376dd",
+        "sha256": "95acbef80b6606224129b5b577a5850ddfcbdfdcc0b23fef00b7a6679765741b"
+      },
+      {
+        "path": "validation/release_entry.py",
+        "previous_sha256": "c3da5a41a87a4e7ca127904ac493e8be30befbbdc20d3fc58d4cea9e62a1ca63",
+        "sha256": "9cdbaae144dc98d169261e4b9dd6670252d35e15962f6d65f44806e2cf79f942"
+      },
+      {
+        "path": "validation/reproduce.py",
+        "previous_sha256": "c19c5d5e545f6d061e80775ae276dd820aab7f50f1b455f80004f9ddec37b12c",
+        "sha256": "85b9692b86ad74dc22a3c58902a1345775f84532dcaf6dee2529ea05ebbaf3a4"
+      },
+      {
+        "path": "benchmark/PREFILL_CV_PIPELINE_20261112.md",
+        "previous_sha256": "fec8658122fc3211ffd4788aed6ec1a51a412ef583b6541b9da3aa407ce38024",
+        "sha256": "9abbafe4f1fe3af8094294bef2bc6c21c8ceb3f15690d17bf11fa04c602daffa"
+      }
+    ],
+    [
+      {
+        "path": "benchmark/PREFILL_A9_CURRENT_20261113.md",
+        "previous_sha256": "5df482251d086c7086ffd98b38be37fabe9048dda8c0ccaf3c387a7f7d593bf9",
+        "sha256": "ad504845e1fbcd0334c5c83540865c249394b0d6e54f9950197fc20c93c7d267"
+      },
+      {
+        "path": "benchmark/PREFILL_A9_CURRENT_20261113.public.json",
+        "previous_sha256": "2b3ec43668f1a5618922089e9b3e737872b00976ee7985540c5195f5ebb38e58",
+        "sha256": "da664fd0fb488a7e35297763f660273e4889cc29fca151ab449090675e621c8d"
+      },
+      {
+        "path": "benchmark/PREFILL_A9_EXPORT_VERIFIED_20261113.json",
+        "previous_sha256": "2048d217087a25e25d70c5021e3fd01cdfae299f9717f607f886f0cef50752c4",
+        "sha256": "d0fb88471e0f19fdfc57d1108ad07e186a041ac141e0fbd2d8d02c4508ad26fd"
+      },
+      {
+        "path": "benchmark/PREFILL_A9_VALIDATION_20261113.json",
+        "previous_sha256": "b35171be1d31d1a9a0061870323f170604e67169fc9ef9f2a964a2a1d51807b8",
+        "sha256": "3a6ebb9710b7f19f9855a53cb690fe39512d17c87d0562b5db13869878276637"
       }
     ]
   ],

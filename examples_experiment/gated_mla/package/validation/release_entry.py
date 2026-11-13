@@ -10,6 +10,14 @@ import re
 import sys
 
 
+def kernel_launch_name(source):
+    """Read the actual generated global entrypoint, not a host tiling helper."""
+    names = re.findall(r"\b__global__\s+(?:(?:AICORE|__aicore__)\s+)?void\s+([A-Za-z_]\w*)\s*\(", source)
+    if len(names) != 1 or names[0] not in ("main_kernel", "main_pipelined_kernel"):
+        raise RuntimeError(f"Expected one supported generated kernel entrypoint; got {names}")
+    return names[0]
+
+
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -198,10 +206,10 @@ def main():
     runtime = gmla.build_runtime(target=args.target)
     kernels, public_route = selected_factories(runtime, args.case, args.dtype, args.target)
     kernel_hashes = {}
+    kernel_launch_names = {}
     for name, kernel in kernels.items():
         source = kernel.get_kernel_source()
-        if not re.search(r"\bmain_kernel\s*\(", source):
-            raise RuntimeError(f"{name} no longer has the audited main_kernel launch name")
+        kernel_launch_names[name] = kernel_launch_name(source)
         (args.output / f"{name}.cpp").write_text(source, encoding="utf-8")
         kernel_hashes[name] = hashlib.sha256(source.encode()).hexdigest()
     after = snapshot(cache)
@@ -209,6 +217,8 @@ def main():
     if prepared is not None:
         if after != before or kernel_hashes != prepared["kernel_source_sha256"]:
             raise RuntimeError("Compilation/cache mutation in run process; discard this capture")
+        if kernel_launch_names != prepared["kernel_launch_names"]:
+            raise RuntimeError("Kernel entrypoint symbols changed since prepare")
         if native != prepared["native"]:
             raise RuntimeError("Native runtime/adapter origin or bytes changed since prepare")
         if public_route != prepared["public_route"]:
@@ -221,6 +231,7 @@ def main():
         cache_dir=str(cache),
         cache_files=after,
         kernel_source_sha256=kernel_hashes,
+        kernel_launch_names=kernel_launch_names,
         kernel_targets={n: str(k.target) for n, k in kernels.items()},
         native=native,
         python=sys.version,

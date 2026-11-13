@@ -1,9 +1,12 @@
 import ast
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
 import sys
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -72,3 +75,52 @@ def test_127_128_129_query_and_value_plans_accept_tail_capacity():
         for tq in (127, 128, 129):
             result = scope["plan"](1, tq)
             assert result["Tq"] == tq and result["tile_m"] == 32 and result["blocks"] == 20
+
+
+def _validation_tool(name):
+    path = ROOT / "validation" / (name + ".py")
+    spec = importlib.util.spec_from_file_location("_gmla_validation_test_" + name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_simulator_entrypoint_is_a_supported_global_definition():
+    tool = _validation_tool("release_entry")
+    for qualifier in ("AICORE", "__aicore__"):
+        for name in ("main_kernel", "main_pipelined_kernel"):
+            source = f'extern "C" __global__ {qualifier} void {name}() {{}}'
+            assert tool.kernel_launch_name(source) == name
+    for source in (
+        'extern "C" __global__ AICORE void unknown_kernel() {}',
+        "void main_kernel() {}",
+        'extern "C" __global__ AICORE void main_kernel() {} __global__ AICORE void other_kernel() {}',
+    ):
+        with pytest.raises(RuntimeError):
+            tool.kernel_launch_name(source)
+
+
+def test_simulator_launch_sequence_accepts_legacy_and_pipelined_entries():
+    tool = _validation_tool("audit_simulator")
+    stages = ["q_absorb", "attention", "value_gate"]
+    legacy = dict(expected_physical_launches=3, launch_order=stages)
+    old_names = ["main_kernel"] * 3
+    assert [row["reported_name"] for row in tool.validate_launch_sequence(legacy, old_names)] == old_names
+    current = {**legacy, "kernel_launch_names": dict(zip(stages, ("main_kernel", "main_pipelined_kernel", "main_kernel"), strict=True))}
+    new_names = ["main_kernel", "main_pipelined_kernel", "main_kernel"]
+    assert [row["stage"] for row in tool.validate_launch_sequence(current, new_names)] == stages
+
+
+def test_simulator_launch_sequence_rejects_unknown_wrong_order_and_missing():
+    tool = _validation_tool("audit_simulator")
+    stages = ["q_absorb", "attention", "value_gate"]
+    names = ["main_kernel", "main_pipelined_kernel", "main_kernel"]
+    entry = dict(expected_physical_launches=3, launch_order=stages, kernel_launch_names=dict(zip(stages, names, strict=True)))
+    for invalid in (names[:-1], [names[1], names[0], names[2]], ["main_kernel", "unknown_kernel", "main_kernel"]):
+        with pytest.raises(AssertionError):
+            tool.validate_launch_sequence(entry, invalid)
+    unknown = {**entry, "kernel_launch_names": {**entry["kernel_launch_names"], "attention": "unknown_kernel"}}
+    with pytest.raises(AssertionError):
+        tool.validate_launch_sequence(unknown, names)
+    with pytest.raises(AssertionError):
+        tool.validate_launch_sequence({"expected_physical_launches": 3, "launch_order": stages}, names)

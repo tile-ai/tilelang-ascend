@@ -1,5 +1,28 @@
 # Experimental Gated MLA forward package
 
+## Current A9/A10 evidence, 2026-11-13
+
+The current prefill source is a9a96f9e, reviewed from parent a1723d4/a0e1c997.
+Only this production file changes; the other24 production Python files remain.
+The batch-one, head-aligned, single-KV-block pipeline retains the original precision policy and fallback.
+
+- [Current source-pinned report](benchmark/PREFILL_A9_CURRENT_20261113.md):24 fresh processes,10800 verified samples.
+  FP16 Graph core reaches75.07%/82.86% of qualified FIA(PTO/AscendC);
+  full-chain reaches87.92%/100.54% of the historical projection/FIA/gate composition.
+  These are one-shape Graph ratios, not all-shape or model-throughput acceptance.
+- Directory-parallel tests include original L0:243 core and44 extensions pass, with artifact checks.
+  Core248.367s exceeds the extra local120s target(wrapper1/pytest0/artifacts pass);
+  extensions201.839s. Hosted CI/review remain separate.
+- [BF16 model diagnostic](benchmark/MODEL_BF16_DIAGNOSTIC_20261113.md):
+  FP64 gates pass in the tested B2 fallback fixture, but original cross-official gates still fail identically in parent/candidate.
+  This is not a new B1-pipeline model acceptance pass.
+- Current normal-install8 passed with production sources/CPP matching all formal trials; current hardware6 profiles passed source/CPP/precision checks.
+  Final documentation was added after the tested frozen wheel; A8 simulator records remain historical.
+  [Current validation](benchmark/PREFILL_A9_VALIDATION_20261113.json) separates these states.
+
+Older environment/count/performance paragraphs below retain their original historical scope.
+This current run uses Torch-NPU2.7.1.post4; do not substitute earlier post11/prototype/7c-control measurements.
+
 Dense causal inference with shared compressed C/E cache. This export starts from
 the selected r1.7 implementation and includes the reviewed 2026-11-12 prefill-only
 revision. Of the 25 production Python files, only `gmla/kernels/prefill.py` changes
@@ -217,4 +240,7 @@ Repository CI selects the preserved L0 suite and nine package suites. The local 
 
 ## Reviewed prefill revision
 
-The prefill revision preserves public interfaces, original FP64 budgets and BF16 query/probability residuals. It adds head-aligned whole-tile masks, invocation-local KV residency and query prefetch, exact one-KV-block state identities and backend-safe L0 grains. Generic heads and multi-KV cases retain the guarded recurrence. See [performance/qualification](benchmark/PREFILL_OPTIMIZATION_20261112.md) and [reproduction](benchmark/PREFILL_OPTIMIZATION_TESTING.md); scope-specific speedups are not whole-model throughput claims.
+The prefill revision preserves public interfaces, original FP64 budgets and BF16 query/probability residuals. It adds head-aligned whole-tile masks, invocation-local KV residency and query prefetch, exact one-KV-block state identities and backend-safe L0 grains. Generic heads and multi-KV cases retain the guarded recurrence. See [performance/qualification](benchmark/PREFILL_OPTIMIZATION_20261112.md) and [reproduction](benchmark/PREFILL_OPTIMIZATION_TESTING.md); scope-specific speedups are not whole-model throughput claims. The following revision adds a cross-wave Cube/Vector pipeline for head-aligned single-KV-block shapes at batch one, leaving arithmetic and ordering unchanged and every other shape on the original entry; see [pipeline performance](benchmark/PREFILL_CV_PIPELINE_20261112.md).
+
+
+Current closeout: final core243 after3 additional CPU symbol regressions passed separately from the earlier44 extensions. Core248.367132s exceeds the unchanged local120s target. Normal-install8 and current hardware6 passed; see current report and validation JSON. New PTO/FP16 simulator timed out at900s after prepare/direct; no new-source simulator pass is claimed. BF16 original model cross-official gates remain failed; hosted CI/review require the new published SHA.
