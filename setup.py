@@ -805,6 +805,7 @@ setup(
     ],
     python_requires=">=3.8",
     install_requires=get_requirements(),
+    extras_require={"ascend-scheduler": ["z3-solver>=4.13.0,<4.15.5"]},
     package_data=package_data,
     include_package_data=False,
     ext_modules=[CMakeExtension("TileLangCXX", sourcedir=".")],

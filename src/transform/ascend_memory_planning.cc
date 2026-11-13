@@ -29,10 +29,11 @@
 
 #include "../op/ascend.h"
 #include "../op/builtin.h"
+#include "./common/ascend_constraint.h"
 #include "./common/attr.h"
 #include "./common/collector.h"
 
-#define ASCEND_SHARED_MEM_SIZE 196352
+#define ASCEND_SHARED_MEM_SIZE kAscendA2A3UBBudget
 #define ASCEND_SHARED_DYN_MEM_SIZE 524032
 #define ASCEND_WMMA_MATRIX_A_MEM_SIZE 65536
 #define ASCEND_WMMA_MATRIX_B_MEM_SIZE 65536

@@ -7,10 +7,13 @@
  *
  */
 
+#include "./transform/common/ascend_constraint.h"
 #include "./transform/common/attr.h"
 #include "op/builtin.h"
 #include <tvm/arith/analyzer.h>
 #include <tvm/script/ir_builder/tir/ir.h>
+
+#include <limits>
 
 namespace tvm {
 namespace tl {
@@ -48,9 +51,38 @@ static ForFrame MakeIterVarFrame(std::string name, PrimExpr dom) {
   return ForFrame(n);
 }
 
+static void ValidateLoopAnnotations(const Map<String, ObjectRef> &annotations,
+                                    bool allow_offset = false) {
+  ICHECK(annotations.defined()) << "Loop annotations must be a non-null Map";
+  for (const auto &entry : annotations) {
+    std::string key = entry.first;
+    if (key == "enable_offset" && allow_offset) {
+      const auto *value = entry.second.as<tvm::tir::IntImmNode>();
+      ICHECK(value && value->dtype.is_bool())
+          << "enable_offset must be boolean";
+      continue;
+    }
+    ICHECK(key != kAscendPersistentGuard && key != kAscendPipelineLoopId &&
+           key != kAscendPipelineVersions && key != "num_stages" &&
+           key != "tl_pipeline_order" && key != "tl_pipeline_stage" &&
+           key != "tl_pipeline_sync" && key != "tl_pipeline_group" &&
+           key != "tl_cross_interval" && key != "tl.ascend_task" &&
+           key != "tl.ascend_stage" && key != "enable_offset" &&
+           key != "parallel_loop_layout" &&
+           key.rfind("software_pipeline_", 0) != 0 &&
+           key.rfind("tl.ascend_storage_", 0) != 0 &&
+           key.rfind("tl.ascend_handoff_", 0) != 0 &&
+           key.rfind("tl.ascend_local_sync_", 0) != 0 &&
+           key.rfind("tl.ascend_auto_schedule", 0) != 0)
+        << "Loop annotation '" << key
+        << "' is reserved; use its dedicated supported API";
+  }
+}
+
 ForFrame ParallelFor(Array<PrimExpr> extents,
                      Map<String, ObjectRef> annotations) {
   using namespace tvm::tir;
+  ValidateLoopAnnotations(annotations);
   ObjectPtr<ForFrameNode> n = make_object<ForFrameNode>();
   n->vars.reserve(extents.size());
   n->doms.reserve(extents.size());
@@ -66,9 +98,18 @@ ForFrame ParallelFor(Array<PrimExpr> extents,
     for (int i = n - 1; i >= 0; --i) {
       Range dom = doms[i];
       Var var = vars[i];
+      // Keep the legacy coalesced-width hint on every generated dimension;
+      // new user metadata belongs to the outermost loop only.
+      Map<String, ObjectRef> loop_annotations;
+      if (i == 0) {
+        loop_annotations = annotations;
+      } else if (annotations.count("coalesced_width")) {
+        loop_annotations.Set("coalesced_width",
+                             annotations.at("coalesced_width"));
+      }
       body =
           For(var, dom->min, dom->extent, ForKind::kParallel, std::move(body),
-              /*thread_binding=*/NullOpt, /*annotations=*/annotations);
+              /*thread_binding=*/NullOpt, /*annotations=*/loop_annotations);
     }
     return body;
   };
@@ -78,8 +119,10 @@ ForFrame ParallelFor(Array<PrimExpr> extents,
 ForFrame PipelinedFor(PrimExpr start, PrimExpr stop, int num_stages,
                       Array<PrimExpr> order, Array<PrimExpr> stages,
                       Array<Array<PrimExpr>> sync,
-                      Array<Array<PrimExpr>> groups, int cross_interval) {
+                      Array<Array<PrimExpr>> groups, int cross_interval,
+                      Map<String, ObjectRef> annotations) {
   using namespace tvm::tir;
+  ValidateLoopAnnotations(annotations, true);
   ObjectPtr<ForFrameNode> n = make_object<ForFrameNode>();
   DataType dtype = stop.dtype();
   n->vars.push_back(Var("v", dtype));
@@ -89,7 +132,7 @@ ForFrame PipelinedFor(PrimExpr start, PrimExpr stop, int num_stages,
     ICHECK_EQ(vars.size(), doms.size());
     int n = vars.size();
     ICHECK(n == 1);
-    Map<String, ObjectRef> anno;
+    Map<String, ObjectRef> anno = annotations;
     if (num_stages > 0)
       anno.Set("num_stages", PrimExpr(num_stages));
     if (order.size() > 0)
@@ -111,66 +154,103 @@ ForFrame PipelinedFor(PrimExpr start, PrimExpr stop, int num_stages,
 }
 
 ForFrame PersistentFor(const Array<PrimExpr> &domain, const PrimExpr &wave_size,
-                       const PrimExpr &index, PrimExpr group_size) {
+                       const PrimExpr &index, PrimExpr group_size,
+                       int num_stages, Map<String, ObjectRef> annotations) {
   using namespace tvm::tir;
-  ICHECK(!domain.empty());
+  ValidateLoopAnnotations(annotations);
+  ICHECK(!domain.empty()) << "T.Persistent domain must not be empty";
+  ICHECK_GE(num_stages, 0) << "T.Persistent num_stages must be nonnegative";
+  auto validate_integer = [](const PrimExpr &value, const char *name) {
+    DataType dtype = value.dtype();
+    ICHECK((dtype.is_int() || dtype.is_uint()) && !dtype.is_bool() &&
+           dtype.is_scalar() && dtype.bits() <= 64 &&
+           !(dtype.is_uint() && dtype.bits() == 64))
+        << "T.Persistent " << name << " must be an integer scalar, but got "
+        << dtype << "; scheduling arithmetic requires lossless int64 promotion";
+  };
+  validate_integer(wave_size, "wave_size");
+  validate_integer(index, "index");
+  validate_integer(group_size, "group_size");
   arith::Analyzer validation_analyzer;
   for (const auto &extent : domain) {
+    validate_integer(extent, "domain extents");
     ICHECK(!validation_analyzer.CanProveLess(extent, 1))
         << "T.Persistent domain extents must be positive, but got " << extent;
   }
   ICHECK(!validation_analyzer.CanProveLess(wave_size, 1))
       << "T.Persistent wave_size must be positive, but got " << wave_size;
-  ICHECK(!validation_analyzer.CanProveLess(index, 0) &&
-         !validation_analyzer.CanProveGreaterEqual(index - wave_size, 0))
+  PrimExpr wide_wave_size = cast(DataType::Int(64), wave_size);
+  PrimExpr wide_index = cast(DataType::Int(64), index);
+  ICHECK(!validation_analyzer.CanProveLess(wide_index, 0) &&
+         !validation_analyzer.CanProve(wide_index >= wide_wave_size))
       << "T.Persistent index must satisfy 0 <= index < wave_size, but got "
       << "index=" << index << " and wave_size=" << wave_size;
   ICHECK(!validation_analyzer.CanProveLess(group_size, 1))
       << "T.Persistent group_size must be positive, but got " << group_size;
-  PrimExpr last_extent = domain[domain.size() - 1];
-  PrimExpr effective_group_size = min(group_size, last_extent);
-  PrimExpr group_remainder =
-      validation_analyzer.Simplify(truncmod(last_extent, effective_group_size));
-  if (const int64_t *remainder = as_const_int(group_remainder)) {
-    ICHECK_EQ(*remainder, 0)
-        << "T.Persistent last domain extent must be divisible by "
-        << "min(group_size, domain[-1]), but got domain[-1]=" << last_extent
-        << " and group_size=" << group_size;
-  }
+  // Promote operands before multiplication or ceil division. Coordinate vars
+  // retain the caller's dtype; only scheduling arithmetic is widened.
+  PrimExpr last_extent = cast(DataType::Int(64), domain[domain.size() - 1]);
+  PrimExpr effective_group_size =
+      min(cast(DataType::Int(64), group_size), last_extent);
+  bool needs_tile_guard = !validation_analyzer.CanProveEqual(
+      truncmod(last_extent, effective_group_size), 0);
   ObjectPtr<ForFrameNode> n = make_object<ForFrameNode>();
   n->vars.reserve(domain.size());
   n->doms.reserve(domain.size());
-  PrimExpr domain_size = domain[0];
-  for (int i = 1; i < domain.size(); i++) {
-    domain_size *= domain[i];
-  }
-
-  auto waves = ceildiv(domain_size, wave_size);
-  auto loop_var = Var("w", waves.dtype());
-  group_size = min(group_size, domain[domain.size() - 1]);
-  Array<Var> coord_vars;
-
+  group_size = effective_group_size;
   for (int i = 0; i < domain.size(); ++i) {
     DataType dtype = domain[i].dtype();
     Var coord("v" + std::to_string(i), dtype);
-    coord_vars.push_back(coord);
     n->vars.push_back(coord);
     n->doms.push_back(Range(make_const(dtype, 0), domain[i]));
   }
 
   Array<PrimExpr> grouped_domain;
-  grouped_domain.push_back(truncdiv(domain[domain.size() - 1], group_size));
+  auto positive_ceildiv = [](PrimExpr a, PrimExpr b) {
+    // Unlike (a + b - 1) / b, this does not overflow before division.
+    return truncdiv(a, b) + cast(DataType::Int(64), truncmod(a, b) != 0);
+  };
+  grouped_domain.push_back(positive_ceildiv(last_extent, group_size));
   for (int i = 0; i < domain.size() - 1; ++i) {
-    grouped_domain.push_back(domain[i]);
+    grouped_domain.push_back(cast(DataType::Int(64), domain[i]));
   }
   grouped_domain.push_back(group_size);
+  PrimExpr padded_size = grouped_domain[0];
+  for (int i = 1; i < grouped_domain.size(); ++i) {
+    PrimExpr lhs_value = validation_analyzer.Simplify(padded_size);
+    PrimExpr rhs_value = validation_analyzer.Simplify(grouped_domain[i]);
+    const int64_t *lhs = as_const_int(lhs_value);
+    const int64_t *rhs = as_const_int(rhs_value);
+    ICHECK(!lhs || !rhs || *lhs <= std::numeric_limits<int64_t>::max() / *rhs)
+        << "T.Persistent padded domain size must fit int64";
+    padded_size *= grouped_domain[i];
+  }
+  auto waves = positive_ceildiv(padded_size, wide_wave_size);
+  PrimExpr constant_waves = validation_analyzer.Simplify(waves);
+  PrimExpr constant_wave_size = validation_analyzer.Simplify(wide_wave_size);
+  const int64_t *wave_count_value = as_const_int(constant_waves);
+  const int64_t *wave_size_value = as_const_int(constant_wave_size);
+  ICHECK(!wave_count_value || !wave_size_value ||
+         *wave_count_value - 1 <=
+             (std::numeric_limits<int64_t>::max() - (*wave_size_value - 1)) /
+                 *wave_size_value)
+      << "T.Persistent padded wave index range must fit int64";
+  auto loop_var = Var("w", waves.dtype());
+  bool guarded_positive =
+      num_stages > 0 && (needs_tile_guard || !validation_analyzer.CanProveEqual(
+                                                 padded_size, wide_wave_size));
 
   n->f_make_for_loop = [=](const Array<Var> &vars, const Array<Range> &doms,
                            const Stmt &body) -> Stmt {
     ICHECK_EQ(vars.size(), doms.size());
-    Map<String, ObjectRef> anno;
+    Map<String, ObjectRef> anno = annotations;
+    if (num_stages > 0) {
+      anno.Set("num_stages", PrimExpr(num_stages));
+      if (guarded_positive)
+        anno.Set(kAscendPersistentGuard, Bool(true));
+    }
     Array<PrimExpr> idxs(grouped_domain.size(), PrimExpr());
-    PrimExpr global_index = loop_var * wave_size + index;
+    PrimExpr global_index = loop_var * wide_wave_size + wide_index;
     PrimExpr rem = global_index;
 
     for (int i = grouped_domain.size() - 1; i >= 1; --i) {
@@ -180,30 +260,44 @@ ForFrame PersistentFor(const Array<PrimExpr> &domain, const PrimExpr &wave_size,
     idxs.Set(0, rem);
 
     auto out_if = tvm::tir::IfThenElse(
-        domain_size <= global_index,
+        padded_size <= global_index,
         tvm::tir::Evaluate(
             tvm::tir::Call(DataType::Handle(), tvm::tl::loop_break(), {})),
         Stmt());
 
     arith::Analyzer analyzer;
     Stmt new_body = body;
-    if (analyzer.CanProveGreaterEqual(waves, 2)) {
-      new_body = SeqStmt({out_if, body});
-    } else if (!analyzer.CanProveEqual(domain_size, wave_size)) {
-      // A unit loop can be removed during lowering, so a loop_break guard
-      // would become an invalid top-level C++ break. Predicate the tile body
-      // for partial first waves and symbolic wave counts instead. Under
-      // Persistent's 0 <= index < wave_size contract, no guard is needed when
-      // the domain is provably exactly one full wave.
-      new_body = tvm::tir::IfThenElse(global_index < domain_size, body, Stmt());
+    if (num_stages > 0) {
+      PrimExpr valid = global_index < padded_size;
+      if (needs_tile_guard) {
+        PrimExpr last_coordinate = idxs[0] * group_size + idxs[vars.size()];
+        valid = valid && last_coordinate < last_extent;
+      }
+      if (guarded_positive)
+        new_body = tvm::tir::IfThenElse(valid, new_body, Stmt());
+    } else {
+      if (needs_tile_guard) {
+        PrimExpr last_coordinate = idxs[0] * group_size + idxs[vars.size()];
+        new_body = tvm::tir::IfThenElse(last_coordinate < last_extent, new_body,
+                                        Stmt());
+      }
+      if (analyzer.CanProveGreaterEqual(waves, 2)) {
+        new_body = SeqStmt({out_if, new_body});
+      } else if (!analyzer.CanProveEqual(padded_size, wide_wave_size)) {
+        new_body =
+            tvm::tir::IfThenElse(global_index < padded_size, new_body, Stmt());
+      }
     }
-    Stmt outer =
-        For(loop_var, 0, waves, ForKind::kSerial, new_body, NullOpt, anno);
+    Stmt outer = For(loop_var, make_const(loop_var.dtype(), 0), waves,
+                     ForKind::kSerial, new_body, NullOpt, anno);
     for (int i = 0; i < vars.size() - 1; ++i) {
-      outer = tvm::tir::LetStmt(vars[i], idxs[i + 1], outer);
+      outer =
+          tvm::tir::LetStmt(vars[i], cast(vars[i].dtype(), idxs[i + 1]), outer);
     }
     outer = tvm::tir::LetStmt(vars[vars.size() - 1],
-                              idxs[0] * group_size + idxs[vars.size()], outer);
+                              cast(vars[vars.size() - 1].dtype(),
+                                   idxs[0] * group_size + idxs[vars.size()]),
+                              outer);
     return outer;
   };
 
@@ -365,8 +459,31 @@ KernelLaunchFrame KernelLaunch(Array<PrimExpr> grid_size,
 TVM_REGISTER_NODE_TYPE(KernelLaunchFrameNode);
 
 TVM_REGISTER_GLOBAL("tl.Parallel").set_body_typed(ParallelFor);
-TVM_REGISTER_GLOBAL("tl.Pipelined").set_body_typed(PipelinedFor);
-TVM_REGISTER_GLOBAL("tl.Persistent").set_body_typed(PersistentFor);
+TVM_REGISTER_GLOBAL("tl.Pipelined").set_body([](TVMArgs args, TVMRetValue *rv) {
+  ICHECK(args.size() == 8 || args.size() == 9)
+      << "tl.Pipelined expects 8 legacy arguments or 9 arguments with "
+         "annotations";
+  Map<String, ObjectRef> annotations;
+  if (args.size() == 9) {
+    annotations = args[8].operator Map<String, ObjectRef>();
+  }
+  *rv = PipelinedFor(args[0], args[1], args[2], args[3], args[4], args[5],
+                     args[6], args[7], annotations);
+});
+TVM_REGISTER_GLOBAL("tl.Persistent")
+    .set_body([](TVMArgs args, TVMRetValue *rv) {
+      ICHECK(args.size() == 4 || args.size() == 6)
+          << "tl.Persistent expects 4 legacy arguments or 6 arguments with "
+             "stages and annotations";
+      int num_stages = 0;
+      Map<String, ObjectRef> annotations;
+      if (args.size() == 6) {
+        num_stages = args[4];
+        annotations = args[5].operator Map<String, ObjectRef>();
+      }
+      *rv = PersistentFor(args[0], args[1], args[2], args[3], num_stages,
+                          annotations);
+    });
 TVM_REGISTER_GLOBAL("tl.KernelLaunch").set_body_typed(KernelLaunch);
 
 class WarpSpecializeFrameNode : public TIRFrameNode {
