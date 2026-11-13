@@ -192,6 +192,52 @@ def device_codegen_without_compile(device_mod: tvm.IRModule, target: Target) -> 
     return device_mod
 
 
+def _validate_bitwise_xor_dtypes(mod: tvm.IRModule, model: str, platform: str) -> None:
+    """Reject int32/uint32 XOR operands on targets/configs where they fail.
+
+    int32/uint32 are usable only on PTO A5 (the ``a5/TXor.hpp`` static assert
+    accepts them). AscendC and PTO A2/A3 reject them in the backend; PTO A5
+    accepts them at the instruction level but crashes OptimizeForTarget when
+    ``tl.ascend_memory_planning`` is enabled. Enforce this here — before
+    OptimizeForTarget — so unsupported combinations fail with a clear diagnostic
+    instead of crashing or relying on the backend compile failure. This also
+    covers calls that bypass the public ``bitwise_xor`` front-end.
+    """
+    memory_planning = bool(tilelang.transform.get_pass_context().config.get("tl.ascend_memory_planning", False))
+    # int32/uint32 are only permitted on PTO A5 with memory planning disabled.
+    allow_int32 = model == "pto" and platform == "A5" and not memory_planning
+
+    xor_op = tir.op.Op.get("tl.ascend_bitwise_xor")
+    access_ptr_op = tir.op.Op.get("tir.tvm_access_ptr")
+
+    def element_dtype(expr):
+        if not isinstance(expr, tir.Call) or expr.op != access_ptr_op:
+            return None
+        if not expr.args or not isinstance(expr.args[0], tir.Call):
+            return None
+        return str(expr.args[0].dtype).split("x")[0]
+
+    offenders = []
+
+    def visit(node):
+        if isinstance(node, tir.Call) and node.op == xor_op:
+            offenders.append(node)
+
+    for _, func in mod.functions_items():
+        tir.stmt_functor.post_order_visit(func.body, visit)
+
+    for call in offenders:
+        for i in range(3):  # dst, src0, src1
+            dtype = element_dtype(call.args[i])
+            if dtype in ("int32", "uint32") and not allow_int32:
+                raise ValueError(
+                    "tilelang.language.bitwise_xor: unsupported operand dtype "
+                    f"(int32/uint32) on target {model}/{platform}; "
+                    "int32/uint32 are only supported on PTO A5 with "
+                    "tl.ascend_memory_planning disabled."
+                )
+
+
 def lower(
     func_or_mod: tir.PrimFunc | tvm.IRModule,
     target: str | Target = "auto",
@@ -224,6 +270,10 @@ def lower(
         mod[gvar] = f.with_attr("npu_platform", platform)
 
     target = tvm.target.Target({"kind": "llvm", "model": target})
+
+    # Target-aware dtype validation must run before OptimizeForTarget, where
+    # unsupported combinations could otherwise reach the backend compile path.
+    _validate_bitwise_xor_dtypes(mod, target.model, platform)
 
     # Phase 1: Lower and legalize the IR
     mod = LowerAndLegalize(mod, target)

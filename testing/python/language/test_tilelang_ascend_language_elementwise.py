@@ -1991,6 +1991,114 @@ def test_bitwise_xor_uint8_slice_sentinel(dtype, shape):
     assert_close_npu(c.cpu(), ref, dtype, rtol=0, atol=0)
 
 
+@pytest.mark.parametrize("dtype", ["int64", "uint64", "float16", "float32", "float64"])
+def test_bitwise_xor_unsupported_dtype_raises(dtype):
+    """Non-integer and 64-bit operands are rejected by the front-end."""
+    src0 = tir.decl_buffer((64, 128), dtype)
+    src1 = tir.decl_buffer((64, 128), dtype)
+    dst = tir.decl_buffer((64, 128), dtype)
+    with pytest.raises(ValueError, match="bitwise_xor: unsupported operand dtype"):
+        T.tile.bitwise_xor(dst, src0, src1)
+
+
+@pytest.mark.parametrize("dtype", ["int32", "uint32"])
+def test_bitwise_xor_int32_uint32_allowed(dtype):
+    """int32/uint32 pass the front-end; the lowering enforces target limits."""
+    src0 = tir.decl_buffer((64, 128), dtype)
+    src1 = tir.decl_buffer((64, 128), dtype)
+    dst = tir.decl_buffer((64, 128), dtype)
+    T.tile.bitwise_xor(dst, src0, src1)
+
+
+def test_bitwise_xor_operand_dtype_raises():
+    """Each of dst/src0/src1 is validated independently."""
+    src16 = tir.decl_buffer((64, 128), "int16")
+    src64 = tir.decl_buffer((64, 128), "int64")
+    with pytest.raises(ValueError, match="bitwise_xor: unsupported operand dtype"):
+        T.tile.bitwise_xor(src64, src16, src16)
+    with pytest.raises(ValueError, match="bitwise_xor: unsupported operand dtype"):
+        T.tile.bitwise_xor(src16, src64, src16)
+    with pytest.raises(ValueError, match="bitwise_xor: unsupported operand dtype"):
+        T.tile.bitwise_xor(src16, src16, src64)
+
+
+def test_bitwise_xor_unsupported_dtype_buffer_region_raises():
+    """BufferRegion operands route through the same dtype validation."""
+    buf = tir.decl_buffer((64, 128), "int64")
+    with pytest.raises(ValueError, match="bitwise_xor: unsupported operand dtype"):
+        T.tile.bitwise_xor(buf[0:64, 0:128], buf[0:64, 0:128], buf[0:64, 0:128])
+
+
+def _direct_xor_intrin(dst_dtype, src0_dtype, src1_dtype):
+    dst = tir.decl_buffer((64,), dst_dtype, scope="shared.ub")
+    src0 = tir.decl_buffer((64,), src0_dtype, scope="shared.ub")
+    src1 = tir.decl_buffer((64,), src1_dtype, scope="shared.ub")
+    xor = tir.call_intrin(
+        "handle",
+        tir.op.Op.get("tl.ascend_bitwise_xor"),
+        dst.access_ptr("w"),
+        src0.access_ptr("r"),
+        src1.access_ptr("r"),
+    )
+    block = tir.Block([], [], [], "root", tir.Evaluate(xor), alloc_buffers=[dst, src0, src1])
+    return tilelang.tvm.IRModule({"main": tir.PrimFunc([], tir.BlockRealize([], True, block))})
+
+
+@pytest.mark.parametrize("dtype", ["int32", "uint32"])
+def test_bitwise_xor_direct_intrinsic_lowering_rejects(dtype):
+    """The lowering check catches int32/uint32 even when bypassing the front-end."""
+    with pytest.raises(ValueError, match="only supported on PTO A5"):
+        tilelang.lower(_direct_xor_intrin(dtype, dtype, dtype), target="pto", platform="A3")
+
+
+@pytest.mark.parametrize("bad_operand", ["src0", "src1"])
+def test_bitwise_xor_direct_intrinsic_lowering_rejects_src(bad_operand):
+    """The lowering check validates src0/src1, not just dst."""
+    dtypes = ["int16", "int16", "int16"]
+    dtypes[1 if bad_operand == "src0" else 2] = "int32"
+    with pytest.raises(ValueError, match="only supported on PTO A5"):
+        tilelang.lower(_direct_xor_intrin(*dtypes), target="pto", platform="A3")
+
+
+@pytest.mark.parametrize(
+    ("target", "platform"),
+    [("pto", "A2"), ("pto", "A3"), ("ascendc", "A3")],
+)
+def test_bitwise_xor_int32_rejected_before_codegen(target, platform):
+    """int32 is unsupported on AscendC and PTO A2/A3 (rejected before codegen)."""
+    func = bitwise_xor(1024, 1024, 128, 256, dtype="int32")
+    with pytest.raises(ValueError, match="only supported on PTO A5"):
+        tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target, platform=platform)
+
+
+def test_bitwise_xor_int32_pto_a5_memory_planning_rejected():
+    """int32 on PTO A5 crashes OptimizeForTarget when memory planning is on."""
+    func = bitwise_xor(1024, 1024, 128, 256, dtype="int32")
+    with pytest.raises(ValueError, match="only supported on PTO A5"):
+        tilelang.compile(
+            func,
+            out_idx=[-1],
+            pass_configs={tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True},
+            target="pto",
+            platform="A5",
+        )
+
+
+def test_bitwise_xor_int32_pto_a5_accepted():
+    """int32 is accepted on PTO A5 at the lowering/codegen stage only.
+
+    Uses ``tilelang.lower`` (not ``tilelang.compile``) and an explicit local
+    PassContext with memory planning disabled, so the A5 kernel is validated
+    down to codegen without building the JIT adapter or dlopen-ing the
+    cross-compiled A5 shared library on the host NPU.
+    """
+    func = bitwise_xor(1024, 1024, 128, 256, dtype="int32")
+    with tilelang.tvm.transform.PassContext(config={tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: False}):
+        artifact = tilelang.lower(func, target="pto", platform="A5")
+        assert artifact.kernel_source
+        assert "TXOR" in artifact.kernel_source or "TXor" in artifact.kernel_source
+
+
 def block_reduce_max(M, N, block_M, block_N, repeat, mask, dstRepStride, srcBlkStride, srcRepStride, dataBlockNum, dtype="float16"):
     m_num = M // block_M
     n_num = N // block_N
