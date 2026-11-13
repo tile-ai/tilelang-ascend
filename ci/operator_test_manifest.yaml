@@ -112,6 +112,7 @@ mappings:
 
   # examples/kpool
   examples/kpool/example_glm53_kpool_compress.py: examples/kpool/test_example_glm53_kpool_compress.py
+  examples/kpool/example_glm53_kpool_fp8_mqa_logits.py: examples/kpool/test_example_glm53_kpool_fp8_mqa_logits.py
 
   # examples/lightning_indexer
   examples/lightning_indexer/example_lightning_indexer.py: examples/lightning_indexer/test_example_lightning_indexer.py
