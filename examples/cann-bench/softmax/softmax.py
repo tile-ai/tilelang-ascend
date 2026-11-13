@@ -20,7 +20,8 @@ Algorithm:
 
 Reference: torch.nn.functional.softmax (golden_softmax in test_softmax.py)
 
-Interface: softmax_impl(x, dim) -> y  (x: 1~8D fp16/fp32/bf16)
+Schema: softmax(x, dim) -> y  (x: 1~8D fp16/fp32/bf16)
+Internal host: softmax_impl(x, dim) -> y
 """
 
 import torch
@@ -915,6 +916,11 @@ def softmax_impl(x, dim=-1):
     return y
 
 
+def softmax(x, dim=-1):
+    """cann-bench schema entry: delegates to softmax_impl."""
+    return softmax_impl(x, dim=dim)
+
+
 # ----------------------------------------------------------------------------
 # CI smoke test (examples/bench_test.sh runs this file directly and requires
 # "Kernel Output Match!" or "TEST PASSED!" in the output, same as the
@@ -933,7 +939,7 @@ if __name__ == "__main__":
         ((2, 3, 128), torch.bfloat16, 1),  # interior dim -> 3D kernel
     ):
         x = (torch.rand(*shape) * 2 - 1).to(dtype)
-        y = softmax_impl(x.npu(), dim=dim).cpu()
+        y = softmax(x.npu(), dim=dim).cpu()
         ref = F.softmax(x.float(), dim=dim).to(dtype)
         atol, rtol = {
             torch.float16: (1e-3, 1e-3),

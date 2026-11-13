@@ -40,7 +40,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 
 import tilelang  # noqa: E402
-from softmax import softmax_impl  # noqa: E402
+from softmax import softmax  # noqa: E402
 
 _DTYPE_MAP = {
     torch.float16: "float16",
@@ -319,7 +319,7 @@ def _run_case(name, shape, dtype_torch, dim, value_range, level):
 
         # Run kernel on NPU
         x_npu = x_cpu.npu()
-        y = softmax_impl(x_npu, dim=dim).cpu()
+        y = softmax(x_npu, dim=dim).cpu()
 
         # Compute golden (FP64) and native (same precision) on CPU
         ref = golden_softmax(x_cpu, dim=dim)
@@ -350,11 +350,12 @@ L0_CASES = [
     (1, [1024, 1024], torch.float16, -1, (-1, 1)),  # 2D last-dim baseline fp16
     (2, [2048, 2048], torch.float32, -1, (-2, 2)),  # 2D last-dim baseline fp32
     (3, [4096, 4096], torch.bfloat16, -1, (-3, 3)),  # 2D last-dim baseline bf16
-    (4, [8192, 8192], torch.float16, 0, (-10, 10)),  # dim=0 kernel path
+    ("d0_gate", [2048, 2048], torch.float16, 0, (-10, 10)),  # small dim=0 gate
     (9, [127, 257, 1023], torch.bfloat16, -2, (-0.5, 0.5)),  # interior dim -> 3D kernel
 ]
 
 L1_CASES = [
+    (4, [8192, 8192], torch.float16, 0, (-10, 10)),  # official dim=0 case, moved out of L0
     (5, [8192, 8192], torch.float32, 1, (-100, 100)),
     (6, [31, 67, 127, 257], torch.bfloat16, 2, (-5, 5)),
     (7, [1023, 2047], torch.float16, -1, (-0.1, 0.1)),  # unaligned
@@ -383,6 +384,35 @@ BOUNDARY_SMALL_CASES = [
     ("small_2x3", [2, 3], torch.bfloat16, -1, (-1, 1)),
 ]
 
+# Coverage manifest (dimension -> number of L1/L2/Boundary cases covering it).
+COVERAGE_CATEGORY = "Vector"
+COVERAGE_MANIFEST = {
+    "D-DTYPE-fp16": 8,
+    "D-DTYPE-fp32": 7,
+    "D-DTYPE-bf16": 5,
+    "D-SHAPE-2D": 13,
+    "D-SHAPE-3D": 2,
+    "D-SHAPE-4D": 2,
+    "D-SHAPE-5D": 3,
+    "D-SHAPE-ALIGNED": 2,
+    "D-SHAPE-UNALIGNED": 16,
+    "D-SHAPE-PRIME": 3,
+    "D-SHAPE-EDGE": 4,
+    "D-PARAM-dim": 20,
+    "D-VALRANGE-S": 8,
+    "D-VALRANGE-M": 5,
+    "D-VALRANGE-L": 4,
+    "D-VALRANGE-ASYM": 4,
+    "D-SPECIAL-INF": 1,
+    "D-SPECIAL-NAN": 1,
+    "D-SPECIAL-ZERO": 1,
+    "D-SPECIAL-DBOUND": 1,
+    "D-EXC-DTYPE": 1,
+    "D-EXC-PARAM": 2,
+    "D-EXC-TYPE": 1,
+}
+COVERAGE_NA = {}
+
 
 # ========== L0 (gate) ==========
 def test_softmax_l0():
@@ -408,10 +438,10 @@ def test_softmax_l2():
         return False
 
     cases = [
-        ("unsupported_dtype_int32", lambda: softmax_impl(torch.ones(64, 128, dtype=torch.int32).npu(), dim=-1)),
-        ("dim_out_of_range", lambda: softmax_impl(torch.randn(64, 128, dtype=torch.float16).npu(), dim=5)),
-        ("dim_negative_out_of_range", lambda: softmax_impl(torch.randn(64, 128, dtype=torch.float16).npu(), dim=-3)),
-        ("none_input", lambda: softmax_impl(None, dim=-1)),
+        ("unsupported_dtype_int32", lambda: softmax(torch.ones(64, 128, dtype=torch.int32).npu(), dim=-1)),
+        ("dim_out_of_range", lambda: softmax(torch.randn(64, 128, dtype=torch.float16).npu(), dim=5)),
+        ("dim_negative_out_of_range", lambda: softmax(torch.randn(64, 128, dtype=torch.float16).npu(), dim=-3)),
+        ("none_input", lambda: softmax(None, dim=-1)),
     ]
     failures = [desc for desc, fn in cases if not _expect_reject(desc, fn)]
     assert not failures, f"L2 negative tests failed for: {failures}"
