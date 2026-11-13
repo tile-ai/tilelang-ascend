@@ -22,6 +22,9 @@
  * \brief Plan the software pipeline
  */
 
+#include <unordered_map>
+#include <unordered_set>
+
 #include <tvm/arith/analyzer.h>
 #include <tvm/tir/analysis.h>
 #include <tvm/tir/builtin.h>
@@ -269,6 +272,268 @@ private:
   PrimExpr conditonal_expr;
 };
 
+/*!
+ * \brief Check whether a LetStmt binding can be inlined into a pipelined body.
+ *
+ * Pipeline stages are scheduled independently, so a binding that scopes the
+ * whole body cannot survive staging. A binding may be inlined only when
+ * duplicating its evaluation into several stages cannot change the result:
+ * pure scalar arithmetic and reads from global (read-only for this kernel)
+ * buffers qualify. Shared-memory reads and opaque calls do not.
+ */
+class PipelineLetInlinable : public ExprVisitor {
+public:
+  bool safe{true};
+
+private:
+  void VisitExpr_(const BufferLoadNode *op) final {
+    if (op->buffer.scope() != "global") {
+      safe = false;
+    }
+    ExprVisitor::VisitExpr_(op);
+  }
+
+  void VisitExpr_(const CallNode *op) final {
+    if (op->op.same_as(builtin::tvm_access_ptr()) ||
+        op->op.same_as(builtin::address_of()) ||
+        op->op.same_as(builtin::call_extern())) {
+      safe = false;
+      return;
+    }
+    if (const auto *op_node = op->op.as<OpNode>()) {
+      const std::string op_name = op_node->name;
+      if (op_name.rfind("tl.", 0) == 0) {
+        safe = false;
+        return;
+      }
+    }
+    ExprVisitor::VisitExpr_(op);
+  }
+};
+
+/*!
+ * \brief Peel and inline the LetStmt bindings that wrap a pipelined loop body.
+ *
+ * TVMScript turns a scalar assignment in the body into a LetStmt that scopes
+ * every stage. Inlining keeps the binding's value available to each stage.
+ */
+Stmt InlinePipelineLetBindings(Stmt body) {
+  Map<Var, PrimExpr> subst;
+  while (const auto *let = body.as<LetStmtNode>()) {
+    PipelineLetInlinable check;
+    check(let->value);
+    ICHECK(check.safe)
+        << "Pipeline_Planning: cannot pipeline this loop because its body "
+           "starts with a LetStmt binding `"
+        << let->var->name_hint
+        << "` whose value is not a pure index expression. Inline the binding "
+           "manually or move it outside T.Pipelined.";
+    subst.Set(let->var, let->value);
+    body = let->body;
+  }
+  if (!subst.empty()) {
+    body = Substitute(body, subst);
+  }
+  return body;
+}
+
+/*!
+ * \brief Whether a statement only writes a scalar (local.var) buffer.
+ *
+ * A T.alloc_var assignment such as ``idx[0] = k`` must run in the same stage
+ * as the copy that consumes it. Stage assignment places non-copy stages last,
+ * so leaving it standalone makes a stage-0 copy depend on a later stage.
+ */
+const BufferStoreNode *GetLocalVarStore(const Stmt &stmt) {
+  Stmt body = stmt;
+  while (const auto *realize = body.as<BlockRealizeNode>()) {
+    body = realize->block->body;
+  }
+  while (const auto *block = body.as<BlockNode>()) {
+    body = block->body;
+  }
+  while (const auto *attr = body.as<AttrStmtNode>()) {
+    body = attr->body;
+  }
+  const auto *store = body.as<BufferStoreNode>();
+  if (store != nullptr && store->buffer.scope() == "local.var") {
+    return store;
+  }
+  return nullptr;
+}
+
+/*! \brief Replace reads of an inlined local.var buffer with its stored value.
+ */
+class LocalVarLoadReplacer : public StmtExprMutator {
+public:
+  explicit LocalVarLoadReplacer(Map<Var, PrimExpr> subst)
+      : subst_(std::move(subst)) {}
+
+private:
+  PrimExpr VisitExpr_(const BufferLoadNode *op) final {
+    auto it = subst_.find(op->buffer->data);
+    if (it != subst_.end() && op->indices.size() == 1) {
+      return (*it).second;
+    }
+    return StmtExprMutator::VisitExpr_(op);
+  }
+
+  Map<Var, PrimExpr> subst_;
+};
+
+/*! \brief Collect local.var buffers read by a statement. */
+class LocalVarReadCollector : public StmtExprVisitor {
+public:
+  std::unordered_set<const VarNode *> reads;
+
+private:
+  void VisitExpr_(const BufferLoadNode *op) final {
+    if (op->buffer.scope() == "local.var") {
+      reads.insert(op->buffer->data.get());
+    }
+    StmtExprVisitor::VisitExpr_(op);
+  }
+};
+
+/*!
+ * rief Count every store to a local.var buffer, including nested ones.
+ *
+ * Inlining a top-level assignment is only safe when no conditional or
+ * loop-nested assignment exists; otherwise the nested write becomes dead and
+ * consumers always see the top-level value.
+ */
+class LocalVarStoreCollector : public StmtExprVisitor {
+public:
+  std::unordered_map<const VarNode *, int> counts;
+
+private:
+  void VisitStmt_(const BufferStoreNode *op) final {
+    if (op->buffer.scope() == "local.var") {
+      counts[op->buffer->data.get()]++;
+    }
+    StmtExprVisitor::VisitStmt_(op);
+  }
+};
+
+/*! rief Whether a statement only touches local.var scalar buffers. */
+class ScalarOnlyStmtCheck : public StmtExprVisitor {
+public:
+  bool scalar_only{true};
+
+private:
+  void VisitStmt_(const BufferStoreNode *op) final {
+    if (op->buffer.scope() != "local.var") {
+      scalar_only = false;
+    }
+    StmtExprVisitor::VisitStmt_(op);
+  }
+
+  void VisitExpr_(const CallNode *op) final {
+    if (op->op.same_as(builtin::tvm_access_ptr()) ||
+        op->op.same_as(builtin::address_of()) ||
+        op->op.same_as(builtin::call_extern())) {
+      scalar_only = false;
+      return;
+    }
+    if (const auto *op_node = op->op.as<OpNode>()) {
+      const std::string name = op_node->name;
+      if (name.rfind("tl.", 0) == 0) {
+        scalar_only = false;
+        return;
+      }
+    }
+    StmtExprVisitor::VisitExpr_(op);
+  }
+};
+
+bool IsScalarOnlyStmt(const Stmt &stmt) {
+  ScalarOnlyStmtCheck check;
+  check(stmt);
+  return check.scalar_only;
+}
+
+/*!
+ * rief Group scalar statements with the next real stage.
+ *
+ * A SeqStmt cannot express this group: TVM flattens nested SeqStmts. An
+ * AttrStmt keeps the group as one pipeline stage while preserving the order
+ * of the scalar stores.
+ */
+Array<Stmt> GroupScalarPrelude(Array<Stmt> stmts) {
+  Array<Stmt> out;
+  Array<Stmt> pending;
+  for (const Stmt &stmt : stmts) {
+    if (IsScalarOnlyStmt(stmt)) {
+      pending.push_back(stmt);
+      continue;
+    }
+    if (pending.empty()) {
+      out.push_back(stmt);
+      continue;
+    }
+    pending.push_back(stmt);
+    out.push_back(AttrStmt(make_zero(DataType::Int(32)), "tl_pipeline_prelude",
+                           Integer(0), SeqStmt(pending)));
+    pending = Array<Stmt>();
+  }
+  for (const Stmt &stmt : pending) {
+    out.push_back(stmt);
+  }
+  return out;
+}
+
+/*!
+ * \brief Inline single-assignment scalar stores into their consumers.
+ *
+ * CrossCorePipeline leaves ``idx[0] = k`` as its own stage before the copy
+ * that uses it. Stage assignment places non-copy stages last, so the copy
+ * would depend on a later stage. Inlining turns the scalar into an SSA value
+ * and removes the stage. A SeqStmt wrapper cannot be used here:
+ * TVM flattens nested SeqStmts, which would split the stage again.
+ */
+Array<Stmt> InlineScalarStores(Array<Stmt> stmts) {
+  if (stmts.size() < 2) {
+    return stmts;
+  }
+  std::unordered_map<const VarNode *, int> store_count;
+  for (const Stmt &stmt : stmts) {
+    LocalVarStoreCollector collector;
+    collector(stmt);
+    for (const auto &[buffer, count] : collector.counts) {
+      store_count[buffer] += count;
+    }
+  }
+
+  Map<Var, PrimExpr> subst;
+  std::unordered_set<const VarNode *> read_before;
+  Array<Stmt> out;
+  for (const Stmt &stmt : stmts) {
+    if (const auto *store = GetLocalVarStore(stmt)) {
+      const VarNode *buf = store->buffer->data.get();
+      // A loop-carried scalar (read before this iteration's store) must keep
+      // its buffer; substituting would feed the previous value's consumer the
+      // current one instead.
+      if (store_count[buf] == 1 && read_before.count(buf) == 0) {
+        PipelineLetInlinable check;
+        check(store->value);
+        if (check.safe) {
+          subst.Set(store->buffer->data, store->value);
+          continue;
+        }
+      }
+    }
+    LocalVarReadCollector collector;
+    collector(stmt);
+    read_before.insert(collector.reads.begin(), collector.reads.end());
+    if (subst.empty()) {
+      out.push_back(stmt);
+    } else {
+      out.push_back(LocalVarLoadReplacer(subst)(stmt));
+    }
+  }
+  return out;
+}
+
 class PipelinePlanner : public StmtExprMutator {
 public:
   static Stmt Substitute(const PrimFunc &f) {
@@ -429,39 +694,76 @@ private:
     if (!num_stages_anno.defined())
       return StmtExprMutator::VisitStmt_(loop);
     int num_stages = num_stages_anno.as<IntImmNode>()->value;
-    Stmt pipeline_body{nullptr};
+    Array<Stmt> pipeline_stmts;
+    bool rebuild_loop_body = false;
+    bool body_was_if = false;
     if (const auto *realize = loop->body.as<BlockRealizeNode>()) {
       const auto &block = realize->block;
       for (const auto &buffer : block->alloc_buffers) {
         ICHECK(buffer->IsInstance<BufferNode>());
         buffer_data_to_buffer_.Set(buffer->data, buffer);
       }
-      if (const auto *seq_stmt = block->body.as<SeqStmtNode>()) {
-        pipeline_body = block->body;
-      } else if (const auto *if_then_else = block->body.as<IfThenElseNode>()) {
+      Stmt original_block_body = block->body;
+      Stmt block_body = InlinePipelineLetBindings(block->body);
+      if (const auto *if_then_else = block_body.as<IfThenElseNode>()) {
+        body_was_if = true;
         // should assert else case is nullptr
         ICHECK(!if_then_else->else_case.defined())
             << "Pipeline_Planning: Can't handle the body of the loop because "
                "it is not a SeqStmt";
-        pipeline_body = if_then_else->then_case;
-      } else {
-        LOG(FATAL) << "Pipeline_Planning: Can't handle the body of the loop "
-                      "because it is not a SeqStmt or IfThenElse";
+        block_body = InlinePipelineLetBindings(if_then_else->then_case);
       }
+      // CrossCorePipeline can leave a stage loop whose whole body is a single
+      // scalar store (a T.alloc_var assignment). A one-entry stage list is
+      // legal; rejecting it blocked legal TIR.
+      if (const auto *seq_stmt = block_body.as<SeqStmtNode>()) {
+        pipeline_stmts = seq_stmt->seq;
+      } else {
+        pipeline_stmts.push_back(block_body);
+      }
+      rebuild_loop_body =
+          !body_was_if && !block_body.same_as(original_block_body);
     } else {
-      pipeline_body = loop->body;
+      Stmt original_body = loop->body;
+      Stmt body = InlinePipelineLetBindings(loop->body);
+      if (const auto *seq_stmt = body.as<SeqStmtNode>()) {
+        pipeline_stmts = seq_stmt->seq;
+      } else {
+        pipeline_stmts.push_back(body);
+      }
+      rebuild_loop_body = !body.same_as(original_body);
     }
-    const SeqStmtNode *pipeline_body_seq = pipeline_body.as<SeqStmtNode>();
-    CHECK(pipeline_body_seq)
-        << "ValueError: The body of the software pipeline "
-           "should be SeqStmt, got "
-        << pipeline_body->GetTypeKey() << " " << pipeline_body;
+    CHECK_GT(pipeline_stmts.size(), 0U)
+        << "ValueError: The body of the software pipeline is empty";
+    if (!body_was_if) {
+      size_t before_inline = pipeline_stmts.size();
+      pipeline_stmts = InlineScalarStores(pipeline_stmts);
+      rebuild_loop_body =
+          rebuild_loop_body || pipeline_stmts.size() != before_inline;
+      size_t before_group = pipeline_stmts.size();
+      pipeline_stmts = GroupScalarPrelude(pipeline_stmts);
+      rebuild_loop_body =
+          rebuild_loop_body || pipeline_stmts.size() != before_group;
+    }
     CHECK(num_stages >= 1);
+    if (pipeline_stmts.size() < 2) {
+      // A single-statement body has no intra-iteration stage to overlap, and
+      // InjectSoftwarePipeline requires a SeqStmt body anyway. Leave it
+      // serial (the Cube stage loop can be just a scalar store).
+      Map<String, ObjectRef> annotations;
+      for (const auto &[key, value] : loop->annotations) {
+        if (key != "num_stages") {
+          annotations.Set(key, value);
+        }
+      }
+      return For(loop->loop_var, loop->min, loop->extent, loop->kind,
+                 loop->body, loop->thread_binding, annotations);
+    }
     CHECK(loop->kind == ForKind::kSerial);
 
     std::vector<PipelineStageInfo> pipeline_stage_infos;
-    for (size_t i = 0; i < pipeline_body_seq->size(); i++) {
-      auto pinfo = MakePipelineStageInfo(pipeline_body_seq->seq[i], i);
+    for (size_t i = 0; i < pipeline_stmts.size(); i++) {
+      auto pinfo = MakePipelineStageInfo(pipeline_stmts[i], i);
       pipeline_stage_infos.push_back(std::move(pinfo));
     }
 
@@ -487,7 +789,7 @@ private:
     // analysis use-def chain
     for (auto &pinfo : pipeline_stage_infos) {
       for (int i = pinfo.original_order + 1;
-           i < static_cast<int>(pipeline_body_seq->size()); i++) {
+           i < static_cast<int>(pipeline_stmts.size()); i++) {
         if (!pinfo.copy_stage)
           continue;
         for (const BufferRegion &read : pipeline_stage_infos[i].reads) {
@@ -619,7 +921,22 @@ private:
       annotations.Set(tir::attr::software_pipeline_async_stages,
                       Array<Integer>{0});
 
-    return For(loop->loop_var, loop->min, loop->extent, loop->kind, loop->body,
+    Stmt loop_body = loop->body;
+    if (rebuild_loop_body) {
+      // The stage list no longer matches the original body (a LetStmt was
+      // inlined or a scalar store was merged into its consumer). Rebuild the
+      // body so InjectSoftwarePipeline sees one top-level statement per
+      // stage annotation.
+      if (const auto *realize = loop->body.as<BlockRealizeNode>()) {
+        Block block = realize->block;
+        block.CopyOnWrite()->body = SeqStmt(pipeline_stmts);
+        loop_body = BlockRealize(realize->iter_values, realize->predicate,
+                                 block, realize->span);
+      } else {
+        loop_body = SeqStmt(pipeline_stmts);
+      }
+    }
+    return For(loop->loop_var, loop->min, loop->extent, loop->kind, loop_body,
                loop->thread_binding, annotations);
   }
 
