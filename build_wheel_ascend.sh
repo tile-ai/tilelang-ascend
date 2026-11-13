@@ -58,6 +58,10 @@ pip install -r requirements.txt
 
 # Update git submodules
 echo "Updating git submodules..."
+# Refresh submodule remote URLs from .gitmodules first: clones made before a
+# submodule repository migration still point at the stale remote and would
+# fail to fetch the recorded pointer (same rationale as install_ascend.sh).
+git submodule sync --recursive
 git submodule update --init --recursive
 
 # Apply local patches to the tvm submodule (same as install_ascend.sh and

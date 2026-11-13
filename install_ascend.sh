@@ -170,6 +170,10 @@ fi
 
 # Step 9: Clone and build TVM
 echo "Cloning TVM repository and initializing submodules..."
+# Refresh submodule remote URLs from .gitmodules first: clones made before
+# the catlass gitee->gitcode migration still point at the stale (defunct)
+# gitee remote and would fail to fetch the recorded pointer.
+git submodule sync --recursive
 # clone and build tvm
 git submodule update --init --recursive
 
