@@ -99,6 +99,11 @@ struct CopyGlobalContext {
     bool has_tmp = false;
     int tmp_M_val = 0;
     int tmp_N_val = 0;
+    // >= 0 when the V2C LEFT_RIGHT push must be serialized (per-subcore row
+    // width not a 32B multiple): mode-1 subcore rendezvous flag. The pipe
+    // reserves one extra flag ID for it, and codegen lowers the producer to
+    // copy_ub_to_pipe_serial with this flag.
+    int sync_flag_id = -1;
   };
   std::unordered_map<std::string, PipeInfo> pipe_info_map_;
 };
@@ -500,7 +505,6 @@ public:
     info.dst_N_val = copy_info.dst_N;
 
     info.flag_id = pipe_flag_id_counter_;
-    pipe_flag_id_counter_ += 2; // one pipe needs 2 FlagID
     int dtype_bytes = GetDtypeBytes(info.dtype_str);
     info.slot_size = copy_info.per_block_ele_nums * dtype_bytes;
     info.slot_num = 1;
@@ -508,6 +512,24 @@ public:
                    (info.dir_type == 2 ? "V2C" : "C2V");
     info.split_axis = ComputeSplitAxis(info.src_M_val, info.src_N_val,
                                        info.dst_M_val, info.dst_N_val);
+
+    // V2C TILE_LEFT_RIGHT whose per-subcore row width (src_N * dtype_bytes)
+    // is not a 32B multiple: both subcores partial-write the same 32B GM
+    // DataBlock in the workspace slot, so the producer push must be
+    // serialized with a mode-1 subcore rendezvous. One extra flag ID is
+    // reserved for the rendezvous; codegen lowers the producer to
+    // copy_ub_to_pipe_serial. The A5 ND->Nz push path is not affected.
+    if (info.dir_type == 2 && info.split_axis == 2 && platform_ != "A5" &&
+        (info.src_N_val * dtype_bytes) % 32 != 0) {
+      ICHECK(info.flag_id + 2 <= 15)
+          << "[Error]<WorkspaceReduction> PTO: rendezvous flag ID "
+          << info.flag_id + 2
+          << " for the serial V2C push exceeds the 16-flag hardware limit.";
+      info.sync_flag_id = info.flag_id + 2;
+    }
+    // One pipe needs 2 FlagIDs; a serial V2C pipe reserves one extra for the
+    // subcore rendezvous.
+    pipe_flag_id_counter_ += (info.sync_flag_id >= 0) ? 3 : 2;
     info.workspace_name =
         needs_gm_workspace_ ? context_.src_to_workspace_map_.at(src_buffer_name)
                             : "";
@@ -970,6 +992,8 @@ public:
         fields.Set("has_tmp", IntImm(DataType::Int(32), info.has_tmp ? 1 : 0));
         fields.Set("tmp_M_val", IntImm(DataType::Int(32), info.tmp_M_val));
         fields.Set("tmp_N_val", IntImm(DataType::Int(32), info.tmp_N_val));
+        fields.Set("sync_flag_id",
+                   IntImm(DataType::Int(32), info.sync_flag_id));
         pipe_infos.Set(IntImm(DataType::Int(32), info.flag_id), fields);
       }
       prim_func_with_new_attr = WithAttr(std::move(prim_func_with_new_attr),
