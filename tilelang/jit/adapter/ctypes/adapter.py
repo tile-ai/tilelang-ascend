@@ -151,8 +151,8 @@ class CtypesKernelAdapter(BaseKernelAdapter):
         adapter.target = Target.canon_target(determine_target(target))
         adapter.verbose = verbose
         adapter.lib_generator = LibraryGenerator(adapter.target)
-        adapter.lib = adapter.lib_generator.load_lib(lib_path=kernel_lib_path)
         adapter.lib_generator.set_lib_path(kernel_lib_path)
+        adapter.lib = adapter.lib_generator.load_lib(lib_path=kernel_lib_path)
         adapter.lib.init()
 
         adapter._post_init()
