@@ -271,26 +271,9 @@ mappings:
 
   # examples_experiment/seer_attention
   examples_experiment/seer_attention/block_sparse_attn.py: examples_experiment/seer_attention/test_block_sparse_attn.py
+  examples/gated_mla_prefill/example_gated_mla_prefill.py: examples/gated_mla_prefill/test_example_gated_mla_prefill.py
 
-  # examples_experiment/gated_mla
-  examples_experiment/gated_mla/example_gated_mla_decode.py: examples_experiment/gated_mla/test_gated_mla_decode.py
 
   # Gated MLA general forward package: executable suites; library changes use directory routing.
-  examples_experiment/gated_mla/package/ci_entries/run_runtime.py: examples_experiment/gated_mla/package/tests/test_runtime_npu.py
-  examples_experiment/gated_mla/package/ci_entries/run_metadata.py: examples_experiment/gated_mla/package/tests/test_metadata.py
-  examples_experiment/gated_mla/package/ci_entries/run_sources.py: examples_experiment/gated_mla/package/tests/test_sources.py
-  examples_experiment/gated_mla/package/ci_entries/run_reference.py: examples_experiment/gated_mla/package/tests/test_reference.py
-  examples_experiment/gated_mla/package/ci_entries/run_layout.py: examples_experiment/gated_mla/package/tests/test_empty_layout_npu.py
-  examples_experiment/gated_mla/package/ci_entries/run_packed.py: examples_experiment/gated_mla/package/tests/test_packed_npu.py
-  examples_experiment/gated_mla/package/ci_entries/run_contracts.py: examples_experiment/gated_mla/package/tests/test_contracts.py
-  examples_experiment/gated_mla/package/ci_entries/run_preflight.py: examples_experiment/gated_mla/package/tests/test_preflight.py
-  examples_experiment/gated_mla/package/ci_entries/run_value_range.py: examples_experiment/gated_mla/package/tests/test_value_range_npu.py
-  examples_experiment/gated_mla/package/ci_entries/run_mask_exact.py: examples_experiment/gated_mla/package/tests/test_prefill_mask_exact_npu.py
 
   # Gated MLA performance harness CPU suites; helpers retain directory fallback.
-  examples_experiment/gated_mla/package/ci_entries/run_paired_timing.py: examples_experiment/gated_mla/package/tests/test_paired_timing.py
-  examples_experiment/gated_mla/package/ci_entries/run_paired_benchmark.py: examples_experiment/gated_mla/package/tests/test_paired_benchmark.py
-  examples_experiment/gated_mla/package/ci_entries/run_host_decode_diagnostic.py: examples_experiment/gated_mla/package/tests/test_host_decode_diagnostic.py
-  examples_experiment/gated_mla/package/ci_entries/run_perf_summary.py: examples_experiment/gated_mla/package/tests/test_perf_summary.py
-  examples_experiment/gated_mla/package/ci_entries/run_aligned_execution.py: examples_experiment/gated_mla/package/tests/test_aligned_execution.py
-  examples_experiment/gated_mla/package/ci_entries/run_aligned_benchmark.py: examples_experiment/gated_mla/package/tests/test_aligned_benchmark.py
