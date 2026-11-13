@@ -271,3 +271,9 @@ mappings:
 
   # examples_experiment/seer_attention
   examples_experiment/seer_attention/block_sparse_attn.py: examples_experiment/seer_attention/test_block_sparse_attn.py
+  examples/gated_mla_prefill/example_gated_mla_prefill.py: examples/gated_mla_prefill/test_example_gated_mla_prefill.py
+
+
+  # Gated MLA general forward package: executable suites; library changes use directory routing.
+
+  # Gated MLA performance harness CPU suites; helpers retain directory fallback.
