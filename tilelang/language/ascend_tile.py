@@ -1113,6 +1113,13 @@ def binary_op(
             size_0,
         )
     else:
+        # Guard against dynamic (symbolic) shapes: only validate when both
+        # dst's element count and src1's capacity are statically known.
+        # Comparing a TIR expression against an int produces a symbolic
+        # expression that Python's assert cannot evaluate.
+        src1_shape_static = all(isinstance(d, (int, IntImm)) for d in src1.shape)
+        if isinstance(size_0, (int, IntImm)) and src1_shape_static:
+            assert size_0 <= math.prod(src1.shape), "src1 must have at least dst.size elements"
         return T.call_intrin(
             "handle",
             tir.op.Op.get(f"tl.ascend_{op}"),
@@ -1239,24 +1246,32 @@ def min(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | 
     return binary_op(dst, src0, src1, "min")
 
 
-def bitwise_and(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
+def bitwise_and(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion):
     """Performs element-wise bitwise AND: dst = src0 & src1.
 
     Args:
         dst: The destination buffer.
         src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        src1: The second source operand. Scalar operands are currently unsupported.
+
+    Supported dtypes on A2/A3:
+        - Ascend C: int16, uint16.
+        - PTO: int8, uint8, int16, uint16.
     """
     return binary_op(dst, src0, src1, "bitwise_and")
 
 
-def bitwise_or(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
+def bitwise_or(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion):
     """Performs element-wise bitwise OR: dst = src0 | src1.
 
     Args:
         dst: The destination buffer.
         src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        src1: The second source operand. Scalar operands are currently unsupported.
+
+    Supported dtypes on A2/A3:
+        - Ascend C: uint8, int16, uint16.
+        - PTO: int8, uint8, int16, uint16.
     """
     return binary_op(dst, src0, src1, "bitwise_or")
 
@@ -1455,6 +1470,23 @@ def bitwise_not(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
     Args:
         dst: The destination buffer.
         src0: The source buffer.
+
+    Supported dtypes on A2/A3:
+        - Ascend C: int16, uint16.
+        - PTO: int8, uint8, int16, uint16.
+
+    Physically contiguous BufferRegion slice operands are supported
+    (full-width row ranges, single-row column ranges, and 1D ranges);
+    non-contiguous regions (e.g. multi-row column slices such as
+    buf[:, a:b]) are not.
+
+    Note (Ascend C): for a full 2-D tile, the current Ascend C implementation
+    requires each row's logical byte width to be a multiple of 32. For
+    int16/uint16 (2 bytes per element) this means the tile inner dim must be a
+    multiple of 16; a tile whose total byte size is 32-aligned but whose rows
+    are not (e.g. a (64, 100) int16 tile) may compile and run yet return
+    incorrect results. This is the current implementation's support scope,
+    not a hardware limitation.
     """
     return unary_op(dst, src0, "bitwise_not")
 
