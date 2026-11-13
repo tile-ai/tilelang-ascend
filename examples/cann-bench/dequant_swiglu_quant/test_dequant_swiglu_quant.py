@@ -203,19 +203,21 @@ def _run_case(name, M, H, x_dtype, has_ws, has_qs, activate_left, level):
 # (cann-bench case id, M, H, dtype, has_ws, has_qs, activate_left)
 L0_CASES = [
     (1, 512, 1024, torch.float16, False, False, True),  # fp16 baseline
-    (4, 4096, 2048, torch.bfloat16, False, True, False),  # bf16 + qs
     (9, 512, 1024, torch.int32, True, False, True),  # int32 + ws/as
-    (11, 2048, 4096, torch.int32, True, True, True),  # int32 + ws/as + qs (full attrs)
+    ("bf16_qs_gate", 512, 1024, torch.bfloat16, False, True, False),  # small bf16+qs gate
+    ("int32_full_gate", 512, 1024, torch.int32, True, True, True),  # small int32 full-attrs gate
 ]
 
 L1_CASES = [
     (2, 1024, 2048, torch.float16, False, False, False),
     (3, 2048, 4096, torch.float16, False, True, True),  # fp16 + qs
+    (4, 4096, 2048, torch.bfloat16, False, True, False),  # official bf16+qs, moved out of L0
     (5, 127, 512, torch.bfloat16, False, False, False),  # unaligned M
     (6, 8192, 512, torch.float16, False, True, False),
     (7, 1023, 2049, torch.bfloat16, False, False, True),  # unaligned M/H
     (8, 255, 4097, torch.bfloat16, False, False, False),
     (10, 1024, 2048, torch.int32, True, False, False),
+    (11, 2048, 4096, torch.int32, True, True, True),  # official int32 full attrs, moved out of L0
     (12, 4096, 2048, torch.int32, True, True, False),
     (13, 127, 512, torch.int32, True, False, False),
     (14, 8192, 512, torch.int32, True, True, False),
@@ -226,6 +228,29 @@ L1_CASES = [
     (19, 4001, 1024, torch.int32, True, True, True),
     (20, 16384, 256, torch.int32, True, False, False),
 ]
+
+# Coverage manifest (dimension -> number of L1/L2/Boundary cases covering it).
+COVERAGE_CATEGORY = "Vector"
+COVERAGE_MANIFEST = {
+    "D-DTYPE-fp16": 3,
+    "D-DTYPE-bf16": 4,
+    "D-DTYPE-int32": 11,
+    "D-SHAPE-ALIGNED": 13,
+    "D-SHAPE-UNALIGNED": 5,
+    "D-SHAPE-PRIME": 3,
+    "D-SHAPE-EDGE": 3,
+    "D-PARAM-activate_left": 18,
+    "D-PARAM-quant_scale": 8,
+    "D-PARAM-weight_scale": 11,
+    "D-SPECIAL-ZERO": 1,
+    "D-SPECIAL-INF": 1,
+    "D-SPECIAL-NAN": 1,
+    "D-SPECIAL-INT32_EXTREME": 1,
+    "D-EXC-DTYPE": 1,
+    "D-EXC-TYPE": 2,
+    "D-EXC-SHAPE": 2,
+}
+COVERAGE_NA = {}
 
 
 # ========== L0 (gate) ==========
