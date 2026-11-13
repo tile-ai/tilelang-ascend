@@ -693,9 +693,18 @@ private:
 
     BroadcastableBufferCollector collector(parallel_vars, inner_vec_len,
                                            outer_extent, this);
+    // AscendC Broadcast materializes one physical row at a time and requires
+    // each row to be 32-byte aligned. For other inner widths the native op
+    // reads/writes a padded row and the result is wrong; keep the scalar-vector
+    // lowering for those shapes instead of materializing a broadcast buffer.
+    const int64_t dtype_bytes = output_buffer->dtype.bytes();
+    const int64_t row_align = dtype_bytes > 0 ? 32 / dtype_bytes : 1;
+    const bool broadcast_row_aligned =
+        row_align <= 1 || inner_vec_len % row_align == 0;
     // Only collect broadcast buffers if there's no container 2d dim and output
     // is 2d
-    if (!dim_checker.container_2d_dim && is_2d_vectorizing_) {
+    if (!dim_checker.container_2d_dim && is_2d_vectorizing_ &&
+        broadcast_row_aligned) {
       collector(store->value);
     }
 
@@ -737,10 +746,13 @@ private:
     public:
       const std::unordered_map<const BufferLoadNode *, Buffer>
           &broadcast_buffer_map_;
+      const VarNode *vector_dim_var_;
 
       BufferLoadReplacer(const std::unordered_map<const BufferLoadNode *,
-                                                  Buffer> &broadcast_buffer_map)
-          : broadcast_buffer_map_(broadcast_buffer_map) {}
+                                                  Buffer> &broadcast_buffer_map,
+                         const VarNode *vector_dim_var)
+          : broadcast_buffer_map_(broadcast_buffer_map),
+            vector_dim_var_(vector_dim_var) {}
 
       PrimExpr VisitExpr_(const BufferLoadNode *op) override {
         auto it = broadcast_buffer_map_.find(op);
@@ -750,14 +762,18 @@ private:
           // accessing all elements of the broadcast buffer as contiguous memory
           Array<PrimExpr> indicates;
           indicates.push_back(IntImm(DataType::Int(32), 0));
-          indicates.push_back(IntImm(DataType::Int(32), 0));
+          if (vector_dim_var_ != nullptr) {
+            indicates.push_back(GetRef<Var>(vector_dim_var_));
+          } else {
+            indicates.push_back(IntImm(DataType::Int(32), 0));
+          }
           return BufferLoad(it->second, indicates);
         }
         return ExprMutator::VisitExpr_(op);
       }
     };
 
-    BufferLoadReplacer replacer(broadcast_buffer_map);
+    BufferLoadReplacer replacer(broadcast_buffer_map, vector_dim_var_);
     PrimExpr new_value = replacer(store->value);
 
     // Step 6: Do the normal pass with the modified expression
