@@ -58,7 +58,7 @@ def alloc_var(
 | `T.alloc_var("int32", "local.var")` | scope="local.var" |
 | `T.alloc_var("int32", 1, "local.var")` | init=1, scope="local.var" |
 | `T.alloc_var("int32", init=1)` | init=1（关键字参数） |
-| `T.alloc_var("int32", "local.var", init=1)` | init=1, scope="local.var" |
+| `T.alloc_var("int32", scope="local.var", init=1)` | init=1, scope="local.var"（关键字参数形式） |
 
 ### 2.4 约束条件
 
