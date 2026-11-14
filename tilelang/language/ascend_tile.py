@@ -1,10 +1,11 @@
 from __future__ import annotations
 import tilelang.language as T
-from tvm.ir import Range
+from tvm.ir import PointerType, PrimType, Range
 from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call, IntImm, Ramp
 from tvm import DataType, arith, tir
 from tilelang.language.ascend import _dtype, _get_tmp_arena_access_ptr
 import functools
+import itertools
 import warnings
 from typing import Any
 
@@ -1312,6 +1313,65 @@ def exp(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
     return unary_op(dst, src0, "exp")
 
 
+def _as_const_int(expr) -> int | None:
+    if isinstance(expr, IntImm):
+        return expr.value
+    return None
+
+
+def _is_aliased(dst: Buffer | BufferRegion, src: Buffer | BufferRegion) -> bool:
+    """Check whether dst and src may overlap in storage.
+
+    Different buffers never alias (the memory planner assigns overlapping
+    addresses only to buffers with disjoint live ranges, and both operands are
+    live at the call site). For regions of the same buffer, statically
+    provable disjointness on any dimension (constant bounds) means no alias;
+    anything not provable is conservatively treated as aliased.
+    """
+    if not _underlying_buffer(dst).same_as(_underlying_buffer(src)):
+        return False
+    if isinstance(dst, BufferRegion) and isinstance(src, BufferRegion):
+        for r_dst, r_src in zip(dst.region, src.region):
+            d_min = _as_const_int(r_dst.min)
+            d_ext = _as_const_int(r_dst.extent)
+            s_min = _as_const_int(r_src.min)
+            s_ext = _as_const_int(r_src.extent)
+            if d_min is None or d_ext is None or s_min is None or s_ext is None:
+                continue
+            if d_min + d_ext <= s_min or s_min + s_ext <= d_min:
+                return False
+    return True
+
+
+_alias_tmp_counter = itertools.count()
+
+
+def _make_alias_free_src(src: Buffer | BufferRegion) -> Buffer:
+    """Copy an aliased src into a fresh UB buffer via a vector mul-by-one.
+
+    Tile ops whose lowering needs the original src values after writing dst
+    (e.g. silu: x / (1 + exp(-x)) reads x again in the final division) are
+    unsafe when dst aliases src. Copying src to a scratch buffer first makes
+    the op correct for any aliasing, including partial region overlap. A
+    scalar mul is used instead of T.copy because the auto-sync pass may skip
+    barriers around copy_ub_to_ub in some op sequences.
+    """
+    if isinstance(src, BufferRegion):
+        shape = [r.extent for r in src.region]
+        dtype = src.buffer.dtype
+    else:
+        shape = list(src.shape)
+        dtype = src.dtype
+    # A named data var is required: an anonymous alloc_buffer var has an empty
+    # name_hint and the Ascend codegen cannot emit a declaration for it. The
+    # counter keeps buffer names unique when several aliased ops are traced.
+    name = f"silu_alias_tmp_{next(_alias_tmp_counter)}"
+    data = tir.Var(name, PointerType(PrimType(dtype), "shared.ub"))
+    tmp = T.alloc_buffer(shape, dtype, data=data, scope="shared.ub")
+    T.evaluate(mul(tmp, src, 1.0))
+    return tmp
+
+
 def sigmoid(
     dst: Buffer | BufferRegion,
     src: Buffer | BufferRegion,
@@ -1321,7 +1381,7 @@ def sigmoid(
     """Performs element-wise Sigmoid activation: dst[i] = 1 / (1 + exp(-src[i])).
 
     Args:
-        dst: The destination buffer; it must not alias src.
+        dst: The destination buffer; it may alias src (in-place).
         src: The source, a buffer or a contiguous region of it.
         tmp: Optional explicit UB scratch storage, used by the AscendC backend
             only. It may use any fixed-width scalar dtype; lowering
@@ -1334,12 +1394,11 @@ def sigmoid(
         - Operand addresses must be 32-byte aligned (hardware constraint).
         - ``tmp`` applies to the AscendC backend only: a temporary buffer of
           ``N x sizeof(dtype)`` bytes (N = element count) is auto-allocated
-          when not provided; the PTO backend uses no temporary buffer and
-          ignores an explicitly passed ``tmp``.
-        - On the PTO backend, ``src`` is modified in place by the call and no
-          longer holds the original input; copy it to another buffer first if
-          the data is needed afterwards. The AscendC backend leaves ``src``
-          unchanged.
+          when not provided; the PTO backend ignores an explicitly passed
+          ``tmp`` and allocates its own internal scratch.
+        - In-place use (``dst`` is the same buffer as ``src``) is supported on
+          both backends: lowering reads ``src`` before writing ``dst``, and
+          neither backend modifies ``src`` as a side effect.
         - Special values: sigmoid(0)=0.5, sigmoid(-inf)=0, sigmoid(inf)=1,
           sigmoid(nan)=nan.
     """
@@ -1372,13 +1431,16 @@ def silu(dst: Buffer | BufferRegion, src: Buffer | BufferRegion):
           mismatched sizes produce undefined results).
         - Supported dtypes: float16, float32 (Ascend A2 / A3).
         - Operand addresses must be 32-byte aligned (hardware constraint).
-        - On the PTO backend, ``src`` is modified in place by the call and no
-          longer holds the original input; copy it to another buffer first if
-          the data is needed afterwards. The AscendC backend leaves ``src``
-          unchanged.
+        - In-place use (``dst`` is the same buffer as ``src``) is supported:
+          the aliased source is transparently copied to a scratch UB buffer
+          before the computation, since the final division needs the original
+          source values after dst has been overwritten.
+        - Neither backend modifies ``src`` as a side effect.
         - Special values follow IEEE semantics: silu(-inf)=nan, silu(inf)=inf,
           silu(nan)=nan.
     """
+    if _is_aliased(dst, src):
+        src = _make_alias_free_src(src)
     if isinstance(dst, BufferRegion):
         dst_ptr, buffer_extent = _handle_buffer_region(dst, "w")
         size = math.prod(buffer_extent)
