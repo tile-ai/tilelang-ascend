@@ -1055,6 +1055,9 @@ private:
     if (platform_ == "A5" && op_name == "copy_pipe_to_ub") {
       op_name = "copy_pipe_to_ub_V";
     }
+    if (platform_ == "A5" && op_name == "copy_pipe_to_l1") {
+      op_name = "copy_pipe_to_l1_bind";
+    }
     std::stringstream ss;
     ss << "tl::ascend::" << op_name;
 
