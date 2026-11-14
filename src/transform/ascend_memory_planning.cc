@@ -445,9 +445,28 @@ private:
         const auto &vec = use_gen ? event.gen : event.kill;
         auto it = std::find(vec.begin(), vec.end(), buffer);
         if (it != vec.end()) {
-          for (size_t i = 0; i < linear_seq_.size(); ++i) {
-            if (linear_seq_[i].stmt == event_pair.first) {
-              return static_cast<int64_t>(i);
+          // Scope statements (For/While/Let/If/Attr/Assert) appear twice in
+          // linear_seq_: once as the opening entry and once as the closing
+          // entry, sharing the same stmt object pointer.  A KILL attached to
+          // such a stmt is semantically "dead at the END of the scope" (the
+          // closing entry, e.g. after ReorderKillPoints moves a kill to the
+          // enclosing LetStmt), while a GEN is "born at the START".
+          // Resolve kills to the LAST matching index and gens to the FIRST;
+          // otherwise a kill may resolve to the opening entry (an index
+          // before the buffer's own gen), producing an inverted interval
+          // that lets the allocator reuse still-live memory
+          // (ISSUE-R7-1: slabF/wF overlapped by errPool).
+          if (use_gen) {
+            for (size_t i = 0; i < linear_seq_.size(); ++i) {
+              if (linear_seq_[i].stmt == event_pair.first) {
+                return static_cast<int64_t>(i);
+              }
+            }
+          } else {
+            for (size_t i = linear_seq_.size(); i != 0; --i) {
+              if (linear_seq_[i - 1].stmt == event_pair.first) {
+                return static_cast<int64_t>(i - 1);
+              }
             }
           }
           break;
