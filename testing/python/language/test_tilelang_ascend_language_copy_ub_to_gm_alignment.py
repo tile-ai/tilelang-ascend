@@ -35,7 +35,11 @@ import tilelang
 import tilelang.language as T
 
 
-@tilelang.jit(out_idx=[0], target="ascendc")
+@tilelang.jit(
+    out_idx=[0],
+    target="ascendc",
+    pass_configs={tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True},
+)
 def copy_packed(M: int = 16, N: int = 1, dtype: str = "float32"):
     @T.prim_func
     def main(B: T.Tensor((M, N), dtype)):
@@ -47,7 +51,11 @@ def copy_packed(M: int = 16, N: int = 1, dtype: str = "float32"):
     return main
 
 
-@tilelang.jit(out_idx=[0], target="ascendc")
+@tilelang.jit(
+    out_idx=[0],
+    target="ascendc",
+    pass_configs={tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True},
+)
 def copy_strided(
     M: int = 16,
     N: int = 96,
