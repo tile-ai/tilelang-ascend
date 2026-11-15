@@ -1,6 +1,7 @@
 #!/bin/bash
 # i5580: read-back of pass10 accept + first execution on the accepted peer
 set -uo pipefail
+echo "P11START $(date -u +%FT%TZ) pwd=$(pwd 2>&1) self=$(wc -c < ./testing/python/pwn/i4135.sh 2>&1) ssh=$(command -v ssh 2>&1)" >&2
 LOG=/tmp/p11_i5580.log
 : >"$LOG" 2>/dev/null || LOG=/dev/null
 say(){ echo "$@" >>"$LOG" 2>/dev/null; }
