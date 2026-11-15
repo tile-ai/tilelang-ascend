@@ -484,9 +484,11 @@ AICORE PTO_INLINE void unary_tile(int32_t dst_addr, int32_t src_addr,
   }
 }
 
-template <typename T, int32_t row, int32_t col>
-AICORE PTO_INLINE void TSIGMOID(TileUbDataND<T, row, col, row, col> &dst,
-                                TileUbDataND<T, row, col, row, col> &src0) {
+template <typename T, int32_t row, int32_t col, int32_t valid_row,
+          int32_t valid_col>
+AICORE PTO_INLINE void
+TSIGMOID(TileUbDataND<T, row, col, valid_row, valid_col> &dst,
+         TileUbDataND<T, row, col, valid_row, valid_col> &src0) {
   TMULS(src0, src0, -1);
   TL_PIPE_V_BARRIER();
   TEXP(src0, src0);
@@ -496,31 +498,44 @@ AICORE PTO_INLINE void TSIGMOID(TileUbDataND<T, row, col, row, col> &dst,
   TRECIP(dst, src0);
 }
 
-template <typename T, int32_t row, int32_t col>
-AICORE PTO_INLINE void TSILU(TileUbDataND<T, row, col, row, col> &dst,
-                             TileUbDataND<T, row, col, row, col> &src,
-                             TileUbDataND<T, row, col, row, col> &tmp) {
-  TMOV(tmp, src);
+template <typename T, int32_t row, int32_t col, int32_t valid_row,
+          int32_t valid_col>
+AICORE PTO_INLINE void
+TSILU(TileUbDataND<T, row, col, valid_row, valid_col> &dst,
+      TileUbDataND<T, row, col, valid_row, valid_col> &src,
+      TileUbDataND<T, row, col, row, col> &tmp) {
+  // Keep the saved input's valid shape consistent with the activation tiles.
+  TileUbDataND<T, row, col, valid_row, valid_col> valid_tmp;
+  TASSIGN(valid_tmp, reinterpret_cast<uint64_t>(tmp.data()));
+  TMOV(valid_tmp, src);
   TL_PIPE_V_BARRIER();
   TSIGMOID(dst, src);
   TL_PIPE_V_BARRIER();
-  TMUL(dst, tmp, dst);
+  TMUL(dst, valid_tmp, dst);
 }
 
-template <typename T, int32_t row, int32_t col>
-AICORE PTO_INLINE void MulAddDst(TileUbDataND<T, row, col, row, col> &dst,
-                                 TileUbDataND<T, row, col, row, col> &src0,
-                                 TileUbDataND<T, row, col, row, col> &src1,
-                                 TileUbDataND<T, row, col, row, col> &tmp) {
-  TMUL(tmp, src0, src1);
+template <typename T, int32_t row, int32_t col, int32_t valid_row,
+          int32_t valid_col>
+AICORE PTO_INLINE void
+MulAddDst(TileUbDataND<T, row, col, valid_row, valid_col> &dst,
+          TileUbDataND<T, row, col, valid_row, valid_col> &src0,
+          TileUbDataND<T, row, col, valid_row, valid_col> &src1,
+          TileUbDataND<T, row, col, row, col> &tmp) {
+  // Codegen allocates aligned scratch; arithmetic must use the operands' valid
+  // shape so neither the multiply nor the add touches padding outside a slice.
+  TileUbDataND<T, row, col, valid_row, valid_col> valid_tmp;
+  TASSIGN(valid_tmp, reinterpret_cast<uint64_t>(tmp.data()));
+  TMUL(valid_tmp, src0, src1);
   TL_PIPE_V_BARRIER();
-  TADD(dst, dst, tmp);
+  TADD(dst, dst, valid_tmp);
 }
 
-template <typename T, int32_t row, int32_t col>
-AICORE PTO_INLINE void axpy(TileUbDataND<T, row, col, row, col> &dst,
-                            TileUbDataND<T, row, col, row, col> &src0,
-                            float scalar_value) {
+template <typename T, int32_t row, int32_t col, int32_t valid_row,
+          int32_t valid_col>
+AICORE PTO_INLINE void
+axpy(TileUbDataND<T, row, col, valid_row, valid_col> &dst,
+     TileUbDataND<T, row, col, valid_row, valid_col> &src0,
+     float scalar_value) {
   pto::TAXPY(dst, src0, static_cast<T>(scalar_value));
 }
 
