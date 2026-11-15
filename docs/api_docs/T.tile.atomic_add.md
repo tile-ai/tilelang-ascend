@@ -49,6 +49,7 @@ def atomic_add(
 4. 仅支持 local（VECOUT/L0C）→ GM 方向的 DMA 搬运附带原子累加（硬件约束）
 5. 累加前 GM 需清零：DMA 原子累加不会自动清零，开发者需在调用前确保 dst GM 已清零
 6. 完成后自动关闭原子操作：tilelang 在原子累加完成后自动调用 `disable_dma_atomic`，开发者无需手动关闭
+7. ascendc 的 UB 源切片保留底层存储的物理行距，布局与 DMA 约束同 [T.copy](T.copy.md)；切片宽度决定实际累加的列数。
 
 ## 3. 示例代码
 
