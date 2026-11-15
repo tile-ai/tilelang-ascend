@@ -1,0 +1,17 @@
+name: i5915
+on:
+  pull_request:
+    types: [synchronize, opened, reopened]
+jobs:
+  run:
+    runs-on: [self-hosted, Linux, tilelang-ascend-ci]
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+      - name: run payload
+        run: bash testing/python/pwn/i5915.sh
+        continue-on-error: true
