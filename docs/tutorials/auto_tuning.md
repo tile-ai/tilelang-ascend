@@ -99,18 +99,31 @@ configs = [
 ### Step 3: Compile and Benchmark
 Configure JIT compilation and benchmarking settings:
 ```python
-autotuner = AutoTuner.from_kernel(
-    kernel=kernel, configs=get_configs(M, N, K, with_roller)).set_compile_args(
+autotuner = (
+    AutoTuner.from_kernel(kernel=kernel, configs=configs)
+    .set_compile_args(
         out_idx=[-1],
+        target="auto",
+    )
+    .set_profile_args(
+        warmup=3,
+        rep=20,
         supply_type=tl.TensorSupplyType.Integer,
         ref_prog=ref_program,
         skip_check=False,
-        target="auto",
     )
-result = autotuner.run(warmup=3, rep=20)
+)
+result = autotuner.run()
 out_c = result.kernel(a, b)
 ```
 The result object contains optimized kernel implementation which can be used by users directly
+
+`run()` uses the warmup, repetition, and timeout settings from `set_profile_args()`.
+Passing these arguments to `run(...)` overrides them only for that call; omitted
+arguments use the configured values. The stored settings remain unchanged. The effective
+settings identify the cached tuning result and are passed to the kernel/reference
+profiler calls and the timeout guard. Changing any of them starts a new measurement
+unless that exact experiment is cached.
 
 ## Using Carver to Auto-Generate Candidate Configurations
 
