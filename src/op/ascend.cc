@@ -119,12 +119,12 @@ AscendAtomicAdd::AscendAtomicAdd(Array<PrimExpr> args, BufferMap vmap)
 // A GM<->UB DMA moves data as `rows` bursts of `cols` elements each. Two
 // hardware constraints govern the UB side (verified empirically on 910B /
 // CANN 9.0.0):
-//   * every burst's payload must be at least 8-byte granular: a multi-burst
-//     copy of 2-byte payloads (issue #929's strided one-element-per-row load
-//     into a flat 1D UB buffer) scatters bursts to alignment boundaries past
-//     the buffer and silently corrupts neighbouring UB allocations, while
-//     8-byte payloads work (tail_block's packed-compare mask store relies on
-//     it);
+//   * GM->UB (MTE2) bursts need a 32-byte-multiple payload: a multi-burst
+//     copy with payloads of 2..24 bytes (issue #929's strided one-element-
+//     per-row load into a flat 1D UB buffer) scatters bursts to 32-byte
+//     boundaries past the buffer and silently corrupts neighbouring UB
+//     allocations -- only burst 0 lands in-buffer. 32-byte multiples work
+//     (the issue's k tile and every aligned full-tile copy rely on it);
 //   * the per-row pitch gap is described in 32-byte units (the helper passes
 //     the UB-side inter-burst gap as (buf_inner - cols) * elem / 32), so a
 //     gap that is not a 32-byte multiple truncates and packs rows at the
@@ -150,7 +150,7 @@ static bool NeedsScalarGMCopyFallback(const PrimExpr &rows,
     return false;
   }
   int64_t payload = static_cast<int64_t>(cols_imm->value) * elem_bytes;
-  if (payload % 8 != 0) {
+  if (payload % 32 != 0) {
     return true;
   }
   const auto *tmpl_imm = tmpl_n.as<IntImmNode>();
@@ -916,6 +916,23 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       needs_fallback = NeedsScalarGMCopyFallback(
           row_extent, col_extent, elem_bytes, local_tmpl_n,
           local_buf->shape[local_buf->shape.size() - 1]);
+      if (needs_fallback && !is_load && local_buf->shape.size() > 1) {
+        // Store direction with a multi-dim local tile: the sub-32B payload
+        // rule is an MTE2 (GM->UB) requirement -- the UB side of a UB->GM
+        // store can be read in any burst size (a [4, 8] uint8 packed-mask
+        // store with 8-byte bursts is correct, as are 2-byte ones), so the
+        // payload check does not apply here; only the pitch/template checks
+        // above stay. (An S-pipe scalar fill feeding such a multi-burst
+        // store is corrupted on this uArch -- the pre-existing store
+        // visibility defect of issue #1304's family, not this copy bug, and
+        // the copy lowering cannot see the producer pipe anyway.)
+        const auto *cols_imm2 = col_extent.as<IntImmNode>();
+        int64_t payload2 =
+            cols_imm2 ? static_cast<int64_t>(cols_imm2->value) * elem_bytes : 0;
+        if (payload2 % 32 != 0) {
+          needs_fallback = false;
+        }
+      }
     }
     if (needs_fallback) {
       if (is_load) {
