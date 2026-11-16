@@ -65,6 +65,7 @@ public:
   void SiluCodegen(const CallNode *op);
   void MulAddDstCodegen(const CallNode *op);
   void CastCodegen(const CallNode *op, const std::string &op_type);
+  void RoundCodegen(const CallNode *op);
 
   void ReinterpretCastCodegen(const CallNode *op);
   void ReduceOpCodegen(const CallNode *op);
