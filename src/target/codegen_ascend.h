@@ -72,6 +72,9 @@ private:
   std::string PrintBufferOffset(const CallNode *call_arg,
                                 bool has_offset = true);
 
+  std::string PrintScalarBufferIndex(const CallNode *access_ptr,
+                                     const PrimExpr &dense_offset);
+
   // Disambiguates the float32 widening views when one kernel holds several
   // half reduce_sum calls sharing a merged workspace.
   int reduce_widen_counter_{0};

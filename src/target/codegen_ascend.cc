@@ -1306,6 +1306,41 @@ CodeGenTileLangAscend::PrintBufferOffset(const CallNode *call_arg_node,
   return _var_name;
 }
 
+std::string
+CodeGenTileLangAscend::PrintScalarBufferIndex(const CallNode *access_ptr,
+                                              const PrimExpr &dense_offset) {
+  // The scalar index carried by a buffer operand is the dense logical offset
+  // computed by the frontend. The physical position depends on the FINAL
+  // storage scope, which is only known here, after AscendInferBufferScope and
+  // Flatten2DBuffer: shared.ub rows are padded to a 32-byte boundary
+  // (kLogicBufferShapes records {M, N_aligned, valid_M, valid_N}), so rows
+  // beyond the first live at row * N_aligned. Upgrade against that layout
+  // here -- the same address rule the write side (DataCopyPad's 32-byte row
+  // granularity) applies. Other scopes keep the dense offset.
+  PrimExpr index = dense_offset;
+  Var buffer_var = Downcast<Var>(access_ptr->args[1]);
+  if (GetPtrStorageScope(buffer_var) == "shared.ub" &&
+      buffer_shapes_.count(buffer_var)) {
+    Array<PrimExpr> shape = buffer_shapes_.at(buffer_var);
+    if (shape.size() == 4) {
+      const auto *valid_n = shape[3].as<IntImmNode>();
+      const auto *aligned_n = shape[1].as<IntImmNode>();
+      if (valid_n != nullptr && aligned_n != nullptr &&
+          aligned_n->value != valid_n->value) {
+        if (const auto *dense = dense_offset.as<IntImmNode>()) {
+          int64_t row = dense->value / valid_n->value;
+          index = Integer(static_cast<int64_t>(
+              dense->value + row * (aligned_n->value - valid_n->value)));
+        } else {
+          index = dense_offset +
+                  truncdiv(dense_offset, shape[3]) * (shape[1] - shape[3]);
+        }
+      }
+    }
+  }
+  return PrintExpr(index);
+}
+
 void CodeGenTileLangAscend::AddDeclStream(std::ostringstream &ss,
                                           const std::string &str) {
   std::string content = ss.str();
@@ -1760,7 +1795,10 @@ void CodeGenTileLangAscend::CompareScalarCodegen(const CallNode *op,
     this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
     this->PrintIndent();
     this->stream << "auto " << var_name << "_scalar = " << var_name
-                 << ".GetValue(" << PrintExpr(op->args[para_idx + 1]) << ");\n";
+                 << ".GetValue("
+                 << PrintScalarBufferIndex(op->args[para_idx].as<CallNode>(),
+                                           op->args[para_idx + 1])
+                 << ");\n";
     var_names.push_back(var_name + "_scalar");
     para_idx++;
   } else {
@@ -3176,7 +3214,8 @@ void CodeGenTileLangAscend::EmitSelectedRawScalar(
     scalar = buffer + "_scalar";
     this->PrintIndent();
     this->stream << "auto " << scalar << " = " << buffer << ".GetValue("
-                 << PrintExpr(semantic_args[semantic_args.size() - 2])
+                 << PrintScalarBufferIndex(
+                        access, semantic_args[semantic_args.size() - 2])
                  << ");\n";
   } else if (transformed_scalar) {
     // Negate or take the reciprocal before converting the scalar's type.

@@ -1146,6 +1146,47 @@ std::string CodeGenTileLangAscendPto::PrintBufferOffset(const CallNode *op) {
   return _var_name;
 }
 
+std::string
+CodeGenTileLangAscendPto::PrintScalarBufferRead(const CallNode *access_ptr,
+                                                const PrimExpr &dense_offset) {
+  // A scalar operand resolved from a buffer arrives as (access_ptr, dense
+  // logical offset). The physical element position depends on the FINAL
+  // storage scope, which is only known here, after AscendInferBufferScope and
+  // Flatten2DBuffer: global memory keeps the dense layout, while shared.ub
+  // rows are padded to a 32-byte boundary (kLogicBufferShapes records
+  // {M, N_aligned, valid_M, valid_N}). Upgrade the dense offset against that
+  // layout so the scalar read addresses the same element the DMA copy wrote,
+  // and emit a domain-appropriate read expression.
+  Var buffer_var = Downcast<Var>(access_ptr->args[1]);
+  std::string var_name = var_idmap_[buffer_var.get()];
+  std::string scope = GetPtrStorageScope(buffer_var);
+  if (scope == "global") {
+    // GM tensors are declared as "<name>_handle" (see AddFunction); global
+    // memory is dense, so index the raw pointer directly.
+    return "*(" + var_name + "_handle + " + PrintExpr(dense_offset) + ")";
+  }
+  PrimExpr physical = dense_offset;
+  if (scope == "shared.ub" && buffer_shapess_.count(buffer_var)) {
+    Array<PrimExpr> shape = buffer_shapess_.at(buffer_var);
+    if (shape.size() == 4) {
+      const auto *valid_n = shape[3].as<IntImmNode>();
+      const auto *aligned_n = shape[1].as<IntImmNode>();
+      if (valid_n != nullptr && aligned_n != nullptr &&
+          aligned_n->value != valid_n->value) {
+        if (const auto *dense = dense_offset.as<IntImmNode>()) {
+          int64_t row = dense->value / valid_n->value;
+          physical = Integer(static_cast<int64_t>(
+              dense->value + row * (aligned_n->value - valid_n->value)));
+        } else {
+          physical = dense_offset +
+                     truncdiv(dense_offset, shape[3]) * (shape[1] - shape[3]);
+        }
+      }
+    }
+  }
+  return var_name + ".GetValue(" + PrintExpr(physical) + ")";
+}
+
 // merge shape's lower dimensions based on srcN
 Array<PrimExpr> MergeShapeBySrcN(const Array<PrimExpr> &shape,
                                  const PrimExpr &srcN,
@@ -2627,11 +2668,39 @@ void CodeGenTileLangAscendPto::CompareScalarCodegen(
   ShapeInfo src0_shape_info = GetSliceInfo(op->args[1].as<CallNode>());
   ShapeInfo dst_shape_info =
       GetCompareMaskInfo(op->args[0].as<CallNode>(), src0_shape_info);
-  auto src1_name = PrintExpr(op->args[2]);
-  auto mode = Downcast<StringImm>(op->args[3])->value;
+  // The scalar operand comes either as an immediate expression (args[2],
+  // mode at args[3]) or as a buffer pointer plus element index (args[2] is a
+  // tvm_access_ptr, index at args[3], mode at args[4]).
+  const auto *scalar_buf = op->args[2].as<CallNode>();
+  const bool is_buffer_scalar =
+      scalar_buf != nullptr &&
+      scalar_buf->op.same_as(builtin::tvm_access_ptr());
+  std::string src1_name;
+  int mode_idx = 3;
+  if (is_buffer_scalar) {
+    std::string temp_name =
+        GetTempVarName(PrintBufferOffset(scalar_buf) + "_scalar");
+    // GetValue is a scalar-pipe read of memory written by the vector/MTE
+    // pipes, so a cross-pipe sync is required. Use pipe_barrier instead of an
+    // event flag pair: a hardcoded EVENT_ID on the V->S channel could collide
+    // with user-level T.set_flag/T.wait_flag in the kernel (event IDs are
+    // documented as free to use within a pipe pair). Mirrors the AscendC
+    // backend's CompareScalarCodegen (codegen_ascend.cc).
+    this->PrintIndent();
+    this->stream << "pipe_barrier(PIPE_ALL);\n";
+    this->PrintIndent();
+    this->stream << "auto " << temp_name << " = "
+                 << PrintScalarBufferRead(scalar_buf, op->args[3]) << ";\n";
+    src1_name = temp_name;
+    mode_idx = 4;
+  } else {
+    src1_name = PrintExpr(op->args[2]);
+  }
+  auto mode = Downcast<StringImm>(op->args[mode_idx])->value;
 
   DataType src_dtype = GetAccessPtrDtypePto(op->args[1].as<CallNode>());
-  DataType scalar_dtype = op->args[2].dtype();
+  DataType scalar_dtype =
+      is_buffer_scalar ? GetAccessPtrDtypePto(scalar_buf) : op->args[2].dtype();
   if (scalar_dtype != src_dtype) {
     src1_name = getType(src_dtype) + "(" + src1_name + ")";
   }
@@ -3072,13 +3141,15 @@ void CodeGenTileLangAscendPto::BinaryVecOpsCodegen(const CallNode *op,
   std::string buf_offset = PrintBufferOffset(buffer);
   std::string temp_name = GetTempVarName(buf_offset + "_scalar");
 
+  // Same cross-pipe sync rationale as CompareScalarCodegen: pipe_barrier
+  // instead of a hardcoded event flag pair, which could collide with
+  // user-level set_flag/wait_flag on the same (V, S) channel.
   this->PrintIndent();
-  this->stream << "set_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
+  this->stream << "pipe_barrier(PIPE_ALL);\n";
   this->PrintIndent();
-  this->stream << "wait_flag(PIPE_V, PIPE_S, EVENT_ID0);\n";
-  this->PrintIndent();
-  this->stream << "auto " << temp_name << " = " << buf_offset << ".GetValue("
-               << index << ");\n";
+  this->stream << "auto " << temp_name << " = "
+               << PrintScalarBufferRead(buffer, op->args[op->args.size() - 2])
+               << ";\n";
 
   std::string applied_scalar = apply_scalar_for_half(temp_name);
 
