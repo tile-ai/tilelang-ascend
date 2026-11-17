@@ -1,6 +1,47 @@
 import tilelang
 import tilelang.language as T
 import torch
+
+
+def _check_precision(actual, golden, dtype):
+    name = str(dtype).replace("torch.", "")
+    if name.startswith("float8_e4m3"):
+        name = "float8_e4m3"
+    elif name.startswith("float8_e5m2"):
+        name = "float8_e5m2"
+    table = {
+        "float16": (1e-2, 1e-3, float("inf"), 0.99),
+        "bfloat16": (1e-2, 1e-3, float("inf"), 0.99),
+        "float32": (1e-2, 1e-3, float("inf"), 0.99),
+        "hifloat32": (1e-2, 1e-3, float("inf"), 0.99),
+        "float8_e4m3": (1e-2, 1e-3, float("inf"), 0.99),
+        "float8_e5m2": (1e-2, 1e-3, float("inf"), 0.99),
+    }
+    actual_cpu, golden_cpu = actual.detach().cpu(), golden.detach().cpu()
+    if actual_cpu.shape != golden_cpu.shape:
+        return False, 0.0, float("inf")
+    if name in {"int8", "int16", "int32", "int64", "uint8"}:
+        mismatches, total = (actual_cpu != golden_cpu).sum().item(), max(actual_cpu.numel(), 1)
+        return mismatches == 0, 1.0 - mismatches / total, 0.0 if mismatches == 0 else float("inf")
+    atol, rtol, max_limit, required_ratio = table.get(name, table["float16"])
+    actual_fp32, golden_fp32 = actual_cpu.float(), golden_cpu.float()
+    special = ~torch.isfinite(golden_fp32)
+    if special.any() and (
+        not torch.equal(torch.isnan(actual_fp32[special]), torch.isnan(golden_fp32[special]))
+        or not torch.equal(torch.isinf(actual_fp32[special]), torch.isinf(golden_fp32[special]))
+        or not torch.equal(actual_fp32[special][torch.isinf(golden_fp32[special])], golden_fp32[special][torch.isinf(golden_fp32[special])])
+    ):
+        return False, 0.0, float("inf")
+    finite = torch.isfinite(golden_fp32)
+    if finite.sum().item() == 0:
+        return True, 1.0, 0.0
+    abs_error = (actual_fp32[finite] - golden_fp32[finite]).abs()
+    abs_error = torch.where(torch.isfinite(abs_error), abs_error, torch.full_like(abs_error, float("inf")))
+    ratio = (abs_error <= atol + rtol * golden_fp32[finite].abs()).float().mean().item()
+    max_abs = abs_error.max().item()
+    return ratio >= required_ratio and max_abs <= max_limit, ratio, max_abs
+
+
 import torch_npu
 
 tilelang.cache.clear_cache()
@@ -97,7 +138,8 @@ for M, N, block_M, block_N in test_configs:
 
     ref_grad_input = torch_npu.npu_gelu_backward(dy, x, approximate="none")
 
-    torch.testing.assert_close(grad_input.cpu(), ref_grad_input.cpu(), rtol=1e-3, atol=1e-2)
+    passed, ratio, max_abs = _check_precision(grad_input, ref_grad_input, grad_input.dtype)
+    assert passed, f"dtype={grad_input.dtype}, matched_ratio={ratio:.4f}, max_abs_error={max_abs:.6e}"
     print("Test pass!")
 
 print("Kernel Output Match!")

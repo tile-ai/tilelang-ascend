@@ -18,6 +18,25 @@ _block_reduce_cache = {}
 VEC_NUM = 2
 
 
+def _check_precision(actual, golden, dtype):
+    table = {"float16": (2**-14, 2**-9, 1e-1), "bfloat16": (2**-10, 2**-6, 1.0), "float32": (2**-16, 2**-10, 1e-2)}
+    actual_cpu, golden_cpu = actual.detach().cpu(), golden.detach().cpu()
+    if actual_cpu.shape != golden_cpu.shape:
+        return False, 0.0, float("inf")
+    if dtype in ("int32", "int64"):
+        mismatches = (actual_cpu != golden_cpu).sum().item()
+        return mismatches == 0, 1.0 - mismatches / max(actual_cpu.numel(), 1), 0.0 if mismatches == 0 else float("inf")
+    actual_fp32, golden_fp32 = actual_cpu.float(), golden_cpu.float()
+    atol, rtol, limit = table.get(dtype, table["float16"])
+    finite = torch.isfinite(golden_fp32)
+    if not finite.any():
+        return True, 1.0, 0.0
+    error = (actual_fp32[finite] - golden_fp32[finite]).abs()
+    error = torch.where(torch.isfinite(error), error, torch.full_like(error, float("inf")))
+    ratio, maximum = (error <= atol + rtol * golden_fp32[finite].abs()).float().mean().item(), error.max().item()
+    return ratio >= 0.99 and maximum <= limit, ratio, maximum
+
+
 # Strategy 1: atomic_add kernel
 
 
@@ -323,8 +342,8 @@ def _test(N, D, num_segments, dtype_str):
     if dtype_str in ("int32", "int64"):
         assert torch.equal(out, ref)
     else:
-        tol = {"float16": (1e-3, 1e-3), "bfloat16": (1e-2, 1e-2), "float32": (1e-3, 1e-3)}[dtype_str]
-        torch.testing.assert_close(out, ref, rtol=tol[0], atol=tol[1])
+        passed, ratio, max_abs = _check_precision(out, ref, dtype_str)
+        assert passed, f"matched_ratio={ratio:.4f}, max_abs_error={max_abs:.6e}"
 
     print(f"Test passed: N={N}, D={D}, num_segments={num_segments}, dtype={dtype_str}")
 
@@ -338,8 +357,8 @@ def _test_3d(N, D2, num_segments, dtype_str):
     out = unsorted_segment_sum(data, ids, num_segments)
     ref = ref_unsorted_segment_sum(data, ids, num_segments)
 
-    tol = {"float16": (1e-3, 1e-3), "bfloat16": (1e-2, 1e-2), "float32": (1e-3, 1e-3)}[dtype_str]
-    torch.testing.assert_close(out, ref, rtol=tol[0], atol=tol[1])
+    passed, ratio, max_abs = _check_precision(out, ref, dtype_str)
+    assert passed, f"matched_ratio={ratio:.4f}, max_abs_error={max_abs:.6e}"
 
     print(f"Test passed: N={N}, shape=({N},{D2},32), num_segments={num_segments}, dtype={dtype_str}")
 

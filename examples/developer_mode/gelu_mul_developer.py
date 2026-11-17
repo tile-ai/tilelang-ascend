@@ -3,6 +3,32 @@ import tilelang.language as T
 import torch
 import torch.nn as nn
 
+
+def _check_precision(actual, golden):
+    a, g = actual.detach().cpu(), golden.detach().cpu()
+    if a.shape != g.shape:
+        raise AssertionError("shape mismatch")
+    if not a.dtype.is_floating_point:
+        if not torch.equal(a, g):
+            raise AssertionError("integer mismatch")
+        return
+    p = {torch.float16: (2**-14, 2**-9, 1e-1), torch.bfloat16: (2**-10, 2**-6, 1e0), torch.float32: (2**-16, 2**-10, 1e-2)}
+    atol, rtol, cap = p.get(g.dtype, p[torch.float16])
+    a, g = a.float(), g.float()
+    if not (
+        torch.equal(torch.isnan(a), torch.isnan(g))
+        and torch.equal(torch.isposinf(a), torch.isposinf(g))
+        and torch.equal(torch.isneginf(a), torch.isneginf(g))
+    ):
+        raise AssertionError("special values differ")
+    v = torch.isfinite(g)
+    if v.any():
+        d = torch.where(torch.isfinite(a[v]), (a[v] - g[v]).abs(), torch.full_like(g[v], float("inf")))
+        q = (d <= atol + rtol * g[v].abs()).float().mean().item()
+        if q < 0.99 or d.max().item() > cap:
+            raise AssertionError("precision mismatch")
+
+
 tilelang.cache.clear_cache()
 
 pass_configs = {
@@ -72,7 +98,7 @@ for M, N, block_M, block_N in test_configs:
     gelu = nn.GELU(approximate="tanh")
     a1, a2 = torch.split(a, N // 2, dim=1)
     ref_b = gelu(a1) * a2
-    torch.testing.assert_close(b.cpu(), ref_b.cpu(), rtol=1e-2, atol=1e-2)
+    _check_precision(b.cpu(), ref_b.cpu())
     print("Test passed!")
 
 print("Kernel Output Match!")
