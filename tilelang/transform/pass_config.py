@@ -45,7 +45,18 @@ class PassConfigKey(str, Enum):
     """Enable/disable TileLang AscendMemoryPlanning pass. Default: False"""
 
     TL_ASCEND_AUTO_CV_COMBINE = "tl.ascend_auto_cv_combine"
-    """Enable/disable TileLang CombineCV pass. Default: False"""
+    """Enable/disable TileLang CombineCV pass. Default: True.
+
+    Infer Cube/Vector ownership for unscoped Ascend operations while respecting
+    explicit ``T.Scope("C")`` and ``T.Scope("V")`` annotations. When disabled,
+    resource-specific operations require explicit scopes.
+    """
+
+    TL_ASCEND_VECTOR_MASK_REUSE = "tl.ascend_vector_mask_reuse"
+    """Reuse compatible A2/A3 AscendC Vector-mask state. Default: True.
+
+    When False, each selected Vector terminal rebuilds its full required mask.
+    """
 
     TL_ASCEND_AUTO_CV_SYNC = "tl.ascend_auto_cross_core_sync"
     """Enable/disable TileLang Auto CV Synchronization. Default: False"""
@@ -61,7 +72,7 @@ class PassConfigKey(str, Enum):
 
     TL_ASCEND_EXCEPTION_DUMP = "tl.ascend_exception_dump"
     """Enable/disable AI CORE exception dump callback. Requires a CANN version
-    that provides aclrtSetExceptionInfoCallback / aclrtGetArgsFromExceptionInfo.
+    that provides aclrtExceptionInfoCallbackRegister / aclrtGetArgsFromExceptionInfo.
     Default: False"""
 
     # TIR related configs

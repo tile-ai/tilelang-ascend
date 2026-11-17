@@ -100,7 +100,7 @@ def flashattn(
 ):
     """GQA varlen Flash Attention forward kernel (Expert mode, pipelined).
 
-    Iter 2: CV pipeline rewrite following fa_opt/flash_attn_bhsd_expert_h16_d128.py.
+    Iter 2: CV pipeline rewrite following fa_opt/expert_v1/kernel.py.
     - num_stages=14 multi-stage pipeline (batch KV iterations)
     - T.mma + L0A/L0B/L0C double buffering (replaces T.gemm_v0)
     - T.set_flag/wait_flag fine-grained intra-core ownership (replaces T.barrier_all)

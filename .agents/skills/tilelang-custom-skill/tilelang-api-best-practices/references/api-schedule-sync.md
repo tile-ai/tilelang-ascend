@@ -167,37 +167,22 @@ T.set_flag("mte2", "v", 0)
 T.wait_flag("mte2", "v", 0)
 ```
 
-`set_flag` / `wait_flag` 应按“物理缓冲 ownership”设计，而不是只做一次 producer →
-consumer 就绪通知。只要同一缓冲会被下一轮复用，就必须同时有 consumer → producer
-归还方向：
+手动同步保护物理缓冲区的完整 ownership 生命周期：
 
-```python
-# 初始化：consumer 预先把缓冲归还给 producer。
-T.set_flag("MTE1", "MTE2", SIG_L1)
+1. `READY` 必须在 producer 的异步写完成后交给 consumer。
+2. consumer 持有 ownership，直到对该区域的最后一次读取完成。
+3. 完整 Set/Wait 配对是 TileLang 核内、核间同步的正确性条件，涵盖初始和最终归还 token。
+   当前调用即使通过，未配对的核内事件仍可能影响后续调用或同一芯片上的其他进程。
+4. store 之前的 `T.barrier_all()` 不保护 store 之后发生的下一轮复用。
 
-for task in T.serial(task_count):
-    T.wait_flag("MTE1", "MTE2", SIG_L1)  # MTE2 获得可写 ownership
-    T.copy(src[task], l1_buf)
-    T.set_flag("MTE2", "MTE1", SIG_L1)   # producer → consumer
+小提示：沿同一槽位的“初始化 → 循环中的获取/归还 → 退出”看 token，容易发现残留；
+未使用的槽位也可能保留初始 token。
 
-    T.wait_flag("MTE2", "MTE1", SIG_L1)  # MTE1 获得可读 ownership
-    # 完成这一 task 对 l1_buf 的全部读取；可以跨多个内层循环。
-    T.copy(l1_buf, l0_buf)
-    T.set_flag("MTE1", "MTE2", SIG_L1)   # consumer → 下一轮 producer
-
-# 销毁：消费最后一次归还，确保 token 生命周期闭合。
-T.wait_flag("MTE1", "MTE2", SIG_L1)
-```
-
-`T.barrier_all()` 只为它之前已经发出的本地异步操作建立完成边界。它不是缓冲区
-ownership token，也不能保护 barrier **之后**的 store，防止下一 task 过早复用同一缓冲。
-跨流水线复用必须使用与实际 producer/consumer 匹配的双向 flag 生命周期。
-
-event ID 属于有向 `(src_pipe, dst_pipe)` pair，不是所有 pipe 共享的全局编号。
-为新缓冲分配 ID 时，应在它的正、反两个 pair 中选择未占用的 ID；不必为了
-全局数字唯一而跳到更高 ID。反向 pair 是独立的编号空间；同一 ownership
-slot 通常在正反两个 pair 中使用相同数字，但 `FREE` 和 `READY` 等不同语义应保留
-独立名称，且两个方向仍分别需要匹配的 `set_flag` / `wait_flag`。
+event ID 的身份包含有向 `(src_pipe, dst_pipe)` pair；反向 pair 是独立编号空间。完整公开
+语义见 [Programming Guide](../../../../../docs/TileLang-Ascend%20Programming%20Guide.md)。
+本节 raw API 用于理解 public/generated/legacy code；编写新 Expert kernel 时，先读取当前
+`AGENTS.md` 并遵循其中的同步 authoring workflow。不得生成已删除的
+`T.init_flag` / `T.clear_flag`。
 
 ### 核间同步
 

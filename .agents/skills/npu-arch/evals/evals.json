@@ -1,0 +1,356 @@
+{
+  "eval_mode": "text",
+  "evals": [
+    {
+      "id": 1,
+      "title": "架构代际概述与核心概念",
+      "config": {
+        "max_tokens": 150000,
+        "max_tokens_by_model": {
+          "deepseek-v4-flash": 180000,
+          "glm-5": 160000
+        },
+        "ascend_platforms": [
+          "A2"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "请介绍 Ascend NPU 的架构代际划分，包括 NpuArch、SocVersion、__NPU_ARCH__、archXX 这几个核心概念的含义和关系。",
+      "expected_output": "回复应说明 Ascend NPU 架构的核心概念：\n- NpuArch：芯片架构号，定义指令集和微架构，运行时通过 GetCurNpuArch() 获取\n- SocVersion：片上系统版本，软件命名标识，运行时通过 GetSocVersion() 获取\n- __NPU_ARCH__：Device 侧编译宏，四位数值，用于条件编译\n- archXX：算子仓目录简写，取 DAV 编号前两位（如 DAV_2201 → arch22，DAV_3510 → arch35）\n- 一对多关系：一个 NpuArch 可对应多个 SocVersion（如 DAV_2201 对应 Ascend910B1~B4、Ascend910B2C、Ascend910_93）",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 2,
+      "title": "产品映射表查询",
+      "config": {
+        "max_tokens": 150000,
+        "max_tokens_by_model": {
+          "deepseek-v4-flash": 180000,
+          "glm-5": 160000
+        },
+        "ascend_platforms": [
+          "A2"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "Ascend910B 和 Ascend950PR 分别对应什么 NpuArch 和 SocVersion？Ascend910_93 呢？",
+      "expected_output": "回复应基于产品映射表给出准确映射：\n- Ascend910B：SocVersion=ASCEND910B，NpuArch=DAV_2201，__NPU_ARCH__=2201\n- Ascend950PR：SocVersion=ASCEND950，NpuArch=DAV_3510，__NPU_ARCH__=3510\n- Ascend910_93：SocVersion 运行时映射到 ASCEND910B（非独立枚举值），NpuArch=DAV_2201\n- 说明一对多关系：DAV_2201 对应 Ascend910B1~B4、Ascend910B2C、Ascend910_93",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 3,
+      "title": "硬件参数获取方式",
+      "config": {
+        "max_tokens": 150000,
+        "max_tokens_by_model": {
+          "deepseek-v4-flash": 180000,
+          "glm-5": 160000
+        },
+        "ascend_platforms": [
+          "A2"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "在 Ascend C 算子开发中，如何正确获取核数、UB 容量等硬件参数？为什么不能硬编码？",
+      "expected_output": "回复应说明正确的硬件参数获取方式：\n- 使用 PlatformAscendC API：GetCoreNumAic()（Cube 核数）、GetCoreNumAiv()（Vector 核数）、GetCoreMemSize()（Buffer 容量）\n- 反例说明：硬编码典型值（如 constexpr uint32_t CORE_NUM = 32）在跨型号或裁剪 SKU 上会越界或浪费\n- 正确做法：运行时通过接口获取实际值，避免硬编码\n- 示例代码：ascendcPlatform.GetCoreNumAiv() / GetCoreMemSize(CoreMemType::UB, ubSize)",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 4,
+      "title": "DAV_3510 vs DAV_2201 关键差异",
+      "config": {
+        "max_tokens": 150000,
+        "max_tokens_by_model": {
+          "deepseek-v4-flash": 180000,
+          "glm-5": 160000
+        },
+        "ascend_platforms": [
+          "A2"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "DAV_3510 相比 DAV_2201 在 Buffer 容量、指令集和数据通路方面有哪些关键变化？",
+      "expected_output": "回复应覆盖 DAV_3510 的关键变化：\n- Buffer 容量：L0C 128→256 KB，UB 192→248 KB，BT 1→4 KB\n- 数据格式：新增 FP8/MXFP8/MXFP4/HiF8 Cube MMAD\n- CV 直通通路：新增 L0C→UB、UB→L1、SSBuffer 消息通路，避免 GM workspace 中转\n- 同步机制：BufferID 替代 set/wait 强配对，简化多流水算子同步\n- 稀疏支持：DAV_3510 不再支持 4:2 稀疏矩阵计算",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 5,
+      "title": "SIMT vs SIMD 架构差异",
+      "config": {
+        "max_tokens": 150000,
+        "max_tokens_by_model": {
+          "deepseek-v4-flash": 180000,
+          "glm-5": 160000
+        },
+        "ascend_platforms": [
+          "A2"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "Ascend C 中 SIMT 和 SIMD 两种编程模型有什么区别？分别适用于什么场景？",
+      "expected_output": "回复应对比 SIMT 和 SIMD 的核心差异：\n- SIMT：标量编程（线程视角），Warp 调度（32 线程分组），每 AIV 4 个 Warp Scheduler\n- SIMD：矢量编程（VF 内连续计算），软件展开循环\n- SIMT 适用场景：Gather/Scatter、Hash 插入、随机数、排序（含原子操作）\n- SIMD 适用场景：大块 dense BF16/FP16 矩阵乘/卷积、长向量顺序计算\n- SIMT 仅 DAV_3510 支持，前代架构无法使用\n- SIMT 独有硬件：DCache（最大 128KB，复用 UB 作 Cacheline）、支持 GM 离散访问",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 6,
+      "title": "数据格式扩展与 SIMD-Regbase",
+      "config": {
+        "max_tokens": 150000,
+        "max_tokens_by_model": {
+          "deepseek-v4-flash": 180000,
+          "glm-5": 160000
+        },
+        "ascend_platforms": [
+          "A2"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "DAV_3510 新增了哪些数据格式？SIMD-Regbase 架构有什么优势？",
+      "expected_output": "回复应说明 DAV_3510 的数据格式扩展和 Regbase 架构：\n- 新增数据格式：FP8（E5M2/E4M3）、MXFP8（E5M2/E4M3）、MXFP4（E2M1/E1M2）、HiF8\n- C++ 类型名映射：fp8_e5m2_t、fp8_e4m3fn_t、hifloat8_t\n- SIMD-Regbase 核心优势：\n  - 寄存器内计算：减少 UB 访问带宽\n  - OOO 指令双发：Vector 性能提升\n  - 支持非 32B 对齐数据处理\n- 代码形态变化：Membase 的 block/repeat 参数 → Regbase 的 for-loop 显式循环",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 7,
+      "title": "算力公式推导",
+      "config": {
+        "max_tokens": 150000,
+        "max_tokens_by_model": {
+          "deepseek-v4-flash": 180000,
+          "glm-5": 160000
+        },
+        "ascend_platforms": [
+          "A2"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "Ascend950PR Server 的 Cube BF16 算力和 FP8 算力分别是多少？怎么推导的？",
+      "expected_output": "回复应给出算力推导公式和计算过程：\n- Cube BF16 算力公式：TFLOPS = M × K × N × 核数 × freq(MHz) × 2 ÷ 10^6\n- BF16/FP16 的 Cube MAC 阵列：M×K×N = 16×16×16 = 4096\n- 950PR Server BF16：4096 × 32 × 1650 × 2 ÷ 10^6 = 432 TFLOPS\n- FP8 的 Cube MAC 阵列更大：M×K×N = 16×32×16 = 8192\n- 950PR Server FP8：8192 × 32 × 1650 × 2 ÷ 10^6 = 865 TFLOPS\n- Vector 算力公式：TFLOPS = vec_calc_size × vector_core_cnt × vec_freq(MHz) × 2 ÷ 10^6",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 8,
+      "title": "正向看护-多 skill 环境下正确触发",
+      "config": {
+        "max_tokens": 150000,
+        "ascend_platforms": [
+          "A2"
+        ],
+        "distractor_skills": [
+          "ascendc-env-check",
+          "ascendc-api-best-practices",
+          "ascendc-docs-search"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "Ascend910B 和 Ascend950 的架构有什么区别？DAV_2201 和 DAV_3510 的 UB 容量分别是多少？",
+      "expected_output": "回复应正确激活 npu-arch skill，回答架构差异和 UB 容量：\n- DAV_2201（Ascend910B）：UB = 192 KB\n- DAV_3510（Ascend950）：UB = 248 KB\n- 架构差异：L0C 容量、BT 容量、数据格式支持、SIMT/SIMD 支持等\n即使在 ascendc-env-check、ascendc-api-best-practices 等相似 skill 共存的环境下，也应正确选择 npu-arch。",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 9,
+      "title": "信息不足时的追问机制",
+      "config": {
+        "max_tokens": 100000,
+        "max_tokens_by_model": {
+          "deepseek-v4-flash": 120000,
+          "glm-5": 110000
+        },
+        "ascend_platforms": [
+          "A2"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "请介绍 npu-arch 技能在用户提问信息不足时应该如何处理。当用户只说\"NPU 的参数是什么\"这样模糊的问题时，技能应该追问哪些方面？请简要说明。不需要执行任何操作，只需要介绍知识。",
+      "expected_output": "回复应说明 npu-arch 技能在信息不足时的追问机制：\n- 应主动追问用户具体想了解哪方面信息，而不是直接罗列所有架构知识\n- 可追问的方向包括：架构映射（芯片型号→NpuArch）、硬件参数（核数/Buffer/算力）、SIMT/SIMD 编程模型、数据格式支持、特定芯片的详细规格\n- 追问的目的是缩小范围，提供精准回答而非信息轰炸",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 10,
+      "title": "使用边界-不适用于算子开发模板",
+      "config": {
+        "max_tokens": 100000,
+        "max_tokens_by_model": {
+          "deepseek-v4-flash": 120000,
+          "glm-5": 110000
+        },
+        "ascend_platforms": [
+          "A2"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "请介绍 npu-arch 技能的使用边界。它适合什么场景？不适合什么场景？如果要创建算子工程模板应该用什么技能？不需要执行任何操作，只需要介绍知识。",
+      "expected_output": "回复应说明 npu-arch 技能的适用边界：\n- 适合场景：架构判断与硬件能力识别（芯片映射、架构差异、硬件参数、数据格式、算力推导）\n- 不适合场景：算子目录结构、CMake 配置、文件命名约定等工程模板内容不在本技能范围内\n- 推荐替代：创建算子工程模板应使用 ascendc-direct-invoke-template（Kernel 直调工程）或 ascendc-registry-invoke-template（完整自定义算子工程）\n- 核心区别：npu-arch 提供架构知识查询，工程模板类技能提供项目脚手架",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 11,
+      "title": "构建宏不可按名字数值推断",
+      "config": {
+        "max_tokens": 150000,
+        "ascend_platforms": [
+          "A2"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "构建系统里的 __DAV_C310__ 是否代表 __NPU_ARCH__=310？它与 arch35、DAV_3510 的关系是什么？",
+      "expected_output": "回复应说明 __DAV_C310__ 是构建系统内部宏，不可从 C310 字样按数值推断；它等价于 NpuArch::DAV_3510、arch35 和 __NPU_ARCH__=3510，应以明确映射而非猜测命名",
+      "expectations": [],
+      "files": []
+    },
+    {
+      "id": 12,
+      "title": "架构查询失败的保留值处理",
+      "config": {
+        "max_tokens": 150000,
+        "ascend_platforms": [
+          "A2"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "PlatformAscendC 查询当前芯片时 GetCurNpuArch 和 GetSocVersion 失败，会返回什么？可以继续按 DAV_2201 默认分支执行吗？",
+      "expected_output": "回复应说明失败分别返回 NpuArch::DAV_RESV 和 SocVersion::RESERVED_VERSION，不能静默假定 DAV_2201；应把未知架构作为显式错误或安全兜底路径处理，再补充平台信息",
+      "expectations": [],
+      "files": []
+    },
+    {
+      "id": 13,
+      "title": "同架构不同 SKU 参数不能套典型值",
+      "config": {
+        "max_tokens": 150000,
+        "ascend_platforms": [
+          "A2"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "既然 Ascend950PR PCIE 和 Server 都是 DAV_3510，能否把 Server 的 32 个 Cube 核、128GB Memory 和频率硬编码给所有 arch35 产品？",
+      "expected_output": "回复应拒绝硬编码，说明同一 NpuArch 下频率、核数、L2 和 Memory 会随子型号或形态变化；应运行时通过 PlatformAscendC 或设备接口获取实际值，参考表中的典型 SKU 只能作说明，不能当所有 arch35 的真值",
+      "expectations": [],
+      "files": []
+    },
+    {
+      "id": 14,
+      "title": "Vector BF16 支持与总算力构成",
+      "config": {
+        "max_tokens": 150000,
+        "max_tokens_by_model": {
+          "deepseek-v4-flash": 180000,
+          "glm-5": 160000
+        },
+        "ascend_platforms": [
+          "A2"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "Ascend950PR（DAV_3510）的 Vector Core 支持 BF16 吗？950PR Server 的 BF16 峰值算力是多少，Cube 和 Vector 各贡献多少？",
+      "expected_output": "回复应明确（昇腾950 NPU架构白皮书 §4.1.2/表3-1）：\n- DAV_3510 的 Vector Core 原生支持 BF16，不存在 BF16 只能用 Cube 的限制\n- 950PR Server BF16 总算力 486 TFLOPS = Cube 432T + Vector 54T\n- 950PR PCIE 档总算力 425T = Cube 378T + Vector 47T\n- 不得再声称 Vector 不支持 bfloat16（过时错误表述）",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 15,
+      "title": "UB 容量口径（512KB vs 248KB）",
+      "config": {
+        "max_tokens": 150000,
+        "max_tokens_by_model": {
+          "deepseek-v4-flash": 180000,
+          "glm-5": 160000
+        },
+        "ascend_platforms": [
+          "A2"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "昇腾950 白皮书表4-2 写 UB 是 512KB per AI Core，但 GetCoreMemSize 返回 248KB，这两个数值矛盾吗？Tiling 时应该用哪个？",
+      "expected_output": "回复应说明 UB 容量口径：\n- 不矛盾：白皮书表4-2 的 512KB 是按 AI Core 组（1 AIC + 2 AIV）计的物理容量，即每 AIV 物理 256KB × 2\n- 248KB（INI ub_size=253952）是每 AIV 用户可用值，即物理 256KB − 8KB 预留\n- 结论：单 AIV 物理 256KB / 可用 248KB，组级物理 512KB\n- Tiling 一律以 GetCoreMemSize(CoreMemType::UB) 返回值为准，禁止硬编码",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 16,
+      "title": "950DT/950PR 规格档位与定位",
+      "config": {
+        "max_tokens": 150000,
+        "max_tokens_by_model": {
+          "deepseek-v4-flash": 180000,
+          "glm-5": 160000
+        },
+        "ascend_platforms": [
+          "A2"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "Ascend950DT 和 Ascend950PR 分别面向什么场景？各自的核数档位和 Memory 规格是什么？",
+      "expected_output": "回复应说明 950 系列定位与规格（昇腾950 NPU架构白皮书 §2/§3/表3-1）：\n- 950PR：面向高性能推荐、大模型 Prefill 及多模态推理；Cube 32/28 核两档，Memory 128/112GB @ 1.6/1.4TB/s\n- 950DT：覆盖预训练、后训练及推理（含 Decode 与 Prefill）全流程；Cube 36/32/28 核三档，Memory 144/96GB @ 4TB/s\n- (Decode)/(Prefill) 仅为场景侧重标注，并非唯一用途",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 17,
+      "title": "Memory 带宽与信息来源分级",
+      "config": {
+        "max_tokens": 150000,
+        "max_tokens_by_model": {
+          "deepseek-v4-flash": 180000,
+          "glm-5": 160000
+        },
+        "ascend_platforms": [
+          "A2"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "Ascend950PR Server 和 PCIE 的 Memory 带宽分别是多少？Ascend910B2 的带宽呢？这些数据的来源是否经过官方证实？",
+      "expected_output": "回复应说明 Memory 带宽及来源可信度：\n- 950PR Server 1.6 TB/s、PCIE 1.4 TB/s：已由昇腾950 NPU架构白皮书表3-1/§4.3 证实\n- 950DT 最高 4 TB/s：白皮书证实\n- 910B2 1.6 TB/s：基于公开资料与经验值，未在 INI 及白皮书中找到直接可核验字段\n- 技能对信息来源分级标注：已证实条目给出白皮书章节，未验证条目明确标注为公开资料/经验值",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 18,
+      "title": "NDDMA 与 BufferID 机制细节",
+      "config": {
+        "max_tokens": 150000,
+        "max_tokens_by_model": {
+          "deepseek-v4-flash": 180000,
+          "glm-5": 160000
+        },
+        "ascend_platforms": [
+          "A2"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "DAV_3510 的 NDDMA 指令有什么能力？BufferID 同步机制相比 set/wait 有什么变化？",
+      "expected_output": "回复应说明 NDDMA 与 BufferID（昇腾950 NPU架构白皮书 §4.1.5/§4.1.6）：\n- NDDMA：对全局内存数据最多 5 个维度重排后直接写入 UB，搬运与重排/转置一步完成；内置缓存自动发掘数据局部性，将多个数据元素粒度的读合并为 128 字节读\n- BufferID：替代 set/wait 强制配对，get_buf() 对应加锁、rel_buf() 对应解锁，类似互斥锁语义，内聚性更强、与其他流水线解耦",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 19,
+      "title": "CCU 通算融合能力",
+      "config": {
+        "max_tokens": 150000,
+        "max_tokens_by_model": {
+          "deepseek-v4-flash": 180000,
+          "glm-5": 160000
+        },
+        "ascend_platforms": [
+          "A2"
+        ],
+        "eval_mode": "text"
+      },
+      "prompt": "DAV_3510 新增的 CCU 是什么？支持哪些集合通信算法？对算子开发有什么影响？",
+      "expected_output": "回复应说明 CCU（昇腾950 NPU架构白皮书 §4.6.4）：\n- CCU（Collective Communication Unit）：IO-Die 上新增的集合通信专用引擎\n- CCUA 集成 MemorySlice（数据存储）与 Reduce Unit（数据计算），URMA 搬运与 Reduce 计算由硬件判定执行，完成后通过 Mission 任务接口上报状态\n- 支持 Broadcast / ReduceScatter / AllGather / AllReduce / All2All / All2Allv 典型算法\n- 对算子开发者的影响：通算融合算子有了新的开发选型",
+      "files": [],
+      "expectations": []
+    }
+  ],
+  "skill_name": "npu-arch"
+}

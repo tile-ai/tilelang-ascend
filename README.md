@@ -572,7 +572,7 @@ for k in T.Pipelined(T.ceildiv(seq_len, block_N), num_stages=2):
     ...
 ```
 
-For performance tuning with `T.Pipelined` (choosing `num_stages`, Double Buffer, etc.), see the [Flash Attention Performance Optimization Guide](./examples/flash_attention/fa_opt/flash_attention_performance_optimization_zh.md).
+For performance tuning with `T.Pipelined` (choosing `num_stages`, Double Buffer, etc.), see the [Flash Attention Performance Optimization Guide](./examples/flash_attention/fa_opt/docs/optimization_guide_zh.md).
 
 ### Dive Deep into TileLang Beyond GEMM
 

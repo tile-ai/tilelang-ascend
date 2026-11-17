@@ -6,21 +6,23 @@ TileLang-ascend introduces new debugging API interfaces: `T.printf` and `T.dump_
 
 ## Prerequisites
 
-To enable `T.printf` and `T.dump_tensor` output at runtime, the environment
-variable `TL_PTO_DEBUG` must be set to `"1"` **before** kernel compilation:
+Enable the required Bisheng flags on the kernel:
 
 ```python
-import os
-os.environ["TL_PTO_DEBUG"] = "1"
+@tilelang.jit(
+    target="ascendc",
+    compile_flags=["-D_DEBUG", "--cce-enable-print"],
+)
+def debug_kernel(...):
+    ...
 ```
 
-This appends the compiler flags `-D_DEBUG` and `--cce-enable-print`,
-which activate the device-side printf infrastructure that is otherwise compiled
-out for performance reasons.
+`TL_PTO_DEBUG=1` is a legacy process-wide fallback only for `target="pto"`;
+it does not enable AscendC debug flags. Prefer kernel-scoped `compile_flags`;
+see [JIT compilation](jit_compilation.md).
 
-> **Warning**: `TL_PTO_DEBUG` is intended for **debugging only**. Leaving it
-> enabled degrades kernel performance and each tile's printf/dump buffer is
-> capped at 1 MB.
+> **Warning**: Device printing is for debugging only. It degrades kernel
+> performance, and each tile's printf/dump buffer is capped at 1 MB.
 
 See the *TileLang-Ascend Programming Guide* for full details.
 

@@ -116,7 +116,6 @@ CUBE_PASS_CONFIGS = {
 # combine is harmless for pure-Cube kernels and matches the passing gm_to_l1
 # suite.
 DEV_PASS_CONFIGS = {
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
     tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
