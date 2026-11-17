@@ -166,6 +166,7 @@ private:
   void PowerOpCodegen(const CallNode *op, const std::string &op_name);
 
   void BroadcastOpCodegen(const CallNode *op);
+  void Im2ColOpCodegen(const CallNode *op);
 
   void TailUnaryOpCodegen(const CallNode *op);
 
