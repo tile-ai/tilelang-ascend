@@ -405,7 +405,7 @@ private:
     }
 
     return Block(op->iter_vars, op->reads, op->writes, op->name_hint, new_body,
-                 op->init, allocs);
+                 op->init, allocs, op->match_buffers, op->annotations);
   }
 
   // Generic Plan
