@@ -109,18 +109,22 @@ def ref_bwd(Q, K, V, Sinks, dO, window_size=None, groups=1):
 
 
 # ============================================================================
-# Precision constants (169-line standard)
+# Precision checks (precision-standard.md)
 # ============================================================================
 
-FP16_ATOL = 6.10e-5
-FP16_RTOL = 1.95e-3
-FP16_MAX_ABS_LIMIT = 0.1
-FP16_REQUIRED_RATIO = 0.99
 
-FP32_ATOL = 1.53e-5
-FP32_RTOL = 9.77e-4
-FP32_MAX_ABS_LIMIT = 1e-2
-FP32_REQUIRED_RATIO = 0.99
+def get_precision(dtype_str):
+    fp_table = {
+        "float16": (2**-14, 2**-9, 1e-1, 0.99),
+        "bfloat16": (2**-10, 2**-6, 1e0, 0.99),
+        "float32": (2**-16, 2**-10, 1e-2, 0.99),
+        "hifloat32": (2**-16, 2**-10, 1e-2, 0.99),
+        "float8_e4m3": (2**-4, 2**-2, 1e0, 0.99),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1, 0.99),
+    }
+    if dtype_str in {"int8", "int16", "int32", "int64", "uint8"}:
+        return 0.0, 0.0, 0.0, 1.0
+    return fp_table.get(dtype_str, fp_table["float16"])
 
 
 def check_precision(actual, golden, dtype_str):
@@ -129,23 +133,15 @@ def check_precision(actual, golden, dtype_str):
     INF/NAN structural comparison per precision-standard.md §3.1.
     Returns: (passed, matched_ratio, max_abs_error)
     """
-    if dtype_str == "float16":
-        atol, rtol, max_abs_limit, required_ratio = (
-            FP16_ATOL,
-            FP16_RTOL,
-            FP16_MAX_ABS_LIMIT,
-            FP16_REQUIRED_RATIO,
-        )
-    else:
-        atol, rtol, max_abs_limit, required_ratio = (
-            FP32_ATOL,
-            FP32_RTOL,
-            FP32_MAX_ABS_LIMIT,
-            FP32_REQUIRED_RATIO,
-        )
-
-    a = actual.detach().cpu().float()
-    g = golden.detach().cpu().float()
+    atol, rtol, max_abs_limit, required_ratio = get_precision(dtype_str)
+    a = actual.detach().cpu()
+    g = golden.detach().cpu()
+    if atol == 0.0 and rtol == 0.0:
+        mismatches = (a != g).sum().item()
+        total = max(a.numel(), 1)
+        return mismatches == 0, 1.0 - mismatches / total, 0.0 if mismatches == 0 else float("inf")
+    a = a.float()
+    g = g.float()
     # INF/NAN structural comparison (precision-standard.md §3.1)
     special = ~torch.isfinite(g)
     if special.any():  # noqa: SIM102
