@@ -220,8 +220,10 @@ Stmt ReduceOp::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       Array<PrimExpr> thread_reduce_args = {
           StringImm(ss.str()), BufferLoad(clear_buffer, dst_indices)};
       if (reducing_threads >= 32) {
-        PrimExpr workspace = T.AddWorkspace(
-            *as_const_int(T.thread_bounds->extent), clear_buffer->dtype);
+        PrimExpr workspace =
+            T.AddWorkspace(*as_const_int(T.thread_bounds->extent),
+                           clear_buffer->dtype, "shared")
+                .access_ptr(2);
         thread_reduce_args.push_back(workspace);
       }
       auto call =

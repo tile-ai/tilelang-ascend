@@ -469,11 +469,12 @@ private:
     auto tile_op = ParseOperator(GetRef<Stmt>(op), buffer_data_to_buffer_);
     if (tile_op == nullptr)
       return IRMutatorWithAnalyzer::VisitStmt_(op);
-    AddWorkspaceCallback callback = [this](int num_elem, DataType dtype) {
+    AddWorkspaceCallback callback = [this](int num_elem, DataType dtype,
+                                           const std::string &scope) {
       auto workspace =
-          decl_buffer({PrimExpr(num_elem)}, dtype, "workspace", "shared");
+          decl_buffer({PrimExpr(num_elem)}, dtype, "workspace", scope);
       workspaces_.push_back(workspace);
-      return workspace.access_ptr(2); // write
+      return workspace;
     };
 
     // Get pass config `tl.disable_tma_lower`
