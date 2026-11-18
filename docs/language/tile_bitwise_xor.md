@@ -38,9 +38,7 @@ def bitwise_xor(
 | 平台 / 后端 | dst | src0 | src1 |
 |-------------|:---:|:----:|:----:|
 | Ascend A2 / A3（Ascend C） | int16, uint16 | 同 dst | 同 dst |
-| Ascend A2 / A3（PTO） | int8, int16, uint16 | 同 dst | 同 dst |
-
-> PTO 后端的 uint8 仅 1D 可用
+| Ascend A2 / A3（PTO） | int8, uint8, int16, uint16 | 同 dst | 同 dst |
 
 #### 2.3.2 Shape 支持
 
