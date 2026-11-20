@@ -151,47 +151,6 @@ def validate_attention_spans(
     checked_elements("latent workspace", blocks, block_m, 512)
 
 
-def validate_chain_spans(
-    batch,
-    query_capacity,
-    heads,
-    cache_capacity,
-    *,
-    packed=False,
-    decode=False,
-    append_sources=False,
-    block_m=32,
-    block_n=64,
-    split_count=6,
-    max_blocks=20,
-):
-    _positive(batch=batch, heads=heads)
-    if any(type(value) is not int or value < 0 for value in (query_capacity, cache_capacity)):
-        raise ValueError("query/cache capacities must be nonnegative host integers")
-    if query_capacity == 0:
-        return  # No kernel or nonempty output allocation; preserve the empty domain.
-    if cache_capacity == 0:
-        checked_elements("empty-cache output", batch, query_capacity, heads, 128)
-        return  # The zero path does not allocate/index QL, weights or cache payload.
-    validate_projection_spans(batch, query_capacity, heads, packed=packed)
-    validate_attention_spans(
-        batch,
-        query_capacity,
-        heads,
-        cache_capacity,
-        decode=decode,
-        block_m=block_m,
-        block_n=block_n,
-        split_count=split_count,
-        max_blocks=max_blocks,
-    )
-    if append_sources:
-        checked_elements("append rawKV", batch, query_capacity, 576)
-
-
-DTYPES = {torch.float16: "float16", torch.bfloat16: "bfloat16"}
-
-
 def projection_plan(B, Tq, H, tiles_per_row):
     if any(type(value) is not int or value <= 0 for value in (B, Tq, H)):
         raise ValueError("B, Tq and H must be positive Python integers")
