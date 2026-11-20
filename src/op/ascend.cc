@@ -9,6 +9,7 @@
 
 #include "ascend.h"
 
+#include <algorithm>
 #include <sstream>
 #include <tuple>
 #include <vector>
@@ -507,6 +508,91 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   } else {
     validRow_dst = 0;
     validCol_dst = 0;
+  }
+
+  // A compact one-dimensional UB tile copied into a GM column is a
+  // reshape followed by a strided store. Every MTE3 burst starts at a 32-byte
+  // UB boundary, so keep the source compact and materialize DMA row slots in
+  // separate storage. The existing GM->UB row-slot convention is unchanged.
+  const String target_model =
+      T.target->GetAttr<String>("model").value_or(String(""));
+  const bool compact_column_copy =
+      config.ub2gm && src->shape.size() == 1 && dst_active.size() == 2 &&
+      is_one(dst_extents.back()) &&
+      (target_model == "ascendc" || target_model == "auto");
+  if (compact_column_copy &&
+      !analyzer->CanProve(src_extents[0] <= Integer(1))) {
+    const int dst_row_idx = dst_active[0];
+    ICHECK(analyzer->CanProve(src_extents[0] == dst_extents[dst_row_idx]))
+        << "copy_ub_to_gm: a compact 1D source and a GM column must have "
+           "the same logical extent";
+    ICHECK(src->dtype == dst->dtype)
+        << "copy_ub_to_gm: compact column copies require matching dtypes";
+    const DataType dtype = src->dtype;
+    const bool supported_dtype =
+        dtype.lanes() == 1 &&
+        ((dtype.bits() == 16 && (dtype.is_int() || dtype.is_uint() ||
+                                 dtype.is_float16() || dtype.is_bfloat16())) ||
+         (dtype.bits() == 32 &&
+          (dtype.is_int() || dtype.is_uint() || dtype.is_float())));
+    ICHECK(supported_dtype)
+        << "copy_ub_to_gm: compact strided column copies support 16-bit and "
+           "32-bit integer/floating-point elements, but got "
+        << dtype;
+    ICHECK(src_new_buffer->shape.size() == 1 &&
+           (src_new_buffer->strides.empty() ||
+            (src_new_buffer->strides.size() == 1 &&
+             analyzer->CanProve(src_new_buffer->strides[0] == Integer(1)))))
+        << "copy_ub_to_gm: compact column copies require a contiguous 1D UB "
+           "source layout";
+    const auto *capacity = src->shape[0].as<IntImmNode>();
+    ICHECK(capacity && capacity->value > 0)
+        << "copy_ub_to_gm: compact column copies require a positive static "
+           "UB capacity";
+    int64_t max_rows = capacity->value;
+    if (const auto *extent = src_extents[0].as<IntImmNode>()) {
+      max_rows = std::min(max_rows, extent->value);
+    }
+    ICHECK_LE(max_rows, 4095)
+        << "copy_ub_to_gm: compact column copies support at most 4095 rows "
+           "per tile (the MTE3 block-count limit)";
+    const int64_t row_elements = 256 / dtype.bits();
+    Buffer packed =
+        decl_buffer({Integer(max_rows), Integer(row_elements)}, dtype,
+                    T.FreshBufferName("copy_column_ub"), "shared.ub");
+    PrimExpr valid_rows =
+        analyzer->Simplify(Select(validCol_dst > Integer(0),
+                                  Min(validRow_dst, validCol_src), Integer(0)));
+    Array<PrimExpr> pack_args{
+        StringImm("tl::ascend::copy_ub_column_pack<" + get_dtype(src) + ">"),
+        src_ptr, packed.access_ptr(2), valid_rows};
+    std::ostringstream copy_name;
+    copy_name << "tl::ascend::copy_ub_to_gm<" << get_dtype(dst) << ", "
+              << row_elements << ", " << max_rows << ">";
+    Array<PrimExpr> copy_args{StringImm(copy_name.str()),
+                              packed.access_ptr(1),
+                              dst_ptr,
+                              strideN,
+                              valid_rows,
+                              validCol_dst,
+                              Integer(max_rows),
+                              Integer(row_elements)};
+    auto sync_all = []() {
+      return Evaluate(
+          Call(DataType::Handle(), ascend_pipe_barrier(), {StringImm("ALL")}));
+    };
+    // Also cover manual-sync kernels: wait for the source producer before
+    // scalar reads, Duplicate before MTE3, and MTE3 before scratch reuse.
+    // DataCopyPad remains an ordinary unconditional helper call; do not mix
+    // GM scalar stores and DMA under a runtime branch.
+    Stmt body = SeqStmt(
+        {sync_all(),
+         Evaluate(Call(DataType::Handle(), builtin::call_extern(), pack_args)),
+         sync_all(),
+         Evaluate(Call(DataType::Handle(), builtin::call_extern(), copy_args)),
+         sync_all()});
+    return Allocate(packed->data, packed->dtype, packed->shape, const_true(),
+                    body);
   }
 
   Array<PrimExpr> new_args;

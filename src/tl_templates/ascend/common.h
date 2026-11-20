@@ -497,6 +497,28 @@ atomic_add_l0c_to_gm(GlobalTensor<T2> dstTensor, LocalTensor<T1> srcTensor,
   disable_dma_atomic_compat();
 }
 
+// Repack a computed compact column into the 32-byte row slots required by
+// MTE3. The lowering brackets this helper and the DMA with full pipe barriers.
+// A vector write is intentional: scalar SetValue is not a reliable producer
+// for the following MTE3 transfer (see tail_broadcast below).
+template <typename T>
+CATLASS_DEVICE void copy_ub_column_pack(LocalTensor<T> dstTensor,
+                                        LocalTensor<T> srcTensor,
+                                        uint32_t rows) {
+  static_assert(IsDuplicateSupported_v<T>,
+                "Compact column packing requires a 16-bit or 32-bit type");
+  // Preserve floating-point payloads, signed zero, and integer bits exactly.
+  // In particular, use integer Duplicate for bfloat16 rather than relying on
+  // a dtype-specific vector Duplicate specialization.
+  using Bits = std::conditional_t<sizeof(T) == 2, uint16_t, uint32_t>;
+  auto dstBits = dstTensor.template ReinterpretCast<Bits>();
+  auto srcBits = srcTensor.template ReinterpretCast<Bits>();
+  constexpr uint32_t rowElements = 32 / sizeof(Bits);
+  for (uint32_t row = 0; row < rows; ++row) {
+    AscendC::Duplicate(dstBits[row * rowElements], srcBits.GetValue(row), 1);
+  }
+}
+
 template <typename T1, typename T2, uint32_t len>
 CATLASS_DEVICE void copy_ub_to_ub(LocalTensor<T1> dstTensor,
                                   LocalTensor<T2> srcTensor) {

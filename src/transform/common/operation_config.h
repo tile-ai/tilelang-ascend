@@ -99,6 +99,8 @@ GetOperationConfig() {
         0}},
       {"copy_ub_to_ub",
        {{{0, "read"}, {1, "write"}}, "PIPE_V", {"shared.ub", "shared.ub"}, 1}},
+      {"copy_ub_column_pack",
+       {{{0, "read"}, {1, "write"}}, "PIPE_V", {"shared.ub", "shared.ub"}, 1}},
       {"copy_ub_to_ub_Nz",
        {{{0, "read"}, {1, "write"}}, "PIPE_V", {"shared.ub", "shared.ub"}, 1}},
       {"copy_ub_to_pipe",
