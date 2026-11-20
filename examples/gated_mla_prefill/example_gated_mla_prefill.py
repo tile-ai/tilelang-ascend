@@ -376,14 +376,6 @@ def _validated_scale(scale):
     return validated_host_scale(scale, DEFAULT_SCALE)
 
 
-EXPERT_PASSES = {
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
-    tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: False,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_COMBINE: False,
-    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: False,
-}
-
-
 def probability_precision_mode(dtype):
     """Static dtype policy; there is no runtime opt-out of the BF16 repair."""
     if dtype == "float16":

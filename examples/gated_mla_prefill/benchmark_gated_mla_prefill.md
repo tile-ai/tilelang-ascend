@@ -360,6 +360,35 @@ raise a specific exception matching a message fragment, not a generic one; and
 the pipelined entry **must not** be compiled at `batch >= 2` or for more than one
 KV block. If that ever starts passing, the documented domain has changed.
 
+### What the gates cost CI
+
+| Entry | Content | Wall clock |
+|---|---|---:|
+| `test_example_gated_mla_prefill.py` | 28 cases, 6 of them CPU-only | 200 s |
+| `example_gated_mla_prefill.py` `__main__` | 5 configurations x 2 backends | 233 s |
+
+The two are independent, so the wall clock is about four minutes. The test
+figure is from a cold JIT cache, which is what CI starts from; a warm cache
+brings it to 173 s. A new shape
+costs roughly 6 s of JIT compilation and a repeated one about 0.2 s, so the
+figure tracks the number of **distinct** shapes rather than the number of cases;
+the configurations above reuse shapes wherever a case only needs a different
+dtype or backend.
+
+### What is covered, and what was cut
+
+The shipped cases cover both dtypes against both backends, both mask paths
+(whole-tile and row-wise), `query_start` in {0, 1, 7, 64}, `kv_len` in
+{1, 40, 127, 128}, one and two batches, an inactive neighbour, the domain guard,
+and four rejection cases.
+
+Two axes are deliberately **not** covered by the shipped gates, and both are
+exercised in section 4 instead: cache lengths beyond 128, and head counts other
+than 96. The ratio matrix qualifies Tk256 and Tk512 at 2.1e-04 against the FP32
+reference, and H32/H64 likewise, so the evidence exists — but no shipped case
+pins it, because each additional distinct shape costs a JIT compilation and
+these shapes cannot reach the pipelined entry anyway (section 6).
+
 ## 6. Known limits
 
 - **The pipelined entry is compiled only when `iterations == 1`,
