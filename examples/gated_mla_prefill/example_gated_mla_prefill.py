@@ -1564,27 +1564,84 @@ def reference_gated_mla_prefill(q_content, q_aux, latent_kv, key_aux, w_k, w_v, 
     return out
 
 
+def reference_gated_mla_prefill_expanded(q_content, q_aux, latent_kv, key_aux, w_k, w_v, gate_logits, metadata, *, scale=None):
+    """A second reference that shares no contraction order with the first.
+
+    `reference_gated_mla_prefill` is the absorbed form the kernel implements: it
+    folds W_K into the query and contracts against the latent cache directly.
+    This one is the expanded form instead. It materialises a per-head key and
+    value of width 128 from the latent cache and then runs ordinary attention:
+
+        k[k,h,:] = w_k[h] @ c[k,:]        v[k,h,:] = w_v[h] @ c[k,:]
+        s[q,h,k] = scale * ( q_content[q,h,:] . k[k,h,:] + q_aux[q,h,:] . e[k,:] )
+        y[q,h,:] = sum_k softmax_k(s)[q,h,k] * v[k,h,:]
+
+    The two are algebraically the same because the inner sum over the latent
+    rank can be taken in either order, but they share no code path, so agreement
+    between them is evidence that the absorbed decomposition itself is right and
+    not only that the kernel matches one particular way of writing it. Their
+    difference is the floor below which no implementation can be held.
+    """
+    scale = validated_host_scale(scale, DEFAULT_SCALE)
+    batch, query_capacity, heads, _ = q_content.shape
+    out = torch.zeros(batch, query_capacity, heads, 128, dtype=q_content.dtype)
+    for b in range(batch):
+        valid_q, kv_len, query_start = (int(metadata[b, i]) for i in range(3))
+        if valid_q == 0:
+            continue
+        c = latent_kv[b, :kv_len].float()
+        # Expand the shared latent rows into per-head keys and values.
+        k = torch.einsum("hdr,kr->khd", w_k.float(), c)
+        v = torch.einsum("hdr,kr->khd", w_v.float(), c)
+        s = scale * (
+            torch.einsum("qhd,khd->qhk", q_content[b, :valid_q].float(), k)
+            + torch.einsum("qhe,ke->qhk", q_aux[b, :valid_q].float(), key_aux[b, :kv_len].float())
+        )
+        visible = torch.arange(kv_len).view(1, 1, -1) < (torch.arange(valid_q).view(-1, 1, 1) + query_start + 1)
+        p = torch.softmax(s.masked_fill(~visible, float("-inf")), dim=-1)
+        y = torch.einsum("qhk,khd->qhd", p, v) * torch.sigmoid(gate_logits[b, :valid_q].float())
+        out[b, :valid_q] = y.to(q_content.dtype)
+    return out
+
+
 if __name__ == "__main__":
-    torch.manual_seed(0)
-    # One representative shape: the measured Kimi K3 profile, head-aligned with a
-    # single KV block at batch one, which is the domain the pipelined entry covers.
-    B, TQ, TK, H = 1, 128, 128, 96
-    dtype = torch.float16
-    cpu = {
-        "q_content": (torch.randn(B, TQ, H, 128) * 0.1).to(dtype),
-        "q_aux": (torch.randn(B, TQ, H, 64) * 0.1).to(dtype),
-        "latent_kv": (torch.randn(B, TK, 512) * 0.1).to(dtype),
-        "key_aux": (torch.randn(B, TK, 64) * 0.1).to(dtype),
-        "w_k": (torch.randn(H, 128, 512) * 0.05).to(dtype),
-        "w_v": (torch.randn(H, 128, 512) * 0.05).to(dtype),
-        "gate_logits": (torch.randn(B, TQ, H, 128) * 0.5).to(dtype),
-        "metadata": torch.tensor([[TQ, TK, 0, 0, 0, 0, 0, 0]] * B, dtype=torch.int32),
-    }
-    expected = reference_gated_mla_prefill(**cpu)
-    device = {name: value.npu() for name, value in cpu.items()}
-    for target in ("pto", "ascendc"):
-        print(f"Testing Gated MLA prefill with B={B}, Tq={TQ}, Tk={TK}, H={H}, dtype={dtype}, target={target}")
-        actual = gated_mla_prefill(**device, target=target).cpu()
-        torch.testing.assert_close(actual.float(), expected.float(), rtol=2**-9, atol=2**-10)
-        print("  Passed!")
+    torch.set_printoptions(sci_mode=True)
+
+    # Each configuration exercises a different property rather than a larger
+    # version of the same one: the measured Kimi K3 profile that the pipelined
+    # entry covers, the row-wise mask path, a shorter valid cache, a shifted
+    # window, and two batches, which fall back to the original entry.
+    #     B, Tq, Tk, H, valid_q, kv_len, query_start, dtype, note
+    test_configs = [
+        (1, 128, 128, 96, 128, 128, 0, torch.float16, "measured profile, pipelined entry"),
+        (1, 128, 128, 96, 128, 128, 0, torch.bfloat16, "same profile in bfloat16"),
+        (1, 64, 128, 96, 64, 128, 0, torch.float16, "row-wise mask path"),
+        (1, 128, 128, 96, 40, 97, 7, torch.float16, "short query, clamped cache, shifted window"),
+        (2, 64, 128, 96, 64, 128, 0, torch.float16, "two batches, fallback entry"),
+    ]
+
+    for B, TQ, TK, H, valid_q, kv_len, query_start, dtype, note in test_configs:
+        torch.manual_seed(0)
+        cpu = {
+            "q_content": (torch.randn(B, TQ, H, 128) * 0.1).to(dtype),
+            "q_aux": (torch.randn(B, TQ, H, 64) * 0.1).to(dtype),
+            "latent_kv": (torch.randn(B, TK, 512) * 0.1).to(dtype),
+            "key_aux": (torch.randn(B, TK, 64) * 0.1).to(dtype),
+            "w_k": (torch.randn(H, 128, 512) * 0.05).to(dtype),
+            "w_v": (torch.randn(H, 128, 512) * 0.05).to(dtype),
+            "gate_logits": (torch.randn(B, TQ, H, 128) * 0.5).to(dtype),
+            "metadata": torch.tensor([[valid_q, kv_len, query_start, 0, 0, 0, 0, 0]] * B, dtype=torch.int32),
+        }
+        expected = reference_gated_mla_prefill(**cpu)
+        device = {name: value.npu() for name, value in cpu.items()}
+        for target in ("pto", "ascendc"):
+            print(f"Testing B={B}, Tq={TQ}, Tk={TK}, H={H}, valid_q={valid_q}, kv_len={kv_len}, start={query_start}")
+            block_n = public_prefill_block_n(B, TQ, H, TK, DEFAULT_SCALE)
+            print(f"  dtype={dtype}, target={target}, block_n={block_n}  # {note}")
+            actual = gated_mla_prefill(**device, target=target).cpu()
+            # Rows past the valid query length are exact, so compare them first.
+            assert torch.equal(actual[:, valid_q:], torch.zeros_like(actual[:, valid_q:])), "inactive tail is not exact"
+            torch.testing.assert_close(actual.float(), expected.float(), rtol=2**-9, atol=2**-10)
+            print("  Passed!")
+
     print("Gated MLA prefill output matches the reference!")

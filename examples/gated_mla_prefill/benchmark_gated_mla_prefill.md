@@ -113,6 +113,61 @@ The last three rows are shapes outside the guard. All land within 0.982–1.008x
 the size of their own half-ranges. **Zero gain outside the domain is the design,
 not an omission.**
 
+### Both dtypes and both backends, measured on this file
+
+The table above was collected during development. This one is measured on the
+example exactly as submitted, over both dtypes and both backends, by NPUGraph
+capture and replay: a graph holding ten calls is captured once, then replayed
+twenty times under a pair of device events, three independent runs per cell.
+Capture takes compilation and host dispatch out of the measurement.
+
+`msprof op` was tried first and abandoned: all three stages are generated from a
+`prim_func` named `main` and therefore share one kernel name, so `--kernel-name`
+cannot separate them, and the default `--launch-count 1` captures only the cold
+first launch. Graph capture needs no name filter.
+
+| dtype | backend | shape | block_n | attention stage (us) |
+|---|---|---|---:|---:|
+| FP16 | PTO | B1 / Tq128 / Tk128 | 128 | 92.68 ±0.09 |
+| FP16 | AscendC | B1 / Tq128 / Tk128 | 128 | **84.70** ±0.40 |
+| BF16 | PTO | B1 / Tq128 / Tk128 | 128 | 116.63 ±0.21 |
+| BF16 | AscendC | B1 / Tq128 / Tk128 | 128 | 97.08 ±0.20 |
+| FP16 | PTO | B1 / Tq64 / Tk128 | 64 | 79.29 ±0.27 |
+| FP16 | AscendC | B1 / Tq64 / Tk128 | 64 | 80.33 ±0.26 |
+| BF16 | PTO | B1 / Tq64 / Tk128 | 64 | 89.71 ±0.24 |
+| BF16 | AscendC | B1 / Tq64 / Tk128 | 64 | 90.98 ±0.62 |
+| FP16 | PTO | B2 / Tq64 / Tk128 | 64 | 145.21 ±0.13 |
+| FP16 | AscendC | B2 / Tq64 / Tk128 | 64 | 147.49 ±0.16 |
+| BF16 | PTO | B2 / Tq64 / Tk128 | 64 | 167.87 ±0.53 |
+| BF16 | AscendC | B2 / Tq64 / Tk128 | 64 | 168.91 ±0.79 |
+
+Three readings, all consistent with the design:
+
+* **BF16 costs more than FP16, and only where the pipeline runs** — 26% more on
+  PTO and 15% on AscendC at the measured profile. BF16 takes the P-residual path
+  (`use_p_residual = dtype == "bfloat16"`), which adds vector work to the stage
+  the skew is hiding.
+* **AscendC leads PTO by 9% on FP16 and 17% on BF16 at the measured profile, and
+  the two converge to within 1.6% on every other row.** The backends differ only
+  where the skew is active, which is the expected signature: off the pipelined
+  entry they are issuing the same work in the same order.
+* The B2 and Tq64 rows are on the scalar entry, as the `entry` column of the
+  ratio table records for the same shapes.
+
+These cells set `query_start = 0`, so **the Tq64 rows here are not comparable
+with the Tq64 rows of the ratio table**, which set `query_start = kv_len -
+valid_q`. The kernel skips cache blocks that the mask makes entirely invisible
+(`k * block_n < c_max_visible`): at Tq64 with `query_start = 0` only the first of
+two 64-wide blocks is ever live, while `query_start = 64` makes both live. That
+is the whole of the 79.29 us against 139.80 us difference, and it is a real
+property of the kernel rather than a discrepancy between the tables.
+
+The same harness measured the full three-launch chain at 15.9–18.1 ms per call
+across these cells, dominated by the Q absorption and value/gate stages that this
+change does not touch. **That figure has not been attributed to its stages and
+should not be read as one** — it is reported only to place the attention core,
+which is what this change moves, in the context of the whole chain.
+
 ### Step by step (FP16 / PTO, B1/H96/Tq=Tk128)
 
 | Step | Optimization | Task |
@@ -132,23 +187,96 @@ three collections, so the two cannot be subtracted as strict increments.
 
 ### Ratio against the official reference
 
-Common low-precision core scope, against an absorbed
-`npu_fused_infer_attention_score_v2`, Graph amortised timing, B1/H96/Tq=Tk128,
-FP16, 24 independent trials:
+Attention core only, against an absorbed `npu_fused_infer_attention_score_v2`,
+FP16 / PTO. NPUGraph capture and replay, device events around the replays, three
+independent runs per cell; the ratio is taken inside each run so the two arms are
+always compared against numbers measured beside each other.
 
-| Backend | This PR | vs official FIA v2 |
-|---|---:|---:|
-| PTO | 97.23 us | **75.07%** |
-| AscendC | 88.67 us | **82.86%** |
+**Both arms qualify before either is timed.** Each is checked against an FP32
+reference of the same stage, and a cell that misses the budget reports no ratio
+rather than a flattering number. All eight cells below qualified, the candidate
+within 1.2–2.4e-04 normalised and the reference within 3.4–6.3e-04.
 
-**These ratios come from measuring the same kernel under a separate comparison
-harness that this example does not carry.** The protocol, shape and environment
-are given here so the measurement can be reproduced; the example does not claim
-to ship that harness.
+One detail decides whether this comparison means anything. FIA implements
+right-down aligned causal masking only — the device refuses the alternatives with
+`Only support sparse 0/3/4/9 when ifa mla is enabled`, and of those only
+`sparse_mode 3` accepts this layout. This operator expresses the same alignment
+natively through `metadata[b,2]`, `query_start`, so **every cell sets
+`query_start = kv_len - valid_q` and both arms then compute the same mask.**
+Comparing a top-left aligned candidate against FIA instead compares two different
+problems, and shows a normalised error near 1.0 for every shape with Tq != Tk.
+Right-down alignment is undefined for Tq > Tk, so no such cell appears.
 
-**The Graph ratio must not be read as every calling domain meeting a bar.**
-Ordinary non-Graph calls in the same scope are dominated by host overhead and sit
-near 66% of FIA; this optimization does not improve them by design.
+| shape | block_n | cache iters | entry | this PR | FIA v2 | ratio |
+|---|---:|---:|---|---:|---:|---:|
+| B1 / H96 / Tq128 / Tk128 | 128 | 1 | **pipelined** | 92.55 | 69.10 | **74.9%** ±0.5 |
+| B1 / H96 / Tq64 / Tk128 | 64 | 2 | scalar | 139.80 | 49.39 | 35.3% ±0.2 |
+| B1 / H96 / Tq128 / Tk256 | 64 | 4 | scalar | 449.65 | 82.74 | 18.4% ±0.3 |
+| B1 / H96 / Tq64 / Tk256 | 64 | 4 | scalar | 264.49 | 56.80 | 21.4% ±0.1 |
+| B1 / H96 / Tq128 / Tk512 | 64 | 8 | scalar | 935.48 | 119.75 | 12.8% ±0.2 |
+| B1 / H32 / Tq128 / Tk128 | 64 | 2 | scalar | 82.44 | 50.71 | 61.5% ±0.2 |
+| B1 / H64 / Tq128 / Tk128 | 64 | 2 | scalar | 140.87 | 57.88 | 41.1% ±0.0 |
+| B2 / H96 / Tq128 / Tk128 | 64 | 2 | scalar | 393.41 | 96.45 | 24.5% ±0.1 |
+
+Times are microseconds per call, median of three runs. An independent repeat of
+the whole matrix reproduced every ratio within 1.2 points.
+
+**The `entry` column is why these rows must not be read against each other.** The
+pipelined entry needs the cache covered in one iteration and a single batch, and
+`public_prefill_block_n` returns 128 only for the one profile it has measured, so
+**seven of the eight rows run the conservative fallback.** Shape and entry move
+together down the table, which is exactly what makes the raw ratios misleading on
+their own — H96/Tq128/Tk128 is faster in absolute terms than H64/Tq128/Tk128
+despite half again the work, purely because it is the only row on the pipeline.
+
+### What the pipeline is worth, at a fixed shape
+
+To separate the pipeline from the shape, hold the shape still and move `block_n`
+alone. Whenever `block_n` covers the cache in one iteration the pipelined entry is
+reachable, so one shape can be timed on both entries. `block_n` is a parameter of
+`cube_prefill`, so every point here is a legal call; the shipped selector simply
+declines to pick the larger values outside its measured profile.
+
+| shape | block_n | cache iters | entry | us | normalised error |
+|---|---:|---:|---|---:|---:|
+| B1 / H96 / Tq128 / Tk128 | 64 | 2 | scalar | 204.54 ±0.10 | 1.2e-04 |
+| B1 / H96 / Tq128 / Tk128 | 128 | 1 | **pipelined** | **92.98** ±0.09 | 1.2e-04 |
+| B1 / H96 / Tq64 / Tk128 | 64 | 2 | scalar | 141.94 ±0.40 | 2.1e-04 |
+| B1 / H96 / Tq64 / Tk128 | 128 | 1 | **pipelined** | **54.31** ±0.09 | 2.1e-04 |
+| B1 / H96 / Tq128 / Tk256 | 64 | 4 | scalar | 452.97 ±0.96 | 2.1e-04 |
+| B1 / H96 / Tq128 / Tk256 | 128 | 2 | scalar | 330.05 ±0.52 | 2.0e-04 |
+| B1 / H96 / Tq128 / Tk256 | 256 | 1 | — | refused: unsupported attention tile | — |
+| B1 / H96 / Tq128 / Tk512 | 64 | 8 | scalar | 942.43 ±12.44 | 2.1e-04 |
+| B1 / H96 / Tq128 / Tk512 | 128 | 4 | scalar | 636.84 ±0.61 | 2.3e-04 |
+| B1 / H96 / Tq128 / Tk512 | 256 | 2 | — | refused: unsupported attention tile | — |
+| B1 / H96 / Tq128 / Tk512 | 512 | 1 | — | refused: unsupported attention tile | — |
+
+**At a fixed shape the pipelined entry is worth 2.20x at Tq128 and 2.61x at
+Tq64**, with the normalised error identical on both entries to the digit shown —
+the two entries compute the same thing. That is the honest measure of this
+change; the ratio table's spread is mostly the selector and the tile limit.
+
+Two consequences follow, and neither is cosmetic:
+
+* **`block_n` >= 256 is refused outright**, so for Tk > 128 the pipelined entry is
+  structurally unreachable, not merely untuned. The low ratios on the Tk256 and
+  Tk512 rows are a ceiling, and raising them needs a larger attention tile rather
+  than a better selector.
+* **At B1/H96/Tq64/Tk128 the shipped selector leaves 2.61x on the table.** That
+  configuration qualifies at 2.1e-04 and runs in 54.31 us, against the 141.94 us
+  the selector's `block_n = 64` actually gets. Widening the selector is not done
+  here: its contract is deliberately "measured profile only", the newly reachable
+  path carries no test coverage today, and earning that coverage means re-running
+  the whole verification chain. It is recorded as the first performance item to
+  take up, with the measurement already in hand.
+
+**No ratio here should be read as every calling domain meeting a bar.** Ordinary
+non-Graph calls in the same scope are dominated by host overhead and sit near 66%
+of FIA; this optimization does not improve them by design.
+
+The matrix and the ablation are driven by harnesses this example does not carry.
+The protocol, shapes, mask convention and environment are given here so both can
+be reproduced; the example does not claim to ship them.
 
 ### What is left
 
@@ -162,8 +290,50 @@ after step 7 (Cube busy 89.28 us against Vector 68.53 us), the former ranks firs
 
 ## 5. Accuracy
 
-`test_example_gated_mla_prefill.py`, 22 cases, with three kinds of gate held to
-deliberately different standards.
+### The floor: two independent references
+
+The module carries two reference implementations that **share no contraction
+order**:
+
+- **absorbed**, the form the kernel implements: fold `W_K` into the query to get
+  `ql`, then contract directly against the latent cache
+- **expanded**: materialise per-head keys and values of width 128 from the
+  latent cache first, then run ordinary attention
+
+```
+absorbed  s = scale * ( (q @ w_k) . c  + qa . e )
+expanded  k = w_k @ c ;  s = scale * ( q . k + qa . e )
+```
+
+They are algebraically the same, since the inner sum over the latent rank can be
+taken in either order, but they are computed by different code. Agreement
+between them is therefore evidence that **the absorbed decomposition itself is
+right**, not merely that the kernel matches one way of writing it.
+
+Measured on CPU, with no device involved, normalised by the output magnitude:
+
+| Case | dtype | max_abs | normalised | ULP |
+|---|---|---:|---:|---:|
+| measured profile | fp16 | 6.10e-05 | 1.95e-04 | 0.20 |
+| measured profile | bf16 | 2.44e-04 | 7.81e-04 | 0.10 |
+| row-wise mask shape | fp16 | 6.10e-05 | 2.08e-04 | 0.21 |
+| short query, clamped cache, shifted | fp16 | 3.05e-05 | 3.07e-04 | 0.31 |
+| two batches | fp16 | 6.10e-05 | 2.35e-04 | 0.24 |
+| single visible key | fp16 | 1.22e-04 | 3.61e-04 | 0.37 |
+
+**The widest gap is 0.37 ULP**, all of them under one unit in the last place.
+
+**This is the floor.** A kernel tolerance tighter than two correct references
+disagree by would be measuring the references rather than the kernel. The
+`rtol=2^-9`, `atol=2^-10` used below sits well above it and was chosen from it,
+not tuned to whatever the implementation happens to produce. A CPU test pins the
+floor at one ULP.
+
+### Gates
+
+`test_example_gated_mla_prefill.py`, 28 cases, six of which are the CPU
+reference-agreement gate above. Four kinds of gate, held to deliberately
+different standards.
 
 **Budgeted** — the chained forward against the FP32 reference in the example
 module, position sensitively: rows past the valid query length must be **exactly
@@ -196,13 +366,28 @@ KV block. If that ever starts passing, the documented domain has changed.
   `heads % block_m == 0` and `batch == 1`.** The first two are properties of the
   guard; the third is a correctness boundary (section 3). Shapes outside it take
   the original entry and measure zero gain.
-- **BF16 has no external performance reference that passes the same accuracy
-  qualification**, so no BF16 ratio is reported.
+- **`block_n` >= 256 is refused with `unsupported attention tile`**, so for
+  Tk > 128 the pipelined entry cannot be reached at any `block_n`. The low ratios
+  on the Tk256 and Tk512 rows are a ceiling set by the available tile, not a
+  tuning gap.
+- **`public_prefill_block_n` is deliberately narrower than what qualifies.** At
+  B1/H96/Tq64/Tk128 the pipelined `block_n = 128` qualifies at 2.1e-04 and runs
+  2.61x faster than the `block_n = 64` the selector returns. The selector's
+  contract is "measured profile only", and the newly reachable path has no test
+  coverage, so widening it is left as the first performance item rather than done
+  here.
+- **BF16 is timed but not ratioed.** Section 4 reports BF16 on both backends; no
+  BF16 ratio is given because no external reference passes the same accuracy
+  qualification in that dtype.
 - **Ordinary non-Graph calls show no significant speedup**; that path is
   dominated by host overhead.
-- The ratio against the official FIA is obtained at one working point only
-  (B1/H96/Tq=Tk128, FP16, core scope, Graph timing). The multi-shape table in
-  section 4 reports **before/after speedups**, not ratios against a qualified
-  reference.
+- **The ratio against the official FIA covers eight shapes in FP16 / PTO, core
+  scope, Graph timing**, with both arms qualified against an FP32 reference
+  before timing. AscendC and BF16 are timed but not ratioed, and the before/after
+  table earlier in section 4 reports **speedups**, not ratios against a qualified
+  reference — the two tables answer different questions.
+- **The FIA comparison requires right-down aligned causal masking** on both
+  sides, so the ratio cells all set `query_start = kv_len - valid_q` and no cell
+  with Tq > Tk can be compared at all.
 - Decode, cache append, the packed layout adapter and full model integration are
   not included.

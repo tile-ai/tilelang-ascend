@@ -1,11 +1,23 @@
 """Correctness gates for the Gated MLA prefill example.
 
-Three kinds of check appear here and they are deliberately not held to the same
+Four kinds of check appear here and they are deliberately not held to the same
 standard.
+
+The reference-agreement one runs on CPU and needs no device. The module carries
+two references that share no contraction order: the absorbed form the kernel
+implements, and an expanded form that materialises per-head keys and values and
+then runs ordinary attention. They are algebraically the same but computed by
+different code, so agreement between them is evidence about the decomposition
+rather than about one way of writing it. Measured over the shapes below they
+differ by at most 0.37 ULP of the storage format, and that is the floor: a
+kernel tolerance tighter than two correct references disagree by would be
+measuring the references.
 
 The budgeted one compares the chained forward against the FP32 reference in the
 example module, position sensitively: rows outside the valid query length must
-be exactly zero before any tolerance is applied to the rest.
+be exactly zero before any tolerance is applied to the rest. The tolerance is
+set well above the reference floor rather than tuned to whatever the kernel
+happens to produce.
 
 The analytic one fixes QL = QA = 0, so every visible score is zero and after the
 online maximum is subtracted the probability of each visible key is exp(0). With
@@ -37,6 +49,7 @@ from example_gated_mla_prefill import (
     gated_mla_prefill,
     public_prefill_block_n,
     reference_gated_mla_prefill,
+    reference_gated_mla_prefill_expanded,
 )
 
 HEADS = 96
@@ -123,6 +136,48 @@ def _assert_quantised_oracle(got, want):
 
 def _window_oracle(out, visible):
     _assert_quantised_oracle(out, ((visible - 1) / 2).view(1, -1, 1, 1).expand_as(out))
+
+
+# --- the two references agree, which sets the floor (CPU only) ---------------
+
+# The widest gap measured over the cases below is 0.37 ULP. One ULP leaves room
+# for a different torch build to reassociate a sum without turning this into a
+# flaky gate, while still failing loudly if the two decompositions ever diverge.
+REFERENCE_FLOOR_ULP = 1.0
+
+
+@pytest.mark.parametrize(
+    "batch,q_len,kv_len,valid_q,kv_valid,start,dtype",
+    [
+        (1, 128, 128, 128, 128, 0, torch.float16),
+        (1, 128, 128, 128, 128, 0, torch.bfloat16),
+        (1, 64, 128, 64, 128, 0, torch.float16),
+        (1, 128, 128, 40, 97, 7, torch.float16),
+        (2, 64, 128, 64, 128, 0, torch.float16),
+        (1, 128, 128, 128, 1, 0, torch.float16),
+    ],
+    ids=["profile_fp16", "profile_bf16", "row_wise", "clamped_shifted", "two_batches", "single_key"],
+)
+def test_the_two_references_agree(batch, q_len, kv_len, valid_q, kv_valid, start, dtype):
+    """The absorbed and expanded decompositions must agree to under one ULP.
+
+    No device is touched. If this fails the disagreement is in the mathematics
+    rather than in the kernel, so it is checked before anything is launched.
+    """
+    cpu = _inputs(batch, q_len, kv_len, dtype)
+    metadata = _metadata([[valid_q, kv_valid, start]] * batch)
+    absorbed = reference_gated_mla_prefill(**cpu, metadata=metadata).float()
+    expanded = reference_gated_mla_prefill_expanded(**cpu, metadata=metadata).float()
+
+    # Inactive rows are written by neither, so they must match exactly.
+    assert torch.equal(absorbed[:, valid_q:], expanded[:, valid_q:])
+
+    peak = expanded.abs().max().item()
+    assert peak > 0, "the reference produced an all-zero output; the case is vacuous"
+    # Normalise by the output magnitude: a row whose true value is zero would
+    # otherwise divide a last-place difference by a subnormal.
+    ulp = (absorbed - expanded).abs().max().item() / (peak * torch.finfo(dtype).eps)
+    assert ulp <= REFERENCE_FLOOR_ULP, f"the two references differ by {ulp:.2f} ULP"
 
 
 # --- budgeted gate against the FP32 reference --------------------------------
