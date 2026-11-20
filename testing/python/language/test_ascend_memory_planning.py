@@ -901,5 +901,132 @@ def test_letstmt_buffer_load_shared_no_crash(target):
     )
 
 
+# Narrow MTE rows use 32-byte slots even when the logical UB row is smaller.
+@pytest.mark.parametrize(
+    "auto_plan,dtype,cols,dynamic_rows",
+    [
+        (False, "float32", 1, False),
+        (True, "float32", 1, True),
+        (False, "float16", 3, False),
+        (True, "float32", 7, True),
+    ],
+)
+@pytest.mark.skipif(not NPU_AVAILABLE, reason="Requires an Ascend NPU runtime")
+def test_narrow_copy_preserves_adjacent_live_buffer(auto_plan, dtype, cols, dynamic_rows):
+    rows, prefix, guard_size = 64, 16, 512
+    actual_rows = T.symbolic("actual_rows") if dynamic_rows else rows
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((actual_rows, cols), dtype),
+        GuardIn: T.Tensor((guard_size,), "float32"),
+        GuardOut: T.Tensor((guard_size,), "float32"),
+    ):
+        with T.Kernel(1, threads=1, is_npu=True) as _cid:
+            narrow_ub = T.alloc_ub((rows + prefix, cols), dtype)
+            guard_ub = T.alloc_ub((guard_size,), "float32")
+            # First touch places narrow_ub before the simultaneously-live guard.
+            # The later, larger copy must determine its allocation footprint.
+            T.copy(A[0:32, 0:cols], narrow_ub[0:32, 0:cols])
+            T.copy(GuardIn, guard_ub)
+            T.barrier_all()
+            T.copy(A[0:rows, 0:cols], narrow_ub[prefix : prefix + rows, 0:cols])
+            T.barrier_all()
+            T.copy(guard_ub, GuardOut)
+
+    configs = PASS_AUTO if auto_plan else PASS_LINEAR
+    kernel = tilelang.compile(main, pass_configs=configs, target="ascendc", out_idx=[2])
+    offsets = _get_buffer_offsets(kernel.get_kernel_source())
+    element_bytes = 2 if dtype == "float16" else 4
+    physical_bytes = prefix * cols * element_bytes + rows * 32
+    torch_dtype = torch.float16 if dtype == "float16" else torch.float32
+    for count in [17, rows] if dynamic_rows else [rows]:
+        a = torch.arange(count * cols, dtype=torch.float32).reshape(count, cols)
+        a = a.to(device="npu", dtype=torch_dtype)
+        guard = torch.full((guard_size,), 123.0, dtype=torch.float32, device="npu")
+        result = kernel(a, guard)
+        torch.npu.synchronize()
+        torch.testing.assert_close(result, guard, rtol=0, atol=0)
+    _assert_no_overlap(
+        "narrow_ub",
+        offsets["narrow_ub"],
+        physical_bytes,
+        "guard_ub",
+        offsets["guard_ub"],
+        guard_size * 4,
+    )
+
+
+@pytest.mark.parametrize("auto_plan", [False, True])
+def test_narrow_copy_with_loop_offset_reserves_all_row_slots(auto_plan):
+    """The largest physical footprint may occur at a nonconstant UB offset."""
+    rows, tile_rows, guard_size = 128, 64, 512
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((rows, 1), "float32"),
+        GuardIn: T.Tensor((guard_size,), "float32"),
+        GuardOut: T.Tensor((guard_size,), "float32"),
+    ):
+        with T.Kernel(1, threads=1, is_npu=True) as _cid:
+            narrow_ub = T.alloc_ub((rows, 1), "float32")
+            guard_ub = T.alloc_ub((guard_size,), "float32")
+            T.copy(A[0:tile_rows, 0:1], narrow_ub[0:tile_rows, 0:1])
+            T.copy(GuardIn, guard_ub)
+            T.barrier_all()
+            for tile in T.serial(2):
+                T.copy(
+                    A[tile * tile_rows : (tile + 1) * tile_rows, 0:1],
+                    narrow_ub[tile * tile_rows : (tile + 1) * tile_rows, 0:1],
+                )
+                T.barrier_all()
+            T.copy(guard_ub, GuardOut)
+
+    configs = PASS_AUTO if auto_plan else PASS_LINEAR
+    with tvm.transform.PassContext(opt_level=3, config=configs):
+        artifact = tilelang.lower(main, target="ascendc")
+    offsets = _get_buffer_offsets(artifact.kernel_source)
+    physical_bytes = tile_rows * 4 + tile_rows * 32
+    _assert_no_overlap(
+        "narrow_ub",
+        offsets["narrow_ub"],
+        physical_bytes,
+        "guard_ub",
+        offsets["guard_ub"],
+        guard_size * 4,
+    )
+
+
+def test_narrow_copy_rejects_physical_ub_overflow():
+    # The logical allocation is 96KB and fits UB. The nonzero-offset DMA needs
+    # 80KB + 4000 * 32B = 208KB. blockCount=4000 is within the DMA field limit.
+    @T.prim_func
+    def main(A: T.Tensor((4000, 1), "float32")):
+        with T.Kernel(1, threads=1, is_npu=True) as _cid:
+            narrow_ub = T.alloc_ub((24000, 1), "float32")
+            T.copy(A, narrow_ub[20000:24000, 0:1])
+
+    with (
+        tvm.transform.PassContext(opt_level=3, config=PASS_LINEAR),
+        pytest.raises(tvm.error.InternalError, match="UB copy physical footprint"),
+    ):
+        tilelang.lower(main, target="ascendc")
+
+
+def test_narrow_packed_store_keeps_compact_allocation():
+    # A packed 32KB output uses one flat burst. Treating it as 8192 narrow
+    # multi-burst rows would incorrectly require 256KB and reject the kernel.
+    @T.prim_func
+    def main(Out: T.Tensor((8192, 1), "float32")):
+        with T.Kernel(1, threads=1, is_npu=True) as _cid:
+            packed_ub = T.alloc_ub((8192, 1), "float32")
+            T.tile.arith_progression(packed_ub, 0.0, 1.0, 8192)
+            T.copy(packed_ub, Out)
+
+    with tvm.transform.PassContext(opt_level=3, config=PASS_LINEAR):
+        artifact = tilelang.lower(main, target="ascendc")
+    assert _get_buffer_sizes(artifact.kernel_source)["packed_ub"] == 8192
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-n", "8"])
