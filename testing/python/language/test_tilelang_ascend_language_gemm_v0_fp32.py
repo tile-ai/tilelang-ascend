@@ -57,9 +57,9 @@ def _gemm_v0_kernel_fp32(
 
     @T.prim_func
     def main(
-        A: T.Tensor(a_gm_shape, dtype),
-        B: T.Tensor(b_gm_shape, dtype),
-        C: T.Tensor((M, N), out_dtype),
+            A: T.Tensor(a_gm_shape, dtype),
+            B: T.Tensor(b_gm_shape, dtype),
+            C: T.Tensor((M, N), out_dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -122,8 +122,17 @@ def _run_fp32_case(
     transpose_B=False,
 ):
     program = _gemm_v0_kernel_fp32(
-        M, N, K, block_M, block_N, K_L1, dtype, out_dtype, kL0Size=kL0Size,
-        transpose_A=transpose_A, transpose_B=transpose_B,
+        M,
+        N,
+        K,
+        block_M,
+        block_N,
+        K_L1,
+        dtype,
+        out_dtype,
+        kL0Size=kL0Size,
+        transpose_A=transpose_A,
+        transpose_B=transpose_B,
     )
     kernel = _compile(program, target)
 
@@ -167,8 +176,17 @@ def test_gemm_v0_fp32_basic(target):
 def test_gemm_v0_fp32_out_fp16(target):
     # L0C(fp32) -> GM(fp16) rides the on-the-fly cast; fp16 output precision.
     _run_fp32_case(
-        target, 256, 256, 256, 128, 128, 64, kL0Size=64,
-        out_dtype="float16", rtol=1e-3, atol=1e-3,
+        target,
+        256,
+        256,
+        256,
+        128,
+        128,
+        64,
+        kL0Size=64,
+        out_dtype="float16",
+        rtol=1e-3,
+        atol=1e-3,
     )
 
 
@@ -177,12 +195,22 @@ def test_gemm_v0_fp32_out_fp16(target):
     reason="gemm_v0 fp32 correctness requires an Ascend NPU runtime",
 )
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
-@pytest.mark.parametrize("transpose_A,transpose_B", [(False, False), (False, True), (True, False), (True, True)])
+@pytest.mark.parametrize("transpose_A,transpose_B", [(False, False), (False, True), (True, False),
+                                                     (True, True)])
 def test_gemm_v0_fp32_transpose(target, transpose_A, transpose_B):
     _run_fp32_case(
-        target, 256, 256, 256, 128, 128, 64, kL0Size=64,
-        rtol=1e-3, atol=1e-3,
-        transpose_A=transpose_A, transpose_B=transpose_B,
+        target,
+        256,
+        256,
+        256,
+        128,
+        128,
+        64,
+        kL0Size=64,
+        rtol=1e-3,
+        atol=1e-3,
+        transpose_A=transpose_A,
+        transpose_B=transpose_B,
     )
 
 
@@ -194,9 +222,7 @@ def test_gemm_v0_fp32_transpose(target, transpose_A, transpose_B):
 def test_gemm_v0_fp32_issue1396_shape(target):
     # The exact failing shape from issue #1396: transpose_B=False, 1024^3,
     # K_L1=64. Measured max_abs_diff on the fixed build: 1.37e-4.
-    _run_fp32_case(
-        target, 1024, 1024, 1024, 128, 128, 64, kL0Size=64, rtol=1e-3, atol=1e-3
-    )
+    _run_fp32_case(target, 1024, 1024, 1024, 128, 128, 64, kL0Size=64, rtol=1e-3, atol=1e-3)
 
 
 @pytest.mark.skipif(
@@ -211,8 +237,7 @@ def test_gemm_v0_fp32_issue1396_shape(target):
             "pto",
             marks=pytest.mark.skip(
                 reason="pto backend rejects this K-tail shape at compile time; "
-                "tracked as a pto-side limitation, out of scope for the AscendC fp32 guard"
-            ),
+                "tracked as a pto-side limitation, out of scope for the AscendC fp32 guard"),
         ),
     ],
 )
@@ -246,6 +271,14 @@ def test_gemm_v0_fp32_kl0size_boundary_reject(target):
     # "Compilation Failed!" RuntimeError, so match on the compile-time gate.
     with pytest.raises(RuntimeError, match=r".*Compilation Failed.*"):
         _run_fp32_case(
-            target, 128, 128, 128, 128, 128, 128, kL0Size=128,
-            rtol=1e-4, atol=1e-4,
+            target,
+            128,
+            128,
+            128,
+            128,
+            128,
+            128,
+            kL0Size=128,
+            rtol=1e-4,
+            atol=1e-4,
         )

@@ -47,7 +47,6 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float32", accum_dtype="float3
 
 if __name__ == "__main__":
     import torch
-    import torch_npu
 
     torch.manual_seed(0)
     a = torch.randn(M, K, dtype=torch.float32).npu()
