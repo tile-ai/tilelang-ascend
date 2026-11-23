@@ -121,7 +121,23 @@ private:
       SetTmpBuffers(external_shape_map);
 
       operator()(func->body);
-      // Size copies after binding all loops, including those inside Allocate.
+      // Most kernels have no narrow DMA. Bind ranges only when the indexed
+      // copies need them, in the same preorder as the main traversal.
+      if (!narrow_copies_.empty()) {
+        for (const auto &stmt : copy_range_stmts_) {
+          if (const auto *loop = stmt.as<ForNode>()) {
+            copy_analyzer_.Bind(loop->loop_var,
+                                Range::FromMinExtent(loop->min, loop->extent));
+          } else if (const auto *let = stmt.as<LetStmtNode>()) {
+            copy_analyzer_.Bind(let->var, let->value);
+          } else if (const auto *attr = stmt.as<AttrStmtNode>()) {
+            const auto *iter = attr->node.as<IterVarNode>();
+            copy_analyzer_.Bind(iter->var,
+                                Range::FromMinExtent(0, attr->value));
+          }
+        }
+      }
+      // Size copies after all relevant loops, including those inside Allocate.
       for (const auto *buf : origin_buffer) {
         buffer_sizes_[buf] = CalculateBufferSize(alloc_info_.at(buf).alloc);
         DLOG(DEBUG) << "Found NPU memory allocation: " << buf->name_hint
@@ -159,6 +175,13 @@ private:
     struct AllocEntry {
       size_t level{0};
       const AllocateNode *alloc{nullptr};
+    };
+
+    struct NarrowCopy {
+      Call call;
+      PrimExpr offset;
+      int64_t columns;
+      bool store;
     };
 
     struct StmtAttr {
@@ -240,6 +263,7 @@ private:
     void VisitExpr_(const VarNode *buf) final { TrackBufferTouch(buf); }
 
     void VisitExpr_(const CallNode *op) final {
+      CollectNarrowCopy(op);
       if (op->op.same_as(builtin::tvm_access_ptr())) {
         Var buffer = Downcast<Var>(op->args[1]);
         if (IsNPUSharedMemory(buffer)) {
@@ -247,6 +271,57 @@ private:
         }
       }
       StmtExprVisitor::VisitExpr_(op);
+    }
+
+    void CollectNarrowCopy(const CallNode *call) {
+      if (!call->op.same_as(builtin::call_extern()) || call->args.size() < 6) {
+        return;
+      }
+      const auto *name = call->args[0].as<StringImmNode>();
+      if (name == nullptr) {
+        return;
+      }
+      const std::string copy_name = name->value;
+      const bool load = copy_name.rfind("tl::ascend::copy_gm_to_ub<", 0) == 0;
+      const bool store =
+          copy_name.rfind("tl::ascend::copy_ub_to_gm<", 0) == 0 ||
+          copy_name.rfind("tl::ascend::atomic_add_ub_to_gm<", 0) == 0;
+      if (!load && !store) {
+        return;
+      }
+      const auto *ptr = call->args[load ? 2 : 1].as<CallNode>();
+      if (ptr == nullptr || !ptr->op.same_as(builtin::tvm_access_ptr()) ||
+          ptr->args.size() < 4) {
+        return;
+      }
+      const auto *buffer = ptr->args[1].as<VarNode>();
+      if (buffer == nullptr) {
+        return;
+      }
+      const auto allocation = alloc_info_.find(buffer);
+      if (allocation == alloc_info_.end() ||
+          allocation->second.alloc == nullptr) {
+        return;
+      }
+      if (!buffer_scopes_.count(buffer)) {
+        return;
+      }
+      std::istringstream dims(copy_name.substr(copy_name.find('<') + 1));
+      std::string dtype_token;
+      std::getline(dims, dtype_token, ',');
+      int64_t columns = 0;
+      dims >> columns;
+      const auto *alloc = allocation->second.alloc;
+      const int64_t bits = alloc->dtype.bits() * alloc->dtype.lanes();
+      if (!dims || columns <= 0 || columns >= (256 + bits - 1) / bits) {
+        return;
+      }
+      // ExprVisitor revisits shared Call nodes; match PostOrderVisit's previous
+      // once-per-node analysis, but only retain identities of narrow DMA calls.
+      if (indexed_narrow_copies_.insert(call).second) {
+        narrow_copies_[buffer].push_back(
+            {GetRef<Call>(call), ptr->args[2], columns, store});
+      }
     }
 
     // Cal Scope level and save linear stmt event
@@ -271,16 +346,15 @@ private:
 
     void VisitStmt_(const AttrStmtNode *op) final {
       if (op->attr_key == tir::attr::thread_extent) {
-        if (const auto *iter = op->node.as<IterVarNode>()) {
-          copy_analyzer_.Bind(iter->var, Range::FromMinExtent(0, op->value));
+        if (op->node.as<IterVarNode>()) {
+          copy_range_stmts_.push_back(GetRef<Stmt>(op));
         }
       }
       VisitNewScope(op);
     }
     void VisitStmt_(const IfThenElseNode *op) final { VisitNewScope(op); }
     void VisitStmt_(const ForNode *op) final {
-      copy_analyzer_.Bind(op->loop_var,
-                          Range::FromMinExtent(op->min, op->extent));
+      copy_range_stmts_.push_back(GetRef<Stmt>(op));
       scope_level_++;
       VisitNewScope(op);
       scope_level_--;
@@ -289,7 +363,7 @@ private:
     void VisitStmt_(const AssertStmtNode *op) final { VisitNewScope(op); }
     void VisitStmt_(const LetStmtNode *op) final {
       if (op->var.dtype().is_int() || op->var.dtype().is_uint()) {
-        copy_analyzer_.Bind(op->var, op->value);
+        copy_range_stmts_.push_back(GetRef<Stmt>(op));
       }
       VisitNewScope(op);
     }
@@ -965,6 +1039,17 @@ private:
       return {bound->min_value, bound->max_value};
     }
 
+    std::pair<int64_t, int64_t> GetNarrowCopyBounds(const PrimExpr &expr) {
+      auto it = copy_bounds_.find(expr.get());
+      if (it != copy_bounds_.end()) {
+        return it->second;
+      }
+      // Cache only global post-Bind queries, never recursive Select contexts.
+      auto bounds = NarrowCopyBounds(expr, &copy_analyzer_);
+      copy_bounds_.emplace(expr.get(), bounds);
+      return bounds;
+    }
+
     size_t CalculateBufferSize(const AllocateNode *alloc) {
       size_t size_elements = 1;
       auto shape_it = external_shape_map_.find(alloc->buffer_var);
@@ -1055,80 +1140,52 @@ private:
       // subregion's offset. Aligned copies and packed UB->GM single bursts
       // retain their existing allocation and behavior.
       auto &copy_analyzer = copy_analyzer_;
-      PostOrderVisit(alloc->body, [&](const ObjectRef &node) {
-        const auto *call = node.as<CallNode>();
-        if (call == nullptr || !call->op.same_as(builtin::call_extern()) ||
-            call->args.size() < 6) {
-          return;
+      const auto copies = narrow_copies_.find(alloc->buffer_var.get());
+      if (copies != narrow_copies_.end()) {
+        for (const auto &copy : copies->second) {
+          const auto *call = copy.call.get();
+          const int64_t columns = copy.columns;
+          const int64_t bits = alloc->dtype.bits() * alloc->dtype.lanes();
+          const auto row_bounds = GetNarrowCopyBounds(call->args[4]);
+          const auto col_bounds = GetNarrowCopyBounds(call->args[5]);
+          PrimExpr offset = copy.offset;
+          if (const auto *ramp = offset.as<RampNode>()) {
+            offset = ramp->base; // CopyCodegen uses the scalar Ramp base.
+          }
+          const auto offset_bounds = GetNarrowCopyBounds(offset);
+          // Only expand a footprint with a proven, finite bound inside the
+          // logical region. Do not introduce new rejection of unrelated dynamic
+          // copies whose address bounds this local analysis cannot establish.
+          if (row_bounds.first < 0 || row_bounds.second <= 1 ||
+              row_bounds.second > static_cast<int64_t>(size_elements) ||
+              col_bounds.first < 0 || col_bounds.second > columns ||
+              offset_bounds.first < 0 ||
+              offset_bounds.second > static_cast<int64_t>(size_elements)) {
+            continue;
+          }
+          const int64_t block_bytes = col_bounds.second * bits / 8;
+          if (block_bytes == 0) {
+            continue;
+          }
+          if (copy.store && col_bounds.first == columns &&
+              col_bounds.second == columns &&
+              copy_analyzer.CanProve(call->args[3] == call->args[5]) &&
+              row_bounds.second <= 65535 / block_bytes) {
+            continue; // copy_ub_to_gm uses one flat burst, not row slots.
+          }
+          const size_t offset_bytes =
+              static_cast<size_t>(offset_bounds.second) * bits / 8;
+          // blockLen < 32B and UB stride == 0: ceil(blockLen/32) + stride
+          // is exactly one 32-byte slot per row, for every supported narrow
+          // width.
+          const size_t footprint =
+              offset_bytes + static_cast<size_t>(row_bounds.second) * 32;
+          ICHECK_LE(footprint, static_cast<size_t>(ASCEND_SHARED_MEM_SIZE))
+              << "UB copy physical footprint exceeds the available shared.ub "
+                 "memory";
+          size_bytes = std::max(size_bytes, footprint);
         }
-        const auto *name = call->args[0].as<StringImmNode>();
-        if (name == nullptr) {
-          return;
-        }
-        const std::string copy_name = name->value;
-        const bool load = copy_name.rfind("tl::ascend::copy_gm_to_ub<", 0) == 0;
-        const bool store =
-            copy_name.rfind("tl::ascend::copy_ub_to_gm<", 0) == 0 ||
-            copy_name.rfind("tl::ascend::atomic_add_ub_to_gm<", 0) == 0;
-        if (!load && !store) {
-          return;
-        }
-        const auto *ptr = call->args[load ? 2 : 1].as<CallNode>();
-        if (ptr == nullptr || !ptr->op.same_as(builtin::tvm_access_ptr()) ||
-            ptr->args.size() < 4 ||
-            ptr->args[1].as<VarNode>() != alloc->buffer_var.get()) {
-          return;
-        }
-        std::istringstream dims(copy_name.substr(copy_name.find('<') + 1));
-        std::string dtype_token;
-        std::getline(dims, dtype_token, ',');
-        int64_t columns = 0;
-        dims >> columns;
-        const int64_t bits = alloc->dtype.bits() * alloc->dtype.lanes();
-        // This is intentionally restricted to sub-32B pitches. Other copy
-        // layouts have existing handling and need no new sizing restriction.
-        if (!dims || columns <= 0 || columns >= (256 + bits - 1) / bits) {
-          return;
-        }
-        const auto row_bounds = NarrowCopyBounds(call->args[4], &copy_analyzer);
-        const auto col_bounds = NarrowCopyBounds(call->args[5], &copy_analyzer);
-        PrimExpr offset = ptr->args[2];
-        if (const auto *ramp = offset.as<RampNode>()) {
-          offset = ramp->base; // CopyCodegen uses the scalar Ramp base.
-        }
-        const auto offset_bounds = NarrowCopyBounds(offset, &copy_analyzer);
-        // Only expand a footprint with a proven, finite bound inside the
-        // logical region. Do not introduce new rejection of unrelated dynamic
-        // copies whose address bounds this local analysis cannot establish.
-        if (row_bounds.first < 0 || row_bounds.second <= 1 ||
-            row_bounds.second > static_cast<int64_t>(size_elements) ||
-            col_bounds.first < 0 || col_bounds.second > columns ||
-            offset_bounds.first < 0 ||
-            offset_bounds.second > static_cast<int64_t>(size_elements)) {
-          return;
-        }
-        const int64_t block_bytes = col_bounds.second * bits / 8;
-        if (block_bytes == 0) {
-          return;
-        }
-        if (store && col_bounds.first == columns &&
-            col_bounds.second == columns &&
-            copy_analyzer.CanProve(call->args[3] == call->args[5]) &&
-            row_bounds.second <= 65535 / block_bytes) {
-          return; // copy_ub_to_gm uses one flat burst, not row slots.
-        }
-        const size_t offset_bytes =
-            static_cast<size_t>(offset_bounds.second) * bits / 8;
-        // blockLen < 32B and UB stride == 0: ceil(blockLen/32) + stride
-        // is exactly one 32-byte slot per row, for every supported narrow
-        // width.
-        const size_t footprint =
-            offset_bytes + static_cast<size_t>(row_bounds.second) * 32;
-        ICHECK_LE(footprint, static_cast<size_t>(ASCEND_SHARED_MEM_SIZE))
-            << "UB copy physical footprint exceeds the available shared.ub "
-               "memory";
-        size_bytes = std::max(size_bytes, footprint);
-      });
+      }
       return AlignUp(size_bytes, 32);
     }
 
@@ -1150,6 +1207,11 @@ private:
     std::unordered_map<const VarNode *, size_t>
         buffer_sizes_; // buffer bytes size
     arith::Analyzer copy_analyzer_;
+    std::unordered_map<const PrimExprNode *, std::pair<int64_t, int64_t>>
+        copy_bounds_;
+    std::vector<Stmt> copy_range_stmts_;
+    std::unordered_map<const VarNode *, std::vector<NarrowCopy>> narrow_copies_;
+    std::unordered_set<const CallNode *> indexed_narrow_copies_;
     // Layout map used to size PTO 4D tiles by physical footprint.
     Map<Var, Array<PrimExpr>> external_shape_map_;
     std::unordered_map<const VarNode *, size_t>
