@@ -415,7 +415,15 @@ def shmem_ub_get_nbi(dst: Buffer, src: Buffer, nelems: PrimExpr, newPe: PrimExpr
     )
 
 
-def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False, kL0Size=128, n_actual=None, use_hf32=False):
+def gemm_v0(A,
+            B,
+            C,
+            transpose_A=False,
+            transpose_B=False,
+            init=False,
+            kL0Size=128,
+            n_actual=None,
+            use_hf32=False):
     """
     Performs a block-level General Matrix Multiplication (GEMM).
 
