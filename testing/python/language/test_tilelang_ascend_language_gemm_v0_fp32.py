@@ -57,9 +57,9 @@ def _gemm_v0_kernel_fp32(
 
     @T.prim_func
     def main(
-            A: T.Tensor(a_gm_shape, dtype),
-            B: T.Tensor(b_gm_shape, dtype),
-            C: T.Tensor((M, N), out_dtype),
+        A: T.Tensor(a_gm_shape, dtype),
+        B: T.Tensor(b_gm_shape, dtype),
+        C: T.Tensor((M, N), out_dtype),
     ):
         with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
             bx = cid // n_num
@@ -195,8 +195,7 @@ def test_gemm_v0_fp32_out_fp16(target):
     reason="gemm_v0 fp32 correctness requires an Ascend NPU runtime",
 )
 @pytest.mark.parametrize("target", ["ascendc", "pto"])
-@pytest.mark.parametrize("transpose_A,transpose_B", [(False, False), (False, True), (True, False),
-                                                     (True, True)])
+@pytest.mark.parametrize("transpose_A,transpose_B", [(False, False), (False, True), (True, False), (True, True)])
 def test_gemm_v0_fp32_transpose(target, transpose_A, transpose_B):
     _run_fp32_case(
         target,
@@ -237,7 +236,8 @@ def test_gemm_v0_fp32_issue1396_shape(target):
             "pto",
             marks=pytest.mark.skip(
                 reason="pto backend rejects this K-tail shape at compile time; "
-                "tracked as a pto-side limitation, out of scope for the AscendC fp32 guard"),
+                "tracked as a pto-side limitation, out of scope for the AscendC fp32 guard"
+            ),
         ),
     ],
 )
