@@ -3,7 +3,7 @@ import tilelang.language as T
 from tvm.ir import PointerType, PrimType, Range
 from tvm.tir import PrimExpr, Buffer, BufferRegion, BufferLoad, Call, IntImm, Ramp
 from tvm import DataType, arith, tir
-from tilelang.language.ascend import _dtype, _get_tmp_arena_access_ptr
+from tilelang.language.ascend import _dtype, _get_tmp_arena_access_ptr, _reinterpret_cast_sources
 import functools
 import itertools
 import warnings
@@ -1304,17 +1304,37 @@ def _as_const_int(expr) -> int | None:
     return None
 
 
+def _storage_root(buf: Buffer) -> Buffer:
+    """Follow reinterpretcast sharing chains to the storage root Buffer."""
+    seen = set()
+    cur = buf
+    while id(cur) not in seen:
+        seen.add(id(cur))
+        nxt = _reinterpret_cast_sources.get(cur)
+        if nxt is None:
+            return cur
+        cur = nxt
+    return cur
+
+
 def _is_aliased(dst: Buffer | BufferRegion, src: Buffer | BufferRegion) -> bool:
     """Check whether dst and src may overlap in storage.
 
     Different buffers never alias (the memory planner assigns overlapping
     addresses only to buffers with disjoint live ranges, and both operands are
-    live at the call site). For regions of the same buffer, statically
-    provable disjointness on any dimension (constant bounds) means no alias;
-    anything not provable is conservatively treated as aliased.
+    live at the call site) -- except when ``T.reinterpretcast`` explicitly
+    shares the storage of two buffer objects: in that case the two names are
+    the same storage and must be treated as aliased. For regions of the same
+    buffer, statically provable disjointness on any dimension (constant
+    bounds) means no alias; anything not provable is conservatively treated
+    as aliased.
     """
-    if not _underlying_buffer(dst).same_as(_underlying_buffer(src)):
-        return False
+    dst_ub = _underlying_buffer(dst)
+    src_ub = _underlying_buffer(src)
+    if not dst_ub.same_as(src_ub):
+        # Distinct Buffer objects alias when a reinterpretcast chain ties
+        # them to the same storage root.
+        return _storage_root(dst_ub) is _storage_root(src_ub)
     if isinstance(dst, BufferRegion) and isinstance(src, BufferRegion):
         for r_dst, r_src in zip(dst.region, src.region):
             d_min = _as_const_int(r_dst.min)

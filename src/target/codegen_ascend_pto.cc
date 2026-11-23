@@ -3565,10 +3565,12 @@ void CodeGenTileLangAscendPto::SiluCodegen(const CallNode *op) {
   std::string dst_name = ResolveUbSliceName(dst_shape_info);
   std::string src_name = ResolveUbSliceName(src_shape_info);
 
-  // Same underlying buffer (any slicing) means dst may overlap src: use the
-  // scratch-copy sequence. Distinct buffers are planner-guaranteed
-  // non-overlapping (both live at the call site), so take the tmp-free path.
-  if (dst_shape_info.ub_name == src_shape_info.ub_name) {
+  // Same storage (same address) means dst may overlap src: use the
+  // scratch-copy sequence. Addresses (not buffer names) decide this, since
+  // T.reinterpretcast gives two differently-named buffers the same address.
+  // Distinct addresses are planner-guaranteed non-overlapping (both live at
+  // the call site), so take the tmp-free path.
+  if (dst_shape_info.first_addr.same_as(src_shape_info.first_addr)) {
     std::string tmp_name = GetTempVarName(dst_shape_info.ub_name) + "_silu_tmp";
     int32_t elem_bytes = GetTypeLen(dst_shape_info.type);
     int64_t tmp_buffer_size = row * col * elem_bytes;

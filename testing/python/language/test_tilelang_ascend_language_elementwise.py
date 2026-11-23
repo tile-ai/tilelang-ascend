@@ -641,6 +641,71 @@ def test_silu_inplace(dtype, target, shape):
     run_test_silu_inplace(M, N, 128, 128, dtype, target)
 
 
+def vec_silu_reinterpretcast_shared(M, N, dtype="float", chained=False):
+    """dst and src are two differently-named buffers that share one storage
+    slab through T.reinterpretcast (optionally chained). This must take the
+    source-preserving path: the final division needs the original input after
+    dst has been overwritten."""
+    casttype = "float" if dtype == "float" else "half"
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            x_ub = T.alloc_ub((M, N), dtype)
+            y_ub = T.alloc_ub((M, N), dtype)
+            z_ub = T.alloc_ub((M, N), dtype)
+            T.copy(A, x_ub)
+            T.reinterpretcast(y_ub, x_ub, casttype)
+            if chained:
+                T.reinterpretcast(z_ub, y_ub, casttype)
+                T.tile.silu(z_ub, x_ub)
+                T.copy(z_ub, B)
+            else:
+                T.tile.silu(y_ub, x_ub)
+                T.copy(y_ub, B)
+
+    return main
+
+
+def run_test_silu_reinterpretcast_shared(M, N, dtype, target, chained):
+    func = vec_silu_reinterpretcast_shared(M, N, dtype, chained)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    # Fixed pattern covering 2 (the reviewer case) plus representative
+    # positives, negatives and zero; the rest stays varying via a seeded tail.
+    base = torch.tensor(
+        [2.0, -2.0, 1.0, 0.0, 3.0, -1.0, 0.5, -0.5],
+        dtype=torch_dtype,
+    )
+    torch.manual_seed(0)
+    tail = torch.randn(M * N - base.numel(), dtype=torch_dtype)
+    a = torch.cat([base, tail]).reshape(M, N).npu()
+
+    torch.npu.synchronize()
+    b = func(a)
+    torch.npu.synchronize()
+
+    ref = a * torch.sigmoid(a)
+    torch.testing.assert_close(b, ref, rtol=1e-2, atol=1e-2)
+
+    # Generated-code check: the frontend must have inserted the aliasing copy
+    # so the PTO backend never picks the unprotected TSiluNoAlias sequence on
+    # two names that alias.
+    src = func.get_kernel_source()
+    assert "silu_alias_tmp" in src
+
+
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("chained", [False, pytest.param(True, marks=pytest.mark.low_priority)])
+def test_silu_reinterpretcast_shared(dtype, target, chained):
+    run_test_silu_reinterpretcast_shared(64, 64, dtype, target, chained)
+
+
 def vec_sigmoid_inplace(M, N, block_M, block_N, dtype="float"):
     m_num = M // block_M
     n_num = N // block_N
