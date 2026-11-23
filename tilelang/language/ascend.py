@@ -626,7 +626,7 @@ _reinterpret_cast_sources: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary
 def reinterpretcast(dst: Buffer, src: Buffer, casttype: str):
     # return T.call_extern("handle", f"ReinterpretCast", dst.access_ptr("w"), src.access_ptr("r"),
     #                      casttype)
-    _reinterpret_cast_sources[dst] = src
+    _reinterpret_cast_sources[dst] = weakref.ref(src)
     return T.call_intrin("handle", tir.op.Op.get("tl.ascend_reinterpretcast"), dst.access_ptr("w"), src.access_ptr("r"), casttype)
 
 

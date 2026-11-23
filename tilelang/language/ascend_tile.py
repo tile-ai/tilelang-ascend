@@ -1305,12 +1305,19 @@ def _as_const_int(expr) -> int | None:
 
 
 def _storage_root(buf: Buffer) -> Buffer:
-    """Follow reinterpretcast sharing chains to the storage root Buffer."""
+    """Follow reinterpretcast sharing chains to the storage root Buffer.
+
+    Entries hold weak references on both sides, so a dead target ends the
+    chain at the last live buffer.
+    """
     seen = set()
     cur = buf
     while id(cur) not in seen:
         seen.add(id(cur))
-        nxt = _reinterpret_cast_sources.get(cur)
+        ref = _reinterpret_cast_sources.get(cur)
+        if ref is None:
+            return cur
+        nxt = ref()
         if nxt is None:
             return cur
         cur = nxt
