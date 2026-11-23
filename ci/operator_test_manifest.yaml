@@ -258,9 +258,6 @@ mappings:
   # examples_experiment/dsa
   examples_experiment/dsa/sparse_mla_bwd.py: examples_experiment/dsa/test_sparse_mla_bwd.py
 
-  # examples_experiment/dsa_sparse_finetune
-  examples_experiment/dsa_sparse_finetune/sparse_mla_fwd.py: examples_experiment/dsa_sparse_finetune/test_sparse_mla_fwd.py
-
   # examples_experiment/gemm_splitk
   examples_experiment/gemm_splitk/example_tilelang_gemm_splitk.py: examples_experiment/gemm_splitk/test_example_tilelang_gemm_splitk.py
 

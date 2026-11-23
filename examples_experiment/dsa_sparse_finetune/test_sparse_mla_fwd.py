@@ -268,3 +268,4 @@ if __name__ == "__main__":
         num_stages=2,
         threads=256,
     )
+    print("Kernel Output Match!")

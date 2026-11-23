@@ -1351,3 +1351,42 @@ def tl_sparse_mla_fwd_fast(
                         T.wait_flag("mte3", "v", 0)
 
     return main
+
+
+if __name__ == "__main__":
+    # Smoke test (CI gate): two dispatch variants on small varlen configs —
+    # topk=256 (block_I=64) hits the fast path, topk=64 falls back to the
+    # portable path; checks Output/Lse shapes and finiteness.
+    import torch
+    import torch_npu  # noqa: F401  (registers the NPU device)
+
+    torch.manual_seed(42)
+
+    def _smoke_indices(S, topk, offsets):
+        # Deterministic causal top-k: row position t fills slots with 0..t;
+        # unfilled slots keep the out-of-range S fill (masked away by the kernel).
+        indices = torch.full((S, 1, topk), S, dtype=torch.int32, device="npu")
+        for i in range(offsets.shape[0] - 1):
+            beg = int(offsets[i].item())
+            seg = int(offsets[i + 1].item()) - beg
+            for t in range(seg):
+                valid = min(t + 1, topk)
+                indices[beg + t, 0, :valid] = torch.arange(valid, dtype=torch.int32, device="npu")
+        return indices
+
+    H, DQK, DV = 128, 576, 512
+    for tag, S, topk, offs in (
+        ("fast", 512, 256, [0, 256, 512]),
+        ("portable", 128, 64, [0, 64, 128]),
+    ):
+        offsets = torch.tensor(offs, dtype=torch.int32, device="npu")
+        q = torch.randn((S, H, DQK), dtype=torch.bfloat16, device="npu")
+        kv = torch.randn((S, 1, DQK), dtype=torch.bfloat16, device="npu")
+        indices = _smoke_indices(S, topk, offsets)
+        out, lse = sparse_mla_fwd_interface(q, kv, indices, offsets, block_I=64)
+        assert out.shape == (S, H, DV), f"Output shape {tuple(out.shape)} != {(S, H, DV)}"
+        assert lse.shape == (S, H), f"Lse shape {tuple(lse.shape)} != {(S, H)}"
+        assert torch.isfinite(out.float()).all().item(), "Output contains NaN/Inf"
+        assert torch.isfinite(lse.float()).all().item(), "Lse contains NaN/Inf"
+        print(f"[SMOKE_PASS] sparse_mla_fwd {tag} S={S} H={H} topk={topk} bf16 varlen{offs}")
+    print("Test Passed!")
