@@ -509,6 +509,55 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     validCol_dst = 0;
   }
 
+  // A GM<->UB transfer is lowered to a single 2D MTE DMA whose per-row
+  // payload (the copy's column count times the element size) must be a
+  // multiple of 32 bytes on the UB side: the hardware places each burst at a
+  // 32-byte-aligned boundary, so a strided multi-row transfer with a smaller
+  // payload would scatter bursts past the buffer instead of packing them
+  // contiguously. Reject such shapes at compile time with a clear message
+  // rather than emitting a DMA the hardware executes incorrectly -- the
+  // caller must restructure the access (scalar element loop, or a UB tile
+  // whose rows are 32-byte aligned). Single-row transfers are safe at any
+  // width, and the PTO backend has its own tensor-copy model without this
+  // restriction.
+  std::string target_model;
+  if (T.target->attrs.count("model")) {
+    target_model = Downcast<String>(T.target->attrs["model"]);
+  }
+  if ((config.gm2ub || config.ub2gm) && target_model != "pto") {
+    const bool is_load = config.gm2ub;
+    const std::vector<int> &gm_active = is_load ? src_active : dst_active;
+    const Array<Range> &gm_rg = is_load ? src_range : dst_range;
+    int elem_bytes = (is_load ? src : dst)->dtype.bytes();
+    if (gm_active.size() >= 2) {
+      int row_idx = gm_active[gm_active.size() - 2];
+      int col_idx = gm_active.back();
+      PrimExpr row_extent = analyzer->Simplify(gm_rg[row_idx]->extent);
+      PrimExpr col_extent = analyzer->Simplify(gm_rg[col_idx]->extent);
+      const auto *row_imm = row_extent.as<IntImmNode>();
+      const auto *col_imm = col_extent.as<IntImmNode>();
+      // Restrict the check to transfers whose local side is a flat 1-D
+      // buffer: there the strided rows are packed back-to-back and a
+      // sub-32-byte payload cannot be placed. A 2-D local tile has a
+      // 32-byte row pitch of its own, so its bursts land on row starts and
+      // keep working (a wider per-row read is possible there).
+      bool affected = (is_load ? dst : src)->shape.size() <= 1;
+      if (affected && col_imm && col_imm->value >= 1 &&
+          (col_imm->value * elem_bytes) % 32 != 0 &&
+          (!row_imm || row_imm->value > 1)) {
+        LOG(FATAL)
+            << "GM<->UB copy: a multi-row transfer with a per-row payload of "
+            << (col_imm->value * elem_bytes)
+            << " bytes cannot be expressed by a single MTE DMA (the hardware "
+               "requires each per-row payload to be a multiple of 32 bytes, "
+               "and starts every burst at a 32-byte-aligned address). "
+               "Restructure the access: read the elements with a scalar loop, "
+               "or stage them through a UB tile whose rows are 32-byte "
+               "aligned.";
+      }
+    }
+  }
+
   Array<PrimExpr> new_args;
   new_args.push_back(StringImm(ss.str()));
   new_args.push_back(src_ptr);
