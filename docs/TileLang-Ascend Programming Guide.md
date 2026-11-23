@@ -316,8 +316,14 @@ def foo(A: T.Tensor((K,), "float32")):
 dtype用于指定Tile的数据类型，支持的类型列表有：
 
 ```
-float16, float32, bfloat16, int8, int16, int32, int64, uint8, uint16, uint32, uint64
+float16, float32, bfloat16, int4, int8, int16, int32, int64, uint8, uint16, uint32, uint64
 ```
+
+`int4` 为半字节打包类型（两个元素共享一个字节，低 nibble 为偶数元素），GM 上的 int4
+tensor 按行打包：`(M, N)` tensor 的第 r 行起始于字节 `r * N / 2`（行宽需为偶数）。
+当前 int4 仅支持在默认 `ascendc` target 下用于 `T.gemm_v0` 的 W4A4（int4×int4→int32）
+矩阵乘（要求 K、N 为 64 的倍数，暂不支持 `transpose_A` / `transpose_B`）以及
+`T.tile.cast` 的 fp16→int4 量化，其余算子暂未支持。参考示例：`examples/w4a4_matmul/`。
 
 
 
@@ -1845,21 +1851,29 @@ Expert编程模式可以复用Developer模式的Reduce类计算原语。
   T.tile.bitwise_xor(c_ub, a_ub, b_ub)
   ```
 
-- `T.tile.bitwise_lshift(dst, src0, scalar)`:
+- `T.tile.bitwise_lshift(dst, src0, scalar)`: 也可写为 `T.tile.bitwise_lshift(dst, src0, shift)`，其中第三参可以是标量位移量，也可以是逐元素位移量 buffer（或 buffer 的连续切片）。
 
   **参数**：
 
   - dst：计算结果存放目的buffer
   - src0：源操作数，数据类型为buffer类型
-  - scalar：左移位数
+  - scalar（标量形式）：左移位数
+  - shift（Tensor 形式）：逐元素左移位数，buffer 类型，必须与 src0 具有相同的 dtype 和 shape，且位于 UB
 
   **功能**：element-wise 左移操作
+
+  **支持范围**：标量形式在 AscendC 与 PTO 后端均支持；Tensor（逐元素）位移量形式同样支持 AscendC 与 PTO 双后端（A2/A3）。PTO 使用底层 `TSHL`；AscendC 因 A2/A3 无原生 Tensor `ShiftLeft`，采用设备端逐元素实现。支持 dtype 为 int16/uint16/int32/uint32（int8/uint8 不支持，与标量形式一致）。Tensor 形式不做隐式 dtype 转换或广播，dtype 与 shape 必须与 src0 完全一致；逐元素位移量为运行时值，编译期只能校验 dtype/shape，无法校验每个元素的位移量是否在合法范围（0 ≤ shift < 位宽）内；负位移或位移量 ≥ 位宽的行为不做保证。
 
   **举例**：
 
   ```
   #a_ub左移1位，结果存放到c_ub
   T.tile.bitwise_lshift(c_ub, a_ub, 1)
+  ```
+
+  ```
+  #a_ub逐元素按 shift_ub 左移，结果存放到c_ub（AscendC/PTO 双后端）
+  T.tile.bitwise_lshift(c_ub, a_ub, shift_ub)
   ```
 
 - `T.tile.bitwise_rshift(dst, src0, scalar)`:

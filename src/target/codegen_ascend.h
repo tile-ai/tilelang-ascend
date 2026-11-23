@@ -118,6 +118,8 @@ private:
   void EmitSelectedRawExpExperiment(const tl::SelectedCallView &view);
   void MaskSetterCodegen(const CallNode *op);
 
+  void TensorBitwiseLShiftCodegen(const CallNode *op);
+
   void TrigOpCodegen(const CallNode *op, const std::string &op_name);
 
   void TransposeCodegen(const CallNode *op, const std::string &op_name);
@@ -143,6 +145,9 @@ private:
   void IfThenElseCodegen(const CallNode *op, std::ostream &os);
 
   void MulAddDstCodegen(const CallNode *op);
+
+  void ClampMaxMinCodegen(const CallNode *op);
+  void ClampCodegen(const CallNode *op);
 
   void InitSortBufCodegen(const CallNode *op);
 

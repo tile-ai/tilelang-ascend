@@ -131,8 +131,8 @@ def parse_exception_dump(dump_path, kernel_name="main_kernel", output_dir=None, 
         output_dir = os.path.join(dump_path, "parsed")
     os.makedirs(output_dir, exist_ok=True)
 
-    # Remove stale .bin files so only the freshly parsed tensors are returned.
-    for stale in glob.glob(os.path.join(output_dir, "*.bin")):
+    # Remove stale tensor files so only the freshly parsed tensors are returned.
+    for stale in glob.glob(os.path.join(output_dir, "*.bin")) + glob.glob(os.path.join(output_dir, "*.npy")):
         os.remove(stale)
 
     ret = subprocess.run(
@@ -144,17 +144,20 @@ def parse_exception_dump(dump_path, kernel_name="main_kernel", output_dir=None, 
     if ret.returncode != 0:
         raise RuntimeError(f"msaicerr.py failed (exit {ret.returncode}):\n{ret.stderr}")
 
-    bin_files = sorted(glob.glob(os.path.join(output_dir, "*.bin")))
+    bin_files = sorted(glob.glob(os.path.join(output_dir, "*.bin")) + glob.glob(os.path.join(output_dir, "*.npy")))
     results = []
     for bin_file in bin_files:
         basename = os.path.basename(bin_file)
         parts = basename.split(".")
-        # <kernel>.custom.<ts>.<type>.<index>.<dtype>.bin
+        # <kernel>.custom.<ts>.<type>.<index>.<dtype>.bin|.npy
         dtype_str = parts[-2]
         index = int(parts[-3])
         tensor_type = parts[-4]
         np_dtype = _DTYPE_MAP.get(dtype_str, np.float32)
-        data = read_msaicerr_bin(bin_file, dtype=np_dtype)
+        if basename.endswith(".npy"):
+            data = np.load(bin_file)
+        else:
+            data = read_msaicerr_bin(bin_file, dtype=np_dtype)
         results.append(
             {
                 "data": data,

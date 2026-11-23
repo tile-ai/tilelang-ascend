@@ -130,6 +130,8 @@ TVM_DLL const Op &ascend_mul_add_dst();
 
 TVM_DLL const Op &ascend_bitwise_lshift();
 
+TVM_DLL const Op &ascend_bitwise_lshifts();
+
 TVM_DLL const Op &ascend_bitwise_rshift();
 
 TVM_DLL const Op &ascend_sin();

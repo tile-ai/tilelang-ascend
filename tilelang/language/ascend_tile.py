@@ -323,7 +323,7 @@ def atomic_add(
         dst: GM destination tensor (Buffer/BufferRegion/BufferLoad). Scope must be
             ``global``. Supports float16, float32, int16, int32, bfloat16.
         src: Local source tensor (Buffer/BufferRegion/BufferLoad). Scope must be
-            local (UB/L0C/L1). dtype must match dst.
+            local (UB/L0C). dtype must match dst on all paths.
 
     Returns:
         tvm.tir.Call: A TIR intrinsic call to ``tl.ascend_atomic_add``.
@@ -353,11 +353,25 @@ def fill(buffer: Buffer | BufferRegion, value: PrimExpr):
     """Fill a buffer or buffer region with a specified value.
 
     Args:
-        buffer: Either a TVM buffer or buffer region to be filled
-        value: The value to fill the buffer with
+        buffer: Either a TVM buffer or buffer region to be filled.
+        value: The value to fill the buffer with.  Can be a Python scalar
+               or PrimExpr.  When the value dtype differs from the buffer
+               dtype, the frontend automatically casts it without range
+               checks.  Out-of-range values may be silently truncated or
+               wrapped.
 
     Returns:
-        A TVM intrinsic call that performs the fill operation
+        A TVM intrinsic call that performs the fill operation.
+
+    Note:
+        On AscendC, dtype support: float16, float32, bfloat16,
+        int16, uint16, int32, uint32.  int8/uint8 are not supported.
+        On PTO, int8 and uint8 are additionally supported.
+        The buffer should reside in UB (Unified Buffer) memory.  A buffer
+        allocated by ``T.alloc_shared`` is supported only when memory planning
+        infers it as UB.  Buffer regions must be physically contiguous; 2D
+        column-offset slices are unsupported and may silently write incorrect
+        locations.
     """
     if isinstance(buffer, BufferRegion):
         buffer_ptr, buffer_extent = _handle_buffer_region(buffer, "w")
@@ -376,12 +390,11 @@ def fill(buffer: Buffer | BufferRegion, value: PrimExpr):
     )
 
 
-def clear(buffer: Buffer | tir.Var):
+def clear(buffer: Buffer | BufferRegion):
     """Clear a buffer or buffer region by filling with zeros.
 
     Args:
-        buffer: The buffer, buffer region, or variable to be cleared.
-                If a tir.Var is provided, it will be resolved automatically.
+        buffer: The buffer or buffer region to be cleared.
 
     Returns:
         A TVM intrinsic call that fills the buffer with zeros.
@@ -1100,6 +1113,13 @@ def binary_op(
             size_0,
         )
     else:
+        # Guard against dynamic (symbolic) shapes: only validate when both
+        # dst's element count and src1's capacity are statically known.
+        # Comparing a TIR expression against an int produces a symbolic
+        # expression that Python's assert cannot evaluate.
+        src1_shape_static = all(isinstance(d, (int, IntImm)) for d in src1.shape)
+        if isinstance(size_0, (int, IntImm)) and src1_shape_static:
+            assert size_0 <= math.prod(src1.shape), "src1 must have at least dst.size elements"
         return T.call_intrin(
             "handle",
             tir.op.Op.get(f"tl.ascend_{op}"),
@@ -1226,24 +1246,32 @@ def min(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | 
     return binary_op(dst, src0, src1, "min")
 
 
-def bitwise_and(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
+def bitwise_and(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion):
     """Performs element-wise bitwise AND: dst = src0 & src1.
 
     Args:
         dst: The destination buffer.
         src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        src1: The second source operand. Scalar operands are currently unsupported.
+
+    Supported dtypes on A2/A3:
+        - Ascend C: int16, uint16.
+        - PTO: int8, uint8, int16, uint16.
     """
     return binary_op(dst, src0, src1, "bitwise_and")
 
 
-def bitwise_or(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion | BufferLoad | PrimExpr):
+def bitwise_or(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, src1: Buffer | BufferRegion):
     """Performs element-wise bitwise OR: dst = src0 | src1.
 
     Args:
         dst: The destination buffer.
         src0: The first source buffer.
-        src1: The second source operand (Buffer, BufferLoad, or Scalar).
+        src1: The second source operand. Scalar operands are currently unsupported.
+
+    Supported dtypes on A2/A3:
+        - Ascend C: uint8, int16, uint16.
+        - PTO: int8, uint8, int16, uint16.
     """
     return binary_op(dst, src0, src1, "bitwise_or")
 
@@ -1442,6 +1470,23 @@ def bitwise_not(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion):
     Args:
         dst: The destination buffer.
         src0: The source buffer.
+
+    Supported dtypes on A2/A3:
+        - Ascend C: int16, uint16.
+        - PTO: int8, uint8, int16, uint16.
+
+    Physically contiguous BufferRegion slice operands are supported
+    (full-width row ranges, single-row column ranges, and 1D ranges);
+    non-contiguous regions (e.g. multi-row column slices such as
+    buf[:, a:b]) are not.
+
+    Note (Ascend C): for a full 2-D tile, the current Ascend C implementation
+    requires each row's logical byte width to be a multiple of 32. For
+    int16/uint16 (2 bytes per element) this means the tile inner dim must be a
+    multiple of 16; a tile whose total byte size is 32-aligned but whose rows
+    are not (e.g. a (64, 100) int16 tile) may compile and run yet return
+    incorrect results. This is the current implementation's support scope,
+    not a hardware limitation.
     """
     return unary_op(dst, src0, "bitwise_not")
 
@@ -1495,15 +1540,24 @@ def leaky_relu(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_v
 
 
 def axpy(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalar_value: PrimExpr):  # noqa: F821
-    """Performs element-wise AXPY operation: dst = scalar_value * src0 + dst.
+    """Performs element-wise AXPY and updates the destination in place.
 
-    Note: This operation updates the destination buffer in-place by adding
-    the scaled source buffer.
+    For each element, computes:
+    ``dst[i] = scalar_value * src0[i] + dst[i]``.
 
     Args:
-        dst: The destination buffer (acts as both operand Y and output).
-        src0: The source buffer X.
-        scalar_value: The scalar alpha.
+        dst: The destination buffer or buffer region. It acts as both the
+            accumulator input and output.
+        src0: The source buffer or buffer region.
+        scalar_value: The scalar multiplier, converted to the destination
+            data type during code generation.
+
+    Note:
+        - Supports float16 and float32 on Ascend A2/A3.
+        - The destination and source must have the same data type.
+        - The destination and source must contain the same number of elements.
+        - Operands must reside in Unified Buffer and satisfy its alignment
+          requirements.
     """
     return scalar_op(dst, src0, scalar_value, "axpy")
 
@@ -1566,33 +1620,90 @@ def mul_add_dst(
     )
 
 
-def bitwise_lshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalarValue: PrimExpr):  # noqa: F821
+def bitwise_lshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalarValue: Buffer | BufferRegion | PrimExpr):  # noqa: F821
     """Performs element-wise bitwise left shift: dst = src0 << scalarValue.
 
+    ``scalarValue`` may be either a scalar shift amount or a per-element
+    shift-amount buffer (or a contiguous region of one). The scalar form
+    lowers to ``TSHLS`` on the PTO backend and ``AscendC::ShiftLeft`` on the
+    AscendC backend. The tensor form (per-element shift amounts) lowers to
+    ``TSHL`` on the PTO backend and a device-side per-element loop on the
+    AscendC backend (A2/A3 has no native tensor ``ShiftLeft``). Both forms
+    support int16/uint16/int32/uint32.
+
     Args:
-        dst: The destination buffer.
-        src0: The source buffer.
-        scalarValue: The number of bits to shift (scalar).
+        dst: The destination buffer (UB).
+        src0: The source buffer (UB).
+        scalarValue: The number of bits to shift (scalar), or a per-element
+            shift-amount buffer / buffer region. The tensor form must share
+            ``src0``'s dtype and shape, and must also live in UB.
+
+    Note:
+        Shift amounts must be within ``[0, element-bit-width)`` for
+        well-defined results. The tensor form's per-element shift amounts are
+        runtime values: the compiler checks dtype and shape only, not the
+        value range, and negative or out-of-range (>= bit width) shift amounts
+        are not guaranteed to produce defined results.
     """
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
-        size_2 = math.prod(dst_extent)
     else:
         dst_ptr = dst.access_ptr("w")
-        size_2 = math.prod(dst.shape)
+        dst_extent = dst.shape
 
     if isinstance(src0, BufferRegion):
         src0_ptr, src0_extent = _handle_buffer_region(src0, "r")
-        size_0 = math.prod(src0_extent)
     else:
         src0_ptr = src0.access_ptr("r")
-        size_0 = math.prod(src0.shape)
+        src0_extent = src0.shape
 
+    size_0 = math.prod(src0_extent)
+    size_2 = math.prod(dst_extent)
     assert size_0 == size_2, "size must be same"
+
+    if isinstance(scalarValue, (Buffer, BufferRegion)):
+        # Tensor (per-element) shift-amount path. Lowered to PTO TSHL or an
+        # AscendC device-side per-element implementation.
+        if isinstance(dst, BufferRegion):
+            _validate_binary_op_region(dst, "bitwise_lshift", "dst")
+        if isinstance(src0, BufferRegion):
+            _validate_binary_op_region(src0, "bitwise_lshift", "src0")
+        if isinstance(scalarValue, BufferRegion):
+            _validate_binary_op_region(scalarValue, "bitwise_lshift", "scalarValue")
+            shift_ptr, shift_extent = _handle_buffer_region(scalarValue, "r")
+        else:
+            shift_ptr = scalarValue.access_ptr("r")
+            shift_extent = scalarValue.shape
+
+        assert size_0 == math.prod(shift_extent), "size must be same"
+        if not (_shapes_equal(list(dst_extent), list(src0_extent)) and _shapes_equal(list(dst_extent), list(shift_extent))):
+            raise ValueError(
+                "T.tile.bitwise_lshift with a tensor shift amount requires dst, src0 and scalarValue to have identical shapes."
+            )
+        dst_dtype = DataType(_underlying_buffer(dst).dtype)
+        src0_dtype = DataType(_underlying_buffer(src0).dtype)
+        shift_dtype = DataType(_underlying_buffer(scalarValue).dtype)
+        if not (dst_dtype == src0_dtype == shift_dtype):
+            raise ValueError("T.tile.bitwise_lshift with a tensor shift amount requires dst, src0 and scalarValue to have the same dtype.")
+        if dst_dtype not in (DataType("int16"), DataType("uint16"), DataType("int32"), DataType("uint32")):
+            # Keep the tensor form consistent with the scalar form (AscendC
+            # ShiftLeft and PTO TSHLS): only 16/32-bit signed/unsigned integers.
+            # PTO TSHL itself also accepts int8/uint8, but the scalar form does
+            # not, so those are rejected here for API consistency.
+            raise ValueError(f"T.tile.bitwise_lshift supports int16/uint16/int32/uint32; got {dst_dtype}.")
+
+        return tir.call_intrin(
+            "handle",
+            tir.op.Op.get("tl.ascend_bitwise_lshift"),
+            dst_ptr,
+            src0_ptr,
+            shift_ptr,
+            size_0,
+        )
 
     return tir.call_intrin(
         "handle",
-        tir.op.Op.get("tl.ascend_bitwise_lshift"),
+        tir.op.Op.get("tl.ascend_bitwise_lshifts"),
         dst_ptr,
         src0_ptr,
         scalarValue,
@@ -1603,11 +1714,25 @@ def bitwise_lshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scal
 def bitwise_rshift(dst: Buffer | BufferRegion, src0: Buffer | BufferRegion, scalarValue: PrimExpr):  # noqa: F821
     """Performs element-wise bitwise right shift: dst = src0 >> scalarValue.
 
+    The shift is **arithmetic** for signed types (sign bit preserved) and
+    **logical** for unsigned types (high bits filled with 0).
+
+    Supported dtypes on A2/A3: int16, uint16, int32, uint32.
+
     Args:
-        dst: The destination buffer.
-        src0: The source buffer.
+        dst: The destination buffer (UB).
+        src0: The source buffer (UB), must have the same size and dtype as dst.
         scalarValue: The number of bits to shift (scalar).
     """
+    _supported = ("int16", "uint16", "int32", "uint32")
+    dst_dtype = _underlying_buffer(dst).dtype
+    src0_dtype = _underlying_buffer(src0).dtype
+    if dst_dtype not in _supported or src0_dtype not in _supported:
+        raise ValueError(
+            "tilelang.language.bitwise_rshift supports only int16, uint16, int32, "
+            f"uint32 data operands on Ascend A2/A3; got dst={dst_dtype}, src0={src0_dtype}."
+        )
+
     if isinstance(dst, BufferRegion):
         dst_ptr, dst_extent = _handle_buffer_region(dst, "w")
         size_2 = math.prod(dst_extent)
@@ -2311,9 +2436,11 @@ def bitwise_xor(
     Args:
         dst: The destination buffer where the result will be stored.
         src0: The first source operand buffer.
-        src1: The second source operand buffer.
-        tmp: Optional complete UB scratch storage. Its scalar dtype is
-            reinterpreted by lowering and has no semantic meaning.
+        src1: The second source operand buffer. Scalar operands are unsupported.
+        tmp: Optional one-dimensional UB scratch buffer. When omitted, the
+            framework allocates the workspace automatically.
+
+    Supported dtypes: AscendC: int16, uint16; PTO: int8, uint8, int16, uint16.
 
     Returns:
         A TVM intrinsic call that performs the bitwise XOR operation.
@@ -2430,30 +2557,64 @@ def clamp_min(
     )
 
 
+def _clamp_bound_arg(val):
+    """Convert a clamp bound to the appropriate TIR argument.
+
+    If *val* is a Buffer or BufferRegion, return its read access pointer so
+    the codegen can detect a tensor bound (CallNode) vs a scalar bound
+    (PrimExpr).  Otherwise return *val* unchanged.
+    """
+    if isinstance(val, BufferRegion):
+        ptr, _ = _handle_buffer_region(val, "r")
+        return ptr
+    if isinstance(val, Buffer):
+        return val.access_ptr("r")
+    return val
+
+
 def clamp(
     out: Buffer | BufferRegion,
     buffer: Buffer | BufferRegion,
-    min_scalar: PrimExpr,
-    max_scalar: PrimExpr,
-    count: PrimExpr,
+    min_val: PrimExpr | Buffer | BufferRegion,
+    max_val: PrimExpr | Buffer | BufferRegion,
+    count: PrimExpr | None = None,
     *,
     tmp: Buffer | BufferRegion | None = None,
 ):  # noqa: F821
-    """
-    Clip tensor elements to [min_scalar, max_scalar] range, replace out-of-bounds values with boundary values
+    """Clamp UB elements to the inclusive ``[min_val, max_val]`` range.
+
+    ``out`` and ``buffer`` may be one- or two-dimensional UB buffers or
+    contiguous buffer regions and may be the same object for an in-place
+    operation. They must have matching shapes and dtypes. AscendC and PTO
+    support float16, float32, int16, and int32. AscendC applies the operation
+    to the first ``count`` elements; PTO currently requires ``count`` to equal
+    the selected tile extent.
+
+    ``min_val`` and ``max_val`` may be scalar expressions or UB buffers /
+    buffer regions of the same dtype and element count as ``buffer``.
 
     Args:
-        out: The destination buffer where the result will be stored.
-        buffer: The first source operand buffer.
-        min_scalar: The min scalar value
-        max_scalar: The max scalar value
-        count: The size of tensor out
+        out: Destination UB buffer or contiguous buffer region.
+        buffer: Source UB buffer or contiguous buffer region.
+        min_val: Inclusive lower bound. May be a scalar expression convertible
+            to ``buffer.dtype``, or a UB buffer / buffer region.
+        max_val: Inclusive upper bound. May be a scalar expression convertible
+            to ``buffer.dtype``, or a UB buffer / buffer region.
+            This must be greater than or equal to ``min_val``.
+        count: Number of leading elements to clamp. When omitted, the total
+            element count of ``buffer`` is used. This must not exceed the
+            number of accessible source or destination elements.
         tmp: Optional complete UB scratch storage. Its scalar dtype is
             reinterpreted by lowering and has no semantic meaning.
 
     Returns:
-        A TVM intrinsic call that performs the clamp operation.
+        tvm.tir.Call: Intrinsic call for the selected Ascend backend.
     """
+    if count is None:
+        if isinstance(buffer, BufferRegion):
+            count = math.prod(r.extent for r in buffer.region)
+        else:
+            count = math.prod(buffer.shape)
     if isinstance(out, BufferRegion):
         out_ptr, _ = _handle_buffer_region(out, "w")
     else:
@@ -2464,14 +2625,17 @@ def clamp(
     else:
         buffer_ptr = buffer.access_ptr("r")
 
+    min_arg = _clamp_bound_arg(min_val)
+    max_arg = _clamp_bound_arg(max_val)
+
     return _call_intrin_with_optional_tmp(
         "clamp",
         [
             f"Clamp<{_dtype(buffer)}>",
             out_ptr,
             buffer_ptr,
-            min_scalar,
-            max_scalar,
+            min_arg,
+            max_arg,
             count,
         ],
         3,
