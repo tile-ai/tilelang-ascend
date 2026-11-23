@@ -60,7 +60,6 @@ def _torch_dtype(dtype):
     return {
         "float16": torch.float16,
         "bfloat16": torch.bfloat16,
-        "float32": torch.float32,
     }[dtype]
 
 
@@ -120,18 +119,6 @@ gemm_configs = [
 @pytest.mark.parametrize("M,N,K", gemm_configs)
 def test_gemm_v0_n_tiling(M, N, K, dtype):
     run_test_gemm_nt(M, N, K, dtype, "float")
-
-
-@pytest.mark.skip(
-    reason="fp32 x N-tiling crashes at runtime (segfault) when the B sub-tile "
-    "sits at the L0B slot budget edge (fp32 doubles the byte footprint of the "
-    "fp16-validated shape); tracked separately -- the fp32 fix itself (#1989) "
-    "covers the non-tiling gemm_v0 paths, which the sibling fp32 test file "
-    "exercises"
-)
-@pytest.mark.parametrize("M,N,K", gemm_configs)
-def test_gemm_v0_n_tiling_fp32(M, N, K):
-    run_test_gemm_nt(M, N, K, "float32", "float")
 
 
 if __name__ == "__main__":
