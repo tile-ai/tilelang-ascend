@@ -288,7 +288,8 @@ CATLASS_DEVICE void copy_l1_to_l0b(LocalTensor<T> dstTensor,
   tileCopier(dst, src);
 }
 
-template <typename T1, typename T2, uint32_t M, uint32_t N>
+template <typename T1, typename T2, uint32_t M, uint32_t N,
+          bool useHf32 = false>
 CATLASS_DEVICE void mma(LocalTensor<T1> const A, LocalTensor<T1> const B,
                         LocalTensor<T2> const C, bool init, uint32_t K,
                         uint32_t n_actual = N, uint8_t unitFlag = 0) {
@@ -314,7 +315,20 @@ CATLASS_DEVICE void mma(LocalTensor<T1> const A, LocalTensor<T1> const B,
   // existing caller is byte-for-byte unchanged.
   mmadParams.unitFlag = unitFlag;
 
+  // HF32 mode: rounds FP32 operands in L0A/L0B to the 10-bit-mantissa HF32
+  // format before the cube multiply (tf32-class throughput). Only meaningful
+  // for FP32 inputs; other dtypes silently ignore it (the hardware mode
+  // simply does not affect non-fp32 paths). Scoped: set before Mmad and
+  // restored right after, so no state leaks past this helper.
+  if constexpr (useHf32 && std::is_same_v<T1, float>) {
+    AscendC::SetHF32Mode(AscendC::HF32Mode::ENABLE);
+  }
+
   Mmad(C, A, B, mmadParams);
+
+  if constexpr (useHf32 && std::is_same_v<T1, float>) {
+    AscendC::SetHF32Mode(AscendC::HF32Mode::DISABLE);
+  }
 
   constexpr uint32_t PIPE_M_BARRIER_THRESHOLD = 10;
   // if constexpr ((M / C0_NUM_PER_FRACTAL) * (N / C0_NUM_PER_FRACTAL) <
@@ -1451,7 +1465,7 @@ static constexpr uint32_t L0AB_EVENT = 0;
 
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           bool transpose_A = false, bool transpose_B = false,
-          uint32_t kL0Size = 128>
+          uint32_t kL0Size = 128, bool useHf32 = false>
 CATLASS_DEVICE void
 gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
         LocalTensor<T2> const &C, // this must be located in l0c
@@ -1643,9 +1657,9 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
       PipeBarrier<PIPE_M>();
       // transpose_B (QK) computes only n_actual columns (window width); the
       // non-transpose path keeps the full template N (nTile per N-tile).
-      tl::ascend::mma<T1, T2, M, nTile>(l0a[l0a_base], l0b[l0b_base],
-                                        C[cNOffset], initflag, kSize,
-                                        transpose_B ? n_actual : nTile);
+      tl::ascend::mma<T1, T2, M, nTile, useHf32>(
+          l0a[l0a_base], l0b[l0b_base], C[cNOffset], initflag, kSize,
+          transpose_B ? n_actual : nTile);
       SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + pp);
       tileIdx++;
     }
