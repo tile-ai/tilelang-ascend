@@ -3567,15 +3567,15 @@ void CodeGenTileLangAscendPto::SiluCodegen(const CallNode *op) {
 
   // Storage overlap decides the path, not buffer names: T.reinterpretcast
   // gives two differently-named buffers the same address. Only take the
-  // tmp-free fast path when the two accesses are provably disjoint:
-  // distinct constant addresses (the planner never overlaps simultaneously
-  // live buffers). Same, symbolic, or non-provably-disjoint addresses keep
+  // tmp-free fast path when the two accesses are provably disjoint: distinct
+  // integer-constant addresses (the planner never overlaps simultaneously
+  // live buffers). Equal, symbolic, or non-provably-disjoint addresses keep
   // the source-preserving scratch sequence.
   bool provably_disjoint = false;
-  if (!dst_shape_info.first_addr.same_as(src_shape_info.first_addr)) {
-    provably_disjoint =
-        dst_shape_info.first_addr.as<IntImmNode>() != nullptr &&
-        src_shape_info.first_addr.as<IntImmNode>() != nullptr;
+  const auto *dst_addr = dst_shape_info.first_addr.as<IntImmNode>();
+  const auto *src_addr = src_shape_info.first_addr.as<IntImmNode>();
+  if (dst_addr != nullptr && src_addr != nullptr) {
+    provably_disjoint = dst_addr->value != src_addr->value;
   }
   if (!provably_disjoint) {
     std::string tmp_name = GetTempVarName(dst_shape_info.ub_name) + "_silu_tmp";
