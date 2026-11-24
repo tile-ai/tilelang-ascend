@@ -1178,8 +1178,25 @@ private:
           // blockLen < 32B and UB stride == 0: ceil(blockLen/32) + stride
           // is exactly one 32-byte slot per row, for every supported narrow
           // width.
-          const size_t footprint =
+          size_t footprint =
               offset_bytes + static_cast<size_t>(row_bounds.second) * 32;
+          if (offset_bounds.first != offset_bounds.second &&
+              row_bounds.first != row_bounds.second) {
+            // Bound the complete end address to preserve offset/row
+            // correlation. Keep the separate bounds as a fallback for
+            // conditional tails.
+            PrimExpr end = floordiv(cast(DataType::Int(64), offset) *
+                                        make_const(DataType::Int(64), bits),
+                                    8) +
+                           cast(DataType::Int(64), call->args[4]) * 32;
+            // Do not cache a temporary expression by its node address.
+            const auto end_bounds =
+                NarrowCopyBounds(copy_analyzer.Simplify(end), &copy_analyzer);
+            if (end_bounds.second >= 0) {
+              footprint =
+                  std::min(footprint, static_cast<size_t>(end_bounds.second));
+            }
+          }
           ICHECK_LE(footprint, static_cast<size_t>(ASCEND_SHARED_MEM_SIZE))
               << "UB copy physical footprint exceeds the available shared.ub "
                  "memory";
