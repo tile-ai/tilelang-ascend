@@ -12,7 +12,7 @@ import types
 import pytest
 
 from tilelang.carver.arch import ascend as ascend_arch
-from tilelang.carver.arch.ascend import Ascend
+from tilelang.carver.arch.ascend import Ascend, is_cube_supported_precision
 
 
 class _FakeProps:
@@ -82,7 +82,82 @@ def test_explicit_910c_chip_name_uses_910b_memory_profile():
     assert arch.l0c_cap == 512 * 1024
 
 
-def test_mcpu_resolves_910c(monkeypatch):
+@pytest.mark.parametrize("mcpu", ["ascend910c", "ascend910_93"])
+def test_mcpu_resolves_910c(monkeypatch, mcpu):
     monkeypatch.setattr(ascend_arch, "_TORCH_NPU_AVAILABLE", False)
-    arch = Ascend(target="llvm --keys=ascend -mcpu=ascend910c")
+    arch = Ascend(target=f"llvm --keys=ascend -mcpu={mcpu}")
     assert arch.chip_name == "Ascend910C"
+    assert arch.chip_profile == "Ascend910B"
+    assert is_cube_supported_precision("float16", "float32", arch) is True
+
+
+@pytest.mark.parametrize("chip_name", ["Ascend910_93", "ascend910c", "Ascend910C3"])
+def test_explicit_chip_name_spellings_are_canonicalised(chip_name):
+    """Caller-supplied names go through the same resolver as detected ones."""
+    arch = Ascend(chip_name=chip_name)
+    assert arch.chip_name == "Ascend910C"
+    assert arch.chip_profile == "Ascend910B"
+    assert arch.ub_cap == 192 * 1024
+
+
+def test_910c_alias_points_at_910b_profile():
+    """Ascend910C has no CHIP_SPECS entry of its own; it reuses 910B's."""
+    arch = Ascend(chip_name="Ascend910C")
+    assert arch.chip_profile == "Ascend910B"
+
+
+@pytest.mark.parametrize("device_name", ["Ascend910B3", "Ascend310P3"])
+def test_non_aliased_profiles_stay_their_own(fake_device, device_name):
+    fake_device(device_name)
+    arch = Ascend()
+    assert arch.chip_profile == arch.chip_name
+
+
+@pytest.mark.parametrize(
+    "in_dtype, accum_dtype, expected",
+    [
+        ("float16", "float32", True),
+        ("float16", "float16", True),
+        ("float16", "bfloat16", True),
+        ("bfloat16", "float32", True),
+        ("bfloat16", "bfloat16", True),
+        ("int8", "int32", False),
+        ("float32", "float32", False),
+    ],
+)
+def test_cube_precision_supported_for_910c(in_dtype, accum_dtype, expected):
+    """The A3 alias must take the same cube branch as 910B.
+
+    Previously ``is_cube_supported_precision`` enumerated raw chip names, so
+    Ascend910C raised ValueError; the caller swallows it and cube hints
+    silently degrade to the default policy.
+    """
+    arch = Ascend(chip_name="Ascend910C")
+    assert is_cube_supported_precision(in_dtype, accum_dtype, arch) is expected
+
+
+@pytest.mark.parametrize("chip_name", ["Ascend910A", "Ascend910B", "Ascend310P"])
+def test_cube_precision_unchanged_for_existing_profiles(chip_name):
+    arch = Ascend(chip_name=chip_name)
+    assert is_cube_supported_precision("float16", "float32", arch) is True
+    assert is_cube_supported_precision("int8", "int32", arch) is False
+
+
+@pytest.mark.parametrize("chip_name", ["Ascend950PR", "Ascend910_95", "Ascend910_9599"])
+def test_a5_names_stay_unprofiled_and_raise(chip_name):
+    """A5 has no carver profile yet: never silently fall back to 910A.
+
+    The explicit spelling must keep the caller's name (so the capability
+    check raises loudly) instead of being canonicalised into the generic
+    "910" bucket.
+    """
+    arch = Ascend(chip_name=chip_name)
+    assert arch.chip_name == chip_name
+    with pytest.raises(ValueError, match="Unsupported architecture"):
+        is_cube_supported_precision("float16", "float32", arch)
+
+
+def test_explicit_310p_sku_canonicalises_to_profile():
+    arch = Ascend(chip_name="Ascend310P3")
+    assert arch.chip_name == "Ascend310P"
+    assert arch.chip_profile == "Ascend310P"
