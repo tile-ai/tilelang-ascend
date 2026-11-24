@@ -1340,8 +1340,10 @@ def _is_aliased(dst: Buffer | BufferRegion, src: Buffer | BufferRegion) -> bool:
     src_ub = _underlying_buffer(src)
     if not dst_ub.same_as(src_ub):
         # Distinct Buffer objects alias when a reinterpretcast chain ties
-        # them to the same storage root.
-        return _storage_root(dst_ub) is _storage_root(src_ub)
+        # them to the same storage root. Compare by same_as, not object
+        # identity: BufferRegion.buffer yields a fresh Python wrapper for the
+        # same underlying buffer, and identity would report it independent.
+        return _storage_root(dst_ub).same_as(_storage_root(src_ub))
     if isinstance(dst, BufferRegion) and isinstance(src, BufferRegion):
         for r_dst, r_src in zip(dst.region, src.region):
             d_min = _as_const_int(r_dst.min)

@@ -618,8 +618,9 @@ def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple = (
 
 # Buffer -> Buffer map recording that the destination of a `reinterpretcast`
 # shares its storage with the source. Keys are weak so entries disappear with
-# the traced buffer objects of a completed kernel; alias lookups must walk
-# chains (a reinterpretcast of a reinterpretcast).
+# the traced buffer objects of a completed kernel; values are strong so a
+# chain's intermediate sources outlive the lookup during a trace. Alias
+# lookups must walk chains (a reinterpretcast of a reinterpretcast).
 _reinterpret_cast_sources: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 

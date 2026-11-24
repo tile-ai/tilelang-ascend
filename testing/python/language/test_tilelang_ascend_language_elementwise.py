@@ -641,11 +641,13 @@ def test_silu_inplace(dtype, target, shape):
     run_test_silu_inplace(M, N, 128, 128, dtype, target)
 
 
-def vec_silu_reinterpretcast_shared(M, N, dtype="float", chained=False):
+def vec_silu_reinterpretcast_shared(M, N, src_region=False, dtype="float", chained=False):
     """dst and src are two differently-named buffers that share one storage
     slab through T.reinterpretcast (optionally chained). This must take the
     source-preserving path: the final division needs the original input after
-    dst has been overwritten."""
+    dst has been overwritten. With src_region=True, src is passed as a
+    BufferRegion whose .buffer attribute is a fresh Python wrapper of the
+    storage's Buffer: this pins the wrapper-identity case in _is_aliased."""
     casttype = "float" if dtype == "float" else "half"
 
     @T.prim_func
@@ -663,6 +665,9 @@ def vec_silu_reinterpretcast_shared(M, N, dtype="float", chained=False):
                 T.reinterpretcast(z_ub, y_ub, casttype)
                 T.tile.silu(z_ub, x_ub)
                 T.copy(z_ub, B)
+            elif src_region:
+                T.tile.silu(y_ub, x_ub[0:M, 0:N])
+                T.copy(y_ub, B)
             else:
                 T.tile.silu(y_ub, x_ub)
                 T.copy(y_ub, B)
@@ -670,8 +675,8 @@ def vec_silu_reinterpretcast_shared(M, N, dtype="float", chained=False):
     return main
 
 
-def run_test_silu_reinterpretcast_shared(M, N, dtype, target, chained):
-    func = vec_silu_reinterpretcast_shared(M, N, dtype, chained)
+def run_test_silu_reinterpretcast_shared(M, N, dtype, target, chained, src_region=False):
+    func = vec_silu_reinterpretcast_shared(M, N, src_region, dtype, chained)
     func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
     torch_dtype = torch.float32 if dtype == "float" else torch.float16
@@ -697,6 +702,13 @@ def run_test_silu_reinterpretcast_shared(M, N, dtype, target, chained):
     # two names that alias.
     src = func.get_kernel_source()
     assert "silu_alias_tmp" in src
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_silu_reinterpretcast_shared_region_src(target):
+    """src as a BufferRegion over the shared storage (fresh Python wrapper of
+    the aliased Buffer): the wrapper-identity case in _is_aliased."""
+    run_test_silu_reinterpretcast_shared(64, 64, "float", target, False, src_region=True)
 
 
 @pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
