@@ -657,11 +657,10 @@ jobs:
 
           # ---- job 取消/超时自清理 ----
           # 唯一标识本次执行：区分仓库、run、attempt 与 job。所有进入容器的进程都继承
-          # CI_EXEC_TAG，因此可以精确识别并在取消/超时后只清理本 job 的进程树。
+          # CI_EXEC_TAG，因此可以精确识别并只清理本 job 的进程树。TAG 只是防误伤的
+          # 归属标记，不是跨 PR 的权限隔离（同容器内进程可互相读取环境）。
           # （当前 test job 无 matrix；若将来加 matrix，需把 ${{ toJson(matrix) }} 并入 TAG）
           CI_EXEC_TAG="${GITHUB_REPOSITORY//[^A-Za-z0-9_-]/_}-r${GITHUB_RUN_ID}-a${GITHUB_RUN_ATTEMPT}-j${GITHUB_JOB//[^A-Za-z0-9_-]/_}"
-          CI_EXEC_HB="${RUNNER_TEMP}/ci_exec_hb_${CI_EXEC_TAG}"
-          touch "$CI_EXEC_HB" || true
 
           # 幂等清理：KILL 容器内所有继承本 job TAG 的进程（含子/孙进程）。
           ci_exec_kill_tree() {
@@ -675,18 +674,17 @@ jobs:
           }
           export -f ci_exec_kill_tree
 
+          # 宿主侧看门狗是取消后的清理执行者：runner 取消时只杀宿主侧步骤进程树
+          # （trap 不会执行；容器侧进程不带任何 runner 跟踪标记，runner 不会回收——
+          # 实测取消后容器内任务继续跑数小时）。看门狗用双重 fork + setsid 脱离该
+          # 进程树（PPID 重挂到 init）。清理条件只有一条：宿主侧 bash 已死（PID
+          # 不存在，或 starttime 不匹配以排除 PID 复用）。不做心跳：宿主短暂卡顿
+          # 不影响判定，也不会因此误杀活跃任务。
           CI_WRAPPER_PID=$$
           CI_WRAPPER_START="$(awk '{print $22}' "/proc/$$/stat")"
           CI_WATCHDOG_PID_FILE="${RUNNER_TEMP}/ci_exec_wd_${CI_EXEC_TAG}"
-
-          # 宿主侧看门狗：runner 取消时可能直接 KILL 本步骤进程而不执行 trap，
-          # 因此用双重 fork + setsid 彻底脱离步骤进程树（PPID 重挂到 init，
-          # 不受"杀进程组/杀进程树"影响）。清理条件：
-          #   宿主侧 bash 已死（PID 不存在，或 starttime 不匹配以排除 PID 复用）
-          #   且 心跳文件丢失或过期 >20s。
-          # 心跳过期本身不作为 KILL 依据，避免宿主短暂卡顿(>20s)误杀活跃任务。
           ( setsid bash -c '
-              ci_hb="$1"; ci_wpid="$2"; ci_wstart="$3"; ci_tag="$4"
+              ci_wpid="$1"; ci_wstart="$2"; ci_tag="$3"
               echo "$$" > "${RUNNER_TEMP}/ci_exec_wd_${ci_tag}"
               wrapper_alive() {
                 [ -d "/proc/${ci_wpid}" ] || return 1
@@ -694,26 +692,19 @@ jobs:
               }
               while :; do
                 if ! wrapper_alive; then
-                  if [ ! -f "$ci_hb" ] || [ $(( $(date +%s) - $(stat -c %Y "$ci_hb" 2>/dev/null || echo $(date +%s)) )) -gt 20 ]; then
-                    ci_exec_kill_tree "$ci_tag" || true
-                    rm -f "$ci_hb" "${RUNNER_TEMP}/ci_exec_wd_${ci_tag}"
-                    exit 0
-                  fi
+                  ci_exec_kill_tree "$ci_tag" || true
+                  rm -f "${RUNNER_TEMP}/ci_exec_wd_${ci_tag}"
+                  exit 0
                 fi
                 sleep 5
-              done' _ "$CI_EXEC_HB" "$CI_WRAPPER_PID" "$CI_WRAPPER_START" "$CI_EXEC_TAG" >/dev/null 2>&1 & )
-
-          # 心跳：步骤存活期间每 4s 刷新；宿主侧 bash 退出(含被 KILL)后自动删除心跳。
-          ( while kill -0 "$CI_WRAPPER_PID" 2>/dev/null; do touch "$CI_EXEC_HB" 2>/dev/null || true; sleep 4; done; rm -f "$CI_EXEC_HB" 2>/dev/null ) &
-          CI_HB_PID=$!
+              done' _ "$CI_WRAPPER_PID" "$CI_WRAPPER_START" "$CI_EXEC_TAG" >/dev/null 2>&1 & )
 
           # 正常退出/收到 TERM 时的兜底清理（被 KILL 的场景由看门狗覆盖）；幂等。
           ci_exec_host_cleanup() {
-            kill "$CI_HB_PID" 2>/dev/null || true
             if [ -f "$CI_WATCHDOG_PID_FILE" ]; then
               kill "$(cat "$CI_WATCHDOG_PID_FILE")" 2>/dev/null || true
             fi
-            rm -f "$CI_EXEC_HB" "$CI_WATCHDOG_PID_FILE" 2>/dev/null || true
+            rm -f "$CI_WATCHDOG_PID_FILE" 2>/dev/null || true
             ci_exec_kill_tree "$CI_EXEC_TAG" || true
           }
           trap ci_exec_host_cleanup EXIT
@@ -736,7 +727,6 @@ jobs:
             -e A3_MULTICARD="$A3_MULTICARD" \
             -e A3_DEVICE_LIST="$A3_DEVICE_LIST" \
             -e CI_EXEC_TAG="${CI_EXEC_TAG}" \
-            -e CI_EXEC_HB="${CI_EXEC_HB}" \
             tilelang_x1 \
             bash -c "
               set -e
