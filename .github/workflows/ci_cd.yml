@@ -662,50 +662,77 @@ jobs:
           # （当前 test job 无 matrix；若将来加 matrix，需把 ${{ toJson(matrix) }} 并入 TAG）
           CI_EXEC_TAG="${GITHUB_REPOSITORY//[^A-Za-z0-9_-]/_}-r${GITHUB_RUN_ID}-a${GITHUB_RUN_ATTEMPT}-j${GITHUB_JOB//[^A-Za-z0-9_-]/_}"
 
-          # 幂等清理：KILL 容器内所有继承本 job TAG 的进程（含子/孙进程）。
+          # 幂等清理，区分三种结果：
+          #   no_residue  —— 本就没有残留（正常路径零开销，无任何固定等待）
+          #   cleaned     —— 有残留且已清完（KILL 后有限次复查，总时限 ≤10s）
+          #   kill_failed —— 复查后仍有匹配进程（如 D 状态进程）；docker exec 本身
+          #                  失败同样记为清理失败。失败只以 ::warning:: 与失败标记
+          #                  文件呈现，不覆盖测试本身的退出码。
+          # 不在宿主机上依据共享/容器可写文件里的裸 PID 发信号。
           ci_exec_kill_tree() {
-            docker exec -e CI_CLEAN_TAG="$1" tilelang_x1 sh -c '
+            local _ci_tag="$1" _ci_out _ci_rc
+            _ci_out="$(docker exec -e CI_CLEAN_TAG="$_ci_tag" tilelang_x1 sh -c '
+              tag="${CI_CLEAN_TAG}"
+              killed=0
               for d in /proc/[0-9]*; do
                 p="${d#/proc/}"; [ "$p" = "0" ] && continue
-                tr "\0" "\n" < "$d/environ" 2>/dev/null | grep -qx "CI_EXEC_TAG=${CI_CLEAN_TAG}" \
-                  && kill -KILL "$p" 2>/dev/null
+                tr "\0" "\n" < "$d/environ" 2>/dev/null | grep -qx "CI_EXEC_TAG=${tag}" \
+                  && { kill -KILL "$p" 2>/dev/null; killed=$((killed+1)); }
               done
-              true' 2>/dev/null || true
+              if [ "$killed" = "0" ]; then echo "CLEAN_RESULT=no_residue"; exit 0; fi
+              attempt=1
+              while [ "$attempt" -le 5 ]; do
+                left=0
+                for d in /proc/[0-9]*; do
+                  p="${d#/proc/}"; [ "$p" = "0" ] && continue
+                  tr "\0" "\n" < "$d/environ" 2>/dev/null | grep -qx "CI_EXEC_TAG=${tag}" \
+                    && { kill -KILL "$p" 2>/dev/null; left=$((left+1)); }
+                done
+                [ "$left" = "0" ] && { echo "CLEAN_RESULT=cleaned count=${killed}"; exit 0; }
+                attempt=$((attempt+1))
+                sleep 2
+              done
+              echo "CLEAN_RESULT=kill_failed remaining=${left}"
+              exit 1' 2>&1)"
+            _ci_rc=$?
+            if [ "$_ci_rc" -ne 0 ] || printf '%s\n' "$_ci_out" | grep -q "CLEAN_RESULT=kill_failed"; then
+              echo "::warning:: CI 容器残留清理失败(rc=${_ci_rc}): $(printf '%s' "$_ci_out" | tr '\n' ' ' | head -c 300)"
+              echo "rc=${_ci_rc} out=$(printf '%s' "$_ci_out" | head -c 300)" \
+                > "${RUNNER_TEMP}/ci_exec_cleanup_failed_${_ci_tag}" 2>/dev/null
+              return 1
+            fi
+            return 0
           }
           export -f ci_exec_kill_tree
 
           # 宿主侧看门狗是取消后的清理执行者：runner 取消时只杀宿主侧步骤进程树
           # （trap 不会执行；容器侧进程不带任何 runner 跟踪标记，runner 不会回收——
           # 实测取消后容器内任务继续跑数小时）。看门狗用双重 fork + setsid 脱离该
-          # 进程树（PPID 重挂到 init）。清理条件只有一条：宿主侧 bash 已死（PID
-          # 不存在，或 starttime 不匹配以排除 PID 复用）。不做心跳：宿主短暂卡顿
-          # 不影响判定，也不会因此误杀活跃任务。
+          # 进程树（PPID 重挂到 init），不规避任何 runner 的跟踪回收逻辑（本版本
+          # runner 亦无 RUNNER_TRACKING_ID 回收）。清理条件只有一条：宿主侧 bash
+          # 已死（PID 不存在，或 starttime 不匹配以排除 PID 复用）。看门狗不持有
+          # 步骤管道、不需要被 trap 按 PID 击杀，清理完即自退。
           CI_WRAPPER_PID=$$
           CI_WRAPPER_START="$(awk '{print $22}' "/proc/$$/stat")"
-          CI_WATCHDOG_PID_FILE="${RUNNER_TEMP}/ci_exec_wd_${CI_EXEC_TAG}"
           ( setsid bash -c '
               ci_wpid="$1"; ci_wstart="$2"; ci_tag="$3"
-              echo "$$" > "${RUNNER_TEMP}/ci_exec_wd_${ci_tag}"
               wrapper_alive() {
                 [ -d "/proc/${ci_wpid}" ] || return 1
                 [ "$(awk "{print \$22}" "/proc/${ci_wpid}/stat" 2>/dev/null)" = "${ci_wstart}" ]
               }
               while :; do
                 if ! wrapper_alive; then
-                  ci_exec_kill_tree "$ci_tag" || true
-                  rm -f "${RUNNER_TEMP}/ci_exec_wd_${ci_tag}"
+                  ci_exec_kill_tree "$ci_tag"
                   exit 0
                 fi
                 sleep 5
               done' _ "$CI_WRAPPER_PID" "$CI_WRAPPER_START" "$CI_EXEC_TAG" >/dev/null 2>&1 & )
 
-          # 正常退出/收到 TERM 时的兜底清理（被 KILL 的场景由看门狗覆盖）；幂等。
+          # 正常退出/收到 TERM 时的主动清理（被 KILL 的场景由看门狗兜底）。
+          # 不改退出码：清理成功与否都保留测试原有状态，失败仅以 ::warning:: +
+          # 标记文件呈现，不吞掉任何失败信息。
           ci_exec_host_cleanup() {
-            if [ -f "$CI_WATCHDOG_PID_FILE" ]; then
-              kill "$(cat "$CI_WATCHDOG_PID_FILE")" 2>/dev/null || true
-            fi
-            rm -f "$CI_WATCHDOG_PID_FILE" 2>/dev/null || true
-            ci_exec_kill_tree "$CI_EXEC_TAG" || true
+            ci_exec_kill_tree "$CI_EXEC_TAG"
           }
           trap ci_exec_host_cleanup EXIT
           # ---- 自清理定义结束 ----
