@@ -2334,8 +2334,9 @@ def pow(
     """Performs element-wise power: `dst[i] = src0[i] ** src1[i]`.
 
     Args:
-        dst: The destination buffer; it may alias src0 or src1 (in-place)
-            on AscendC, and src0 on PTO.
+        dst: The destination buffer; it may alias src0 (in-place) on both
+            backends; aliasing src1 is supported on PTO for float16/float32
+            and on AscendC for float16/int32.
         src0: The base, a buffer or a contiguous region of it.
         src1: The exponent, a buffer or a contiguous region of it.
         tmp: Optional complete UB scratch storage for the AscendC backend;

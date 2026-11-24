@@ -59,7 +59,7 @@ def pow(
 
 1. dst、src0、src1 的 dtype 必须一致；不支持 scalar 指数，固定指数需先用 `T.tile.fill` 填成 buffer
 2. 三者的元素总数应一致；**无大小校验**：Ascend C 后端大小不一致仍会静默运行（结果未定义），PTO 后端因 tile 形状不匹配编译失败
-3. 原地运算（dst 与 src0 为同一 buffer）两后端均支持；dst 与 src1 为同一 buffer 时仅 Ascend C 后端支持
+3. 原地运算（dst 与 src0 为同一 buffer）两后端均支持；dst 与 src1 为同一 buffer 时，PTO 支持 float16、float32，Ascend C 支持 float16、int32
 4. **PTO 后端会原地修改 src0**（内部先对 src0 求对数再参与运算），调用后 src0 不可复用；Ascend C 后端运算过程中不改写 src0/src1 的取值（输入保持原值，原地别名时 dst 的写入按常规覆盖目标缓冲区）
 5. 特殊值语义：Ascend C 遵循 IEEE（`0^0=1`、`(-2)^3=-8`、`1^nan=1`）；PTO 基于 log/exp 路径，`0^0`、负底数、`1^nan` 均产生 nan
 6. 精度：Ascend C 内部按 float32 计算，float32 结果与 torch 逐位一致、float16 误差 ≤ 1 ulp，int32 对不可精确表示的幂可能偏差 ±1；PTO float32 精确、float16 为近似实现（最大相对误差约 3.6e-3）

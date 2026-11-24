@@ -45,7 +45,7 @@ def rsqrt(
 2. dst 可与 src0 为同一 buffer（原地运算，如 `T.tile.rsqrt(a_ub, a_ub)`）
 3. 操作数地址需 32 字节对齐（硬件约束）
 4. 精度：Ascend C 与 PTO 后端均为硬件近似实现，最大相对误差约 3e-3（0.3% 量级）
-5. 若对精度要求较高，推荐组合 `T.tile.sqrt + T.tile.div`（`1/sqrt(x) = sqrt(x)/x`）：最大相对误差降至 float32 约 1.8e-7、float16 约 6.7e-4（参考 issue #1225 相关讨论）
+5. 若对精度要求较高，推荐组合 `T.tile.sqrt + T.tile.div`（`1/sqrt(x) = sqrt(x)/x`）：最大相对误差降至 float32 约 1.8e-7、float16 约 6.7e-4
 6. 特殊值遵循 IEEE 语义：`rsqrt(0)=inf`、`rsqrt(负数)=nan`、`rsqrt(inf)=0`、`rsqrt(nan)=nan`
 
 ## 3. 示例代码
