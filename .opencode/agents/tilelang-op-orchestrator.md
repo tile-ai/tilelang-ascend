@@ -428,7 +428,7 @@ Stage 2 返回 `[PRECISION_PASS]` 后，你**必须**先向用户说明当前状
 | `tilelang-env-check` | 本次有跑过环境预检 |
 | `tilelang-op-design` | Stage 1 执行过（含设计回退） |
 | `tilelang-op-develop` | Stage 2 执行过任意 attempt |
-| `tilelang-perf-optimization` | Stage 3 执行过任意迭代 |
+| `tilelang-performance-best-practices` | Stage 3 执行过任意迭代 |
 
 各 Subagent 摘要里的 `skills_consulted` 字段（如查 `tilelang-api-best-practices`、`tilelang-debug-helper` 等）需追加合并。
 

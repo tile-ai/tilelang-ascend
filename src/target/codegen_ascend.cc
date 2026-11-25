@@ -546,6 +546,8 @@ void CodeGenTileLangAscend::VisitExpr_(const CallNode *op, std::ostream &os) {
                   "explicit T.Scope(\"V\"); enable "
                   "tl.ascend_auto_cv_combine or scope it explicitly: "
                << GetRef<Call>(op);
+  } else if (op->op.same_as(tl::ascend_bitwise_lshift())) {
+    TensorBitwiseLShiftCodegen(op);
   } else if (op->op.same_as(builtin::call_extern())) {
     std::string op_name = Downcast<StringImm>(op->args[0])->value;
     if (op_name.find("tl::ascend::copy") != std::string::npos ||
@@ -1496,6 +1498,64 @@ void CodeGenTileLangAscend::TrigOpCodegen(const CallNode *op,
                                           const std::string &op_name) {
   int len = op->args.size();
   PrintOpCall(op, op_name, {0, len - 1}, {len - 1, len});
+}
+
+void CodeGenTileLangAscend::TensorBitwiseLShiftCodegen(const CallNode *op) {
+  // args: dst(0) src0(1) shift(2) size(3). A2/A3 has no native tensor
+  // AscendC::ShiftLeft, so emit a per-element scalar loop over the valid
+  // region, addressing each UB tile with its physical row stride.
+  DataType dtype = GetAccessPtrDtype(op->args[1].as<CallNode>());
+  std::string type_str = getType(dtype);
+
+  auto get_stride_and_cols = [&](const CallNode *access) {
+    Var var = Downcast<Var>(access->args[1]);
+    int32_t stride = 0;
+    int32_t cols = 0;
+    ICHECK(buffer_shapes_.count(var))
+        << "Buffer shape not found: " << var->name_hint;
+    const Array<PrimExpr> &shape = buffer_shapes_.at(var);
+    // Flattened UB shape is {M, N_aligned, valid_M, valid_N}.
+    ICHECK_GE(shape.size(), 4U);
+    ICHECK(shape[1]->IsInstance<IntImmNode>());
+    ICHECK(shape[3]->IsInstance<IntImmNode>());
+    stride = static_cast<int32_t>(shape[1].as<IntImmNode>()->value);
+    cols = static_cast<int32_t>(shape[3].as<IntImmNode>()->value);
+    ICHECK_GT(stride, 0) << "physical row stride must be positive";
+    ICHECK_GT(cols, 0) << "valid column count must be positive";
+    return std::make_pair(stride, cols);
+  };
+
+  auto dst_info = get_stride_and_cols(op->args[0].as<CallNode>());
+  auto src0_info = get_stride_and_cols(op->args[1].as<CallNode>());
+  auto shift_info = get_stride_and_cols(op->args[2].as<CallNode>());
+
+  int32_t extent = 0;
+  if (const auto *extent_imm = op->args[3].as<IntImmNode>()) {
+    extent = static_cast<int32_t>(extent_imm->value);
+  } else {
+    ICHECK(false) << "T.tile.bitwise_lshift tensor form requires a static "
+                     "element count";
+  }
+  const int32_t valid_col = dst_info.second;
+  ICHECK_GT(extent, 0) << "tensor bitwise_lshift extent must be positive";
+  // Contiguous BufferRegions reach here as whole rows, a single row, or a 1D
+  // slice, so the valid shape is recovered from extent and valid_col.
+  int32_t rows = extent > valid_col ? extent / valid_col : 1;
+  int32_t cols = extent > valid_col ? valid_col : extent;
+
+  std::string dst_name = PrintBufferOffset(op->args[0].as<CallNode>(), true);
+  std::string src0_name = PrintBufferOffset(op->args[1].as<CallNode>(), true);
+  std::string shift_name = PrintBufferOffset(op->args[2].as<CallNode>(), true);
+
+  this->PrintIndent();
+  this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
+  this->PrintIndent();
+  this->stream << "tl::ascend::tile_bitwise_lshift_tensor<" << type_str << ">("
+               << dst_name << ", " << src0_name << ", " << shift_name << ", "
+               << rows << ", " << cols << ", " << dst_info.first << ", "
+               << src0_info.first << ", " << shift_info.first << ");\n";
+  this->PrintIndent();
+  this->stream << "AscendC::PipeBarrier<PIPE_ALL>();\n";
 }
 
 void CodeGenTileLangAscend::TransposeCodegen(const CallNode *op,

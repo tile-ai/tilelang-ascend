@@ -108,7 +108,7 @@ TL_ASCEND_NATURAL_SCALAR(ascend_mins, ascend_mins, 5, kFloat16Float32Int16Int32,
                          kRawScalar, "AscendC::Mins")
 TL_ASCEND_NATURAL_SCALAR(ascend_leaky_relu, ascend_leaky_relu, 4,
                          kFloat16Float32, kRawScalar, "AscendC::LeakyRelu")
-TL_ASCEND_NATURAL_SCALAR(ascend_bitwise_lshift, ascend_bitwise_lshift, 4,
+TL_ASCEND_NATURAL_SCALAR(ascend_bitwise_lshifts, ascend_bitwise_lshifts, 4,
                          kShiftInteger, kRawShift, "AscendC::ShiftLeft")
 TL_ASCEND_NATURAL_SCALAR(ascend_bitwise_rshift, ascend_bitwise_rshift, 4,
                          kShiftInteger, kRawShift, "AscendC::ShiftRight")
