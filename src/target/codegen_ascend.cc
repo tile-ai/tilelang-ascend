@@ -2679,11 +2679,12 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
   auto dst_offset = PrintExpr(dst_offset_expr);
 
   static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
-      {"copy_l0c_to_gm", 3},      {"copy_gm_to_l1", 3},
-      {"copy_l1_to_l0a", 2},      {"copy_l1_to_l0b", 2},
-      {"copy_gm_to_ub", 4},       {"copy_ub_to_gm", 3},
-      {"atomic_add_ub_to_gm", 3}, {"atomic_add_l0c_to_gm", 3},
-      {"copy_ub_to_ub", 6},       {"copy_ub_column_pack", 1}};
+      {"copy_l0c_to_gm", 3},       {"copy_gm_to_l1", 3},
+      {"copy_l1_to_l0a", 2},       {"copy_l1_to_l0b", 2},
+      {"copy_gm_to_ub", 4},        {"copy_ub_to_gm", 3},
+      {"atomic_add_ub_to_gm", 3},  {"atomic_add_l0c_to_gm", 3},
+      {"copy_ub_to_ub", 6},        {"copy_ub_column_pack", 1},
+      {"copy_ub_column_unpack", 2}};
 
   bool found = false;
   int extra_args = 0;

@@ -397,6 +397,9 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
       WaitFlag<HardEvent::V_MTE2>(0);
     }
   }
+  if (maskShapeM == 0 || maskShapeN == 0) {
+    return;
+  }
   AscendC::DataCopyExtParams dataCopyParams(
       maskShapeM, EleNumToBytes<T>(maskShapeN),
       EleNumToBytes<T>(realSrcN - maskShapeN),
@@ -516,6 +519,31 @@ CATLASS_DEVICE void copy_ub_column_pack(LocalTensor<T> dstTensor,
   constexpr uint32_t rowElements = 32 / sizeof(Bits);
   for (uint32_t row = 0; row < rows; ++row) {
     AscendC::Duplicate(dstBits[row * rowElements], srcBits.GetValue(row), 1);
+  }
+}
+
+// A GM column arrives in 32B slots. Restore the compact 1D logical layout
+// before exposing it to computation or another copy. Use a one-lane vector
+// mask at an aligned block base so an unaligned destination slice preserves
+// every neighbouring lane, and produces vector-visible writes like pack.
+template <typename T>
+CATLASS_DEVICE void copy_ub_column_unpack(LocalTensor<T> dstTensor,
+                                          LocalTensor<T> srcTensor,
+                                          uint32_t rows, uint32_t dstOffset) {
+  static_assert(IsDuplicateSupported_v<T>,
+                "Compact column unpacking requires a 16-bit or 32-bit type");
+  using Bits = std::conditional_t<sizeof(T) == 2, uint16_t, uint32_t>;
+  auto dstBits = dstTensor.template ReinterpretCast<Bits>();
+  auto srcBits = srcTensor.template ReinterpretCast<Bits>();
+  constexpr uint32_t rowElements = 32 / sizeof(Bits);
+  for (uint32_t row = 0; row < rows; ++row) {
+    const uint32_t index = dstOffset + row;
+    const uint32_t lane = index % rowElements;
+    uint64_t mask[2] = {1ULL << lane, 0};
+    AscendC::Duplicate(dstBits[index - lane],
+                       srcBits.GetValue(row * rowElements), mask,
+                       static_cast<uint8_t>(1), static_cast<uint16_t>(1),
+                       static_cast<uint8_t>(0));
   }
 }
 

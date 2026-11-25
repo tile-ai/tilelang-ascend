@@ -1,4 +1,4 @@
-"""Computed compact UB tiles copied to strided GM columns (issue #2017)."""
+"""Compact UB tiles copied to and from strided GM columns (issue #2017)."""
 
 import pytest
 import torch
@@ -226,3 +226,221 @@ def test_narrow_slot_roundtrip_preserves_live_buffer(dtype, auto_plan):
     torch.npu.synchronize()
     torch.testing.assert_close(output.cpu(), expected, rtol=0, atol=0)
     torch.testing.assert_close(guard_output, guard_input, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float16", "bfloat16", "int32"])
+@pytest.mark.parametrize("auto_sync,auto_plan", [(True, True), (False, False)])
+def test_dma_column_1d_layout_and_offset_guards(dtype, auto_sync, auto_plan):
+    """Column DMA produces compact 1D elements and preserves partial-block guards."""
+    rows, heads, capacity, offset = 5, 3, 32, 3
+
+    @T.prim_func
+    def main(
+        source: T.Tensor((rows, heads), dtype),
+        initial: T.Tensor((heads + 1, capacity), dtype),
+        output: T.Tensor((rows + 2, heads + 3), dtype),
+        compact_output: T.Tensor((heads + 1, capacity), dtype),
+        valid_length: T.int32,
+    ):
+        # The extra core sees an empty source column. The requested UB slice
+        # receives the default pad value; lanes outside that slice stay intact.
+        with T.Kernel(heads + 1, threads=1, is_npu=True) as cid:
+            tmp = T.alloc_ub((capacity,), dtype)
+            n = T.max(0, T.min(valid_length, rows))
+            T.copy(initial[cid, :], tmp)
+            T.barrier_all()
+            T.copy(source[:n, cid], tmp[offset : offset + n])
+            T.copy(tmp, compact_output[cid, :])
+            T.barrier_all()
+            T.copy(tmp[offset : offset + n], output[1 : 1 + n, cid + 1])
+
+    kernel = tilelang.compile(
+        main,
+        target="ascendc",
+        pass_configs={
+            tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: auto_sync,
+            tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: auto_plan,
+        },
+    )
+    torch_dtype = getattr(torch, dtype)
+    source = (torch.arange(rows * heads).reshape(rows, heads) + 7).to(torch_dtype)
+    initial = torch.full((heads + 1, capacity), -123, dtype=torch_dtype)
+    for length in [-1, 0, 1, 4, 5, 8]:
+        n = max(0, min(length, rows))
+        expected = torch.full((rows + 2, heads + 3), -123, dtype=torch_dtype)
+        expected[1 : n + 1, 1 : heads + 1] = source[:n]
+        expected[1 : n + 1, heads + 1] = 0
+        compact_expected = initial.clone()
+        compact_expected[:heads, offset : offset + n] = source[:n].T
+        compact_expected[heads, offset : offset + n] = 0
+        output = torch.full_like(expected, -123, device="npu")
+        compact_output = torch.full_like(compact_expected, -42, device="npu")
+        kernel(source.npu(), initial.npu(), output, compact_output, length)
+        torch.npu.synchronize()
+        torch.testing.assert_close(output.cpu(), expected, rtol=0, atol=0)
+        torch.testing.assert_close(compact_output.cpu(), compact_expected, rtol=0, atol=0)
+
+
+def test_dma_column_1d_tail_padding_preserves_slice_guards():
+    rows, heads, capacity, offset = 5, 3, 80, 3
+
+    @T.prim_func
+    def main(
+        source: T.Tensor((rows, heads), "float32"),
+        initial: T.Tensor((heads + 1, capacity), "float32"),
+        output: T.Tensor((heads + 1, capacity), "float32"),
+        valid_length: T.int32,
+    ):
+        with T.Kernel(heads + 1, threads=1, is_npu=True) as cid:
+            tmp = T.alloc_ub((capacity,), "float32")
+            n = T.max(0, T.min(valid_length, 64))
+            T.copy(initial[cid, :], tmp)
+            T.copy(source[:n, cid], tmp[offset : offset + n], pad_value=7)
+            T.copy(tmp, output[cid, :])
+
+    kernel = tilelang.compile(
+        main,
+        target="ascendc",
+        pass_configs={
+            tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+            tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+        },
+    )
+    source = torch.arange(rows * heads, dtype=torch.float32).reshape(rows, heads) + 13
+    initial = torch.full((heads + 1, capacity), -123.0, device="npu")
+    for length in [0, 1, 5, 13, 64, 80]:
+        n = min(length, 64)
+        copied_rows = min(rows, n)
+        expected = torch.full((heads + 1, capacity), -123.0)
+        expected[:, offset : offset + n] = 7
+        expected[:heads, offset : offset + copied_rows] = source[:copied_rows].T
+        output = torch.full_like(expected, -42, device="npu")
+        kernel(source.npu(), initial, output, length)
+        torch.npu.synchronize()
+        torch.testing.assert_close(output.cpu(), expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("auto_sync", [True, False])
+def test_dma_column_1d_computation_and_reuse(auto_sync):
+    """The same UB can alternate DMA and computed producers inside a loop."""
+    rows, heads, capacity, offset = 4, 3, 32, 3
+
+    @T.prim_func
+    def main(
+        source: T.Tensor((2, rows, heads), "float32"),
+        initial: T.Tensor((heads, capacity), "float32"),
+        output: T.Tensor((2, 2, rows, heads), "float32"),
+    ):
+        with T.Kernel(heads, threads=1, is_npu=True) as cid:
+            tmp = T.alloc_ub((capacity,), "float32")
+            copied = T.alloc_ub((capacity,), "float32")
+            T.copy(initial[cid, :], tmp)
+            for repeat in T.serial(2):
+                # Seed an unrelated old tail mask. The following column load
+                # must invalidate it before the full-tile add or UB copy.
+                T.copy(initial[cid, :2], tmp[:2])
+                T.barrier_all()
+                T.copy(source[repeat, :rows, cid], tmp[offset : offset + rows])
+                T.copy(tmp, copied)
+                T.barrier_all()
+                T.copy(copied[offset : offset + rows], output[repeat, 0, :rows, cid])
+                T.tile.add(tmp, tmp, tmp)
+                T.copy(tmp[offset : offset + rows], output[repeat, 1, :rows, cid])
+
+    kernel = tilelang.compile(
+        main,
+        target="ascendc",
+        pass_configs={
+            tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: auto_sync,
+            tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+            tilelang.PassConfigKey.TL_ASCEND_TAIL_MASK: True,
+        },
+    )
+    source = torch.arange(2 * rows * heads, dtype=torch.float32).reshape(2, rows, heads)
+    initial = torch.full((heads, capacity), -123.0, device="npu")
+    expected = torch.stack((source, source * 2), dim=1)
+    output = torch.full_like(expected, -123, device="npu")
+    kernel(source.npu(), initial, output)
+    torch.npu.synchronize()
+    torch.testing.assert_close(output.cpu(), expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("tail_mask", [False, True])
+@pytest.mark.parametrize("rows", [1, 5])
+def test_dma_column_1d_full_tail_keeps_padding_through_exp(tail_mask, rows):
+    @T.prim_func
+    def main(
+        source: T.Tensor((rows, 3), "float32"),
+        output: T.Tensor((4, 64), "float32"),
+    ):
+        with T.Kernel(4, threads=1, is_npu=True) as cid:
+            tmp = T.alloc_ub((64,), "float32")
+            copied = T.alloc_ub((64,), "float32")
+            T.copy(source[:64, cid], tmp, pad_value=0)
+            T.copy(tmp, copied)
+            T.tile.add(tmp, copied, copied)
+            T.tile.exp(tmp, tmp)
+            T.copy(tmp, output[cid, :])
+
+    kernel = tilelang.compile(
+        main,
+        target="ascendc",
+        pass_configs={
+            tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+            tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+            tilelang.PassConfigKey.TL_ASCEND_TAIL_MASK: tail_mask,
+        },
+    )
+    source = torch.arange(rows * 3, dtype=torch.float32).reshape(rows, 3) / 16
+    expected = torch.full((4, 64), 0.0 if tail_mask else 1.0)
+    expected[:3, :rows] = (source * 2).exp().T
+    output = torch.full_like(expected, -123, device="npu")
+    kernel(source.npu(), output)
+    torch.npu.synchronize()
+    torch.testing.assert_close(output.cpu(), expected, rtol=1e-5, atol=1e-5)
+
+
+def test_dynamic_column_slice_of_large_1d_ub():
+    """A proven 64-row slice needs 64 slots even when the UB capacity is 8192."""
+
+    @T.prim_func
+    def main(
+        source: T.Tensor((64,), "float32"),
+        output: T.Tensor((64, 2), "float32"),
+        valid_length: T.int32,
+    ):
+        with T.Kernel(1, threads=1, is_npu=True):
+            tmp = T.alloc_ub((8192,), "float32")
+            n = T.min(valid_length, 64)
+            T.copy(source[:64], tmp[:64])
+            T.copy(tmp[:n], output[:n, 1])
+
+    kernel = tilelang.compile(
+        main,
+        target="ascendc",
+        pass_configs={
+            tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+            tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
+        },
+    )
+    source = torch.arange(64, dtype=torch.float32) + 3
+    for length in [-1, 0, 1, 63, 64, 80]:
+        n = max(0, min(length, 64))
+        expected = torch.full((64, 2), -123.0)
+        expected[:n, 1] = source[:n]
+        output = torch.full_like(expected, -123, device="npu")
+        kernel(source.npu(), output, length)
+        torch.npu.synchronize()
+        torch.testing.assert_close(output.cpu(), expected, rtol=0, atol=0)
+
+
+def test_unbounded_large_column_slice_is_rejected():
+    @T.prim_func
+    def main(output: T.Tensor((8192, 2), "float32"), valid_length: T.int32):
+        with T.Kernel(1, threads=1, is_npu=True):
+            tmp = T.alloc_ub((8192,), "float32")
+            T.tile.fill(tmp, 1.0)
+            T.copy(tmp[:valid_length], output[:valid_length, 1])
+
+    with pytest.raises(Exception, match="at most 4095 rows"):
+        tilelang.compile(main, target="ascendc")
