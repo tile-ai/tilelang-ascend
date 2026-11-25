@@ -671,9 +671,11 @@ jobs:
           # 不在宿主机上依据共享/容器可写文件里的裸 PID 发信号。
           ci_exec_kill_tree() {
             local _ci_tag="$1" _ci_out _ci_rc
-            # 整个清理调用（含 docker exec）用 timeout 设总时限；docker 挂起时
-            # 宿主放弃等待(rc=124/137)，与"已确认容器内无残留"严格区分。
-            _ci_out="$(timeout 20 docker exec -e CI_CLEAN_TAG="$_ci_tag" tilelang_x1 sh -c '
+            # 整个清理调用（含 docker exec）用 timeout 设总时限，-k 3s 保证
+            # 忽略 TERM 的 docker 进程也会被强杀。rc=124（20s 到点）或
+            # rc=137（-k 强杀；也可能是其它 SIGKILL）都只记为"宿主放弃等待、
+            # 未确认容器内无残留"，不据此断言具体机制。
+            _ci_out="$(timeout -k 3s 20s docker exec -e CI_CLEAN_TAG="$_ci_tag" tilelang_x1 sh -c '
               tag="${CI_CLEAN_TAG}"
               killed=0
               for d in /proc/[0-9]*; do
@@ -698,7 +700,7 @@ jobs:
               exit 1' 2>&1)"
             _ci_rc=$?
             if [ "$_ci_rc" -eq 124 ] || [ "$_ci_rc" -eq 137 ]; then
-              echo "::warning:: CI 容器残留清理超时(宿主放弃等待, rc=${_ci_rc})：未能确认容器内已无残留"
+              echo "::warning:: CI 容器残留清理未确认完成(宿主放弃等待, rc=${_ci_rc})：未确认容器内无残留"
               echo "rc=${_ci_rc} outcome=timeout_gave_up" \
                 > "${RUNNER_TEMP}/ci_exec_cleanup_failed_${_ci_tag}" 2>/dev/null
               return 1
