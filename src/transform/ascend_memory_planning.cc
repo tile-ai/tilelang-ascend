@@ -1070,6 +1070,30 @@ private:
       // access_ptr and extent arithmetic can wrap a Select in e.g. 0 + x.
       // Normalize before splitting it so branch constraints remain visible.
       PrimExpr simplified = analyzer->Simplify(expr);
+      // A folded N-D copy scales the tail-clamped row extent by a
+      // compile-time inner-row product. Preserve its finite bound through
+      // that multiplication when the product is representable.
+      if (const auto *mul = simplified.as<MulNode>()) {
+        const PrimExpr *inner = nullptr;
+        int64_t factor = 0;
+        if (const auto *constant = mul->a.as<IntImmNode>()) {
+          factor = constant->value;
+          inner = &mul->b;
+        } else if (const auto *constant = mul->b.as<IntImmNode>()) {
+          factor = constant->value;
+          inner = &mul->a;
+        }
+        if (inner != nullptr && factor > 0) {
+          const auto inner_bounds = CopyBounds(*inner, analyzer, positive_only);
+          const int64_t limit = arith::ConstIntBoundNode::kPosInf;
+          if (inner_bounds.first >= 0 &&
+              inner_bounds.first <= inner_bounds.second &&
+              inner_bounds.second < limit && factor < limit &&
+              inner_bounds.second <= (limit - 1) / factor) {
+            return {inner_bounds.first * factor, inner_bounds.second * factor};
+          }
+        }
+      }
       const auto *select = simplified.as<SelectNode>();
       const auto *conditional = simplified.as<CallNode>();
       if (conditional && !conditional->op.same_as(builtin::if_then_else())) {
