@@ -656,47 +656,46 @@ jobs:
           fi
 
           # ---- job 取消/超时自清理 ----
-          # 唯一标识本次执行：区分仓库、run、attempt 与 job。所有进入容器的进程都继承
-          # CI_EXEC_TAG，因此可以精确识别并只清理本 job 的进程树。TAG 只是防误伤的
-          # 归属标记，不是跨 PR 的权限隔离（同容器内进程可互相读取环境）。
-          # （当前 test job 无 matrix；若将来加 matrix，需把 ${{ toJson(matrix) }} 并入 TAG）
+          # CI_EXEC_TAG 唯一标识本次执行（仓库+run+attempt+job），经 -e 注入容器并被
+          # 子/孙进程继承；清理始终按完整 TAG 精确匹配，避免误伤同容器内的并发任务。
+          # TAG 只是防误伤标记，不是跨 PR 的权限隔离（同容器内进程可互相读取环境）。
           CI_EXEC_TAG="${GITHUB_REPOSITORY//[^A-Za-z0-9_-]/_}-r${GITHUB_RUN_ID}-a${GITHUB_RUN_ATTEMPT}-j${GITHUB_JOB//[^A-Za-z0-9_-]/_}"
 
-          # 幂等清理，区分三种结果：
-          #   no_residue  —— 本就没有残留（正常路径零开销，无任何固定等待）
-          #   cleaned     —— 有残留且已清完（KILL 后有限次复查，总时限 ≤10s）
-          #   kill_failed —— 复查后仍有匹配进程（如 D 状态进程）；docker exec 本身
-          #                  失败同样记为清理失败。失败只以 ::warning:: 与失败标记
-          #                  文件呈现，不覆盖测试本身的退出码。
-          # 不在宿主机上依据共享/容器可写文件里的裸 PID 发信号。
+          # 清理区分三种结果：no_residue（无匹配进程）/ cleaned（已清完）/
+          # kill_failed（复查仍有匹配）。复查只计数、不发信号，remaining 取复查时
+          # 仍存在的匹配进程数。docker exec 失败或超时同样记为清理失败：都以
+          # ::warning:: 和失败标记文件呈现，不覆盖测试退出码；宿主不在共享或容器
+          # 可写文件里按裸 PID 发信号。
           ci_exec_kill_tree() {
             local _ci_tag="$1" _ci_out _ci_rc
-            # 整个清理调用（含 docker exec）用 timeout 设总时限，-k 3s 保证
-            # 忽略 TERM 的 docker 进程也会被强杀。rc=124（20s 到点）或
-            # rc=137（-k 强杀；也可能是其它 SIGKILL）都只记为"宿主放弃等待、
+            # 整个清理调用用 timeout -k 3s 20s 设总时限，忽略 TERM 的 docker 进程也会
+            # 被强杀。rc=124 或 rc=137（也可能是其它 SIGKILL）都只记为"宿主放弃等待、
             # 未确认容器内无残留"，不据此断言具体机制。
             _ci_out="$(timeout -k 3s 20s docker exec -e CI_CLEAN_TAG="$_ci_tag" tilelang_x1 sh -c '
               tag="${CI_CLEAN_TAG}"
-              killed=0
-              for d in /proc/[0-9]*; do
-                p="${d#/proc/}"; [ "$p" = "0" ] && continue
-                tr "\0" "\n" < "$d/environ" 2>/dev/null | grep -qx "CI_EXEC_TAG=${tag}" \
-                  && { kill -KILL "$p" 2>/dev/null; killed=$((killed+1)); }
-              done
-              if [ "$killed" = "0" ]; then echo "CLEAN_RESULT=no_residue"; exit 0; fi
-              attempt=1
-              while [ "$attempt" -le 5 ]; do
-                left=0
+              scan() {
                 for d in /proc/[0-9]*; do
                   p="${d#/proc/}"; [ "$p" = "0" ] && continue
-                  tr "\0" "\n" < "$d/environ" 2>/dev/null | grep -qx "CI_EXEC_TAG=${tag}" \
-                    && { kill -KILL "$p" 2>/dev/null; left=$((left+1)); }
+                  tr "\0" "\n" < "$d/environ" 2>/dev/null | grep -qx "CI_EXEC_TAG=${tag}" && echo "$p"
                 done
-                [ "$left" = "0" ] && { echo "CLEAN_RESULT=cleaned count=${killed}"; exit 0; }
-                attempt=$((attempt+1))
-                sleep 2
+              }
+              kill_pass() {
+                n=0
+                for p in $(scan); do kill -KILL "$p" 2>/dev/null; n=$((n+1)); done
+                echo "$n"
+              }
+              killed="$(kill_pass)"
+              if [ "$killed" = "0" ]; then echo "CLEAN_RESULT=no_residue"; exit 0; fi
+              for attempt in 1 2 3 4; do
+                remaining="$(scan | wc -l)"
+                if [ "$remaining" = "0" ]; then echo "CLEAN_RESULT=cleaned count=${killed}"; exit 0; fi
+                [ "$attempt" = "4" ] && break
+                kill_pass >/dev/null
+                sleep 1
               done
-              echo "CLEAN_RESULT=kill_failed remaining=${left}"
+              remaining="$(scan | wc -l)"
+              if [ "$remaining" = "0" ]; then echo "CLEAN_RESULT=cleaned count=${killed}"; exit 0; fi
+              echo "CLEAN_RESULT=kill_failed remaining=${remaining}"
               exit 1' 2>&1)"
             _ci_rc=$?
             if [ "$_ci_rc" -eq 124 ] || [ "$_ci_rc" -eq 137 ]; then
@@ -715,13 +714,10 @@ jobs:
           }
           export -f ci_exec_kill_tree
 
-          # 宿主侧看门狗是取消后的清理执行者：runner 取消时只杀宿主侧步骤进程树
-          # （trap 不会执行；容器侧进程不带任何 runner 跟踪标记，runner 不会回收——
-          # 实测取消后容器内任务继续跑数小时）。看门狗用双重 fork + setsid 脱离该
-          # 进程树（PPID 重挂到 init），不规避任何 runner 的跟踪回收逻辑（本版本
-          # runner 亦无 RUNNER_TRACKING_ID 回收）。清理条件只有一条：宿主侧 bash
-          # 已死（PID 不存在，或 starttime 不匹配以排除 PID 复用）。看门狗不持有
-          # 步骤管道、不需要被 trap 按 PID 击杀，清理完即自退。
+          # 取消时 runner 只杀宿主侧步骤进程树，trap 不执行：由脱离该进程树
+          # （双重 fork + setsid，PPID 重挂 init）的宿主看门狗兜底清理。看门狗不持有
+          # 步骤管道、清理完自退。清理条件只有宿主侧 bash 已死（PID 不存在，或
+          # starttime 不匹配以排除 PID 复用）。
           CI_WRAPPER_PID=$$
           CI_WRAPPER_START="$(awk '{print $22}' "/proc/$$/stat")"
           ( setsid bash -c '
