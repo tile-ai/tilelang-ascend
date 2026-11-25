@@ -90,7 +90,7 @@ Each kernel's dump file is prefixed with the kernel name, supporting file isolat
 
 The feature is controlled by the `TL_ASCEND_EXCEPTION_DUMP` compile-time config, **disabled by default**. Reasons for default-off:
 
-1. The feature depends on CANN APIs such as `aclrtSetExceptionInfoCallback` and `acldumpSaveExceptionInfo`, which may not be available in older CANN versions
+1. The feature depends on CANN APIs such as `aclrtExceptionInfoCallbackRegister` and `acldumpSaveExceptionInfo`, which may not be available in older CANN versions
 2. Enabling it appends an extra parameter to the kernel signature, changing the compiled artifact's ABI
 3. Exception callback registration alters CANN runtime behavior
 
@@ -102,13 +102,13 @@ The config is propagated through TVM's standard `PassContext` mechanism: Python 
 
 ### 3.1 CANN Version Requirements
 
-**CANN >= 9.3.0**
+**CANN >= 9.2.0** (verified on 9.2.0; the callback is registered via `aclrtExceptionInfoCallbackRegister`; the legacy `aclrtSetExceptionInfoCallback` is deprecated since 9.2.0)
 
 The following CANN APIs are required (see `acl/acl_rt.h` and `acl/acl_dump.h`):
 
 | API | Purpose |
 |-----|---------|
-| `aclrtSetExceptionInfoCallback` | Register exception callback |
+| `aclrtExceptionInfoCallbackRegister` | Register exception callback |
 | `aclrtGetArgsFromExceptionInfo` | Extract kernel args from exception info |
 | `acldumpSaveExceptionInfo` | Save tensor data to dump file |
 
@@ -195,7 +195,7 @@ except Exception as e:
 | `type` | `str` | `"input"` / `"output"` / `"workspace"` |
 | `index` | `int` | Tensor index within its type group |
 | `dtype` | `str` | Data type string, e.g. `"float16"` |
-| `file` | `str` | Path to the `.bin` file |
+| `file` | `str` | Path to the tensor file (`.bin` or `.npy`) |
 
 ### 4.5 Manual Parsing (Optional)
 
@@ -236,13 +236,13 @@ See `examples/exception_dump_test/example_exception_dump.py`.
             └── <kernel_name>.custom.<timestamp>   # Dump file
 ```
 
-After msaicerr.py parsing, per-tensor `.bin` files are generated with the naming convention:
+After msaicerr.py parsing, per-tensor tensor files are generated (extension is `.bin` or `.npy` depending on the CANN version: 9.2.0 outputs `.npy`), with the naming convention:
 
 ```
-<kernel_name>.custom.<timestamp>.<tensor_type>.<tensor_index>.<dtype>.bin
+<kernel_name>.custom.<timestamp>.<tensor_type>.<tensor_index>.<dtype>.bin|.npy
 ```
 
-Example: `main_kernel.custom.20260731191027177.input.0.float16.bin`
+Example: `main_kernel.custom.20260731191027177.input.0.float16.npy`
 
 ---
 

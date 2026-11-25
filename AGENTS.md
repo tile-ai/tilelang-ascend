@@ -31,9 +31,10 @@
 - `tilelang-error-fixer`：编译 / 运行时错误诊断与修复
 
 #### 性能调优
-- `tilelang-perf-optimization`：性能优化方案、最佳实践（Flash Attention / GEMM intrinsic / RoPE）与反模式排查
+- `tilelang-performance-best-practices`：性能知识库，提供优化适用条件、实现约束、算子族参考与反模式检查
 
 #### 环境与工具
+- `npu-arch`：Ascend 架构与硬件能力查询；性能调优时结合已确认设备证据读取目标设备参数，并与编译器可用容量分别核验
 - `tilelang-env-check`：环境检查与配置验证（CANN、torch_npu、子模块、编译产物、环境变量）
 - `tilelang-submodule-pull`：自动拉取代码和子模块
 - `tilelang-github-operations`：GitHub PR 创建与操作
@@ -50,9 +51,9 @@
 
 - [`@tilelang-op-analyst`](.opencode/agents/tilelang-op-analyst.md) (Stage 1)：调用 `tilelang-op-design` 完成需求理解与设计
 - [`@tilelang-op-developer`](.opencode/agents/tilelang-op-developer.md) (Stage 2)：调用 `tilelang-op-develop` 完成代码实现、测试、精度调试（一站式，attempt 上限 5 次）
-- [`@tilelang-op-perf-tuner`](.opencode/agents/tilelang-op-perf-tuner.md) (Stage 3，**可选**)：调用 `tilelang-perf-optimization` 完成性能调优
+- [`@tilelang-op-perf-tuner`](.opencode/agents/tilelang-op-perf-tuner.md) (Stage 3，**可选**)：负责数据采集、瓶颈分析、优化实施与复验，查阅 `tilelang-performance-best-practices` 核对实现约束
 
-`DESIGN.md` 非硬性约束——Subagent 在实施中发现设计错误时返回 `[DESIGN_ERROR]`，Orchestrator 回退到 Stage 1 重做（不设次数上限）。新建算子直接对 `@tilelang-op-orchestrator` 描述需求；单独使用某个 skill 可走 `/tilelang-op-design`、`/tilelang-op-develop`、`/tilelang-perf-optimization`、`/tilelang-env-check` 跳过编排层。
+`DESIGN.md` 非硬性约束——Subagent 在实施中发现设计错误时返回 `[DESIGN_ERROR]`，Orchestrator 回退到 Stage 1 重做（不设次数上限）。新建算子直接对 `@tilelang-op-orchestrator` 描述需求；单独使用某个 skill 可走 `/tilelang-op-design`、`/tilelang-op-develop`、`/tilelang-performance-best-practices`、`/tilelang-env-check` 跳过编排层。
 
 ---
 
