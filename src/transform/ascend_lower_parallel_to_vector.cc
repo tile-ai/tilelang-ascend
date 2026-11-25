@@ -110,11 +110,11 @@ inline std::vector<BinaryOpInfo> CreateBinaryOpTable() {
 
   add_builtin_op(tl::ascend_bitwise_and(), builtin::bitwise_and);
   add_builtin_op(tl::ascend_bitwise_or(), builtin::bitwise_or);
-  add_builtin_op(tl::ascend_bitwise_lshift(), builtin::shift_left);
+  add_builtin_op(tl::ascend_bitwise_lshifts(), builtin::shift_left);
   add_builtin_op(tl::ascend_bitwise_rshift(), builtin::shift_right);
   add_builtin_op(tl::ascend_bitwise_and(), tl::ascend_bitwise_and);
   add_builtin_op(tl::ascend_bitwise_or(), tl::ascend_bitwise_or);
-  add_builtin_op(tl::ascend_bitwise_lshift(), tl::ascend_bitwise_lshift);
+  add_builtin_op(tl::ascend_bitwise_lshifts(), tl::ascend_bitwise_lshifts);
   add_builtin_op(tl::ascend_bitwise_rshift(), tl::ascend_bitwise_rshift);
   return table;
 }
