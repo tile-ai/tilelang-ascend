@@ -671,7 +671,9 @@ jobs:
           # 不在宿主机上依据共享/容器可写文件里的裸 PID 发信号。
           ci_exec_kill_tree() {
             local _ci_tag="$1" _ci_out _ci_rc
-            _ci_out="$(docker exec -e CI_CLEAN_TAG="$_ci_tag" tilelang_x1 sh -c '
+            # 整个清理调用（含 docker exec）用 timeout 设总时限；docker 挂起时
+            # 宿主放弃等待(rc=124/137)，与"已确认容器内无残留"严格区分。
+            _ci_out="$(timeout 20 docker exec -e CI_CLEAN_TAG="$_ci_tag" tilelang_x1 sh -c '
               tag="${CI_CLEAN_TAG}"
               killed=0
               for d in /proc/[0-9]*; do
@@ -695,6 +697,12 @@ jobs:
               echo "CLEAN_RESULT=kill_failed remaining=${left}"
               exit 1' 2>&1)"
             _ci_rc=$?
+            if [ "$_ci_rc" -eq 124 ] || [ "$_ci_rc" -eq 137 ]; then
+              echo "::warning:: CI 容器残留清理超时(宿主放弃等待, rc=${_ci_rc})：未能确认容器内已无残留"
+              echo "rc=${_ci_rc} outcome=timeout_gave_up" \
+                > "${RUNNER_TEMP}/ci_exec_cleanup_failed_${_ci_tag}" 2>/dev/null
+              return 1
+            fi
             if [ "$_ci_rc" -ne 0 ] || printf '%s\n' "$_ci_out" | grep -q "CLEAN_RESULT=kill_failed"; then
               echo "::warning:: CI 容器残留清理失败(rc=${_ci_rc}): $(printf '%s' "$_ci_out" | tr '\n' ' ' | head -c 300)"
               echo "rc=${_ci_rc} out=$(printf '%s' "$_ci_out" | head -c 300)" \
@@ -729,10 +737,13 @@ jobs:
               done' _ "$CI_WRAPPER_PID" "$CI_WRAPPER_START" "$CI_EXEC_TAG" >/dev/null 2>&1 & )
 
           # 正常退出/收到 TERM 时的主动清理（被 KILL 的场景由看门狗兜底）。
-          # 不改退出码：清理成功与否都保留测试原有状态，失败仅以 ::warning:: +
-          # 标记文件呈现，不吞掉任何失败信息。
+          # 陷阱入口先保存原退出码；陷阱体内关闭 errexit，保证 docker exec 失败时
+          # 告警与诊断记录仍能执行；最后显式以原退出码退出，测试失败/成功码不变。
           ci_exec_host_cleanup() {
+            local _ci_trap_rc=$?
+            set +e
             ci_exec_kill_tree "$CI_EXEC_TAG"
+            exit "$_ci_trap_rc"
           }
           trap ci_exec_host_cleanup EXIT
           # ---- 自清理定义结束 ----
