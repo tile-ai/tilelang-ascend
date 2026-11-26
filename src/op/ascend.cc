@@ -278,71 +278,70 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     PrimExpr full_rows;
   };
 
-  auto fold_leading_row_dims =
-      [&](const Buffer &buf, const Array<Range> &ranges,
-          const Array<PrimExpr> &extents, const std::vector<int> &active,
-          FoldedRegion &res) {
-        if (active.size() < 3) {
+  auto fold_leading_row_dims = [&](const Buffer &buf,
+                                   const Array<Range> &ranges,
+                                   const Array<PrimExpr> &extents,
+                                   const std::vector<int> &active,
+                                   FoldedRegion &res) {
+    if (active.size() < 3) {
+      return;
+    }
+    // Active row dims: active[0 .. m-2] (outermost first), col:
+    // active[m-1]. A uniform burst pitch requires, for each j in
+    // [0, m-3]:
+    //   extents[active[j+1]] == prod(buf->shape[active[j]+1 ..
+    //   active[j+1]])
+    // (the intermediate active dim fully spans its group), and every
+    // dim inside the group must start at its base (min == 0) so the
+    // folded plane is the contiguous group span and not a shifted
+    // window over it.
+    for (size_t j = 0; j + 2 < active.size(); ++j) {
+      int lead = active[j];
+      int mid = active[j + 1];
+      PrimExpr group = Integer(1);
+      for (int q = lead + 1; q <= mid; ++q) {
+        group = group * buf->shape[q];
+      }
+      if (!analyzer->CanProveEqual(extents[mid], group)) {
+        return;
+      }
+      for (int q = lead + 1; q <= mid; ++q) {
+        if (!analyzer->CanProveEqual(ranges[q]->min, 0)) {
           return;
         }
-        // Active row dims: active[0 .. m-2] (outermost first), col:
-        // active[m-1]. A uniform burst pitch requires, for each j in
-        // [0, m-3]:
-        //   extents[active[j+1]] == prod(buf->shape[active[j]+1 ..
-        //   active[j+1]])
-        // (the intermediate active dim fully spans its group), and every
-        // dim inside the group must start at its base (min == 0) so the
-        // folded plane is the contiguous group span and not a shifted
-        // window over it.
-        for (size_t j = 0; j + 2 < active.size(); ++j) {
-          int lead = active[j];
-          int mid = active[j + 1];
-          PrimExpr group = Integer(1);
-          for (int q = lead + 1; q <= mid; ++q) {
-            group = group * buf->shape[q];
-          }
-          if (!analyzer->CanProveEqual(extents[mid], group)) {
-            return;
-          }
-          for (int q = lead + 1; q <= mid; ++q) {
-            if (!analyzer->CanProveEqual(ranges[q]->min, 0)) {
-              return;
-            }
-          }
-        }
-        // Condition 2 above: on the UB side, the dims between the last row
-        // dim and the col dim must all be physically trivial (shape 1) --
-        // they sit inside the burst pitch, which the last-dim-bound
-        // template cannot widen.
-        if (buf.scope() == "shared.ub") {
-          PrimExpr tail_gap = Integer(1);
-          for (int q = active[active.size() - 2] + 1; q < active.back(); ++q) {
-            tail_gap = tail_gap * buf->shape[q];
-          }
-          if (!analyzer->CanProveEqual(tail_gap, 1)) {
-            return;
-          }
-        }
-        // The outermost dim may be a tail block (clamp it); the intermediate
-        // dims are full, so their extents fold in as-is.
-        // Keep the tail clamp explicit: the memory planner can prove its
-        // finite bound even after the inner row dimensions are multiplied in.
-        PrimExpr remaining =
-            buf->shape[active[0]] - ranges[active[0]]->min;
-        PrimExpr rows =
-            Min(Max(remaining, Integer(0)), ranges[active[0]]->extent);
-        PrimExpr rows = compute_valid_extent(ranges[active[0]]->min,
-                                             ranges[active[0]]->extent,
-                                             buf->shape[active[0]]);
-        PrimExpr full_rows = ranges[active[0]]->extent;
-        for (size_t j = 1; j + 1 < active.size(); ++j) {
-          rows = rows * extents[active[j]];
-          full_rows = full_rows * extents[active[j]];
-        }
-        res.foldable = true;
-        res.valid_rows = analyzer->Simplify(rows);
-        res.full_rows = analyzer->Simplify(full_rows);
-      };
+      }
+    }
+    // Condition 2 above: on the UB side, the dims between the last row
+    // dim and the col dim must all be physically trivial (shape 1) --
+    // they sit inside the burst pitch, which the last-dim-bound
+    // template cannot widen.
+    if (buf.scope() == "shared.ub") {
+      PrimExpr tail_gap = Integer(1);
+      for (int q = active[active.size() - 2] + 1; q < active.back(); ++q) {
+        tail_gap = tail_gap * buf->shape[q];
+      }
+      if (!analyzer->CanProveEqual(tail_gap, 1)) {
+        return;
+      }
+    }
+    // The outermost dim may be a tail block (clamp it); the intermediate
+    // dims are full, so their extents fold in as-is.
+    // Keep the tail clamp explicit: the memory planner can prove its
+    // finite bound even after the inner row dimensions are multiplied in.
+    PrimExpr remaining = buf->shape[active[0]] - ranges[active[0]]->min;
+    PrimExpr rows = Min(Max(remaining, Integer(0)), ranges[active[0]]->extent);
+    PrimExpr rows =
+        compute_valid_extent(ranges[active[0]]->min, ranges[active[0]]->extent,
+                             buf->shape[active[0]]);
+    PrimExpr full_rows = ranges[active[0]]->extent;
+    for (size_t j = 1; j + 1 < active.size(); ++j) {
+      rows = rows * extents[active[j]];
+      full_rows = full_rows * extents[active[j]];
+    }
+    res.foldable = true;
+    res.valid_rows = analyzer->Simplify(rows);
+    res.full_rows = analyzer->Simplify(full_rows);
+  };
 
   std::vector<int> src_active = find_active_dim_indices(src_extents);
   std::vector<int> dst_active = find_active_dim_indices(dst_extents);

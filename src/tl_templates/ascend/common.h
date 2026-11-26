@@ -446,11 +446,11 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
         rows, EleNumToBytes<T>(maskShapeN),
         EleNumToBytes<T>(realSrcN - maskShapeN),
         EleNumToBytes<T>(dstN - maskShapeN) / 32, 0);
-    AscendC::DataCopyPad(dstTensor[dstOffset], srcTensor[srcOffset],
-                         dataCopyParams, padParams);
-    dstOffset += rows * dstN;
-    srcOffset += static_cast<uint64_t>(rows) * realSrcN;
-    remaining -= rows;
+        AscendC::DataCopyPad(dstTensor[dstOffset], srcTensor[srcOffset],
+                             dataCopyParams, padParams);
+        dstOffset += rows * dstN;
+        srcOffset += static_cast<uint64_t>(rows) * realSrcN;
+        remaining -= rows;
   }
 }
 
