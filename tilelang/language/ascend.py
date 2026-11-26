@@ -444,8 +444,10 @@ def gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False, kL0Size=1
         use_hf32 (bool, optional, advanced): Enable the HF32 (tf32-class) mode for
             fp32 GEMM: FP32 operands in L0A/L0B are rounded to the 10-bit-mantissa
             HF32 format before the cube multiply, trading precision for throughput
-            (~20% measured on the 1024^3 shape). Only meaningful for fp32 inputs;
-            silently ignored for other dtypes. Defaults to False (full fp32).
+            (~20% measured on the 1024^3 shape). Only meaningful for fp32 inputs on
+            the AscendC backend; silently ignored for other dtypes and on the pto
+            backend (pto has its own gemm path without this mode). Defaults to
+            False (full fp32).
         kL0Size (int, optional, advanced): K-axis tile size for L1->L0 data movement.
             Controls how the K dimension is split when copying from L1 to L0A/L0B.
             Must be a multiple of 16 and ≤ 4095. Defaults to 128.
