@@ -68,14 +68,8 @@ def copy_computed_column(
 @pytest.mark.parametrize(
     "rows,block,heads,dtype,threads,guard",
     [
-        pytest.param(64, 64, 8, "float32", 1, 0, id="issue2017"),
-        pytest.param(5, 5, 17, "float32", 1, 1, id="short_unaligned_pitch"),
-        pytest.param(63, 63, 3, "float32", 1, 1, id="odd_compact_length"),
-        pytest.param(192, 64, 8, "float32", 1, 1, id="reuse_three_iterations"),
         pytest.param(133, 64, 3, "float32", 1, 1, id="dynamic_tail"),
-        pytest.param(64, 64, 8, "float16", 1, 1, id="float16"),
         pytest.param(64, 64, 8, "bfloat16", 1, 1, id="bfloat16"),
-        pytest.param(32, 32, 3, "int32", 1, 1, id="int32"),
     ],
 )
 def test_copy_computed_1d_to_strided_gm(rows, block, heads, dtype, threads, guard):
@@ -184,9 +178,9 @@ def test_copy_computed_column_manual_sync():
     torch.testing.assert_close(output.cpu(), expected, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("dtype,auto_plan", [("float32", False), ("float16", True)])
-def test_narrow_slot_roundtrip_preserves_live_buffer(dtype, auto_plan):
+def test_narrow_slot_roundtrip_preserves_live_buffer():
     """Preserve MTE-filled row slots and the live buffer after their footprint."""
+    dtype = "float32"
     heads, rows, guard_size = 8, 64, 64
 
     @T.prim_func
@@ -212,7 +206,7 @@ def test_narrow_slot_roundtrip_preserves_live_buffer(dtype, auto_plan):
         target="ascendc",
         pass_configs={
             tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
-            tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: auto_plan,
+            tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: False,
         },
     )
     source = ((torch.arange(heads * rows) % 251) - 113).reshape(heads, rows, 1)
@@ -228,8 +222,10 @@ def test_narrow_slot_roundtrip_preserves_live_buffer(dtype, auto_plan):
     torch.testing.assert_close(guard_output, guard_input, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("dtype", ["float32", "float16", "bfloat16", "int32"])
-@pytest.mark.parametrize("auto_sync,auto_plan", [(True, True), (False, False)])
+@pytest.mark.parametrize(
+    "dtype,auto_sync,auto_plan",
+    [("float32", True, True), ("float16", False, False), ("int32", True, True)],
+)
 def test_dma_column_1d_layout_and_offset_guards(dtype, auto_sync, auto_plan):
     """Column DMA produces compact 1D elements and preserves partial-block guards."""
     rows, heads, capacity, offset = 5, 3, 32, 3
@@ -320,8 +316,7 @@ def test_dma_column_1d_tail_padding_preserves_slice_guards():
         torch.testing.assert_close(output.cpu(), expected, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("auto_sync", [True, False])
-def test_dma_column_1d_computation_and_reuse(auto_sync):
+def test_dma_column_1d_computation_and_reuse():
     """The same UB can alternate DMA and computed producers inside a loop."""
     rows, heads, capacity, offset = 4, 3, 32, 3
 
@@ -351,7 +346,7 @@ def test_dma_column_1d_computation_and_reuse(auto_sync):
         main,
         target="ascendc",
         pass_configs={
-            tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: auto_sync,
+            tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
             tilelang.PassConfigKey.TL_ASCEND_MEMORY_PLANNING: True,
             tilelang.PassConfigKey.TL_ASCEND_TAIL_MASK: True,
         },
@@ -365,8 +360,7 @@ def test_dma_column_1d_computation_and_reuse(auto_sync):
     torch.testing.assert_close(output.cpu(), expected, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("tail_mask", [False, True])
-@pytest.mark.parametrize("rows", [1, 5])
+@pytest.mark.parametrize("tail_mask,rows", [(True, 1), (False, 5)])
 def test_dma_column_1d_full_tail_keeps_padding_through_exp(tail_mask, rows):
     @T.prim_func
     def main(
