@@ -414,6 +414,10 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
   // Batched DMA (see MAX_DMA_ROWS): the pad above covers the whole tile
   // once, then each batch copies one row chunk. The UB side advances by
   // the physical 32B row pitch, the GM side by realSrcN. Like the classic
+  AscendC::DataCopyPadExtParams<T> padParams(isPad, 0, rightPadding, padValue);
+  // Batched DMA (see MAX_DMA_ROWS): the pad above covers the whole tile
+  // once, then each batch copies one row chunk. The UB side advances by
+  // dstN elements per row, the GM side by realSrcN. Like the classic
   // single-call form this stays one bare DataCopyPad per iteration - no
   // sibling scalar stores, no alternative copy paths - so the bisheng
   // cross-pipe sync constraint documented in copy_ub_to_gm below is
@@ -429,6 +433,8 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
       EleNumPerC0<T>();
   uint32_t remaining = maskShapeM;
   uint64_t dstOffset = 0;
+  uint32_t remaining = maskShapeM;
+  uint32_t dstOffset = 0;
   uint64_t srcOffset = 0;
   while (remaining > 0) {
     uint32_t rows = remaining > MAX_DMA_ROWS ? MAX_DMA_ROWS : remaining;
@@ -437,6 +443,12 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
     AscendC::DataCopyPad(dstTensor[dstOffset], srcTensor[srcOffset],
                          dataCopyParams, padParams);
     dstOffset += static_cast<uint64_t>(rows) * dstRowElements;
+        rows, EleNumToBytes<T>(maskShapeN),
+        EleNumToBytes<T>(realSrcN - maskShapeN),
+        EleNumToBytes<T>(dstN - maskShapeN) / 32, 0);
+    AscendC::DataCopyPad(dstTensor[dstOffset], srcTensor[srcOffset],
+                         dataCopyParams, padParams);
+    dstOffset += rows * dstN;
     srcOffset += static_cast<uint64_t>(rows) * realSrcN;
     remaining -= rows;
   }

@@ -331,6 +331,9 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
             buf->shape[active[0]] - ranges[active[0]]->min;
         PrimExpr rows =
             Min(Max(remaining, Integer(0)), ranges[active[0]]->extent);
+        PrimExpr rows = compute_valid_extent(ranges[active[0]]->min,
+                                             ranges[active[0]]->extent,
+                                             buf->shape[active[0]]);
         PrimExpr full_rows = ranges[active[0]]->extent;
         for (size_t j = 1; j + 1 < active.size(); ++j) {
           rows = rows * extents[active[j]];
