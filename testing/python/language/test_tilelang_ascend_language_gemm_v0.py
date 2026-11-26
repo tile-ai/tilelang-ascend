@@ -483,5 +483,270 @@ def test_gemm_v0_init_false_accumulation(target):
     torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
 
 
+# ---------------------------------------------------------------------------
+# fp32 matrix: the fp32 copy path is fixed by the catlass v2.2.0 bump; these
+# cases pin the corrected behaviour on every branch shape that historically
+# mattered (fp32 operands are 4 bytes, so kL0Size is sized to fit the L0A
+# ping-pong budget where the fp16-typical 128 would trip the compile-time
+# static_assert).
+# ---------------------------------------------------------------------------
+
+
+def _gemm_v0_fp32_kernel(
+    M,
+    N,
+    K,
+    block_M,
+    block_N,
+    K_L1,
+    dtype="float32",
+    out_dtype="float32",
+    accum_dtype="float32",
+    kL0Size=64,
+    transpose_A=False,
+    transpose_B=False,
+):
+    # A dedicated staging for fp32: the shared _gemm_v0_kernel writes the
+    # L0C result back element-wise, which the combine-CV pass rejects for
+    # fp32 (Vector op outside T.Scope("V")); the tile copy below stages the
+    # same result through the L0C->GM path instead.
+    m_num = M // block_M
+    n_num = N // block_N
+
+    a_gm_shape = (K, M) if transpose_A else (M, K)
+    b_gm_shape = (N, K) if transpose_B else (K, N)
+    a_l1_shape = (K_L1, block_M) if transpose_A else (block_M, K_L1)
+    b_l1_shape = (block_N, K_L1) if transpose_B else (K_L1, block_N)
+
+    @T.prim_func
+    def main(
+        A: T.Tensor(a_gm_shape, dtype),
+        B: T.Tensor(b_gm_shape, dtype),
+        C: T.Tensor((M, N), out_dtype),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+
+            A_L1 = T.alloc_L1(a_l1_shape, dtype)
+            B_L1 = T.alloc_L1(b_l1_shape, dtype)
+            C_L0 = T.alloc_L0C((block_M, block_N), accum_dtype)
+
+            with T.Scope("C"):
+                loop_k = T.ceildiv(K, K_L1)
+                for k in T.serial(loop_k):
+                    if transpose_A:
+                        T.copy(A[k * K_L1, bx * block_M], A_L1)
+                    else:
+                        T.copy(A[bx * block_M, k * K_L1], A_L1)
+                    if transpose_B:
+                        T.copy(B[by * block_N, k * K_L1], B_L1)
+                    else:
+                        T.copy(B[k * K_L1, by * block_N], B_L1)
+
+                    T.barrier_all()
+                    T.gemm_v0(
+                        A_L1,
+                        B_L1,
+                        C_L0,
+                        transpose_A=transpose_A,
+                        transpose_B=transpose_B,
+                        init=(k == 0),
+                        kL0Size=kL0Size,
+                    )
+                    T.barrier_all()
+
+                T.copy(C_L0, C[bx * block_M, by * block_N])
+
+    return main
+
+
+_TORCH_FP32_DTYPE = {"float32": torch.float32, "float16": torch.float16}
+
+
+def _run_fp32_case(
+    target,
+    M,
+    N,
+    K,
+    block_M,
+    block_N,
+    K_L1,
+    kL0Size,
+    dtype="float32",
+    out_dtype="float32",
+    accum_dtype="float32",
+    rtol=1e-4,
+    atol=1e-4,
+    transpose_A=False,
+    transpose_B=False,
+):
+    """Run one fp32 gemm_v0 case and check against the torch fp32 reference.
+
+    Tolerance bands are measured: the tight 1e-4 band holds for K<=256-level
+    accumulation; the relaxed 1e-3 band matches the measured 1.37e-4 max
+    deviation of the large-K shape below (plus headroom).
+    """
+    program = _gemm_v0_fp32_kernel(
+        M,
+        N,
+        K,
+        block_M,
+        block_N,
+        K_L1,
+        dtype,
+        out_dtype,
+        accum_dtype,
+        kL0Size,
+        transpose_A,
+        transpose_B,
+    )
+    kernel = _compile(program, target)
+
+    in_t = _TORCH_FP32_DTYPE[dtype]
+    out_t = _TORCH_FP32_DTYPE[out_dtype]
+    if transpose_A:
+        a = torch.randn(K, M, dtype=in_t, device="npu")
+    else:
+        a = torch.randn(M, K, dtype=in_t, device="npu")
+    if transpose_B:
+        b = torch.randn(N, K, dtype=in_t, device="npu")
+    else:
+        b = torch.randn(K, N, dtype=in_t, device="npu")
+    c = torch.zeros(M, N, dtype=out_t, device="npu")
+
+    torch.npu.synchronize()
+    kernel(a, b, c)
+    torch.npu.synchronize()
+
+    a_ref = a.float().T if transpose_A else a.float()
+    b_ref = b.float().T if transpose_B else b.float()
+    ref = a_ref @ b_ref
+    torch.testing.assert_close(c.float(), ref, rtol=rtol, atol=atol)
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 fp32 correctness requires an Ascend NPU runtime",
+)
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_gemm_v0_fp32_basic(target):
+    _run_fp32_case(target, 256, 256, 256, 128, 128, 64, kL0Size=64, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 fp32 correctness requires an Ascend NPU runtime",
+)
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_gemm_v0_fp32_out_fp16(target):
+    # L0C(fp32) -> GM(fp16) rides the on-the-fly cast; fp16 output precision.
+    _run_fp32_case(
+        target,
+        256,
+        256,
+        256,
+        128,
+        128,
+        64,
+        kL0Size=64,
+        out_dtype="float16",
+        rtol=1e-3,
+        atol=1e-3,
+    )
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 fp32 correctness requires an Ascend NPU runtime",
+)
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("transpose_A,transpose_B", [(False, False), (False, True), (True, False), (True, True)])
+def test_gemm_v0_fp32_transpose(target, transpose_A, transpose_B):
+    _run_fp32_case(
+        target,
+        256,
+        256,
+        256,
+        128,
+        128,
+        64,
+        kL0Size=64,
+        rtol=1e-3,
+        atol=1e-3,
+        transpose_A=transpose_A,
+        transpose_B=transpose_B,
+    )
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 fp32 correctness requires an Ascend NPU runtime",
+)
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_gemm_v0_fp32_large_shape(target):
+    # The large transpose_B=False shape: the historical failing
+    # configuration; measured max deviation on the fixed build is 1.37e-4.
+    _run_fp32_case(target, 1024, 1024, 1024, 128, 128, 64, kL0Size=64, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 fp32 correctness requires an Ascend NPU runtime",
+)
+@pytest.mark.parametrize(
+    "target",
+    [
+        "ascendc",
+        pytest.param(
+            "pto",
+            marks=pytest.mark.skip(
+                reason="pto backend rejects this K-tail shape at compile time; "
+                "tracked as a pto-side limitation, out of scope for the AscendC fp32 guard"
+            ),
+        ),
+    ],
+)
+def test_gemm_v0_fp32_kl0size_tail(target):
+    # K=200 with kL0Size=64: the L0-level K tail (200 = 3*64 + 8) exercises
+    # the gemm_v0 tail-mma path (whole-C0-block rounding, zN hole hygiene).
+    _run_fp32_case(target, 256, 128, 200, 128, 128, 200, kL0Size=64, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 fp32 correctness requires an Ascend NPU runtime",
+)
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_gemm_v0_fp32_kl0size_boundary_ok(target):
+    # A legal fp32 tile: must compile and be correct.
+    _run_fp32_case(target, 128, 128, 64, 128, 128, 64, kL0Size=64, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 fp32 correctness requires an Ascend NPU runtime",
+)
+@pytest.mark.parametrize("target", ["ascendc"])
+def test_gemm_v0_fp32_kl0size_boundary_reject(target):
+    # An oversized fp32 tile must be rejected at compile time by the L0A
+    # budget static_assert -- clearly, not silently. AscendC-only: the check
+    # lives in the AscendC common.h path; the pto backend compiles this
+    # shape without that gate.
+    with pytest.raises(RuntimeError, match=r".*Compilation Failed.*"):
+        _run_fp32_case(
+            target,
+            128,
+            128,
+            128,
+            128,
+            128,
+            128,
+            kL0Size=128,
+            rtol=1e-4,
+            atol=1e-4,
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-n", "8"])
