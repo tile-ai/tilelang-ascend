@@ -25,6 +25,19 @@ pass_configs = {
 }
 
 
+def test_flat_vector_ops_reject_cross_row_ub_slice():
+    """A pointer+count vector ABI must not silently flatten ``ub[:, 8:16]``."""
+    with pytest.raises(ValueError, match="contiguous when flattened"):
+
+        @T.prim_func
+        def main():
+            with T.Kernel(1, is_npu=True) as (cid, vid):
+                ub = T.alloc_ub((2, 32), "float32")
+                T.tile.fill(ub[:, 8:16], 1.0)
+
+        del main
+
+
 @pytest.fixture(scope="session", autouse=True)
 def clear_cache():
     """Clear tilelang cache before tests."""
