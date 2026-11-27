@@ -190,7 +190,6 @@ mappings:
   # examples/situ_glu
   examples/situ_glu/situ_glu.py: examples/situ_glu/test_situ_glu.py
 
-
   # examples/softmax
   examples/softmax/example_online_softmax.py: examples/softmax/test_example_online_softmax.py
 
@@ -274,3 +273,6 @@ mappings:
 
   # examples_experiment/seer_attention
   examples_experiment/seer_attention/block_sparse_attn.py: examples_experiment/seer_attention/test_block_sparse_attn.py
+
+  # examples/gated_mla_prefill
+  examples/gated_mla_prefill/example_gated_mla_prefill.py: examples/gated_mla_prefill/test_example_gated_mla_prefill.py
