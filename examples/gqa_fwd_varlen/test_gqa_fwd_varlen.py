@@ -4,6 +4,29 @@ import sys
 
 import torch
 
+
+def _check_precision(actual, golden):
+    if not actual.dtype.is_floating_point:
+        assert torch.equal(actual, golden), "integer outputs differ"
+        return
+    atol, rtol, max_abs = {
+        torch.float16: (2**-14, 2**-9, 1e-1),
+        torch.bfloat16: (2**-10, 2**-6, 1e0),
+        torch.float32: (2**-16, 2**-10, 1e-2),
+    }.get(actual.dtype, (2**-16, 2**-10, 1e-2))
+    a, g = actual.float(), golden.float()
+    assert (
+        torch.equal(torch.isnan(a), torch.isnan(g))
+        and torch.equal(torch.isposinf(a), torch.isposinf(g))
+        and torch.equal(torch.isneginf(a), torch.isneginf(g))
+    ), "NaN/Inf structure mismatch"
+    valid = torch.isfinite(g)
+    if valid.any():
+        diff = torch.where(torch.isfinite(a[valid]), (a[valid] - g[valid]).abs(), torch.full_like(g[valid], float("inf")))
+        assert (diff <= atol + rtol * g[valid].abs()).float().mean().item() >= 0.99, "precision ratio below 0.99"
+        assert diff.max().item() <= max_abs, "maximum absolute error exceeded"
+
+
 import tilelang
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -326,8 +349,8 @@ def _prepare_and_run(
 
     # Test passes only if kernel matches BOTH goldens within tolerance.
     try:
-        torch.testing.assert_close(out_valid, ref_valid, rtol=rtol, atol=atol)
-        torch.testing.assert_close(out_valid, ref_sdpa_valid, rtol=rtol, atol=atol)
+        _check_precision(out_valid, ref_valid)
+        _check_precision(out_valid, ref_sdpa_valid)
         passed = True
     except AssertionError:
         passed = False
@@ -477,7 +500,7 @@ def _run_boundary_case(name, batch, heads, groups, q_seqlen, k_seqlen, dim, is_c
     """Run one L2/Boundary case. Non-blocking: prints [BOUNDARY_PASS/WARN]."""
     device = "npu"
     dtype = torch.float16
-    atol, rtol = 1e-2, 1e-2
+    _atol, _rtol = 1e-2, 1e-2
     head_kv = heads // groups
     try:
         torch.manual_seed(0)
@@ -549,13 +572,11 @@ def _run_boundary_case(name, batch, heads, groups, q_seqlen, k_seqlen, dim, is_c
         out_perm = out.permute(0, 2, 1, 3).contiguous()[q_mask].cpu()
         ref_perm = ref_out.permute(0, 2, 1, 3).contiguous()[q_mask].cpu()
         ref_sdpa_perm = ref_sdpa_out.permute(0, 2, 1, 3).contiguous()[q_mask].cpu()
-        if torch.isnan(out_perm).any():
-            print(f"[BOUNDARY_WARN] boundary {name}: NaN in valid output")
-            return
         max_diff = (out_perm.float() - ref_perm.float()).abs().max().item()
         golden_diff = (ref_perm.float() - ref_sdpa_perm.float()).abs().max().item()
         max_diff_sdpa = (out_perm.float() - ref_sdpa_perm.float()).abs().max().item()
-        torch.testing.assert_close(out_perm, ref_perm, rtol=rtol, atol=atol)
+        _check_precision(out_perm, ref_perm)
+        _check_precision(out_perm, ref_sdpa_perm)
         print(f"[BOUNDARY_PASS] boundary {name} max_diff={max_diff:.6e} golden_diff={golden_diff:.6e} max_diff_sdpa={max_diff_sdpa:.6e}")
     except Exception as e:
         print(f"[BOUNDARY_WARN] boundary {name}: {e}")

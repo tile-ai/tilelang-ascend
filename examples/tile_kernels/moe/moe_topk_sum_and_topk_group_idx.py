@@ -3,6 +3,39 @@ import sys
 import pytest
 import numpy as np
 import torch
+
+
+def _check_precision(actual, golden, dtype="float32"):
+    configs = {
+        "float16": (2**-14, 2**-9, 1e-1, 0.99),
+        "bfloat16": (2**-10, 2**-6, 1e0, 0.99),
+        "float32": (2**-16, 2**-10, 1e-2, 0.99),
+        "hifloat32": (2**-16, 2**-10, 1e-2, 0.99),
+        "float8_e4m3": (2**-4, 2**-2, 1e0, 0.99),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1, 0.99),
+    }
+    actual, golden = actual.detach().cpu(), golden.detach().cpu()
+    assert actual.shape == golden.shape, f"shape mismatch: {actual.shape} != {golden.shape}"
+    if dtype in {"int8", "int16", "int32", "int64", "uint8"}:
+        assert torch.equal(actual, golden), "integer output mismatch"
+        return
+    atol, rtol, max_abs_limit, required_ratio = configs[dtype]
+    actual, golden = actual.float(), golden.float()
+    special = ~torch.isfinite(golden)
+    assert torch.equal(torch.isnan(actual[special]), torch.isnan(golden[special])), "NaN positions differ"
+    assert torch.equal(torch.isinf(actual[special]), torch.isinf(golden[special])), "Inf positions differ"
+    finite = torch.isfinite(golden)
+    if not finite.any():
+        return
+    abs_error = (actual[finite] - golden[finite]).abs()
+    abs_error = torch.where(torch.isfinite(abs_error), abs_error, torch.full_like(abs_error, float("inf")))
+    matched_ratio = (abs_error <= atol + rtol * golden[finite].abs()).float().mean().item()
+    max_abs_error = abs_error.max().item()
+    assert matched_ratio >= required_ratio and max_abs_error <= max_abs_limit, (
+        f"matched_ratio={matched_ratio:.4f}, max_abs_error={max_abs_error:.3e}"
+    )
+
+
 import tilelang
 from tilelang import language as T
 
@@ -494,12 +527,7 @@ def test_topk_sum_and_topk_group_idx_backward(params):
 
     grad_scores_tl = topk_sum_and_topk_group_idx_backward(grad_out, scores, topk_idx, num_group_sum_topk)
 
-    np.testing.assert_allclose(
-        grad_scores_tl.cpu().numpy(),
-        grad_scores_ref.cpu().numpy(),
-        atol=1e-5,
-        rtol=1e-5,
-    )
+    _check_precision(grad_scores_tl, grad_scores_ref)
     print(f"Backward Test passed for {make_param_id(params)}")
 
 

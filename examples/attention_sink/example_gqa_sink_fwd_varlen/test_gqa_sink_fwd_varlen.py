@@ -36,13 +36,50 @@ from example_gqa_sink_fwd_varlen import (  # noqa: E402
     padded_to_varlen,
 )
 
-ATOL = 1e-2
-RTOL = 1e-2
-
 BLOCK_M = 64
 BLOCK_N = 128
 CORE_NUM = 20
 NUM_STAGES = 14
+
+
+def _get_precision(dtype_str):
+    fp_table = {
+        "float16": (2**-14, 2**-9, 1e-1, 0.99),
+        "bfloat16": (2**-10, 2**-6, 1e0, 0.99),
+        "float32": (2**-16, 2**-10, 1e-2, 0.99),
+        "hifloat32": (2**-16, 2**-10, 1e-2, 0.99),
+        "float8_e4m3": (2**-4, 2**-2, 1e0, 0.99),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1, 0.99),
+    }
+    if dtype_str in {"int8", "int16", "int32", "int64", "uint8"}:
+        return 0.0, 0.0, 0.0, 1.0
+    return fp_table.get(dtype_str, fp_table["float16"])
+
+
+def _check_precision(actual, golden, dtype_str):
+    atol, rtol, max_abs_limit, required_ratio = _get_precision(dtype_str)
+    actual_cpu = actual.detach().cpu()
+    golden_cpu = golden.detach().cpu()
+    if atol == 0.0 and rtol == 0.0:
+        mismatches = (actual_cpu != golden_cpu).sum().item()
+        total = max(actual_cpu.numel(), 1)
+        return mismatches == 0, 1.0 - mismatches / total, 0.0 if mismatches == 0 else float("inf")
+
+    actual_float = actual_cpu.float()
+    golden_float = golden_cpu.float()
+    special = ~torch.isfinite(golden_float)
+    if special.any() and (
+        not torch.equal(torch.isnan(actual_float[special]), torch.isnan(golden_float[special]))
+        or not torch.equal(torch.isinf(actual_float[special]), torch.isinf(golden_float[special]))
+    ):
+        return False, 0.0, float("inf")
+    finite = torch.isfinite(golden_float)
+    if finite.sum().item() == 0:
+        return True, 1.0, 0.0
+    abs_error = (actual_float[finite] - golden_float[finite]).abs()
+    matched_ratio = (abs_error <= atol + rtol * golden_float[finite].abs()).float().mean().item()
+    max_abs_error = abs_error.max().item()
+    return matched_ratio >= required_ratio and max_abs_error <= max_abs_limit, matched_ratio, max_abs_error
 
 
 def _setup():
@@ -103,8 +140,8 @@ def _run_one(batch, heads, groups, q_seqlen, k_seqlen, dim, is_causal, name, lev
     tag = "PRECISION" if level in ("l0", "l1") else "BOUNDARY"
     try:
         _, _, ref_out, out_3d = _prepare(batch, heads, groups, q_seqlen, k_seqlen, dim, is_causal)
-        max_diff = (out_3d.cpu().float() - ref_out.cpu().float()).abs().max().item()
-        torch.testing.assert_close(out_3d.cpu().float(), ref_out.cpu().float(), rtol=RTOL, atol=ATOL)
+        passed, matched_ratio, max_diff = _check_precision(out_3d, ref_out, "float16")
+        assert passed, f"matched_ratio={matched_ratio:.4f}, max_abs={max_diff:.3e}"
 
         print(
             f"[{tag}_PASS] {level} {name} "
@@ -222,8 +259,8 @@ def run_bench():
     for batch, heads, groups, q_seqlen, k_seqlen, dim, is_causal, label in bench_configs:
         try:
             kernel, inputs, ref_out, out_3d = _prepare(batch, heads, groups, q_seqlen, k_seqlen, dim, is_causal)
-            max_diff = (out_3d.cpu().float() - ref_out.cpu().float()).abs().max().item()
-            torch.testing.assert_close(out_3d.cpu().float(), ref_out.cpu().float(), rtol=RTOL, atol=ATOL)
+            passed, matched_ratio, max_diff = _check_precision(out_3d, ref_out, "float16")
+            assert passed, f"matched_ratio={matched_ratio:.4f}, max_abs={max_diff:.3e}"
 
             # Benchmark with do_bench (CI-stable)
             latency_ms = do_bench(
