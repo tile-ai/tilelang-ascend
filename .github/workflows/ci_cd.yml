@@ -680,7 +680,8 @@ jobs:
                 for d in /proc/[0-9]*; do
                   p="${d#/proc/}"; [ "$p" = "0" ] && continue
                   [ -d "$d" ] || continue
-                  [ "$(awk '{print $3}' "$d/stat" 2>/dev/null)" = "Z" ] && continue
+                  _st=X; read -r _ _ _st _ < "$d/stat" 2>/dev/null
+                  [ "$_st" = "Z" ] && continue
                   grep -zqx "CI_EXEC_TAG=${tag}" "$d/environ" 2>/dev/null && echo "$p"
                 done
               }
@@ -689,7 +690,8 @@ jobs:
                 for d in /proc/[0-9]*; do
                   p="${d#/proc/}"; [ "$p" = "0" ] && continue
                   [ -d "$d" ] || continue
-                  [ "$(awk '{print $3}' "$d/stat" 2>/dev/null)" = "Z" ] && continue
+                  _st=X; read -r _ _ _st _ < "$d/stat" 2>/dev/null
+                  [ "$_st" = "Z" ] && continue
                   cat "$d/environ" >/dev/null 2>&1 || u=$((u+1))
                 done
                 echo "$u"
@@ -743,14 +745,14 @@ jobs:
 
           # 取消时 runner 只杀宿主侧步骤进程树，trap 不执行：由脱离该进程树
           # （双重 fork + setsid，PPID 重挂 init）的宿主看门狗兜底清理。看门狗以
-          # 最小环境（env -i，仅保留 PATH）运行：不继承步骤环境的任何 runner
-          # 标记（如 RUNNER_TRACKING_ID），即便 runner 按环境标记回收步骤后代
-          # 进程，也不会在看门狗执行清理前终止它。这仅是针对该有明确退出条件的
-          # 执行器的例外，不关闭 runner 的进程回收，测试任务本身照常被回收。
-          # 清理函数源码内嵌（declare -f），不依赖 export -f 传递。
+          # 最小环境运行：不继承步骤环境的任何 runner 标记（如 RUNNER_TRACKING_ID
+          # 类跟踪变量），仅保留 PATH 与 Docker 连接配置 DOCKER_HOST（与主测试、
+          # trap 同源同值），保证三条路径连接同一 daemon 与容器。这仅是针对该有
+          # 明确退出条件的执行器的例外，不关闭 runner 的进程回收，测试任务本身
+          # 照常被回收。清理函数源码经参数内嵌（declare -f），不依赖 export -f。
           CI_WRAPPER_PID=$$
           CI_WRAPPER_START="$(awk '{print $22}' "/proc/$$/stat")"
-          ( env -i PATH="$PATH" setsid bash -c '
+          ( env -i PATH="$PATH" DOCKER_HOST="${DOCKER_HOST:-unix:///var/run/docker.sock}" setsid bash -c '
               ci_wpid="$1"; ci_wstart="$2"; ci_tag="$3"; ci_tmp="$4"; ci_fn="$5"
               eval "$ci_fn"
               wrapper_alive() {
