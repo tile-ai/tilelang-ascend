@@ -847,11 +847,11 @@ private:
                                    });
             if (it != active_allocations.end()) {
               free_blocks.emplace_back(it->offset, it->size);
-              active_allocations.erase(it);
 
               DLOG(DEBUG) << "  Released for reuse: "
                           << expired.buffer->name_hint << " at offset "
                           << it->offset;
+              active_allocations.erase(it);
             }
 
             active_queue.pop();
@@ -999,6 +999,10 @@ private:
               return aligned_offset;
             }
           }
+        }
+
+        if (free_blocks.empty()) {
+          return static_cast<size_t>(-1);
         }
 
         auto &last_block = free_blocks[free_blocks.size() - 1];
