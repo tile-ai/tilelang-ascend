@@ -655,6 +655,130 @@ jobs:
             fi
           fi
 
+          # ---- job 取消/超时自清理 ----
+          # CI_EXEC_TAG 唯一标识本次执行（仓库+run+attempt+job），经 -e 注入容器并被
+          # 子/孙进程继承；清理始终按完整 TAG 精确匹配，避免误伤同容器内的并发任务。
+          # TAG 只是防误伤标记，不是跨 PR 的权限隔离（同容器内进程可互相读取环境）。
+          CI_EXEC_TAG="${GITHUB_REPOSITORY//[^A-Za-z0-9_-]/_}-r${GITHUB_RUN_ID}-a${GITHUB_RUN_ATTEMPT}-j${GITHUB_JOB//[^A-Za-z0-9_-]/_}"
+
+          # 清理结果：no_residue（无匹配且无不可读进程）/ cleaned（已清完）/
+          # kill_failed（复查仍有匹配）/ unconfirmed（有存活但环境不可读的进程，
+          # 无法确认归属）。unreadable 只统计"仍存活但 /proc/<pid>/environ 不可读"
+          # 的进程；扫描期间已退出的进程属于正常竞态，直接跳过。对不可读进程只
+          # 计数、不发信号、不猜测杀除。反复核只计数；remaining 取复查时仍存在的
+          # 匹配数。docker exec 失败或超时同样记为清理失败：都以 ::warning:: 和
+          # 失败标记文件呈现，不覆盖测试退出码；宿主不在共享或容器可写文件里按
+          # 裸 PID 发信号。
+          ci_exec_kill_tree() {
+            local _ci_tag="$1" _ci_out _ci_rc
+            # 整个清理调用用 timeout -k 3s 20s 设总时限，忽略 TERM 的 docker 进程也会
+            # 被强杀。rc=124 或 rc=137（也可能是其它 SIGKILL）都只记为"宿主放弃等待、
+            # 未确认容器内无残留"，不据此断言具体机制。
+            _ci_out="$(timeout -k 3s 20s docker exec -e CI_CLEAN_TAG="$_ci_tag" tilelang_x1 sh -c '
+              tag="${CI_CLEAN_TAG}"
+              scan() {
+                for d in /proc/[0-9]*; do
+                  p="${d#/proc/}"; [ "$p" = "0" ] && continue
+                  [ -d "$d" ] || continue
+                  _st=X; read -r _ _ _st _ < "$d/stat" 2>/dev/null
+                  [ "$_st" = "Z" ] && continue
+                  grep -zqx "CI_EXEC_TAG=${tag}" "$d/environ" 2>/dev/null && echo "$p"
+                done
+              }
+              count_unreadable() {
+                u=0
+                for d in /proc/[0-9]*; do
+                  p="${d#/proc/}"; [ "$p" = "0" ] && continue
+                  [ -d "$d" ] || continue
+                  _st=X; read -r _ _ _st _ < "$d/stat" 2>/dev/null
+                  [ "$_st" = "Z" ] && continue
+                  cat "$d/environ" >/dev/null 2>&1 || u=$((u+1))
+                done
+                echo "$u"
+              }
+              kill_pass() {
+                n=0
+                for p in $(scan); do kill -KILL "$p" 2>/dev/null; n=$((n+1)); done
+                echo "$n"
+              }
+              killed="$(kill_pass)"
+              unreadable="$(count_unreadable)"
+              if [ "$killed" = "0" ] && [ "$unreadable" = "0" ]; then
+                echo "CLEAN_RESULT=no_residue"; exit 0
+              fi
+              for attempt in 1 2 3 4; do
+                remaining="$(scan | wc -l)"
+                unreadable="$(count_unreadable)"
+                if [ "$remaining" = "0" ] && [ "$unreadable" = "0" ]; then
+                  echo "CLEAN_RESULT=cleaned count=${killed}"; exit 0
+                fi
+                [ "$attempt" = "4" ] && break
+                kill_pass >/dev/null
+                sleep 1
+              done
+              remaining="$(scan | wc -l)"
+              unreadable="$(count_unreadable)"
+              if [ "$remaining" = "0" ] && [ "$unreadable" = "0" ]; then
+                echo "CLEAN_RESULT=cleaned count=${killed}"; exit 0
+              fi
+              if [ "$remaining" -gt 0 ]; then
+                echo "CLEAN_RESULT=kill_failed remaining=${remaining} unreadable=${unreadable}"
+              else
+                echo "CLEAN_RESULT=unconfirmed unreadable=${unreadable}"
+              fi
+              exit 1' 2>&1)"
+            _ci_rc=$?
+            if [ "$_ci_rc" -eq 124 ] || [ "$_ci_rc" -eq 137 ]; then
+              echo "::warning:: CI 容器残留清理未确认完成(宿主放弃等待, rc=${_ci_rc})：未确认容器内无残留"
+              echo "rc=${_ci_rc} outcome=timeout_gave_up" \
+                > "${RUNNER_TEMP}/ci_exec_cleanup_failed_${_ci_tag}" 2>/dev/null
+              return 1
+            fi
+            if [ "$_ci_rc" -ne 0 ] || printf '%s\n' "$_ci_out" | grep -qE "CLEAN_RESULT=(kill_failed|unconfirmed)"; then
+              echo "::warning:: CI 容器残留清理未确认完成或失败(rc=${_ci_rc}): $(printf '%s' "$_ci_out" | tr '\n' ' ' | head -c 300)"
+              echo "rc=${_ci_rc} out=$(printf '%s' "$_ci_out" | head -c 300)" \
+                > "${RUNNER_TEMP}/ci_exec_cleanup_failed_${_ci_tag}" 2>/dev/null
+              return 1
+            fi
+            return 0
+          }
+
+          # 取消时 runner 只杀宿主侧步骤进程树，trap 不执行：由脱离该进程树
+          # （双重 fork + setsid，PPID 重挂 init）的宿主看门狗兜底清理。看门狗以
+          # 最小环境运行：不继承步骤环境的任何 runner 标记（如 RUNNER_TRACKING_ID
+          # 类跟踪变量），仅保留 PATH 与 Docker 连接配置 DOCKER_HOST（与主测试、
+          # trap 同源同值），保证三条路径连接同一 daemon 与容器。这仅是针对该有
+          # 明确退出条件的执行器的例外，不关闭 runner 的进程回收，测试任务本身
+          # 照常被回收。清理函数源码经参数内嵌（declare -f），不依赖 export -f。
+          CI_WRAPPER_PID=$$
+          CI_WRAPPER_START="$(awk '{print $22}' "/proc/$$/stat")"
+          ( env -i PATH="$PATH" DOCKER_HOST="${DOCKER_HOST:-unix:///var/run/docker.sock}" setsid bash -c '
+              ci_wpid="$1"; ci_wstart="$2"; ci_tag="$3"; ci_tmp="$4"; ci_fn="$5"
+              eval "$ci_fn"
+              wrapper_alive() {
+                [ -d "/proc/${ci_wpid}" ] || return 1
+                [ "$(awk "{print \$22}" "/proc/${ci_wpid}/stat" 2>/dev/null)" = "${ci_wstart}" ]
+              }
+              while :; do
+                if ! wrapper_alive; then
+                  RUNNER_TEMP="$ci_tmp" ci_exec_kill_tree "$ci_tag" || true
+                  exit 0
+                fi
+                sleep 5
+              done' _ "$CI_WRAPPER_PID" "$CI_WRAPPER_START" "$CI_EXEC_TAG" "$RUNNER_TEMP" "$(declare -f ci_exec_kill_tree)" >/dev/null 2>&1 & )
+
+          # 正常退出/收到 TERM 时的主动清理（被 KILL 的场景由看门狗兜底）。
+          # 陷阱入口先保存原退出码；陷阱体内关闭 errexit，保证 docker exec 失败时
+          # 告警与诊断记录仍能执行；最后显式以原退出码退出，测试失败/成功码不变。
+          ci_exec_host_cleanup() {
+            local _ci_trap_rc=$?
+            set +e
+            ci_exec_kill_tree "$CI_EXEC_TAG"
+            exit "$_ci_trap_rc"
+          }
+          trap ci_exec_host_cleanup EXIT
+          # ---- 自清理定义结束 ----
+
           docker exec \
             "${NPU_DEVICE_ARGS[@]}" \
             -w $GITHUB_WORKSPACE \
@@ -671,6 +795,7 @@ jobs:
             -e PYTEST_MARKERS="$PYTEST_MARKERS" \
             -e A3_MULTICARD="$A3_MULTICARD" \
             -e A3_DEVICE_LIST="$A3_DEVICE_LIST" \
+            -e CI_EXEC_TAG="${CI_EXEC_TAG}" \
             tilelang_x1 \
             bash -c "
               set -e
