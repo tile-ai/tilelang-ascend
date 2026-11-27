@@ -407,28 +407,36 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
       WaitFlag<HardEvent::V_MTE2>(0);
     }
   }
+  if (maskShapeM == 0 || maskShapeN == 0) {
+    return;
+  }
   AscendC::DataCopyPadExtParams<T> padParams(isPad, 0, rightPadding, padValue);
   // Batched DMA (see MAX_DMA_ROWS): the pad above covers the whole tile
   // once, then each batch copies one row chunk. The UB side advances by
-  // dstN elements per row, the GM side by realSrcN. Like the classic
+  // the physical 32B row pitch, the GM side by realSrcN. Like the classic
   // single-call form this stays one bare DataCopyPad per iteration - no
   // sibling scalar stores, no alternative copy paths - so the bisheng
   // cross-pipe sync constraint documented in copy_ub_to_gm below is
   // respected; the batch loop is device-validated by the 3d-flatten
   // round-trip suite. Byte math uses EleNumToBytes<T>() (bit-width exact)
   // so sub-byte dtypes count real bytes.
+  const uint32_t blockLen = EleNumToBytes<T>(maskShapeN);
+  const uint32_t dstStride = EleNumToBytes<T>(dstN - maskShapeN) / 32;
+  // MTE2 places each UB row in whole 32B blocks. The next batch must start
+  // after those physical slots, including the gap represented by dstStride.
+  const uint64_t dstRowElements =
+      ((static_cast<uint64_t>(blockLen) + 31) / 32 + dstStride) *
+      EleNumPerC0<T>();
   uint32_t remaining = maskShapeM;
-  uint32_t dstOffset = 0;
+  uint64_t dstOffset = 0;
   uint64_t srcOffset = 0;
   while (remaining > 0) {
     uint32_t rows = remaining > MAX_DMA_ROWS ? MAX_DMA_ROWS : remaining;
     AscendC::DataCopyExtParams dataCopyParams(
-        rows, EleNumToBytes<T>(maskShapeN),
-        EleNumToBytes<T>(realSrcN - maskShapeN),
-        EleNumToBytes<T>(dstN - maskShapeN) / 32, 0);
+        rows, blockLen, EleNumToBytes<T>(realSrcN - maskShapeN), dstStride, 0);
     AscendC::DataCopyPad(dstTensor[dstOffset], srcTensor[srcOffset],
                          dataCopyParams, padParams);
-    dstOffset += rows * dstN;
+    dstOffset += static_cast<uint64_t>(rows) * dstRowElements;
     srcOffset += static_cast<uint64_t>(rows) * realSrcN;
     remaining -= rows;
   }
@@ -552,6 +560,53 @@ atomic_add_l0c_to_gm(GlobalTensor<T2> dstTensor, LocalTensor<T1> srcTensor,
   copy_l0c_to_gm<T1, T2, LayoutGM, srcM, srcN, enRelu>(
       dstTensor, srcTensor, realDstN, realTailM, realTailN);
   disable_dma_atomic_compat();
+}
+
+// Repack a computed compact column into the 32-byte row slots required by
+// MTE3. The lowering brackets this helper and the DMA with full pipe barriers.
+// A vector write is intentional: scalar SetValue is not a reliable producer
+// for the following MTE3 transfer (see tail_broadcast below).
+template <typename T>
+CATLASS_DEVICE void copy_ub_column_pack(LocalTensor<T> dstTensor,
+                                        LocalTensor<T> srcTensor,
+                                        uint32_t rows) {
+  static_assert(IsDuplicateSupported_v<T>,
+                "Compact column packing requires a 16-bit or 32-bit type");
+  // Preserve floating-point payloads, signed zero, and integer bits exactly.
+  // In particular, use integer Duplicate for bfloat16 rather than relying on
+  // a dtype-specific vector Duplicate specialization.
+  using Bits = std::conditional_t<sizeof(T) == 2, uint16_t, uint32_t>;
+  auto dstBits = dstTensor.template ReinterpretCast<Bits>();
+  auto srcBits = srcTensor.template ReinterpretCast<Bits>();
+  constexpr uint32_t rowElements = 32 / sizeof(Bits);
+  for (uint32_t row = 0; row < rows; ++row) {
+    AscendC::Duplicate(dstBits[row * rowElements], srcBits.GetValue(row), 1);
+  }
+}
+
+// A GM column arrives in 32B slots. Restore the compact 1D logical layout
+// before exposing it to computation or another copy. Use a one-lane vector
+// mask at an aligned block base so an unaligned destination slice preserves
+// every neighbouring lane, and produces vector-visible writes like pack.
+template <typename T>
+CATLASS_DEVICE void copy_ub_column_unpack(LocalTensor<T> dstTensor,
+                                          LocalTensor<T> srcTensor,
+                                          uint32_t rows, uint32_t dstOffset) {
+  static_assert(IsDuplicateSupported_v<T>,
+                "Compact column unpacking requires a 16-bit or 32-bit type");
+  using Bits = std::conditional_t<sizeof(T) == 2, uint16_t, uint32_t>;
+  auto dstBits = dstTensor.template ReinterpretCast<Bits>();
+  auto srcBits = srcTensor.template ReinterpretCast<Bits>();
+  constexpr uint32_t rowElements = 32 / sizeof(Bits);
+  for (uint32_t row = 0; row < rows; ++row) {
+    const uint32_t index = dstOffset + row;
+    const uint32_t lane = index % rowElements;
+    uint64_t mask[2] = {1ULL << lane, 0};
+    AscendC::Duplicate(dstBits[index - lane],
+                       srcBits.GetValue(row * rowElements), mask,
+                       static_cast<uint8_t>(1), static_cast<uint16_t>(1),
+                       static_cast<uint8_t>(0));
+  }
 }
 
 template <typename T1, typename T2, uint32_t len>

@@ -58,6 +58,9 @@ struct TailMaskInfo {
   PrimExpr physical_row;
   PrimExpr physical_col;
   PrimExpr storage_col;
+  // A compact column load can have one valid element without representing
+  // a broadcast scalar. Preserve that distinction through derived masks.
+  bool may_broadcast_scalar = true;
 
   bool is_tail() const { return kind == TailMaskKind::kTail; }
   bool is_packed_cmp() const { return kind == TailMaskKind::kPackedCmp; }
@@ -137,6 +140,7 @@ inline TailMaskInfo IntersectMasks(const TailMaskInfo &a, const TailMaskInfo &b,
   const TailMaskInfo &base = a.is_tail() ? a : b;
   TailMaskInfo m = base;
   m.kind = TailMaskKind::kTail;
+  m.may_broadcast_scalar = a.may_broadcast_scalar && b.may_broadcast_scalar;
   if (a.valid_row.defined() && b.valid_row.defined()) {
     m.valid_row = analyzer->CanProveEqual(a.valid_row, b.valid_row)
                       ? a.valid_row

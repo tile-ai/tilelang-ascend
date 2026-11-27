@@ -901,5 +901,645 @@ def test_letstmt_buffer_load_shared_no_crash(target):
     )
 
 
+# Narrow MTE rows use 32-byte slots even when the logical UB row is smaller.
+@pytest.mark.parametrize(
+    "auto_plan,dtype,cols,dynamic_rows",
+    [
+        (False, "float16", 3, False),
+        (True, "float32", 9, True),
+    ],
+)
+@pytest.mark.skipif(not NPU_AVAILABLE, reason="Requires an Ascend NPU runtime")
+def test_narrow_copy_preserves_adjacent_live_buffer(auto_plan, dtype, cols, dynamic_rows):
+    rows, prefix, guard_size = 64, 16, 512
+    actual_rows = T.symbolic("actual_rows") if dynamic_rows else rows
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((actual_rows, cols), dtype),
+        GuardIn: T.Tensor((guard_size,), "float32"),
+        GuardOut: T.Tensor((guard_size,), "float32"),
+    ):
+        with T.Kernel(1, threads=1, is_npu=True) as _cid:
+            narrow_ub = T.alloc_ub((rows + prefix, cols), dtype)
+            guard_ub = T.alloc_ub((guard_size,), "float32")
+            # First touch places narrow_ub before the simultaneously-live guard.
+            # The later, larger copy must determine its allocation footprint.
+            T.copy(A[0:32, 0:cols], narrow_ub[0:32, 0:cols])
+            T.copy(GuardIn, guard_ub)
+            T.barrier_all()
+            T.copy(A[0:rows, 0:cols], narrow_ub[prefix : prefix + rows, 0:cols])
+            T.barrier_all()
+            T.copy(guard_ub, GuardOut)
+
+    configs = PASS_AUTO if auto_plan else PASS_LINEAR
+    kernel = tilelang.compile(main, pass_configs=configs, target="ascendc", out_idx=[2])
+    offsets = _get_buffer_offsets(kernel.get_kernel_source())
+    element_bytes = 2 if dtype == "float16" else 4
+    row_bytes = ((cols * element_bytes + 31) // 32) * 32
+    physical_bytes = prefix * cols * element_bytes + rows * row_bytes
+    torch_dtype = torch.float16 if dtype == "float16" else torch.float32
+    for count in [17, rows] if dynamic_rows else [rows]:
+        a = torch.arange(count * cols, dtype=torch.float32).reshape(count, cols)
+        a = a.to(device="npu", dtype=torch_dtype)
+        guard = torch.full((guard_size,), 123.0, dtype=torch.float32, device="npu")
+        result = kernel(a, guard)
+        torch.npu.synchronize()
+        torch.testing.assert_close(result, guard, rtol=0, atol=0)
+    _assert_no_overlap(
+        "narrow_ub",
+        offsets["narrow_ub"],
+        physical_bytes,
+        "guard_ub",
+        offsets["guard_ub"],
+        guard_size * 4,
+    )
+
+
+def test_narrow_copy_with_loop_offset_reserves_all_row_slots():
+    """The largest physical footprint may occur at a nonconstant UB offset."""
+    rows, tile_rows, guard_size = 128, 64, 512
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((rows, 1), "float32"),
+        GuardIn: T.Tensor((guard_size,), "float32"),
+        GuardOut: T.Tensor((guard_size,), "float32"),
+    ):
+        with T.Kernel(1, threads=1, is_npu=True) as _cid:
+            narrow_ub = T.alloc_ub((rows, 1), "float32")
+            guard_ub = T.alloc_ub((guard_size,), "float32")
+            T.copy(A[0:tile_rows, 0:1], narrow_ub[0:tile_rows, 0:1])
+            T.copy(GuardIn, guard_ub)
+            T.barrier_all()
+            for tile in T.serial(2):
+                T.copy(
+                    A[tile * tile_rows : (tile + 1) * tile_rows, 0:1],
+                    narrow_ub[tile * tile_rows : (tile + 1) * tile_rows, 0:1],
+                )
+                T.barrier_all()
+            T.copy(guard_ub, GuardOut)
+
+    configs = PASS_LINEAR
+    with tvm.transform.PassContext(opt_level=3, config=configs):
+        artifact = tilelang.lower(main, target="ascendc")
+    offsets = _get_buffer_offsets(artifact.kernel_source)
+    physical_bytes = tile_rows * 4 + tile_rows * 32
+    _assert_no_overlap(
+        "narrow_ub",
+        offsets["narrow_ub"],
+        physical_bytes,
+        "guard_ub",
+        offsets["guard_ub"],
+        guard_size * 4,
+    )
+
+
+def test_narrow_copy_index_preserves_thread_let_and_loop_bounds():
+    """A nested, shared copy must use all enclosing offset bounds exactly once."""
+    tir = tvm.tir
+    source = tir.decl_buffer((96,), "float32", name="source", scope="global")
+    outer = tir.decl_buffer((96,), "float32", name="outer", scope="shared.ub")
+    inner = tir.decl_buffer((1,), "float32", name="inner", scope="shared.ub")
+    cid, tile, offset = [tir.Var(name, "int32") for name in ("cid", "tile", "offset")]
+    copy = tir.call_extern(
+        "handle",
+        "tl::ascend::copy_gm_to_ub<float, 1, 64>",
+        source.access_ptr("r"),
+        outer.access_ptr("w", offset=offset, extent=64),
+        1,
+        64,
+        1,
+        tir.const(0, "float32"),
+    )
+    body = tir.SeqStmt(
+        [
+            tir.Evaluate(copy),
+            tir.Evaluate(copy),
+            tir.Evaluate(tir.call_extern("handle", "test_touch", inner.access_ptr("rw"))),
+        ]
+    )
+    body = tir.Allocate(inner.data, inner.dtype, [1], tir.const(True, "bool"), body)
+    body = tir.LetStmt(offset, (cid + tile) * 16, body)
+    body = tir.For(tile, 0, 2, tir.ForKind.SERIAL, body)
+    body = tir.Allocate(outer.data, outer.dtype, [96], tir.const(True, "bool"), body)
+    thread = tir.IterVar((0, 2), cid, tir.IterVar.ThreadIndex, "blockIdx.x")
+    body = tir.AttrStmt(thread, "thread_extent", 2, body)
+    func = tir.PrimFunc([source.data], body, buffer_map={source.data: source}).with_attr("global_symbol", "main")
+    with tvm.transform.PassContext(config={"tl.ascend_memory_planning": True}):
+        planned = tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+    # max(offset) = (1 + 1) * 16 elements; each of the 64 DMA rows occupies 32B.
+    assert int(planned["main"].attrs["size_map"][outer.data]) == 32 * 4 + 64 * 32
+
+
+def test_narrow_copy_bounds_cache_keeps_select_constraints_local():
+    """A bound from one Select arm must not replace a later global bound."""
+    tir = tvm.tir
+    source = tir.decl_buffer((128,), "float32", name="source", scope="global")
+    ub = tir.decl_buffer((128,), "float32", name="ub", scope="shared.ub")
+    rows = tir.Var("rows", "int32")
+
+    def copy(count):
+        return tir.Evaluate(
+            tir.call_extern(
+                "handle",
+                "tl::ascend::copy_gm_to_ub<float, 1, 128>",
+                source.access_ptr("r"),
+                ub.access_ptr("w"),
+                1,
+                count,
+                1,
+                tir.const(0, "float32"),
+            )
+        )
+
+    body = tir.SeqStmt([copy(tir.Select(rows < 64, rows, 64)), copy(rows)])
+    body = tir.For(rows, 0, 129, tir.ForKind.SERIAL, body)
+    body = tir.Allocate(ub.data, ub.dtype, [128], tir.const(True, "bool"), body)
+    func = tir.PrimFunc([source.data], body, buffer_map={source.data: source}).with_attr("global_symbol", "main")
+    with tvm.transform.PassContext(config={"tl.ascend_memory_planning": True}):
+        planned = tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+    assert int(planned["main"].attrs["size_map"][ub.data]) == 128 * 32
+
+
+@pytest.mark.parametrize("row_step", [2500, 250])
+def test_narrow_copy_preserves_offset_row_correlation(row_step):
+    """Correlated offsets/rows must neither over-allocate nor hide UB overflow."""
+    tir = tvm.tir
+    source = tir.decl_buffer((4000,), "float32", name="source", scope="global")
+    ub = tir.decl_buffer((32000,), "float32", name="ub", scope="shared.ub")
+    tile = tir.Var("tile", "int32")
+    rows = 4000 - tile * row_step
+    copy = tir.call_extern(
+        "handle",
+        "tl::ascend::copy_gm_to_ub<float, 1, 4000>",
+        source.access_ptr("r"),
+        ub.access_ptr("w", offset=tile * 20000),
+        1,
+        rows,
+        1,
+        tir.const(0, "float32"),
+    )
+    body = tir.For(tile, 0, 2, tir.ForKind.SERIAL, tir.Evaluate(copy))
+    body = tir.Allocate(ub.data, ub.dtype, [32000], tir.const(True, "bool"), body)
+    func = tir.PrimFunc([source.data], body, buffer_map={source.data: source}).with_attr("global_symbol", "main")
+    with tvm.transform.PassContext(config={"tl.ascend_memory_planning": True}):
+        if row_step == 250:
+            # The second iteration really needs 80000 + 3750 * 32 = 200000B.
+            with pytest.raises(tvm.error.InternalError, match="UB copy physical footprint"):
+                tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+        else:
+            planned = tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+            # Both iterations end at 128000B, not max(offset) + max(rows) * 32.
+            assert int(planned["main"].attrs["size_map"][ub.data]) == 128000
+
+
+def test_dma_copy_rejects_unbounded_offset():
+    """An unbounded runtime offset must not silently discard the DMA footprint."""
+    tir = tvm.tir
+    source = tir.decl_buffer((64,), "float32", name="source", scope="global")
+    ub = tir.decl_buffer((128,), "float32", name="ub", scope="shared.ub")
+    start = tir.Var("start", "int32")
+    copy = tir.call_extern(
+        "handle",
+        "tl::ascend::copy_gm_to_ub<float, 1, 64>",
+        source.access_ptr("r"),
+        ub.access_ptr("w", offset=start),
+        1,
+        64,
+        1,
+        tir.const(0, "float32"),
+    )
+    body = tir.Allocate(ub.data, ub.dtype, [128], tir.const(True, "bool"), tir.Evaluate(copy))
+    func = tir.PrimFunc([source.data, start], body, buffer_map={source.data: source}).with_attr("global_symbol", "main")
+    with (
+        tvm.transform.PassContext(config={"tl.ascend_memory_planning": False}),
+        pytest.raises(tvm.error.InternalError, match="Cannot prove.*UB copy"),
+    ):
+        tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+
+
+def test_dma_copy_reserves_wide_unaligned_rows():
+    """A 34-byte GM->UB row occupies a 64-byte physical slot."""
+    dtype, cpp_dtype, columns = "float16", "half", 17
+    tir = tvm.tir
+    source = tir.decl_buffer((64, columns), dtype, name="source", scope="global")
+    ub = tir.decl_buffer((64, columns), dtype, name="ub", scope="shared.ub")
+    copy = tir.call_extern(
+        "handle",
+        f"tl::ascend::copy_gm_to_ub<{cpp_dtype}, {columns}, 64>",
+        source.access_ptr("r"),
+        ub.access_ptr("w"),
+        columns,
+        64,
+        columns,
+        tir.const(0, dtype),
+    )
+    body = tir.Allocate(ub.data, ub.dtype, [64 * columns], tir.const(True, "bool"), tir.Evaluate(copy))
+    func = tir.PrimFunc([source.data], body, buffer_map={source.data: source}).with_attr("global_symbol", "main")
+    with tvm.transform.PassContext(config={"tl.ascend_memory_planning": True}):
+        planned = tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+    assert int(planned["main"].attrs["size_map"][ub.data]) == 64 * 64
+
+
+def test_dma_packed_store_ignores_empty_tail_columns():
+    """Zero columns do not turn an otherwise flat 32KB store into 256KB."""
+    tir = tvm.tir
+    output = tir.decl_buffer((8192,), "float32", name="output", scope="global")
+    ub = tir.decl_buffer((8192,), "float32", name="ub", scope="shared.ub")
+    cid = tir.Var("cid", "int32")
+    columns = tir.Select(cid == 0, 1, 0)
+    copy = tir.call_extern(
+        "handle",
+        "tl::ascend::atomic_add_ub_to_gm<float, 1, 8192>",
+        ub.access_ptr("r"),
+        output.access_ptr("w"),
+        1,
+        8192,
+        columns,
+    )
+    body = tir.For(cid, 0, 2, tir.ForKind.SERIAL, tir.Evaluate(copy))
+    body = tir.Allocate(ub.data, ub.dtype, [8192], tir.const(True, "bool"), body)
+    func = tir.PrimFunc([output.data], body, buffer_map={output.data: output}).with_attr("global_symbol", "main")
+    with tvm.transform.PassContext(config={"tl.ascend_memory_planning": False}):
+        planned = tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+    assert int(planned["main"].attrs["size_map"][ub.data]) == 8192 * 4
+
+
+@pytest.mark.parametrize("valid_columns,expected_size", [(0, 2304), (1, 4064), (8, 2304)])
+def test_dma_unaligned_pitch_tracks_valid_columns(valid_columns, expected_size):
+    """The runtime block length controls stride; tail Duplicate is also counted."""
+    tir = tvm.tir
+    source = tir.decl_buffer((64, 9), "float32", name="source", scope="global")
+    ub = tir.decl_buffer((64, 9), "float32", name="ub", scope="shared.ub")
+    copy = tir.call_extern(
+        "handle",
+        "tl::ascend::copy_gm_to_ub<float, 9, 64>",
+        source.access_ptr("r"),
+        ub.access_ptr("w"),
+        9,
+        64,
+        valid_columns,
+        tir.const(0, "float32"),
+    )
+    body = tir.Allocate(ub.data, ub.dtype, [64 * 9], tir.const(True, "bool"), tir.Evaluate(copy))
+    func = tir.PrimFunc([source.data], body, buffer_map={source.data: source}).with_attr("global_symbol", "main")
+    with tvm.transform.PassContext(config={"tl.ascend_memory_planning": True}):
+        planned = tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+    assert int(planned["main"].attrs["size_map"][ub.data]) == expected_size
+
+
+@pytest.mark.parametrize("shared_call", [False, True])
+def test_dma_copy_uses_enclosing_branch_bounds(shared_call):
+    """A shared Call is analyzed separately in every reachable branch."""
+    tir = tvm.tir
+    source = tir.decl_buffer((4000,), "float32", name="source", scope="global")
+    ub = tir.decl_buffer((40000,), "float32", name="ub", scope="shared.ub")
+    cid = tir.Var("cid", "int32")
+    copy = tir.call_extern(
+        "handle",
+        "tl::ascend::copy_gm_to_ub<float, 1, 4000>",
+        source.access_ptr("r"),
+        ub.access_ptr("w", offset=cid * 256),
+        1,
+        4000,
+        1,
+        tir.const(0, "float32"),
+    )
+    if shared_call:
+        body = tir.SeqStmt(
+            [
+                tir.IfThenElse(cid < 32, tir.Evaluate(copy), None),
+                tir.IfThenElse(tir.And(cid >= 32, cid < 64), tir.Evaluate(copy), None),
+            ]
+        )
+    else:
+        body = tir.IfThenElse(cid >= 64, tir.Evaluate(0), tir.Evaluate(copy))
+    body = tir.For(cid, 0, 128, tir.ForKind.SERIAL, body)
+    body = tir.Allocate(ub.data, ub.dtype, [40000], tir.const(True, "bool"), body)
+    func = tir.PrimFunc([source.data], body, buffer_map={source.data: source}).with_attr("global_symbol", "main")
+    with tvm.transform.PassContext(config={"tl.ascend_memory_planning": True}):
+        planned = tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+    assert int(planned["main"].attrs["size_map"][ub.data]) == 63 * 256 * 4 + 4000 * 32
+
+
+def test_dma_copy_shared_call_keeps_unconditional_bounds():
+    """A narrow branch must not hide the same Call's later unconditional use."""
+    tir = tvm.tir
+    source = tir.decl_buffer((64,), "float32", name="source", scope="global")
+    ub = tir.decl_buffer((128,), "float32", name="ub", scope="shared.ub")
+    cid = tir.Var("cid", "int32")
+    copy = tir.call_extern(
+        "handle",
+        "tl::ascend::copy_gm_to_ub<float, 1, 64>",
+        source.access_ptr("r"),
+        ub.access_ptr("w", offset=cid * 8),
+        1,
+        64,
+        1,
+        tir.const(0, "float32"),
+    )
+    body = tir.SeqStmt([tir.IfThenElse(cid < 2, tir.Evaluate(copy), None), tir.Evaluate(copy)])
+    body = tir.For(cid, 0, 8, tir.ForKind.SERIAL, body)
+    body = tir.Allocate(ub.data, ub.dtype, [128], tir.const(True, "bool"), body)
+    func = tir.PrimFunc([source.data], body, buffer_map={source.data: source}).with_attr("global_symbol", "main")
+    with tvm.transform.PassContext(config={"tl.ascend_memory_planning": False}):
+        planned = tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+    assert int(planned["main"].attrs["size_map"][ub.data]) == 7 * 8 * 4 + 64 * 32
+
+
+def test_dma_copy_rejects_extreme_finite_bounds():
+    """Finite bounds must not wrap during element-to-byte conversion."""
+    tir = tvm.tir
+    source = tir.decl_buffer((64,), "float32", name="source", scope="global")
+    ub = tir.decl_buffer((128,), "float32", name="ub", scope="shared.ub")
+    large = tir.const(2**61, "int64")
+    copy = tir.call_extern(
+        "handle",
+        "tl::ascend::copy_gm_to_ub<float, 1, 64>",
+        source.access_ptr("r"),
+        ub.access_ptr("w", extent=64),
+        1,
+        large,
+        1,
+        tir.const(0, "float32"),
+    )
+    body = tir.Allocate(ub.data, ub.dtype, [128], tir.const(True, "bool"), tir.Evaluate(copy))
+    func = tir.PrimFunc([source.data], body, buffer_map={source.data: source}).with_attr("global_symbol", "main")
+    with (
+        tvm.transform.PassContext(config={"tl.ascend_memory_planning": False}),
+        pytest.raises(tvm.error.InternalError, match="UB copy physical footprint"),
+    ):
+        tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+
+
+def test_dma_store_ignores_offsets_on_empty_rows():
+    """A huge offset confined to a no-op row count must not reject a safe store."""
+    tir = tvm.tir
+    output = tir.decl_buffer((64, 2), "float32", name="output", scope="global")
+    ub = tir.decl_buffer((128,), "float32", name="ub", scope="shared.ub")
+    cid = tir.Var("cid", "int32")
+    offset = tir.Select(cid == 0, tir.const(0, "int64"), tir.const(2**61, "int64"))
+    rows = tir.Select(cid == 0, 64, 0)
+    copy = tir.call_extern(
+        "handle",
+        "tl::ascend::copy_ub_to_gm<float, 1, 64>",
+        ub.access_ptr("r", offset=offset, extent=64),
+        output.access_ptr("w"),
+        2,
+        rows,
+        1,
+    )
+    body = tir.For(cid, 0, 2, tir.ForKind.SERIAL, tir.Evaluate(copy))
+    body = tir.Allocate(ub.data, ub.dtype, [128], tir.const(True, "bool"), body)
+    func = tir.PrimFunc([output.data], body, buffer_map={output.data: output}).with_attr("global_symbol", "main")
+    with tvm.transform.PassContext(config={"tl.ascend_memory_planning": True}):
+        planned = tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+    assert int(planned["main"].attrs["size_map"][ub.data]) == 64 * 32
+
+
+@pytest.mark.skipif(not NPU_AVAILABLE, reason="Requires an Ascend NPU runtime")
+def test_dma_empty_tail_column_store_correctness():
+    """The second core has no output columns; the first writes one flat slab."""
+
+    @T.prim_func
+    def main(Out: T.Tensor((8192, 1), "float32")):
+        with T.Kernel(2, threads=1, is_npu=True) as cid:
+            packed_ub = T.alloc_ub((8192, 1), "float32")
+            T.tile.arith_progression(packed_ub, 0.0, 1.0, 8192)
+            T.copy(packed_ub, Out[:, cid : cid + 1])
+
+    configs = PASS_LINEAR
+    kernel = tilelang.compile(main, pass_configs=configs, target="ascendc", out_idx=[0])
+    assert _get_buffer_sizes(kernel.get_kernel_source())["packed_ub"] == 8192
+    actual = kernel()
+    torch.npu.synchronize()
+    expected = torch.arange(8192, dtype=torch.float32, device="npu").reshape(8192, 1)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_dma_single_burst_reshape_uses_full_block_length():
+    """A one-row reshape may exceed template pitch, as in GroupNorm parameters."""
+    columns, offset = 17, 8
+    tir = tvm.tir
+    source = tir.decl_buffer((columns,), "float32", name="source", scope="global")
+    ub = tir.decl_buffer((16,), "float32", name="ub", scope="shared.ub")
+    copy = tir.call_extern(
+        "handle",
+        "tl::ascend::copy_gm_to_ub<float, 1, 16>",
+        source.access_ptr("r"),
+        ub.access_ptr("w", offset=offset, extent=columns),
+        columns,
+        1,
+        columns,
+        tir.const(0, "float32"),
+    )
+    body = tir.Allocate(ub.data, ub.dtype, [16], tir.const(True, "bool"), tir.Evaluate(copy))
+    func = tir.PrimFunc([source.data], body, buffer_map={source.data: source}).with_attr("global_symbol", "main")
+    with tvm.transform.PassContext(config={"tl.ascend_memory_planning": False}):
+        planned = tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+    # A 32-byte offset plus three 32-byte blocks covers the 68-byte burst.
+    assert int(planned["main"].attrs["size_map"][ub.data]) == 128
+
+
+def test_dma_multiburst_rejects_columns_exceeding_pitch():
+    """Only a single row can ignore a template stride smaller than its burst."""
+    tir = tvm.tir
+    source = tir.decl_buffer((2, 17), "float32", name="source", scope="global")
+    ub = tir.decl_buffer((64,), "float32", name="ub", scope="shared.ub")
+    copy = tir.call_extern(
+        "handle",
+        "tl::ascend::copy_gm_to_ub<float, 1, 16>",
+        source.access_ptr("r"),
+        ub.access_ptr("w"),
+        17,
+        2,
+        17,
+        tir.const(0, "float32"),
+    )
+    body = tir.Allocate(ub.data, ub.dtype, [64], tir.const(True, "bool"), tir.Evaluate(copy))
+    func = tir.PrimFunc([source.data], body, buffer_map={source.data: source}).with_attr("global_symbol", "main")
+    with (
+        tvm.transform.PassContext(config={"tl.ascend_memory_planning": False}),
+        pytest.raises(tvm.error.InternalError, match="Cannot prove bounded nonnegative UB copy extents"),
+    ):
+        tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+
+
+def _nested_dma_tail_columns(cid, vid, slot):
+    """The floordiv predicates produced for XAttention's last merge tile."""
+    tir = tvm.tir
+    return tir.Select(
+        -vid - cid * 2 - slot * 48 >= -15,
+        64,
+        tir.Select(slot * 3 + cid // 8 < 1, 1024 - vid * 64 - cid * 128 - slot * 3072, 0),
+    )
+
+
+def test_dma_nested_floor_predicates_have_bounded_extents():
+    """The apparent negative Select arm is unreachable at all 96 scalar points."""
+    tir = tvm.tir
+    source = tir.decl_buffer((8192,), "float32", name="source", scope="global")
+    ub = tir.decl_buffer((128,), "float32", name="ub", scope="shared.ub")
+    cid, vid, slot = [tir.Var(name, "int32") for name in ("cid", "vid", "slot")]
+    columns = _nested_dma_tail_columns(cid, vid, slot)
+    copy = tir.call_extern(
+        "handle",
+        "tl::ascend::copy_gm_to_ub<float, 1, 64>",
+        source.access_ptr("r"),
+        ub.access_ptr("w", offset=(slot + 1) % 2 * 64, extent=64),
+        4096,
+        1,
+        columns,
+        tir.const(0, "float32"),
+    )
+    body = tir.IfThenElse(slot + 1 < (111 - vid - cid * 2) // 48, tir.Evaluate(copy), None)
+    body = tir.IfThenElse(slot < (111 - vid - cid * 2) // 48, body, None)
+    body = tir.For(slot, 0, 2, tir.ForKind.SERIAL, body)
+    body = tir.For(vid, 0, 2, tir.ForKind.SERIAL, body)
+    body = tir.For(cid, 0, 24, tir.ForKind.SERIAL, body)
+    body = tir.Allocate(ub.data, ub.dtype, [128], tir.const(True, "bool"), body)
+    func = tir.PrimFunc([source.data], body, buffer_map={source.data: source}).with_attr("global_symbol", "main")
+    with tvm.transform.PassContext(config={"tl.ascend_memory_planning": True}):
+        planned = tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+    assert int(planned["main"].attrs["size_map"][ub.data]) == 128 * 4
+
+
+@pytest.mark.parametrize("invalid_bounds", ["runtime_load", "over_budget"])
+def test_dma_failed_extent_bounds_remain_rejected(invalid_bounds):
+    """Small-domain refinement must never clamp, sample, or guess a runtime value."""
+    tir = tvm.tir
+    source = tir.decl_buffer((8192,), "float32", name="source", scope="global")
+    ub = tir.decl_buffer((128,), "float32", name="ub", scope="shared.ub")
+    cid, vid, slot = [tir.Var(name, "int32") for name in ("cid", "vid", "slot")]
+    parameters = [source.data]
+    buffer_map = {source.data: source}
+    if invalid_bounds == "runtime_load":
+        extents = tir.decl_buffer((2,), "int32", name="extents", scope="global")
+        parameters.append(extents.data)
+        buffer_map[extents.data] = extents
+        columns = extents[cid]
+        loops = [(cid, 2)]
+    else:
+        # All values are safe, but the 129 * 2 * 2 domain exceeds the strict
+        # fallback budget. It must retain the original unproven-bound error.
+        columns = _nested_dma_tail_columns(cid, vid, slot)
+        loops = [(cid, 129), (vid, 2), (slot, 2)]
+    copy = tir.call_extern(
+        "handle",
+        "tl::ascend::copy_gm_to_ub<float, 1, 64>",
+        source.access_ptr("r"),
+        ub.access_ptr("w", extent=64),
+        4096,
+        1,
+        columns,
+        tir.const(0, "float32"),
+    )
+    body = tir.Evaluate(copy)
+    for variable, extent in reversed(loops):
+        body = tir.For(variable, 0, extent, tir.ForKind.SERIAL, body)
+    body = tir.Allocate(ub.data, ub.dtype, [128], tir.const(True, "bool"), body)
+    func = tir.PrimFunc(parameters, body, buffer_map=buffer_map).with_attr("global_symbol", "main")
+    with (
+        tvm.transform.PassContext(config={"tl.ascend_memory_planning": True}),
+        pytest.raises(tvm.error.InternalError, match="Cannot prove bounded nonnegative UB copy extents"),
+    ):
+        tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+
+
+def test_dma_dynamic_conditional_loop_bounds():
+    """GDN's dynamic batches still cap each UB row loop at its static tile size."""
+    rows_per_iter, minimum = 32, -3
+    tir = tvm.tir
+    source = tir.decl_buffer((8192,), "float32", name="source", scope="global")
+    ub = tir.decl_buffer((64,), "float32", name="ub", scope="shared.ub")
+    batches, vid, chunk, row = [tir.Var(name, "int32") for name in ("batches", "vid", "chunk", "row")]
+    base = vid * ((batches + 1) // 2) + chunk * rows_per_iter
+    remaining = tir.if_then_else(base < batches, batches - base, 0)
+    count = tir.if_then_else(remaining >= rows_per_iter, rows_per_iter, remaining)
+    copy = tir.call_extern(
+        "handle",
+        "tl::ascend::copy_gm_to_ub<float, 4, 1>",
+        source.access_ptr("r"),
+        ub.access_ptr("w", offset=(row - minimum) * 64, extent=4),
+        4,
+        1,
+        4,
+        tir.const(0, "float32"),
+    )
+    # The first occurrence has a narrower context. It must not poison the
+    # repeated Call's global bounds, including for a negative loop minimum.
+    body = tir.SeqStmt([tir.IfThenElse(row < minimum + 1, tir.Evaluate(copy), None), tir.Evaluate(copy)])
+    body = tir.For(row, minimum, count, tir.ForKind.SERIAL, body)
+    chunks = tir.if_then_else(batches > 0, (batches + 1) // 2, 0)
+    body = tir.For(chunk, 0, chunks, tir.ForKind.SERIAL, body)
+    body = tir.For(vid, 0, 2, tir.ForKind.SERIAL, body)
+    body = tir.Allocate(ub.data, ub.dtype, [64], tir.const(True, "bool"), body)
+    func = tir.PrimFunc([source.data, batches], body, buffer_map={source.data: source}).with_attr("global_symbol", "main")
+    with tvm.transform.PassContext(config={"tl.ascend_memory_planning": True}):
+        planned = tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+    assert int(planned["main"].attrs["size_map"][ub.data]) == (rows_per_iter - 1) * 256 + 32
+
+
+@pytest.mark.parametrize("invalid_range", ["negative", "uncapped"])
+def test_dma_conditional_loop_bounds_do_not_hide_invalid_offsets(invalid_range):
+    """Refinement preserves a negative minimum and rejects an uncapped extent."""
+    tir = tvm.tir
+    source = tir.decl_buffer((8192,), "float32", name="source", scope="global")
+    ub = tir.decl_buffer((64,), "float32", name="ub", scope="shared.ub")
+    batches, row = [tir.Var(name, "int64") for name in ("batches", "row")]
+    parameters = [source.data, batches]
+    remaining = tir.if_then_else(batches > 0, batches, tir.const(0, "int64"))
+    count = tir.if_then_else(remaining >= 32, tir.const(32, "int64"), remaining)
+    if invalid_range == "negative":
+        minimum = tir.const(-1, "int64")
+    else:
+        minimum = tir.const(0, "int64")
+        count = remaining
+    copy = tir.call_extern(
+        "handle",
+        "tl::ascend::copy_gm_to_ub<float, 4, 1>",
+        source.access_ptr("r"),
+        ub.access_ptr("w", offset=row, extent=4),
+        4,
+        1,
+        4,
+        tir.const(0, "float32"),
+    )
+    body = tir.For(row, minimum, count, tir.ForKind.SERIAL, tir.Evaluate(copy))
+    body = tir.Allocate(ub.data, ub.dtype, [64], tir.const(True, "bool"), body)
+    func = tir.PrimFunc(parameters, body, buffer_map={source.data: source}).with_attr("global_symbol", "main")
+    with (
+        tvm.transform.PassContext(config={"tl.ascend_memory_planning": False}),
+        pytest.raises(tvm.error.InternalError, match="UB copy"),
+    ):
+        tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+
+
+def test_dma_if_then_else_counts_and_empty_offsets():
+    """Scalar if_then_else extents have the same bounds and no-op rules as Select."""
+    tir = tvm.tir
+    source = tir.decl_buffer((64, 2), "float32", name="source", scope="global")
+    ub = tir.decl_buffer((64,), "float32", name="ub", scope="shared.ub")
+    batches = tir.Var("batches", "int32")
+    remaining = tir.if_then_else(batches > 0, batches, 0)
+    rows = tir.if_then_else(remaining >= 32, 32, remaining)
+    offset = tir.if_then_else(batches > 0, tir.const(0, "int64"), tir.const(2**61, "int64"))
+    copy = tir.call_extern(
+        "handle",
+        "tl::ascend::copy_ub_to_gm<float, 1, 32>",
+        ub.access_ptr("r", offset=offset, extent=32),
+        source.access_ptr("w"),
+        2,
+        rows,
+        1,
+    )
+    body = tir.Allocate(ub.data, ub.dtype, [64], tir.const(True, "bool"), tir.Evaluate(copy))
+    func = tir.PrimFunc([source.data, batches], body, buffer_map={source.data: source}).with_attr("global_symbol", "main")
+    with tvm.transform.PassContext(config={"tl.ascend_memory_planning": True}):
+        planned = tilelang.transform.AscendMemoryPlanning()(tvm.IRModule({"main": func}))
+    assert int(planned["main"].attrs["size_map"][ub.data]) == 32 * 32
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-n", "8"])
