@@ -54,6 +54,48 @@ CHIP_SPECS = {
 }
 DEFAULT_CHIP = "Ascend910A"
 
+# Chip names that share a memory profile with another entry.  Atlas A3
+# (Ascend910_93) and Ascend910C are DAV_2201 parts, i.e. the same core
+# architecture as 910B, so they reuse its UB/L1/L0A/L0B/L0C sizes instead of
+# duplicating the numbers.  Without this mapping the name falls through the
+# "910" bucket below and silently selects the 910A profile (256 KB UB,
+# 256 KB L0C), which overstates UB and understates L0C on A3.
+CHIP_PROFILE_ALIASES = {
+    "Ascend910C": "Ascend910B",
+}
+
+# Device-name fragments, longest/most specific first: the generic "910"
+# bucket must never shadow 910B / 910C / 910_93. A ``None`` target marks a
+# family that is recognised but has no carver profile yet: those names stay
+# unresolved instead of being silently claimed by the "910" bucket below.
+_CHIP_NAME_PATTERNS = (
+    ("910_95", None),  # A5 family (910_95xx / 950xx): no profile yet
+    ("950", None),
+    ("910_93", "Ascend910C"),
+    ("910c", "Ascend910C"),
+    ("910b", "Ascend910B"),
+    ("310p", "Ascend310P"),
+    ("910a", "Ascend910A"),
+    ("910", "Ascend910A"),
+)
+
+
+# Profiles that expose the Ascend cube (tensor core) at all.
+CUBE_PRECISION_PROFILES = ("Ascend910A", "Ascend910B", "Ascend310P")
+
+
+def resolve_chip_name(device_name: str) -> Optional[str]:
+    """Resolve a device name or target ``mcpu`` string to a chip profile.
+
+    Returns ``None`` for names outside the known families so callers can
+    decide between a loud fallback and an error.
+    """
+    name = (device_name or "").lower()
+    for fragment, chip_name in _CHIP_NAME_PATTERNS:
+        if fragment in name:
+            return chip_name
+    return None
+
 
 class CubeInstruction(object):
     def __init__(self, name: str, shape: List[int]):
@@ -82,12 +124,12 @@ class Ascend(TileDevice):
                     if hasattr(props, "l2_cache_size"):
                         L2_cache_size_bytes = props.l2_cache_size
 
-                    if "910B" in npu_name:
-                        chip_name = "Ascend910B"
-                    elif "310P" in npu_name:
-                        chip_name = "Ascend310P"
-                    elif "910" in npu_name:
-                        chip_name = "Ascend910A"
+                    chip_name = resolve_chip_name(npu_name)
+                    if chip_name is None:
+                        logger.warning(
+                            f"Unrecognized Ascend device '{npu_name}'; "
+                            "falling back to the target mcpu / default profile."
+                        )
 
                     logger.debug(
                         f"Detected Ascend NPU: {npu_name}, using chip profile: {chip_name}"
@@ -100,21 +142,22 @@ class Ascend(TileDevice):
         # Else determine chip properties from CHIP_SPEC if not chip name provided
         if chip_name is None:
             mcpu = getattr(target, "mcpu", None)
-            if mcpu:
-                mcpu = mcpu.lower()
-                if "910b" in mcpu:
-                    chip_name = "Ascend910B"
-                elif "310p" in mcpu:
-                    chip_name = "Ascend310P"
-                elif "910" in mcpu:
-                    chip_name = "Ascend910A"
-                else:
-                    chip_name = DEFAULT_CHIP
-            else:
+            chip_name = resolve_chip_name(mcpu) if mcpu else None
+            if chip_name is None:
                 chip_name = DEFAULT_CHIP
 
+        # Canonicalise names passed in by the caller (``chip_name="Ascend910_93"``,
+        # lowercase spellings, ...) so the alias table and the capability checks
+        # see the same spelling as detected devices. Unknown names are kept
+        # verbatim so a caller-supplied model still fails loudly later.
+        chip_name = resolve_chip_name(chip_name) or chip_name
+
         self.chip_name = chip_name
-        spec = CHIP_SPECS.get(chip_name, CHIP_SPECS[DEFAULT_CHIP]).copy()
+        # Alias-resolved profile (e.g. Ascend910C -> Ascend910B). Profile
+        # capability checks must use this instead of enumerating raw chip
+        # names, otherwise every new alias has to be added to each list.
+        self.chip_profile = CHIP_PROFILE_ALIASES.get(chip_name, chip_name)
+        spec = CHIP_SPECS.get(self.chip_profile, CHIP_SPECS[DEFAULT_CHIP]).copy()
 
         # AI Core size
         if detected_cores is not None and detected_cores > 0:
@@ -180,10 +223,19 @@ class Ascend(TileDevice):
 def is_cube_supported_precision(in_dtype: str, accum_dtype: str, arch: TileDevice) -> bool:
     if not isinstance(arch, Ascend):
         return False
-    if arch.chip_name == "Ascend910A" or arch.chip_name == "Ascend910B" or arch.chip_name == "Ascend310P":
-        # Ascend NPU supports float16 and bfloat16 tensor core operations
-        return in_dtype in ["float16", "bfloat16"] and accum_dtype in ["float16", "bfloat16", "float32"]
-    else:
-        raise ValueError(f"Unsupported architecture: {arch}")
+    # Compare the alias-resolved profile, not the raw chip name: Ascend910C
+    # (Atlas A3) shares the 16x16x16 cube and the memory profile of 910B (see
+    # CHIP_PROFILE_ALIASES), so it must take the same branch instead of
+    # raising and silently degrading cube hints to the default policy.
+    profile = arch.chip_profile
+    if profile not in CUBE_PRECISION_PROFILES:
+        raise ValueError(f"Unsupported architecture: chip={arch.chip_name}, profile={profile}")
+    # Ascend NPU supports float16 and bfloat16 tensor core operations
+    return in_dtype in ["float16", "bfloat16"] and accum_dtype in [
+        "float16",
+        "bfloat16",
+        "float32",
+    ]
+
 
 __all__ = ["Ascend", "is_ascend_arch", "is_cube_supported_precision"]
