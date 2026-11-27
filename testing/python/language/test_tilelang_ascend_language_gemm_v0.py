@@ -505,6 +505,7 @@ def _gemm_v0_fp32_kernel(
     kL0Size=64,
     transpose_A=False,
     transpose_B=False,
+    use_hf32=False,
 ):
     # A dedicated staging for fp32: the shared _gemm_v0_kernel writes the
     # L0C result back element-wise, which the combine-CV pass rejects for
@@ -553,6 +554,7 @@ def _gemm_v0_fp32_kernel(
                         transpose_B=transpose_B,
                         init=(k == 0),
                         kL0Size=kL0Size,
+                        use_hf32=use_hf32,
                     )
                     T.barrier_all()
 
@@ -746,6 +748,132 @@ def test_gemm_v0_fp32_kl0size_boundary_reject(target):
             rtol=1e-4,
             atol=1e-4,
         )
+
+
+# ---------------------------------------------------------------------------
+# HF32 (tf32-class) mode: T.gemm_v0(..., use_hf32=True) rounds FP32 operands
+# in L0A/L0B to the 10-bit-mantissa format before the cube multiply,
+# trading precision for throughput. Default off; non-fp32 inputs silently
+# ignore the switch. Tolerance bands are measured on 910B3/CANN 9.2.0:
+# the tf32 band starts at 1e-2 for K<=256 shapes; the large-K band
+# (2e-2/5e-2) carries 2x headroom over the measured 2.36e-2 max deviation.
+#
+# CI tiering: the switch contract cases (off baseline, on basic, fp16 mix)
+# run in the PR gate; the large shape and transpose-combination variants
+# are low_priority (daily full runs).
+# ---------------------------------------------------------------------------
+
+
+def _run_hf32_case(
+    target,
+    use_hf32,
+    dtype="float32",
+    rtol=1e-2,
+    atol=1e-2,
+    M=256,
+    N=256,
+    K=256,
+    transpose_A=False,
+    transpose_B=False,
+):
+    program = _gemm_v0_fp32_kernel(
+        M,
+        N,
+        K,
+        128,
+        128,
+        64,
+        dtype,
+        "float32",
+        "float32",
+        64,
+        transpose_A,
+        transpose_B,
+        use_hf32,
+    )
+    kernel = _compile(program, target)
+
+    in_t = _TORCH_FP32_DTYPE[dtype]
+    if transpose_A:
+        a = torch.randn(K, M, dtype=in_t, device="npu")
+    else:
+        a = torch.randn(M, K, dtype=in_t, device="npu")
+    if transpose_B:
+        b = torch.randn(N, K, dtype=in_t, device="npu")
+    else:
+        b = torch.randn(K, N, dtype=in_t, device="npu")
+    c = torch.zeros(M, N, dtype=torch.float32, device="npu")
+
+    torch.npu.synchronize()
+    kernel(a, b, c)
+    torch.npu.synchronize()
+
+    a_ref = a.float().T if transpose_A else a.float()
+    b_ref = b.float().T if transpose_B else b.float()
+    ref = a_ref @ b_ref
+    torch.testing.assert_close(c, ref, rtol=rtol, atol=atol)
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 hf32 correctness requires an Ascend NPU runtime",
+)
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_gemm_v0_hf32_off_baseline(target):
+    # The switch present but off: must match the fp32 tight tolerance.
+    _run_hf32_case(target, use_hf32=False, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 hf32 correctness requires an Ascend NPU runtime",
+)
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_gemm_v0_hf32_on_basic(target):
+    # The switch on at the tf32 band (small shape, PR-gate tier).
+    _run_hf32_case(target, use_hf32=True, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 hf32 correctness requires an Ascend NPU runtime",
+)
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_gemm_v0_hf32_fp16_ignores_switch(target):
+    # fp16 inputs with the switch on: silently ignored, fp16-grade result
+    # against the fp32 reference.
+    _run_hf32_case(target, use_hf32=True, dtype="float16", rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 hf32 correctness requires an Ascend NPU runtime",
+)
+@pytest.mark.low_priority
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_gemm_v0_hf32_on_large_shape(target):
+    # Large shape under HF32 at the measured large-K band.
+    _run_hf32_case(target, use_hf32=True, rtol=2e-2, atol=5e-2, M=1024, N=1024, K=1024)
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 hf32 correctness requires an Ascend NPU runtime",
+)
+@pytest.mark.low_priority
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("transpose_A,transpose_B", [(False, True), (True, False), (True, True)])
+def test_gemm_v0_hf32_transpose_on(target, transpose_A, transpose_B):
+    # HF32 + transpose combinations: SetHF32Mode is set around each Mmad and
+    # must hold regardless of the tile-copy branch taken around it.
+    _run_hf32_case(
+        target,
+        use_hf32=True,
+        rtol=2e-2,
+        atol=5e-2,
+        transpose_A=transpose_A,
+        transpose_B=transpose_B,
+    )
 
 
 if __name__ == "__main__":

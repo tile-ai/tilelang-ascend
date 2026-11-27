@@ -647,7 +647,9 @@ workspace 是两种不同机制。显式 arena 的结构、对齐、容量责任
 
 ##### 4.1.3.1 矩阵计算
 
-- `T.gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False, kL0Size=128):`
+- `T.gemm_v0(A, B, C, transpose_A=False, transpose_B=False, init=False, kL0Size=128, use_hf32=False):`
+
+    use_hf32：启用 HF32（tf32 级）高性能模式。开启后 L0A/L0B 中的 FP32 操作数在 Cube 乘法前按 10 位尾数格式舍入，以精度换吞吐（1024³ 实测约 +20%）。仅对 fp32 输入生效，其他 dtype 静默忽略。默认关闭（完整 fp32 精度）。
 
   **参数**：
 
