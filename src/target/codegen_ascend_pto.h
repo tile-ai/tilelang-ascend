@@ -286,6 +286,9 @@ private:
 
   std::string PrintBufferOffset(const CallNode *op);
 
+  std::string PrintScalarBufferRead(const CallNode *access_ptr,
+                                    const PrimExpr &dense_offset);
+
   std::string GetTempVarName(const std::string &temp_name);
   void CreateUbVariableND(const std::string &temp_name,
                           const ShapeInfo &shape_info);
