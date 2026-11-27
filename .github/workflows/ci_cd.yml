@@ -681,6 +681,10 @@ jobs:
               source set_env.sh
               echo 'TILELANG_PATH='\$PWD >> \$GITHUB_ENV
 
+              # Install the optional scheduler dependency in the test environment.
+              python -m pip install 'z3-solver>=4.13.0,<4.15.5'
+              python -c 'import z3; print(z3.get_version_string()); assert z3.Solver().check() == z3.sat'
+
               # 3. 运行测试用例
               cd examples
               chmod +x bench_test.sh

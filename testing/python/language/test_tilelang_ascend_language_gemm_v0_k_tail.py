@@ -343,7 +343,7 @@ def test_gemm_v0_ktail_int8(K, expected):
     reason="gemm_v0 correctness requires an Ascend NPU runtime",
 )
 @pytest.mark.parametrize("K,num_stages", [(200, 2), (200, 3), (456, 2), (256, 2)])
-def test_gemm_v0_ktail_pipeline(K, num_stages):
+def test_gemm_v0_ktail_pipeline(K, num_stages, repeat=1, seed=0):
     """Pipelined K-loop with an unaligned K-tail: software pipelining
     (``T.Pipelined``) multi-versions the L1 buffers, and every non-zero
     version base used to skip the zero-init (the codegen's ``need_clear`` was
@@ -377,16 +377,21 @@ def test_gemm_v0_ktail_pipeline(K, num_stages):
                     T.barrier_all()
                 T.copy(C_L0, C[bx * block_M, by * block_N])
 
-    torch.manual_seed(0)
+    from ascend_repeat import repeat_launch
+
+    torch.manual_seed(seed)
     kernel = _compile(main)
     a = torch.randn(M, K, dtype=torch.float16, device="npu")
     b = torch.randn(K, N, dtype=torch.float16, device="npu")
     c = torch.zeros(M, N, dtype=torch.float16, device="npu")
-    torch.npu.synchronize()
-    kernel(a, b, c)
-    torch.npu.synchronize()
     ref = a.float() @ b.float()
-    torch.testing.assert_close(c.float(), ref, rtol=2e-2, atol=2e-2)
+    repeat_launch(
+        kernel,
+        (a, b, c),
+        (c,),
+        lambda: torch.testing.assert_close(c.float(), ref, rtol=2e-2, atol=2e-2),
+        repeat,
+    )
 
 
 @pytest.mark.skipif(
@@ -453,7 +458,7 @@ def test_gemm_v0_ktail_int8_kl0size_c0(kL0Size, expected):
     reason="gemm_v0 correctness requires an Ascend NPU runtime",
 )
 @pytest.mark.parametrize("K_L1", [200, 152])
-def test_gemm_v0_ktail_pipeline_parallel(K_L1):
+def test_gemm_v0_ktail_pipeline_parallel(K_L1, repeat=1, seed=0):
     """Pipelined K-loop with an unaligned K_L1 AND a T.Parallel epilogue (the
     layout_map-loss path): InjectSoftwarePipeline versions the L1 buffers and
     used to bake the version stride from the LOGICAL slice size (128*200 =
@@ -491,16 +496,21 @@ def test_gemm_v0_ktail_pipeline_parallel(K_L1):
                 for i, j in T.Parallel(block_M, block_N):
                     C[bx * block_M + i, by * block_N + j] = C_L0[i, j]
 
-    torch.manual_seed(0)
+    from ascend_repeat import repeat_launch
+
+    torch.manual_seed(seed)
     kernel = _compile(main)
     a = torch.randn(M, K, dtype=torch.float16, device="npu")
     b = torch.randn(K, N, dtype=torch.float16, device="npu")
     c = torch.zeros(M, N, dtype=torch.float16, device="npu")
-    torch.npu.synchronize()
-    kernel(a, b, c)
-    torch.npu.synchronize()
     ref = a.float() @ b.float()
-    torch.testing.assert_close(c.float(), ref, rtol=2e-2, atol=2e-2)
+    repeat_launch(
+        kernel,
+        (a, b, c),
+        (c,),
+        lambda: torch.testing.assert_close(c.float(), ref, rtol=2e-2, atol=2e-2),
+        repeat,
+    )
 
 
 if __name__ == "__main__":

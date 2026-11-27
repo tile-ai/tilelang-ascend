@@ -19,6 +19,7 @@
 #include <tvm/tir/transform.h>
 
 #include "../op/ascend.h"
+#include "common/ascend_constraint.h"
 #include "common/ascend_vector_mask.h"
 #include "common/operation_config.h"
 
@@ -380,18 +381,237 @@ public:
   bool found{false};
 };
 
+bool EqualMaskFact(const std::optional<PrimExpr> &known,
+                   const PrimExpr &required, arith::Analyzer *analyzer) {
+  if (!known.has_value())
+    return false;
+  PrimExpr lhs = analyzer->Simplify(*known);
+  PrimExpr rhs = analyzer->Simplify(required);
+  return StructuralEqual()(lhs, rhs) || analyzer->CanProveEqual(lhs, rhs);
+}
+
+std::optional<PrimExpr> StableMaskPayload(const PrimExpr &value,
+                                          arith::Analyzer *analyzer) {
+  if (SideEffect(value) != CallEffectKind::kPure)
+    return std::nullopt;
+  return analyzer->Simplify(value);
+}
+
+MaskFacts MeetMaskFacts(const MaskFacts &lhs, const MaskFacts &rhs,
+                        arith::Analyzer *analyzer) {
+  MaskFacts result;
+  if (lhs.mode.has_value() && lhs.mode == rhs.mode)
+    result.mode = lhs.mode;
+  if (lhs.lo.has_value() && rhs.lo.has_value() &&
+      EqualMaskFact(lhs.lo, *rhs.lo, analyzer))
+    result.lo = lhs.lo;
+  if (lhs.hi.has_value() && rhs.hi.has_value() &&
+      EqualMaskFact(lhs.hi, *rhs.hi, analyzer))
+    result.hi = lhs.hi;
+  return result;
+}
+
+void ApplyMaskContract(const MaskContract &contract, MaskFacts *facts,
+                       arith::Analyzer *analyzer) {
+  if (contract.mode.ensure == MaskEnsure::kExact) {
+    facts->mode = static_cast<AscendMaskMode>(
+        Downcast<IntImm>(contract.mode.ensured)->value);
+  } else if (contract.mode.ensure == MaskEnsure::kUnknown) {
+    facts->mode.reset();
+  }
+  auto apply = [&](const MaskFieldContract &field,
+                   std::optional<PrimExpr> *fact) {
+    if (field.ensure == MaskEnsure::kExact)
+      *fact = StableMaskPayload(field.ensured, analyzer);
+    else if (field.ensure == MaskEnsure::kUnknown)
+      fact->reset();
+  };
+  apply(contract.lo, &facts->lo);
+  apply(contract.hi, &facts->hi);
+}
+
+// Verify the emitted command stream. Mask values are shared by the entire V
+// region; software-pipeline buffer versions do not version these registers.
+class MaskContractVerifier final : public StmtExprVisitor {
+public:
+  static void Verify(const PrimFunc &function, bool auto_schedule = false) {
+    MaskContractVerifier verifier(auto_schedule);
+    verifier(function->body);
+  }
+
+private:
+  explicit MaskContractVerifier(bool auto_schedule)
+      : auto_schedule_(auto_schedule) {}
+
+  bool IsAutoReduction(const SelectedCallView &selected) {
+    if (!auto_schedule_ ||
+        !selected.semantic_spec().base.same_as(ascend_reduce()))
+      return false;
+    ICHECK(selected.variant().selector == SelectorRecipe::kReduceFp32V2 &&
+           selected.vector_dtype() == DataType::Float(32))
+        << "Auto scheduling requires the audited fp32 row-reduce terminal";
+    const Array<PrimExpr> &args = selected.semantic_args();
+    ICHECK((args.size() == 5 || args.size() == 6) &&
+           args[4].dtype().is_bool() && is_one(args[4]))
+        << "Auto scheduling requires clear=true reduction with private scratch";
+    for (size_t i = 1; i <= 3; ++i)
+      ICHECK(VectorAccessPtrDtype(args[i]) == DataType::Float(32))
+          << "Auto reduction operands must be fp32 pointer views";
+    return true;
+  }
+
+  void VisitStmt_(const AttrStmtNode *op) final {
+    if (op->attr_key != "resource_scope") {
+      StmtExprVisitor::VisitStmt_(op);
+      return;
+    }
+    const auto *scope = op->value.as<IntImmNode>();
+    ICHECK(scope && (scope->value == 0 || scope->value == 1));
+    if (!scope->value)
+      return;
+    bool outermost = depth_++ == 0;
+    if (outermost)
+      facts_ = {};
+    VisitStmt(op->body);
+    --depth_;
+    if (outermost)
+      facts_ = {};
+  }
+
+  void VisitStmt_(const EvaluateNode *op) final {
+    const auto *node = op->value.as<CallNode>();
+    if (!node || !depth_) {
+      StmtExprVisitor::VisitStmt_(op);
+      return;
+    }
+    Call call = GetRef<Call>(node);
+    for (const PrimExpr &arg : call->args)
+      VisitExpr(arg);
+    if (call->op.same_as(ascend_set_mask_mode())) {
+      ICHECK_EQ(call->args.size(), 1U) << "Malformed managed mask mode setter";
+      const auto *mode = call->args[0].as<IntImmNode>();
+      ICHECK(mode && mode->dtype == DataType::Int(32) &&
+             (mode->value == 0 || mode->value == 1))
+          << "Malformed managed mask mode setter";
+      facts_.mode = static_cast<AscendMaskMode>(mode->value);
+      return;
+    }
+    if (call->op.same_as(ascend_set_mask_payload())) {
+      ICHECK_EQ(call->args.size(), 2U)
+          << "Malformed managed mask payload setter";
+      for (const PrimExpr &word : call->args) {
+        DataType dtype = word.dtype();
+        ICHECK(dtype.is_scalar() && !dtype.is_bool() &&
+               (dtype.is_int() || dtype.is_uint()) && dtype.bits() <= 64)
+            << "Malformed managed mask payload setter dtype";
+      }
+      facts_.lo = StableMaskPayload(call->args[0], &analyzer_);
+      facts_.hi = StableMaskPayload(call->args[1], &analyzer_);
+      return;
+    }
+    ICHECK(!RequiresSelectedVectorTerminal(call))
+        << "Unselected managed Vector operation in mask contract verification";
+    if (IsSelectedVectorTerminal(call)) {
+      SelectedCallView selected(call);
+      ICHECK(selected.semantic_spec().base.same_as(ascend_fill()) ||
+             selected.semantic_spec().base.same_as(ascend_add()) ||
+             IsAutoReduction(selected))
+          << "Unsupported constraint managed mask terminal";
+      MaskContract contract = ContractOf(call, &analyzer_);
+      if (contract.mode.requirement == MaskRequirement::kExact) {
+        const auto *required = contract.mode.required.as<IntImmNode>();
+        ICHECK(required && facts_.mode.has_value() &&
+               int32_t(*facts_.mode) == required->value)
+            << "Managed mask mode has no matching reaching setter";
+      }
+      if (contract.lo.requirement == MaskRequirement::kExact)
+        ICHECK(EqualMaskFact(facts_.lo, contract.lo.required, &analyzer_))
+            << "Managed mask low word has no matching reaching setter";
+      if (contract.hi.requirement == MaskRequirement::kExact)
+        ICHECK(EqualMaskFact(facts_.hi, contract.hi.required, &analyzer_))
+            << "Managed mask high word has no matching reaching setter";
+      ApplyMaskContract(contract, &facts_, &analyzer_);
+    } else if (ExternCallee(call) == "copy_gm_to_ub") {
+      MaskFacts padded{AscendMaskMode::kNormal, FullPayload(), FullPayload()};
+      facts_ = MeetMaskFacts(facts_, padded, &analyzer_);
+    } else if (CallMayAffectVectorMask(call)) {
+      facts_ = {};
+    }
+  }
+
+  void VisitExpr_(const CallNode *op) final {
+    ICHECK(!depth_ || !CallMayAffectVectorMask(GetRef<Call>(op)))
+        << "Mask-affecting expression in managed mask contract verification";
+    StmtExprVisitor::VisitExpr_(op);
+  }
+
+  void VisitStmt_(const IfThenElseNode *op) final {
+    VisitExpr(op->condition);
+    MaskFacts incoming = facts_;
+    VisitStmt(op->then_case);
+    MaskFacts then_out = facts_;
+    facts_ = incoming;
+    if (op->else_case.defined())
+      VisitStmt(op->else_case.value());
+    facts_ = MeetMaskFacts(then_out, facts_, &analyzer_);
+  }
+
+  template <typename Loop> void VisitLoop(const Loop *op) {
+    MaskEffectDetector detector;
+    detector(GetRef<Stmt>(op));
+    if (!detector.found)
+      return;
+    facts_ = {};
+    StmtExprVisitor::VisitStmt_(op);
+    facts_ = {};
+  }
+  void VisitStmt_(const ForNode *op) final { VisitLoop(op); }
+  void VisitStmt_(const WhileNode *op) final { VisitLoop(op); }
+
+  void VisitStmt_(const LetStmtNode *op) final {
+    VisitExpr(op->value);
+    VisitStmt(op->body);
+    Drop(op->var);
+  }
+  void VisitStmt_(const BlockNode *op) final {
+    StmtExprVisitor::VisitStmt_(op);
+    for (const IterVar &iter : op->iter_vars)
+      Drop(iter->var);
+  }
+  void VisitStmt_(const CustomizedCodeNode *) final { facts_ = {}; }
+  void Drop(const Var &var) {
+    auto drop = [&](std::optional<PrimExpr> *fact) {
+      if (fact->has_value() &&
+          UsesVar(**fact, [node = var.get()](const VarNode *candidate) {
+            return candidate == node;
+          }))
+        fact->reset();
+    };
+    drop(&facts_.lo);
+    drop(&facts_.hi);
+  }
+
+  int depth_{0};
+  const bool auto_schedule_;
+  MaskFacts facts_;
+  arith::Analyzer analyzer_;
+};
+
 } // namespace
 
 class AscendVectorMaskLegalizer final : public StmtExprMutator {
 public:
   static PrimFunc Rewrite(PrimFunc func, Target target, std::string platform,
-                          bool reuse_mask) {
+                          bool reuse_mask, bool verify_contract,
+                          bool auto_schedule = false) {
     if (!UseCompilerManagedVectorMask(target, platform)) {
       return func;
     }
     AscendVectorMaskLegalizer legalizer(reuse_mask);
     PrimFuncNode *copy = func.CopyOnWrite();
     copy->body = legalizer.VisitStmt(func->body);
+    if (verify_contract)
+      MaskContractVerifier::Verify(func, auto_schedule);
     return func;
   }
 
@@ -545,12 +765,7 @@ private:
   }
 
   bool Equal(const std::optional<PrimExpr> &known, const PrimExpr &required) {
-    if (!known.has_value()) {
-      return false;
-    }
-    PrimExpr lhs = analyzer_.Simplify(*known);
-    PrimExpr rhs = analyzer_.Simplify(required);
-    return StructuralEqual()(lhs, rhs) || analyzer_.CanProveEqual(lhs, rhs);
+    return EqualMaskFact(known, required, &analyzer_);
   }
 
   bool IsGmToUbCopy(const Call &call) const {
@@ -602,19 +817,7 @@ private:
     // A load expression identifies a location, not the value sampled by a
     // previous setter/helper. Pure expressions remain stable within the
     // existing loop and binding boundaries.
-    if (SideEffect(value) != CallEffectKind::kPure) {
-      return std::nullopt;
-    }
-    return analyzer_.Simplify(value);
-  }
-
-  void ApplyField(const MaskFieldContract &field,
-                  std::optional<PrimExpr> *fact) {
-    if (field.ensure == MaskEnsure::kExact) {
-      *fact = ReusablePayload(field.ensured);
-    } else if (field.ensure == MaskEnsure::kUnknown) {
-      fact->reset();
-    }
+    return StableMaskPayload(value, &analyzer_);
   }
 
   void ApplyGather(const SelectedCallView &selected) {
@@ -648,28 +851,11 @@ private:
   }
 
   void Apply(const MaskContract &contract) {
-    if (contract.mode.ensure == MaskEnsure::kExact) {
-      facts_.mode = static_cast<AscendMaskMode>(
-          Downcast<IntImm>(contract.mode.ensured)->value);
-    } else if (contract.mode.ensure == MaskEnsure::kUnknown) {
-      facts_.mode.reset();
-    }
-    ApplyField(contract.lo, &facts_.lo);
-    ApplyField(contract.hi, &facts_.hi);
+    ApplyMaskContract(contract, &facts_, &analyzer_);
   }
 
   MaskFacts Meet(const MaskFacts &lhs, const MaskFacts &rhs) {
-    MaskFacts result;
-    if (lhs.mode.has_value() && lhs.mode == rhs.mode) {
-      result.mode = lhs.mode;
-    }
-    if (lhs.lo.has_value() && rhs.lo.has_value() && Equal(lhs.lo, *rhs.lo)) {
-      result.lo = lhs.lo;
-    }
-    if (lhs.hi.has_value() && rhs.hi.has_value() && Equal(lhs.hi, *rhs.hi)) {
-      result.hi = lhs.hi;
-    }
-    return result;
+    return MeetMaskFacts(lhs, rhs, &analyzer_);
   }
 
   void DropFactsUsing(const Var &var) {
@@ -698,14 +884,31 @@ tvm::transform::Pass AscendVectorMaskLegalize(Target target,
   auto pass_func = [=](PrimFunc func, IRModule, PassContext ctx) {
     bool reuse_mask =
         ctx->GetConfig<Bool>(ascendVectorMaskReuse, Bool(true)).value();
+    String planner =
+        ctx->GetConfig<String>(kAscendPipelinePlanner, String("legacy"))
+            .value();
+    bool verify_contract = planner == "constraint" || planner == "auto";
     return AscendVectorMaskLegalizer::Rewrite(std::move(func), target, platform,
-                                              reuse_mask);
+                                              reuse_mask, verify_contract,
+                                              planner == "auto");
   };
   return CreatePrimFuncPass(pass_func, 0, "tl.AscendVectorMaskLegalize", {});
 }
 
 TVM_REGISTER_GLOBAL("tl.transform.AscendVectorMaskLegalize")
     .set_body_typed(AscendVectorMaskLegalize);
+
+TVM_REGISTER_GLOBAL("tl.transform._AscendVerifyManagedMaskContract")
+    .set_body_typed([](PrimFunc function) {
+      MaskContractVerifier::Verify(function);
+      return function;
+    });
+
+TVM_REGISTER_GLOBAL("tl.transform._AscendVerifyAutoMaskContract")
+    .set_body_typed([](PrimFunc function) {
+      MaskContractVerifier::Verify(function, true);
+      return function;
+    });
 
 } // namespace tl
 } // namespace tvm

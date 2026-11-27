@@ -56,7 +56,8 @@ def _get_buffer_info(
         real_buffer = br.buffer
 
         indices = [x.min for x in br.region]
-        offset = real_buffer.offset_of(indices)[0]
+        # access_ptr adds the buffer view base; offset_of already includes it.
+        offset = real_buffer.offset_of(indices)[0] - real_buffer.elem_offset
         ptr = real_buffer.access_ptr(mask, offset=offset)
 
         size = 1
@@ -75,7 +76,7 @@ def _get_buffer_info(
 def _handle_buffer_region(br: BufferRegion, mask):
     bf = br.buffer
     indices = [x.min for x in br.region]
-    offset = bf.offset_of(indices)[0]
+    offset = bf.offset_of(indices)[0] - bf.elem_offset
     extent = [x.extent for x in br.region]
     size_extent = math.prod(extent)
     return bf.access_ptr(mask, offset=offset, extent=size_extent), extent
@@ -205,7 +206,7 @@ def _handle_buffer_region_2d(
     )
     bf = br.buffer
     indices = [x.min for x in br.region]
-    offset = bf.offset_of(indices)[0]
+    offset = bf.offset_of(indices)[0] - bf.elem_offset
     extent_nd = [x.extent for x in br.region]
     size_extent = math.prod(extent_nd)
     extent_2d = _fold_nd_shape_to_2d(extent_nd)

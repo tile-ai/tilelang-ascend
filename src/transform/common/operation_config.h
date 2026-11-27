@@ -1,5 +1,6 @@
 // Copyright (c) Tile-AI Corporation.
 // Licensed under the MIT License.
+#pragma once
 
 /*
  * \file operation_config.h

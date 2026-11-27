@@ -29,6 +29,7 @@
 #include <tvm/tir/transform.h>
 
 #include "../target/utils.h"
+#include "./common/ascend_constraint.h"
 #include "./common/operation_config.h"
 
 namespace tvm {
@@ -641,6 +642,15 @@ private:
 tvm::transform::Pass PipelinePlanning() {
   using namespace tir::transform;
   auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {
+    ICHECK(!f->GetAttr<ObjectRef>("tl.ascend_auto_schedule").defined())
+        << "Auto schedule already owns this kernel; old planning cannot run";
+    String strategy =
+        ctx->GetConfig<String>(kAscendPipelinePlanner, String("legacy"))
+            .value();
+    ICHECK(strategy == "legacy" || strategy == "constraint")
+        << "Unknown tl.ascend_pipeline_planner strategy: " << strategy;
+    if (strategy == "constraint")
+      return PlanAscendConstraintPipeline(f, ctx);
     PrimFuncNode *fptr = f.CopyOnWrite();
     fptr->body = PipelinePlanner::Substitute(f);
     return f;

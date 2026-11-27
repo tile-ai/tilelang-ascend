@@ -63,7 +63,7 @@ def _block_index(func):
 
 
 def _global_index(func, loop):
-    return loop.loop_var * WAVE_SIZE + _block_index(func)
+    return loop.loop_var * WAVE_SIZE + tir.Cast("int64", _block_index(func))
 
 
 def _assert_break_guard_precedes_tile_body(func, loop, domain_size):
@@ -72,7 +72,7 @@ def _assert_break_guard_precedes_tile_body(func, loop, domain_size):
     guard = loop.body.seq[0]
     assert isinstance(guard, tir.IfThenElse)
     assert len(_loop_break_calls(guard)) == 1
-    expected_condition = tir.LE(domain_size, _global_index(func, loop))
+    expected_condition = tir.LE(tir.const(domain_size, "int64"), _global_index(func, loop))
     assert tvm.ir.structural_equal(guard.condition, expected_condition)
     for stmt in loop.body.seq[1:]:
         assert not _loop_break_calls(stmt)
@@ -81,6 +81,7 @@ def _assert_break_guard_precedes_tile_body(func, loop, domain_size):
 def _assert_tile_body_is_predicated(func, loop, domain_size):
     assert isinstance(loop.body, tir.IfThenElse)
     assert not _loop_break_calls(loop.body)
+    domain_size = tir.const(domain_size, "int64") if isinstance(domain_size, int) else domain_size
     expected_condition = tir.LT(_global_index(func, loop), domain_size)
     assert tvm.ir.structural_equal(loop.body.condition, expected_condition)
     assert loop.body.else_case is None
@@ -116,7 +117,7 @@ def test_persistent_guard_for_dynamic_domain():
     func = _persistent_kernel(rows)
     loop = _persistent_loop(func)
 
-    _assert_tile_body_is_predicated(func, loop, rows * 2)
+    _assert_tile_body_is_predicated(func, loop, tir.Cast("int64", rows) * 2)
 
 
 @pytest.mark.parametrize(
@@ -127,7 +128,6 @@ def test_persistent_guard_for_dynamic_domain():
         ([4, 2], WAVE_SIZE, -1, 8, "index must satisfy"),
         ([4, 2], WAVE_SIZE, WAVE_SIZE, 8, "index must satisfy"),
         ([4, 2], WAVE_SIZE, 0, 0, "group_size must be positive"),
-        ([4, 3], WAVE_SIZE, 0, 2, "last domain extent must be divisible"),
     ],
 )
 def test_persistent_rejects_invalid_static_arguments(domain, wave_size, index, group_size, error_match):

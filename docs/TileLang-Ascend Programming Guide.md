@@ -1111,7 +1111,7 @@ TileLang提供了多种元素级操作算符，并结合调度原语**T.Parallel
 for var in T.Pipelined(range: int, num_stages: int):
 ```
 
-假设某些操作需要循环迭代执行，该语句能够为这些循环内的操作开启流水线，通过设置`num_stages`的不同取值（`num_stages`是一个小于`range-1`的正整数）来控制重叠度。
+假设某些操作需要循环迭代执行，该语句能够为这些循环内的操作开启流水线。以下示例使用 legacy planner。经 A3 校准的 opt-in constraint 子集将 `num_stages=1/2/3` 解释为版本搜索上限，并独立验证实际版本和 stage；支持 0/1 次及短于 stage 跨度的静态循环。其操作范围与边界见 [calibrated constraint pipelines](language_ref/primitives.md#calibrated-multi-stage-constraint-pipelines)。
 
 ###### 4.1.4.2.3 使用场景
 

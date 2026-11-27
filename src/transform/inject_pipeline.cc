@@ -28,6 +28,9 @@
 
 #include <unordered_set>
 
+#include "./common/ascend_constraint.h"
+#include "./common/ascend_pipeline_structure.h"
+#include "./common/ascend_pipeline_versions.h"
 #include "support/utils.h"
 #include "tir/schedule/utils.h"
 #include "tir/transforms/ir_utils.h"
@@ -66,21 +69,6 @@ Block MakeBlock(const Stmt &body,
   n->writes = access[1];
   return block;
 }
-
-/*! Structure that represents the provided annotation per block or loop. */
-struct PipelineAnnotation {
-  int stage;
-  int order;
-  bool async;
-};
-
-using PipelineInfo = std::unordered_map<Block, PipelineAnnotation,
-                                        ObjectPtrHash, ObjectPtrEqual>;
-
-struct BufferAccessInfo {
-  int def = -1; // the defining stage of the buffer
-  int use = -1; // the last using stage of the buffer
-};
 
 /*!
  * \brief Replace IfThenElse nodes with their then_case, preserving attribute
@@ -137,12 +125,47 @@ public:
         access_all_versions_(access_all_versions) {}
 
 private:
+  Optional<Buffer> RemappedView(const Buffer &view) const {
+    if (auto direct = buffer_remap_.Get(view))
+      return direct;
+    if (!pipeline_loop_->annotations.count(kAscendPipelineLoopId) ||
+        !buffer_data_to_buffer_.count(view->data))
+      return NullOpt;
+    Buffer root = buffer_data_to_buffer_.at(view->data);
+    auto rewritten = buffer_remap_.Get(root);
+    if (!rewritten.defined())
+      return NullOpt;
+    Buffer physical = rewritten.value();
+    PrimExpr pitch = Integer(root->dtype.bytes());
+    for (size_t i = 1; i < physical->shape.size(); ++i)
+      pitch = pitch * physical->shape[i];
+    arith::Analyzer analyzer;
+    ICHECK(
+        analyzer.CanProve(floormod(pitch, Integer(view->dtype.bytes())) == 0))
+        << "Constraint byte pitch is not divisible by view dtype";
+    Buffer result = RewriteLegacyPipelineBuffer(
+        view, Downcast<IntImm>(physical->shape[0])->value);
+    auto *node = result.CopyOnWrite();
+    Array<PrimExpr> strides = view->strides;
+    if (strides.empty()) {
+      strides.resize(view->shape.size());
+      PrimExpr stride = Integer(1);
+      for (int i = int(view->shape.size()) - 1; i >= 0; --i) {
+        strides.Set(i, stride);
+        stride = stride * view->shape[i];
+      }
+    }
+    strides.insert(strides.begin(), analyzer.Simplify(floordiv(
+                                        pitch, Integer(view->dtype.bytes()))));
+    node->strides = strides;
+    return result;
+  }
   BufferRegion
   RewritePipelineBufferRegion(const BufferRegion &buffer_region) const {
-    auto it = buffer_remap_.find(buffer_region->buffer);
-    if (it != buffer_remap_.end()) {
+    auto remapped = RemappedView(buffer_region->buffer);
+    if (remapped.defined()) {
       Region new_region = buffer_region->region;
-      const Buffer &new_buffer = (*it).second;
+      const Buffer &new_buffer = remapped.value();
       // For pipeline buffers, relax the access region of the first dimension to
       // full extent if access_all_versions == true
       Range accessed_version =
@@ -185,9 +208,21 @@ private:
         } else {
           offset = new_buffer->strides[0];
         }
+        if (pipeline_loop_->annotations.count(kAscendPipelineLoopId)) {
+          int64_t root_bytes = buffer->dtype.bytes();
+          int64_t consumer_bytes = call->args[0].dtype().bytes();
+          PrimExpr stride_bytes = offset * Integer(root_bytes);
+          arith::Analyzer analyzer;
+          ICHECK(analyzer.CanProve(
+              floormod(stride_bytes, Integer(consumer_bytes)) == 0))
+              << "Constraint byte pitch is not divisible by alias dtype";
+          offset = analyzer.Simplify(
+              floordiv(stride_bytes, Integer(consumer_bytes)));
+        }
         PrimExpr new_index =
-            old_index +
-            floormod(pipeline_loop_->loop_var, new_buffer->shape[0]) * offset;
+            old_index + floormod(pipeline_loop_->loop_var - pipeline_loop_->min,
+                                 new_buffer->shape[0]) *
+                            offset;
         new_args.Set(i + 1, new_index);
       }
     }
@@ -214,11 +249,11 @@ private:
 
   Stmt VisitStmt_(const BufferStoreNode *op) final {
     BufferStore store = Downcast<BufferStore>(StmtExprMutator::VisitStmt_(op));
-    auto it = buffer_remap_.find(store->buffer);
-    if (it == buffer_remap_.end()) {
+    auto remapped = RemappedView(store->buffer);
+    if (!remapped.defined()) {
       return std::move(store);
     }
-    const Buffer &new_buffer = (*it).second;
+    const Buffer &new_buffer = remapped.value();
     auto *n = store.CopyOnWrite();
     n->buffer = new_buffer;
     PrimExpr version = floormod(
@@ -229,11 +264,11 @@ private:
 
   PrimExpr VisitExpr_(const BufferLoadNode *op) final {
     BufferLoad load = Downcast<BufferLoad>(StmtExprMutator::VisitExpr_(op));
-    auto it = buffer_remap_.find(load->buffer);
-    if (it == buffer_remap_.end()) {
+    auto remapped = RemappedView(load->buffer);
+    if (!remapped.defined()) {
       return std::move(load);
     }
-    const Buffer &new_buffer = (*it).second;
+    const Buffer &new_buffer = remapped.value();
     auto *n = load.CopyOnWrite();
     n->buffer = new_buffer;
     PrimExpr version = floormod(
@@ -272,12 +307,27 @@ public:
         predicate_condition_(predicate_condition) {}
 
   std::pair<Stmt, Map<Var, PrimExpr>> BuildPipeline() {
+    auto requested = pipeline_loop_->annotations.Get(kAscendPipelineVersions);
+    Map<Var, Integer> overrides;
+    if (requested.defined())
+      overrides = Downcast<Map<Var, Integer>>(requested.value());
     // Step 1: Analyze accesses to the buffers in the pipeline and compute the
     // number of versions need to maintain for each buffer.
     std::unordered_map<Buffer, BufferAccessInfo, ObjectPtrHash, ObjectPtrEqual>
         infos = GetBufferAccessInfo();
     for (const Buffer &buffer : pipeline_allocs_) {
-      int num_versions = ComputeBufferVersions(buffer, infos.at(buffer));
+      int num_versions =
+          pipeline_loop_->annotations.count(kAscendPipelineLoopId)
+              ? ComputeAscendStoragePipelineVersions(buffer->data,
+                                                     pipeline_info_)
+              : ComputeBufferVersions(buffer, infos.at(buffer));
+      if (overrides.count(buffer->data)) {
+        int64_t actual = overrides.at(buffer->data)->value;
+        ICHECK(actual >= std::max(1, num_versions) && actual <= 3)
+            << "Constraint actual versions cannot undercut injector liveness";
+        num_versions = actual;
+      }
+      actual_versions_.Set(buffer->data, Integer(std::max(1, num_versions)));
       if (num_versions > 1) {
         buffer_remap_.Set(buffer, RewriteAllocBuffer(buffer, num_versions));
       }
@@ -333,12 +383,13 @@ public:
     // Step 2: Emit the pipeline prologue, body and epilogue.
     Stmt prologue = EmitImpl(pipeline_loop_->min,
                              pipeline_loop_->min + max_stage_, true, true);
-    Stmt body =
-        EmitImpl(pipeline_loop_->min + max_stage_,
-                 pipeline_loop_->min + pipeline_loop_->extent, false, false);
+    PrimExpr body_start = pipeline_loop_->min + max_stage_;
+    PrimExpr body_end =
+        max(body_start, pipeline_loop_->min + pipeline_loop_->extent);
+    Stmt body = EmitImpl(body_start, body_end, false, false);
     Stmt epilogue = EmitImpl(
-        pipeline_loop_->min + pipeline_loop_->extent,
-        pipeline_loop_->min + pipeline_loop_->extent + max_stage_, true, true);
+        body_end, pipeline_loop_->min + pipeline_loop_->extent + max_stage_,
+        true, true);
 
     SeqStmt stmt = SeqStmt({prologue, body, epilogue});
 
@@ -347,12 +398,7 @@ public:
     Array<Buffer> alloc_buffers;
     Map<Var, PrimExpr> buffer_versions;
     for (const auto &alloc : pipeline_allocs_) {
-      int num_versions = 1;
-      if (buffer_remap_.count(alloc)) {
-        if (auto it = infos.find(alloc); it != infos.end()) {
-          num_versions = ComputeBufferVersions(alloc, it->second);
-        }
-      }
+      int num_versions = actual_versions_.at(alloc->data)->value;
       buffer_versions.Set(alloc->data, Integer(num_versions));
 
       alloc_buffers.push_back(buffer_remap_.Get(alloc).value_or(alloc));
@@ -387,178 +433,17 @@ private:
    */
   std::unordered_map<Buffer, BufferAccessInfo, ObjectPtrHash, ObjectPtrEqual>
   GetBufferAccessInfo() {
-    std::unordered_map<Buffer, BufferAccessInfo, ObjectPtrHash, ObjectPtrEqual>
-        infos;
-    for (const auto &pair : pipeline_info_) {
-      const Block &block = pair.first;
-      int stage = pair.second.stage;
-      max_stage_ = std::max(max_stage_, stage);
-
-      for (const BufferRegion &write : block->writes) {
-        if (!infos.count(write->buffer)) {
-          infos.emplace(write->buffer, BufferAccessInfo{});
-        }
-        auto &info = infos.at(write->buffer);
-        if (info.def == -1) {
-          info.def = stage;
-        } else {
-          info.def = std::min(info.def, stage);
-        }
-      }
-
-      for (const BufferRegion &read : block->reads) {
-        if (!infos.count(read->buffer)) {
-          infos.emplace(read->buffer, BufferAccessInfo{});
-        }
-        auto &info = infos.at(read->buffer);
-        info.use = std::max(info.use, stage);
-      }
-    }
-    return infos;
+    return GetLegacyPipelineBufferAccessInfo(pipeline_info_, &max_stage_);
   }
-
-  /*!
-   * \brief Check whether two regions have intersections.
-   * \param region1 The first region.
-   * \param region2 The second region.
-   * \return Whether region1 and region2 have intersections.
-   */
-  bool MayConflict(Region region1, Region region2) {
-    ICHECK(region1.size() == region2.size());
-    for (size_t i = 0; i < region1.size(); i++) {
-      Range dim1 = region1[i];
-      Range dim2 = region2[i];
-      auto int_set1 = arith::IntSet::FromRange(dim1);
-      auto int_set2 = arith::IntSet::FromRange(dim2);
-      if (arith::Intersect({int_set1, int_set2}).IsNothing()) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  /*!
-   * \brief Compute the number of versions need to maintain for buffer accessed
-   * in the software pipeline.
-   *
-   * This method applies liveness analysis to the target buffer to compute the
-   * number of versions need to maintain during the software pipeline.
-   * Annotation `attr::double_buffer_scope` is handled here which provides a way
-   * to override the result of the analysis. Additional double buffering in the
-   * software pipeline can be useful to eliminate synchronizations in GPU
-   * devices.
-   *
-   * \param buffer The target buffer
-   * \param buffer_info The access information of the target buffer.
-   * \return The number of versions required for the target buffer.
-   */
   int ComputeBufferVersions(const Buffer &buffer,
-                            const BufferAccessInfo &buffer_info) {
-    if (buffer_info.def == -1) {
-      // Keep the original number of versions as buffers defined outside the
-      // software pipeline should not be mutated.
-      return 1;
-    }
-
-    // `use - def + 1` is a upper bound of the needed versions
-    // We optimize a few case where the number of versions can be smaller than
-    // the upper bound
-    int num_versions = buffer_info.use - buffer_info.def + 1;
-    if (num_versions >= 2) {
-      // A special case when `use - def + 1 == 2`. Double buffering is only
-      // needed in this case when these exists a reader block_i and a writer
-      // block_j such that order(block_i) < order(block_j) and stage(block_i) <
-      // stage(block_j) and the access regions of block_i and block_j overlap.
-      bool need_multi_version = false;
-      for (const auto &pair1 : pipeline_info_) {
-        const Block &writer_block = pair1.first;
-        const auto &writer_info = pair1.second;
-
-        auto it1 = std::find_if(writer_block->writes.begin(),
-                                writer_block->writes.end(),
-                                [&](const BufferRegion &buffer_region) {
-                                  return buffer_region->buffer.same_as(buffer);
-                                });
-        if (it1 == writer_block->writes.end()) {
-          continue;
-        }
-
-        for (const auto &pair2 : pipeline_info_) {
-          const Block &reader_block = pair2.first;
-          const auto &reader_info = pair2.second;
-          auto it2 = std::find_if(
-              reader_block->reads.begin(), reader_block->reads.end(),
-              [&](const BufferRegion &buffer_region) {
-                return buffer_region->buffer.same_as(buffer);
-              });
-          if (it2 == reader_block->reads.end()) {
-            continue;
-          }
-          if (writer_info.order < reader_info.order &&
-              writer_info.stage < reader_info.stage &&
-              MayConflict((*it1)->region, (*it2)->region)) {
-            need_multi_version = true;
-            break;
-          }
-        }
-      }
-      if (!need_multi_version) {
-        num_versions--;
-      }
-    }
-    return num_versions;
+                            const BufferAccessInfo &info) {
+    return ComputeLegacyPipelineBufferVersions(buffer, info, pipeline_info_);
+  }
+  Buffer RewriteAllocBuffer(const Buffer &buffer, int versions) {
+    return RewriteLegacyPipelineBuffer(buffer, versions);
   }
 
-  /*!
-   * \brief Rewrite buffer allocation to keep multiple versions of original
-   * buffer for pipelined accesses. \param buffer The buffer to be resized.
-   * \param num_versions The number of versions to keep.
-   * \return The resized buffer.
-   */
-  Buffer RewriteAllocBuffer(const Buffer &buffer, int num_versions) {
-    ObjectPtr<BufferNode> new_buffer = make_object<BufferNode>(*(buffer.get()));
-
-    // L1 buffers are physically zN-fractal, so one version of the buffer
-    // occupies ceil(N/C0) * roundUp16(M) * C0 elements -- possibly MORE than
-    // the logical M*N (e.g. zN(128, 200) spans 26624 vs 25600). Pad the
-    // per-version shape up to that extent before prepending the version axis,
-    // so the implicit version stride (product of the trailing dims) and the
-    // flattened Allocate size both use the physical extent. Without this,
-    // adjacent versions overlap: the previous version's fractal tail spills
-    // into the next version's base and a K-tail Mmad reads it (issue #1341,
-    // pipeline + T.Parallel variant). Only applies to constant-shape 2D
-    // shared.l1 buffers; everything else keeps the original shape.
-    const auto *ptr_type = buffer->data->type_annotation.as<PointerTypeNode>();
-    if (ptr_type != nullptr && ptr_type->storage_scope == "shared.l1" &&
-        buffer->shape.size() == 2 && buffer->dtype.bits() > 0 &&
-        buffer->dtype.lanes() == 1) {
-      const auto *rows = buffer->shape[0].as<IntImmNode>();
-      const auto *cols = buffer->shape[1].as<IntImmNode>();
-      if (rows != nullptr && cols != nullptr) {
-        const int64_t ele_per_c0 = 32 * 8 / buffer->dtype.bits();
-        auto round_up = [](int64_t v, int64_t m) {
-          return (v + m - 1) / m * m;
-        };
-        const int64_t padded_rows = round_up(rows->value, 16);
-        const int64_t padded_cols = round_up(cols->value, ele_per_c0);
-        const int64_t zn_extent = padded_rows * padded_cols;
-        const int64_t logical = static_cast<int64_t>(rows->value) * cols->value;
-        if (zn_extent > logical) {
-          new_buffer->shape =
-              Array<PrimExpr>{Integer(static_cast<int64_t>(padded_rows)),
-                              Integer(static_cast<int64_t>(padded_cols))};
-        }
-      }
-    }
-
-    new_buffer->shape.insert(new_buffer->shape.begin(), PrimExpr(num_versions));
-    if (new_buffer->strides.size()) {
-      ICHECK(new_buffer->strides.size() + 1 == new_buffer->shape.size());
-      PrimExpr stride_0 = new_buffer->strides[0] * new_buffer->shape[1];
-      new_buffer->strides.insert(new_buffer->strides.begin(), stride_0);
-    }
-    return Buffer(new_buffer);
-  }
+  Map<Var, Integer> actual_versions_;
 
   // Per-stage states that need to be tracked across pipeline prologue, body,
   // and epilogue.
@@ -888,6 +773,11 @@ public:
       fn_attr->dict.Set("buffer_versions", injector.collected_buffer_versions_);
     }
 
+    if (!injector.version_remaps_.empty()) {
+      PrimFuncNode *fptr = func.CopyOnWrite();
+      auto fn_attr = fptr->attrs.CopyOnWrite();
+      fn_attr->dict.Set(kAscendPipelineBufferRemap, injector.version_remaps_);
+    }
     return result;
   }
 
@@ -987,24 +877,15 @@ private:
     auto f_add_child = [&](const Stmt &child) {
       original_order.push_back(MakeBlock(child, buffer_data_to_buffer_));
     };
-    for (size_t i = 0; i < pipeline_body_seq->seq.size(); i++) {
-      const auto *nested_block_realize =
-          pipeline_body_seq->seq[i].as<BlockRealizeNode>();
-      if (nested_block_realize && is_one(nested_block_realize->predicate) &&
-          nested_block_realize->block->body->IsInstance<SeqStmtNode>()) {
-        const Block &nested_pipeline_block = nested_block_realize->block;
-        ICHECK(nested_pipeline_block->match_buffers
-                   .empty()); // match_buffer should have been lowered
-        for (const auto &buffer : nested_pipeline_block->alloc_buffers) {
-          pipeline_allocs.push_back(buffer);
-          buffer_data_to_buffer_.Set(buffer->data, buffer);
-        }
-        const auto *nested_seq = nested_pipeline_block->body.as<SeqStmtNode>();
-        for (size_t j = 0; j < nested_seq->seq.size(); j++) {
-          f_add_child(nested_seq->seq[j]);
-        }
+    auto groups =
+        CollectAscendPipelineGroups(GetRef<SeqStmt>(pipeline_body_seq));
+    for (const auto &element : groups) {
+      if (element.allocation.defined()) {
+        pipeline_allocs.push_back(element.allocation);
+        buffer_data_to_buffer_.Set(element.allocation->data,
+                                   element.allocation);
       } else {
-        f_add_child(pipeline_body_seq->seq[i]);
+        f_add_child(element.statement);
       }
     }
 
@@ -1054,6 +935,38 @@ private:
     for (const auto &[buffer, version] : buffer_versions) {
       collected_buffer_versions_.Set(buffer, version);
     }
+    if (auto identity = op->annotations.Get(kAscendPipelineLoopId)) {
+      for (const Buffer &logical : pipeline_allocs) {
+        int64_t versions =
+            Downcast<Integer>(buffer_versions.at(logical->data))->value;
+        Buffer physical = versions > 1
+                              ? RewriteLegacyPipelineBuffer(logical, versions)
+                              : logical;
+        int64_t stride = logical->dtype.bytes();
+        for (size_t dim = versions > 1 ? 1 : 0; dim < physical->shape.size();
+             ++dim) {
+          const auto *extent = physical->shape[dim].as<IntImmNode>();
+          ICHECK(extent && extent->value > 0 &&
+                 extent->value <= kAscendA2A3UBBudget / stride)
+              << "Constraint actual physical version exceeds UB budget";
+          stride *= extent->value;
+        }
+        ICHECK(stride % 32 == 0 && versions <= kAscendA2A3UBBudget / stride)
+            << "Constraint actual physical versions exceed UB budget/alignment";
+        version_remaps_.push_back(Map<String, ObjectRef>{
+            {"logical_data", logical->data},
+            {"physical_data", physical->data},
+            {"loop_id", identity.value()},
+            {"versions", Integer(versions)},
+            {"version_stride_bytes", IntImm(DataType::Int(64), stride)},
+            {"version_span_bytes", IntImm(DataType::Int(64), stride)},
+            {"total_bytes", IntImm(DataType::Int(64), stride * versions)},
+            {"logical_elem_offset", logical->elem_offset},
+            {"selector_origin", cast(DataType::Int(64), op->min)},
+            {"logical_shape", logical->shape},
+            {"physical_shape", physical->shape}});
+      }
+    }
 
     if (const auto *realize = op->body.as<BlockRealizeNode>()) {
       const auto &block = realize->block;
@@ -1099,6 +1012,7 @@ private:
   Map<Var, Buffer> buffer_data_to_buffer_;
   Optional<String> global_symbol_;
   Map<Var, PrimExpr> collected_buffer_versions_;
+  Array<ObjectRef> version_remaps_;
 };
 
 /*!
@@ -1108,6 +1022,12 @@ private:
 tir::transform::Pass InjectSoftwarePipeline() {
   using namespace tir::transform;
   auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {
+    ICHECK(
+        ctx->GetConfig<String>("tl.ascend_pipeline_planner", String("legacy"))
+                .value() != "auto" &&
+        !f->GetAttr<ObjectRef>("tl.ascend_auto_schedule").defined())
+        << "Auto schedule owns version materialization; old injector cannot "
+           "run";
     auto *fptr = f.CopyOnWrite();
     fptr->body = PipelineInjector::Inject(f);
     fptr->body = ConvertSSA(std::move(fptr->body));
