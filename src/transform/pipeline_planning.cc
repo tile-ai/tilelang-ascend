@@ -56,6 +56,16 @@ bool MayConflict(Region region1, Region region2) {
   return true;
 }
 
+/*! rief Whether a scalar expression only uses arithmetic and variables. */
+class PipelineIndexExprCheck : public ExprVisitor {
+public:
+  bool pure{true};
+
+private:
+  void VisitExpr_(const BufferLoadNode *) final { pure = false; }
+  void VisitExpr_(const CallNode *) final { pure = false; }
+};
+
 /*!
  * \brief Detect if a statement follows the global memory copy pattern:
  *        1. Contains exactly one buffer store operation
@@ -429,6 +439,25 @@ private:
     if (!num_stages_anno.defined())
       return StmtExprMutator::VisitStmt_(loop);
     int num_stages = num_stages_anno.as<IntImmNode>()->value;
+    // A loop with fewer iterations than the pipeline depth cannot reach the
+    // steady state. Lowering it anyway produces a prologue-only pipeline whose
+    // empty steady loop leaves some buffers untouched, and memory planning
+    // then assigns them no address. A serial loop is equivalent.
+    if (num_stages > 1) {
+      arith::Analyzer analyzer;
+      if (analyzer.CanProve(loop->extent <= num_stages - 1)) {
+        Map<String, ObjectRef> annotations;
+        for (const auto &[key, value] : loop->annotations) {
+          if (key != "num_stages") {
+            annotations.Set(key, value);
+          }
+        }
+        return For(loop->loop_var, loop->min, loop->extent, loop->kind,
+                   loop->body, loop->thread_binding, annotations);
+      }
+    }
+    bool body_was_let = false;
+    PrimExpr tail_predicate;
     Stmt pipeline_body{nullptr};
     if (const auto *realize = loop->body.as<BlockRealizeNode>()) {
       const auto &block = realize->block;
@@ -436,13 +465,31 @@ private:
         ICHECK(buffer->IsInstance<BufferNode>());
         buffer_data_to_buffer_.Set(buffer->data, buffer);
       }
-      if (const auto *seq_stmt = block->body.as<SeqStmtNode>()) {
-        pipeline_body = block->body;
-      } else if (const auto *if_then_else = block->body.as<IfThenElseNode>()) {
+      Stmt block_body = block->body;
+      // CrossCorePipeline wraps a partial last wave in a pure LetStmt that
+      // carries the tail predicate. Inline it so the predicate is visible.
+      if (block_body.as<LetStmtNode>() != nullptr) {
+        Map<Var, PrimExpr> subst;
+        while (const auto *binding = block_body.as<LetStmtNode>()) {
+          PipelineIndexExprCheck check;
+          check(binding->value);
+          ICHECK(check.pure)
+              << "Pipeline_Planning: the pipeline body starts with a LetStmt "
+                 "binding that is not a pure index expression";
+          subst.Set(binding->var, binding->value);
+          block_body = binding->body;
+        }
+        block_body = tir::Substitute(block_body, subst);
+        body_was_let = true;
+      }
+      if (const auto *seq_stmt = block_body.as<SeqStmtNode>()) {
+        pipeline_body = block_body;
+      } else if (const auto *if_then_else = block_body.as<IfThenElseNode>()) {
         // should assert else case is nullptr
         ICHECK(!if_then_else->else_case.defined())
             << "Pipeline_Planning: Can't handle the body of the loop because "
                "it is not a SeqStmt";
+        tail_predicate = if_then_else->condition;
         pipeline_body = if_then_else->then_case;
       } else {
         LOG(FATAL) << "Pipeline_Planning: Can't handle the body of the loop "
@@ -619,7 +666,23 @@ private:
       annotations.Set(tir::attr::software_pipeline_async_stages,
                       Array<Integer>{0});
 
-    return For(loop->loop_var, loop->min, loop->extent, loop->kind, loop->body,
+    Stmt loop_body = loop->body;
+    if (body_was_let) {
+      // Rebuild the body so the predicate and the stage annotations line up.
+      Stmt rebuilt = SeqStmt(pipeline_body_seq->seq);
+      if (tail_predicate.defined()) {
+        rebuilt = IfThenElse(tail_predicate, rebuilt);
+      }
+      if (const auto *realize = loop->body.as<BlockRealizeNode>()) {
+        Block block = realize->block;
+        block.CopyOnWrite()->body = rebuilt;
+        loop_body = BlockRealize(realize->iter_values, realize->predicate,
+                                 block, realize->span);
+      } else {
+        loop_body = rebuilt;
+      }
+    }
+    return For(loop->loop_var, loop->min, loop->extent, loop->kind, loop_body,
                loop->thread_binding, annotations);
   }
 
