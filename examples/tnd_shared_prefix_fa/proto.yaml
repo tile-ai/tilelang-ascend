@@ -1,0 +1,81 @@
+operator:
+  name: TndSharedPrefixFA
+  category: FlashAttention
+  formula: |
+    O = softmax(Q @ [K_shared; K_private]^T / sqrt(d)) @ [V_shared; V_private]
+    with GQA: h_kv = h_q // (q_head / kv_head)
+  attrs:
+    - name: q_head
+      type: Int
+      default: null
+      required: true
+    - name: kv_head
+      type: Int
+      default: null
+      required: true
+    - name: head_dim
+      type: Int
+      default: 64
+      required: true
+    - name: shared_prefix_len
+      type: Int
+      default: null
+      required: true
+    - name: max_private_kv_len
+      type: Int
+      default: null
+      required: true
+    - name: total_q
+      type: Int
+      default: null
+      required: true
+    - name: total_private_kv
+      type: Int
+      default: null
+      required: true
+    - name: total_q_blocks
+      type: Int
+      default: null
+      required: true
+    - name: block_M
+      type: Int
+      default: 128
+      required: false
+    - name: block_N
+      type: Int
+      default: 64
+      required: false
+    - name: causal_mask
+      type: Bool
+      default: false
+      required: false
+    - name: sm_scale
+      type: Float
+      default: null
+      required: false
+  inputs:
+    - name: Q
+      dtype: [float16, bfloat16]
+    - name: K_shared
+      dtype: [float16, bfloat16]
+    - name: V_shared
+      dtype: [float16, bfloat16]
+    - name: K_private
+      dtype: [float16, bfloat16]
+    - name: V_private
+      dtype: [float16, bfloat16]
+    - name: block_metadata
+      dtype: [int32]
+  outputs:
+    - name: Output
+      dtype: [float16, bfloat16]
+  schema: |
+    tnd_shared_prefix_fa(
+      Tensor Q, Tensor K_shared, Tensor V_shared,
+      Tensor K_private, Tensor V_private, Tensor block_metadata,
+      int q_head, int kv_head, int head_dim,
+      int shared_prefix_len, int max_private_kv_len,
+      int total_q, int total_private_kv, int total_q_blocks,
+      int block_M=128, int block_N=64,
+      bool causal_mask=false, float sm_scale=null
+    ) -> Tensor Output
