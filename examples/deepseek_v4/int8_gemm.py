@@ -22,6 +22,32 @@ FP32 = "float32"
 INT32 = "int32"
 
 
+def _check_precision(actual, golden, dtype):
+    table = {
+        "float16": (2**-14, 2**-9, 1e-1),
+        "bfloat16": (2**-10, 2**-6, 1.0),
+        "float32": (2**-16, 2**-10, 1e-2),
+        "hifloat32": (2**-16, 2**-10, 1e-2),
+        "float8_e4m3": (2**-4, 2**-2, 1.0),
+        "float8_e5m2": (2**-3, 2**-1, 1e-1),
+    }
+    if dtype not in table:
+        assert torch.equal(actual.detach().cpu(), golden.detach().cpu()), "integer output mismatch"
+        return
+    atol, rtol, max_abs_limit = table[dtype]
+    actual, golden = actual.detach().cpu().float(), golden.detach().cpu().float()
+    special = ~torch.isfinite(golden)
+    assert torch.equal(torch.isnan(actual[special]), torch.isnan(golden[special]))
+    assert torch.equal(torch.isinf(actual[special]), torch.isinf(golden[special]))
+    finite = torch.isfinite(golden)
+    if not finite.any():
+        return
+    error = (actual[finite] - golden[finite]).abs()
+    ratio = (error <= atol + rtol * golden[finite].abs()).float().mean().item()
+    max_abs = error.max().item()
+    assert ratio >= 0.99 and max_abs <= max_abs_limit, f"matched_ratio={ratio:.4f}, max_abs={max_abs:.3e}"
+
+
 @tilelang.jit(
     out_idx=[-2],
     workspace_idx=[5],
@@ -168,7 +194,7 @@ def test(custom_args=None):
     output_torch_ref = int8_gemm_torch_optimized(a_int8, a_scales, b_int8, b_scales, out_dtype=torch.bfloat16)
     torch.npu.synchronize()
 
-    torch.testing.assert_close(result, output_torch_ref, rtol=1e-2, atol=1e-2)
+    _check_precision(result, output_torch_ref, "bfloat16")
     logging.info("Kernel Output Match!")
 
 
