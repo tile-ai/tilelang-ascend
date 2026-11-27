@@ -23,6 +23,7 @@
 - [ ] 新增算子在默认场景下通过：未显式指定 `target="ascendc"`，PTO 后端已完成编译、运行和精度验证；如不适用，已说明原因。
 - [ ] 适用时 AscendC 与 PTO 双后端均已通过；不支持的 dtype/shape/后端行为已显式说明，没有静默跳过。
 - [ ] 未影响现有算子用例、公共接口和已有后端行为。
+- [ ] 新增或迁移的算子测试在 `test_*.py` 中提供 `test_*` 入口，完成必要初始化，并用断言报告精度失败。
 - [ ] `examples/` 下的算子有性能要求和代表性 shape；历史遗留且暂未达标的实现已迁移到 `examples_experiment/`，或有维护者批准的豁免。
 - [ ] 有 AscendC 参考实现时，TileLang 性能达到 AscendC 的 50% 以上；如有 GPU 基线，候选耗时不超过其 2 倍。
 - [ ] 无 AscendC 参考实现时，已检查 [性能反模式清单](../.agents/skills/tilelang-performance-best-practices/references/performance-antipatterns.md)，并记录保留项及原因。
@@ -42,7 +43,7 @@
 - [ ] 算子及对应测试用例已在本地多轮重复验证，未发现概率性失败；如出现偶发问题，已定位修复或在“其他补充”中说明。
 - [ ] PR 阶段只保留核心冒烟/L0 与关键回归用例；核心回归不得用 marker 隐藏。
 - [ ] 非核心扩展组合统一标记 `low_priority`，由每日/全量任务使用 `-m "not ci_skip"` 执行；`ci_skip` 仅用于已有 Issue 的已知不稳定或硬件限制。
-- [ ] 已避免无意义泛化、重复编译和重复执行；新增/迁移测试已登记 `ci/operator_test_manifest.yaml`，legacy runner 与 pytest 不重复。
+- [ ] 已避免无意义泛化、重复编译和重复执行；新增/迁移测试已核对并按需补齐 `ci/operator_test_manifest.yaml` 的源文件与测试文件映射，legacy runner 与 pytest 不重复，并已按 CI 配置逐文件验证收集及 NPU 运行，附命令、结果和耗时。
 - [ ] 如未新增或迁移算子测试，已注明 manifest 不适用及原因。
 - [ ] 已更新对应文档，明确 API、后端、dtype、shape 或硬件能力边界；无文档变更时已说明原因。
 
