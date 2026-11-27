@@ -35,6 +35,17 @@ Files must be named `tvm_*.patch` to be picked up.
   longer uses `symsize` here, but that code arrives only with the FFI migration
   and cannot be cherry-picked into the pinned commit.
 
+- **`tvm_diagnostic_error_passthrough.patch`** — Propagates an existing
+  `DiagnosticError` at the shared `Parser.report_error` boundary instead of
+  rendering it again. Macro expression errors already emitted their diagnostic;
+  the pinned TVM clears the renderer after emission, so a second render can
+  segfault. This is a minimal adaptation of the Python guard in Apache TVM
+  [PR #17373](https://github.com/apache/tvm/pull/17373), commit
+  `ff8e41644fde86714d6dbf021d57baebe3a1ec1a`, not a full backport. Existing
+  exception wrapping and native renderer behavior are unchanged. No FFI update
+  or native rebuild is required for this Python-only guard. The bounded parser
+  regression is `testing/python/language/test_tilelang_ascend_language_macro_diagnostics.py`.
+
 ## Regenerating a patch after a submodule bump
 
     cd 3rdparty/tvm

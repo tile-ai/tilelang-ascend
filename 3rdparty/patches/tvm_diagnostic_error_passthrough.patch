@@ -1,0 +1,13 @@
+--- a/python/tvm/script/parser/core/parser.py
++++ b/python/tvm/script/parser/core/parser.py
+@@ -527,6 +527,10 @@
+         err: Union[Exception, str]
+             The error to report.
+         """
++        # Already-rendered errors must not enter DiagnosticContext again.
++        if isinstance(err, DiagnosticError):
++            raise err
++
+         # Only take the last line of the error message
+         if isinstance(err, TVMError):
+             msg = list(filter(None, str(err).split("\n")))[-1]
