@@ -5,7 +5,12 @@
 
 #include "catlass/detail/tag_to_layout.hpp"
 #include "catlass/gemm/block/block_swizzle.hpp"
-#include "catlass/gemm/tile/tile_copy.hpp"
+#include "catlass/gemm/tile/atlasa2/copy_gm_to_l1.hpp"
+#include "catlass/gemm/tile/atlasa2/copy_gm_to_ub.hpp"
+#include "catlass/gemm/tile/atlasa2/copy_l0c_to_gm.hpp"
+#include "catlass/gemm/tile/atlasa2/copy_l1_to_l0a.hpp"
+#include "catlass/gemm/tile/atlasa2/copy_l1_to_l0b.hpp"
+#include "catlass/gemm/tile/atlasa2/copy_ub_to_gm.hpp"
 #include "catlass/layout/layout.hpp"
 
 #if defined(__has_include)
@@ -64,7 +69,7 @@ template <typename T> CATLASS_DEVICE constexpr uint32_t EleNumPerC0() {
 
 // Elements of T that fit in one 512-byte fractal (1024 for int4b_t).
 template <typename T> CATLASS_DEVICE constexpr uint32_t EleNumPerFractal() {
-  return BYTE_PER_FRCATLASSAL * 8 / ElementSizeBits<T>();
+  return Catlass::BYTE_PER_FRACTAL * 8 / ElementSizeBits<T>();
 }
 
 // Exact byte footprint of n elements of T. n must cover whole bytes for
@@ -109,7 +114,8 @@ copy_gm_to_l1(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
   // sub-byte dtypes (int4b_t: sizeof == 1 but 4 bits per element, see
   // ElementSizeBits).
   constexpr uint32_t ELE_PER_C0 = EleNumPerC0<T>();
-  constexpr uint32_t C0_PER_FRACTAL = Catlass::C0_NUM_PER_FRCATLASSAL;
+  constexpr uint32_t C0_PER_FRACTAL = Catlass::C0_NUM_PER_FRACTAL;
+
   const uint32_t paddedRows =
       (dstM + C0_PER_FRACTAL - 1) / C0_PER_FRACTAL * C0_PER_FRACTAL;
   const uint32_t fractalExtent =
@@ -157,15 +163,15 @@ copy_gm_to_l1(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
     }
     return;
   }
-  auto layout = MakeLayoutFromTag(LayoutGM{tailM, realSrcN});
-  auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(tailM, tailN));
-  auto src = tla::MakeTensor<decltype(srcTensor), decltype(src_LAYOUT),
-                             AscendC::TPosition::GM>(srcTensor, src_LAYOUT);
+  auto src_full_layout = tla::MakeLayout<T, LayoutGM>(tailM, realSrcN);
+  auto src_full =
+      tla::MakeTensor(srcTensor, src_full_layout, Arch::PositionGM{});
+  auto src =
+      tla::GetTile(src_full, tla::MakeCoord(tla::Int<0>{}, tla::Int<0>{}),
+                   tla::MakeShape(tailM, tailN));
 
-  using LayoutL1_ = Catlass::detail::TagToLayout_t<T, LayoutL1>;
-  constexpr auto layoutInL1 = tla::MakeLayout<T, LayoutL1_>(dstM, dstN);
-  auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutInL1),
-                             AscendC::TPosition::A1>(dstTensor, layoutInL1);
+  constexpr auto layoutInL1 = tla::MakeLayout<T, LayoutL1>(dstM, dstN);
+  auto dst = tla::MakeTensor(dstTensor, layoutInL1, Arch::PositionL1{});
 
   TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
   tileCopier(dst, src);
@@ -206,20 +212,18 @@ CATLASS_DEVICE void copy_l1_to_l0a(LocalTensor<T> dstTensor,
     }
     return;
   }
-  using LayoutL1_ =
-      std::conditional_t<transpose,
-                         Catlass::detail::TagToLayout_t<T, LayoutL1T>,
-                         Catlass::detail::TagToLayout_t<T, LayoutL1>>;
-  constexpr auto layout = transpose ? tla::MakeLayout<T, LayoutL1_>(srcN, srcM)
-                                    : tla::MakeLayout<T, LayoutL1_>(srcM, srcN);
-  auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(dstM, dstN));
-  auto src = MakeTensor<decltype(srcTensor), decltype(src_LAYOUT),
-                        AscendC::TPosition::A1>(srcTensor, src_LAYOUT);
+  using LayoutL1Sel = std::conditional_t<transpose, LayoutL1T, LayoutL1>;
+  constexpr auto src_layout = transpose
+                                  ? tla::MakeLayout<T, LayoutL1Sel>(srcN, srcM)
+                                  : tla::MakeLayout<T, LayoutL1Sel>(srcM, srcN);
+  auto src_full = tla::MakeTensor(srcTensor, src_layout, Arch::PositionL1{});
+  auto src =
+      tla::GetTile(src_full, tla::MakeCoord(tla::Int<0>{}, tla::Int<0>{}),
+                   tla::MakeShape(dstM, dstN));
 
-  using LayoutL0A_ = Catlass::detail::TagToLayout_t<T, LayoutL0A>;
-  auto layoutAInL0 = tla::MakeLayout<T, LayoutL0A_>(dstM, dstN);
-  auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutAInL0),
-                             AscendC::TPosition::A2>(dstTensor, layoutAInL0);
+  auto layoutAInL0 = tla::MakeLayout<T, LayoutL0A>(dstM, dstN);
+  auto dst = tla::MakeTensor(dstTensor, layoutAInL0, Arch::PositionL0A{});
+
   TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
   tileCopier(dst, src);
 }
@@ -268,20 +272,17 @@ CATLASS_DEVICE void copy_l1_to_l0b(LocalTensor<T> dstTensor,
     }
     return;
   }
-  using LayoutL1_ =
-      std::conditional_t<transpose,
-                         Catlass::detail::TagToLayout_t<T, LayoutL1T>,
-                         Catlass::detail::TagToLayout_t<T, LayoutL1>>;
-  constexpr auto layout = transpose ? tla::MakeLayout<T, LayoutL1_>(srcN, srcM)
-                                    : tla::MakeLayout<T, LayoutL1_>(srcM, srcN);
-  auto src_LAYOUT = MakeLayoutTile(layout, tla::MakeShape(dstM, dstN));
-  auto src = MakeTensor<decltype(srcTensor), decltype(src_LAYOUT),
-                        AscendC::TPosition::A1>(srcTensor, src_LAYOUT);
+  using LayoutL1Sel = std::conditional_t<transpose, LayoutL1T, LayoutL1>;
+  constexpr auto src_layout = transpose
+                                  ? tla::MakeLayout<T, LayoutL1Sel>(srcN, srcM)
+                                  : tla::MakeLayout<T, LayoutL1Sel>(srcM, srcN);
+  auto src_full = tla::MakeTensor(srcTensor, src_layout, Arch::PositionL1{});
+  auto src =
+      tla::GetTile(src_full, tla::MakeCoord(tla::Int<0>{}, tla::Int<0>{}),
+                   tla::MakeShape(dstM, dstN));
 
-  using LayoutL0B_ = Catlass::detail::TagToLayout_t<T, LayoutL0B>;
-  auto layoutBInL0 = tla::MakeLayout<T, LayoutL0B_>(dstM, dstN);
-  auto dst = tla::MakeTensor<decltype(dstTensor), decltype(layoutBInL0),
-                             AscendC::TPosition::B2>(dstTensor, layoutBInL0);
+  auto layoutBInL0 = tla::MakeLayout<T, LayoutL0B>(dstM, dstN);
+  auto dst = tla::MakeTensor(dstTensor, layoutBInL0, Arch::PositionL0B{});
 
   TileCopyTla<ArchTag, decltype(src), decltype(dst)> tileCopier;
   tileCopier(dst, src);
@@ -331,15 +332,13 @@ copy_l0c_to_gm(GlobalTensor<T2> dstTensor, LocalTensor<T1> srcTensor,
   uint32_t tailM = realTailM == 0 ? srcM : realTailM;
   uint32_t tailN = realTailN == 0 ? srcN : realTailN;
   auto layoutInL0C = tla::MakeLayoutL0C(srcM, srcN);
-  auto src = tla::MakeTensor<decltype(srcTensor), decltype(layoutInL0C),
-                             AscendC::TPosition::CO1>(srcTensor, layoutInL0C);
-  LayoutGM gm{tailM, realDstN};
-  auto layout = MakeLayoutFromTag(gm);
-  auto dTensor = MakeTensor(dstTensor, layout, Arch::PositionGM{});
-  auto layout_ = dTensor.layout();
-  auto dst_LAYOUT = MakeLayoutTile(layout_, tla::MakeShape(tailM, tailN));
-  auto dst = MakeTensor<decltype(dstTensor), decltype(dst_LAYOUT),
-                        AscendC::TPosition::GM>(dstTensor, dst_LAYOUT);
+  auto src = tla::MakeTensor(srcTensor, layoutInL0C, Arch::PositionL0C{});
+  auto dst_full_layout = tla::MakeLayout<T2, LayoutGM>(tailM, realDstN);
+  auto dst_full =
+      tla::MakeTensor(dstTensor, dst_full_layout, Arch::PositionGM{});
+  auto dst =
+      tla::GetTile(dst_full, tla::MakeCoord(tla::Int<0>{}, tla::Int<0>{}),
+                   tla::MakeShape(tailM, tailN));
 
   CopyL0CToGmTla<ArchTag, decltype(src), decltype(dst),
                  ScaleGranularity::NO_QUANT, enRelu>
@@ -368,6 +367,16 @@ CATLASS_DEVICE auto thread_block_swizzle(uint64_t pid) {
   // return coord;
   return coord.m() * cols + coord.n();
 }
+
+// DataCopyExtParams.blockCount (the number of DMA bursts) is a 12-bit
+// hardware field: at most 4095 rows fit in a single DataCopyPad (CANN
+// parameter constraint). A folded >2D region flattens its leading dims into
+// the row count (e.g. a (64, 64, 8) float32 block -- only 128 KiB of UB --
+// folds to 4096 rows), and plain 2D tiles can be taller than that too, so
+// the transfer is split into batches of at most MAX_DMA_ROWS with the
+// src/dst tensors advanced by the per-batch element offset (rows * row
+// pitch) between batches.
+constexpr uint32_t MAX_DMA_ROWS = 4095;
 
 template <typename T, uint32_t dstN, uint32_t dstM = 1>
 CATLASS_DEVICE void
@@ -398,12 +407,39 @@ copy_gm_to_ub(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
       WaitFlag<HardEvent::V_MTE2>(0);
     }
   }
-  AscendC::DataCopyExtParams dataCopyParams(
-      maskShapeM, EleNumToBytes<T>(maskShapeN),
-      EleNumToBytes<T>(realSrcN - maskShapeN),
-      EleNumToBytes<T>(dstN - maskShapeN) / 32, 0);
+  if (maskShapeM == 0 || maskShapeN == 0) {
+    return;
+  }
   AscendC::DataCopyPadExtParams<T> padParams(isPad, 0, rightPadding, padValue);
-  AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams, padParams);
+  // Batched DMA (see MAX_DMA_ROWS): the pad above covers the whole tile
+  // once, then each batch copies one row chunk. The UB side advances by
+  // the physical 32B row pitch, the GM side by realSrcN. Like the classic
+  // single-call form this stays one bare DataCopyPad per iteration - no
+  // sibling scalar stores, no alternative copy paths - so the bisheng
+  // cross-pipe sync constraint documented in copy_ub_to_gm below is
+  // respected; the batch loop is device-validated by the 3d-flatten
+  // round-trip suite. Byte math uses EleNumToBytes<T>() (bit-width exact)
+  // so sub-byte dtypes count real bytes.
+  const uint32_t blockLen = EleNumToBytes<T>(maskShapeN);
+  const uint32_t dstStride = EleNumToBytes<T>(dstN - maskShapeN) / 32;
+  // MTE2 places each UB row in whole 32B blocks. The next batch must start
+  // after those physical slots, including the gap represented by dstStride.
+  const uint64_t dstRowElements =
+      ((static_cast<uint64_t>(blockLen) + 31) / 32 + dstStride) *
+      EleNumPerC0<T>();
+  uint32_t remaining = maskShapeM;
+  uint64_t dstOffset = 0;
+  uint64_t srcOffset = 0;
+  while (remaining > 0) {
+    uint32_t rows = remaining > MAX_DMA_ROWS ? MAX_DMA_ROWS : remaining;
+    AscendC::DataCopyExtParams dataCopyParams(
+        rows, blockLen, EleNumToBytes<T>(realSrcN - maskShapeN), dstStride, 0);
+    AscendC::DataCopyPad(dstTensor[dstOffset], srcTensor[srcOffset],
+                         dataCopyParams, padParams);
+    dstOffset += static_cast<uint64_t>(rows) * dstRowElements;
+    srcOffset += static_cast<uint64_t>(rows) * realSrcN;
+    remaining -= rows;
+  }
 }
 
 template <typename T, uint32_t srcN, uint32_t srcM = 1>
@@ -434,6 +470,16 @@ copy_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
   // (int4: two elements per byte) count real bytes instead of sizeof(T)
   // (which is 1 for the packed int4b_t); for all non sub-byte dtypes the
   // values are identical to sizeof(T) math.
+  //
+  // Batching (MAX_DMA_ROWS): blockCount is a 12-bit field, so a multi-row
+  // copy taller than 4095 rows must be split into batches. The batch loop
+  // below repeats the SAME bare DataCopyPad - no sibling scalar stores, no
+  // alternative copy paths, only pointer/counter arithmetic between
+  // iterations - and keeps the flat-vs-multi-burst choice as parameter
+  // selection at the single call site (the straight-line rule above); the
+  // whole-copy flat form from #1795 is preserved verbatim (one burst, the
+  // loop exits after a single iteration). The loop shape is device-validated
+  // by the 3d-flatten round-trip suite (2-iteration batches on dav-c220).
   constexpr uint32_t kBlockBytes = 32;
   const uint32_t blockLen = EleNumToBytes<T>(maskShapeN);
   const uint32_t srcPitch = EleNumToBytes<T>(srcN);
@@ -459,20 +505,38 @@ copy_ub_to_gm(GlobalTensor<T> dstTensor, LocalTensor<T> srcTensor,
     }
   }
   // Flat form (both sides packed): one burst covers the whole slab.
-  // Everything else keeps the classic multi-burst.
-  uint32_t blockCount = maskShapeM;
-  uint32_t burstLen = blockLen;
-  uint32_t srcStride = (srcPitch - blockLen) / kBlockBytes;
-  uint32_t dstStride = dstPitch - blockLen;
-  if (flat) {
-    blockCount = 1;
-    burstLen = static_cast<uint32_t>(total);
-    srcStride = 0;
-    dstStride = 0;
+  // Everything else keeps the classic multi-burst, batched to at most
+  // MAX_DMA_ROWS rows per DataCopyPad.
+  uint32_t remaining = maskShapeM;
+  uint32_t srcOffset = 0;
+  uint64_t dstOffset = 0;
+  while (remaining > 0) {
+    uint32_t rows;
+    uint32_t blockCount;
+    uint32_t burstLen;
+    uint32_t srcStride;
+    uint32_t dstStride;
+    if (flat) {
+      rows = maskShapeM;
+      blockCount = 1;
+      burstLen = static_cast<uint32_t>(total);
+      srcStride = 0;
+      dstStride = 0;
+    } else {
+      rows = remaining > MAX_DMA_ROWS ? MAX_DMA_ROWS : remaining;
+      blockCount = rows;
+      burstLen = blockLen;
+      srcStride = (srcPitch - blockLen) / kBlockBytes;
+      dstStride = dstPitch - blockLen;
+    }
+    AscendC::DataCopyExtParams dataCopyParams(blockCount, burstLen, srcStride,
+                                              dstStride, 0);
+    AscendC::DataCopyPad(dstTensor[dstOffset], srcTensor[srcOffset],
+                         dataCopyParams);
+    srcOffset += rows * srcN;
+    dstOffset += static_cast<uint64_t>(rows) * realdstN;
+    remaining -= rows;
   }
-  AscendC::DataCopyExtParams dataCopyParams(blockCount, burstLen, srcStride,
-                                            dstStride, 0);
-  AscendC::DataCopyPad(dstTensor, srcTensor, dataCopyParams);
 }
 
 template <typename T, uint32_t srcN, uint32_t srcM = 1>
@@ -496,6 +560,53 @@ atomic_add_l0c_to_gm(GlobalTensor<T2> dstTensor, LocalTensor<T1> srcTensor,
   copy_l0c_to_gm<T1, T2, LayoutGM, srcM, srcN, enRelu>(
       dstTensor, srcTensor, realDstN, realTailM, realTailN);
   disable_dma_atomic_compat();
+}
+
+// Repack a computed compact column into the 32-byte row slots required by
+// MTE3. The lowering brackets this helper and the DMA with full pipe barriers.
+// A vector write is intentional: scalar SetValue is not a reliable producer
+// for the following MTE3 transfer (see tail_broadcast below).
+template <typename T>
+CATLASS_DEVICE void copy_ub_column_pack(LocalTensor<T> dstTensor,
+                                        LocalTensor<T> srcTensor,
+                                        uint32_t rows) {
+  static_assert(IsDuplicateSupported_v<T>,
+                "Compact column packing requires a 16-bit or 32-bit type");
+  // Preserve floating-point payloads, signed zero, and integer bits exactly.
+  // In particular, use integer Duplicate for bfloat16 rather than relying on
+  // a dtype-specific vector Duplicate specialization.
+  using Bits = std::conditional_t<sizeof(T) == 2, uint16_t, uint32_t>;
+  auto dstBits = dstTensor.template ReinterpretCast<Bits>();
+  auto srcBits = srcTensor.template ReinterpretCast<Bits>();
+  constexpr uint32_t rowElements = 32 / sizeof(Bits);
+  for (uint32_t row = 0; row < rows; ++row) {
+    AscendC::Duplicate(dstBits[row * rowElements], srcBits.GetValue(row), 1);
+  }
+}
+
+// A GM column arrives in 32B slots. Restore the compact 1D logical layout
+// before exposing it to computation or another copy. Use a one-lane vector
+// mask at an aligned block base so an unaligned destination slice preserves
+// every neighbouring lane, and produces vector-visible writes like pack.
+template <typename T>
+CATLASS_DEVICE void copy_ub_column_unpack(LocalTensor<T> dstTensor,
+                                          LocalTensor<T> srcTensor,
+                                          uint32_t rows, uint32_t dstOffset) {
+  static_assert(IsDuplicateSupported_v<T>,
+                "Compact column unpacking requires a 16-bit or 32-bit type");
+  using Bits = std::conditional_t<sizeof(T) == 2, uint16_t, uint32_t>;
+  auto dstBits = dstTensor.template ReinterpretCast<Bits>();
+  auto srcBits = srcTensor.template ReinterpretCast<Bits>();
+  constexpr uint32_t rowElements = 32 / sizeof(Bits);
+  for (uint32_t row = 0; row < rows; ++row) {
+    const uint32_t index = dstOffset + row;
+    const uint32_t lane = index % rowElements;
+    uint64_t mask[2] = {1ULL << lane, 0};
+    AscendC::Duplicate(dstBits[index - lane],
+                       srcBits.GetValue(row * rowElements), mask,
+                       static_cast<uint8_t>(1), static_cast<uint16_t>(1),
+                       static_cast<uint8_t>(0));
+  }
 }
 
 template <typename T1, typename T2, uint32_t len>
@@ -2251,6 +2362,30 @@ CATLASS_DEVICE void transpose(LocalTensor<T> const &dst,
     for (uint32_t i = 0; i < FullM; i++)
       for (uint32_t j = 0; j < FullN; j++)
         dst.SetValue(j * FullM + i, src.GetValue(i * FullN + j));
+  }
+}
+
+// Software per-element left shift for the tensor shift-amount form of
+// T.tile.bitwise_lshift on the AscendC backend (A2/A3 has no native tensor
+// ShiftLeft). Each operand is a UB tile addressed with its physical row
+// stride; the scalar shift amount is reinterpreted through uint64_t so a
+// signed src0 receives a fixed-width logical left shift (avoiding C++ signed
+// left-shift UB and the value-preserving integer promotions of narrower
+// operands).
+template <typename T>
+CATLASS_DEVICE void
+tile_bitwise_lshift_tensor(LocalTensor<T> dst, LocalTensor<T> src0,
+                           LocalTensor<T> shift, uint32_t rows, uint32_t cols,
+                           uint32_t dst_stride, uint32_t src0_stride,
+                           uint32_t shift_stride) {
+  for (uint32_t r = 0; r < rows; ++r) {
+    for (uint32_t c = 0; c < cols; ++c) {
+      uint64_t src_bits =
+          static_cast<uint64_t>(src0.GetValue(r * src0_stride + c));
+      uint64_t shift_bits =
+          static_cast<uint64_t>(shift.GetValue(r * shift_stride + c));
+      dst.SetValue(r * dst_stride + c, static_cast<T>(src_bits << shift_bits));
+    }
   }
 }
 

@@ -9,6 +9,7 @@
 
 #include "ascend.h"
 
+#include <algorithm>
 #include <sstream>
 #include <tuple>
 #include <vector>
@@ -203,6 +204,155 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     return indices;
   };
 
+  auto compute_valid_extent = [](PrimExpr min_val, PrimExpr extent,
+                                 PrimExpr shape) -> PrimExpr {
+    PrimExpr remaining = shape - min_val;
+    if (remaining.dtype().lanes() > 1) {
+      return extent;
+    }
+    return Select(remaining >= extent, extent,
+                  Select(remaining > 0, remaining, 0));
+  };
+
+  auto find_active_dim_indices =
+      [](const Array<PrimExpr> &extents) -> std::vector<int> {
+    std::vector<int> active_indices;
+    int size = static_cast<int>(extents.size());
+
+    // Traverse from 0 to size-1, find dimensions where extent != 1
+    for (int i = 0; i < size; ++i) {
+      if (auto *int_imm = extents[i].as<IntImmNode>()) {
+        if (int_imm->value != 1) {
+          active_indices.push_back(i);
+        }
+      } else {
+        active_indices.push_back(i);
+      }
+    }
+
+    // The last dimension must always be included in the result
+    if (size >= 1 &&
+        (active_indices.empty() || active_indices.back() != size - 1)) {
+      active_indices.push_back(size - 1);
+    }
+
+    // Special: If extents.size() >= 2 and active_indices.size() == 1,
+    // insert size-2 at the second-to-last position
+    if (size >= 2 && active_indices.size() == 1) {
+      active_indices.insert(active_indices.begin(), size - 2);
+    }
+
+    return active_indices;
+  };
+
+  // A region with more than two active dims (e.g. a 3D block copy) must be
+  // flattened into the 2D (rows x cols) DMA rectangle the copy helpers
+  // model. Without the fold the leading dims were silently dropped and the
+  // DMA copied only the last-2-dims rectangle, leaving most of the
+  // destination uninitialized.
+  //
+  // The flatten is guarded by conditions on the intermediate (row) dims:
+  //   1. Every active row dim except the outermost fully AND legally spans
+  //      its group (dims up to and including the next active dim): its
+  //      extent equals the group span AND its range starts at the group
+  //      base (min == 0), so consecutive row starts keep a constant pitch
+  //      and the flattened plane is contiguous. The min check matters for
+  //      out-of-bounds regions whose extent still equals the full span
+  //      (e.g. A[0:16, 1:5, :] over a size-4 dim): extent-only checking
+  //      would fold that into a single contiguous DMA whose bursts walk
+  //      across the neighboring groups and past the end of the buffer.
+  //   2. On the UB side that pitch must equal the last dim. The UB burst
+  //      pitch is not a free parameter: it is derived from the dstN/srcN
+  //      template, which is built from the last-dim extent/shape. A
+  //      singleton dim with shape > 1 between the last row dim and the col
+  //      dim (e.g. shape (T, 4, 2, 8) with region [16, 4, 1, 8]: physical
+  //      row pitch 2*8 = 16, not 8) therefore makes the fold
+  //      unrepresentable -- the DMA would write rows at the wrong offsets.
+  //      The GM side needs no such check: its pitch rides the free strideN
+  //      argument, which already folds those singleton shapes.
+  struct FoldedRegion {
+    bool foldable = false;
+    // Row count with the outermost dim tail-clamped (runtime expr).
+    PrimExpr valid_rows;
+    // Full (unclamped) row count of the region, for compile-time templates.
+    PrimExpr full_rows;
+  };
+
+  auto fold_leading_row_dims = [&](const Buffer &buf,
+                                   const Array<Range> &ranges,
+                                   const Array<PrimExpr> &extents,
+                                   const std::vector<int> &active,
+                                   FoldedRegion &res) {
+    if (active.size() < 3) {
+      return;
+    }
+    // Active row dims: active[0 .. m-2] (outermost first), col:
+    // active[m-1]. A uniform burst pitch requires, for each j in
+    // [0, m-3]:
+    //   extents[active[j+1]] == prod(buf->shape[active[j]+1 ..
+    //   active[j+1]])
+    // (the intermediate active dim fully spans its group), and every
+    // dim inside the group must start at its base (min == 0) so the
+    // folded plane is the contiguous group span and not a shifted
+    // window over it.
+    for (size_t j = 0; j + 2 < active.size(); ++j) {
+      int lead = active[j];
+      int mid = active[j + 1];
+      PrimExpr group = Integer(1);
+      for (int q = lead + 1; q <= mid; ++q) {
+        group = group * buf->shape[q];
+      }
+      if (!analyzer->CanProveEqual(extents[mid], group)) {
+        return;
+      }
+      for (int q = lead + 1; q <= mid; ++q) {
+        if (!analyzer->CanProveEqual(ranges[q]->min, 0)) {
+          return;
+        }
+      }
+    }
+    // Condition 2 above: on the UB side, the dims between the last row
+    // dim and the col dim must all be physically trivial (shape 1) --
+    // they sit inside the burst pitch, which the last-dim-bound
+    // template cannot widen.
+    if (buf.scope() == "shared.ub") {
+      PrimExpr tail_gap = Integer(1);
+      for (int q = active[active.size() - 2] + 1; q < active.back(); ++q) {
+        tail_gap = tail_gap * buf->shape[q];
+      }
+      if (!analyzer->CanProveEqual(tail_gap, 1)) {
+        return;
+      }
+    }
+    // The outermost dim may be a tail block (clamp it); the intermediate
+    // dims are full, so their extents fold in as-is.
+    // Keep the tail clamp explicit: the memory planner can prove its
+    // finite bound even after the inner row dimensions are multiplied in.
+    PrimExpr remaining = buf->shape[active[0]] - ranges[active[0]]->min;
+    PrimExpr rows = Min(Max(remaining, Integer(0)), ranges[active[0]]->extent);
+    PrimExpr full_rows = ranges[active[0]]->extent;
+    for (size_t j = 1; j + 1 < active.size(); ++j) {
+      rows = rows * extents[active[j]];
+      full_rows = full_rows * extents[active[j]];
+    }
+    res.foldable = true;
+    res.valid_rows = analyzer->Simplify(rows);
+    res.full_rows = analyzer->Simplify(full_rows);
+  };
+
+  std::vector<int> src_active = find_active_dim_indices(src_extents);
+  std::vector<int> dst_active = find_active_dim_indices(dst_extents);
+  FoldedRegion src_fold, dst_fold;
+  fold_leading_row_dims(src, src_range, src_extents, src_active, src_fold);
+  fold_leading_row_dims(dst, dst_range, dst_extents, dst_active, dst_fold);
+  // The fold commits the DMA to the flattened row count on BOTH sides, so
+  // it is all-or-nothing: only fold when each side's region folds (the GM
+  // side supplies uniformly pitched rows via strideN; the UB side must
+  // additionally be tail-gap free). A mismatch -- e.g. a clean GM region
+  // landing in a differently shaped UB buffer -- falls back to the
+  // unfolded 2D form instead of half-folding.
+  bool fold_copy = src_fold.foldable && dst_fold.foldable;
+
   struct CopyConfig {
     bool needs_strideN = false;
     bool l0c2gm = false;
@@ -272,7 +422,16 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
       }
       ss << gm2ub_tmpl_n;
       if (dst->shape.size() > 1) {
-        ss << ", " << compute_blocklen(dst, dst_extents);
+        // For a folded >2D region the DMA tile is the flattened (rows, cols)
+        // plane, so the template row count (the Duplicate pad size and the
+        // default maskShapeM) is the folded row product, not the buffer's
+        // second-to-last dim. Fall back to the 2D blocklen when the product
+        // is not a compile-time constant.
+        if (fold_copy && dst_fold.full_rows->IsInstance<IntImmNode>()) {
+          ss << ", " << dst_fold.full_rows;
+        } else {
+          ss << ", " << compute_blocklen(dst, dst_extents);
+        }
       }
       ss << ">";
     } else if (dst.scope() == "global") {
@@ -294,9 +453,41 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
                "buffer shape must be a compile-time constant, but got "
             << ub2gm_tmpl_n;
       }
+      // A folded >2D out-copy is by construction a whole-block DMA tile, so
+      // the UB source was loaded by copy_gm_to_ub and its rows sit on the
+      // MTE 32B-slot layout, not the compact pitch the helper's flat form
+      // (upstream #1795) assumes: reading such a tile as one contiguous
+      // slab mixes the slot padding into the data (a fp16 (16, 4, 8) block
+      // round-trips with only row 0 intact). Widen the template col dim to
+      // the 32B-aligned physical pitch in that case: srcN != maskShapeN
+      // then breaks the helper's packed test and routes the copy to the
+      // classic multi-burst, whose slot stepping matches the loading DMA.
+      // The emitted DMA is byte-identical to the unfolded multi-burst
+      // (srcStride stays 0), and 32B-multiple rows are a no-op, so only
+      // sub-32B-row folded copies change behavior. Unfolded copies are
+      // left to the helper's own packed heuristic: their source may be
+      // V-pipe compact (the #1682 family the flat form exists for), which
+      // the lowering cannot distinguish from MTE-slot here.
+      if (fold_copy) {
+        auto *n_imm = ub2gm_tmpl_n.as<IntImmNode>();
+        int bits = src->dtype.bits();
+        int64_t width_bits = n_imm->value * bits;
+        if (width_bits % 256 != 0) {
+          int64_t padded_bits = (width_bits + 255) / 256 * 256;
+          ub2gm_tmpl_n = Integer(padded_bits / bits);
+        }
+      }
       ss << ub2gm_tmpl_n;
       if (src->shape.size() > 1) {
-        ss << ", " << compute_blocklen(src, src_extents);
+        // See copy_gm_to_ub above: a folded >2D region uses the flattened
+        // row product as the template row count. (srcM is only the default
+        // for the explicitly-passed maskShapeM, so this stays cosmetic for
+        // full copies.)
+        if (fold_copy && src_fold.full_rows->IsInstance<IntImmNode>()) {
+          ss << ", " << src_fold.full_rows;
+        } else {
+          ss << ", " << compute_blocklen(src, src_extents);
+        }
       }
       ss << ">";
     } else if (dst.scope() == "shared.l1") {
@@ -422,51 +613,9 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
         tmp_new_buffer.OffsetOf(tmp_new_indices).back(), tmp_len);
   }
 
-  auto compute_valid_extent = [](PrimExpr min_val, PrimExpr extent,
-                                 PrimExpr shape) -> PrimExpr {
-    PrimExpr remaining = shape - min_val;
-    if (remaining.dtype().lanes() > 1) {
-      return extent;
-    }
-    return Select(remaining >= extent, extent,
-                  Select(remaining > 0, remaining, 0));
-  };
-
-  auto find_active_dim_indices =
-      [](const Array<PrimExpr> &extents) -> std::vector<int> {
-    std::vector<int> active_indices;
-    int size = static_cast<int>(extents.size());
-
-    // Traverse from 0 to size-1, find dimensions where extent != 1
-    for (int i = 0; i < size; ++i) {
-      if (auto *int_imm = extents[i].as<IntImmNode>()) {
-        if (int_imm->value != 1) {
-          active_indices.push_back(i);
-        }
-      } else {
-        active_indices.push_back(i);
-      }
-    }
-
-    // The last dimension must always be included in the result
-    if (size >= 1 &&
-        (active_indices.empty() || active_indices.back() != size - 1)) {
-      active_indices.push_back(size - 1);
-    }
-
-    // Special: If extents.size() >= 2 and active_indices.size() == 1,
-    // insert size-2 at the second-to-last position
-    if (size >= 2 && active_indices.size() == 1) {
-      active_indices.insert(active_indices.begin(), size - 2);
-    }
-
-    return active_indices;
-  };
-
   PrimExpr validRow_src, validCol_src, validRow_dst, validCol_dst;
 
   // src: compute validRow and validCol using active dimension indices
-  std::vector<int> src_active = find_active_dim_indices(src_extents);
   if (src_active.size() >= 2) {
     int row_idx = src_active[src_active.size() - 2];
     int col_idx = src_active.back();
@@ -476,6 +625,12 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     validCol_src =
         compute_valid_extent(src_range[col_idx]->min,
                              src_range[col_idx]->extent, src->shape[col_idx]);
+    // Fold the leading active dims into the row count (see
+    // fold_leading_row_dims); valid_rows already includes the row_idx dim.
+    // Gated on fold_copy: both sides must fold, see the comment there.
+    if (fold_copy) {
+      validRow_src = src_fold.valid_rows;
+    }
   } else if (src_active.size() == 1) {
     int col_idx = src_active[0];
     validRow_src = Integer(1);
@@ -488,7 +643,6 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   }
 
   // dst: compute validRow and validCol using active dimension indices
-  std::vector<int> dst_active = find_active_dim_indices(dst_extents);
   if (dst_active.size() >= 2) {
     int row_idx = dst_active[dst_active.size() - 2];
     int col_idx = dst_active.back();
@@ -498,6 +652,12 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     validCol_dst =
         compute_valid_extent(dst_range[col_idx]->min,
                              dst_range[col_idx]->extent, dst->shape[col_idx]);
+    // Fold the leading active dims into the row count (see
+    // fold_leading_row_dims); valid_rows already includes the row_idx dim.
+    // Gated on fold_copy: both sides must fold, see the comment there.
+    if (fold_copy) {
+      validRow_dst = dst_fold.valid_rows;
+    }
   } else if (dst_active.size() == 1) {
     int col_idx = dst_active[0];
     validRow_dst = Integer(1);
@@ -507,6 +667,137 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   } else {
     validRow_dst = 0;
     validCol_dst = 0;
+  }
+
+  // A one-dimensional UB tile denotes compact logical elements, including
+  // when its producer is a GM column DMA. Materialize DMA row slots in
+  // separate storage in both directions; otherwise a column load leaves
+  // values at 0, 32B, ... while the following computation/store reads 0, 1, ...
+  // . Multidimensional UB tiles retain their existing row-slot convention.
+  const String target_model =
+      T.target->GetAttr<String>("model").value_or(String(""));
+  const bool compact_column_store = config.ub2gm && src->shape.size() == 1 &&
+                                    dst_active.size() == 2 &&
+                                    is_one(dst_extents.back());
+  const bool compact_column_load = config.gm2ub && dst->shape.size() == 1 &&
+                                   src_active.size() == 2 &&
+                                   is_one(src_extents.back());
+  if ((compact_column_store || compact_column_load) &&
+      !analyzer->CanProve(
+          (compact_column_load ? dst_extents[0] : src_extents[0]) <=
+          Integer(1)) &&
+      (target_model == "ascendc" || target_model == "auto")) {
+    const Buffer &compact = compact_column_load ? dst : src;
+    const Buffer &compact_new =
+        compact_column_load ? dst_new_buffer : src_new_buffer;
+    const PrimExpr compact_extent =
+        compact_column_load ? dst_extents[0] : src_extents[0];
+    const PrimExpr column_extent = compact_column_load
+                                       ? src_extents[src_active[0]]
+                                       : dst_extents[dst_active[0]];
+    ICHECK(analyzer->CanProve(compact_extent == column_extent))
+        << "column copy: a compact 1D UB and a GM column must have "
+           "the same logical extent";
+    ICHECK(src->dtype == dst->dtype)
+        << "column copy: compact column copies require matching dtypes";
+    const DataType dtype = src->dtype;
+    const bool supported_dtype =
+        dtype.lanes() == 1 &&
+        ((dtype.bits() == 16 && (dtype.is_int() || dtype.is_uint() ||
+                                 dtype.is_float16() || dtype.is_bfloat16())) ||
+         (dtype.bits() == 32 &&
+          (dtype.is_int() || dtype.is_uint() || dtype.is_float())));
+    ICHECK(supported_dtype)
+        << "column copy: compact strided column copies support 16-bit and "
+           "32-bit integer/floating-point elements, but got "
+        << dtype;
+    ICHECK(compact_new->shape.size() == 1 &&
+           (compact_new->strides.empty() ||
+            (compact_new->strides.size() == 1 &&
+             analyzer->CanProve(compact_new->strides[0] == Integer(1)))))
+        << "column copy: compact column copies require a contiguous 1D UB "
+           "layout";
+    const auto *capacity = compact->shape[0].as<IntImmNode>();
+    ICHECK(capacity && capacity->value > 0)
+        << "column copy: compact column copies require a positive static "
+           "UB capacity";
+    const auto extent_bound = analyzer->const_int_bound(compact_extent);
+    int64_t max_rows = std::max<int64_t>(
+        1, std::min(capacity->value, extent_bound->max_value));
+    ICHECK_LE(max_rows, 4095)
+        << "column copy: compact column copies support at most 4095 rows "
+           "per tile (the DMA block-count limit)";
+    const int64_t row_elements = 256 / dtype.bits();
+    Buffer packed =
+        decl_buffer({Integer(max_rows), Integer(row_elements)}, dtype,
+                    T.FreshBufferName("copy_column_ub"), "shared.ub");
+    PrimExpr valid_cols = compact_column_load ? validCol_src : validCol_dst;
+    PrimExpr valid_rows = analyzer->Simplify(
+        Max(Integer(0),
+            Select(valid_cols > Integer(0),
+                   compact_column_load ? Min(validRow_src, validCol_dst)
+                                       : Min(validRow_dst, validCol_src),
+                   Integer(0))));
+    Array<PrimExpr> first_args;
+    Array<PrimExpr> second_args;
+    std::ostringstream copy_name;
+    if (compact_column_load) {
+      copy_name << "tl::ascend::copy_gm_to_ub<" << get_dtype(src) << ", "
+                << row_elements << ", " << max_rows << ">";
+      PrimExpr pad_val = padValue;
+      if (pad_val.dtype() != dtype) {
+        pad_val = Cast(dtype, pad_val);
+      }
+      first_args = {StringImm(copy_name.str()),
+                    src_ptr,
+                    packed.access_ptr(2),
+                    strideN,
+                    valid_rows,
+                    valid_cols,
+                    pad_val,
+                    Integer(max_rows),
+                    Integer(row_elements)};
+      // Pass an aligned base and a separate logical offset: a slice can begin
+      // inside a 32B block, and unpack must preserve the preceding lanes.
+      PrimExpr dst_offset = dst_new_buffer.OffsetOf(dst_new_indices).back();
+      second_args = {StringImm("tl::ascend::copy_ub_column_unpack<" +
+                               get_dtype(dst) + ">"),
+                     packed.access_ptr(1), dst_new_buffer.access_ptr(2),
+                     analyzer->Simplify(
+                         Max(Integer(0), Min(validCol_dst, Integer(max_rows)))),
+                     dst_offset};
+    } else {
+      first_args = {
+          StringImm("tl::ascend::copy_ub_column_pack<" + get_dtype(src) + ">"),
+          src_ptr, packed.access_ptr(2), valid_rows};
+      copy_name << "tl::ascend::copy_ub_to_gm<" << get_dtype(dst) << ", "
+                << row_elements << ", " << max_rows << ">";
+      second_args = {StringImm(copy_name.str()),
+                     packed.access_ptr(1),
+                     dst_ptr,
+                     strideN,
+                     valid_rows,
+                     valid_cols,
+                     Integer(max_rows),
+                     Integer(row_elements)};
+    }
+    auto sync_all = []() {
+      return Evaluate(
+          Call(DataType::Handle(), ascend_pipe_barrier(), {StringImm("ALL")}));
+    };
+    // Also cover manual-sync kernels: wait for DMA before scalar reads,
+    // Duplicate before consumers, and the consumer before scratch reuse.
+    // DataCopyPad remains an ordinary unconditional helper call; do not mix
+    // GM scalar stores and DMA under a runtime branch.
+    Stmt body = SeqStmt(
+        {sync_all(),
+         Evaluate(Call(DataType::Handle(), builtin::call_extern(), first_args)),
+         sync_all(),
+         Evaluate(
+             Call(DataType::Handle(), builtin::call_extern(), second_args)),
+         sync_all()});
+    return Allocate(packed->data, packed->dtype, packed->shape, const_true(),
+                    body);
   }
 
   Array<PrimExpr> new_args;
@@ -576,8 +867,19 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     // Physical UB tile dims (row pitch). These trail pad_val and are consumed
     // by AscendTailMaskPropagation to model the tail rect; CopyCodegen prints
     // only the first 4 extra args (strideN, validRow, validCol, pad_val).
+    // For a folded >2D copy the physical tile as seen by the DMA is the
+    // flattened (prod(leading dims), last dim) plane; report that so the
+    // tail-mask model stays consistent with the folded validRow.
     if (dst->shape.size() > 1) {
-      new_args.push_back(dst->shape[dst->shape.size() - 2]);
+      if (fold_copy) {
+        PrimExpr phys_rows = Integer(1);
+        for (size_t i = 0; i + 1 < dst->shape.size(); ++i) {
+          phys_rows = phys_rows * dst->shape[i];
+        }
+        new_args.push_back(analyzer->Simplify(phys_rows));
+      } else {
+        new_args.push_back(dst->shape[dst->shape.size() - 2]);
+      }
     }
     new_args.push_back(dst->shape[dst->shape.size() - 1]);
   }
@@ -585,8 +887,19 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   if (config.ub2gm) {
     new_args.push_back(validRow_dst);
     new_args.push_back(validCol_dst);
+    // See the gm2ub block above: a folded >2D copy reports the flattened
+    // physical row count so AscendTailMaskPropagation's output hints stay
+    // consistent with the folded validRow.
     if (src->shape.size() > 1) {
-      new_args.push_back(src->shape[src->shape.size() - 2]);
+      if (fold_copy) {
+        PrimExpr phys_rows = Integer(1);
+        for (size_t i = 0; i + 1 < src->shape.size(); ++i) {
+          phys_rows = phys_rows * src->shape[i];
+        }
+        new_args.push_back(analyzer->Simplify(phys_rows));
+      } else {
+        new_args.push_back(src->shape[src->shape.size() - 2]);
+      }
     }
     new_args.push_back(src->shape[src->shape.size() - 1]);
   }
@@ -1141,6 +1454,11 @@ TIR_DEFINE_TL_BUILTIN(ascend_mul_add_dst)
                                Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_TL_BUILTIN(ascend_bitwise_lshift)
+    .set_num_inputs(4)
+    .set_attr<TCallEffectKind>("TCallEffectKind",
+                               Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_TL_BUILTIN(ascend_bitwise_lshifts)
     .set_num_inputs(4)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));

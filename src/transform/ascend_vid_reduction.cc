@@ -574,7 +574,7 @@ private:
         // scalar_op: size = math.prod(src0_extent), assert size_0 == size_2
         "tl.ascend_leaky_relu", "tl.ascend_axpy",
         // bitwise_shift: size = math.prod(src0_extent), assert size_0 == size_2
-        "tl.ascend_bitwise_lshift", "tl.ascend_bitwise_rshift",
+        "tl.ascend_bitwise_lshifts", "tl.ascend_bitwise_rshift",
         // compare: dst_size = math.prod(src0_extent)
         "tl.ascend_compare", "tl.ascend_compare_scalar",
         // sin/cos: size = math.prod(src_extent), assert size_0 == size_2

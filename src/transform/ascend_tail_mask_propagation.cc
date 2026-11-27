@@ -230,6 +230,8 @@ private:
                                  const TailMaskInfo &data) {
     TailMaskInfo out = packed;
     out.kind = TailMaskKind::kTail;
+    out.may_broadcast_scalar =
+        packed.may_broadcast_scalar && data.may_broadcast_scalar;
     out.storage_col = out.physical_col;
     if (!data.valid_row.defined() || !data.valid_col.defined())
       return out;
@@ -267,7 +269,7 @@ private:
   // element instead of the full broadcast -- so bail and let the full-tile path
   // (which reads the pad-filled gap) handle it.
   bool IsBroadcastScalarMask(const TailMaskInfo &m) const {
-    if (!m.physical_col.defined())
+    if (!m.may_broadcast_scalar || !m.physical_col.defined())
       return false;
     auto *pcol = m.physical_col.as<IntImmNode>();
     if (pcol == nullptr || pcol->value <= 1)
@@ -305,6 +307,27 @@ private:
         const VarNode *dst_v = GetPtrVar(call->args[2]);
         if (dst_v != nullptr)
           state_[dst_v] = GetMask(src_v);
+      }
+      return GetRef<Stmt>(op);
+    }
+    if (ext.find("copy_ub_column_unpack") != std::string::npos) {
+      // A full unpack turns the scratch's valid rows into compact columns.
+      // Partial overwrites do not describe a single valid rectangle; discard
+      // any older destination mask rather than applying it to the new data.
+      if (call->args.size() >= 5) {
+        const VarNode *dst_v = GetPtrVar(call->args[2]);
+        TailMaskInfo in = GetMask(GetPtrVar(call->args[1]));
+        PrimExpr extent = PtrExtent(call->args[2]);
+        TailMaskInfo out{};
+        if (extent.defined() && in.valid_row.defined() &&
+            analyzer_->CanProveEqual(call->args[4], 0) &&
+            analyzer_->CanProveEqual(call->args[3], extent)) {
+          out = MakeCopyMask(Integer(1), Min(in.valid_row, extent), Integer(1),
+                             extent, analyzer_);
+          out.may_broadcast_scalar = false;
+        }
+        if (dst_v != nullptr)
+          state_[dst_v] = out;
       }
       return GetRef<Stmt>(op);
     }
@@ -662,6 +685,7 @@ private:
     if (ok) {
       PrimExpr one = IntImm(DataType::Int(32), 1);
       out = MakeCopyMask(one, in.valid_col, one, in.physical_col, analyzer_);
+      out.may_broadcast_scalar = in.may_broadcast_scalar;
     }
     if (out_v != nullptr)
       state_[out_v] = out;
@@ -769,6 +793,7 @@ private:
     out.physical_row = dst_rows;
     out.physical_col = dst_cols;
     out.storage_col = dst_cols;
+    out.may_broadcast_scalar = in.may_broadcast_scalar;
     bool ok = out.is_tail() && SupportedCmpSelDtype(PtrDtype(call->args[1])) &&
               PtrDtype(call->args[2]) == PtrDtype(call->args[1]) &&
               !HasOutOfScopeLoopVar(out.valid_row) &&

@@ -21,6 +21,7 @@
 #include "tir/analysis/var_use_def_analysis.h"
 #include "tir/transforms/ir_utils.h"
 
+#include <tvm/node/structural_equal.h>
 #include <tvm/tir/analysis.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/stmt_functor.h>
@@ -121,6 +122,30 @@ private:
       SetTmpBuffers(external_shape_map);
 
       operator()(func->body);
+      // Most kernels have no row-padded DMA. Bind ranges only when the indexed
+      // copies need them, in the same preorder as the main traversal.
+      if (!padded_copies_.empty()) {
+        for (const auto &stmt : copy_range_stmts_) {
+          if (const auto *loop = stmt.as<ForNode>()) {
+            copy_analyzer_.Bind(loop->loop_var,
+                                Range::FromMinExtent(loop->min, loop->extent));
+            RefineCopyLoopBound(loop);
+          } else if (const auto *let = stmt.as<LetStmtNode>()) {
+            copy_analyzer_.Bind(let->var, let->value);
+          } else if (const auto *attr = stmt.as<AttrStmtNode>()) {
+            const auto *iter = attr->node.as<IterVarNode>();
+            copy_analyzer_.Bind(iter->var,
+                                Range::FromMinExtent(0, attr->value));
+          }
+        }
+      }
+      // Size copies after all relevant loops, including those inside Allocate.
+      for (const auto *buf : origin_buffer) {
+        buffer_sizes_[buf] = CalculateBufferSize(alloc_info_.at(buf).alloc);
+        DLOG(DEBUG) << "Found NPU memory allocation: " << buf->name_hint
+                    << " scope=" << buffer_scopes_.at(buf)
+                    << " size=" << buffer_sizes_[buf] << " bytes";
+      }
       PlanMemory();
     }
 
@@ -152,6 +177,15 @@ private:
     struct AllocEntry {
       size_t level{0};
       const AllocateNode *alloc{nullptr};
+    };
+
+    struct PaddedCopy {
+      Call call;
+      PrimExpr offset;
+      int64_t columns;
+      int64_t rows;
+      bool store;
+      std::vector<PrimExpr> conditions;
     };
 
     struct StmtAttr {
@@ -191,11 +225,6 @@ private:
         if (memory_limits_.count(scope)) {
           buffer_scopes_[buf] = scope;
           origin_buffer.push_back(buf);
-          buffer_sizes_[buf] = CalculateBufferSize(op);
-
-          DLOG(DEBUG) << "Found NPU memory allocation: "
-                      << op->buffer_var->name_hint << " scope=" << scope
-                      << " size=" << buffer_sizes_[buf] << " bytes";
         }
       }
 
@@ -238,6 +267,7 @@ private:
     void VisitExpr_(const VarNode *buf) final { TrackBufferTouch(buf); }
 
     void VisitExpr_(const CallNode *op) final {
+      CollectPaddedCopy(op);
       if (op->op.same_as(builtin::tvm_access_ptr())) {
         Var buffer = Downcast<Var>(op->args[1]);
         if (IsNPUSharedMemory(buffer)) {
@@ -247,8 +277,81 @@ private:
       StmtExprVisitor::VisitExpr_(op);
     }
 
+    void CollectPaddedCopy(const CallNode *call) {
+      if (!call->op.same_as(builtin::call_extern()) || call->args.size() < 6) {
+        return;
+      }
+      // Shared Calls recur during the liveness traversal. Once indexed in
+      // this context, their name, template dimensions and buffer are unchanged.
+      const auto indexed = indexed_padded_copies_.find(call);
+      if (indexed != indexed_padded_copies_.end() &&
+          indexed->second.count(copy_condition_id_)) {
+        return;
+      }
+      const auto *name = call->args[0].as<StringImmNode>();
+      if (name == nullptr) {
+        return;
+      }
+      const std::string copy_name = name->value;
+      const bool load = copy_name.rfind("tl::ascend::copy_gm_to_ub<", 0) == 0;
+      const bool store =
+          copy_name.rfind("tl::ascend::copy_ub_to_gm<", 0) == 0 ||
+          copy_name.rfind("tl::ascend::atomic_add_ub_to_gm<", 0) == 0;
+      if (!load && !store) {
+        return;
+      }
+      const auto *ptr = call->args[load ? 2 : 1].as<CallNode>();
+      if (ptr == nullptr || !ptr->op.same_as(builtin::tvm_access_ptr()) ||
+          ptr->args.size() < 4) {
+        return;
+      }
+      const auto *buffer = ptr->args[1].as<VarNode>();
+      if (buffer == nullptr) {
+        return;
+      }
+      const auto allocation = alloc_info_.find(buffer);
+      if (allocation == alloc_info_.end() ||
+          allocation->second.alloc == nullptr) {
+        return;
+      }
+      if (!buffer_scopes_.count(buffer)) {
+        return;
+      }
+      std::istringstream dims(copy_name.substr(copy_name.find('<') + 1));
+      std::string dtype_token;
+      std::getline(dims, dtype_token, ',');
+      int64_t columns = 0;
+      dims >> columns;
+      int64_t rows = 1;
+      char separator = 0;
+      dims >> separator;
+      if (separator == ',') {
+        dims >> rows;
+      }
+      const auto *alloc = allocation->second.alloc;
+      const int64_t bits = alloc->dtype.bits() * alloc->dtype.lanes();
+      if (!dims || columns <= 0 || rows <= 0) {
+        return;
+      }
+      ICHECK(columns <= ASCEND_SHARED_MEM_SIZE * 8 / bits &&
+             rows <= ASCEND_SHARED_MEM_SIZE * 8 / bits)
+          << "UB copy physical footprint exceeds the available shared.ub "
+             "memory";
+      if (columns * bits % 256 == 0 || (store && columns * bits >= 256)) {
+        return;
+      }
+      // A shared Call can occur under different predicates. Deduplicate only
+      // within the same branch context, never across distinct feasible ranges.
+      if (indexed_padded_copies_[call].insert(copy_condition_id_).second) {
+        padded_copies_[buffer].push_back({GetRef<Call>(call), ptr->args[2],
+                                          columns, rows, store,
+                                          copy_conditions_});
+      }
+    }
+
     // Cal Scope level and save linear stmt event
-    template <typename T> void VisitNewScope(const T *op) {
+    template <typename T, typename F>
+    void VisitNewScope(const T *op, F visit_body) {
       scope_.push_back(StmtEntry());
       StmtEntry e;
       e.stmt = op;
@@ -256,7 +359,7 @@ private:
       int64_t begin_index = static_cast<int64_t>(linear_seq_.size());
 
       linear_seq_.push_back(e);
-      StmtExprVisitor::VisitStmt_(op);
+      visit_body();
 
       e.touched = std::move(scope_.back().touched);
       scope_.pop_back();
@@ -267,16 +370,49 @@ private:
       linear_seq_[begin_index].scope_pair_offset = end_index - begin_index;
     }
 
-    void VisitStmt_(const AttrStmtNode *op) final { VisitNewScope(op); }
-    void VisitStmt_(const IfThenElseNode *op) final { VisitNewScope(op); }
+    template <typename T> void VisitNewScope(const T *op) {
+      VisitNewScope(op, [&]() { StmtExprVisitor::VisitStmt_(op); });
+    }
+
+    void VisitStmt_(const AttrStmtNode *op) final {
+      if (op->attr_key == tir::attr::thread_extent) {
+        if (op->node.as<IterVarNode>()) {
+          copy_range_stmts_.push_back(GetRef<Stmt>(op));
+        }
+      }
+      VisitNewScope(op);
+    }
+    void VisitStmt_(const IfThenElseNode *op) final {
+      VisitNewScope(op, [&]() {
+        VisitExpr(op->condition);
+        const size_t parent_id = copy_condition_id_;
+        copy_conditions_.push_back(op->condition);
+        copy_condition_id_ = ++next_copy_condition_id_;
+        VisitStmt(op->then_case);
+        copy_conditions_.pop_back();
+        if (op->else_case.defined()) {
+          copy_conditions_.push_back(!op->condition);
+          copy_condition_id_ = ++next_copy_condition_id_;
+          VisitStmt(op->else_case.value());
+          copy_conditions_.pop_back();
+        }
+        copy_condition_id_ = parent_id;
+      });
+    }
     void VisitStmt_(const ForNode *op) final {
+      copy_range_stmts_.push_back(GetRef<Stmt>(op));
       scope_level_++;
       VisitNewScope(op);
       scope_level_--;
     }
     void VisitStmt_(const WhileNode *op) final { VisitNewScope(op); }
     void VisitStmt_(const AssertStmtNode *op) final { VisitNewScope(op); }
-    void VisitStmt_(const LetStmtNode *op) final { VisitNewScope(op); }
+    void VisitStmt_(const LetStmtNode *op) final {
+      if (op->var.dtype().is_int() || op->var.dtype().is_uint()) {
+        copy_range_stmts_.push_back(GetRef<Stmt>(op));
+      }
+      VisitNewScope(op);
+    }
 
     void SetPreAllocBuffer(Map<Var, PrimExpr> external_address_map) {
       for (const auto &kv : external_address_map) {
@@ -918,6 +1054,453 @@ private:
       std::unordered_map<const VarNode *, const LiveInterval *> buffer_map_;
     };
 
+    // compute_valid_extent lowers a runtime tail to nested Select nodes.
+    // Refine each arm by its condition so the static tile bound (rather than
+    // the unrestricted symbolic tensor dimension) determines the footprint.
+    static std::pair<int64_t, int64_t> CopyBounds(const PrimExpr &expr,
+                                                  arith::Analyzer *analyzer,
+                                                  bool positive_only = false) {
+      if (const auto *constant = expr.as<IntImmNode>()) {
+        if (constant->dtype.is_int()) {
+          return {positive_only ? std::max<int64_t>(1, constant->value)
+                                : constant->value,
+                  constant->value};
+        }
+      }
+      // access_ptr and extent arithmetic can wrap a Select in e.g. 0 + x.
+      // Normalize before splitting it so branch constraints remain visible.
+      PrimExpr simplified = analyzer->Simplify(expr);
+      // A folded N-D copy scales the tail-clamped row extent by a
+      // compile-time inner-row product. Preserve its finite bound through
+      // that multiplication when the product is representable.
+      if (const auto *mul = simplified.as<MulNode>()) {
+        const PrimExpr *inner = nullptr;
+        int64_t factor = 0;
+        if (const auto *constant = mul->a.as<IntImmNode>()) {
+          factor = constant->value;
+          inner = &mul->b;
+        } else if (const auto *constant = mul->b.as<IntImmNode>()) {
+          factor = constant->value;
+          inner = &mul->a;
+        }
+        if (inner != nullptr && factor > 0) {
+          const auto inner_bounds = CopyBounds(*inner, analyzer, positive_only);
+          const int64_t limit = arith::ConstIntBoundNode::kPosInf;
+          if (inner_bounds.first >= 0 &&
+              inner_bounds.first <= inner_bounds.second &&
+              inner_bounds.second < limit && factor < limit &&
+              inner_bounds.second <= (limit - 1) / factor) {
+            return {inner_bounds.first * factor, inner_bounds.second * factor};
+          }
+        }
+      }
+      const auto *select = simplified.as<SelectNode>();
+      const auto *conditional = simplified.as<CallNode>();
+      if (conditional && !conditional->op.same_as(builtin::if_then_else())) {
+        conditional = nullptr;
+      }
+      if (select || conditional) {
+        const PrimExpr &predicate =
+            select ? select->condition : conditional->args[0];
+        const PrimExpr &true_value =
+            select ? select->true_value : conditional->args[1];
+        const PrimExpr &false_value =
+            select ? select->false_value : conditional->args[2];
+        // ConstIntBound recognizes comparisons, not an unnormalized Not.
+        PrimExpr condition = analyzer->Simplify(predicate);
+        PrimExpr negated_condition = analyzer->Simplify(!predicate);
+        std::pair<int64_t, int64_t> bounds;
+        if (analyzer->CanProve(condition)) {
+          bounds = CopyBounds(true_value, analyzer, positive_only);
+        } else if (analyzer->CanProve(negated_condition)) {
+          bounds = CopyBounds(false_value, analyzer, positive_only);
+        } else {
+          std::pair<int64_t, int64_t> true_bounds, false_bounds;
+          {
+            With<arith::ConstraintContext> context(analyzer, condition);
+            true_bounds = CopyBounds(true_value, analyzer, positive_only);
+          }
+          {
+            With<arith::ConstraintContext> context(analyzer, negated_condition);
+            false_bounds = CopyBounds(false_value, analyzer, positive_only);
+          }
+          if (positive_only && true_bounds.second <= 0) {
+            bounds = false_bounds;
+          } else if (positive_only && false_bounds.second <= 0) {
+            bounds = true_bounds;
+          } else {
+            bounds = {std::min(true_bounds.first, false_bounds.first),
+                      std::max(true_bounds.second, false_bounds.second)};
+          }
+        }
+        if (conditional) {
+          // A surrounding comparison may bound the complete if_then_else
+          // result, without bounding either of its individual arms.
+          const auto direct = analyzer->const_int_bound(simplified);
+          bounds.first = std::max(bounds.first, direct->min_value);
+          bounds.second = std::min(bounds.second, direct->max_value);
+        }
+        return bounds;
+      }
+      auto bound = analyzer->const_int_bound(simplified);
+      return {positive_only ? std::max<int64_t>(1, bound->min_value)
+                            : bound->min_value,
+              bound->max_value};
+    }
+
+    void RefineCopyLoopBound(const ForNode *loop) {
+      if (loop->extent.as<IntImmNode>()) {
+        return;
+      }
+      PrimExpr extent = copy_analyzer_.Simplify(loop->extent);
+      const auto *conditional = extent.as<CallNode>();
+      if (!extent.as<SelectNode>() &&
+          !(conditional && conditional->op.same_as(builtin::if_then_else()))) {
+        return;
+      }
+      // Bind retains symbolic range relations, but its interval analyzer can
+      // miss the cap in if_then_else(n >= tile_rows, tile_rows, n). Refine only
+      // the constant upper bound; loop minima may be nonzero or negative.
+      const auto extent_bounds = CopyBounds(extent, &copy_analyzer_);
+      const auto minimum_bounds = copy_analyzer_.const_int_bound(loop->min);
+      const int64_t maximum_minimum = minimum_bounds->max_value;
+      const int64_t maximum_extent = extent_bounds.second;
+      if (maximum_extent <= 0 ||
+          maximum_extent >= arith::ConstIntBoundNode::kPosInf ||
+          maximum_minimum <= arith::ConstIntBoundNode::kNegInf ||
+          maximum_minimum >= arith::ConstIntBoundNode::kPosInf ||
+          maximum_minimum >
+              arith::ConstIntBoundNode::kPosInf - (maximum_extent - 1)) {
+        return;
+      }
+      const int64_t maximum = maximum_minimum + (maximum_extent - 1);
+      const auto original = copy_analyzer_.const_int_bound(loop->loop_var);
+      if (maximum >= original->min_value && maximum < original->max_value) {
+        copy_analyzer_.const_int_bound.Update(
+            loop->loop_var, arith::ConstIntBound(original->min_value, maximum),
+            true);
+      }
+    }
+
+    bool TryEnumeratedCopyBounds(const PrimExpr &expr,
+                                 std::pair<int64_t, int64_t> *bounds) {
+      // Floor division and nested Select predicates can hide an impossible
+      // arm from the arithmetic analyzer. Only on failed ordinary bounds,
+      // exhaust a small rectangular superset of the reachable scalar values.
+      constexpr uint64_t kMaxCombinations = 256;
+      PrimExpr simplified = copy_analyzer_.Simplify(expr);
+      std::vector<Var> variables;
+      PostOrderVisit(simplified, [&](const ObjectRef &node) {
+        if (const auto *var = node.as<VarNode>()) {
+          variables.push_back(GetRef<Var>(var));
+        }
+      });
+      struct VariableRange {
+        int64_t minimum;
+        uint64_t count;
+      };
+      std::vector<VariableRange> ranges;
+      uint64_t combinations = 1;
+      for (const Var &var : variables) {
+        if (!var.dtype().is_scalar() ||
+            (!var.dtype().is_int() && !var.dtype().is_uint())) {
+          return false;
+        }
+        auto range = copy_analyzer_.const_int_bound(var);
+        if (range->min_value <= arith::ConstIntBoundNode::kNegInf ||
+            range->max_value >= arith::ConstIntBoundNode::kPosInf ||
+            range->min_value > range->max_value) {
+          return false;
+        }
+        // Unsigned subtraction avoids overflowing a wide signed interval.
+        const uint64_t width = static_cast<uint64_t>(range->max_value) -
+                               static_cast<uint64_t>(range->min_value);
+        if (width >= kMaxCombinations ||
+            combinations > kMaxCombinations / (width + 1)) {
+          return false;
+        }
+        ranges.push_back({range->min_value, width + 1});
+        combinations *= width + 1;
+      }
+      arith::Analyzer evaluator;
+      int64_t minimum = arith::ConstIntBoundNode::kPosInf;
+      int64_t maximum = arith::ConstIntBoundNode::kNegInf;
+      for (uint64_t point = 0; point < combinations; ++point) {
+        Map<Var, PrimExpr> values;
+        uint64_t remainder = point;
+        for (size_t i = 0; i < variables.size(); ++i) {
+          const int64_t value =
+              ranges[i].minimum +
+              static_cast<int64_t>(remainder % ranges[i].count);
+          values.Set(variables[i], make_const(variables[i].dtype(), value));
+          remainder /= ranges[i].count;
+        }
+        // Use a fresh analyzer without the symbolic branch assumptions. Every
+        // point must evaluate exactly; runtime loads and unknown calls fail.
+        PrimExpr value =
+            evaluator.Simplify(tir::Substitute(simplified, values));
+        const auto *constant = value.as<IntImmNode>();
+        if (!constant) {
+          return false;
+        }
+        minimum = std::min(minimum, constant->value);
+        maximum = std::max(maximum, constant->value);
+      }
+      *bounds = {minimum, maximum};
+      return true;
+    }
+
+    std::pair<int64_t, int64_t> GetCopyBounds(const PrimExpr &expr,
+                                              bool constrained) {
+      if (const auto *constant = expr.as<IntImmNode>()) {
+        if (constant->dtype.is_int()) {
+          return {constant->value, constant->value};
+        }
+      }
+      if (!constrained) {
+        auto it = copy_bounds_.find(expr.get());
+        if (it != copy_bounds_.end()) {
+          return it->second;
+        }
+      }
+      auto bounds = CopyBounds(expr, &copy_analyzer_);
+      if (bounds.first < 0 ||
+          bounds.second == arith::ConstIntBoundNode::kPosInf) {
+        TryEnumeratedCopyBounds(expr, &bounds);
+      }
+      // Cache only global post-Bind queries, never recursive Select contexts.
+      if (!constrained) {
+        copy_bounds_.emplace(expr.get(), bounds);
+      }
+      return bounds;
+    }
+
+    static PrimExpr NonemptyCopyCondition(const PrimExpr &extent,
+                                          arith::Analyzer *analyzer) {
+      PrimExpr simplified = analyzer->Simplify(extent);
+      const auto *select = simplified.as<SelectNode>();
+      const auto *conditional = simplified.as<CallNode>();
+      if (conditional && !conditional->op.same_as(builtin::if_then_else())) {
+        conditional = nullptr;
+      }
+      if (select || conditional) {
+        const PrimExpr &condition =
+            select ? select->condition : conditional->args[0];
+        const PrimExpr &true_value =
+            select ? select->true_value : conditional->args[1];
+        const PrimExpr &false_value =
+            select ? select->false_value : conditional->args[2];
+        PrimExpr lhs, rhs;
+        bool less = true;
+        if (const auto *op = condition.as<LTNode>()) {
+          lhs = op->a;
+          rhs = op->b;
+        } else if (const auto *op = condition.as<LENode>()) {
+          lhs = op->a;
+          rhs = op->b;
+        } else if (const auto *op = condition.as<GTNode>()) {
+          lhs = op->a;
+          rhs = op->b;
+          less = false;
+        } else if (const auto *op = condition.as<GENode>()) {
+          lhs = op->a;
+          rhs = op->b;
+          less = false;
+        }
+        if (lhs.defined() && simplified.dtype().is_scalar() &&
+            (simplified.dtype().is_int() || simplified.dtype().is_uint())) {
+          const bool direct = StructuralEqual()(lhs, true_value) &&
+                              StructuralEqual()(rhs, false_value);
+          const bool reversed = StructuralEqual()(lhs, false_value) &&
+                                StructuralEqual()(rhs, true_value);
+          if ((direct || reversed) &&
+              SideEffect(simplified) == CallEffectKind::kPure) {
+            // The predicate compares exactly the two returned values, so the
+            // conditional is a min or max. This exposes nested clamp > 0
+            // without leaving an opaque conditional Call in its predicate.
+            PrimExpr positive = NonemptyCopyCondition(true_value, analyzer);
+            PrimExpr negative = NonemptyCopyCondition(false_value, analyzer);
+            return less == direct ? positive && negative : positive || negative;
+          }
+        }
+        // ConstraintContext understands Boolean combinations, not bool Select.
+        return (condition && NonemptyCopyCondition(true_value, analyzer)) ||
+               (!condition && NonemptyCopyCondition(false_value, analyzer));
+      }
+      return simplified > 0;
+    }
+
+    size_t CalculateCopyFootprint(const PaddedCopy &copy, int64_t bits,
+                                  size_t condition_index = 0,
+                                  bool nonempty_store = false) {
+      auto &analyzer = copy_analyzer_;
+      if (condition_index < copy.conditions.size()) {
+        PrimExpr condition =
+            analyzer.Simplify(copy.conditions[condition_index]);
+        if (analyzer.CanProve(analyzer.Simplify(!condition))) {
+          return 0;
+        }
+        With<arith::ConstraintContext> context(&analyzer, condition);
+        return CalculateCopyFootprint(copy, bits, condition_index + 1);
+      }
+      const bool constrained = !copy.conditions.empty() || nonempty_store;
+      const auto *call = copy.call.get();
+      const auto row_bounds = GetCopyBounds(call->args[4], constrained);
+      const auto col_bounds = GetCopyBounds(call->args[5], constrained);
+      ICHECK(row_bounds.first >= 0 &&
+             row_bounds.second < arith::ConstIntBoundNode::kPosInf &&
+             col_bounds.first >= 0 &&
+             col_bounds.second < arith::ConstIntBoundNode::kPosInf &&
+             (row_bounds.second <= 1 || col_bounds.second <= copy.columns))
+          << "Cannot prove bounded nonnegative UB copy extents";
+      if (copy.store && (row_bounds.second == 0 || col_bounds.second == 0)) {
+        return 0; // copy_ub_to_gm returns before touching UB for empty copies.
+      }
+      if (copy.store && !nonempty_store &&
+          (row_bounds.first == 0 || col_bounds.first == 0)) {
+        // Offsets reachable only on empty transfers are irrelevant, too.
+        // Expand Select predicates so the analyzer sees the controlling vars.
+        PrimExpr condition =
+            analyzer.Simplify(NonemptyCopyCondition(call->args[4], &analyzer) &&
+                              NonemptyCopyCondition(call->args[5], &analyzer));
+        if (analyzer.CanProve(analyzer.Simplify(!condition))) {
+          return 0;
+        }
+        With<arith::ConstraintContext> context(&analyzer, condition);
+        return CalculateCopyFootprint(copy, bits, condition_index, true);
+      }
+      PrimExpr offset = copy.offset;
+      if (const auto *ramp = offset.as<RampNode>()) {
+        offset = ramp->base; // CopyCodegen uses the scalar Ramp base.
+      }
+      const auto offset_bounds = GetCopyBounds(offset, constrained);
+      ICHECK(offset_bounds.first >= 0 &&
+             offset_bounds.second < arith::ConstIntBoundNode::kPosInf)
+          << "Cannot prove a bounded nonnegative UB copy offset for " << offset;
+
+      // Reject capacity-sized components before multiplying them: a finite
+      // int64 bound can still overflow byte/stride arithmetic. For stores the
+      // bounds above already exclude no-op paths; loads may Duplicate there.
+      const int64_t max_elements = ASCEND_SHARED_MEM_SIZE * 8 / bits;
+      ICHECK(offset_bounds.second <= max_elements &&
+             row_bounds.second <= max_elements &&
+             col_bounds.second <= max_elements &&
+             copy.columns <= max_elements && copy.rows <= max_elements)
+          << "UB copy physical footprint exceeds the available shared.ub "
+             "memory";
+
+      const int64_t pitch_bytes = copy.columns * bits / 8;
+      const int64_t block_bytes = col_bounds.second * bits / 8;
+      const size_t offset_bytes =
+          static_cast<size_t>(offset_bounds.second) * bits / 8;
+      size_t footprint = 0;
+      if (!copy.store &&
+          (row_bounds.first != copy.rows || row_bounds.second != copy.rows ||
+           col_bounds.first != copy.columns ||
+           col_bounds.second != copy.columns)) {
+        // GM->UB can Duplicate the complete logical tile even for empty DMA.
+        footprint = offset_bytes + static_cast<size_t>(copy.rows) * pitch_bytes;
+      }
+      if (row_bounds.second == 0 || block_bytes == 0) {
+        return footprint;
+      }
+
+      // Ignore empty Select arms when checking the helper's flat-store path.
+      // They return early and cannot require padded row slots.
+      const auto active_cols =
+          copy.store ? CopyBounds(call->args[5], &analyzer, true) : col_bounds;
+      const bool flat =
+          copy.store && active_cols.first == copy.columns &&
+          active_cols.second == copy.columns &&
+          (analyzer.CanProve(call->args[3] == Integer(copy.columns)) ||
+           analyzer.CanProve(call->args[3] == call->args[5])) &&
+          row_bounds.second <= 65535 / block_bytes;
+
+      const bool single_row = row_bounds.second <= 1;
+      const bool needs_end_bound =
+          (offset_bounds.first != offset_bounds.second &&
+           row_bounds.first != row_bounds.second) ||
+          (single_row && !flat &&
+           (offset_bounds.first != offset_bounds.second ||
+            row_bounds.first != row_bounds.second) &&
+           col_bounds.first != col_bounds.second) ||
+          (!flat && pitch_bytes >= 32 && col_bounds.first != col_bounds.second);
+      const DataType i64 = DataType::Int(64);
+      PrimExpr rows, bytes, end;
+      if (needs_end_bound) {
+        rows = cast(i64, call->args[4]);
+      }
+      if (needs_end_bound || (!flat && !single_row && pitch_bytes >= 32)) {
+        bytes = floordiv(cast(i64, call->args[5]) * make_const(i64, bits), 8);
+      }
+      size_t dma_footprint;
+      if (flat) {
+        dma_footprint =
+            offset_bytes + static_cast<size_t>(row_bounds.second) * block_bytes;
+        if (needs_end_bound) {
+          end = floordiv(cast(i64, offset) * make_const(i64, bits), 8) +
+                rows * bytes;
+        }
+      } else if (single_row) {
+        // A one-burst reshape can have more valid columns than the template
+        // pitch (e.g. a GM vector loaded into an [M, 1] UB). The row stride is
+        // unused, but the complete burst can span multiple 32-byte blocks.
+        dma_footprint =
+            offset_bytes + AlignUp(static_cast<size_t>(block_bytes), 32);
+        if (needs_end_bound) {
+          end = floordiv(cast(i64, offset) * make_const(i64, bits), 8) +
+                rows * floordiv(bytes + 31, 32) * 32;
+        }
+      } else if (pitch_bytes < 32) {
+        // Every nonempty narrow row occupies one block. Avoid re-analyzing
+        // symbolic stride arithmetic for the common column-copy case.
+        dma_footprint =
+            offset_bytes + static_cast<size_t>(row_bounds.second) * 32;
+        if (needs_end_bound) {
+          end = floordiv(cast(i64, offset) * make_const(i64, bits), 8) +
+                rows * 32;
+        }
+      } else {
+        // Match DataCopyPad's UB step, including >32B unaligned pitches:
+        // (ceil(blockLen / 32) + floor((pitch - blockLen) / 32)) * 32.
+        PrimExpr block = floordiv(bytes + 31, 32) * 32;
+        PrimExpr step = block + floordiv((make_const(i64, copy.columns) -
+                                          cast(i64, call->args[5])) *
+                                             make_const(i64, bits),
+                                         256) *
+                                    32;
+        const auto step_bounds = CopyBounds(analyzer.Simplify(step), &analyzer);
+        ICHECK(step_bounds.first >= 0 &&
+               step_bounds.second < arith::ConstIntBoundNode::kPosInf)
+            << "Cannot prove a bounded nonnegative UB copy row stride";
+        const size_t last_block = AlignUp(static_cast<size_t>(block_bytes), 32);
+        dma_footprint =
+            offset_bytes +
+            static_cast<size_t>(row_bounds.second - 1) * step_bounds.second +
+            last_block;
+        if (needs_end_bound) {
+          end = floordiv(cast(i64, offset) * make_const(i64, bits), 8) +
+                (rows - 1) * step + block;
+        }
+      }
+      if (needs_end_bound) {
+        // Preserve correlations between offsets, row counts, and row strides.
+        // With a fixed stride, a single varying term is already bounded exactly
+        // above. Avoid re-simplifying the same dynamic tail for every buffer.
+        // Temporary expressions and branch-local bounds are never cached.
+        const auto end_bounds = CopyBounds(analyzer.Simplify(end), &analyzer);
+        if (end_bounds.second >= 0) {
+          dma_footprint =
+              std::min(dma_footprint, static_cast<size_t>(end_bounds.second));
+        }
+      }
+      footprint = std::max(footprint, dma_footprint);
+      ICHECK_LE(footprint, static_cast<size_t>(ASCEND_SHARED_MEM_SIZE))
+          << "UB copy physical footprint exceeds the available shared.ub "
+             "memory";
+      return footprint;
+    }
+
     size_t CalculateBufferSize(const AllocateNode *alloc) {
       size_t size_elements = 1;
       auto shape_it = external_shape_map_.find(alloc->buffer_var);
@@ -1003,6 +1586,15 @@ private:
         }
       });
       size_bytes = std::max(size_bytes, padded_broadcast_bytes);
+      // Index only copies whose physical UB pitch may exceed their logical
+      // pitch; aligned transfers retain the existing fast path.
+      const auto copies = padded_copies_.find(alloc->buffer_var.get());
+      if (copies != padded_copies_.end()) {
+        const int64_t bits = alloc->dtype.bits() * alloc->dtype.lanes();
+        for (const auto &copy : copies->second) {
+          size_bytes = std::max(size_bytes, CalculateCopyFootprint(copy, bits));
+        }
+      }
       return AlignUp(size_bytes, 32);
     }
 
@@ -1023,6 +1615,16 @@ private:
         buffer_scopes_; // buffer scope(UB/L1..)
     std::unordered_map<const VarNode *, size_t>
         buffer_sizes_; // buffer bytes size
+    arith::Analyzer copy_analyzer_;
+    std::unordered_map<const PrimExprNode *, std::pair<int64_t, int64_t>>
+        copy_bounds_;
+    std::vector<Stmt> copy_range_stmts_;
+    std::unordered_map<const VarNode *, std::vector<PaddedCopy>> padded_copies_;
+    std::unordered_map<const CallNode *, std::unordered_set<size_t>>
+        indexed_padded_copies_;
+    std::vector<PrimExpr> copy_conditions_;
+    size_t copy_condition_id_{0};
+    size_t next_copy_condition_id_{0};
     // Layout map used to size PTO 4D tiles by physical footprint.
     Map<Var, Array<PrimExpr>> external_shape_map_;
     std::unordered_map<const VarNode *, size_t>

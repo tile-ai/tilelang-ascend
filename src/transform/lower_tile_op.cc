@@ -6,6 +6,7 @@
  * \brief Lower the tile op for further codegen.
  */
 
+#include <tvm/ir/name_supply.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
@@ -227,7 +228,23 @@ public:
     substituter.buffer_map_.insert(f->buffer_map.begin(), f->buffer_map.end());
     for (const auto &[_, buffer] : f->buffer_map) {
       substituter.buffer_data_to_buffer_.Set(buffer->data, buffer);
+      substituter.buffer_name_supply_->ReserveName(buffer->data->name_hint,
+                                                   /*add_prefix=*/false);
     }
+    // Only newly introduced buffers consume this function-local name supply.
+    // Reserve all original allocations up front, including later/nested blocks,
+    // so generated scratch names never collide with user buffers.
+    PostOrderVisit(f->body, [&](const ObjectRef &node) {
+      if (const auto *block = node.as<BlockNode>()) {
+        for (const auto &buffer : block->alloc_buffers) {
+          substituter.buffer_name_supply_->ReserveName(buffer->data->name_hint,
+                                                       /*add_prefix=*/false);
+        }
+      } else if (const auto *alloc = node.as<AllocateNode>()) {
+        substituter.buffer_name_supply_->ReserveName(
+            alloc->buffer_var->name_hint, /*add_prefix=*/false);
+      }
+    });
     auto target = f->GetAttr<Target>(tvm::attr::kTarget);
     ICHECK(target.defined()) << "LowerTileOpPass: Require the target attribute";
     substituter.target_ = target.value();
@@ -495,11 +512,14 @@ private:
       thread_bounds = Range::FromMinExtent(0, 1);
     }
 
-    auto lowered =
-        tile_op->Lower(LowerArgs{target_, thread_bounds, thread_var_->var,
-                                 callback, layout_map_, buffer_remap_,
-                                 disable_tma_lower, resource_scope_},
-                       analyzer_);
+    FreshBufferNameCallback fresh_buffer_name = [this](const String &hint) {
+      return buffer_name_supply_->FreshName(hint, /*add_prefix=*/false);
+    };
+    auto lowered = tile_op->Lower(
+        LowerArgs{target_, thread_bounds, thread_var_->var, callback,
+                  layout_map_, buffer_remap_, disable_tma_lower,
+                  resource_scope_, fresh_buffer_name},
+        analyzer_);
     return IRMutatorWithAnalyzer::VisitStmt(lowered);
   }
 
@@ -519,6 +539,7 @@ private:
   }
 
   Target target_;
+  NameSupply buffer_name_supply_{""};
   Map<Var, Buffer> buffer_data_to_buffer_;
   Map<Buffer, Layout> layout_map_;
   Map<Buffer, Buffer> buffer_remap_;
