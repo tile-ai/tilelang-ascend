@@ -42,6 +42,7 @@ mappings:
   examples/cann-bench/cummin/example_cummin.py: examples/cann-bench/cummin/test_example_cummin.py
   examples/cann-bench/depthwise_conv_2d/depthwise_conv_2d.py: examples/cann-bench/depthwise_conv_2d/test_depthwise_conv_2d.py
   examples/cann-bench/group_norm/example_group_norm.py: examples/cann-bench/group_norm/test_example_group_norm.py
+  examples/cann-bench/softmax/softmax.py: examples/cann-bench/softmax/test_softmax.py
   examples/cann-bench/situ_glu_grad/example_situ_glu_grad.py: examples/cann-bench/situ_glu_grad/test_example_situ_glu_grad.py
 
   # examples/causal_conv1d
