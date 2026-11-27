@@ -14,7 +14,7 @@ import tilelang
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from example_fla_chunk_o import fla_chunk_o  # noqa: E402
+from fla_chunk_o import fla_chunk_o  # noqa: E402
 
 
 # ============================================================================

@@ -1356,7 +1356,7 @@ __all__ = [
 if __name__ == "__main__":
     # Smoke entry (the CI legacy runner executes this file with `python`):
     # L0-gate shape, output-shape/finite checks, "Test Passed!" on success.
-    # Numerical accuracy is covered by test_example_fla_chunk_o.py
+    # Numerical accuracy is covered by test_fla_chunk_o.py
     # (PyTorch golden).
     import torch_npu  # noqa: F401  (registers .npu() on torch)
 
