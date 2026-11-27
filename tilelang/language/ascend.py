@@ -1,4 +1,5 @@
 from __future__ import annotations
+import weakref
 import tilelang.language as T
 from tvm.tir import PrimExpr, Buffer, BufferRegion, Var
 from typing import Union, Literal  # noqa: F401, UP035
@@ -615,9 +616,18 @@ def dump_tensor(tensor: Buffer, desc: int, dump_size: int, shape_info: tuple = (
     )
 
 
+# Buffer -> Buffer map recording that the destination of a `reinterpretcast`
+# shares its storage with the source. Keys are weak so entries disappear with
+# the traced buffer objects of a completed kernel; values are strong so a
+# chain's intermediate sources outlive the lookup during a trace. Alias
+# lookups must walk chains (a reinterpretcast of a reinterpretcast).
+_reinterpret_cast_sources: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
 def reinterpretcast(dst: Buffer, src: Buffer, casttype: str):
     # return T.call_extern("handle", f"ReinterpretCast", dst.access_ptr("w"), src.access_ptr("r"),
     #                      casttype)
+    _reinterpret_cast_sources[dst] = src
     return T.call_intrin("handle", tir.op.Op.get("tl.ascend_reinterpretcast"), dst.access_ptr("w"), src.access_ptr("r"), casttype)
 
 

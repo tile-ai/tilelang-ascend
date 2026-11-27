@@ -755,6 +755,29 @@ def leaky_relu_inplace(N, alpha, dtype="float"):
     return main
 
 
+def vec_silu_inplace(M, N, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            # in-place: dst == src (the whole buffer)
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+            T.tile.silu(a_ub, a_ub)
+            T.copy(a_ub, B[bx * block_M, by * block_N])
+
+    return main
+
+
 def run_test_activation_inplace(func, golden, N, dtype, target):
     compiled = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
 
@@ -806,8 +829,9 @@ def activation_out_of_place(op_name, N, dtype="float"):
 def run_test_src_after_call(func, golden, N, dtype, target):
     """Check dst correctness and src contents after an out-of-place call.
 
-    AscendC preserves src; PTO rewrites src in place with 1 + exp(-src)
-    (documented backend limitation).
+    Both backends leave src unchanged: the PTO lowering now computes through
+    an internal scratch buffer instead of rewriting src (fixed together with
+    in-place silu/sigmoid).
     """
     compiled = tilelang.compile(func, out_idx=None, pass_configs=pass_configs, target=target)
 
@@ -821,11 +845,7 @@ def run_test_src_after_call(func, golden, N, dtype, target):
     compiled(a, b, c)
 
     torch.testing.assert_close(b, golden(a), rtol=1e-2, atol=1e-2)
-    if target == "pto":
-        expected_src = 1.0 + torch.exp(-a)
-    else:
-        expected_src = a
-    torch.testing.assert_close(c, expected_src, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(c, a, rtol=1e-2, atol=1e-2)
 
 
 @pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
@@ -838,6 +858,150 @@ def test_sigmoid_src_after_call(dtype, target):
 @pytest.mark.parametrize("target", ["ascendc", pytest.param("pto", marks=pytest.mark.low_priority)])
 def test_silu_src_after_call(dtype, target):
     run_test_src_after_call(activation_out_of_place("silu", 256, dtype), lambda a: a * torch.sigmoid(a), 256, dtype, target)
+
+
+def run_test_silu_inplace(M, N, block_M, block_N, dtype, target):
+    func = vec_silu_inplace(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+
+    torch.npu.synchronize()
+
+    result = func(a)
+    ref = torch.nn.functional.silu(a)
+
+    torch.testing.assert_close(result, ref, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("shape", [(256, 256), pytest.param((512, 512), marks=pytest.mark.low_priority)])
+def test_silu_inplace(dtype, target, shape):
+    M, N = shape
+    run_test_silu_inplace(M, N, 128, 128, dtype, target)
+
+
+def vec_silu_reinterpretcast_shared(M, N, src_region=False, dtype="float", chained=False):
+    """dst and src are two differently-named buffers that share one storage
+    slab through T.reinterpretcast (optionally chained). This must take the
+    source-preserving path: the final division needs the original input after
+    dst has been overwritten. With src_region=True, src is passed as a
+    BufferRegion whose .buffer attribute is a fresh Python wrapper of the
+    storage's Buffer: this pins the wrapper-identity case in _is_aliased."""
+    casttype = "float" if dtype == "float" else "half"
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(1, is_npu=True) as (cid, vid):
+            x_ub = T.alloc_ub((M, N), dtype)
+            y_ub = T.alloc_ub((M, N), dtype)
+            z_ub = T.alloc_ub((M, N), dtype)
+            T.copy(A, x_ub)
+            T.reinterpretcast(y_ub, x_ub, casttype)
+            if chained:
+                T.reinterpretcast(z_ub, y_ub, casttype)
+                T.tile.silu(z_ub, x_ub)
+                T.copy(z_ub, B)
+            elif src_region:
+                T.tile.silu(y_ub, x_ub[0:M, 0:N])
+                T.copy(y_ub, B)
+            else:
+                T.tile.silu(y_ub, x_ub)
+                T.copy(y_ub, B)
+
+    return main
+
+
+def run_test_silu_reinterpretcast_shared(M, N, dtype, target, chained, src_region=False):
+    func = vec_silu_reinterpretcast_shared(M, N, src_region, dtype, chained)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    # Fixed pattern covering 2 (the reviewer case) plus representative
+    # positives, negatives and zero; the rest stays varying via a seeded tail.
+    base = torch.tensor(
+        [2.0, -2.0, 1.0, 0.0, 3.0, -1.0, 0.5, -0.5],
+        dtype=torch_dtype,
+    )
+    torch.manual_seed(0)
+    tail = torch.randn(M * N - base.numel(), dtype=torch_dtype)
+    a = torch.cat([base, tail]).reshape(M, N).npu()
+
+    torch.npu.synchronize()
+    b = func(a)
+    torch.npu.synchronize()
+
+    ref = a * torch.sigmoid(a)
+    torch.testing.assert_close(b, ref, rtol=1e-2, atol=1e-2)
+
+    # Generated-code check: the frontend must have inserted the aliasing copy
+    # so the PTO backend never picks the unprotected TSiluNoAlias sequence on
+    # two names that alias.
+    src = func.get_kernel_source()
+    assert "silu_alias_tmp" in src
+
+
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+def test_silu_reinterpretcast_shared_region_src(target):
+    """src as a BufferRegion over the shared storage (fresh Python wrapper of
+    the aliased Buffer): the wrapper-identity case in _is_aliased."""
+    run_test_silu_reinterpretcast_shared(64, 64, "float", target, False, src_region=True)
+
+
+@pytest.mark.parametrize("dtype", ["float", pytest.param("float16", marks=pytest.mark.low_priority)])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("chained", [False, pytest.param(True, marks=pytest.mark.low_priority)])
+def test_silu_reinterpretcast_shared(dtype, target, chained):
+    run_test_silu_reinterpretcast_shared(64, 64, dtype, target, chained)
+
+
+def vec_sigmoid_inplace(M, N, block_M, block_N, dtype="float"):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, N), dtype),  # type: ignore
+        B: T.Tensor((M, N), dtype),  # type: ignore
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, vid):
+            bx = cid // n_num
+            by = cid % n_num
+
+            a_ub = T.alloc_ub((block_M, block_N), dtype)
+
+            T.copy(A[bx * block_M, by * block_N], a_ub)
+            T.tile.sigmoid(a_ub, a_ub)  # in-place: dst == src
+            T.copy(a_ub, B[bx * block_M, by * block_N])
+
+    return main
+
+
+def run_test_sigmoid_inplace(M, N, block_M, block_N, dtype, target):
+    func = vec_sigmoid_inplace(M, N, block_M, block_N, dtype)
+    func = tilelang.compile(func, out_idx=[-1], pass_configs=pass_configs, target=target)
+
+    torch_dtype = torch.float32 if dtype == "float" else torch.float16
+    a = torch.randn(M, N, dtype=torch_dtype).npu()
+
+    torch.npu.synchronize()
+
+    result = func(a)
+
+    torch.testing.assert_close(result, torch.sigmoid(a), rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", ["float", "float16"])
+@pytest.mark.parametrize("target", ["ascendc", "pto"])
+@pytest.mark.parametrize("shape", [(256, 256), pytest.param((512, 512), marks=pytest.mark.low_priority)])
+def test_sigmoid_inplace(dtype, target, shape):
+    M, N = shape
+    run_test_sigmoid_inplace(M, N, 128, 128, dtype, target)
 
 
 def vec_mul_add_dst(M, N, block_M, block_N, dtype="float"):
