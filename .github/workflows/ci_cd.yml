@@ -661,11 +661,14 @@ jobs:
           # TAG 只是防误伤标记，不是跨 PR 的权限隔离（同容器内进程可互相读取环境）。
           CI_EXEC_TAG="${GITHUB_REPOSITORY//[^A-Za-z0-9_-]/_}-r${GITHUB_RUN_ID}-a${GITHUB_RUN_ATTEMPT}-j${GITHUB_JOB//[^A-Za-z0-9_-]/_}"
 
-          # 清理区分三种结果：no_residue（无匹配进程）/ cleaned（已清完）/
-          # kill_failed（复查仍有匹配）。复查只计数、不发信号，remaining 取复查时
-          # 仍存在的匹配进程数。docker exec 失败或超时同样记为清理失败：都以
-          # ::warning:: 和失败标记文件呈现，不覆盖测试退出码；宿主不在共享或容器
-          # 可写文件里按裸 PID 发信号。
+          # 清理结果：no_residue（无匹配且无不可读进程）/ cleaned（已清完）/
+          # kill_failed（复查仍有匹配）/ unconfirmed（有存活但环境不可读的进程，
+          # 无法确认归属）。unreadable 只统计"仍存活但 /proc/<pid>/environ 不可读"
+          # 的进程；扫描期间已退出的进程属于正常竞态，直接跳过。对不可读进程只
+          # 计数、不发信号、不猜测杀除。反复核只计数；remaining 取复查时仍存在的
+          # 匹配数。docker exec 失败或超时同样记为清理失败：都以 ::warning:: 和
+          # 失败标记文件呈现，不覆盖测试退出码；宿主不在共享或容器可写文件里按
+          # 裸 PID 发信号。
           ci_exec_kill_tree() {
             local _ci_tag="$1" _ci_out _ci_rc
             # 整个清理调用用 timeout -k 3s 20s 设总时限，忽略 TERM 的 docker 进程也会
@@ -676,8 +679,20 @@ jobs:
               scan() {
                 for d in /proc/[0-9]*; do
                   p="${d#/proc/}"; [ "$p" = "0" ] && continue
-                  tr "\0" "\n" < "$d/environ" 2>/dev/null | grep -qx "CI_EXEC_TAG=${tag}" && echo "$p"
+                  [ -d "$d" ] || continue
+                  [ "$(awk '{print $3}' "$d/stat" 2>/dev/null)" = "Z" ] && continue
+                  grep -zqx "CI_EXEC_TAG=${tag}" "$d/environ" 2>/dev/null && echo "$p"
                 done
+              }
+              count_unreadable() {
+                u=0
+                for d in /proc/[0-9]*; do
+                  p="${d#/proc/}"; [ "$p" = "0" ] && continue
+                  [ -d "$d" ] || continue
+                  [ "$(awk '{print $3}' "$d/stat" 2>/dev/null)" = "Z" ] && continue
+                  cat "$d/environ" >/dev/null 2>&1 || u=$((u+1))
+                done
+                echo "$u"
               }
               kill_pass() {
                 n=0
@@ -685,17 +700,30 @@ jobs:
                 echo "$n"
               }
               killed="$(kill_pass)"
-              if [ "$killed" = "0" ]; then echo "CLEAN_RESULT=no_residue"; exit 0; fi
+              unreadable="$(count_unreadable)"
+              if [ "$killed" = "0" ] && [ "$unreadable" = "0" ]; then
+                echo "CLEAN_RESULT=no_residue"; exit 0
+              fi
               for attempt in 1 2 3 4; do
                 remaining="$(scan | wc -l)"
-                if [ "$remaining" = "0" ]; then echo "CLEAN_RESULT=cleaned count=${killed}"; exit 0; fi
+                unreadable="$(count_unreadable)"
+                if [ "$remaining" = "0" ] && [ "$unreadable" = "0" ]; then
+                  echo "CLEAN_RESULT=cleaned count=${killed}"; exit 0
+                fi
                 [ "$attempt" = "4" ] && break
                 kill_pass >/dev/null
                 sleep 1
               done
               remaining="$(scan | wc -l)"
-              if [ "$remaining" = "0" ]; then echo "CLEAN_RESULT=cleaned count=${killed}"; exit 0; fi
-              echo "CLEAN_RESULT=kill_failed remaining=${remaining}"
+              unreadable="$(count_unreadable)"
+              if [ "$remaining" = "0" ] && [ "$unreadable" = "0" ]; then
+                echo "CLEAN_RESULT=cleaned count=${killed}"; exit 0
+              fi
+              if [ "$remaining" -gt 0 ]; then
+                echo "CLEAN_RESULT=kill_failed remaining=${remaining} unreadable=${unreadable}"
+              else
+                echo "CLEAN_RESULT=unconfirmed unreadable=${unreadable}"
+              fi
               exit 1' 2>&1)"
             _ci_rc=$?
             if [ "$_ci_rc" -eq 124 ] || [ "$_ci_rc" -eq 137 ]; then
@@ -704,35 +732,38 @@ jobs:
                 > "${RUNNER_TEMP}/ci_exec_cleanup_failed_${_ci_tag}" 2>/dev/null
               return 1
             fi
-            if [ "$_ci_rc" -ne 0 ] || printf '%s\n' "$_ci_out" | grep -q "CLEAN_RESULT=kill_failed"; then
-              echo "::warning:: CI 容器残留清理失败(rc=${_ci_rc}): $(printf '%s' "$_ci_out" | tr '\n' ' ' | head -c 300)"
+            if [ "$_ci_rc" -ne 0 ] || printf '%s\n' "$_ci_out" | grep -qE "CLEAN_RESULT=(kill_failed|unconfirmed)"; then
+              echo "::warning:: CI 容器残留清理未确认完成或失败(rc=${_ci_rc}): $(printf '%s' "$_ci_out" | tr '\n' ' ' | head -c 300)"
               echo "rc=${_ci_rc} out=$(printf '%s' "$_ci_out" | head -c 300)" \
                 > "${RUNNER_TEMP}/ci_exec_cleanup_failed_${_ci_tag}" 2>/dev/null
               return 1
             fi
             return 0
           }
-          export -f ci_exec_kill_tree
 
           # 取消时 runner 只杀宿主侧步骤进程树，trap 不执行：由脱离该进程树
-          # （双重 fork + setsid，PPID 重挂 init）的宿主看门狗兜底清理。看门狗不持有
-          # 步骤管道、清理完自退。清理条件只有宿主侧 bash 已死（PID 不存在，或
-          # starttime 不匹配以排除 PID 复用）。
+          # （双重 fork + setsid，PPID 重挂 init）的宿主看门狗兜底清理。看门狗以
+          # 最小环境（env -i，仅保留 PATH）运行：不继承步骤环境的任何 runner
+          # 标记（如 RUNNER_TRACKING_ID），即便 runner 按环境标记回收步骤后代
+          # 进程，也不会在看门狗执行清理前终止它。这仅是针对该有明确退出条件的
+          # 执行器的例外，不关闭 runner 的进程回收，测试任务本身照常被回收。
+          # 清理函数源码内嵌（declare -f），不依赖 export -f 传递。
           CI_WRAPPER_PID=$$
           CI_WRAPPER_START="$(awk '{print $22}' "/proc/$$/stat")"
-          ( setsid bash -c '
-              ci_wpid="$1"; ci_wstart="$2"; ci_tag="$3"
+          ( env -i PATH="$PATH" setsid bash -c '
+              ci_wpid="$1"; ci_wstart="$2"; ci_tag="$3"; ci_tmp="$4"; ci_fn="$5"
+              eval "$ci_fn"
               wrapper_alive() {
                 [ -d "/proc/${ci_wpid}" ] || return 1
                 [ "$(awk "{print \$22}" "/proc/${ci_wpid}/stat" 2>/dev/null)" = "${ci_wstart}" ]
               }
               while :; do
                 if ! wrapper_alive; then
-                  ci_exec_kill_tree "$ci_tag"
+                  RUNNER_TEMP="$ci_tmp" ci_exec_kill_tree "$ci_tag" || true
                   exit 0
                 fi
                 sleep 5
-              done' _ "$CI_WRAPPER_PID" "$CI_WRAPPER_START" "$CI_EXEC_TAG" >/dev/null 2>&1 & )
+              done' _ "$CI_WRAPPER_PID" "$CI_WRAPPER_START" "$CI_EXEC_TAG" "$RUNNER_TEMP" "$(declare -f ci_exec_kill_tree)" >/dev/null 2>&1 & )
 
           # 正常退出/收到 TERM 时的主动清理（被 KILL 的场景由看门狗兜底）。
           # 陷阱入口先保存原退出码；陷阱体内关闭 errexit，保证 docker exec 失败时
