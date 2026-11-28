@@ -53,6 +53,12 @@ private:
   // shorter mma addresses the wrong K-blocks. Applies to matrix_b only, since
   // matrix_a is [M, K] and has no N.
   PrimExpr realN;
+  // L0C->GM per-tensor dequant scale (undefined = no quantized epilogue).
+  // Rides as the final call argument and switches the lowering to
+  // copy_l0c_to_gm_quant, whose Fixpipe applies the scale while writing out
+  // (W8A8-style quantized output without the manual UB dequant round-trip).
+  // Ignored by every scope pair other than wmma.accumulator -> global.
+  PrimExpr deqScale;
 };
 
 class AscendAtomicAdd : public Operator {

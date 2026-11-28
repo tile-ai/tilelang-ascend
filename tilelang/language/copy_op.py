@@ -264,6 +264,7 @@ def npu_copy_v2(
     unit_flag: int | None = None,
     real_k: int | tir.PrimExpr | None = None,
     real_n: int | tir.PrimExpr | None = None,
+    scale: float | None = None,
 ):
     """Copy data between memory regions.
 
@@ -300,6 +301,29 @@ def npu_copy_v2(
             stride from the column count, so a full-width load followed by a
             shorter ``T.mma(n_actual=...)`` addresses the wrong K-blocks. Applies
             to matrix_b only, since matrix_a is ``[M, K]`` and has no N.
+        scale (float | None): Per-tensor dequant/quant scale applied by the
+            hardware Fixpipe while writing L0C out to GM (W8A8-style quantized
+            epilogue without the manual UB dequant round-trip). None -> plain
+            copy, byte-identical to before. Only valid on
+            ``wmma.accumulator -> global`` copies of a RowMajor GM output;
+            supported (accumulator, output) dtype pairs follow the A2 fixpipe
+            quant-mode matrix: float32 -> int8/uint8 (quantize), int32 ->
+            int8/uint8 (quantize), int32 -> float16 (dequantize).
+
+            Measured A2 hardware contract (verified bit-exact on NPU):
+            the effective scale is taken at half precision (the deq multiply
+            rides a half-precision channel), and 8-bit outputs follow
+            UNSIGNED saturation: ``sat_u8(rint(acc * fp16(scale)))`` --
+            negative products clamp to 0 and values >= 256 saturate at 255,
+            with the bits stored raw into the 8-bit container (an int8 output
+            therefore carries uint8 semantics; signed int8 quantization is
+            not what this hardware path computes). The int32 -> float16 mode
+            dequantizes signed: ``half(acc * fp16(scale))``. When comparing
+            against a reference, allow +/-1 on 8-bit outputs around rounding
+            boundaries: exact ties and power-of-two scales take internal
+            normalisation paths whose tie handling differs (tie values may
+            round down). Ignored by the pto target (it has no fixpipe
+            quantization path). Per-channel granularity is not supported yet.
 
     Raises:
         TypeError: If copy extents cannot be deduced from arguments
@@ -312,6 +336,33 @@ def npu_copy_v2(
             _check_cross_cv_shapes(src.shape, dst.shape)
         else:
             ir.assert_structural_equal(src.shape, dst.shape)
+
+    # The per-tensor quantized epilogue is a Fixpipe-side hardware path: the
+    # (accumulator, output) dtype pair must be one the A2 fixpipe quant-mode
+    # matrix covers, and the scale must be a compile-time float. Validate
+    # before src/dst are rebased to region calls below, while the raw
+    # Buffer/BufferLoad forms are still at hand.
+    if scale is not None:
+
+        def _buf_dtype(data):
+            if isinstance(data, tir.Var) and T.has_let_value(data):
+                data = T.get_let_value(data)
+            if isinstance(data, tir.Buffer):
+                return data.dtype
+            if isinstance(data, (tir.BufferLoad, tir.BufferRegion)):
+                return data.buffer.dtype
+            return None
+
+        src_dt, dst_dt = _buf_dtype(src), _buf_dtype(dst)
+        allowed = {
+            ("float32", "int8"),  # QF322B8_PRE: quantize fp32 accumulator
+            ("float32", "uint8"),
+            ("int32", "int8"),  # REQ8: quantize W8A8 int32 accumulator
+            ("int32", "uint8"),
+            ("int32", "float16"),  # DEQF16: dequantize int32 accumulator
+        }
+        if (src_dt, dst_dt) not in allowed:
+            raise ValueError(f"copy scale supports {sorted(allowed)} (accumulator, output) dtype pairs, got ({src_dt}, {dst_dt})")
 
     # src_shape = src.shape if isinstance(src, tir.Buffer) else src.buffer.shape
 
@@ -390,12 +441,17 @@ def npu_copy_v2(
     def _as_expr(value):
         return value if isinstance(value, tir.PrimExpr) else tir.IntImm("int32", int(value))
 
-    if unit_flag is not None or real_k is not None or real_n is not None:
+    if unit_flag is not None or real_k is not None or real_n is not None or scale is not None:
         copy_args.append(tir.IntImm("int32", int(unit_flag) if unit_flag is not None else 0))
-        if real_k is not None or real_n is not None:
+        if real_k is not None or real_n is not None or scale is not None:
             copy_args.append(_as_expr(real_k) if real_k is not None else tir.IntImm("int32", 0))
-            if real_n is not None:
-                copy_args.append(_as_expr(real_n))
+            if real_n is not None or scale is not None:
+                copy_args.append(_as_expr(real_n) if real_n is not None else tir.IntImm("int32", 0))
+        if scale is not None:
+            if isinstance(scale, (int, float)):
+                copy_args.append(tir.FloatImm("float32", float(scale)))
+            else:
+                raise TypeError(f"copy scale must be a compile-time float, got {type(scale).__name__}")
 
     return tir.call_intrin("handle", tir.op.Op.get("tl.ascend_copy"), *copy_args)
 
