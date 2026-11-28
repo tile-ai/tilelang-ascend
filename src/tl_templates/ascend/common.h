@@ -363,6 +363,46 @@ copy_l0c_to_gm(GlobalTensor<T2> dstTensor, LocalTensor<T1> srcTensor,
   tileCopier(dst, src, unitFlag);
 }
 
+// Quantized L0C->GM epilogue: the Fixpipe applies deqScale while writing out,
+// so a W8A8-style kernel avoids the manual UB dequant round-trip entirely.
+// PER_TENSOR granularity only: the scale is a scalar float whose raw bits the
+// hardware reinterprets (catlass packs it into FixpipeParams.deqScalar).
+// Supported (acc -> out) pairs follow the catlass A2 quant-mode matrix:
+// float -> int8/uint8 (QF322B8_PRE), int32 -> int8/uint8 (REQ8),
+// int32 -> half (DEQF16). The quantized CopyL0CToGm specializations take raw
+// layouts rather than tla tensors, and exist only for RowMajor GM dst.
+template <typename T1, typename T2, typename LayoutGM, uint32_t srcM,
+          uint32_t srcN, bool enRelu = false>
+CATLASS_DEVICE void
+copy_l0c_to_gm_quant(GlobalTensor<T2> dstTensor, LocalTensor<T1> srcTensor,
+                     uint32_t realDstN = 1, uint32_t realTailM = 0,
+                     uint32_t realTailN = 0, uint8_t unitFlag = 0,
+                     float deqScale = 1.0f) {
+  static_assert(
+      std::is_same_v<LayoutGM, layout::RowMajor>,
+      "copy_l0c_to_gm_quant only supports RowMajor GM output: the catlass "
+      "quantized CopyL0CToGm specializations are RowMajor-only");
+  uint32_t tailM = realTailM == 0 ? srcM : realTailM;
+  uint32_t tailN = realTailN == 0 ? srcN : realTailN;
+  // zN::MakeLayoutInL0C reproduces tla::MakeLayoutL0C's fractal layout, so
+  // srcStride = stride(3) / stride(0) = RoundUp<16>(srcM) matches what the
+  // NO_QUANT tla path computes from get<1,1>/get<0,0>.
+  auto srcLayout =
+      Catlass::layout::zN::MakeLayoutInL0C(Catlass::MatrixCoord(srcM, srcN));
+  // RowMajor(rows, cols, ldm) carries both the tile extent (mSize/nSize read
+  // shape(0/1)) and the full GM row pitch (dstStride reads stride(0)).
+  auto dstLayout =
+      Catlass::layout::RowMajor(tailM, tailN, static_cast<int64_t>(realDstN));
+  using QuantCopier =
+      CopyL0CToGm<ArchTag, T1, Gemm::GemmType<T2, Catlass::layout::RowMajor>,
+                  ScaleGranularity::PER_TENSOR, enRelu>;
+  QuantCopier tileCopier{typename QuantCopier::Params{deqScale}};
+  // unitFlag pairs with the Mmad unitFlag exactly as in copy_l0c_to_gm; the
+  // scale table config (SetFixPipeConfig) is PER_CHANNEL-only and is not
+  // touched on the scalar deqScalar path.
+  tileCopier(dstTensor, srcTensor, dstLayout, srcLayout, unitFlag);
+}
+
 template <uint32_t M, uint32_t N, uint32_t K, uint32_t block_M,
           uint32_t block_N, uint32_t SwizzleOffset = 1,
           uint32_t SwizzleDirection = 0>

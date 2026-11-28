@@ -2800,6 +2800,15 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
         static_cast<int>(op->args.size()) >= kL0cToGmArgc) {
       this->stream << ", " << PrintExpr(op->args[kL0cToGmArgc - 1]);
     }
+    // The quantized epilogue (copy_l0c_to_gm_quant) carries the per-tensor
+    // dequant scale behind unitFlag. The kCopyOpExtraArgs prefix match above
+    // already routes this op through the shared l0c-to-gm handling, so only
+    // the extra trailing argument needs dedicated emission.
+    constexpr int kL0cToGmQuantArgc = 11;
+    if (op_name.find("copy_l0c_to_gm_quant") != std::string::npos &&
+        static_cast<int>(op->args.size()) >= kL0cToGmQuantArgc) {
+      this->stream << ", " << PrintExpr(op->args[kL0cToGmQuantArgc - 1]);
+    }
 
     this->stream << ");\n";
   } else {

@@ -332,6 +332,144 @@ def test_gemm_v0_int8_kl0split_eq1(transpose_A, transpose_B):
 
 
 # ============================================================
+# Quantized epilogue (T.copy scale) tests
+# ============================================================
+
+
+def _gemm_v0_quant_kernel(M, N, K, block_M, block_N, K_L1, in_dtype="int8", acc_dtype="int32", out_dtype="int8", scale=0.25 / 127.0):
+    m_num = M // block_M
+    n_num = N // block_N
+
+    @T.prim_func
+    def main(
+        A: T.Tensor((M, K), in_dtype),
+        B: T.Tensor((K, N), in_dtype),
+        C: T.Tensor((M, N), out_dtype),
+    ):
+        with T.Kernel(m_num * n_num, is_npu=True) as (cid, _):
+            bx = cid // n_num
+            by = cid % n_num
+
+            A_L1 = T.alloc_L1((block_M, K_L1), in_dtype)
+            B_L1 = T.alloc_L1((K_L1, block_N), in_dtype)
+            C_L0 = T.alloc_L0C((block_M, block_N), acc_dtype)
+
+            with T.Scope("C"):
+                loop_k = T.ceildiv(K, K_L1)
+                for k in T.serial(loop_k):
+                    T.copy(A[bx * block_M, k * K_L1], A_L1)
+                    T.copy(B[k * K_L1, by * block_N], B_L1)
+                    T.gemm_v0(A_L1, B_L1, C_L0, init=(k == 0))
+
+                T.copy(C_L0, C[bx * block_M, by * block_N], scale=scale)
+
+    return main
+
+
+def _quant_ref(acc_f32, scale, out_dtype):
+    # Measured A2 fixpipe contract (bit-exact on NPU for non-power-of-two
+    # scales): the effective scale is taken at half precision, and 8-bit
+    # outputs follow UNSIGNED saturation -- negatives clamp to 0, values
+    # >= 256 saturate at 255, bits stored raw into the container. The
+    # int32 -> half mode dequantizes signed without rounding.
+    scale_h = torch.tensor(scale, dtype=torch.float32).to(torch.float16).to(torch.float32)
+    x = acc_f32 * scale_h
+    if out_dtype in (torch.int8, torch.uint8):
+        return torch.round(x).clamp(0, 255).to(torch.uint8).to(out_dtype)
+    return x.to(torch.float16)
+
+
+def _run_quant_case(in_dtype, acc_dtype, out_dtype, scale):
+    M, N, K = 256, 256, 256
+    block_M, block_N, K_L1 = 128, 128, 128
+
+    program = _gemm_v0_quant_kernel(M, N, K, block_M, block_N, K_L1, in_dtype, acc_dtype, out_dtype, scale)
+    kernel = _compile(program, "ascendc")
+
+    torch.manual_seed(42)
+    if in_dtype == "int8":
+        a = torch.randint(-128, 128, (M, K), dtype=torch.int8, device="npu")
+        b = torch.randint(-128, 128, (K, N), dtype=torch.int8, device="npu")
+    else:
+        a = torch.randn(M, K, dtype=torch.float16, device="npu")
+        b = torch.randn(K, N, dtype=torch.float16, device="npu")
+    torch_dt = {"int8": torch.int8, "uint8": torch.uint8, "float16": torch.float16}[out_dtype]
+    c = torch.zeros(M, N, dtype=torch_dt, device="npu")
+
+    torch.npu.synchronize()
+    kernel(a, b, c)
+    torch.npu.synchronize()
+
+    # The 8-bit reference matmul is computed on CPU like the int8 tests above.
+    acc = a.cpu().to(torch.float32) @ b.cpu().to(torch.float32)
+    ref = _quant_ref(acc, scale, torch_dt)
+
+    if torch_dt in (torch.int8, torch.uint8):
+        # +/-1 tolerance covers the deq multiply's internal rounding-boundary
+        # behaviour (exact ties / power-of-two scales take normalisation paths
+        # whose tie handling differs); realistic scales come out bit-exact.
+        diff = (c.cpu().to(torch.int32) - ref.to(torch.int32)).abs()
+        assert diff.max().item() <= 1, f"quantized epilogue max diff {diff.max().item()} > 1"
+    else:
+        torch.testing.assert_close(c.cpu(), ref, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
+@pytest.mark.parametrize(
+    "in_dtype,acc_dtype,out_dtype,scale",
+    [
+        ("int8", "int32", "int8", 0.25 / 127.0),  # W8A8 quantize, REQ8
+        ("int8", "int32", "uint8", 0.5 / 127.0),  # unsigned quantize
+        ("int8", "int32", "int8", 1.5),  # saturation: products beyond 255
+        ("int8", "int32", "float16", 1.0 / 127.0),  # DEQF16 dequantize, signed
+        ("float16", "float32", "int8", 0.25 / 127.0),  # QF322B8_PRE quantize
+        ("float16", "float32", "uint8", 0.5 / 127.0),  # QF322B8_PRE unsigned
+    ],
+)
+def test_gemm_v0_quant_epilogue(in_dtype, acc_dtype, out_dtype, scale):
+    _run_quant_case(in_dtype, acc_dtype, out_dtype, scale)
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
+def test_copy_scale_rejects_unsupported_dtype_pair(capfd):
+    # float32 acc -> float16 out has no A2 fixpipe quant-mode specialization
+    # (int32 -> float16 is the legal DEQF16 pair, so use the fp32 accumulator);
+    # the Python layer must reject it up front with a clear message. The
+    # script tracer renders the raise through the TVM diagnostic machinery
+    # (generic DiagnosticError with the real text on stderr), so assert on
+    # the captured stderr rather than the exception message.
+    with pytest.raises(Exception):
+        _gemm_v0_quant_kernel(256, 256, 256, 128, 128, 128, "float16", "float32", "float16", 0.5)
+    assert "dtype pairs" in capfd.readouterr().err
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "npu") and torch.npu.is_available()),
+    reason="gemm_v0 correctness requires an Ascend NPU runtime",
+)
+def test_copy_scale_rejects_non_l0c_scope():
+    # scale rides the L0C->GM fixpipe only; a GM->UB copy must refuse it
+    # at lowering rather than silently dropping the scale. The (int32, int8)
+    # dtype pair passes the Python-layer matrix check so this exercise
+    # reaches -- and is rejected by -- the C++ scope guard.
+    @T.prim_func
+    def main(A: T.Tensor((64, 64), "int32"), C: T.Tensor((64, 64), "int8")):
+        with T.Kernel(1, is_npu=True) as (cid, _):
+            A_ub = T.alloc_ub((64, 64), "int8")
+            with T.Scope("V"):
+                T.copy(A[cid * 64, 0], A_ub, scale=0.5)
+
+    with pytest.raises(Exception, match="scale is only supported"):
+        _compile(main, "ascendc")
+
+
+# ============================================================
 # Supplementary dtype coverage tests
 # ============================================================
 

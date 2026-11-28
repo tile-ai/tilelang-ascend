@@ -86,6 +86,11 @@ AscendCopy::AscendCopy(Array<PrimExpr> args, BufferMap vmap) : args_(args) {
   if (args.size() >= 9) {
     realN = args[8];
   }
+  // Per-tensor dequant scale for the quantized L0C->GM epilogue. Absent for
+  // every existing caller; defined only when T.copy was given scale=...
+  if (args.size() >= 10) {
+    deqScale = args[9];
+  }
   std::tie(this->src, this->dst) = std::tie(bf[0], bf[1]);
   std::tie(this->src_range, this->dst_range) = std::tie(rgs[0], rgs[1]);
   std::tie(this->src_extents, this->dst_extents) = std::tie(ets[0], ets[1]);
@@ -387,7 +392,11 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     config.l12l0 = true;
     config.l0_dst_split = true;
   } else if (src.scope() == "wmma.accumulator" && dst.scope() == "global") {
-    ss << "copy_l0c_to_gm";
+    if (deqScale.defined()) {
+      ss << "copy_l0c_to_gm_quant";
+    } else {
+      ss << "copy_l0c_to_gm";
+    }
     config.l0c2gm = true;
     config.print_gm_layout = true;
   } else if (src.scope() == "shared.ub" || dst.scope() == "shared.ub") {
@@ -520,6 +529,16 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   } else {
     LOG(FATAL) << "Unsupported scope: src = " << src.scope()
                << ", dst = " << dst.scope();
+  }
+
+  // The per-tensor dequant scale is a Fixpipe-side quantization knob: it only
+  // exists on the L0C->GM epilogue. Reject it everywhere else loudly rather
+  // than silently dropping the scale (a caller who quantizes UB->GM would get
+  // unquantized output and never notice).
+  if (deqScale.defined() && !config.l0c2gm) {
+    LOG(FATAL) << "scale is only supported on wmma.accumulator -> global "
+                  "copies, got src = "
+               << src.scope() << ", dst = " << dst.scope();
   }
 
   if (!config.print_ub) {
@@ -846,6 +865,13 @@ Stmt AscendCopy::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     // relu flag among them). The ascendc codegen picks it up off the end and
     // emits it in the position the C++ helper expects.
     new_args.push_back(unitFlag);
+    // The dequant scale rides behind unitFlag (same tail-append contract):
+    // absent for every unquantized copy, present only for the quantized
+    // epilogue. The ascendc codegen emits it after unitFlag; the PTO codegen
+    // ignores it (pto has no fixpipe quantization path).
+    if (deqScale.defined()) {
+      new_args.push_back(deqScale);
+    }
   }
 
   if (config.gm2l1) {
