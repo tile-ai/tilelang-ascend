@@ -10,8 +10,8 @@
 #include "catlass/gemm/tile/atlasa2/copy_l0c_to_gm.hpp"
 #include "catlass/gemm/tile/atlasa2/copy_l1_to_l0a.hpp"
 #include "catlass/gemm/tile/atlasa2/copy_l1_to_l0b.hpp"
-#include "catlass/gemm/tile/copy_l1_to_fp.hpp"
 #include "catlass/gemm/tile/atlasa2/copy_ub_to_gm.hpp"
+#include "catlass/gemm/tile/copy_l1_to_fp.hpp"
 #include "catlass/layout/layout.hpp"
 #include "copy_gm_to_l1_faq.h"
 
@@ -179,7 +179,7 @@ copy_gm_to_l1(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
       const LayoutGM src_layout(tailM, tailN, realSrcN);
       using GmType = Catlass::Gemm::GemmType<T, LayoutGM>;
       CopyGmToL1GMMPTD<ArchTag, GmType>{}(dstTensor, srcTensor, dst_layout,
-                                        src_layout);
+                                          src_layout);
       return;
     }
   }
@@ -373,9 +373,9 @@ copy_l0c_to_gm(GlobalTensor<T2> dstTensor, LocalTensor<T1> srcTensor,
 // Explicit Fixpipe path used by the aligned A3 INT8 matmul example.
 // The caller validates the positive power-of-two scale and FP16 range.
 template <uint32_t M, uint32_t N>
-CATLASS_DEVICE void copy_l0c_to_gm_per_tensor_fp16(
-    GlobalTensor<half> dst, LocalTensor<int32_t> src, uint32_t dst_pitch,
-    float scale) {
+CATLASS_DEVICE void
+copy_l0c_to_gm_per_tensor_fp16(GlobalTensor<half> dst, LocalTensor<int32_t> src,
+                               uint32_t dst_pitch, float scale) {
   using Copier = Catlass::Gemm::Tile::CopyL0CToGm<
       ArchTag, int32_t, Catlass::Gemm::GemmType<half, layout::RowMajor>,
       Catlass::Gemm::Tile::ScaleGranularity::PER_TENSOR>;
@@ -392,9 +392,12 @@ CATLASS_DEVICE void copy_l0c_to_gm_per_channel_fp16(
     GlobalTensor<half> dst, LocalTensor<int32_t> src, uint32_t dst_pitch,
     GlobalTensor<uint64_t> scale_gm, LocalTensor<uint32_t> scale_storage) {
   using Vector = layout::VectorLayout;
-  using ScaleGM = Catlass::Gemm::GemmType<uint64_t, Vector, AscendC::TPosition::GM>;
-  using ScaleL1 = Catlass::Gemm::GemmType<uint64_t, Vector, AscendC::TPosition::A1>;
-  using ScaleFP = Catlass::Gemm::GemmType<uint64_t, Vector, AscendC::TPosition::C2PIPE2GM>;
+  using ScaleGM =
+      Catlass::Gemm::GemmType<uint64_t, Vector, AscendC::TPosition::GM>;
+  using ScaleL1 =
+      Catlass::Gemm::GemmType<uint64_t, Vector, AscendC::TPosition::A1>;
+  using ScaleFP =
+      Catlass::Gemm::GemmType<uint64_t, Vector, AscendC::TPosition::C2PIPE2GM>;
   using Copier = Catlass::Gemm::Tile::CopyL0CToGm<
       ArchTag, int32_t, Catlass::Gemm::GemmType<half, layout::RowMajor>,
       Catlass::Gemm::Tile::ScaleGranularity::PER_CHANNEL>;

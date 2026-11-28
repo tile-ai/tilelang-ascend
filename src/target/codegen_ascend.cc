@@ -2678,8 +2678,8 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
   auto src_offset = PrintExpr(src_offset_expr);
   auto dst_offset = PrintExpr(dst_offset_expr);
 
-  const bool channel_fixpipe = op_name.rfind(
-      "tl::ascend::copy_l0c_to_gm_per_channel_fp16<", 0) == 0;
+  const bool channel_fixpipe =
+      op_name.rfind("tl::ascend::copy_l0c_to_gm_per_channel_fp16<", 0) == 0;
 
   static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
       {"copy_l0c_to_gm", 3},       {"copy_gm_to_l1", 3},
@@ -2712,7 +2712,8 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
       extra_args = available;
     }
     if (channel_fixpipe) {
-      ICHECK_EQ(available, 3) << "Channel Fixpipe expects a stride and two scale tensors";
+      ICHECK_EQ(available, 3)
+          << "Channel Fixpipe expects a stride and two scale tensors";
     }
     std::vector<std::string> var_names;
     for (int i = 0; i < extra_args; ++i) {
