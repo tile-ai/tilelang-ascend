@@ -221,6 +221,30 @@ def test_full_copy_plain(dtype, accum_dtype):
     run_test_full_copy_plain(128, 128, 128, 128, 128, 128, dtype, accum_dtype)
 
 
+@pytest.mark.parametrize("k,k_l1", [(64, 64), (72, 64), (80, 64), (128, 16)])
+def test_full_copy_plain_single_c0(k, k_l1):
+    """Compare a full C0-wide copy and its short and eligible K tails."""
+    m, n = 32, 16
+    program = full_copy_plain(m, n, k, m, n, k_l1, "float16", "float32")
+    optimized = tilelang.compile(program, out_idx=[-1], pass_configs=CUBE_CONFIGS, target=TARGET)
+    baseline = tilelang.compile(
+        program,
+        out_idx=[-1],
+        pass_configs=CUBE_CONFIGS,
+        target=TARGET,
+        compile_flags=["-DTILELANG_ASCEND_DISABLE_GM_TO_L1_C0_COPY"],
+    )
+    torch.manual_seed(0)
+    a = torch.randn(m, k, dtype=torch.float16).npu()
+    b = torch.randn(k, n, dtype=torch.float16).npu()
+    actual = optimized(a, b)
+    expected = baseline(a, b)
+    torch.testing.assert_close(actual, a @ b, rtol=1e-2, atol=1e-2)
+    actual_bits = actual.cpu().contiguous().view(torch.int16)
+    expected_bits = expected.cpu().contiguous().view(torch.int16)
+    assert torch.equal(actual_bits, expected_bits)
+
+
 # =============================================================================
 # Group 2 - K-tail GEMM (clearing regression guard)   [risk: low]
 # K is not divisible by K_L1; the last K-tile is partial.  The clearing
