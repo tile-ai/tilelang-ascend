@@ -2678,6 +2678,9 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
   auto src_offset = PrintExpr(src_offset_expr);
   auto dst_offset = PrintExpr(dst_offset_expr);
 
+  const bool channel_fixpipe = op_name.rfind(
+      "tl::ascend::copy_l0c_to_gm_per_channel_fp16<", 0) == 0;
+
   static const std::unordered_map<std::string, int> kCopyOpExtraArgs = {
       {"copy_l0c_to_gm", 3},       {"copy_gm_to_l1", 3},
       {"copy_l1_to_l0a", 2},       {"copy_l1_to_l0b", 2},
@@ -2708,11 +2711,20 @@ void CodeGenTileLangAscend::CopyCodegen(const CallNode *op) {
     if (extra_args > available) {
       extra_args = available;
     }
+    if (channel_fixpipe) {
+      ICHECK_EQ(available, 3) << "Channel Fixpipe expects a stride and two scale tensors";
+    }
     std::vector<std::string> var_names;
     for (int i = 0; i < extra_args; ++i) {
-      auto expr = op->args[3 + i];
-      std::string var_name = PrintExpr(expr);
-      var_names.push_back(var_name);
+      const auto &expr = op->args[3 + i];
+      if (channel_fixpipe && i > 0) {
+        const auto *access = expr.as<CallNode>();
+        ICHECK(access && access->op.same_as(builtin::tvm_access_ptr()))
+            << "Channel Fixpipe scale arguments must be tensor access pointers";
+        var_names.push_back(PrintBufferOffset(access, true));
+      } else {
+        var_names.push_back(PrintExpr(expr));
+      }
     }
 
     this->PrintIndent();

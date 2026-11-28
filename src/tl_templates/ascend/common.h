@@ -10,8 +10,10 @@
 #include "catlass/gemm/tile/atlasa2/copy_l0c_to_gm.hpp"
 #include "catlass/gemm/tile/atlasa2/copy_l1_to_l0a.hpp"
 #include "catlass/gemm/tile/atlasa2/copy_l1_to_l0b.hpp"
+#include "catlass/gemm/tile/copy_l1_to_fp.hpp"
 #include "catlass/gemm/tile/atlasa2/copy_ub_to_gm.hpp"
 #include "catlass/layout/layout.hpp"
+#include "copy_gm_to_l1_faq.h"
 
 #if defined(__has_include)
 #if __has_include("version/cann_version.h")
@@ -163,6 +165,25 @@ copy_gm_to_l1(LocalTensor<T> dstTensor, GlobalTensor<T> srcTensor,
     }
     return;
   }
+#if !defined(TILELANG_ASCEND_DISABLE_GM_TO_L1_C0_COPY)
+  if constexpr (std::is_same_v<T, half> && dstN == ELE_PER_C0 &&
+                dstM >= C0_PER_FRACTAL) {
+    // A single C0 column block is contiguous in both RowMajor and zN.
+    // Keep the padded destination layout and the original padding clear above.
+    if (realSrcN == ELE_PER_C0 && tailN == ELE_PER_C0 &&
+        tailM >= C0_PER_FRACTAL && tailM <= dstM &&
+        EleNumToBytes<T>(fractalExtent) <= ArchTag::L1_SIZE &&
+        (uint64_t)srcTensor.GetPhyAddr() % BYTE_PER_C0 == 0 &&
+        (uint64_t)dstTensor.GetPhyAddr() % BYTE_PER_C0 == 0) {
+      const auto dst_layout = LayoutL1::MakeLayout<T>(dstM, dstN);
+      const LayoutGM src_layout(tailM, tailN, realSrcN);
+      using GmType = Catlass::Gemm::GemmType<T, LayoutGM>;
+      CopyGmToL1GMMPTD<ArchTag, GmType>{}(dstTensor, srcTensor, dst_layout,
+                                        src_layout);
+      return;
+    }
+  }
+#endif
   auto src_full_layout = tla::MakeLayout<T, LayoutGM>(tailM, realSrcN);
   auto src_full =
       tla::MakeTensor(srcTensor, src_full_layout, Arch::PositionGM{});
@@ -288,8 +309,7 @@ CATLASS_DEVICE void copy_l1_to_l0b(LocalTensor<T> dstTensor,
   tileCopier(dst, src);
 }
 
-template <typename T1, typename T2, uint32_t M, uint32_t N,
-          bool useHf32 = false>
+template <typename T1, typename T2, uint32_t M, uint32_t N>
 CATLASS_DEVICE void mma(LocalTensor<T1> const A, LocalTensor<T1> const B,
                         LocalTensor<T2> const C, bool init, uint32_t K,
                         uint32_t n_actual = N, uint8_t unitFlag = 0) {
@@ -315,20 +335,7 @@ CATLASS_DEVICE void mma(LocalTensor<T1> const A, LocalTensor<T1> const B,
   // existing caller is byte-for-byte unchanged.
   mmadParams.unitFlag = unitFlag;
 
-  // HF32 mode: rounds FP32 operands in L0A/L0B to the 10-bit-mantissa HF32
-  // format before the cube multiply (tf32-class throughput). Only meaningful
-  // for FP32 inputs; other dtypes silently ignore it (the hardware mode
-  // simply does not affect non-fp32 paths). Scoped: set before Mmad and
-  // restored right after, so no state leaks past this helper.
-  if constexpr (useHf32 && std::is_same_v<T1, float>) {
-    AscendC::SetHF32Mode(AscendC::HF32Mode::ENABLE);
-  }
-
   Mmad(C, A, B, mmadParams);
-
-  if constexpr (useHf32 && std::is_same_v<T1, float>) {
-    AscendC::SetHF32Mode(AscendC::HF32Mode::DISABLE);
-  }
 
   constexpr uint32_t PIPE_M_BARRIER_THRESHOLD = 10;
   // if constexpr ((M / C0_NUM_PER_FRACTAL) * (N / C0_NUM_PER_FRACTAL) <
@@ -361,6 +368,52 @@ copy_l0c_to_gm(GlobalTensor<T2> dstTensor, LocalTensor<T1> srcTensor,
   // form the hardware mma->fixpipe pipeline; CopyL0CToGmTla already plumbs it
   // through to FixpipeParams.
   tileCopier(dst, src, unitFlag);
+}
+
+// Explicit Fixpipe path used by the aligned A3 INT8 matmul example.
+// The caller validates the positive power-of-two scale and FP16 range.
+template <uint32_t M, uint32_t N>
+CATLASS_DEVICE void copy_l0c_to_gm_per_tensor_fp16(
+    GlobalTensor<half> dst, LocalTensor<int32_t> src, uint32_t dst_pitch,
+    float scale) {
+  using Copier = Catlass::Gemm::Tile::CopyL0CToGm<
+      ArchTag, int32_t, Catlass::Gemm::GemmType<half, layout::RowMajor>,
+      Catlass::Gemm::Tile::ScaleGranularity::PER_TENSOR>;
+  const auto src_layout = layout::zN::MakeLayoutInL0C(MatrixCoord(M, N));
+  const layout::RowMajor dst_layout(M, N, dst_pitch);
+  Copier copier(typename Copier::Params{scale});
+  copier(dst, src, dst_layout, src_layout);
+}
+
+// One explicit A3 epilogue per cube. The GM tensor contains prevalidated
+// uint64 scale words. L1 staging is a separate allocation from the operands.
+template <uint32_t M, uint32_t N>
+CATLASS_DEVICE void copy_l0c_to_gm_per_channel_fp16(
+    GlobalTensor<half> dst, LocalTensor<int32_t> src, uint32_t dst_pitch,
+    GlobalTensor<uint64_t> scale_gm, LocalTensor<uint32_t> scale_storage) {
+  using Vector = layout::VectorLayout;
+  using ScaleGM = Catlass::Gemm::GemmType<uint64_t, Vector, AscendC::TPosition::GM>;
+  using ScaleL1 = Catlass::Gemm::GemmType<uint64_t, Vector, AscendC::TPosition::A1>;
+  using ScaleFP = Catlass::Gemm::GemmType<uint64_t, Vector, AscendC::TPosition::C2PIPE2GM>;
+  using Copier = Catlass::Gemm::Tile::CopyL0CToGm<
+      ArchTag, int32_t, Catlass::Gemm::GemmType<half, layout::RowMajor>,
+      Catlass::Gemm::Tile::ScaleGranularity::PER_CHANNEL>;
+
+  // This opt-in epilogue owns the FP buffer at byte offset zero.
+  const LocalTensor<uint64_t> scale_fp(AscendC::TPosition::C2PIPE2GM, 0, N);
+  const auto scale_l1 = scale_storage.template ReinterpretCast<uint64_t>();
+  const Vector scale_layout(N);
+  Catlass::Gemm::Tile::CopyGmToL1<ArchTag, ScaleGM, ScaleL1>{}(
+      scale_l1, scale_gm, scale_layout, scale_layout);
+  AscendC::SetFlag<AscendC::HardEvent::MTE2_FIX>(7);
+  AscendC::WaitFlag<AscendC::HardEvent::MTE2_FIX>(7);
+  Catlass::Gemm::Tile::CopyL1ToFP<ArchTag, ScaleL1, ScaleFP>{}(
+      scale_fp, scale_l1, scale_layout, scale_layout);
+  AscendC::PipeBarrier<PIPE_FIX>();
+
+  const auto src_layout = layout::zN::MakeLayoutInL0C(MatrixCoord(M, N));
+  const layout::RowMajor dst_layout(M, N, dst_pitch);
+  Copier{}(dst, src, scale_fp, dst_layout, src_layout, 0);
 }
 
 template <uint32_t M, uint32_t N, uint32_t K, uint32_t block_M,
@@ -1520,7 +1573,7 @@ static constexpr uint32_t L0AB_EVENT = 0;
 
 template <typename T1, typename T2, uint32_t M, uint32_t N, uint32_t K,
           bool transpose_A = false, bool transpose_B = false,
-          uint32_t kL0Size = 128, bool useHf32 = false>
+          uint32_t kL0Size = 128>
 CATLASS_DEVICE void
 gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
         LocalTensor<T2> const &C, // this must be located in l0c
@@ -1712,9 +1765,9 @@ gemm_v0(LocalTensor<T1> const &A, LocalTensor<T1> const &B,
       PipeBarrier<PIPE_M>();
       // transpose_B (QK) computes only n_actual columns (window width); the
       // non-transpose path keeps the full template N (nTile per N-tile).
-      tl::ascend::mma<T1, T2, M, nTile, useHf32>(
-          l0a[l0a_base], l0b[l0b_base], C[cNOffset], initflag, kSize,
-          transpose_B ? n_actual : nTile);
+      tl::ascend::mma<T1, T2, M, nTile>(l0a[l0a_base], l0b[l0b_base],
+                                        C[cNOffset], initflag, kSize,
+                                        transpose_B ? n_actual : nTile);
       SetFlag<HardEvent::M_MTE1>(L0AB_EVENT + pp);
       tileIdx++;
     }
